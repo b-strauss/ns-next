@@ -21,8 +21,8 @@ can be added without restructuring the frontend.
 ## Goals
 
 - Parse **every** `.ns` file in the official `newspeaklanguage/newspeak`
-  repository without error (a documented allowlist may exempt known
-  hard cases).
+  repository without error (a documented blacklist of known hard cases
+  may be exempted).
 - Execute custom Newspeak test modules and the subset of real modules whose
   platform requirements are covered by the Milestone 1 core library.
 - Faithfully implement Newspeak name resolution: no global namespace;
@@ -128,7 +128,7 @@ D:\Workspace\ns-next\
     ns-cli/                  # binary `ns-next`
   corpus/                    # vendored .ns snapshot for the parser corpus test
     PROVENANCE.md            # upstream repo URL + exact commit hash
-    allowlist.toml           # known-unparseable files, each with a reason
+    blacklist.toml           # known-unparseable files, each with a reason
   tests-fixtures/            # *.ns + matching *.expected for execution tests
   docs/superpowers/specs/
 ```
@@ -251,7 +251,7 @@ Binary `ns-next`. Subcommands:
 - `ns-next parse <file.ns> [--ast]` — parse only; print diagnostics, and
   the AST with `--ast`.
 - `ns-next parse-corpus <dir>` — parse every `.ns` under `<dir>`, honor
-  `corpus/allowlist.toml`, print a pass/fail summary, exit non-zero on any
+  `corpus/blacklist.toml`, print a pass/fail summary, exit non-zero on any
   unexpected failure.
 
 Arg parsing via `clap`.
@@ -287,7 +287,7 @@ source bytes
 - **Parser corpus test**: `corpus/` holds every `.ns` from
   `newspeaklanguage/newspeak` at a fixed commit (recorded in
   `corpus/PROVENANCE.md`). A test runs `parse` on each file; failures not
-  listed in `corpus/allowlist.toml` (with a stated reason) fail the
+  listed in `corpus/blacklist.toml` (with a stated reason) fail the
   suite.
 - `ns-runtime`: unit tests for the resolver (each `Binding` variant) and
   the interpreter (dispatch, `super` sends, blocks, non-local return,
