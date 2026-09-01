@@ -75,7 +75,7 @@ impl<'a> Lexer<'a> {
             b'^' => self.single(TokenKind::Caret),
             b'.' => self.single(TokenKind::Dot),
             b';' => self.single(TokenKind::Semicolon),
-            b'#' => self.single(TokenKind::Pound), // Symbol body lexed in Task 4
+            b'#' => self.lex_symbol(),
             b'|' => {
                 if self.peek_at(1) == Some(b'|') {
                     self.pos += 2;
@@ -99,6 +99,12 @@ impl<'a> Lexer<'a> {
             _ if b.is_ascii_digit() => self.lex_number(), // Task 4
             b'\'' => self.lex_string(),                   // Task 4
             b'"' => self.lex_char_constant(),             // Task 4
+            _ if b == b'-'
+                && self.peek_at(1).is_some_and(|n| n.is_ascii_digit())
+                && (!self.prev_ends_value() || self.preceded_by_whitespace()) =>
+            {
+                self.lex_number()
+            }
             _ if SPECIAL.contains(&b) => self.lex_operator(),
             _ => {
                 self.pos += 1;
@@ -178,15 +184,167 @@ impl<'a> Lexer<'a> {
         self.push(TokenKind::BinarySelector, start, self.pos);
     }
 
-    // Task 4 stubs — implemented next task.
     fn lex_number(&mut self) {
-        self.single(TokenKind::Number);
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+        self.eat_digits();
+        // radix?
+        if self.peek() == Some(b'r') {
+            self.pos += 1;
+            if self.peek() == Some(b'-') {
+                self.pos += 1;
+            }
+            self.eat_extended_digits();
+            if self.peek() == Some(b'.')
+                && self.peek_at(1).is_some_and(|b| b.is_ascii_alphanumeric())
+            {
+                self.pos += 1;
+                self.eat_extended_digits();
+            }
+        } else if self.peek() == Some(b'.') && self.peek_at(1).is_some_and(|b| b.is_ascii_digit()) {
+            self.pos += 1;
+            self.eat_digits();
+        }
+        if self.peek() == Some(b'e') && self.exponent_follows() {
+            self.pos += 1;
+            if self.peek() == Some(b'-') {
+                self.pos += 1;
+            }
+            self.eat_digits();
+        }
+        self.push(TokenKind::Number, start, self.pos);
     }
+
+    fn exponent_follows(&self) -> bool {
+        let mut i = 1;
+        if self.peek_at(i) == Some(b'-') {
+            i += 1;
+        }
+        self.peek_at(i).is_some_and(|b| b.is_ascii_digit())
+    }
+
+    fn eat_digits(&mut self) {
+        while matches!(self.peek(), Some(b) if b.is_ascii_digit()) {
+            self.pos += 1;
+        }
+    }
+
+    fn eat_extended_digits(&mut self) {
+        while matches!(self.peek(), Some(b) if b.is_ascii_digit() || b.is_ascii_uppercase()) {
+            self.pos += 1;
+        }
+    }
+
     fn lex_string(&mut self) {
-        self.single(TokenKind::String);
+        let start = self.pos;
+        self.pos += 1; // opening quote
+        loop {
+            match self.peek() {
+                None => {
+                    self.diags.push(Diagnostic::error(
+                        Span::new(start as u32, self.pos as u32),
+                        "unterminated string literal",
+                    ));
+                    break;
+                }
+                Some(b'\'') => {
+                    if self.peek_at(1) == Some(b'\'') {
+                        self.pos += 2;
+                    } else {
+                        self.pos += 1;
+                        break;
+                    }
+                }
+                Some(_) => self.pos += 1,
+            }
+        }
+        self.push(TokenKind::String, start, self.pos);
     }
+
+    fn lex_symbol(&mut self) {
+        let start = self.pos;
+        self.pos += 1; // '#'
+        match self.peek() {
+            Some(b'\'') => {
+                self.lex_string();
+                self.tokens.pop(); // replace String token with Symbol span
+            }
+            Some(b) if b == b'_' || b.is_ascii_alphabetic() => {
+                // identifier, possibly a run of keywords `at:put:`
+                while matches!(self.peek(), Some(c) if c == b'_' || c.is_ascii_alphanumeric()) {
+                    self.pos += 1;
+                }
+                while self.peek() == Some(b':') {
+                    self.pos += 1;
+                    while matches!(self.peek(), Some(c) if c == b'_' || c.is_ascii_alphanumeric()) {
+                        self.pos += 1;
+                    }
+                }
+            }
+            Some(b) if SPECIAL.contains(&b) => {
+                while matches!(self.peek(), Some(c) if SPECIAL.contains(&c)) {
+                    self.pos += 1;
+                }
+            }
+            _ => {
+                self.diags.push(Diagnostic::error(
+                    Span::new(start as u32, self.pos as u32),
+                    "expected symbol after `#`",
+                ));
+            }
+        }
+        self.push(TokenKind::Symbol, start, self.pos);
+    }
+
     fn lex_char_constant(&mut self) {
-        self.single(TokenKind::CharConstant);
+        let start = self.pos;
+        self.pos += 1; // opening `"`
+        match self.peek() {
+            Some(_) => self.pos += 1,
+            None => {
+                self.diags.push(Diagnostic::error(
+                    Span::new(start as u32, self.pos as u32),
+                    "unterminated character constant",
+                ));
+                self.push(TokenKind::CharConstant, start, self.pos);
+                return;
+            }
+        }
+        if self.peek() == Some(b'"') {
+            self.pos += 1;
+        } else {
+            self.diags.push(Diagnostic::error(
+                Span::new(start as u32, self.pos as u32),
+                "character constant must contain exactly one character",
+            ));
+        }
+        self.push(TokenKind::CharConstant, start, self.pos);
+    }
+
+    /// True when the byte immediately before the current position is ASCII
+    /// whitespace, or we are at the start of input. Used to let `-42` lex as a
+    /// negative literal even after a value token when a space separates them
+    /// (`a -42`), while `a-42` and `a - 42` stay subtraction.
+    fn preceded_by_whitespace(&self) -> bool {
+        self.pos == 0 || self.bytes[self.pos - 1].is_ascii_whitespace()
+    }
+
+    fn prev_ends_value(&self) -> bool {
+        matches!(
+            self.tokens.last().map(|t| t.kind),
+            Some(
+                TokenKind::Identifier
+                    | TokenKind::Number
+                    | TokenKind::String
+                    | TokenKind::Symbol
+                    | TokenKind::CharConstant
+                    | TokenKind::RParen
+                    | TokenKind::RBracket
+                    | TokenKind::RBrace
+            )
+        )
     }
 }
 
@@ -273,5 +431,58 @@ mod tests {
             kinds("foo::=bar"),
             vec![Identifier, ColonColonEquals, Identifier, Eoi]
         );
+    }
+
+    #[test]
+    fn decimal_numbers() {
+        assert_eq!(
+            kinds("0 42 3.14 1.5e-3"),
+            vec![Number, Number, Number, Number, Eoi,]
+        );
+    }
+
+    #[test]
+    fn radix_numbers() {
+        assert_eq!(kinds("16rFF 2r1010"), vec![Number, Number, Eoi]);
+    }
+
+    #[test]
+    fn negative_number_vs_subtraction() {
+        assert_eq!(kinds("-42"), vec![Number, Eoi]);
+        assert_eq!(
+            kinds("a - 42"),
+            vec![Identifier, BinarySelector, Number, Eoi]
+        );
+        assert_eq!(kinds("a -42"), vec![Identifier, Number, Eoi]);
+    }
+
+    #[test]
+    fn strings_with_escaped_quote() {
+        let (tokens, diags) = Lexer::new("'it''s'").run();
+        assert!(diags.is_empty());
+        assert_eq!(tokens[0].kind, String);
+        assert_eq!(tokens[0].span.text("'it''s'"), "'it''s'");
+    }
+
+    #[test]
+    fn symbols() {
+        assert_eq!(
+            kinds("#foo #at:put: #+ #'hi there'"),
+            vec![Symbol, Symbol, Symbol, Symbol, Eoi,]
+        );
+    }
+
+    #[test]
+    fn character_constants() {
+        assert_eq!(
+            kinds(r#""a" "'" " ""#),
+            vec![CharConstant, CharConstant, CharConstant, Eoi]
+        );
+    }
+
+    #[test]
+    fn unterminated_string_is_diagnostic() {
+        let (_tokens, diags) = Lexer::new("'oops").run();
+        assert_eq!(diags.len(), 1);
     }
 }
