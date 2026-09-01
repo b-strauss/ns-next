@@ -1,0 +1,3 @@
+# Vendored third-party corpus: keep byte-for-byte verbatim, no line-ending or
+# other normalization, so parser tests and snapshots are stable across platforms.
+corpus/** -text

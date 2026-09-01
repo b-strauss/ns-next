@@ -1,0 +1,1698 @@
+Newspeak3
+'Root'
+class HopscotchForCroquet usingPlatform: p <Platform> hopscotch: H <HopscotchForHTML5 class> = Object new (
+	(* Module definition enclosing Hopscotch UI subclass that integrates Croquet style synchronization. 
+See that class (#Hopscotch) for details. *)
+	
+	(* imports *)
+	
+	|
+		private HopscotchForHTML5 = H.
+		private Promise = p actors Promise.
+		private Resolver = p actors Resolver.
+		private List = p collections List.
+		private Map = p collections Map.
+	|
+) (
+	public class Hopscotch usingPlatform: p <Platform> images: images ducts: ds voiceControlClass: VCC = HopscotchForHTML5 usingPlatform: p
+		images: images
+		ducts: ds
+		voiceControlClass: VCC (
+		(* This class overrides the normal Hopscotch UI module to allow the UI to synchronize using croquet.io. A series of croquet clients running a Newspeak application can be synchronized, without any modification to the Newspeak application code; the only requirement is that application be deployed using a platform object that uses an instance of this class as its GUI.
+
+For every interactive fragment class, we maintain:
+
+1) A subclass, defined here, that manages the interaction with Croquet.
+2) A counter that is used to generate unique ids for each fragment.
+
+Each fragment sets its id upon instantiation, accessing and incrementing the per-fragment type counter via a dedicated method in this class.
+
+The fragment notifies the Croquet root view when an interaction occurs. The croquet view notifies the croquet model, which notifies the reflector; when the reflector has signaled the croquet model, it notifies the croquet view; the view then executes a call back in which the fragment performs the normal behavior defined in its superclass.
+
+As a general recipe:
+
+Every fragment type has a per type croquet event scope id, of the form #ns<fragmentypename>_, and, for each of its actions, a croquet event.  When an action occurs, we publish an event with the fragment type scope id, the action-specific event name, and event specific data. Usually this data is  a JS object with two fields: fid, containing the individual fragment id publishing, and a data field for additional event info. We produce these objects by calling out to JS via #newspeakFragmentData:data:. This JS function takes a fragment id and a data object, which can be anything that Croquet can serialize (so numbers, strings or vanilla objects, but not instances of specific classes with function valued fields etc.).
+
+Back in Javascript, the root model subscribes to these events , scoping them using the aforementioned fragment type scope id.  The subscription specifies a root model method. When an event is detected, the method will be called with the event data as a parameter. The method in turn publishes an event whose name is of the form #model_<fragment specific scope>_ <action>. The fragment specific scope is the concatenation of the fragment type scope id and a fragment id number, which is usually found in the fid field of the incoming method argument. Associated with the event is the data from the incoming parameter.
+
+Each fragment subscribes to such an event for each of its actions. Thus, it will be notified when croquet has processed the action - regardless of whether the action originated on the client that actually published, or any other client. Now it can act on the event data it receives.
+
+The scheme is designed so that we only generate events upon user interaction. Thus the event pressure is bounded by the speed of human input. 
+
+A complication to the above scheme is Croquet's use of snapshotting. Croquet expects all application state to be stored as serializable data in a Javascript Croquet model object, with the UI managed by the Croquet view objects that are essentially stateless. We are of course subverting this model, as all our state is in the Newspeak heap. In principle, we could add an image mechanism to Newspeak, store that image as a blob in the Croquet model and use it to restore the system. For now, we use a different solution. We store the entire event history in the model. This is a legitimate representation of the application state, as it can always be reconstructed from its initial state (the vfuel) by applying all events in order. 
+
+When restoring a client from a Croquet snapshot, we play back any events in the snapshot that have not yet been seen by the client, bringing into sync. The logic managing the above process is located mainly in Javascript code. When the client starts up, it sets up Croquet before activating Newspeak. Usually, this will include playing back unprocessed events.  However, in the case where a fresh client starts up, Newspeak has not yet been run, no Hopscotch fragments have been created, and so no fragments have subscribed to events.  Hence, replaying events would have no effect in a fresh client. To remedy this, we have Hopscotch notify the JS code to replay after the very first presenter has been displayed. This is managed in #HopscotchShell>>displayPresenter:. We track whether this is the first presenter via the flag #isStartingUp.
+
+A few other details also complicate the picture. These have to do with file handling, drag and drop, and menus, and are described in classes #FileChooserFragment, #MediaCreatorFragment and #Menu respectively.
+
+Ultimately, we hope to go beyond the above, and be able to diff the saved model state and extend this to full local-first solution. *)
+		
+		(* Per fragment-type counters for managing fragment ids *)
+		
+		(* Fragment numbering is SCOPED. A fragment's id is its enclosing scope path
+     plus an ordinal within that scope, and that id is the Croquet event address,
+     so clients agree on what an event refers to only while they mint ids the same
+     way. A flat counter made that depend on global construction ORDER, which
+     deferred, async and lazily realized content each break. See
+     CROQUET_SCOPED_FRAGMENT_IDS_2026-08-18.md. *)
+		
+		|
+			fragmentScopePath <String> ::= ''.
+			scopedCounters <Map[String, Integer]> = Map new.
+			liveFileChoosers = List new.
+			isStartingUp ::= true.
+			
+			(* JS access *)
+			js = p js.
+		|
+	) (
+		public class ButtonFragment label: l action: a = super ButtonFragment label: l
+			action: a (
+			|
+				fragmentId <String> = newButtonId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			updateVisualsFromSameKind: oldFragment <ButtonFragment> ^<Alien[ButtonElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			action = (
+				^[ publish: 'nsbutton_' event: #button_click data: fragmentId ]
+			)
+			public scope ^<String> = (
+				(* Lazily return a unique identifier for this fragment *)
+				
+				scope_slot isNil ifTrue: [ scope_slot: 'nsbutton_' , fragmentId ].
+				^scope_slot
+			)
+			setupCroquetView = (
+				(* When the Croquet view is notified of a click, it will call back to the Newspeak button to perform its normal action *)
+				
+				subscribe: #model_button_click handler: [:e | super action value ]
+			)
+		) : ()
+		public class ImageButtonFragment new = super ImageButtonFragment new (
+			|
+				fragmentId <String> = newImageButtonId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			public scope ^<String> = (
+				scope_slot isNil ifTrue: [ scope_slot: 'nsImagebutton_' , fragmentId ].
+				^scope_slot
+			)
+			updateVisualsFromSameKind: oldFragment <ImageButtonFragment> ^<Alien[ButtonElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			action = (
+				^[ publish: 'nsImagebutton_' event: #image_button_click data: fragmentId ]
+			)
+			setupCroquetView = (
+				subscribe: #model_image_button_click handler: [:e | super action value ]
+			)
+		) : ()
+		public class CheckboxFragment text: t <Holder> value: v <Boolean | Holder> action: a <[:Boolean | Object]> = super CheckboxFragment text: t
+			value: v
+			action: a (
+			|
+				fragmentId <String> = newCheckboxId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			public scope ^<String> = (
+				scope_slot isNil ifTrue: [ scope_slot: 'nscheckbox_' , fragmentId ].
+				^scope_slot
+			)
+			updateVisualsFromSameKind: oldFragment <CheckboxFragment> ^<Alien[ButtonElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			writeInput: v = (
+				checkbox at: 'checked' put: v.
+				super writeInput: v
+			)
+			inputHandler ^<[:Alien | Boolean]> = (
+				^[:b <Boolean> |
+					(checkbox at: 'checked') printString out.
+					publish: 'nscheckbox_'
+						event: ((checkbox at: 'checked') ifTrue: [ #checkBox_unchecked ]
+							ifFalse: [ #checkBox_checked ])
+						data: fragmentId.
+					nil
+				]
+			)
+			setupCroquetView = (
+				subscribe: #model_checkBox_checked
+					handler: [:e |
+						'checkbox checked event ' out.
+						writeInput: true
+					].
+				subscribe: #model_checkBox_unchecked
+					handler: [:e |
+						'checkbox unchecked event ' out.
+						writeInput: false
+					]
+			)
+		) : ()
+		public class RadioButtonFragment text: t <String> value: v <Boolean | Holder> group: g <String> action: a <[:Boolean | Object]> = super RadioButtonFragment text: t
+			value: v
+			group: g
+			action: a (
+			|
+				fragmentId <String> = newRadioButtonId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			public scope ^<String> = (
+				scope_slot isNil ifTrue: [ scope_slot: 'nsradiobutton_' , fragmentId ].
+				^scope_slot
+			)
+			updateVisualsFromSameKind: oldFragment <RadioButtonFragment> ^<Alien[ButtonElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			writeInput: v = (
+				button at: 'checked' put: v.
+				super writeInput: v
+			)
+			inputHandler ^<[:Alien | Boolean]> = (
+				^[:b <Boolean> |
+					publish: 'nsradiobutton_'
+						event: ((button at: 'checked') ifTrue: [ #radioButton_pressed ]
+							ifFalse: [ #radioButton_released ])
+						data: fragmentId.
+					nil
+				]
+			)
+			setupCroquetView = (
+				subscribe: #model_radioButton_pressed handler: [:e | writeInput: true ].
+				subscribe: #model_radioButton_released handler: [:e | writeInput: false ]
+			)
+		) : ()
+		public class HyperlinkFragment label: l action: a = super HyperlinkFragment label: l
+			action: a (
+			|
+				fragmentId <String> = newHyperlinkId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			updateVisualsFromSameKind: oldFragment <HyperlinkFragment> ^<Alien[LinkElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			action = (
+				^[ publish: 'nshyperlink_' event: #hyperlink_click data: fragmentId ]
+			)
+			public scope ^<String> = (
+				scope_slot isNil ifTrue: [ scope_slot: 'nshyperlink_' , fragmentId ].
+				^scope_slot
+			)
+			setupCroquetView = (
+				subscribe: #model_hyperlink_click handler: [:e | super action value ]
+			)
+		) : ()
+		public class CodeMirrorFragment onText: t <String> = super CodeMirrorFragment onText: t (
+			|
+				fragmentId <String> = newCodeMirrorId.
+				scope_slot <String>
+				reflecting <Boolean> ::= true.
+			|
+			setupCroquetView.
+		) (
+			public scope ^<String> = (
+				scope_slot isNil ifTrue: [ scope_slot: 'nscodemirror_' , fragmentId ].
+				^scope_slot
+			)
+			preventDefault: event <Alien> = (
+				(* Only the initiating client has an event to manage, and others have no access to this event; it cannot be serialized, so cannot be passed via croquet to other clients, and it would not be a valid event if it was. *)
+				
+			)
+			respondToCancel = (
+				reflecting ifTrue: [
+						publish: 'nscodemirror_' event: #codeMirror_cancel data: codeMirrorData
+					]
+			)
+			acceptFromKeydown: event <Alien> = (
+				super respondToAccept: event
+			)
+			convertKeydown: kde <Alien[KeydownEvent]> ^<Alien[JSObject]> = (
+				^js global sanitizeKeydownEvent: kde
+			)
+			cancelFromKeydown = (
+				super respondToCancel
+			)
+			codeMirrorData = (
+				^js global newspeakFragmentData: fragmentId data: textBeingAccepted
+			)
+			codeMirrorData: change <Alien[CodeMirrorChangeObject]> = (
+				^js global newspeakFragmentData: fragmentId
+					data: (js global nsCodeMirrorData: textBeingAccepted change: change)
+			)
+			croquetOrigin ^<Alien[JSObject]> = (
+				(* Options object tagging a programmatic CodeMirror operation as caused by synchronization, so the publish hooks can recognize and suppress its signals. The reflecting flag alone cannot: CodeMirror delivers some signals (beforeSelectionChange from a cursor adjustment above all) only when its operation or display update ends - AFTER the flag has been restored - and the resulting echo of every applied event stormed the reflector past its send rate limit; each disconnect's replay then re-fired the echoes en masse, a self-sustaining storm.
+      Also scroll: false - by default CodeMirror scrolls its cursor into view on setCursor/setSelection, so applying an echo to a VISIBLE editor yanked the page to that editor's cursor. Bit hardest when typing in a document's live view with the raw view open: every keystroke's echo scrolled to the raw pane's insertion point, hiding what was being typed. A synchronization-applied cursor must never steal the viewport. *)
+				
+				| opts = JSObject new. |
+				opts at: #origin put: 'croquet'.
+				opts at: #scroll put: false.
+				^opts
+			)
+			adjustCursorPos: change <Alien[CodeMirrorChangeRecord]> = (
+				(* The change record from CodeMirror will have information on:
+
+indices of change (#from, #to fields)
+new text (#text field - an array of lines of new text)
+old text (#removed field) *)
+				
+				| text = change at: #text. linesInserted = text at: #length. from = change at: #from. fromLine = from at: #line. toLine = (change at: #to) at: #line. linesReplaced = toLine - fromLine + 1. linesAdded = linesInserted - linesReplaced. targetLine = toLine + linesAdded. lastLineLength = linesInserted = 0 ifTrue: [
+						0
+					]
+					ifFalse: [ (text at: linesInserted - 1) size ]. baseCh = fromLine = targetLine ifTrue: [
+						from at: #ch
+					]
+					ifFalse: [ 0 ]. targetCh = baseCh + lastLineLength. |
+				editor setCursor: (js global nsCursorPos: targetCh line: targetLine)
+					ch: nil
+					options: croquetOrigin
+			)
+			respondToKeyDown: event <Alien[Event]> = (
+				| key <Character> = event at: 'key'. metaPressed <Boolean> = 
+				(* customary on mac, does not work on windows *)
+				event at: 'metaKey'. ctrlPressed <Boolean> = 
+				(* works on windows *)
+				event at: 'ctrlKey'. shiftPressed <Boolean> = event at: 'shiftKey'. |
+				reflecting ifTrue: [
+						((key = 'Enter' and: [
+								metaPressed or: [ ctrlPressed or: [ shiftPressed ] ]
+							]) or: [ key = 'Escape' ]) ifTrue: [ event preventDefault ].
+						publish: 'nscodemirror_'
+							event: #codeMirror_keydown
+							data: (js global newspeakFragmentData: fragmentId
+								data: (convertKeydown: event))
+					]
+			)
+			respondToAccept: event <Alien[Event]> = (
+				reflecting ifTrue: [
+						publish: 'nscodemirror_' event: #codeMirror_accept data: codeMirrorData
+					]
+			)
+			selectionEventData: event = (
+				^js global nsCodeMirrorSelectionChange: event
+			)
+			adjustSelection: selection <Alien[Range]> = (
+				editor setSelection: (selection at: #anchor)
+					head: (selection at: #head)
+					options: croquetOrigin
+			)
+			isSyncOrigin: origin ^<Boolean> = (
+				(* Selection/cursor signals originating from applying a synchronized event: our tagged programmatic operations ('croquet') and the selection fallout of a full-buffer setValue. CodeMirror may deliver these at the END of its operation - after the reflecting flag has been restored - so the flag alone cannot suppress their echo, which stormed the reflector (see croquetOrigin). Deliberately NOT consulted by the change/beforeChange publishers: setValue-originated CHANGE events have always been published and parts of the document-update pipeline ride on them. *)
+				
+				origin = 'croquet' ifTrue: [ ^true ].
+				origin = 'setValue' ifTrue: [ ^true ].
+				^false
+			)
+			respondToBeforeSelectionChange: event <Alien[Event]> = (
+				(reflecting and: [ (isSyncOrigin: (event at: #origin)) not ]) ifTrue: [
+						publish: 'nscodemirror_'
+							event: #codeMirror_beforeSelectionChange
+							data: (js global newspeakFragmentData: fragmentId
+								data: (selectionEventData: event))
+					]
+			)
+			updateVisualsFromSameKind: oldFragment <CodeMirrorFragment> ^<Alien[Element]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			updateEditedText: oldFragment <CodeMirrorFragment> = (
+				(* We don't want spurious changes signaling croquet, so we update only when needed. This isn't quite right. This will update when needed, but even that is not a real change. This method is called when no edits have occurred. The situation to worry about is when we edited a method and changed the selector, changing a different method. That method has changed, even though it was not being edited. At the same time, the edited method has not changed, yet the text in its editor has. So it was always best to just update the method. However, we do need to avoid the change events thereby generated. Once the correct test for this is implemented, it will likely be cheaper to use it to avoid the notification than to compare old and new text. *)
+				
+				textSlot = oldFragment textBeingAccepted ifFalse: [
+						editor setValue: textSlot
+					]
+			)
+			setupCroquetView = (
+				subscribe: #model_codeMirror_change
+					handler: [:e |
+						reflecting ifTrue: [
+								reflecting:: false.
+								hasVisual ifTrue: [
+										| newText = e at: #textBeingAccepted. |
+										editor setValue: newText.
+										adjustCursorPos: (e at: #change)
+									].
+								super respondToChange: e.
+								reflecting:: true
+							]
+							ifFalse: [ reflecting:: true ]
+					].
+				subscribe: #model_codeMirror_beforeChange
+					handler: [:e |
+						reflecting ifTrue: [
+								reflecting:: false.
+								super respondToBeforeChange: e.
+								reflecting:: true
+							]
+							ifFalse: [ reflecting:: true ]
+					].
+				subscribe: #model_codeMirror_keydown
+					handler: [:e |
+						reflecting ifTrue: [
+								reflecting:: false.
+								super respondToKeyDown: e.
+								reflecting:: true
+							]
+							ifFalse: [ reflecting:: true ]
+					].
+				subscribe: #model_codeMirror_accept
+					handler: [:e |
+						reflecting ifTrue: [
+								reflecting:: false.
+								super respondToAccept: e.
+								reflecting:: true
+							]
+							ifFalse: [ reflecting:: true ]
+					].
+				subscribe: #model_codeMirror_cancel
+					handler: [:e |
+						reflecting ifTrue: [
+								reflecting:: false.
+								super respondToCancel.
+								reflecting:: true
+							]
+							ifFalse: [ reflecting:: true ]
+					].
+				subscribe: #model_codeMirror_beforeSelectionChange
+					handler: [:e |
+						reflecting ifTrue: [
+								reflecting:: false.
+								adjustSelection: e.
+								reflecting:: true
+							]
+							ifFalse: [ reflecting:: true ]
+					]
+			)
+			respondToChange: change <Alien[CodeMirrorChangeObject]> = (
+				reflecting ifTrue: [
+						publish: 'nscodemirror_'
+							event: #codeMirror_change
+							data: (codeMirrorData: (js global nsCodeMirrorChange: change))
+					]
+			)
+			respondToBeforeChange: event <Alien[Event]> = (
+				reflecting ifTrue: [
+						publish: 'nscodemirror_'
+							event: #codeMirror_beforeChange
+							data: codeMirrorData
+					]
+			)
+		) : ()
+		public class HyperlinkImageFragment image: i action: a = super HyperlinkImageFragment new (
+			|
+				fragmentId <String> = newHyperlinkImageId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			action = (
+				^[
+					publish: 'nshyperlinkImage_' event: #hyperlink_image_click data: fragmentId
+				]
+			)
+			public scope ^<String> = (
+				scope_slot isNil ifTrue: [ scope_slot: 'nshyperlinkImage_' , fragmentId ].
+				^scope_slot
+			)
+			updateVisualsFromSameKind: oldFragment <HyperlinkImageFragment> ^<Alien[LinkElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			setupCroquetView = (
+				subscribe: #model_hyperlink_image_click handler: [:e | super action value ]
+			)
+		) : ()
+		public class ToggleComposer collapsedDefinition: collapsed <[Fragment]> expandedDefinition: expanded <[Fragment]> initiallyExpanded: flag <Boolean> = super ToggleComposer collapsedDefinition: collapsed
+			expandedDefinition: expanded
+			initiallyExpanded: flag (
+			|
+				fragmentId <String> = newToggleComposerId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			public scope ^<String> = (
+				scope_slot isNil ifTrue: [ scope_slot: 'nstogglecomposer_' , fragmentId ].
+				^scope_slot
+			)
+			updateVisualsFromSameKind: oldFragment <ToggleComposer> ^<Alien[ButtonElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			interactiveToggle = (
+				publish: 'nstogglecomposer_' event: #toggleComposer_toggle data: fragmentId
+			)
+			setupCroquetView = (
+				subscribe: #model_toggleComposer_toggle
+					handler: [:e | super interactiveToggle ]
+			)
+		) : ()
+		public class TextEditorFragment new = super TextEditorFragment new (
+			|
+				fragmentId <String> = newTextEditorId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			updateVisualsFromSameKind: oldFragment <TextEditorFragment> ^<Alien[ButtonElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			public scope ^<String> = (
+				(* Lazily return a unique identifier for this fragment *)
+				
+				scope_slot isNil ifTrue: [ scope_slot: 'nstexteditor_' , fragmentId ].
+				^scope_slot
+			)
+			textEditorData = (
+				^js global newspeakFragmentData: fragmentId data: (textEditor at: 'value')
+			)
+			respondToCancel: event <Alien[Event]> = (
+				publish: 'nstexteditor_' event: #textEditor_cancel data: textEditorData
+			)
+			respondToAccept: event <Alien[InputEvent]> = (
+				publish: 'nstexteditor_' event: #textEditor_accept data: textEditorData
+			)
+			respondToChange: event <Alien[InputEvent]> = (
+				publish: 'nstexteditor_' event: #textEditor_change data: textEditorData
+			)
+			setupCroquetView = (
+				(* ensure a corresponding Croquet view is set *)
+				
+				(* When the Croquet view is notified of a click, it will call back to the Newspeak button to perform its normal action *)
+				
+				subscribe: #model_textEditor_accept
+					handler: [:e |
+						textEditor at: 'value' put: e.
+						super respondToAccept: e
+					].
+				subscribe: #model_textEditor_change
+					handler: [:e |
+						textEditor at: 'value' put: e.
+						textEditor setSelectionRange: e size to: e size.
+						super respondToChange: e
+					].
+				subscribe: #model_textEditor_cancel
+					handler: [:e | super respondToCancel: e ]
+			)
+		) : ()
+		public class PickerFragment text: t <String> items: i <List[String]> action: a <[:String | Object]> = super PickerFragment text: t
+			items: i
+			action: a (
+			|
+				fragmentId <String> = newPickerId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			updateVisualsFromSameKind: oldFragment <PickerFragment> ^<Alien[ButtonElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			public scope ^<String> = (
+				(* Lazily return a unique identifier for this fragment *)
+				
+				scope_slot isNil ifTrue: [ scope_slot: 'nspicker_' , fragmentId ].
+				^scope_slot
+			)
+			writeInput: v = (
+				(* Set the value, in the DOM, in case it is a remote notice from Croquet. This is needed when this client is not the one that initiated the change *)
+				
+				picker at: 'value' put: v.
+				
+				(* Then do the usual action via a call to the super method *)
+				super writeInput: v
+			)
+			inputHandler ^<[:Alien | Boolean]> = (
+				^[:event |
+					publish: 'nspicker_' event: #picker_pick data: pickerData.
+					nil
+				]
+			)
+			pickerData = (
+				^js global newspeakFragmentData: fragmentId data: extractInput
+			)
+			setupCroquetView = (
+				(* ensure a corresponding Croquet view is set *)
+				
+				(* When the Croquet view is notified of a click, it will write the input *)
+				
+				subscribe: #model_picker_pick handler: [:e | writeInput: e ]
+			)
+		) : ()
+		public class ColorPickerFragment value: v <String | Holder> action: a <[:String | Object]> = super ColorPickerFragment value: v
+			action: a (
+			|
+				fragmentId <String> = newColorPickerId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			updateVisualsFromSameKind: oldFragment <ColorPickerFragment> ^<Alien[ButtonElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			public scope ^<String> = (
+				(* Lazily return a unique identifier for this fragment *)
+				
+				scope_slot isNil ifTrue: [ scope_slot: 'nscolorpicker_' , fragmentId ].
+				^scope_slot
+			)
+			writeInput: v = (
+				(* Set the value, in the DOM, in case it is a remote notice from Croquet. This is needed when this client is not the one that initiated the change *)
+				
+				picker at: 'value' put: v.
+				
+				(* Then do the usual action via a call to the super method *)
+				super writeInput: v
+			)
+			inputHandler ^<[:Alien | Boolean]> = (
+				^[:event |
+					publish: 'nscolorpicker_' event: #colorPicker_pick data: colorPickerData.
+					nil
+				]
+			)
+			colorPickerData = (
+				^js global newspeakFragmentData: fragmentId data: extractInput
+			)
+			setupCroquetView = (
+				(* When the Croquet view is notified of a click, it will write the input *)
+				
+				subscribe: #model_colorPicker_pick handler: [:e | writeInput: e ]
+			)
+		) : ()
+		public class DatePickerFragment value: v <String | Holder> action: a <[:String | Object]> = super DatePickerFragment value: v
+			action: a (
+			|
+				fragmentId <String> = newDatePickerId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			updateVisualsFromSameKind: oldFragment <DatePickerFragment> ^<Alien[ButtonElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			public scope ^<String> = (
+				(* Lazily return a unique identifier for this fragment *)
+				
+				scope_slot isNil ifTrue: [ scope_slot: 'nsdatepicker_' , fragmentId ].
+				^scope_slot
+			)
+			writeInput: v = (
+				(* Set the value, in the DOM, in case it is a remote notice from Croquet. This is needed when this client is not the one that initiated the change *)
+				
+				picker at: 'value' put: v.
+				
+				(* Then do the usual action via a call to the super method *)
+				super writeInput: v
+			)
+			inputHandler ^<[:Alien | Boolean]> = (
+				^[:event |
+					publish: 'nsdatepicker_' event: #datePicker_pick data: datePickerData.
+					nil
+				]
+			)
+			datePickerData = (
+				^js global newspeakFragmentData: fragmentId data: extractInput
+			)
+			setupCroquetView = (
+				(* When the Croquet view is notified of a click, it will write the input *)
+				
+				subscribe: #model_datePicker_pick handler: [:e | writeInput: e ]
+			)
+		) : ()
+		public class TimePickerFragment value: v <String | Holder> action: a <[:String | Object]> = super TimePickerFragment value: v
+			action: a (
+			|
+				fragmentId <String> = newTimePickerId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			updateVisualsFromSameKind: oldFragment <TimePickerFragment> ^<Alien[ButtonElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			public scope ^<String> = (
+				(* Lazily return a unique identifier for this fragment *)
+				
+				scope_slot isNil ifTrue: [ scope_slot: 'nstimepicker_' , fragmentId ].
+				^scope_slot
+			)
+			writeInput: v = (
+				(* Set the value, in the DOM, in case it is a remote notice from Croquet. This is needed when this client is not the one that initiated the change *)
+				
+				picker at: 'value' put: v.
+				
+				(* Then do the usual action via a call to the super method *)
+				super writeInput: v
+			)
+			inputHandler ^<[:Alien | Boolean]> = (
+				^[:event |
+					publish: 'nstimepicker_' event: #timePicker_pick data: timePickerData.
+					nil
+				]
+			)
+			timePickerData = (
+				^js global newspeakFragmentData: fragmentId data: extractInput
+			)
+			setupCroquetView = (
+				(* When the Croquet view is notified of a click, it will write the input *)
+				
+				subscribe: #model_timePicker_pick handler: [:e | writeInput: e ]
+			)
+		) : ()
+		public class SliderFragment value: v <Holder> min: mn <Float> max: mx <Float> = super SliderFragment value: v
+			min: mn
+			max: mx (
+			|
+				fragmentId <String> = newSliderId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			updateVisualsFromSameKind: oldFragment <SliderFragment> ^<Alien[InputElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			public scope ^<String> = (
+				(* Lazily return a unique identifier for this fragment *)
+				
+				scope_slot isNil ifTrue: [ scope_slot: 'nsslider_' , fragmentId ].
+				^scope_slot
+			)
+			writeInput: v = (
+				visual at: 'value' put: v.
+				super writeInput: v
+			)
+			inputHandler ^<[:Ailen | Boolean]> = (
+				^[:event |
+					publish: 'nsslider_' event: #slider_pick data: sliderData.
+					nil
+				]
+			)
+			sliderData = (
+				^js global newspeakFragmentData: fragmentId data: extractInput
+			)
+			setupCroquetView = (
+				(* When the Croquet view is notified of a click, it will call back to the Newspeak button to perform its normal action *)
+				
+				subscribe: #model_slider_pick handler: [:e | writeInput: e ]
+			)
+		) : ()
+		public class DropDownMenuFragment menu: ms image: img <Image> alignment: side <Symbol> = super DropDownMenuFragment menu: ms
+			image: img
+			alignment: side (
+			(* Dropdown menus operate in two stages: first, the menu button is clicked, to display the actual menu.  This is handled in this class, via #clickHandler, which publishes the #dropDownMenu_click event.
+Once the menu is displayed, individual entries in it can be clicked.  This is handled via class #Menu. Here we compute an instance of #Menu based on the menu contents; this is what gets displayed. *)
+			
+			(* NOT named fragmentId. That would override the slot of the same name in
+     ImageButtonFragment, our superclass, whose initializer runs FIRST and calls
+     setupCroquetView - and #scope there dispatches the id accessor to THIS slot,
+     still uninitialized, so it read nil. Every dropdown then subscribed on
+     'nsImagebutton_nil', because nil printString silently produced a string
+     instead of failing. *)
+			
+			|
+				dropDownMenuId <String> = newDropDownMenuId.
+			|
+			scope_slot: 'nsdropdownmenu_' , dropDownMenuId.
+			setupCroquetView.
+		) (
+			updateVisualsFromSameKind: oldFragment <DropDownMenuFragment> ^<Alien[InputElement]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			updateContent ^<Alien[Element]> = (
+				(* Overridden so as to wrap the menu items so that their actions post Croquet events *)
+				
+				| menu <Alien[Div]> = computeContentForMenu: [
+						(Menu supplier: menuSupplier) menuContents
+					]. |
+				showMenu: menu forFragment: self.
+				^menu
+			)
+			setupCroquetView = (
+				(* When the Croquet view is notified of a click, it will call back to the Newspeak button to perform its normal action *)
+				
+				subscribe: #model_dropDownMenu_click
+					handler: [:e | super computeClickHandler value: e ]
+			)
+			computeClickHandler ^<[:Alien | Boolean]> = (
+				^[:event |
+					event stopPropagation.
+					publish: 'nsdropdownmenu_' event: #dropDownMenu_click data: dropDownMenuId.
+					nil
+				]
+			)
+		) : (
+			public menu: ms <[{Symbol | {String. []}}]> ^<Instance> = (
+				^menu: ms image: dropDownImage alignment: #right
+			)
+			public menu: ms <[{Symbol | {String. []}}]> alignment: side <Symbol> ^<Instance> = (
+				^menu: ms image: dropDownImage alignment: side
+			)
+			public menu: ms <[{Symbol | {String. []}}]> image: img <Image> ^<Instance> = (
+				^menu: ms image: img alignment: #right
+			)
+		)
+		public class Fragment new = super Fragment new (
+			|
+				public croquetView_slot <Promise[Alien[NewspeakCroquetFragmentView]]>
+			|
+		) (
+			croquetModel = (
+				^croquetView model
+			)
+			croquetView = (
+				croquetView_slot isNil ifTrue: [ setupCroquetView ].
+				^croquetView_slot
+			)
+			setupCroquetView = (
+				(* only fragments that actively need croquet support need this *)
+				
+				subclassResponsibility
+			)
+			subscribe: eventSpec <String> handler: blk <[CroquetEvent]> = (
+				subscribeFragment: fragmentId scope: scope eventSpec: eventSpec handler: blk
+			)
+		) : ()
+		public class Menu supplier: ms <[{Symbol | {String. []}}]> = Object new (
+			(* This class reifies the structure displayed by a dropdown menu when it is clicked, ergo, the list of menu entries (the actual menu). The handling of the latter clicking is done in #DropDownMenuFragment.
+
+Instances of this class are not proper fragments in and of themselves (perhaps an oversight in the Hopscotch menu design for the web).
+Nevertheless, it operates in a similar manner. Each entry shows the original menu text, but wraps the corresponding action so that when the entry is clicked, an event will get published indicating what entry was selected.  A handler is set up, subscribing to the notification events from the model, that uses the name of the entry provided by the event to choose the appropriate action. This is done by looking it up in a map, #menuItemMap, which is constructed from the original menu supplier, #ms, via the #buildMenuItemMap method. *)
+			
+			|
+				fragmentId <String> = newMenuId.
+				public menuContents <List[Symbol | {String. []}]> = List new.
+				menuItemMap <Map[String, []]> = Map new.
+			|
+			buildMenuItemMap: ms.
+			setupCroquetView.
+		) (
+			lazy scope <String> = 'nsmenu_' , fragmentId.
+			setupCroquetView = (
+				subscribeFragment: fragmentId
+					scope: scope
+					eventSpec: #model_menu_click
+					handler: [:e <String> |
+						('executing menu item ' , e) out.
+						(menuItemMap at: e) value
+					]
+			)
+			buildMenuItemMap: ms <[{Symbol | {String. []}}]> ^<Map[String, []]> = (
+				ms value do: [:item <Symbol | {String. []}> |
+						item = #separator ifFalse: [
+								menuItemMap at: item first put: item last.
+								('menu item ' , item first , fragmentId) out.
+								menuContents add: {item first. [
+										('published menu click ' , fragmentId , ' ' , item first) out.
+										publish: 'nsmenu_'
+											event: 'menu_click'
+											data: (js global newspeakFragmentData: fragmentId data: item first)
+									]. }
+							]
+							ifTrue: [ menuContents add: #separator ]
+					]
+			)
+		) : ()
+		class HopscotchShell new = super HopscotchShell new (
+			(* We override HopscotchShell, much like we override fragments. This is needed because users interact via the navigation buttons in the web browser (or our own navigation buttons in non-browser configurations. 
+
+This behavior is routed through the #userBack: method, which handles web browser navigation events ('onpopstate'). *)
+			
+			|
+				fragmentId <String> = newWindowId.
+			|
+			setupCroquetView.
+		) (
+			scope = (
+				^'nsshell_' , fragmentId
+			)
+			convertPopState: event = (
+				^js global nsPopstateData: event
+			)
+			userBack: event = (
+				publish: 'nsshell_'
+					event: #shell_userBack
+					data: (js global newspeakFragmentData: fragmentId
+						data: (convertPopState: event))
+			)
+			public displayPresenter: p = (
+				super displayPresenter: p.
+				
+				(* As explained in the class comment, the very first presenter we display needs to notify the JS code that a replay of any unprocessed events should be done. *)
+				isStartingUp ifTrue: [
+						isStartingUp:: false.
+						
+						(* The replayed event handlers assume that all Newspeak processing for the turn has completed by the time they run (as it has in normal execution). A direct send honors that: replayEvents only ENQUEUES handler thunks on the dispatch chain, and promise thunks run after the current turn's synchronous processing. This used to be an eventual send (rootView <-: replay), which raised MessageNotUnderstood on the JS platform and silently cost late joiners their entire catch-up there. (That MNU turned out to be a since-fixed bug in ActorsForJS enqueueMessage: - master 4713887 - not a platform limitation; the direct send is kept because its turn-ordering argument stands on its own.) *)
+						rootView replay
+					]
+			)
+			public activeMenuBlurred = (
+				publish: 'nsshell_' event: #shell_activeMenuBlurred data: fragmentId
+			)
+			setupCroquetView = (
+				subscribeFragment: fragmentId
+					scope: scope
+					eventSpec: #model_shell_userBack
+					handler: [:e |
+						super userBack: e.
+						nil
+					].
+				subscribeFragment: fragmentId
+					scope: scope
+					eventSpec: #model_shell_activeMenuBlurred
+					handler: [:e |
+						super activeMenuBlurred.
+						nil
+					]
+			)
+		) : ()
+		
+		(* public, like the class it overrides: an override with no modifier is protected,
+     which NARROWS a public member, and clients import this one with an ordinary
+     cross-object send (AI_IDE_Support: `platform hopscotch FileChooserFragment`).
+     Getting it wrong shows up as `MessageNotUnderstood: Hopscotch FileChooserFragment`
+     during IDE startup, long before anything renders. *)
+		public class FileChooserFragment allowMultiples: b <Boolean> = super FileChooserFragment allowMultiples: b (
+			(* This fragment is a bit unusual. We deviate somewhat from this module's standard formula for overriding fragments. The browser will not allow the standard (i.e., inherited) FileChooserFragment action to take place unless there was an actual user action (i.e., the user activated the UI).
+As a result, only the client where the request to load files was initiated can respond with a file dialog, and only in the same turn.  This means we must take action to read files immediately, and so the #chooseFileList: method calls the super method. However, it sends it a different closure than the one passed in to it.
+The original closure is stored in the #lastAction slot, while the super method is passed a closure that accepts the locally read file metadata, and forwards that data as part of the event sent to the croquet reflector.  The actual file contents are stored on the croquet server as well. The separation of metadata and file contents is needed because of size restrictions on events. When the reflector responds, the data is used to look up file contents on the server so they can be fed into the original closure kept in #lastAction. See  #chooseFlieList: and #setupCroquetView for the details.
+
+A complication is that the file API is asynchronous, so we only have promises initially. We must wait for these promises to be resolved to obtain the required data which we will forward to the reflector. This is handled in #extractFileData:whenReady:. *)
+			
+			|
+				fragmentId <String> = newFileChooserId.
+				scope_slot <String>
+				lastAction <[:List[Alien[File]] | Object]>
+			|
+			liveFileChoosers add: self.
+			setupCroquetView.
+		) (
+			public scope ^<String> = (
+				(* Lazily return a unique identifier for this fragment *)
+				
+				scope_slot isNil ifTrue: [ scope_slot: 'nsfilechooser_' , fragmentId ].
+				^scope_slot
+			)
+			updateVisualsFromSameKind: oldFragment <FileChooserFragment> ^<Alien[Node]> = (
+				scope_slot: oldFragment scope.
+				^self
+			)
+			descriptorFor: fd <JSObject> ^<JSObject> = (
+				(* Given a file description, produce a description of the metadata only, without the contents *)
+				
+				| descriptor = JSObject new. |
+				
+				(* Copy all the data except the actual file contents (the array buffer) to the incoming file descriptor *)
+				{#name. #type. #lastModified. #webkitRelativePath. } do: [:pn <Symbol> |
+						descriptor at: pn put: (fd at: pn)
+					].
+				^descriptor
+			)
+			public chooseFileList: blk <[:List[Alien[File]] | Object]> = (
+				(* Save the original closure for later *)
+				
+				lastAction:: blk.
+				
+				(* Locally read the files and pass their data to the reflector. In more detail:
+      Once we've extracted the actual file contents, we can store them on the Croquet server. We then separate out the file metadata and pass that in the Croquet event. When that data is received by clients (including the one that sent it), it will be placed in File-like objects so that the original closure (now stored in #lastAction) can consume it.  See #setupCroquetView for details. *)
+				super chooseFileList: [:fs <List[Alien[File]]> |
+						extractFileData: fs
+							whenReady: [:fds <JSArray[JSObject]> |
+								| ps <List[Alien[Promise[[ArrayBuffer]]]]> = (js global at: 'Array') new: fds
+									at: #length. descriptors = (js global at: 'Array') new: fs size. |
+								1 to: fs size
+									do: [:i <Integer> |
+										| fd <JSObject> = fds at: i - 1. |
+										
+										(* store the file contents in the reflector *)
+										ps at: i - 1 put: (rootView storedData store: (fd at: #arrayBuff)).
+										
+										(* Gather file metadata, to be published to all clients *)
+										descriptors at: i - 1 put: (descriptorFor: fd)
+									].
+								
+								(* When data has been stored, publish notification, which will be passed on to all clients *)
+								((js global at: 'Promise') all: ps) then: [:handles <JSArray[CroquetHandle]> |
+										0 to: fs size - 1
+											do: [:i <Integer> |
+												(descriptors at: i) at: #handle put: (handles at: i)
+											].
+										publish: 'nsfilechooser_'
+											event: #fileChooser_click
+											data: (js global newspeakFragmentData: fragmentId data: descriptors).
+										nil
+									]
+									onError: [:ex |
+										alert: 'HopscotchForCroquet FileChooserFragment chooseFileList: ' , ex printString.
+										nil
+									]
+							]
+					]
+			)
+			extractFileData: fs <List[Alien[File]]> whenReady: blk <[:JSArray[JSObject] | Object]> = (
+				(* In principle, the data is the file list, fs. However, files cannot be serialized as part of a Croquet event. Even if they could, they are often too large. We must obtain their contents via their asynchronous API and package that up. We then feed the data into the blk parameter for further processing. See #chooseFileList: for what that further processing looks like. *)
+				
+				| ps <List[Alien[Promise[[ArrayBuffer]]]]> = (js global at: 'Array') new: fs size. fds <JSArray[JSObject]> = 
+				(* An array of file descriptors - JS objects of the form 
+  {name: String, type: String, lastModified: Float, webkitRelativePath: String, handle: JSPromise, arrayBuff: Blob} *)
+				(js global at: 'Array') new: fs size. |
+				1 to: fs size
+					do: [:i <Integer> |
+						| f <Alien[File]> = fs at: i. |
+						ps at: i - 1 put: (fs at: i) arrayBuffer.
+						fds at: i - 1 put: (descriptorFor: f)
+					].
+				((js global at: 'Promise') all: ps) then: [:buffers <JSArray[ArrayBuffer]> |
+						0 to: fs size - 1
+							do: [:i <Integer> | (fds at: i) at: #arrayBuff put: (buffers at: i) ].
+						[
+							blk value: fds.
+							nil
+						] on: Error
+							do: [:ex |
+								alert: 'HopscotchForCroquet FileChooserFragment extractFileData:whenReady ' , ex printString.
+								nil
+							].
+						nil
+					]
+					onError: [:ex |
+						alert: ex printString.
+						nil
+					]
+			)
+			setupCroquetView = (
+				(* When the Croquet view is notified of the chosen files, it will message us back with the file metadata. We will use that metadata to extract the file contents, stored on the Croquet server. We want to submit all that information to the original action block passed into #chooseFileList:. 
+        The block wants a list of Files, so we need to feed it objects with the same API - including async methods that return the data. Of course, we actually resolved that data before posting the original event, and so the incoming data needs to repackaged into File-like objects with a fake async API. *)
+				
+				subscribe: #model_fileChooser_click
+					handler: [:e <JSArray[JSObject]> |
+						| len <Integer> = 
+						(* The event data: an array of file descriptors - JS objects of the form 
+             {name: String, type: String, lastModified: Float, webkitRelativePath: String, handle:   JSPromise *)
+						e at: #length. fds <List[Alien[File]]> = List new: len. contents <JSArray[JSPromise]> = (js global at: 'Array') new: len. |
+						
+						(* repackage the file data into File-ish objects *)
+						
+						(* Get the data from the server *)
+						0 to: len - 1
+							do: [:i <Integer> |
+								| fd <JSObject> = e at: i. |
+								contents at: i put: (rootView storedData fetch: (fd at: #handle))
+							].
+						
+						(* Wait for data to resolve, and generate the File objects *)
+						((js global at: 'Promise') all: contents) then: [:cs |
+								0 to: len - 1
+									do: [:i <Integer> |
+										(e at: i) at: #arrayBuff put: (cs at: i).
+										fds add: (createFile: (e at: i))
+									].
+								lastAction value: fds.
+								liveFileChoosers remove: self.
+								nil
+							]
+							onError: [:ex |
+								alert: 'HopscotchForCroquet FileChooserFragment setupCroquetView: ' , ex printString.
+								nil
+							]
+					]
+			)
+		) : (
+			public new ^<Instance> = (
+				^allowMultiples: false
+			)
+		)
+		class MediaCreatorFragment type: t <Symbol> name: fn <String> registry: mr <Map[String, Blob]> width: w = super MediaCreatorFragment type: t
+			name: fn
+			registry: mr
+			width: w (
+			|
+				fragmentId <String> = newMediaCreatorId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			updateVisualsFromSameKind: oldFragment <MediaCreatorFragment> ^<Alien[Element]> = (
+				scope_slot: oldFragment scope.
+				^super updateVisualsFromSameKind: oldFragment
+			)
+			public scope ^<String> = (
+				scope_slot isNil ifTrue: [ scope_slot: 'nsmediacreator_' , fragmentId ].
+				^scope_slot
+			)
+			file: f <Alien[File]> = (
+				| uri = blobURIFor: f. |
+				registry at: fileName put: f.
+				holder content: (computeHolderContentsFrom: uri)
+			)
+			setupCroquetView = (
+				subscribe: #model_mediaCreator_setFile
+					handler: [:e |
+						| handle <[CroquetHandle]> = 
+						(* extract handle from event *)
+						e at: #handle. p <JSPromise> = 
+						(* retrieve file data *)
+						rootView storedData fetch: handle. |
+						
+						(* when the file data is actually ready ... *)
+						p then: [:fd <Alien[JSObject]> |
+								
+								(* get the file contents and add to the file descriptor *)
+								e at: #arrayBuff put: fd.
+								
+								(* derive a file object and pass to the super method to do the actual update *)
+								file: (createFile: e).
+								nil
+							]
+							onError: [:ex |
+								alert: 'HopscotchForCroquet MediaCreatorFragment setupCroquetView: ' , ex printString.
+								nil
+							]
+					]
+			)
+			public setFile: f <Alien[File]> = (
+				(* publish event *)
+				
+				extractFileData: {f. }
+					whenReady: [:fds <JSArray[JSObject]> |
+						| fd = fds at: 0. p <JSPromise[CroquetHandle]> = 
+						(* store the file contents in the reflector *)
+						rootView storedData store: (fd at: #arrayBuff). descriptor = 
+						(* Gather file metadata, to be published to all clients *)
+						descriptorFor: fd. |
+						
+						(* When data has been stored, publish notification, which will be passed on to all clients *)
+						p then: [:handle <[CroquetHandle]> |
+								
+								(* update descriptor with handle *)
+								descriptor at: #handle put: handle.
+								
+								(* publish *)
+								publish: 'nsmediacreator_'
+									event: #mediaCreator_setFile
+									data: (js global newspeakFragmentData: fragmentId data: descriptor).
+								nil
+							]
+							onError: [:ex |
+								alert: 'HopscotchForCroquet mediaForFile: ' , ex printString.
+								nil
+							]
+					]
+			)
+		) : (
+			public type: t <Symbol> name: fn <String> registry: mr <Map[String, Blob]> ^<Instance> = (
+				^type: t name: fn registry: mr width: '600px'
+			)
+		)
+		public class TimerFragment duration: seconds <Integer> = super TimerFragment duration: seconds (
+			(* Synchronized countdown. The base class decrements on a client-local
+	   schedule - free-running divergence in a lock-step system. Here no client
+	   schedules anything: every client publishes timer_start on realization (the
+	   model honors only the FIRST for a given fragment id), and the root model
+	   drives the ticks from its own future queue, so they pace on teatime -
+	   identical on every client, with no relative drift. Each tick is recorded
+	   in the model's event history, so late joiners replay the same tick stream.
+	   The countdown length travels in the start event and the model stops
+	   itself; nothing needs to publish a stop. *)
+			
+			|
+				fragmentId <String> = newTimerId.
+				scope_slot <String>
+			|
+			setupCroquetView.
+		) (
+			public scope ^<String> = (
+				scope_slot isNil ifTrue: [ scope_slot: 'nstimer_' , fragmentId ].
+				^scope_slot
+			)
+			subscribe: eventSpec <String> handler: blk <[CroquetEvent]> = (
+				subscribeFragment: fragmentId scope: scope eventSpec: eventSpec handler: blk
+			)
+			createVisual = (
+				(* As the base method, but WITHOUT the client-local schedule; ticks come
+	     from the model. *)
+				
+				| timer = (js global at: #document) createElement: 'div'. spec = (js global at: #Object) new. |
+				timer at: 'id' put: 'timer'.
+				timer at: #innerHTML put: duration.
+				spec at: #interval put: 1000;
+					at: #count put: duration.
+				publish: 'nstimer_'
+					event: #timer_start
+					data: (js global newspeakFragmentData: fragmentId data: spec).
+				^timer
+			)
+			updateVisualsFromSameKind: oldFragment <TimerFragment> ^<Alien[Element]> = (
+				(* Carry over identity and state; do NOT restart the schedule (the model
+	     owns it, and republishing start after completion would restart the
+	     countdown). *)
+				
+				scope_slot: oldFragment scope.
+				timeLeft:: oldFragment timeLeft.
+				^oldFragment visual
+			)
+			setupCroquetView = (
+				subscribe: #model_timer_tick
+					handler: [:remaining <Integer> |
+						timeLeft:: remaining.
+						visual at: #innerHTML put: remaining
+					]
+			)
+		) : ()
+		public class NonSyncingPresenter onSubject: s <Subject> = Presenter onSubject: s (
+			(* It is sometimes desirable to display information that is not-synchronized, but instead restricted on a client. This presenter is intended to support that.
+All methods that produce synchronizing fragments are overridden to provide the original, non-synchronizing fragments.
+
+To produce a non-synchronizing part of the UI, subclass NonSyncingPresenter and write a normal presenter definition. *)
+			
+		) (
+			timePicker: value <Holder> action: a <[:Boolean | Object]> = (
+				^super TimePickerFragment value: value action: a
+			)
+			slider: value <Holder> min: mn <Float> max: mx <Float> = (
+				^super SliderFragment value: value min: mn max: mx
+			)
+			radioButton: text <String> value: v <Holder> group: g <Integer> action: a <[:Boolean | Object]> = (
+				^super RadioButtonFragment text: text value: v group: g action: a
+			)
+			picker: text <String> items: i <List[String]> action: a <[:String | Object]> = (
+				^super PickerFragment text: text items: i action: a
+			)
+			multipleFileChooser = (
+				^super FileChooserFragment allowMultiples: true
+			)
+			checkbox: text <String> value: v <Boolean | Holder> action: a <[:Boolean | Object]> ^<CheckboxFragent> = (
+				^super CheckboxFragment text: text value: v action: a
+			)
+			codeMirror: t <Text | String> = (
+				^super CodeMirrorFragment onText: t
+			)
+			collapsed: collapsed <[Fragment]> expanded: expanded <[Fragment]> initiallyExpanded: flag <Boolean> ^<ToggleComposer> = (
+				^super ToggleComposer collapsedDefinition: collapsed
+					expandedDefinition: expanded
+					initiallyExpanded: flag
+			)
+			collapsed: collapsed <[Fragment]> expanded: expanded <[Fragment]> initiallyExpanded: flag <Boolean> tag: t <String> ^<ToggleComposer> = (
+				^(super ToggleComposer collapsedDefinition: collapsed
+					expandedDefinition: expanded
+					initiallyExpanded: flag) tag: t;
+					yourself
+			)
+			colorPicker: value <Holder> action: a <[:Boolean | Object]> = (
+				^super ColorPickerFragment value: value action: a
+			)
+			datePicker: value <Holder> action: a <[:Boolean | Object]> = (
+				^super DatePickerFragment value: value action: a
+			)
+			dropDownMenu: menu <[Menu]> image: img <Image> ^<DropDownMenuFragment> = (
+				^super DropDownMenuFragment menu: menu image: img
+			)
+			dropDownMenu: menu <[Menu]> alignment: side <Symbol> ^<DropDownMenuFragment> = (
+				^super DropDownMenuFragment menu: menu alignment: side
+			)
+			dropDownMenu: menu <[Menu]> ^<DropDownMenuFragment> = (
+				^super DropDownMenuFragment menu: menu
+			)
+			dropDownMenu: menu <[Menu]> images: img <Image> alignment: side <Symbol> ^<DropDownMenuFragment> = (
+				^super DropDownMenuFragment menu: menu image: img alignment: side
+			)
+			fileChooser = (
+				^super FileChooserFragment new
+			)
+			imageButton: image <Image> action: block <[]> = (
+				^super ImageButtonFragment new image: image;
+					action: block
+			)
+			imageButton: image <Image> action: block <[]> size: s <Float> = (
+				^super ImageButtonFragment new image: image;
+					action: block;
+					width: s;
+					height: s
+			)
+			link: label <String> action: block <[]> = (
+				^super HyperlinkFragment label: label action: block
+			)
+			mediaFromFileNamed: f <String> type: t <String> registry: r <Map[String, Blob]> width: w <String> ^<MediaCreatorFragment> = (
+				^super MediaCreatorFragment type: t name: f registry: r width: w
+			)
+			mediaFromFileNamed: f <String> type: t <String> registry: r <Map[String, Blob]> ^<MediaCreatorFragment> = (
+				^super MediaCreatorFragment type: t name: f registry: r
+			)
+			linkImage: image action: block = (
+				^super HyperlinkImageFragment image: image action: block
+			)
+			textField: initialText onAccept: blk = (
+				(* experimental *)
+				
+				^super TextEditorFragment new text: initialText;
+					acceptResponse: blk
+				(* [:editor | blk valueWithPossibleArgument: editor. editor defaultAcceptResponse] *)
+				
+			)
+			button: label <String> action: block <[]> = (
+				^superButton label: label action: block
+			)
+			public isMyKind: otherPresenter ^<Boolean> = (
+				^otherPresenter isKindOfNonSyncingPresenter
+			)
+			public isKindOfNonSyncingPresenter ^<Boolean> = (
+				^true
+			)
+		) : ()
+		lazy coordinatedFetchPending <Map[String, List]> = Map new.
+		lazy coordinatedFetchers <Map[String, [:[:Alien[ArrayBuffer] | Object] :[:String | Object] | Object]]> = Map new.
+		lazy coordinatedFetchSubscribed <Map[String, Boolean]> = Map new.
+		newImageButtonId ^<String> = (
+			^newIdFor: 'imageButton'
+		)
+		public coordinatedFetch: key <String> via: fetcher <[:[:Alien[ArrayBuffer] | Object] :[:String | Object] | Object]> ifSuccess: sb <[:Alien[ArrayBuffer] | Object]> ifFailure: fb <[:String | Object]> = (
+			(* Synchronized override of the once-per-session IO primitive (see the base
+	   method in HopscotchForHTML5). Every client wanting the bytes for key
+	   publishes a coordinatedFetch_request carrying its view id. The root model
+	   elects the FIRST requester - reflector ordering is the election - and
+	   answers model_coordinatedFetch_fetch naming the elected view; only that
+	   client runs its own stored fetcher block, stores the resulting bytes with
+	   the session Data API, and publishes coordinatedFetch_loaded with the
+	   handle. The model records only loaded answers in its event history, so
+	   every client - including late joiners replaying that history - consumes
+	   the SAME bytes, rather than re-running IO against a possibly changed
+	   source. A request arriving after the bytes are stored is answered with a
+	   fresh recorded loaded event; a fetch failure clears the model's entry (so
+	   a retry can re-elect) and broadcasts coordinatedFetch_failed, which is
+	   not recorded. *)
+			
+			(coordinatedFetchPending at: key ifAbsentPut: [ List new ]) add: {sb. fb. }.
+			coordinatedFetchers at: key put: fetcher.
+			subscribeCoordinatedFetchEventsFor: key.
+			publish: 'nscoordfetch_'
+				event: #coordinatedFetch_request
+				data: (js global newspeakFragmentData: (coordinatedFetchEventKeyFor: key)
+					data: (rootView at: #viewId))
+		)
+		coordinatedFetchEventKeyFor: key <String> ^<String> = (
+			(* Croquet rejects subscription scopes containing ':' (its internal
+	   scope:event separator), and the recorded fid must match the subscription
+	   scope suffix for replay lookup, so the key is sanitized ONCE here and used
+	   for ALL event traffic (the scope suffix and the fid). The raw key stays
+	   local: the pending list, the fetcher registry and the handler closures are
+	   keyed by it. Distinct raw keys that sanitize alike would collide in the
+	   model - do not choose keys differing only by ':' vs '.'. *)
+			
+			^((js global at: #String) new: key) replaceAll: ':' with: '.'
+		)
+		subscribeCoordinatedFetchEventsFor: key <String> = (
+			(* One-time per-key subscriptions for the coordinated fetch (see
+	   coordinatedFetch:via:ifSuccess:ifFailure:). The loaded event is RECORDED
+	   in the model's history, so its handler must go through subscribeFragment: -
+	   whose wrapper counts processed events to keep the replay cursor exact. The
+	   fetch and failed events are never recorded, so they must NOT be counted:
+	   they are subscribed directly via nsSubscribe. *)
+			
+			| scope = 'nscoordfetch_' , (coordinatedFetchEventKeyFor: key). |
+			(coordinatedFetchSubscribed at: key ifAbsent: [ false ]) ifTrue: [ ^self ].
+			coordinatedFetchSubscribed at: key put: true.
+			js global nsSubscribe: scope
+				eventSpec: #model_coordinatedFetch_fetch
+				handler: [:electedViewId |
+					electedViewId = (rootView at: #viewId) ifTrue: [
+							runCoordinatedFetcherFor: key
+						].
+					nil
+				].
+			js global nsSubscribe: scope
+				eventSpec: #model_coordinatedFetch_failed
+				handler: [:msg |
+					deliverCoordinatedFetchFailure: key message: msg.
+					nil
+				].
+			subscribeFragment: key
+				scope: scope
+				eventSpec: #model_coordinatedFetch_loaded
+				handler: [:handle | deliverCoordinatedFetchBytes: key handle: handle ]
+		)
+		runCoordinatedFetcherFor: key <String> = (
+			(* This client won the election: run the fetcher block it registered for
+	   this key, store the resulting bytes with the session Data API, and publish
+	   the handle for everyone; the model records it. Failures are broadcast so
+	   all waiting clients report them, and clear the model's entry so a retry
+	   can re-elect. *)
+			
+			| fetcher = coordinatedFetchers at: key ifAbsent: [ nil ]. eventKey = coordinatedFetchEventKeyFor: key. |
+			fetcher isNil ifTrue: [
+					^publish: 'nscoordfetch_'
+						event: #coordinatedFetch_failed
+						data: (js global newspeakFragmentData: eventKey
+							data: 'No fetcher registered for ' , key , ' on the elected client')
+				].
+			fetcher value: [:bytes |
+					(rootView storedData store: bytes) then: [:handle |
+							publish: 'nscoordfetch_'
+								event: #coordinatedFetch_loaded
+								data: (js global newspeakFragmentData: eventKey data: handle).
+							nil
+						]
+						onError: [:ex |
+							publish: 'nscoordfetch_'
+								event: #coordinatedFetch_failed
+								data: (js global newspeakFragmentData: eventKey
+									data: 'Storing ' , key , ' failed: ' , ex printString).
+							nil
+						]
+				]
+				value: [:msg |
+					publish: 'nscoordfetch_'
+						event: #coordinatedFetch_failed
+						data: (js global newspeakFragmentData: eventKey data: msg)
+				]
+		)
+		deliverCoordinatedFetchBytes: key <String> handle: h <Alien[CroquetHandle]> = (
+			(* A recorded loaded answer arrived. If no request is pending locally (a
+	   repeat answer to some other client's late request, or replay after this
+	   client already consumed the bytes) there is nothing to do - skip the
+	   fetch entirely. *)
+			
+			| pending = coordinatedFetchPending at: key ifAbsent: [ nil ]. |
+			pending isNil ifTrue: [ ^self ].
+			pending isEmpty ifTrue: [ ^self ].
+			coordinatedFetchPending at: key put: List new.
+			(rootView storedData fetch: h) then: [:bytes |
+					pending do: [:pair | (pair at: 1) value: bytes ].
+					nil
+				]
+				onError: [:ex |
+					pending do: [:pair |
+							(pair at: 2) value: 'Fetching stored bytes for ' , key , ' failed: ' , ex printString
+						].
+					nil
+				]
+		)
+		deliverCoordinatedFetchFailure: key <String> message: msg <String> = (
+			| pending = coordinatedFetchPending at: key ifAbsent: [ nil ]. |
+			pending isNil ifTrue: [ ^self ].
+			pending isEmpty ifTrue: [ ^self ].
+			coordinatedFetchPending at: key put: List new.
+			pending do: [:pair | (pair at: 2) value: msg ]
+		)
+		newRadioButtonId ^<String> = (
+			^newIdFor: 'radioButton'
+		)
+		newHyperlinkId ^<String> = (
+			^newIdFor: 'hyperlink'
+		)
+		newCodeMirrorId ^<String> = (
+			^newIdFor: 'codeMirror'
+		)
+		newHyperlinkImageId ^<String> = (
+			^newIdFor: 'hyperlinkImage'
+		)
+		newToggleComposerId ^<String> = (
+			^newIdFor: 'toggleComposer'
+		)
+		newCheckboxId ^<String> = (
+			^newIdFor: 'checkbox'
+		)
+		newTextEditorId ^<String> = (
+			^newIdFor: 'textEditor'
+		)
+		rootModel ^<Alien[NewspeakCroquetView]> = (
+			^rootView model
+		)
+		newPickerId ^<String> = (
+			^newIdFor: 'picker'
+		)
+		newSliderId ^<String> = (
+			^newIdFor: 'slider'
+		)
+		newColorPickerId ^<String> = (
+			^newIdFor: 'colorPicker'
+		)
+		newDatePickerId ^<String> = (
+			^newIdFor: 'datePicker'
+		)
+		newTimePickerId ^<String> = (
+			^newIdFor: 'timePicker'
+		)
+		newDropDownMenuId ^<String> = (
+			^newIdFor: 'dropDownMenu'
+		)
+		public dropDownImage = (
+			^super dropDownImage
+		)
+		replaceUndefined: event = (
+			^js global replaceUndefined: event
+		)
+		printJSObjectTree: event = (
+			^js global printJSObjectTree: event
+		)
+		newMenuId ^<String> = (
+			^newIdFor: 'menu'
+		)
+		newWindowId ^<String> = (
+			^newIdFor: 'window'
+		)
+		alert: text <String> = (
+			(* FragmentFactory>>alert: is reachable only from presenters, since
+     FragmentFactory is mixed into Fragment to form Presenter. The file and media
+     fragments below are plain Fragments, so their error handlers were sending
+     alert: to something that has never understood it - a DNU that MASKED the very
+     error being reported. Declared here at module level, where those nested
+     classes reach it by lexical scope; presenters continue to find
+     FragmentFactory's, which their inheritance chain reaches first. *)
+			
+			js global alert: text
+		)
+		newFileChooserId ^<String> = (
+			^newIdFor: 'fileChooser'
+		)
+		newIdFor: type <String> ^<String> = (
+			(* An ordinal within the current scope, per fragment type, rendered as a path.
+     The caller prefixes its type marker, so two types in one scope may share an
+     ordinal without colliding. *)
+			
+			| key = fragmentScopePath , '/' , type. n = (scopedCounters at: key
+				ifAbsent: [ 0 ]) + 1. |
+			scopedCounters at: key put: n.
+			^fragmentScopePath , '/' , n printString
+		)
+		newFragmentScope ^<String> = (
+			(* Minted in the CURRENT scope, so the token is itself the same on every
+     client - the construct that owns it is built in deterministic order; only
+     its content arrives late. *)
+			
+			^newIdFor: 'scope'
+		)
+		withFragmentScope: scope <String> do: block <[X def]> ^<X> = (
+			(* ensure:, so that a failure while realizing content cannot leave the path
+     dangling and skew everything numbered afterwards. *)
+			
+			| saved = fragmentScopePath. |
+			fragmentScopePath:: scope.
+			^[ block value ] ensure: [ fragmentScopePath:: saved ]
+		)
+		withFragmentScope: scope <String> at: index <Integer> do: block <[X def]> ^<X> = (
+			(* Keyed by index rather than a counter: two clients realizing different
+     windows of one sequence must still number an element they both realize
+     identically. *)
+			
+			^withFragmentScope: scope , '/r' , index printString do: block
+		)
+		newButtonId ^<String> = (
+			^newIdFor: 'button'
+		)
+		JSObject = (
+			(* make JS Object constructor available to nested classes *)
+			
+			^super JSObject
+		)
+		descriptorFor: fd <JSObject> ^<JSObject> = (
+			(* Given a file description, produce a description of the metadata only, without the contents *)
+			
+			| descriptor = JSObject new. |
+			
+			(* Copy all the data except the actual file contents (the array buffer) to the incoming file descriptor *)
+			{#name. #type. #lastModified. #webkitRelativePath. } do: [:pn <Symbol> |
+					descriptor at: pn put: (fd at: pn)
+				].
+			^descriptor
+		)
+		extractFileData: fs <List[Alien[File]]> whenReady: blk <[:JSArray[JSObject] | Object]> = (
+			(* In principle, the data is the file list, fs. However, files cannot be serialized as part of a Croquet event. Even if they could, they are often too large. We must obtain their contents via their asynchronous API and package that up. We then feed the data into the blk parameter for further processing. See #chooseFileList: for what that further processing looks like. *)
+			
+			| ps <List[Alien[Promise[[ArrayBuffer]]]]> = (js global at: 'Array') new: fs size. fds <JSArray[JSObject]> = 
+			(* An array of file descriptors - JS objects of the form 
+  {name: String, type: String, lastModified: Float, webkitRelativePath: String, handle: JSPromise, arrayBuff: Blob} *)
+			(js global at: 'Array') new: fs size. |
+			1 to: fs size
+				do: [:i <Integer> |
+					| f <Alien[File]> = fs at: i. |
+					ps at: i - 1 put: (fs at: i) arrayBuffer.
+					fds at: i - 1 put: (descriptorFor: f)
+				].
+			((js global at: 'Promise') all: ps) then: [:buffers <JSArray[ArrayBuffer]> |
+					0 to: fs size - 1
+						do: [:i <Integer> | (fds at: i) at: #arrayBuff put: (buffers at: i) ].
+					[
+						blk value: fds.
+						nil
+					] on: Error
+						do: [:ex |
+							alert: 'HopscotchForCroquet FileChooserFragment extractFileData:whenReady ' , ex printString.
+							nil
+						].
+					nil
+				]
+				onError: [:ex |
+					alert: ex printString.
+					nil
+				]
+		)
+		processMediaUpdatesFromFiles: files <List[Alien[File]]> = (
+		)
+		createFile: fd <JSObject> ^<Alien[File]> = (
+			(* Given a file description, return a corresponding JS File object.
+The argument is of the form 
+{name: String, type: String, lastModified: Float, webkitRelativePath: String, handle: JSPromise, arrayBuff: JSArrayBuffer} *)
+			
+			| contents <JSArray> = (js global at: 'Array') new: 1. options = JSObject new. |
+			contents at: 0 put: (fd at: #arrayBuff).
+			options at: #type put: (fd at: #type);
+				at: #lastModified put: (fd at: #lastModified).
+			^(js global at: #File) new: contents name: (fd at: #name) options: options
+		)
+		newMediaCreatorId ^<String> = (
+			^newIdFor: 'mediaCreator'
+		)
+		newTimerId ^<String> = (
+			^newIdFor: 'timer'
+		)
+		public blobURIFor: file <Alien[File]> ^<String> = (
+			(* Make inherited method accessible to nested classes *)
+			
+			^super blobURIFor: file
+		)
+		publish: s <String> event: en <String> data: d = (
+			(* Routed through nsPublish (croquet-post.js) rather than the view's own publish. Croquet silently drops reflector messages over 16KB, and the editor fragments send their full text on every keystroke; nsPublish detours oversized payloads through the file server, publishing only a handle. *)
+			
+			js global nsPublish: s event: en data: d
+		)
+		rootView ^<Alien[NewspeakCroquetView]> = (
+			^js global at: #theView
+		)
+		public syncRandom ^<Float> = (
+			(* A random number in [0, 1) from a deterministic PRNG replicated across
+	   all clients of the session (seeded from the session id; see nsSyncRandom
+	   in the croquet support script). DISCIPLINE: draw only inside synchronized
+	   event handlers (button actions, editor responses, tick handlers), which
+	   run in identical order on every client and under replay; a draw outside
+	   them - a local animation frame, a promise callback, hover feedback -
+	   advances the stream on one client only and desynchronizes every draw
+	   after it. For purely local, non-shared randomness use the browser's
+	   Math.random via js global instead. *)
+			
+			^(js global at: #nsSyncRandom) apply: nil
+		)
+		showMenu: menu <Alien[Div]> forShell: s <HopscotchShell> inVisual: v <Visual> = (
+			(* Make the inherited method visible to nested classes *)
+			
+			super showMenu: menu forShell: s inVisual: v
+		)
+		computeContentForMenu: menuSupplier <[Menu]> ^<Alien[Div]> = (
+			(* Make the inherited method visible to nested classes *)
+			
+			^super computeContentForMenu: menuSupplier
+		)
+		openMenu: aMenu <Menu> = (
+			(* Overridden so as to wrap the menu items so that their actions post Croquet events *)
+			
+			showMenu: (computeContentForMenu: [ (Menu supplier: [ aMenu ]) menuContents ])
+				forShell: shell
+				inVisual: visual
+		)
+		showMenu: menu <Alien[Div]> forFragment: m <DropDownMenuFragment> = (
+			(* Make the inherited method visible to nested classes *)
+			
+			super showMenu: menu forFragment: m
+		)
+		subscribeFragment: fragmentId scope: scope eventSpec: eventSpec <String> handler: blk <[CroquetEvent]> = (
+			(* Routed through nsSubscribe (croquet-post.js), which wraps the handler to resolve detoured (oversized) payloads - see #publish:event:data: - records the wrapped handler so it is available for replay after rejoining the session, and subscribes it. *)
+			
+			| handler = [:e |
+				blk value: e.
+				(js global at: #eventProcessed) apply: nil.
+				nil
+			]. |
+			js global nsSubscribe: scope eventSpec: eventSpec handler: handler
+		)
+		superButton ^<super ButtonFragment class> = (
+			^super ButtonFragment
+		)
+		superCheckbox ^<super CheckboxFragment class> = (
+			^super CheckboxFragment
+		)
+		superPicker ^<super PickerFragment class> = (
+			^super PickerFragment
+		)
+		superColorPicker ^<super ColorPickerFragment class> = (
+			^super ColorPickerFragment
+		)
+		superDatePicker ^<super DatePickerFragment class> = (
+			^super DatePickerFragment
+		)
+		superTimePicker ^<super ColorTimeFragment class> = (
+			^super TimePickerFragment
+		)
+		superCodeMirror ^<super CodeMirrorFragment class> = (
+			^super CodeMirrorFragment
+		)
+		superRadioButton ^<super RadioButtonFragment class> = (
+			^super RadioButtonFragment
+		)
+		superImageButton ^<super ImageButtonFragment class> = (
+			^super ImageButtonFragment
+		)
+		superDropdownMenu ^<super DropdownMenuFragment class> = (
+			^super DropdownMenuFragment
+		)
+		superFileChooser ^<super FileChooserFragment class> = (
+			^super FileChooserFragment
+		)
+		superHyperlink ^<super HyperlinkFragment class> = (
+			^super HyperlinkFragment
+		)
+		superHyperlinkImage ^<super HyperlinkImageFragment class> = (
+			^super HyperlinkImageFragment
+		)
+		superMediaCreator ^<super MediaCreatorFragment class> = (
+			^super MediaCreatorFragment
+		)
+		superSlider ^<super SliderFragment class> = (
+			^super SliderFragment
+		)
+		superTextEditor ^<super TextEditorFragment class> = (
+			^super TextEditorFragment
+		)
+		superToggleComposer ^<super ToggleComposer class> = (
+			^super ToggleComposer
+		)
+	) : ()
+) : ()

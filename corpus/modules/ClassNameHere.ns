@@ -1,0 +1,9 @@
+Newspeak3
+'Newspeak'
+class ClassNameHere new = Object new (
+	|
+		slot1
+		slot2
+	|
+) (
+) : ()
