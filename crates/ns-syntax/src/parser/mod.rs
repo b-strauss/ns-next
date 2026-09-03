@@ -96,6 +96,11 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn push_error(&mut self, span: crate::span::Span, msg: &str) {
+        self.diags
+            .push(crate::diagnostic::Diagnostic::error(span, msg));
+    }
+
     // `parse_expression` and the full precedence ladder live in `expr.rs`.
 }
 

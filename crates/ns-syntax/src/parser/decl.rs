@@ -135,6 +135,56 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub(crate) fn parse_slot_decls(&mut self) -> Vec<SlotDecl> {
+        let simultaneous = self.at(T::DoubleBar);
+        let close = if simultaneous { T::DoubleBar } else { T::Bar };
+        if !self.eat(close) {
+            return Vec::new();
+        }
+        let mut slots = Vec::new();
+        while !self.at(close) && !self.at(T::Eoi) {
+            let start = self.cur().span;
+            let access = self.parse_access_modifier();
+            if !self.at(T::Identifier) {
+                // recovery: skip to next '.' or close
+                let t = self.bump();
+                self.push_error(t.span, "expected a slot name");
+                self.recover_to_dot(close);
+                continue;
+            }
+            let name = self.ident();
+            let (mutability, init) = match self.peek() {
+                T::Equals => {
+                    self.bump();
+                    (SlotMutability::Immutable, Some(self.parse_expression()))
+                }
+                T::ColonColonEquals => {
+                    self.bump();
+                    (SlotMutability::MutableInit, Some(self.parse_expression()))
+                }
+                _ => (SlotMutability::MutableBare, None),
+            };
+            let end = self.cur().span;
+            self.eat(T::Dot);
+            slots.push(SlotDecl {
+                access,
+                name,
+                mutability,
+                init,
+                span: start.merge(end),
+            });
+        }
+        self.expect(close);
+        slots
+    }
+
+    fn recover_to_dot(&mut self, close: T) {
+        while !self.at(T::Dot) && !self.at(close) && !self.at(T::Eoi) {
+            self.bump();
+        }
+        self.eat(T::Dot);
+    }
+
     fn ident_from_bump(&mut self) -> Ident {
         let t = self.bump();
         Ident {
@@ -150,12 +200,51 @@ impl<'a> Parser<'a> {
         self.parse_method_decl()
     }
 
+    pub(crate) fn parse_slot_decls_for_test(&mut self) -> Vec<SlotDecl> {
+        self.parse_slot_decls()
+    }
+
     pub(crate) fn diags_is_empty(&self) -> bool {
         self.diags.is_empty()
     }
 
     pub(crate) fn debug_diags(&self) -> String {
         format!("{:?}", self.diags)
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+    use crate::parser::Parser;
+
+    fn slots(src: &str) -> Vec<SlotDecl> {
+        let tokens = crate::lex(src).unwrap();
+        let mut p = Parser::new(src, tokens);
+        let s = p.parse_slot_decls_for_test();
+        assert!(p.diags_is_empty(), "{:?}", p.debug_diags());
+        s
+    }
+
+    #[test]
+    fn immutable_and_mutable_slots() {
+        let s = slots("| private List = platform collections List. count ::= 0. name. |");
+        assert_eq!(s.len(), 3);
+        assert_eq!(s[0].access, Some(AccessModifier::Private));
+        assert_eq!(s[0].mutability, SlotMutability::Immutable);
+        assert_eq!(s[1].mutability, SlotMutability::MutableInit);
+        assert_eq!(s[2].mutability, SlotMutability::MutableBare);
+    }
+
+    #[test]
+    fn empty_section() {
+        assert!(slots("| |").is_empty());
+    }
+
+    #[test]
+    fn simultaneous_section() {
+        let s = slots("|| a = 1. b = 2. ||");
+        assert_eq!(s.len(), 2);
     }
 }
 
