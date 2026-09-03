@@ -1,9 +1,11 @@
 //! Recursive-descent + Pratt parser for Newspeak3.
 
 // Scaffold: the module is `mod parser;` (private) and, outside of tests, nothing
-// in the crate calls into it yet. Tasks 8+ wire it up and add the public entry
-// point. Until then the helpers and primary-expression code are only exercised
-// by this module's own tests, so silence dead-code warnings crate-wide here.
+// in the crate constructs `Parser` yet — so in a non-test build the *entire*
+// module reads as dead (every item is reachable only from `#[cfg(test)]` code).
+// Per-item `#[allow(dead_code)]` would therefore have to annotate every item,
+// which is strictly worse than one blanket allow. Task 9 adds the public entry
+// point and a non-test caller; drop this allow then.
 #![allow(dead_code)]
 
 mod expr;
@@ -37,7 +39,7 @@ impl<'a> Parser<'a> {
         self.cur().kind
     }
 
-    // Unused until Task 8's message-send parsing needs one-token lookahead.
+    // One-token lookahead, used by the message-send precedence ladder.
     fn peek2(&self) -> TokenKind {
         self.tokens
             .get(self.pos + 1)
@@ -56,7 +58,6 @@ impl<'a> Parser<'a> {
         t
     }
 
-    // Unused until Task 8; kept here as part of the cursor helper set.
     fn eat(&mut self, k: TokenKind) -> bool {
         if self.at(k) {
             self.bump();
@@ -94,10 +95,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_expression(&mut self) -> Expr {
-        // Task 8 replaces this with full message-send parsing.
-        self.parse_primary()
-    }
+    // `parse_expression` and the full precedence ladder live in `expr.rs`.
 }
 
 #[cfg(test)]
@@ -117,6 +115,15 @@ mod tests {
         let e = p.parse_expr_for_test();
         assert!(p.diags.is_empty(), "{:?}", p.diags);
         e
+    }
+
+    // Sibling of `parse_expr` that does NOT assert a clean diagnostics list, for
+    // exercising error recovery.
+    fn parse_with_diags(src: &str) -> (Expr, Vec<Diagnostic>) {
+        let tokens = crate::lex(src).expect("lex");
+        let mut p = Parser::new(src, tokens);
+        let e = p.parse_expr_for_test();
+        (e, p.diags)
     }
 
     #[test]
@@ -158,5 +165,79 @@ mod tests {
     #[test]
     fn parenthesized() {
         assert!(matches!(parse_expr("(foo)"), Expr::Ident(_)));
+    }
+
+    #[test]
+    fn unary_chain() {
+        // foo bar baz  ==  ((foo bar) baz)
+        let e = parse_expr("foo bar baz");
+        let Expr::Send(s) = e else { panic!() };
+        assert_eq!(s.message.selector, Selector::Unary("baz".into()));
+        assert!(matches!(s.receiver, Expr::Send(_)));
+    }
+
+    #[test]
+    fn binary_left_assoc_and_below_unary() {
+        // a + b foo  ==  a + (b foo)
+        let e = parse_expr("a + b foo");
+        let Expr::Send(s) = e else { panic!() };
+        assert_eq!(s.message.selector, Selector::Binary("+".into()));
+        assert!(matches!(s.message.args[0], Expr::Send(_)));
+    }
+
+    #[test]
+    fn keyword_below_binary() {
+        // d at: i + 1 put: x  ==  d at:(i+1) put:x  (one keyword send, selector at:put:)
+        let e = parse_expr("d at: i + 1 put: x");
+        let Expr::Send(s) = e else { panic!() };
+        assert_eq!(s.message.selector, Selector::Keyword("at:put:".into()));
+        assert_eq!(s.message.args.len(), 2);
+    }
+
+    #[test]
+    fn assignment_right_assoc() {
+        let e = parse_expr("x := y := 1");
+        let Expr::Assign { target, value, .. } = e else {
+            panic!()
+        };
+        assert_eq!(target.name, "x");
+        assert!(matches!(*value, Expr::Assign { .. }));
+    }
+
+    #[test]
+    fn cascade() {
+        let e = parse_expr("s add: 1; add: 2; yourself");
+        let Expr::Cascade(c) = e else { panic!() };
+        assert_eq!(c.rest.len(), 2);
+        assert_eq!(c.first.selector, Selector::Keyword("add:".into()));
+    }
+
+    #[test]
+    fn setter_keyword_at_head_is_assign() {
+        let e = parse_expr("x:: 42");
+        let Expr::Assign { target, value, .. } = e else {
+            panic!("{e:?}")
+        };
+        assert_eq!(target.name, "x");
+        assert!(matches!(*value, Expr::Literal(Literal::Int { .. })));
+    }
+
+    #[test]
+    fn recovers_from_bad_token() {
+        let (e, diags) = parse_with_diags(")");
+        assert!(matches!(e, Expr::Literal(Literal::Nil { .. })));
+        assert_eq!(diags.len(), 1);
+    }
+
+    #[test]
+    fn string_and_symbol_literals() {
+        let Expr::Literal(Literal::String { value, .. }) = parse_expr("'hi'") else {
+            panic!()
+        };
+        assert_eq!(value, "hi");
+        let Expr::Literal(Literal::Symbol { value, .. }) = parse_expr("#foo") else {
+            panic!()
+        };
+        assert_eq!(value, "foo");
     }
 }
