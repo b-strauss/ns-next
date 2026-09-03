@@ -107,6 +107,10 @@ impl<'a> Lexer<'a> {
                 if self.peek_at(1) == Some(b'|') {
                     self.pos += 2;
                     self.push(TokenKind::DoubleBar, start, self.pos);
+                } else if self.peek_at(1).is_some_and(|n| SPECIAL.contains(&n)) {
+                    // `|` starting a multi-char run (`|>`, `|=`, ...) is a
+                    // binary selector, not a slot/temp delimiter.
+                    self.lex_operator();
                 } else {
                     self.single(TokenKind::Bar);
                 }

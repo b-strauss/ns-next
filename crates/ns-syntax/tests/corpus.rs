@@ -59,31 +59,17 @@ fn every_corpus_file_parses_or_is_blacklisted() {
         }
     }
 
-    // Task 14a installs this test and the two-group class-grammar restructure
-    // it exercises. The full triage — the dominant remaining blocker is
-    // declaration-position type annotations (`x <T>`, `sel: p <T>`, `^<T>`),
-    // then `lazy` slots in the header and a few exotic forms — and the
-    // eventual >=90% target are Task 14b's job. Until then this test only
-    // reports the still-failing files and guards against a regression below
-    // the level the restructure reached.
-    eprintln!(
-        "corpus: {parsed}/{} files parse ({} still failing)",
-        modules.len(),
-        failures.len()
-    );
-    for f in failures.iter() {
-        eprintln!("  FAIL {f}");
-    }
+    // Libtest captures this; it is the quick "where are we" line.
+    eprintln!("corpus: {parsed}/{} files parse", modules.len());
 
+    // The real Milestone 1 assertions (Task 14b): every non-blacklisted file
+    // parses, and no blacklist entry is stale (a listed file that now parses).
     assert!(
-        stale.is_empty(),
-        "stale blacklist entries ({}): {}",
+        failures.is_empty() && stale.is_empty(),
+        "\nunexpected parse failures ({}):\n{}\n\nstale blacklist entries ({}):\n{}\n",
+        failures.len(),
+        failures.join("\n"),
         stale.len(),
-        stale.join(", ")
-    );
-    assert!(
-        parsed >= 40,
-        "corpus pass rate regressed: only {parsed}/{} parse (was 43 after Task 14a)",
-        modules.len()
+        stale.join("\n"),
     );
 }

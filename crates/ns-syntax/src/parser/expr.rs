@@ -40,6 +40,12 @@ impl<'a> Parser<'a> {
                     _ => Expr::Ident(self.ident()),
                 }
             }
+            // `class` lexes as the reserved `T::Class` token, but outside a
+            // class-declaration prefix it is the pseudo-variable naming the
+            // receiver's class (`self class`, `class onContext: it`). Grammar:
+            // `primary = slotName | ...` (`NewspeakGrammar.ns:123`); the real
+            // parser's `id` admits `class` in expression position.
+            T::Class => Expr::Ident(self.ident()),
             T::LessThan => Expr::Literal(self.parse_pattern_literal()),
             T::Pound if self.peek2() == T::LParen => Expr::Literal(self.parse_literal_array()),
             _ => {
@@ -115,6 +121,9 @@ impl<'a> Parser<'a> {
             self.bump();
             if self.at(T::Identifier) {
                 params.push(self.ident());
+                // `[:x <T> :y <T> | ...]` — block params carry the same
+                // declaration-position `<Type>` annotations as method params.
+                self.skip_type_annotation();
             }
         }
         if !params.is_empty() {
@@ -314,16 +323,17 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_binary_message(&mut self) -> Expr {
         let mut recv = self.parse_unary_message();
-        // The lexer emits lone `=`, `<`, `>` as dedicated punctuation tokens
-        // (`Equals` / `LessThan` / `GreaterThan`) for declaration syntax, but
-        // in operand position — after a primary — they are ordinary binary
-        // selectors per the grammar's `binarySelector`
-        // (`corpus/reference/NewspeakGrammar.ns:126`, `binaryMsg`). A leading
-        // `<` is still a pattern literal (handled in `parse_primary`), so the
-        // ambiguity only bites here, where a left operand already exists.
+        // The lexer emits lone `=`, `<`, `>`, `|` and `||` as dedicated tokens
+        // (`Equals` / `LessThan` / `GreaterThan` / `Bar` / `DoubleBar`) for
+        // declaration and slot/temp syntax, but in operand position — after a
+        // primary — they are ordinary binary selectors per the grammar's
+        // `binarySelector` (`corpus/reference/NewspeakGrammar.ns:126`,
+        // `binaryMsg`). A leading `<` is still a pattern literal and a leading
+        // `|` / `||` is still a temp section (both handled before we get here),
+        // so the ambiguity only bites where a left operand already exists.
         while matches!(
             self.peek(),
-            T::BinarySelector | T::Equals | T::LessThan | T::GreaterThan
+            T::BinarySelector | T::Equals | T::LessThan | T::GreaterThan | T::Bar | T::DoubleBar
         ) {
             let op = self.bump();
             let arg = self.parse_unary_message();
@@ -343,10 +353,24 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_unary_message(&mut self) -> Expr {
         let mut recv = self.parse_primary();
-        while self.at(T::Identifier)
-            && !self.is_reserved_ident(self.cur())
-            && self.peek2() != T::Assign
-        {
+        // Generic instantiation `Array[E] new: n` — `[...]` type arguments on a
+        // primary (`NewspeakGrammar.ns:376`). Dropped in Milestone 1.
+        self.skip_type_arguments();
+        loop {
+            // Eventual-send operator `<-:` (`NewspeakGrammar.ns:50`) may prefix
+            // any message. The lexer splits it into `BinarySelector("<-")` +
+            // `Colon`; Milestone 1 drops the async marker and parses the
+            // following message as an ordinary send.
+            if self.at_eventual_send_operator() {
+                self.bump(); // `<-`
+                self.bump(); // `:`
+            }
+            if !((self.at(T::Identifier) || self.at(T::Class))
+                && !self.is_reserved_ident(self.cur())
+                && self.peek2() != T::Assign)
+            {
+                break;
+            }
             let sel = self.bump();
             let span = expr_span(&recv).merge(sel.span);
             recv = Expr::Send(Box::new(Send {
@@ -358,6 +382,8 @@ impl<'a> Parser<'a> {
                     span,
                 },
             }));
+            // `foo bar[E]` — type arguments on a unary send result.
+            self.skip_type_arguments();
         }
         recv
     }
@@ -393,6 +419,14 @@ impl<'a> Parser<'a> {
                     args: vec![arg],
                 }
             }
+            T::Class => {
+                let sel = self.bump();
+                MessageSend {
+                    selector: Selector::Unary(self.text(sel).to_string()),
+                    args: Vec::new(),
+                    span: sel.span,
+                }
+            }
             _ => {
                 let sel = self.expect(T::Identifier).unwrap_or(self.cur());
                 MessageSend {
@@ -406,6 +440,12 @@ impl<'a> Parser<'a> {
 
     pub(super) fn is_reserved_ident(&self, tok: crate::token::Token) -> bool {
         matches!(self.text(tok), "nil" | "true" | "false")
+    }
+
+    /// The eventual-send operator `<-:` (`NewspeakGrammar.ns:50`), which the
+    /// lexer emits as `BinarySelector("<-")` followed by `Colon`.
+    pub(super) fn at_eventual_send_operator(&self) -> bool {
+        self.at(T::BinarySelector) && self.text(self.cur()) == "<-" && self.peek2() == T::Colon
     }
 }
 

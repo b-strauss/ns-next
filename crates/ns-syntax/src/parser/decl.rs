@@ -89,33 +89,72 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `=`, `<` and `>` lex as the dedicated punctuation tokens `Equals` /
+    /// `LessThan` / `GreaterThan` (they carry declaration syntax), but the
+    /// grammar's `binarySelector` (`corpus/reference/NewspeakGrammar.ns:126`)
+    /// includes them, so `public = other = (...)` / `< other = (...)` /
+    /// `> other = (...)` are binary-operator method declarations. In
+    /// message-pattern position such a token followed by an identifier is a
+    /// binary selector, not the pattern's `=` terminator.
+    fn at_binary_selector_pattern(&self) -> bool {
+        matches!(
+            self.peek(),
+            T::BinarySelector | T::Equals | T::LessThan | T::GreaterThan | T::Bar
+        ) && self.peek2() == T::Identifier
+    }
+
     pub(crate) fn parse_message_pattern(&mut self) -> MessagePattern {
-        match self.peek() {
-            T::BinarySelector => {
-                let sel = self.ident_from_bump();
-                let param = self.ident();
-                MessagePattern::Binary {
-                    selector: sel,
-                    param,
+        // Declarations may carry `<Type>` annotations after each parameter name,
+        // and a `^<Type>` return annotation before the `=`; Milestone 1 discards
+        // them via `skip_type_annotation` / `skip_return_type_annotation`.
+        let pattern = if self.at_binary_selector_pattern() {
+            let sel = self.ident_from_bump();
+            let param = self.ident();
+            self.skip_type_annotation();
+            MessagePattern::Binary {
+                selector: sel,
+                param,
+            }
+        } else {
+            match self.peek() {
+                T::Keyword | T::SetterKeyword => {
+                    let mut parts = Vec::new();
+                    while self.at(T::Keyword) || self.at(T::SetterKeyword) {
+                        let kw = self.bump();
+                        let key = Ident {
+                            name: self.text(kw).trim_end_matches(':').to_string(),
+                            span: kw.span,
+                        };
+                        let param = self.ident();
+                        self.skip_type_annotation();
+                        parts.push((key, param));
+                    }
+                    MessagePattern::Keyword { parts }
+                }
+                _ => {
+                    let sel = self.ident();
+                    // `selectorTypeParameters` (`NewspeakGrammar.ns:446`):
+                    // `public List[E] = (...)` — type parameters on the
+                    // selector itself. Dropped in Milestone 1.
+                    self.skip_type_arguments();
+                    self.skip_type_annotation();
+                    MessagePattern::Unary { selector: sel }
                 }
             }
-            T::Keyword | T::SetterKeyword => {
-                let mut parts = Vec::new();
-                while self.at(T::Keyword) || self.at(T::SetterKeyword) {
-                    let kw = self.bump();
-                    let key = Ident {
-                        name: self.text(kw).trim_end_matches(':').to_string(),
-                        span: kw.span,
-                    };
-                    let param = self.ident();
-                    parts.push((key, param));
-                }
-                MessagePattern::Keyword { parts }
-            }
-            _ => {
-                let sel = self.ident();
-                MessagePattern::Unary { selector: sel }
-            }
+        };
+        self.skip_return_type_annotation();
+        self.skip_where_clause();
+        pattern
+    }
+
+    /// A method/slot return type `^ <Type>` (grammar's `returnType`, e.g.
+    /// `storageKey ^<String> = (...)`, `seed: v <Value> ^<FarReference[Value]>
+    /// = (...)`). Milestone 1 drops it. A bare `^` with no following `<` is left
+    /// in place (it is then a syntax error the caller reports).
+    fn skip_return_type_annotation(&mut self) {
+        if self.at(T::Caret) && self.peek2() == T::LessThan {
+            self.bump(); // `^`
+            self.skip_type_annotation();
         }
     }
 
@@ -146,7 +185,9 @@ impl<'a> Parser<'a> {
         while !self.at(close) && !self.at(T::Eoi) {
             let start = self.cur().span;
             let access = self.parse_access_modifier();
-            if !self.at(T::Identifier) {
+            // A slot / temporary may be named `class` (`| class |` locals in
+            // the mirror libraries); `class` lexes as `T::Class`.
+            if !self.at(T::Identifier) && !self.at(T::Class) {
                 // recovery: skip to next '.' or close
                 let t = self.bump();
                 self.push_error(t.span, "expected a slot name");
@@ -154,6 +195,8 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let name = self.ident();
+            // `slotName <Type>` — the annotation is dropped in Milestone 1.
+            self.skip_type_annotation();
             let (mutability, init) = match self.peek() {
                 T::Equals => {
                     self.bump();
@@ -260,6 +303,9 @@ impl<'a> Parser<'a> {
         let access = self.parse_access_modifier();
         self.expect(T::Class);
         let name = self.ident();
+        // `class List[E] ...` — generic type-parameter declaration
+        // (`NewspeakGrammar.ns:465`); dropped in Milestone 1.
+        self.skip_type_arguments();
         let factory = if self.at(T::Equals) {
             None
         } else {
@@ -371,6 +417,8 @@ impl<'a> Parser<'a> {
             _ => None,
         };
         let receiver = self.ident();
+        // `Collection[E] new` — type arguments on the superclass receiver.
+        self.skip_type_arguments();
         let mut messages = Vec::new();
         self.parse_trailing_sends(&mut messages);
         let end = messages.last().map(|m| m.span).unwrap_or(receiver.span);
@@ -385,7 +433,7 @@ impl<'a> Parser<'a> {
     /// unary*, then binary*, then an optional keyword send — the grammar's
     /// `message`, seeded by an already-parsed receiver.
     fn parse_trailing_sends(&mut self, out: &mut Vec<MessageSend>) {
-        while self.at(T::Identifier)
+        while (self.at(T::Identifier) || self.at(T::Class))
             && !self.is_reserved_ident(self.cur())
             && self.peek2() != T::Assign
         {
@@ -486,7 +534,9 @@ impl<'a> Parser<'a> {
                 T::Dot => {
                     self.bump();
                 }
-                T::Bar | T::DoubleBar => {
+                // A `| param ... = (...)` binary-operator method named `|` is
+                // valid here; only a genuine `|...|` slot section is not.
+                T::Bar | T::DoubleBar if !self.looks_like_method() => {
                     let t = self.bump();
                     self.push_error(
                         t.span,
@@ -559,10 +609,19 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A nested class is `accessModifier? 'class' classId ...` — the token
+    /// after `class` must be the class-name identifier. `public class = (...)`
+    /// (a method literally named `class`, common in the mirror libraries) has
+    /// `=` there, not an identifier, so it is NOT a nested class.
     fn at_nested_class(&self) -> bool {
-        self.peek() == T::Class
-            || (matches!(self.peek(), T::Public | T::Protected | T::Private)
-                && self.peek2() == T::Class)
+        if self.peek() == T::Class {
+            return self.peek2() == T::Identifier;
+        }
+        if matches!(self.peek(), T::Public | T::Protected | T::Private) && self.peek2() == T::Class
+        {
+            return self.tokens.get(self.pos + 2).map(|t| t.kind) == Some(T::Identifier);
+        }
+        false
     }
 
     /// `lazy` lexes as an `Identifier` with text `"lazy"`. A lazy slot decl is
@@ -602,6 +661,7 @@ impl<'a> Parser<'a> {
             a
         };
         let name = self.ident();
+        self.skip_type_annotation();
         let mutability = if self.eat(T::ColonColonEquals) {
             SlotMutability::MutableInit
         } else {
@@ -633,31 +693,41 @@ impl<'a> Parser<'a> {
     }
 
     fn try_parse_message_pattern(&mut self) -> Option<()> {
-        match self.peek() {
-            T::BinarySelector => {
-                self.bump();
-                if self.at(T::Identifier) {
-                    self.bump();
-                }
-                Some(())
-            }
-            T::Keyword | T::SetterKeyword => {
-                while self.at(T::Keyword) || self.at(T::SetterKeyword) {
-                    self.bump();
-                    if self.at(T::Identifier) {
+        // Mirror `parse_message_pattern`'s `<Type>` / `^<Type>` skipping and its
+        // `= < >`-as-binary-selector handling so the speculative
+        // `looks_like_method` lookahead lands on `=` `(`, not `<` / `^`.
+        let matched = if self.at_binary_selector_pattern() {
+            self.bump(); // selector
+            self.bump(); // param ident
+            self.skip_type_annotation();
+            Some(())
+        } else {
+            match self.peek() {
+                T::Keyword | T::SetterKeyword => {
+                    while self.at(T::Keyword) || self.at(T::SetterKeyword) {
                         self.bump();
-                    } else {
-                        return None;
+                        if self.at(T::Identifier) {
+                            self.bump();
+                        } else {
+                            return None;
+                        }
+                        self.skip_type_annotation();
                     }
+                    Some(())
                 }
-                Some(())
+                T::Identifier | T::Class => {
+                    self.bump();
+                    self.skip_type_arguments();
+                    self.skip_type_annotation();
+                    Some(())
+                }
+                _ => None,
             }
-            T::Identifier => {
-                self.bump();
-                Some(())
-            }
-            _ => None,
-        }
+        };
+        matched?;
+        self.skip_return_type_annotation();
+        self.skip_where_clause();
+        Some(())
     }
 }
 
@@ -720,6 +790,26 @@ mod slot_tests {
     fn simultaneous_section() {
         let s = slots("|| a = 1. b = 2. ||");
         assert_eq!(s.len(), 2);
+    }
+
+    // --- Task 14b ---
+
+    #[test]
+    fn slot_type_annotation() {
+        let s = slots("| public foo <Bar> = 1. x <Baz[Y]> ::= 2. n <Q>. |");
+        assert_eq!(s.len(), 3);
+        assert_eq!(s[0].name.name, "foo");
+        assert_eq!(s[0].mutability, SlotMutability::Immutable);
+        assert_eq!(s[1].mutability, SlotMutability::MutableInit);
+        assert_eq!(s[2].mutability, SlotMutability::MutableBare);
+    }
+
+    #[test]
+    fn slot_named_class() {
+        // `| class |` locals appear in the mirror libraries.
+        let s = slots("| class |");
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].name.name, "class");
     }
 }
 
@@ -911,6 +1001,85 @@ mod method_tests {
     fn binary_method() {
         let m = method("+ other = ( ^ self addTo: other )");
         assert!(matches!(m.pattern, MessagePattern::Binary { .. }));
+    }
+
+    // --- Task 14b: declaration-position `<Type>` annotations & friends ---
+
+    #[test]
+    fn keyword_method_param_type_annotation() {
+        let m = method("at: k <Integer> put: v <Object> = ( ^ nil )");
+        let MessagePattern::Keyword { parts } = &m.pattern else {
+            panic!("{:?}", m.pattern)
+        };
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].1.name, "k");
+        assert_eq!(parts[1].1.name, "v");
+    }
+
+    #[test]
+    fn binary_method_param_type_annotation() {
+        let m = method("+ other <Foo> = ( ^ self )");
+        let MessagePattern::Binary { selector, param } = &m.pattern else {
+            panic!()
+        };
+        assert_eq!(selector.name, "+");
+        assert_eq!(param.name, "other");
+    }
+
+    #[test]
+    fn nested_type_annotation_is_one_unit() {
+        // `<Tuple[String]>` / `<Map[K, V]>` / `<{String. Namespace}>` /
+        // `<[:E | Object]>` are each consumed whole.
+        for src in [
+            "get: k <Map[K, V]> = ( ^ nil )",
+            "get: k <Tuple[String]> = ( ^ nil )",
+            "on: b <[:E | Object]> = ( ^ nil )",
+            "with: p <{String. Namespace}> = ( ^ nil )",
+        ] {
+            let m = method(src);
+            assert!(matches!(m.pattern, MessagePattern::Keyword { .. }));
+        }
+    }
+
+    #[test]
+    fn method_return_type_annotation() {
+        let m = method("storageKey ^<String> = ( ^ 'k' )");
+        assert!(matches!(m.pattern, MessagePattern::Unary { .. }));
+        let m = method("seed: v <Value> ^<FarReference[Value]> = ( ^ nil )");
+        assert!(matches!(m.pattern, MessagePattern::Keyword { .. }));
+    }
+
+    #[test]
+    fn equals_and_bar_are_binary_operator_method_names() {
+        for (src, sel) in [
+            ("= other = ( ^ true )", "="),
+            ("< other = ( ^ true )", "<"),
+            ("| p <Parser> ^<Parser> = ( ^ self )", "|"),
+        ] {
+            let m = method(src);
+            let MessagePattern::Binary { selector, .. } = &m.pattern else {
+                panic!("{src}: {:?}", m.pattern)
+            };
+            assert_eq!(selector.name, sel);
+        }
+    }
+
+    #[test]
+    fn selector_type_parameters_and_where_clause() {
+        let m = method("List[E] = ( ^ MutableArrayList[E] )");
+        assert!(matches!(m.pattern, MessagePattern::Unary { .. }));
+        let m = method("reduce: f <[:RE :RE | RE]> ^<RE> where { C <: RE :: nil } = ( ^ nil )");
+        assert!(matches!(m.pattern, MessagePattern::Keyword { .. }));
+    }
+
+    #[test]
+    fn unterminated_type_annotation_recovers_without_panic() {
+        // `skip_type_annotation` must push a diagnostic and stop, not run away
+        // or panic, on a malformed `<...>`.
+        let tokens = crate::lex("foo: x <Bad = ( ^ nil )").unwrap();
+        let mut p = Parser::new("foo: x <Bad = ( ^ nil )", tokens);
+        let _ = p.parse_method_decl_for_test();
+        assert!(!p.diags_is_empty());
     }
 
     // `codeBody` temporaries: `temporaries = slotDecls` (grammar :148-150).

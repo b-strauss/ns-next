@@ -93,6 +93,145 @@ impl<'a> Parser<'a> {
             .push(crate::diagnostic::Diagnostic::error(span, msg));
     }
 
+    /// Consume and discard a method pattern's `where { ... }` type-constraint
+    /// clause (`whereClause`, `NewspeakGrammar.ns:443`; the `<:` / `::`
+    /// inference grammar of lines 382-434). This is a large sub-grammar with no
+    /// Milestone 1 AST; the whole `where { ... }` is skipped by balancing
+    /// `{}` / `[]` / `()` until the clause's closing brace. Stops at `Eoi`.
+    fn skip_where_clause(&mut self) {
+        if !(self.at(TokenKind::Identifier)
+            && self.text(self.cur()) == "where"
+            && self.peek2() == TokenKind::LBrace)
+        {
+            return;
+        }
+        self.bump(); // `where`
+        self.bump(); // `{`
+        let mut depth: u32 = 1;
+        loop {
+            match self.peek() {
+                TokenKind::Eoi => return,
+                TokenKind::LBrace | TokenKind::LBracket | TokenKind::LParen => {
+                    depth += 1;
+                    self.bump();
+                }
+                TokenKind::RBrace | TokenKind::RBracket | TokenKind::RParen => {
+                    self.bump();
+                    depth -= 1;
+                    if depth == 0 {
+                        return;
+                    }
+                }
+                _ => {
+                    self.bump();
+                }
+            }
+        }
+    }
+
+    /// Consume and discard a balanced `[...]` type-argument / type-parameter
+    /// list (`typeArguments`, `NewspeakGrammar.ns:376`; `typeParameterDecl`,
+    /// `:465`) — e.g. the `[E]` in `class List[E] ...` or `Collection[E] new`,
+    /// or `[K, V]` in `Map[K, V]`. Milestone 1 has no type AST, so the list is
+    /// dropped. Nested `[...]` are balanced; the scan stops at `Eoi`.
+    fn skip_type_arguments(&mut self) {
+        if !self.at(TokenKind::LBracket) {
+            return;
+        }
+        let open = self.bump(); // `[`
+        let mut depth: u32 = 1;
+        loop {
+            match self.peek() {
+                TokenKind::Eoi => {
+                    self.push_error(open.span, "unterminated `[...]` type arguments");
+                    return;
+                }
+                TokenKind::LBracket => {
+                    depth += 1;
+                    self.bump();
+                }
+                TokenKind::RBracket => {
+                    self.bump();
+                    depth -= 1;
+                    if depth == 0 {
+                        return;
+                    }
+                }
+                _ => {
+                    self.bump();
+                }
+            }
+        }
+    }
+
+    /// Consume and discard a declaration-position `<Type>` annotation.
+    ///
+    /// Typed Newspeak3 annotates declarations with `<Type>` — method/block
+    /// parameters (`sel: p <Platform>`, `+ other <Foo>`), slot names
+    /// (`public foo <Bar> = expr.`), and return positions. The vendored grammar
+    /// wires these in via `typeArguments = lbracket , (typeExpr ...) , rbracket`
+    /// (`corpus/reference/NewspeakGrammar.ns:376`) and the `<:` bound operator
+    /// (`:49`, `:216`); type bodies therefore nest through `<...>` and `[...]`
+    /// (`<Tuple[String]>`, `<Map[K, V]>`, `<Foo <: Bar>`).
+    ///
+    /// Milestone 1 has no AST type node, so — consistent with the
+    /// `<T>`-as-`Literal::Pattern` stance in expression position
+    /// (`parser::expr::parse_pattern_literal`) — the annotation is parsed and
+    /// dropped here. Balanced `<`/`[` pairs are consumed until the matching
+    /// `>`; a `<` immediately followed by `:` is the `<:` bound operator, not a
+    /// nesting open. The scan never runs past a declaration boundary
+    /// (`= ::= ) .` at depth 0) or `Eoi`: on a malformed / unterminated
+    /// `<...>` it pushes a diagnostic and returns without panicking. Every
+    /// branch consumes a token or returns, so the loop always terminates.
+    fn skip_type_annotation(&mut self) {
+        if !self.at(TokenKind::LessThan) {
+            return;
+        }
+        let open = self.bump(); // `<`
+        let mut depth: u32 = 1;
+        loop {
+            match self.peek() {
+                TokenKind::Eoi => {
+                    self.push_error(open.span, "unterminated `<...>` type annotation");
+                    return;
+                }
+                TokenKind::LessThan => {
+                    self.bump();
+                    // `<:` is the mixin/bound operator, not a nesting open.
+                    if !self.at(TokenKind::Colon) {
+                        depth += 1;
+                    }
+                }
+                TokenKind::LBracket | TokenKind::LBrace | TokenKind::LParen => {
+                    depth += 1;
+                    self.bump();
+                }
+                TokenKind::GreaterThan
+                | TokenKind::RBracket
+                | TokenKind::RBrace
+                | TokenKind::RParen => {
+                    self.bump();
+                    depth -= 1;
+                    if depth == 0 {
+                        return;
+                    }
+                }
+                // Safety net: a declaration boundary means the `<` never opened
+                // an annotation — bail rather than eat the decl. `.` is a legal
+                // tuple-type separator (`<{String. Namespace}>`) and `(` `)`
+                // wrap arrow-type groups (`<[:(E | X) :E | X def]>`), so those
+                // are not boundaries; a malformed `<...>` instead runs to `Eoi`.
+                TokenKind::Equals | TokenKind::ColonColonEquals => {
+                    self.push_error(open.span, "unterminated `<...>` type annotation");
+                    return;
+                }
+                _ => {
+                    self.bump();
+                }
+            }
+        }
+    }
+
     /// Save the cursor position and the current diagnostics length, so a
     /// speculative parse can be rewound with [`Parser::restore`].
     pub(crate) fn checkpoint(&self) -> (usize, usize) {
@@ -357,5 +496,76 @@ mod tests {
         let e = parse_expr("[ ^ 42 ]");
         let Expr::Block(b) = e else { panic!() };
         assert!(matches!(b.body.stmts[0], Stmt::Return(_)));
+    }
+
+    // --- Task 14b ---
+
+    #[test]
+    fn typed_block_params() {
+        let e = parse_expr("[:x <Integer> :y <{A. B}> | x + y ]");
+        let Expr::Block(b) = e else { panic!("{e:?}") };
+        assert_eq!(
+            b.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["x", "y"]
+        );
+    }
+
+    #[test]
+    fn class_is_a_pseudo_variable_and_a_unary_selector() {
+        // `self class` — `class` as unary send.
+        let Expr::Send(s) = parse_expr("self class") else {
+            panic!()
+        };
+        assert_eq!(s.message.selector, Selector::Unary("class".into()));
+        // `class onContext: it` — `class` as the receiver.
+        let Expr::Send(s) = parse_expr("class onContext: it") else {
+            panic!()
+        };
+        let Expr::Ident(recv) = &s.receiver else {
+            panic!()
+        };
+        assert_eq!(recv.name, "class");
+    }
+
+    #[test]
+    fn bar_is_a_binary_operator_in_operand_position() {
+        // `a | b` and `a || b` are ordinary binary sends once a left operand
+        // exists (the lexer emits `Bar` / `DoubleBar`).
+        let Expr::Send(s) = parse_expr("a | b") else {
+            panic!()
+        };
+        assert_eq!(s.message.selector, Selector::Binary("|".into()));
+        let Expr::Send(s) = parse_expr("a || b") else {
+            panic!()
+        };
+        assert_eq!(s.message.selector, Selector::Binary("||".into()));
+    }
+
+    #[test]
+    fn eventual_send_operator_is_dropped() {
+        // `x <-: new` — async unary send; Milestone 1 parses it as `x new`.
+        let Expr::Send(s) = parse_expr("x <-: new") else {
+            panic!("{:?}", parse_expr("x <-: new"))
+        };
+        assert_eq!(s.message.selector, Selector::Unary("new".into()));
+        // `[ b ] <-: value fulfilled: [ r ]` — eventual send inside a keyword arg.
+        let e = parse_expr("Promise when: [ b ] <-: value fulfilled: [ r ]");
+        let Expr::Send(s) = e else { panic!("{e:?}") };
+        assert_eq!(
+            s.message.selector,
+            Selector::Keyword("when:fulfilled:".into())
+        );
+    }
+
+    #[test]
+    fn generic_instantiation_drops_type_arguments() {
+        // `Array[E] new: n` — `[E]` type arguments on a primary.
+        let e = parse_expr("Array[E] new: 3");
+        let Expr::Send(s) = e else { panic!("{e:?}") };
+        assert_eq!(s.message.selector, Selector::Keyword("new:".into()));
+        let Expr::Ident(recv) = &s.receiver else {
+            panic!("{:?}", s.receiver)
+        };
+        assert_eq!(recv.name, "Array");
     }
 }
