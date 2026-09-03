@@ -38,11 +38,37 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_trivia(&mut self) {
-        while let Some(&b) = self.bytes.get(self.pos) {
-            if b.is_ascii_whitespace() {
-                self.pos += 1;
-            } else {
-                break;
+        loop {
+            match self.peek() {
+                Some(b) if b.is_ascii_whitespace() => self.pos += 1,
+                Some(b'(') if self.peek_at(1) == Some(b'*') => self.skip_block_comment(),
+                _ => break,
+            }
+        }
+    }
+
+    fn skip_block_comment(&mut self) {
+        let start = self.pos;
+        self.pos += 2;
+        let mut depth = 1u32;
+        while depth > 0 {
+            match (self.peek(), self.peek_at(1)) {
+                (Some(b'('), Some(b'*')) => {
+                    self.pos += 2;
+                    depth += 1;
+                }
+                (Some(b'*'), Some(b')')) => {
+                    self.pos += 2;
+                    depth -= 1;
+                }
+                (Some(_), _) => self.pos += 1,
+                (None, _) => {
+                    self.diags.push(Diagnostic::error(
+                        Span::new(start as u32, self.pos as u32),
+                        "unterminated comment",
+                    ));
+                    return;
+                }
             }
         }
     }
@@ -327,6 +353,12 @@ impl<'a> Lexer<'a> {
     /// whitespace, or we are at the start of input. Used to let `-42` lex as a
     /// negative literal even after a value token when a space separates them
     /// (`a -42`), while `a-42` and `a - 42` stay subtraction.
+    ///
+    /// NOTE: Comments are not considered whitespace here. This is deliberate:
+    /// a comment is trivia but does NOT count as preceding whitespace for the
+    /// purposes of distinguishing negative literals from subtraction. So `x (*c*)-42`
+    /// stays subtraction; `x (*c*) -42` is a negative literal (the real space after
+    /// the comment counts).
     fn preceded_by_whitespace(&self) -> bool {
         self.pos == 0 || self.bytes[self.pos - 1].is_ascii_whitespace()
     }
@@ -484,5 +516,46 @@ mod tests {
     fn unterminated_string_is_diagnostic() {
         let (_tokens, diags) = Lexer::new("'oops").run();
         assert_eq!(diags.len(), 1);
+    }
+
+    #[test]
+    fn line_and_block_comments_are_trivia() {
+        assert_eq!(
+            kinds("a (* comment *) b"),
+            vec![Identifier, Identifier, Eoi]
+        );
+    }
+
+    #[test]
+    fn comments_nest() {
+        assert_eq!(
+            kinds("a (* x (* y *) z *) b"),
+            vec![Identifier, Identifier, Eoi]
+        );
+    }
+
+    #[test]
+    fn unterminated_comment_is_diagnostic() {
+        let (_t, diags) = Lexer::new("a (* oops").run();
+        assert_eq!(diags.len(), 1);
+    }
+
+    #[test]
+    fn lex_api_returns_err_on_diagnostics() {
+        assert!(crate::lex("'unterminated").is_err());
+        assert!(crate::lex("class Foo = ()").is_ok());
+    }
+
+    #[test]
+    fn token_stream_ends_with_eoi() {
+        let tokens = crate::lex("foo").unwrap();
+        assert_eq!(tokens.last().unwrap().kind, Eoi);
+    }
+
+    #[test]
+    fn lexes_vendored_grammar_without_error() {
+        let src = std::fs::read_to_string("../../corpus/reference/NewspeakGrammar.ns").unwrap();
+        let (_tokens, diags) = Lexer::new(&src).run();
+        assert!(diags.is_empty(), "{diags:#?}");
     }
 }
