@@ -278,10 +278,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// A class body may open with a comment: either a `'...'` string literal
-    /// that stands alone, or a `(* ... *)` block comment. The lexer drops block
-    /// comments as trivia, so that form is recovered from the source gap
-    /// between the opening `(` and the next token.
+    /// A class body may open with a class comment. Per the vendored grammar
+    /// (`corpus/reference/NewspeakGrammar.ns:196`,
+    /// `classComment = whitespace opt , comment`, where `comment` is a
+    /// `(* ... *)` block form — `beginNSComment`/`endNSComment`, grammar
+    /// lines 152-153) it is a block comment, which the lexer drops as trivia;
+    /// that form is recovered here from the source gap between the opening `(`
+    /// and the next token. A leading `'...'` string literal is also accepted
+    /// (some sources write the class comment that way) and its contents kept.
     fn take_class_comment(&mut self) -> Option<String> {
         if self.at(T::String) {
             let t = self.bump();
@@ -335,7 +339,6 @@ impl<'a> Parser<'a> {
         while self.at(T::Identifier)
             && !self.is_reserved_ident(self.cur())
             && self.peek2() != T::Assign
-            && self.peek() != T::Equals
         {
             let sel = self.bump();
             out.push(MessageSend {
@@ -403,16 +406,26 @@ impl<'a> Parser<'a> {
                     self.bump();
                 }
                 _ => {
-                    if !seen_decl && self.looks_like_method() {
+                    let before = self.pos;
+                    let is_method = self.looks_like_method();
+                    if is_method {
                         methods.push(self.parse_method_decl());
                         seen_decl = true;
                     } else if !seen_decl && instance_side {
                         let e = self.parse_expression();
-                        init_exprs.push(Stmt::Expr(e));
                         self.eat(T::Dot);
-                    } else if self.looks_like_method() {
-                        methods.push(self.parse_method_decl());
-                        seen_decl = true;
+                        if self.pos == before {
+                            // `parse_expression` can return a recovery node
+                            // without consuming a token (a stray `^ ; + = ]`
+                            // etc). Force progress and drop the bogus node.
+                            let t = self.bump();
+                            self.push_error(
+                                t.span,
+                                "expected a method, nested class, or init expression",
+                            );
+                        } else {
+                            init_exprs.push(Stmt::Expr(e));
+                        }
                     } else {
                         let t = self.bump();
                         self.push_error(
@@ -601,6 +614,24 @@ class Outer usingPlatform: p = (
     #[test]
     fn trailing_garbage_is_an_error() {
         assert!(crate::parse("Newspeak3\n'X'\nclass C = ()\nextra").is_err());
+    }
+
+    // Malformed instance-side input must terminate with a diagnostic, not hang:
+    // `parse_expression` can return a recovery node without consuming a token,
+    // so `parse_class_body`'s loop needs an explicit forward-progress guard.
+    #[test]
+    fn malformed_body_caret_is_error() {
+        assert!(crate::parse("Newspeak3\n'X'\nclass C = ( ^ 1 )").is_err());
+    }
+
+    #[test]
+    fn malformed_body_semi_is_error() {
+        assert!(crate::parse("Newspeak3\n'X'\nclass C = ( ; )").is_err());
+    }
+
+    #[test]
+    fn malformed_body_binsel_is_error() {
+        assert!(crate::parse("Newspeak3\n'X'\nclass C = ( + )").is_err());
     }
 }
 
