@@ -41,6 +41,7 @@ impl<'a> Parser<'a> {
                 }
             }
             T::LessThan => Expr::Literal(self.parse_pattern_literal()),
+            T::Pound if self.peek2() == T::LParen => Expr::Literal(self.parse_literal_array()),
             _ => {
                 let t = self.cur();
                 self.diags.push(crate::diagnostic::Diagnostic::error(
@@ -107,34 +108,89 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // Placeholder until Task 9.
     fn parse_block(&mut self) -> Expr {
-        let lb = self.bump();
-        // minimal: skip to matching ]
-        while !self.at(T::RBracket) && !self.at(T::Eoi) {
+        let lb = self.expect(T::LBracket).unwrap_or(self.cur());
+        let mut params = Vec::new();
+        while self.at(T::Colon) {
             self.bump();
+            if self.at(T::Identifier) {
+                params.push(self.ident());
+            }
         }
-        let rb = self.bump();
-        Expr::Block(Box::new(BlockExpr {
-            params: Vec::new(),
-            body: CodeBody {
-                temps: Vec::new(),
-                stmts: Vec::new(),
-                span: lb.span.merge(rb.span),
-            },
-            span: lb.span.merge(rb.span),
-        }))
+        if !params.is_empty() {
+            self.expect(T::Bar);
+        }
+        let body = self.parse_code_body();
+        let rb = self.expect(T::RBracket).unwrap_or(self.cur());
+        let span = lb.span.merge(rb.span);
+        Expr::Block(Box::new(BlockExpr { params, body, span }))
     }
 
     fn parse_dynamic_array(&mut self) -> Expr {
-        let lb = self.bump();
+        let lb = self.bump(); // {
+        let mut elements = Vec::new();
         while !self.at(T::RBrace) && !self.at(T::Eoi) {
-            self.bump();
+            elements.push(self.parse_expression());
+            if !self.eat(T::Dot) {
+                break;
+            }
         }
-        let rb = self.bump();
+        let rb = self.expect(T::RBrace).unwrap_or(self.cur());
         Expr::DynamicArray {
-            elements: Vec::new(),
+            elements,
             span: lb.span.merge(rb.span),
+        }
+    }
+
+    fn parse_literal_array(&mut self) -> Literal {
+        let pound = self.bump(); // #
+        self.expect(T::LParen);
+        let mut elements = Vec::new();
+        while !self.at(T::RParen) && !self.at(T::Eoi) {
+            elements.push(self.parse_array_element());
+        }
+        let rp = self.expect(T::RParen).unwrap_or(self.cur());
+        Literal::Array {
+            elements,
+            span: pound.span.merge(rp.span),
+        }
+    }
+
+    fn parse_array_element(&mut self) -> Literal {
+        match self.peek() {
+            T::LParen => {
+                let lp = self.bump();
+                let mut inner = Vec::new();
+                while !self.at(T::RParen) && !self.at(T::Eoi) {
+                    inner.push(self.parse_array_element());
+                }
+                let rp = self.expect(T::RParen).unwrap_or(self.cur());
+                Literal::Array {
+                    elements: inner,
+                    span: lp.span.merge(rp.span),
+                }
+            }
+            T::Pound => {
+                self.bump();
+                self.parse_array_element()
+            }
+            T::Identifier => {
+                let id = self.bump();
+                // bare word inside a literal array is a symbol
+                Literal::Symbol {
+                    value: self.text(id).to_string(),
+                    span: id.span,
+                }
+            }
+            T::Number | T::String | T::Symbol | T::CharConstant => self.parse_literal(),
+            _ => {
+                let t = self.bump();
+                self.diags.push(crate::diagnostic::Diagnostic::error(
+                    t.span,
+                    "invalid literal-array element",
+                ));
+                Literal::Nil { span: t.span }
+            }
         }
     }
 }

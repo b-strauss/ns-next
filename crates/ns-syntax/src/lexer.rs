@@ -101,6 +101,7 @@ impl<'a> Lexer<'a> {
             b'^' => self.single(TokenKind::Caret),
             b'.' => self.single(TokenKind::Dot),
             b';' => self.single(TokenKind::Semicolon),
+            b'#' if self.peek_at(1) == Some(b'(') => self.single(TokenKind::Pound),
             b'#' => self.lex_symbol(),
             b'|' => {
                 if self.peek_at(1) == Some(b'|') {
@@ -502,6 +503,11 @@ mod tests {
             kinds("#foo #at:put: #+ #'hi there'"),
             vec![Symbol, Symbol, Symbol, Symbol, Eoi,]
         );
+    }
+
+    #[test]
+    fn hash_paren_is_pound_then_lparen() {
+        assert_eq!(kinds("#(1)"), vec![Pound, LParen, Number, RParen, Eoi]);
     }
 
     #[test]

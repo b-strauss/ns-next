@@ -4,10 +4,11 @@
 // in the crate constructs `Parser` yet — so in a non-test build the *entire*
 // module reads as dead (every item is reachable only from `#[cfg(test)]` code).
 // Per-item `#[allow(dead_code)]` would therefore have to annotate every item,
-// which is strictly worse than one blanket allow. Task 9 adds the public entry
+// which is strictly worse than one blanket allow. Task 12 adds the public entry
 // point and a non-test caller; drop this allow then.
 #![allow(dead_code)]
 
+mod decl;
 mod expr;
 
 use crate::ast::*;
@@ -239,5 +240,73 @@ mod tests {
             panic!()
         };
         assert_eq!(value, "foo");
+    }
+
+    #[test]
+    fn setter_keyword_after_receiver_is_keyword_send() {
+        // `recv x:: v` stays a keyword send, not an assignment.
+        let e = parse_expr("obj foo:: 5");
+        let Expr::Send(s) = e else { panic!("{e:?}") };
+        assert_eq!(s.message.selector, Selector::Keyword("foo:".into()));
+    }
+
+    #[test]
+    fn nested_setter_keyword_at_head_is_nested_assign() {
+        let e = parse_expr("x:: y:: 1");
+        let Expr::Assign { target, value, .. } = e else {
+            panic!("{e:?}")
+        };
+        assert_eq!(target.name, "x");
+        let Expr::Assign { target: inner, .. } = *value else {
+            panic!()
+        };
+        assert_eq!(inner.name, "y");
+    }
+
+    #[test]
+    fn block_with_params_and_temps() {
+        let e = parse_expr("[:x :y | | t | t := x. t + y ]");
+        let Expr::Block(b) = e else { panic!() };
+        assert_eq!(
+            b.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["x", "y"]
+        );
+        assert_eq!(b.body.temps.len(), 1);
+        assert_eq!(b.body.stmts.len(), 2);
+    }
+
+    #[test]
+    fn empty_block() {
+        let e = parse_expr("[]");
+        let Expr::Block(b) = e else { panic!() };
+        assert!(b.params.is_empty() && b.body.stmts.is_empty());
+    }
+
+    #[test]
+    fn dynamic_array() {
+        let e = parse_expr("{ 1. 2 + 3. foo }");
+        let Expr::DynamicArray { elements, .. } = e else {
+            panic!()
+        };
+        assert_eq!(elements.len(), 3);
+    }
+
+    #[test]
+    fn literal_array() {
+        let e = parse_expr("#(1 2 foo #bar (3 4))");
+        let Expr::Literal(Literal::Array { elements, .. }) = e else {
+            panic!()
+        };
+        assert_eq!(elements.len(), 5);
+        assert!(matches!(elements[2], Literal::Symbol { .. })); // bare `foo`
+        assert!(matches!(elements[4], Literal::Array { .. }));
+    }
+
+    #[test]
+    fn return_statement_in_body() {
+        // exercised via block body
+        let e = parse_expr("[ ^ 42 ]");
+        let Expr::Block(b) = e else { panic!() };
+        assert!(matches!(b.body.stmts[0], Stmt::Return(_)));
     }
 }
