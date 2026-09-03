@@ -1,0 +1,186 @@
+---
+source: crates/ns-syntax/tests/parse_snapshot.rs
+expression: module
+---
+Module {
+    language_id: "Newspeak3",
+    category: "HelloApp",
+    root_class: ClassDecl {
+        access: None,
+        name: Ident {
+            name: "Hello",
+            span: Span {
+                start: 27,
+                end: 32,
+            },
+        },
+        factory: Some(
+            Keyword {
+                parts: [
+                    (
+                        Ident {
+                            name: "usingPlatform",
+                            span: Span {
+                                start: 33,
+                                end: 47,
+                            },
+                        },
+                        Ident {
+                            name: "platform",
+                            span: Span {
+                                start: 48,
+                                end: 56,
+                            },
+                        },
+                    ),
+                ],
+            },
+        ),
+        superclass: None,
+        class_comment: None,
+        instance_side: ClassBody {
+            slots: [
+                SlotDecl {
+                    access: Some(
+                        Private,
+                    ),
+                    name: Ident {
+                        name: "Transcript",
+                        span: Span {
+                            start: 75,
+                            end: 85,
+                        },
+                    },
+                    mutability: Immutable,
+                    init: Some(
+                        Send(
+                            Send {
+                                receiver: Ident(
+                                    Ident {
+                                        name: "platform",
+                                        span: Span {
+                                            start: 88,
+                                            end: 96,
+                                        },
+                                    },
+                                ),
+                                message: MessageSend {
+                                    selector: Unary(
+                                        "Transcript",
+                                    ),
+                                    args: [],
+                                    span: Span {
+                                        start: 88,
+                                        end: 107,
+                                    },
+                                },
+                                span: Span {
+                                    start: 88,
+                                    end: 107,
+                                },
+                            },
+                        ),
+                    ),
+                    span: Span {
+                        start: 67,
+                        end: 108,
+                    },
+                },
+            ],
+            init_exprs: [],
+            methods: [
+                MethodDecl {
+                    access: Some(
+                        Public,
+                    ),
+                    pattern: Keyword {
+                        parts: [
+                            (
+                                Ident {
+                                    name: "main",
+                                    span: Span {
+                                        start: 122,
+                                        end: 127,
+                                    },
+                                },
+                                Ident {
+                                    name: "args",
+                                    span: Span {
+                                        start: 128,
+                                        end: 132,
+                                    },
+                                },
+                            ),
+                        ],
+                    },
+                    body: CodeBody {
+                        temps: [],
+                        stmts: [
+                            Expr(
+                                Send(
+                                    Send {
+                                        receiver: Ident(
+                                            Ident {
+                                                name: "Transcript",
+                                                span: Span {
+                                                    start: 137,
+                                                    end: 147,
+                                                },
+                                            },
+                                        ),
+                                        message: MessageSend {
+                                            selector: Keyword(
+                                                "show:",
+                                            ),
+                                            args: [
+                                                Literal(
+                                                    String {
+                                                        value: "Hello, World!",
+                                                        span: Span {
+                                                            start: 154,
+                                                            end: 169,
+                                                        },
+                                                    },
+                                                ),
+                                            ],
+                                            span: Span {
+                                                start: 137,
+                                                end: 169,
+                                            },
+                                        },
+                                        span: Span {
+                                            start: 137,
+                                            end: 169,
+                                        },
+                                    },
+                                ),
+                            ),
+                        ],
+                        span: Span {
+                            start: 137,
+                            end: 171,
+                        },
+                    },
+                    span: Span {
+                        start: 115,
+                        end: 171,
+                    },
+                },
+            ],
+            nested_classes: [],
+            span: Span {
+                start: 65,
+                end: 173,
+            },
+        },
+        class_side: None,
+        span: Span {
+            start: 21,
+            end: 173,
+        },
+    },
+    span: Span {
+        start: 0,
+        end: 173,
+    },
+}

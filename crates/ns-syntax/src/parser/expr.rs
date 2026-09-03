@@ -300,7 +300,7 @@ impl<'a> Parser<'a> {
         recv
     }
 
-    fn parse_binary_message(&mut self) -> Expr {
+    pub(super) fn parse_binary_message(&mut self) -> Expr {
         let mut recv = self.parse_unary_message();
         while self.at(T::BinarySelector) {
             let op = self.bump();
@@ -319,7 +319,7 @@ impl<'a> Parser<'a> {
         recv
     }
 
-    fn parse_unary_message(&mut self) -> Expr {
+    pub(super) fn parse_unary_message(&mut self) -> Expr {
         let mut recv = self.parse_primary();
         while self.at(T::Identifier)
             && !self.is_reserved_ident(self.cur())
@@ -382,7 +382,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn is_reserved_ident(&self, tok: crate::token::Token) -> bool {
+    pub(super) fn is_reserved_ident(&self, tok: crate::token::Token) -> bool {
         matches!(self.text(tok), "nil" | "true" | "false")
     }
 }

@@ -1,13 +1,5 @@
 //! Recursive-descent + Pratt parser for Newspeak3.
 
-// Scaffold: the module is `mod parser;` (private) and, outside of tests, nothing
-// in the crate constructs `Parser` yet — so in a non-test build the *entire*
-// module reads as dead (every item is reachable only from `#[cfg(test)]` code).
-// Per-item `#[allow(dead_code)]` would therefore have to annotate every item,
-// which is strictly worse than one blanket allow. Task 12 adds the public entry
-// point and a non-test caller; drop this allow then.
-#![allow(dead_code)]
-
 mod decl;
 mod expr;
 
@@ -99,6 +91,24 @@ impl<'a> Parser<'a> {
     fn push_error(&mut self, span: crate::span::Span, msg: &str) {
         self.diags
             .push(crate::diagnostic::Diagnostic::error(span, msg));
+    }
+
+    /// Save the cursor position and the current diagnostics length, so a
+    /// speculative parse can be rewound with [`Parser::restore`].
+    pub(crate) fn checkpoint(&self) -> (usize, usize) {
+        (self.pos, self.diags.len())
+    }
+
+    /// Rewind to a [`Parser::checkpoint`]: restore the cursor and drop any
+    /// diagnostics pushed since (so speculative errors are discarded).
+    pub(crate) fn restore(&mut self, cp: (usize, usize)) {
+        self.pos = cp.0;
+        self.diags.truncate(cp.1);
+    }
+
+    /// Consume the parser and return the diagnostics it accumulated.
+    pub(crate) fn into_diagnostics(self) -> Vec<Diagnostic> {
+        self.diags
     }
 
     // `parse_expression` and the full precedence ladder live in `expr.rs`.
