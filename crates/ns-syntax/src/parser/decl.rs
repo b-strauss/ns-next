@@ -53,7 +53,16 @@ impl<'a> Parser<'a> {
     /// a binary `|` send (there is no left operand), so a leading `Bar` /
     /// `DoubleBar` is unambiguously a temp section.
     fn parse_temps(&mut self) -> Vec<Ident> {
-        if !self.at(T::Bar) && !self.at(T::DoubleBar) {
+        // The lexer emits `||` as one `DoubleBar` token. In code-body position
+        // that lone token is the degenerate empty simultaneous temp list —
+        // short-circuit it before the `parse_slot_decls` handoff, which would
+        // otherwise consume `||` and then scan the rest of the body hunting a
+        // closing `||` that never comes.
+        if self.at(T::DoubleBar) {
+            self.bump();
+            return Vec::new();
+        }
+        if !self.at(T::Bar) {
             return Vec::new();
         }
         self.parse_slot_decls()
@@ -902,5 +911,52 @@ mod method_tests {
     fn binary_method() {
         let m = method("+ other = ( ^ self addTo: other )");
         assert!(matches!(m.pattern, MessagePattern::Binary { .. }));
+    }
+
+    // `codeBody` temporaries: `temporaries = slotDecls` (grammar :148-150).
+
+    #[test]
+    fn empty_double_bar_temps() {
+        // Lone `||` is the degenerate empty simultaneous temp list; the body
+        // after it must still parse and no diagnostic is emitted.
+        let m = method("foo = ( || ^ 1 )");
+        assert!(m.body.temps.is_empty());
+        assert!(matches!(m.body.stmts.as_slice(), [Stmt::Return(_)]));
+    }
+
+    #[test]
+    fn empty_seq_bar_temps() {
+        let m = method("foo = ( | | ^ 1 )");
+        assert!(m.body.temps.is_empty());
+        assert_eq!(m.body.stmts.len(), 1);
+    }
+
+    #[test]
+    fn plain_seq_temps() {
+        let m = method("foo = ( | a b | ^ a )");
+        assert_eq!(
+            m.body
+                .temps
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+    }
+
+    #[test]
+    fn initialized_local_slot_temps() {
+        // The `| x = expr. |` full slot-decl form: initializer is parsed (body
+        // stays in sync) but only the name is retained in Milestone 1.
+        let m = method("foo = ( | x = 5. y ::= bar baz. | ^ x )");
+        assert_eq!(
+            m.body
+                .temps
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>(),
+            ["x", "y"]
+        );
+        assert!(matches!(m.body.stmts.as_slice(), [Stmt::Return(_)]));
     }
 }
