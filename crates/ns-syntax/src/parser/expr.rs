@@ -331,10 +331,19 @@ impl<'a> Parser<'a> {
         // `binaryMsg`). A leading `<` is still a pattern literal and a leading
         // `|` / `||` is still a temp section (both handled before we get here),
         // so the ambiguity only bites where a left operand already exists.
+        // `|` / `||` double as slot/temp-section delimiters, so accept them as a
+        // binary operator only when a primary can actually follow. A
+        // section-closing `|` / `||` is followed by `RParen` / a decl keyword /
+        // `Eoi` / another `|` — none of which start a primary — so a dot-less
+        // final slot initializer no longer eats its closing delimiter and
+        // cascades into the following declaration. `= < >` and plain
+        // `BinarySelector` are unconditional (their non-operator uses cannot
+        // reach here with a left operand present).
         while matches!(
             self.peek(),
-            T::BinarySelector | T::Equals | T::LessThan | T::GreaterThan | T::Bar | T::DoubleBar
-        ) {
+            T::BinarySelector | T::Equals | T::LessThan | T::GreaterThan
+        ) || (matches!(self.peek(), T::Bar | T::DoubleBar) && starts_primary(self.peek2()))
+        {
             let op = self.bump();
             let arg = self.parse_unary_message();
             let span = expr_span(&recv).merge(expr_span(&arg));
@@ -447,6 +456,27 @@ impl<'a> Parser<'a> {
     pub(super) fn at_eventual_send_operator(&self) -> bool {
         self.at(T::BinarySelector) && self.text(self.cur()) == "<-" && self.peek2() == T::Colon
     }
+}
+
+/// Whether a token of this kind can begin a `primary` (`NewspeakGrammar.ns:123`
+/// plus the parser's `nil`/`true`/`false`, `class` pseudo-variable and `<...>`
+/// pattern-literal extensions). Used to disambiguate `|` / `||` as a binary
+/// operator from a slot/temp-section delimiter.
+fn starts_primary(k: T) -> bool {
+    matches!(
+        k,
+        T::Identifier
+            | T::Class
+            | T::Number
+            | T::String
+            | T::Symbol
+            | T::CharConstant
+            | T::LParen
+            | T::LBracket
+            | T::LBrace
+            | T::Pound
+            | T::LessThan
+    )
 }
 
 pub(super) fn expr_span(e: &Expr) -> crate::span::Span {

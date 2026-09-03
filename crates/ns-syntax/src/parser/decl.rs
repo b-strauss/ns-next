@@ -749,6 +749,10 @@ impl<'a> Parser<'a> {
         self.parse_slot_decls()
     }
 
+    pub(crate) fn parse_module_for_test(&mut self) -> Module {
+        self.parse_module()
+    }
+
     pub(crate) fn diags_is_empty(&self) -> bool {
         self.diags.is_empty()
     }
@@ -822,6 +826,52 @@ mod class_tests {
             Ok(m) => m,
             Err(d) => panic!("parse errors: {d:#?}"),
         }
+    }
+
+    // Parse a module keeping the (possibly partial) AST *and* the diagnostics,
+    // for exercising error recovery.
+    fn module_with_diags(src: &str) -> (Module, bool) {
+        let tokens = crate::lex(src).unwrap();
+        let mut p = super::Parser::new(src, tokens);
+        let m = p.parse_module_for_test();
+        let clean = p.diags_is_empty();
+        (m, clean)
+    }
+
+    // Task 14b fix: a dot-less final slot initializer (invalid — grammar :165
+    // makes the trailing `.` mandatory) must not have its section-closing `|`
+    // eaten as a binary `|` operator, which pre-fix cascaded into and swallowed
+    // the following G2 declaration.
+    #[test]
+    fn dotless_final_slot_init_does_not_swallow_following_decl() {
+        let src = "Newspeak3\n'X'\n\
+                   class Outer = (\n | a = X new |\n) (\n class Inner = () () : ()\n) : ()\n";
+        let (m, _clean) = module_with_diags(src);
+        let body = &m.root_class.instance_side;
+        assert_eq!(body.slots.len(), 1, "the slot survives");
+        assert_eq!(body.slots[0].name.name, "a");
+        assert_eq!(
+            body.nested_classes.len(),
+            1,
+            "the following nested class is not swallowed"
+        );
+        assert_eq!(body.nested_classes[0].name.name, "Inner");
+    }
+
+    // The boolean-or case still works: `|` with a primary after it is a binary
+    // send even in a slot initializer.
+    #[test]
+    fn bar_operator_in_slot_initializer() {
+        let m = module("Newspeak3\n'X'\nclass C = (\n | flag = a | b. |\n) ()\n");
+        let init = m.root_class.instance_side.slots[0].init.as_ref().unwrap();
+        let Expr::Send(s) = init else {
+            panic!("{init:?}")
+        };
+        assert_eq!(s.message.selector, Selector::Binary("|".into()));
+        let Expr::Ident(arg) = &s.message.args[0] else {
+            panic!()
+        };
+        assert_eq!(arg.name, "b");
     }
 
     #[test]
@@ -1098,6 +1148,22 @@ mod method_tests {
         let m = method("foo = ( | | ^ 1 )");
         assert!(m.body.temps.is_empty());
         assert_eq!(m.body.stmts.len(), 1);
+    }
+
+    // A well-formed (dot-terminated) single initialized local: the closing `|`
+    // is the section terminator, not a binary operator.
+    #[test]
+    fn single_initialized_local_temp_with_dot() {
+        let m = method("foo = ( | x = 1. | ^ x )");
+        assert_eq!(
+            m.body
+                .temps
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>(),
+            ["x"]
+        );
+        assert!(matches!(m.body.stmts.as_slice(), [Stmt::Return(_)]));
     }
 
     #[test]

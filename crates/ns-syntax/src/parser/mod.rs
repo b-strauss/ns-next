@@ -97,7 +97,9 @@ impl<'a> Parser<'a> {
     /// clause (`whereClause`, `NewspeakGrammar.ns:443`; the `<:` / `::`
     /// inference grammar of lines 382-434). This is a large sub-grammar with no
     /// Milestone 1 AST; the whole `where { ... }` is skipped by balancing
-    /// `{}` / `[]` / `()` until the clause's closing brace. Stops at `Eoi`.
+    /// `{}` / `[]` / `()` until the clause's closing brace. On an unterminated
+    /// clause it pushes a diagnostic and stops at `Eoi` (parity with
+    /// [`Parser::skip_type_annotation`] / [`Parser::skip_type_arguments`]).
     fn skip_where_clause(&mut self) {
         if !(self.at(TokenKind::Identifier)
             && self.text(self.cur()) == "where"
@@ -106,11 +108,14 @@ impl<'a> Parser<'a> {
             return;
         }
         self.bump(); // `where`
-        self.bump(); // `{`
+        let open = self.bump(); // `{`
         let mut depth: u32 = 1;
         loop {
             match self.peek() {
-                TokenKind::Eoi => return,
+                TokenKind::Eoi => {
+                    self.push_error(open.span, "unterminated `where { ... }` clause");
+                    return;
+                }
                 TokenKind::LBrace | TokenKind::LBracket | TokenKind::LParen => {
                     depth += 1;
                     self.bump();
