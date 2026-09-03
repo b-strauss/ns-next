@@ -99,15 +99,15 @@ Module {
                                 Ident {
                                     name: "main",
                                     span: Span {
-                                        start: 122,
-                                        end: 127,
+                                        start: 126,
+                                        end: 131,
                                     },
                                 },
                                 Ident {
                                     name: "args",
                                     span: Span {
-                                        start: 128,
-                                        end: 132,
+                                        start: 132,
+                                        end: 136,
                                     },
                                 },
                             ),
@@ -123,8 +123,8 @@ Module {
                                             Ident {
                                                 name: "Transcript",
                                                 span: Span {
-                                                    start: 137,
-                                                    end: 147,
+                                                    start: 141,
+                                                    end: 151,
                                                 },
                                             },
                                         ),
@@ -137,50 +137,61 @@ Module {
                                                     String {
                                                         value: "Hello, World!",
                                                         span: Span {
-                                                            start: 154,
-                                                            end: 169,
+                                                            start: 158,
+                                                            end: 173,
                                                         },
                                                     },
                                                 ),
                                             ],
                                             span: Span {
-                                                start: 137,
-                                                end: 169,
+                                                start: 141,
+                                                end: 173,
                                             },
                                         },
                                         span: Span {
-                                            start: 137,
-                                            end: 169,
+                                            start: 141,
+                                            end: 173,
                                         },
                                     },
                                 ),
                             ),
                         ],
                         span: Span {
-                            start: 137,
-                            end: 171,
+                            start: 141,
+                            end: 175,
                         },
                     },
                     span: Span {
-                        start: 115,
-                        end: 171,
+                        start: 119,
+                        end: 175,
                     },
                 },
             ],
             nested_classes: [],
             span: Span {
                 start: 65,
-                end: 173,
+                end: 177,
             },
         },
-        class_side: None,
+        class_side: Some(
+            ClassBody {
+                slots: [],
+                init_exprs: [],
+                methods: [],
+                nested_classes: [],
+                span: Span {
+                    start: 181,
+                    end: 182,
+                },
+            },
+        ),
         span: Span {
             start: 21,
-            end: 173,
+            end: 182,
         },
     },
     span: Span {
         start: 0,
-        end: 173,
+        end: 182,
     },
 }

@@ -233,6 +233,7 @@ name = "ns-syntax"
 version = "0.1.0"
 dependencies = [
  "insta",
+ "serde",
  "toml",
 ]
 

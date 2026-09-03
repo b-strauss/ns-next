@@ -43,31 +43,23 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `codeBody` temporaries. Per the grammar
+    /// (`corpus/reference/NewspeakGrammar.ns:148-150`), `temporaries =
+    /// slotDecls`, i.e. a temp list has the full slot-declaration form,
+    /// including initialized locals `| x = expr. |`. Milestone 1's
+    /// `CodeBody::temps` keeps only the names: a local initializer is parsed
+    /// (so the rest of the body stays in sync) but then dropped, the same way
+    /// `lazy` is dropped elsewhere. A code body never legitimately starts with
+    /// a binary `|` send (there is no left operand), so a leading `Bar` /
+    /// `DoubleBar` is unambiguously a temp section.
     fn parse_temps(&mut self) -> Vec<Ident> {
-        if self.at(T::DoubleBar) {
-            self.bump(); // `||` == empty temp list
+        if !self.at(T::Bar) && !self.at(T::DoubleBar) {
             return Vec::new();
         }
-        if !self.at(T::Bar) {
-            return Vec::new();
-        }
-        // Distinguish `| t |` (temps) from a leading binary `|` expression:
-        // a temp list is `Bar Identifier* Bar`. Look ahead.
-        let mut i = self.pos + 1;
-        loop {
-            match self.tokens.get(i).map(|t| t.kind) {
-                Some(T::Identifier) => i += 1,
-                Some(T::Bar) => break,
-                _ => return Vec::new(), // not a temp list
-            }
-        }
-        self.bump(); // opening Bar
-        let mut temps = Vec::new();
-        while self.at(T::Identifier) {
-            temps.push(self.ident());
-        }
-        self.expect(T::Bar);
-        temps
+        self.parse_slot_decls()
+            .into_iter()
+            .map(|s| s.name)
+            .collect()
     }
 
     pub(crate) fn parse_access_modifier(&mut self) -> Option<AccessModifier> {
@@ -232,8 +224,28 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `accessModifier? 'class' Ident messagePattern? '=' superclassClause? '('
-    /// classComment? classBody ')' (':' '(' classComment? classBody ')')?`
+    /// The real Newspeak3 class grammar
+    /// (`corpus/reference/NewspeakGrammar.ns:189,200,208,212`):
+    ///
+    /// ```text
+    /// classDeclaration = classHeader , sideDecl , classSideDecl?
+    /// classHeader   = accessModifier? 'class' classId messagePattern? '='
+    ///                 superclassClause? '(' classComment? slotDecls? initExprs ')'
+    /// sideDecl      = '(' ( classDecl | lazySlotDecl | methodDecl )* ')'
+    /// classSideDecl = ':' '(' methodDecl* ')'
+    /// ```
+    ///
+    /// So a class is `class Id pattern? = superclause? ( G1 ) ( G2 ) ( ':' '(' G3 ')' )?`
+    /// with three distinct paren groups:
+    /// - **G1** (`classHeader` body): class comment, ONE slot section, then
+    ///   init expressions. No methods, no nested classes.
+    /// - **G2** (`sideDecl` body): nested classes, methods, and lazy-slot decls.
+    /// - **G3** (`classSideDecl` body): methods only.
+    ///
+    /// The AST keeps a single `instance_side: ClassBody`: G1's slots (plus any
+    /// G2 lazy-slot decls) land in `slots`, G1's init exprs in `init_exprs`,
+    /// and G2's methods / nested classes in `methods` / `nested_classes`.
+    /// `class_side` is G3.
     pub(crate) fn parse_class_decl(&mut self) -> ClassDecl {
         let start = self.cur().span;
         let access = self.parse_access_modifier();
@@ -250,22 +262,50 @@ impl<'a> Parser<'a> {
         } else {
             Some(self.parse_superclass_clause())
         };
+
+        // --- G1: classHeader body `( classComment? slotDecls? initExprs )` ---
         self.expect(T::LParen);
         let class_comment = self.take_class_comment();
-        let instance_side = self.parse_class_body(true);
-        let inst_end = self.cur().span;
+        let (header_slots, init_exprs, g1_span) = self.parse_header_body();
+        let g1_end = self.cur().span;
         self.expect(T::RParen);
+
+        // --- G2: sideDecl body `( ( classDecl | lazySlotDecl | methodDecl )* )` ---
+        // Corpus always has G2; being lenient when it is absent keeps a
+        // degenerate `class C = ()` parseable.
+        let (lazy_slots, methods, nested_classes, g2_end) = if self.at(T::LParen) {
+            self.bump(); // `(`
+            let (lazy, methods, nested) = self.parse_side_body();
+            let end = self.cur().span;
+            self.expect(T::RParen);
+            (lazy, methods, nested, end)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new(), g1_end)
+        };
+
+        let mut slots = header_slots;
+        slots.extend(lazy_slots);
+        let instance_side = ClassBody {
+            slots,
+            init_exprs,
+            methods,
+            nested_classes,
+            span: g1_span.merge(g2_end),
+        };
+
+        // --- G3: classSideDecl body `: ( methodDecl* )` ---
         let class_side = if self.eat(T::Colon) {
             self.expect(T::LParen);
-            // class-side comment is allowed too, but not retained
+            // A class-side comment is allowed but not retained.
             let _ = self.take_class_comment();
-            let body = self.parse_class_body(false);
+            let body = self.parse_class_side_body();
             self.expect(T::RParen);
             Some(body)
         } else {
             None
         };
-        let end = class_side.as_ref().map(|b| b.span).unwrap_or(inst_end);
+
+        let end = class_side.as_ref().map(|b| b.span).unwrap_or(g2_end);
         ClassDecl {
             access,
             name,
@@ -377,10 +417,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// The interleaving inside `( ... )`: an optional slot section, then a
-    /// sequence of nested classes / method decls / (instance side, before the
-    /// first decl) `.`-terminated init expressions.
-    pub(crate) fn parse_class_body(&mut self, instance_side: bool) -> ClassBody {
+    /// **G1** — `classHeader` body (`NewspeakGrammar.ns:208`):
+    /// `classComment? , slotDecls? , initExprs`. The class comment is consumed
+    /// by the caller via [`Parser::take_class_comment`] right after the `(`.
+    /// Here: an optional single slot section (`| .. |` or `|| .. ||`), then
+    /// zero or more `Dot`-separated/terminated init expressions, until `)` or
+    /// end of input. Methods, nested classes and a second slot section are NOT
+    /// accepted here — they belong to G2.
+    fn parse_header_body(&mut self) -> (Vec<SlotDecl>, Vec<Stmt>, crate::span::Span) {
         let start = self.cur().span;
         let slots = if self.at(T::Bar) || self.at(T::DoubleBar) {
             self.parse_slot_decls()
@@ -388,66 +432,183 @@ impl<'a> Parser<'a> {
             Vec::new()
         };
         let mut init_exprs = Vec::new();
-        let mut methods = Vec::new();
-        let mut nested_classes = Vec::new();
-        let mut seen_decl = false;
         loop {
             match self.peek() {
                 T::RParen | T::Eoi => break,
-                T::Class | T::Public | T::Protected | T::Private => {
-                    if self.peek() == T::Class || self.class_after_modifier() {
-                        nested_classes.push(self.parse_class_decl());
-                    } else {
-                        methods.push(self.parse_method_decl());
-                    }
-                    seen_decl = true;
-                }
                 T::Dot => {
                     self.bump();
                 }
                 _ => {
                     let before = self.pos;
-                    let is_method = self.looks_like_method();
-                    if is_method {
-                        methods.push(self.parse_method_decl());
-                        seen_decl = true;
-                    } else if !seen_decl && instance_side {
-                        let e = self.parse_expression();
-                        self.eat(T::Dot);
-                        if self.pos == before {
-                            // `parse_expression` can return a recovery node
-                            // without consuming a token (a stray `^ ; + = ]`
-                            // etc). Force progress and drop the bogus node.
-                            let t = self.bump();
-                            self.push_error(
-                                t.span,
-                                "expected a method, nested class, or init expression",
-                            );
-                        } else {
-                            init_exprs.push(Stmt::Expr(e));
-                        }
-                    } else {
+                    let e = self.parse_expression();
+                    self.eat(T::Dot);
+                    if self.pos == before {
+                        // `parse_expression` can return a recovery node without
+                        // consuming a token (a stray `^ ; + = ]` etc). Force
+                        // progress and drop the bogus node.
                         let t = self.bump();
-                        self.push_error(
-                            t.span,
-                            "expected a method, nested class, or (before them) an init expression",
-                        );
+                        self.push_error(t.span, "expected an init expression or `)`");
+                    } else {
+                        init_exprs.push(Stmt::Expr(e));
                     }
                 }
             }
         }
         let end = self.cur().span;
+        (slots, init_exprs, start.merge(end))
+    }
+
+    /// **G2** — `sideDecl` body (`NewspeakGrammar.ns:189`):
+    /// `( classDecl | lazySlotDecl | methodDecl )*`. Returns the lazy-slot
+    /// decls (merged into `ClassBody::slots` by the caller), the methods, and
+    /// the nested classes. A `| .. |` slot section, a bare init expression or a
+    /// class comment here is malformed (those belong to G1).
+    fn parse_side_body(&mut self) -> (Vec<SlotDecl>, Vec<MethodDecl>, Vec<ClassDecl>) {
+        let mut lazy_slots = Vec::new();
+        let mut methods = Vec::new();
+        let mut nested_classes = Vec::new();
+        loop {
+            match self.peek() {
+                T::RParen | T::Eoi => break,
+                _ => {}
+            }
+            let before = self.pos;
+            match self.peek() {
+                T::Dot => {
+                    self.bump();
+                }
+                T::Bar | T::DoubleBar => {
+                    let t = self.bump();
+                    self.push_error(
+                        t.span,
+                        "a `|...|` slot section is not allowed in the class body \
+                         (grammar line 189); it belongs in the class header",
+                    );
+                }
+                _ if self.at_nested_class() => {
+                    nested_classes.push(self.parse_class_decl());
+                }
+                _ if self.at_lazy_slot() => {
+                    lazy_slots.push(self.parse_lazy_slot_decl());
+                }
+                _ if self.looks_like_method() => {
+                    methods.push(self.parse_method_decl());
+                }
+                _ => {
+                    let t = self.bump();
+                    self.push_error(
+                        t.span,
+                        "expected a method, nested class, or lazy slot declaration",
+                    );
+                }
+            }
+            if self.pos == before {
+                // Forward-progress guard: nothing above consumed a token.
+                let t = self.bump();
+                self.push_error(t.span, "unexpected token in class body");
+            }
+        }
+        (lazy_slots, methods, nested_classes)
+    }
+
+    /// **G3** — `classSideDecl` body (`NewspeakGrammar.ns:200`):
+    /// `methodDecl*`. Methods only; slots / init exprs / nested classes stay
+    /// empty.
+    fn parse_class_side_body(&mut self) -> ClassBody {
+        let start = self.cur().span;
+        let mut methods = Vec::new();
+        loop {
+            match self.peek() {
+                T::RParen | T::Eoi => break,
+                _ => {}
+            }
+            let before = self.pos;
+            match self.peek() {
+                T::Dot => {
+                    self.bump();
+                }
+                _ if self.looks_like_method() => {
+                    methods.push(self.parse_method_decl());
+                }
+                _ => {
+                    let t = self.bump();
+                    self.push_error(t.span, "expected a method declaration");
+                }
+            }
+            if self.pos == before {
+                let t = self.bump();
+                self.push_error(t.span, "unexpected token on the class side");
+            }
+        }
+        let end = self.cur().span;
         ClassBody {
-            slots,
-            init_exprs,
+            slots: Vec::new(),
+            init_exprs: Vec::new(),
             methods,
-            nested_classes,
+            nested_classes: Vec::new(),
             span: start.merge(end),
         }
     }
 
-    fn class_after_modifier(&self) -> bool {
-        self.peek2() == T::Class
+    fn at_nested_class(&self) -> bool {
+        self.peek() == T::Class
+            || (matches!(self.peek(), T::Public | T::Protected | T::Private)
+                && self.peek2() == T::Class)
+    }
+
+    /// `lazy` lexes as an `Identifier` with text `"lazy"`. A lazy slot decl is
+    /// either `lazy accessModifier? slotName ...` (lazy-first) or
+    /// `accessModifier lazy slotName ...` (modifier-first) —
+    /// `NewspeakGrammar.ns:183-186`.
+    fn at_lazy_slot(&self) -> bool {
+        if self.at(T::Identifier) && self.text(self.cur()) == "lazy" {
+            // Distinguish from a method literally named `lazy` (`lazy = (...)`).
+            return matches!(
+                self.peek2(),
+                T::Public | T::Protected | T::Private | T::Identifier
+            );
+        }
+        if matches!(self.peek(), T::Public | T::Protected | T::Private) {
+            if let Some(t1) = self.tokens.get(self.pos + 1) {
+                return t1.kind == T::Identifier && self.text(*t1) == "lazy";
+            }
+        }
+        false
+    }
+
+    /// Parse a lazy slot declaration. Milestone 1's AST has no "lazy" flag, so
+    /// the laziness is dropped and the slot is recorded as an ordinary
+    /// [`SlotDecl`] (mutability from `=` vs `::=`). Both grammar orderings are
+    /// accepted.
+    fn parse_lazy_slot_decl(&mut self) -> SlotDecl {
+        let start = self.cur().span;
+        let access = if self.at(T::Identifier) && self.text(self.cur()) == "lazy" {
+            self.bump(); // `lazy`
+            self.parse_access_modifier()
+        } else {
+            let a = self.parse_access_modifier();
+            if self.at(T::Identifier) && self.text(self.cur()) == "lazy" {
+                self.bump(); // `lazy`
+            }
+            a
+        };
+        let name = self.ident();
+        let mutability = if self.eat(T::ColonColonEquals) {
+            SlotMutability::MutableInit
+        } else {
+            self.expect(T::Equals);
+            SlotMutability::Immutable
+        };
+        let init = Some(self.parse_expression());
+        let end = self.cur().span;
+        self.eat(T::Dot);
+        SlotDecl {
+            access,
+            name,
+            mutability,
+            init,
+            span: start.merge(end),
+        }
     }
 
     /// Speculative lookahead: does the cursor sit at `accessModifier?
@@ -566,7 +727,8 @@ mod class_tests {
 
     #[test]
     fn minimal_module() {
-        let m = module("Newspeak3\n'App'\nclass Empty usingPlatform: p = ()\n");
+        // Real grammar: G1 `()` then G2 `()` (both empty).
+        let m = module("Newspeak3\n'App'\nclass Empty usingPlatform: p = () ()\n");
         assert_eq!(m.language_id, "Newspeak3");
         assert_eq!(m.category, "App");
         assert_eq!(m.root_class.name.name, "Empty");
@@ -574,11 +736,13 @@ mod class_tests {
             panic!()
         };
         assert_eq!(parts[0].0.name, "usingPlatform");
+        assert!(m.root_class.instance_side.slots.is_empty());
+        assert!(m.root_class.instance_side.methods.is_empty());
     }
 
     #[test]
     fn superclass_clause_with_send() {
-        let m = module("Newspeak3\n'X'\nclass C = Object new ()\n");
+        let m = module("Newspeak3\n'X'\nclass C = Object new () ()\n");
         let sc = m.root_class.superclass.as_ref().unwrap();
         assert_eq!(sc.receiver.name, "Object");
         assert_eq!(sc.messages.len(), 1);
@@ -586,14 +750,17 @@ mod class_tests {
 
     #[test]
     fn slots_methods_and_nested_class() {
+        // Comment + `|..|` slot section + init exprs live in G1; methods and
+        // nested classes live in G2.
         let src = r#"Newspeak3
 'X'
 class Outer usingPlatform: p = (
     (* a comment *)
     | x ::= 0. |
     x := 1.
+) (
     public bump = ( x := x + 1 )
-    class Inner = ( public ping = ( ^ 42 ) )
+    class Inner = ( ) ( public ping = ( ^ 42 ) ) : ()
 )"#;
         let m = module(src);
         let body = &m.root_class.instance_side;
@@ -606,32 +773,98 @@ class Outer usingPlatform: p = (
 
     #[test]
     fn class_side_block() {
-        let src = "Newspeak3\n'X'\nclass C = ( ) : ( public default = ( ^ C new ) )\n";
+        let src = "Newspeak3\n'X'\nclass C = () () : ( public default = ( ^ C new ) )\n";
         let m = module(src);
         assert_eq!(m.root_class.class_side.as_ref().unwrap().methods.len(), 1);
     }
 
     #[test]
     fn trailing_garbage_is_an_error() {
-        assert!(crate::parse("Newspeak3\n'X'\nclass C = ()\nextra").is_err());
+        assert!(crate::parse("Newspeak3\n'X'\nclass C = () ()\nextra").is_err());
     }
 
-    // Malformed instance-side input must terminate with a diagnostic, not hang:
+    // Malformed G1 input must terminate with a diagnostic, not hang:
     // `parse_expression` can return a recovery node without consuming a token,
-    // so `parse_class_body`'s loop needs an explicit forward-progress guard.
+    // so `parse_header_body`'s loop needs an explicit forward-progress guard.
     #[test]
     fn malformed_body_caret_is_error() {
-        assert!(crate::parse("Newspeak3\n'X'\nclass C = ( ^ 1 )").is_err());
+        assert!(crate::parse("Newspeak3\n'X'\nclass C = ( ^ 1 ) ()").is_err());
     }
 
     #[test]
     fn malformed_body_semi_is_error() {
-        assert!(crate::parse("Newspeak3\n'X'\nclass C = ( ; )").is_err());
+        assert!(crate::parse("Newspeak3\n'X'\nclass C = ( ; ) ()").is_err());
     }
 
     #[test]
     fn malformed_body_binsel_is_error() {
-        assert!(crate::parse("Newspeak3\n'X'\nclass C = ( + )").is_err());
+        assert!(crate::parse("Newspeak3\n'X'\nclass C = ( + ) ()").is_err());
+    }
+
+    // A `|..|` slot section inside G2 is malformed (it belongs to G1).
+    #[test]
+    fn slot_section_in_g2_is_error() {
+        assert!(crate::parse("Newspeak3\n'X'\nclass C = () ( | x | ) : ()").is_err());
+    }
+
+    // --- corpus-shaped tests (real two-group grammar) ---
+
+    #[test]
+    fn two_group_with_class_side() {
+        // Exact shape of corpus/modules/ADummyPush.ns.
+        let src = "Newspeak3\n'Newspeak'\nclass ADummyPush new = Object new (\n) (\n\tfoo = (\n\t\t^99\n\t)\n) : ()\n";
+        let m = module(src);
+        assert_eq!(m.root_class.instance_side.methods.len(), 1);
+        assert!(m.root_class.class_side.is_some());
+    }
+
+    #[test]
+    fn nested_class_two_group() {
+        let src = "Newspeak3\n'X'\nclass C = () ( class Inner = ( ) ( m = () ) : () ) : ()\n";
+        let m = module(src);
+        assert_eq!(m.root_class.instance_side.nested_classes.len(), 1);
+        assert_eq!(
+            m.root_class.instance_side.nested_classes[0]
+                .instance_side
+                .methods
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn init_exprs_in_g1_only() {
+        let m = module("Newspeak3\n'X'\nclass C = ( x := 1. y := 2. ) ()\n");
+        let body = &m.root_class.instance_side;
+        assert_eq!(body.init_exprs.len(), 2);
+        assert!(body.methods.is_empty());
+    }
+
+    #[test]
+    fn lazy_slot_in_g2() {
+        let m = module("Newspeak3\n'X'\nclass C = () ( lazy foo = bar baz. ) : ()\n");
+        let body = &m.root_class.instance_side;
+        assert_eq!(body.slots.len(), 1);
+        assert_eq!(body.slots[0].name.name, "foo");
+        assert_eq!(body.slots[0].mutability, SlotMutability::Immutable);
+    }
+
+    #[test]
+    fn lazy_slot_modifier_first_in_g2() {
+        let m = module("Newspeak3\n'X'\nclass C = () ( public lazy foo ::= bar. ) : ()\n");
+        let body = &m.root_class.instance_side;
+        assert_eq!(body.slots.len(), 1);
+        assert_eq!(body.slots[0].access, Some(AccessModifier::Public));
+        assert_eq!(body.slots[0].mutability, SlotMutability::MutableInit);
+    }
+
+    // A method literally named `lazy` must not be mistaken for a lazy slot.
+    #[test]
+    fn method_named_lazy_is_not_a_slot() {
+        let m = module("Newspeak3\n'X'\nclass C = () ( lazy = ( ^ 1 ) ) : ()\n");
+        let body = &m.root_class.instance_side;
+        assert!(body.slots.is_empty());
+        assert_eq!(body.methods.len(), 1);
     }
 }
 

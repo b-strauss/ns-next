@@ -270,7 +270,19 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_keyword_message(&mut self) -> Expr {
-        let mut recv = self.parse_binary_message();
+        // `keywordHereSend` (grammar `corpus/reference/NewspeakGrammar.ns:139`):
+        // a keyword message with no explicit receiver (`foo: x bar: y`) is an
+        // implicit send to `self`. Milestone 1 models the receiver as the
+        // identifier `self` (zero-width span at the selector start).
+        let mut recv = if self.at(T::Keyword) {
+            let at = self.cur().span.start;
+            Expr::Ident(Ident {
+                name: "self".to_string(),
+                span: crate::span::Span::new(at, at),
+            })
+        } else {
+            self.parse_binary_message()
+        };
         if self.at(T::Keyword) || self.at(T::SetterKeyword) {
             let start = expr_span(&recv);
             let mut selector = String::new();
@@ -302,7 +314,17 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_binary_message(&mut self) -> Expr {
         let mut recv = self.parse_unary_message();
-        while self.at(T::BinarySelector) {
+        // The lexer emits lone `=`, `<`, `>` as dedicated punctuation tokens
+        // (`Equals` / `LessThan` / `GreaterThan`) for declaration syntax, but
+        // in operand position — after a primary — they are ordinary binary
+        // selectors per the grammar's `binarySelector`
+        // (`corpus/reference/NewspeakGrammar.ns:126`, `binaryMsg`). A leading
+        // `<` is still a pattern literal (handled in `parse_primary`), so the
+        // ambiguity only bites here, where a left operand already exists.
+        while matches!(
+            self.peek(),
+            T::BinarySelector | T::Equals | T::LessThan | T::GreaterThan
+        ) {
             let op = self.bump();
             let arg = self.parse_unary_message();
             let span = expr_span(&recv).merge(expr_span(&arg));

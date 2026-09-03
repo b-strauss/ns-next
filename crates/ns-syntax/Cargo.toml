@@ -7,4 +7,5 @@ license.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+serde = { version = "1", features = ["derive"] }
 toml.workspace = true

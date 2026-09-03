@@ -318,6 +318,40 @@ mod tests {
     }
 
     #[test]
+    fn equals_and_relational_are_binary_sends() {
+        // The lexer emits lone `=` / `<` / `>` as punctuation tokens; in
+        // operand position they are binary selectors (grammar `binaryMsg`).
+        let e = parse_expr("a = b");
+        let Expr::Send(s) = e else { panic!("{e:?}") };
+        assert_eq!(s.message.selector, Selector::Binary("=".into()));
+
+        let e = parse_expr("count < limit");
+        let Expr::Send(s) = e else { panic!("{e:?}") };
+        assert_eq!(s.message.selector, Selector::Binary("<".into()));
+
+        // `a = b ifTrue: [...]` == `(a = b) ifTrue: [...]`
+        let e = parse_expr("a = b ifTrue: [ c ]");
+        let Expr::Send(s) = e else { panic!("{e:?}") };
+        assert_eq!(s.message.selector, Selector::Keyword("ifTrue:".into()));
+        assert!(matches!(s.receiver, Expr::Send(_)));
+    }
+
+    #[test]
+    fn keyword_here_send_has_implicit_self_receiver() {
+        // `sel: arg` with no explicit receiver — grammar `keywordHereSend`.
+        let e = parse_expr("should: [ x ] description: 'oops'");
+        let Expr::Send(s) = e else { panic!("{e:?}") };
+        assert_eq!(
+            s.message.selector,
+            Selector::Keyword("should:description:".into())
+        );
+        let Expr::Ident(recv) = &s.receiver else {
+            panic!("{:?}", s.receiver)
+        };
+        assert_eq!(recv.name, "self");
+    }
+
+    #[test]
     fn return_statement_in_body() {
         // exercised via block body
         let e = parse_expr("[ ^ 42 ]");
