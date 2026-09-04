@@ -18,6 +18,19 @@ add a bytecode compiler and stack VM, a real garbage collector, bignums,
 actors, and a reflection (mirrors) API. The architecture is chosen so those
 can be added without restructuring the frontend.
 
+**Read `2026-09-04-ns-next-liveness-images-vm-design.md` before implementing
+this milestone.** It is a cross-cutting constraints spec that binds every
+milestone, this one included: even though M1 implements none of live
+debugging, mirrors, portable images, or actors (see Non-Goals below), its
+object model, frame representation, and dispatch must already be shaped so
+those can be added later without restructuring the runtime — the same way
+this document's architecture protects the frontend. In particular: reify
+activations (heap-reachable frames with a growable, indexable temp vector,
+never only Rust locals/call stack), dispatch only through mutable method
+dictionaries (never bake in a method-body pointer), give objects stable
+identity and an identity hash from the start, and retain each method's/class's
+source text with a provenance record.
+
 ## Goals
 
 - Parse **every** `.ns` file in the official `newspeaklanguage/newspeak`
