@@ -54,6 +54,17 @@ pub struct ClassData {
     pub superclass: Option<ClassRef>,
     pub methods: HashMap<Symbol, Rc<ast::MethodDecl>>,
     pub instance_slots: Vec<Rc<ast::SlotDecl>>,
+    /// Each of `instance_slots`' (own, not inherited) absolute index into an
+    /// instance's `ObjectData::Instance` fields vector -- computed once in
+    /// `Interpreter::load_class` (Task 7), offset past every inherited
+    /// slot's own index range. Populated for builtins too (always empty --
+    /// no `BuiltinClass` declares slots in Milestone 1).
+    pub slot_index: HashMap<Symbol, usize>,
+    /// This class's own `initExprs` statement list (`newspeak-spec.pdf`
+    /// §6.1/§6.3, Class Instantiation step 5) -- evaluated, in order, after
+    /// this class's own slots are initialized. Empty for every
+    /// `BuiltinClass` (no Newspeak-source init exprs to run).
+    pub init_exprs: Vec<ast::Stmt>,
     pub class_side: Option<ClassRef>,
     pub enclosing: Option<ObjRef>,
     pub factory: Option<Rc<ast::MessagePattern>>,
@@ -62,7 +73,7 @@ pub struct ClassData {
     pub builtin: Option<BuiltinClass>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinClass {
     Object,
     Boolean,
@@ -217,6 +228,8 @@ mod tests {
                     superclass: None,
                     methods: HashMap::new(),
                     instance_slots: vec![],
+                    slot_index: HashMap::new(),
+                    init_exprs: vec![],
                     class_side: None,
                     enclosing: None,
                     factory: None,

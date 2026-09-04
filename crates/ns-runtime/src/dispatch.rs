@@ -127,6 +127,32 @@ fn access_of(method: &ast::MethodDecl) -> Option<ast::AccessModifier> {
     method.access
 }
 
+/// Walks `class`'s own-or-inherited `slot_index` maps (same shape as
+/// `walk` above, but there is no access check -- slot access is never
+/// access-controlled the way a method send is in Milestone 1; see Task 7's
+/// design note on this known gap) to find `name`'s absolute instance-field
+/// index, if any. Used by `eval.rs::dispatch_lexical_send` before falling
+/// through to `lookup_defined_for`/`lookup_protected`.
+pub fn lookup_slot(class: &ClassRef, name: Symbol) -> Option<usize> {
+    let mut current = Some(class.clone());
+    while let Some(c) = current {
+        let (index, superclass) = {
+            let borrowed = c.borrow();
+            match &borrowed.data {
+                ObjectData::Class(data) => {
+                    (data.slot_index.get(&name).copied(), data.superclass.clone())
+                }
+                _ => return None,
+            }
+        };
+        if let Some(i) = index {
+            return Some(i);
+        }
+        current = superclass;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +233,8 @@ mod tests {
                 superclass,
                 methods,
                 instance_slots: vec![],
+                slot_index: HashMap::new(),
+                init_exprs: vec![],
                 class_side: None,
                 enclosing: None,
                 factory: None,

@@ -1,8 +1,10 @@
 //! The tree-walking interpreter's core: sends, method invocation, and the
 //! `Signal` non-local-return/error channel. Expression-level evaluation is
-//! in `eval.rs`.
+//! in `eval.rs`. The bootstrap and class-instantiation machinery are in
+//! `instantiate.rs`.
 
 pub mod eval;
+pub mod instantiate;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -24,6 +26,7 @@ pub type EvalResult = Result<Value, Signal>;
 
 pub struct Interpreter {
     next_identity_hash: u32,
+    builtin_classes: Option<HashMap<BuiltinClass, ClassRef>>,
 }
 
 impl Default for Interpreter {
@@ -36,7 +39,26 @@ impl Interpreter {
     pub fn new() -> Interpreter {
         Interpreter {
             next_identity_hash: 1,
+            builtin_classes: None,
         }
+    }
+
+    pub fn bootstrap() -> Interpreter {
+        let mut interp = Interpreter {
+            next_identity_hash: 1,
+            builtin_classes: None,
+        };
+        interp.builtin_classes = Some(build_builtin_classes(&mut interp));
+        interp
+    }
+
+    pub fn builtin_class(&self, kind: BuiltinClass) -> ClassRef {
+        self.builtin_classes
+            .as_ref()
+            .expect("bootstrap() must run before builtin_class()")
+            .get(&kind)
+            .expect("every BuiltinClass variant is registered by build_builtin_classes")
+            .clone()
     }
 
     pub fn alloc_identity_hash(&mut self) -> u32 {
@@ -90,6 +112,15 @@ impl Interpreter {
 
     /// §5.5's `doesNotUnderstand:` fallback -- access-blind (`lookup_defined_for`),
     /// per the runtime spec's Dispatch section.
+    ///
+    /// Task 6 left this handling only the `Lookup::Method` case (a
+    /// user-overridden `doesNotUnderstand:`); Task 7 adds `Object`'s own
+    /// *native* `doesNotUnderstand:` (`builtins::object_class::dispatch`),
+    /// reached here via `Lookup::Native` exactly like `dispatch_native_or_dnu`
+    /// reaches any other native method -- without this arm, `Object`'s
+    /// builtin `doesNotUnderstand:` (which every class inherits, since
+    /// `lookup_defined_for` finds `ClassData.builtin` on any class with no
+    /// method override) would never actually run.
     fn does_not_understand(
         &mut self,
         receiver: Value,
@@ -100,12 +131,12 @@ impl Interpreter {
     ) -> EvalResult {
         let class = self.class_of(&receiver);
         let dnu_selector = Symbol::intern("doesNotUnderstand:");
+        // Milestone 1 passes a minimal message-mirror-shaped value: an Array
+        // `{selector. args}` rather than a real MessageMirror object
+        // (mirrors are a later milestone's Non-Goal). Callers relying on a
+        // real `MessageMirror` API are out of scope.
         match dispatch::lookup_defined_for(&class, dnu_selector) {
             Lookup::Method(method, defining_class) => {
-                // Milestone 1 passes a minimal message-mirror-shaped value:
-                // an Array `{selector. args}` rather than a real MessageMirror
-                // object (mirrors are a later milestone's Non-Goal). Callers
-                // relying on a real `MessageMirror` API are out of scope.
                 let selector_value = self.new_symbol(selector);
                 let args_value = Value::Obj(self.new_array(args));
                 let message_arg = Value::Obj(self.new_array(vec![selector_value, args_value]));
@@ -118,10 +149,29 @@ impl Interpreter {
                     sender,
                 )
             }
-            _ => Err(Signal::Error(NewspeakError {
+            Lookup::Native(kind) => {
+                let selector_value = self.new_symbol(selector);
+                let args_value = Value::Obj(self.new_array(args));
+                let message_arg = Value::Obj(self.new_array(vec![selector_value, args_value]));
+                match crate::builtins::dispatch_native(
+                    self,
+                    kind,
+                    receiver.clone(),
+                    dnu_selector,
+                    &[message_arg],
+                ) {
+                    Some(result) => result.map_err(Signal::Error),
+                    None => Err(Signal::Error(NewspeakError {
+                        selector,
+                        receiver,
+                        message: format!("doesNotUnderstand: {selector} (native class {kind:?} has no doesNotUnderstand: implementation)"),
+                    })),
+                }
+            }
+            Lookup::NotFound => Err(Signal::Error(NewspeakError {
                 selector,
                 receiver,
-                message: format!("doesNotUnderstand: {selector} (and no doesNotUnderstand: found -- Object's builtin default is missing; see Task 7)"),
+                message: format!("doesNotUnderstand: {selector} (and no doesNotUnderstand: found anywhere in the class chain)"),
             })),
         }
     }
@@ -218,36 +268,179 @@ impl Interpreter {
         }
     }
 
-    // ---- Temporary stubs (Task 6) ----
-    //
-    // `builtin_class_for_primitive`, `new_array`, and `new_symbol` are
-    // wired up for real by Task 7's bootstrap, which needs the globals
-    // table introduced there. These bodies exist only so the crate
-    // compiles and this task's own tests (which never call `class_of` on
-    // a primitive `Value`, nor go through `new_array`/`new_symbol`) can
-    // run. Task 7 Step 1 deletes these stub bodies when the real ones
-    // land.
-    fn builtin_class_for_primitive(&self, _value: &Value) -> ClassRef {
-        unimplemented!("wired up in Task 7's bootstrap")
+    fn builtin_class_for_primitive(&self, value: &Value) -> ClassRef {
+        let kind = match value {
+            Value::Nil => BuiltinClass::Nil,
+            Value::Bool(true) => BuiltinClass::True,
+            Value::Bool(false) => BuiltinClass::False,
+            Value::SmallInt(_) => BuiltinClass::Integer,
+            Value::Float(_) => BuiltinClass::Float,
+            Value::Obj(_) => unreachable!("Value::Obj carries its own .class"),
+        };
+        self.builtin_class(kind)
     }
 
-    pub fn new_array(&mut self, _elements: Vec<Value>) -> ObjRef {
-        unimplemented!("wired up in Task 7's bootstrap")
+    fn new_instance_object(&mut self, class: ClassRef, data: ObjectData) -> ObjRef {
+        let identity_hash = self.alloc_identity_hash();
+        Rc::new(RefCell::new(Object {
+            class,
+            identity_hash,
+            data,
+        }))
     }
 
-    pub fn new_symbol(&mut self, _s: Symbol) -> Value {
-        unimplemented!("wired up in Task 7's bootstrap")
+    pub fn new_array(&mut self, elements: Vec<Value>) -> ObjRef {
+        let class = self.builtin_class(BuiltinClass::Array);
+        self.new_instance_object(class, ObjectData::Array(elements))
     }
 
-    pub fn new_string(&mut self, _s: String) -> ObjRef {
-        unimplemented!("wired up in Task 7's bootstrap")
+    pub fn new_string(&mut self, s: String) -> ObjRef {
+        let class = self.builtin_class(BuiltinClass::Str);
+        self.new_instance_object(class, ObjectData::Str(s))
     }
 
-    pub fn new_character(&mut self, _c: char) -> ObjRef {
-        unimplemented!("wired up in Task 7's bootstrap")
+    pub fn new_symbol(&mut self, s: Symbol) -> Value {
+        let class = self.builtin_class(BuiltinClass::Sym);
+        Value::Obj(self.new_instance_object(class, ObjectData::Sym(s)))
     }
 
-    pub fn new_closure(&mut self, _closure: Rc<ClosureData>) -> ObjRef {
-        unimplemented!("wired up in Task 7's bootstrap")
+    pub fn new_character(&mut self, c: char) -> ObjRef {
+        // Milestone 1 has no dedicated Character payload variant on
+        // ObjectData -- represent a character as a one-`char` Rust String
+        // wrapped the same way String literals are (Str), consistent with
+        // how the language spec itself treats characters as "a special
+        // case of string literals" going forward (`newspeak-spec.pdf`
+        // §2.2.3). `builtins::text` (Task 9) tags the *class* as
+        // `BuiltinClass::Character` so dispatch still lands on the right
+        // native methods; only the payload representation is shared.
+        let class = self.builtin_class(BuiltinClass::Character);
+        self.new_instance_object(class, ObjectData::Str(c.to_string()))
     }
+
+    pub fn new_closure(&mut self, closure: Rc<ClosureData>) -> ObjRef {
+        let class = self.builtin_class(BuiltinClass::Block);
+        self.new_instance_object(class, ObjectData::Closure((*closure).clone()))
+    }
+}
+
+/// Milestone 1 (no metaclasses -- see the runtime spec's "Documented
+/// Deviations") gives every `BuiltinClass` -- including `Object` itself --
+/// the same shared placeholder class object as its own `.class`, tagged
+/// `BuiltinClass::Object`.
+///
+/// Every non-`Object` builtin's superclass below is `Object` directly, a
+/// Milestone 1 simplification of the real class hierarchy
+/// (`newspeak-spec.pdf` places `Boolean` above `True`/`False`, for
+/// instance): `builtins::boolean` (Task 8) must not rely on `True`/`False`
+/// actually inheriting from a `Boolean` superclass node, since they do not
+/// yet. Fix this only if a corpus module or fixture test needs real
+/// `Boolean`/`True`/`False` inheritance to observe correct behavior.
+fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, ClassRef> {
+    // NOTE: deliberately *not* `use BuiltinClass::*;` here (the brief's
+    // original draft did) -- `BuiltinClass::Object` and `crate::types::Object`
+    // (the object-model struct, brought into scope by `use crate::types::*;`
+    // above) share the bare name `Object`. A glob-import of the enum's
+    // variants shadows the struct, so `Object { class: ..., .. }` below
+    // would silently try to build a `BuiltinClass::Object` unit variant
+    // with named fields instead of a `types::Object` struct literal -- a
+    // compile error the type checker catches, but only because the fields
+    // don't match; a differently-shaped `Object` struct could have made
+    // this shadow compile into the wrong construction entirely. Referring
+    // to every variant through its `BuiltinClass::` qualifier avoids the
+    // collision.
+    let kinds = [
+        BuiltinClass::Object,
+        BuiltinClass::Boolean,
+        BuiltinClass::True,
+        BuiltinClass::False,
+        BuiltinClass::Integer,
+        BuiltinClass::Float,
+        BuiltinClass::Str,
+        BuiltinClass::Sym,
+        BuiltinClass::Character,
+        BuiltinClass::Array,
+        BuiltinClass::OrderedCollection,
+        BuiltinClass::Nil,
+        BuiltinClass::Block,
+    ];
+    let class_of_class = build_self_referential_object_class();
+    let mut map = HashMap::new();
+    for kind in kinds {
+        let superclass = if kind == BuiltinClass::Object {
+            None
+        } else {
+            Some(class_of_class.clone())
+        };
+        let obj = Rc::new(RefCell::new(Object {
+            class: class_of_class.clone(),
+            identity_hash: interp.alloc_identity_hash(),
+            data: ObjectData::Class(ClassData {
+                name: Symbol::intern(&format!("{kind:?}")),
+                superclass,
+                methods: HashMap::new(),
+                instance_slots: vec![],
+                slot_index: HashMap::new(),
+                init_exprs: vec![],
+                class_side: None,
+                enclosing: None,
+                factory: None,
+                builtin: Some(kind),
+            }),
+        }));
+        map.insert(kind, obj);
+    }
+    map.insert(BuiltinClass::Object, class_of_class);
+    map
+}
+
+/// Builds the single, genuinely self-referential `Object`-tagged class
+/// object every `BuiltinClass` shares as its own `.class` (see this task's
+/// design note on the bootstrap's identity problem). `Object.class` is
+/// non-optional (no `Option`/`Weak`), so this cannot be built via
+/// `Rc::new_cyclic` in one safe step: `new_cyclic`'s closure only ever
+/// gets a `Weak` that fails to upgrade until construction finishes, and
+/// using `unreachable!()` as a throwaway placeholder panics immediately on
+/// evaluation (eager, not lazy) rather than compiling to something inert.
+/// Instead: allocate the memory uninitialized, mint a second strong `Rc`
+/// handle to the SAME allocation (its count balanced via
+/// `Rc::increment_strong_count` before `Rc::from_raw`), write the real
+/// value using that handle as `class`, then `assume_init`. This is the
+/// same technique already reviewed and approved for `types.rs`'s
+/// `dummy_class` test helper (Task 3) and reused correctly in
+/// `dispatch.rs`'s test helper (Task 5) -- here it builds a real,
+/// production bootstrap object, not a test fixture.
+fn build_self_referential_object_class() -> ClassRef {
+    let uninit: Rc<std::mem::MaybeUninit<RefCell<Object>>> = Rc::new_uninit();
+    let raw_mut = Rc::as_ptr(&uninit) as *mut std::mem::MaybeUninit<RefCell<Object>>;
+    let data_ptr = raw_mut as *const RefCell<Object>;
+    // SAFETY: `data_ptr` points at the allocation `uninit` owns; we bump
+    // its strong count by one before minting a second `Rc` handle to it
+    // via `from_raw`, so the two handles (`uninit`, and the `class` field
+    // written below) share a correctly balanced count. `MaybeUninit<T>` is
+    // guaranteed to have the same layout as `T`, so the pointer cast is
+    // sound; neither handle is dereferenced before the `write` below
+    // completes.
+    unsafe { Rc::increment_strong_count(data_ptr) };
+    let self_ref: ClassRef = unsafe { Rc::from_raw(data_ptr) };
+    unsafe {
+        (*raw_mut).write(RefCell::new(Object {
+            class: self_ref,
+            identity_hash: 0,
+            data: ObjectData::Class(ClassData {
+                name: Symbol::intern("Object"),
+                superclass: None,
+                methods: HashMap::new(),
+                instance_slots: vec![],
+                slot_index: HashMap::new(),
+                init_exprs: vec![],
+                class_side: None,
+                enclosing: None,
+                factory: None,
+                builtin: Some(BuiltinClass::Object),
+            }),
+        }));
+    }
+    // SAFETY: the write above just initialized the payload; `uninit` is
+    // the allocation's original handle, now fully initialized.
+    unsafe { uninit.assume_init() }
 }

@@ -116,6 +116,8 @@ fn class_with_methods(
             superclass: None,
             methods: map,
             instance_slots: vec![],
+            slot_index: HashMap::new(),
+            init_exprs: vec![],
             class_side: None,
             enclosing: None,
             factory: None,

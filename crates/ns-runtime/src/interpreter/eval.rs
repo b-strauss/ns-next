@@ -195,6 +195,24 @@ fn selector_of(message: &ast::MessageSend) -> Symbol {
     }
 }
 
+/// A slot's getter (`x`, no colon) or setter (`x:`, exactly one trailing
+/// colon and no others) shape, per `newspeak-spec.pdf` §6.3.2 -- a slot's
+/// getter/setter are "implicitly defined by the slot declaration", not real
+/// `MethodDecl`s in `ClassData.methods`, so `dispatch_lexical_send` must
+/// recognize and serve them directly rather than relying on method lookup
+/// to ever find them. Returns `None` for a genuine multi-keyword selector
+/// (e.g. `at:put:`), which can never denote a slot access.
+fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
+    let s = selector.as_str();
+    if !s.contains(':') {
+        return Some((selector, false));
+    }
+    if s.ends_with(':') && s.matches(':').count() == 1 {
+        return Some((Symbol::intern(&s[..s.len() - 1]), true));
+    }
+    None
+}
+
 /// `newspeak-spec.pdf` §5.7-§5.9: `o` = the kth enclosing object of `self`;
 /// dispatch privately (direct, non-virtual) if the target is `private` at
 /// depth `k`, otherwise virtually via `lookup_protected` on `o`'s actual
@@ -210,6 +228,33 @@ fn dispatch_lexical_send(
     let self_value = frame.borrow().receiver.clone();
     let o = dispatch::kth_enclosing_object(&self_value, depth);
     let class = interp.class_of(&o);
+    // Slot access fix (Task 7 "must fix before committing" #2): a
+    // `LexicalSend` to a user-defined class's own slot must resolve here,
+    // *before* the method/native lookups below -- `load_class` never puts a
+    // slot's implicit getter/setter into `ClassData.methods`, so
+    // `lookup_defined_for`/`lookup_protected` would never find one.
+    // Milestone 1 known gap: unlike a method send, this is never
+    // access-controlled by the slot's own declared modifier (see the task's
+    // design note) -- revisit if a fixture needs it.
+    if let Some((name, is_setter)) = slot_selector_shape(selector) {
+        if let Some(index) = dispatch::lookup_slot(&class, name) {
+            if let Value::Obj(obj) = &o {
+                if is_setter {
+                    let value = args.first().cloned().unwrap_or(Value::Nil);
+                    if let ObjectData::Instance(fields) = &mut obj.borrow_mut().data {
+                        if index < fields.len() {
+                            fields[index] = value;
+                        }
+                    }
+                    return Ok(o);
+                } else if let ObjectData::Instance(fields) = &obj.borrow().data {
+                    if index < fields.len() {
+                        return Ok(fields[index].clone());
+                    }
+                }
+            }
+        }
+    }
     // Check for a private declaration *at exactly this class* first (the
     // non-virtual case -- private members are never overridden, so there
     // is no search: newspeak-spec.pdf §5.9).
