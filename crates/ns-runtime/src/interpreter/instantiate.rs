@@ -209,6 +209,46 @@ impl Interpreter {
         factory_args: Vec<Value>,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> EvalResult {
+        // Regression fix (re-review finding A): reject a factory-arity
+        // mismatch as a NewspeakError up front, before building the
+        // instance-initializer `Frame` or running any slot initializer /
+        // initExpr. Since 1e07dee, a slot initializer or initExpr may
+        // reference a factory parameter as `Binding::Local(i)`, resolved
+        // against this class's *declared* factory pattern -- but the
+        // `Frame` built below has `temps: vec![]` always, so if fewer
+        // `factory_args` were actually supplied than the pattern declares,
+        // `eval.rs`'s `read_local`/`write_local` index straight past the end
+        // of both `args` and the (empty) `temps` and Rust panics with "index
+        // out of bounds". `try_factory_send`'s call sites always pass
+        // exactly `class`'s own declared arity, so this can only fire when a
+        // caller outside the ordinary factory-send path (today, only
+        // `ns-cli`'s `cmd_run`, which hardcodes a single `usingPlatform:`
+        // argument regardless of the root class's actual declared arity)
+        // hands `instantiate` a mismatched `factory_args`. Mirrors
+        // `eval.rs`'s `invoke_closure`, which has the exact same shape of
+        // guard for the analogous block-arity case: never panic on this
+        // Newspeak-program-input path.
+        let declared_arity = {
+            let borrowed = class.borrow();
+            match &borrowed.data {
+                ObjectData::Class(data) => data.factory.as_deref().map(pattern_param_count),
+                _ => None,
+            }
+        };
+        if let Some(declared_arity) = declared_arity {
+            if factory_args.len() != declared_arity {
+                return Err(Signal::Error(NewspeakError {
+                    selector: Symbol::intern("new"),
+                    receiver: Value::Obj(class),
+                    message: format!(
+                        "wrong number of factory arguments: factory takes {}, got {}",
+                        declared_arity,
+                        factory_args.len()
+                    ),
+                }));
+            }
+        }
+
         // Step 1: one instance, every slot nil.
         let slot_count = total_slot_count(&class);
         let instance = self.new_instance_object(
@@ -434,6 +474,18 @@ fn method_name(pattern: &ast::MessagePattern) -> String {
         ast::MessagePattern::Keyword { parts } => {
             parts.iter().map(|(k, _)| format!("{}:", k.name)).collect()
         }
+    }
+}
+
+/// The number of parameters a message pattern declares -- used by
+/// `instantiate`'s factory-arity guard above to compare a class's declared
+/// factory pattern against the actual `factory_args` supplied at the call
+/// site.
+fn pattern_param_count(pattern: &ast::MessagePattern) -> usize {
+    match pattern {
+        ast::MessagePattern::Unary { .. } => 0,
+        ast::MessagePattern::Binary { .. } => 1,
+        ast::MessagePattern::Keyword { parts } => parts.len(),
     }
 }
 

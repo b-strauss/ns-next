@@ -259,6 +259,36 @@ fn a_factory_parameter_is_visible_in_an_init_expr() {
     }
 }
 
+/// Re-review regression: a class declaring a two-keyword factory pattern
+/// (`usingPlatform:ide:`), instantiated with only one factory argument --
+/// exactly what `ns-cli`'s `cmd_run` does today for any root class, since it
+/// hardcodes a single `usingPlatform:` argument regardless of the class's
+/// actual declared arity. A slot initializer referencing the *second*,
+/// missing parameter resolves (since 1e07dee) to `Binding::Local(1)`, but
+/// `factory_args` here has only one element and the instance-initializer
+/// `Frame`'s `temps` is always empty -- before the fix, `eval.rs`'s
+/// `read_local` indexed straight past both and panicked with "index out of
+/// bounds" instead of returning a clean `NewspeakError`.
+#[test]
+fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
+    let src = "Newspeak3\n'T'\nclass M usingPlatform: p ide: q = Object new (|t = q.|) (public getT = (^t)) : ()";
+    let (mut interp, class, resolved) = load(src);
+
+    let result = interp.instantiate(class, vec![Value::SmallInt(1)], &resolved.bindings);
+
+    match result {
+        Err(Signal::Error(e)) => {
+            assert!(
+                e.message.contains("wrong number of factory arguments"),
+                "unexpected error message: {}",
+                e.message
+            );
+        }
+        Ok(v) => panic!("expected a factory-arity NewspeakError, got Ok({v:?})"),
+        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `instantiate`"),
+    }
+}
+
 #[test]
 fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new () () : ()";
