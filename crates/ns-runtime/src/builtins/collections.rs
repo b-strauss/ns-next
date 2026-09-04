@@ -43,6 +43,7 @@ fn dispatch_common(
     receiver: Value,
     selector: Symbol,
     args: &[Value],
+    sender: Option<&FrameRef>,
 ) -> Option<EvalResult> {
     let Value::Obj(obj) = &receiver else {
         return None;
@@ -92,7 +93,7 @@ fn dispatch_common(
                 })));
             };
             for item in items {
-                if let Err(signal) = super::call_block(interp, &block, vec![item]) {
+                if let Err(signal) = super::call_block(interp, &block, vec![item], sender) {
                     return Some(Err(signal));
                 }
             }
@@ -107,6 +108,7 @@ pub fn dispatch_array(
     receiver: Value,
     selector: Symbol,
     args: &[Value],
+    sender: Option<&FrameRef>,
 ) -> Option<EvalResult> {
     if selector.as_str() == "at:put:" {
         let Value::Obj(obj) = &receiver else {
@@ -135,7 +137,7 @@ pub fn dispatch_array(
         }
         return Some(Ok(receiver.clone()));
     }
-    dispatch_common(interp, receiver, selector, args)
+    dispatch_common(interp, receiver, selector, args, sender)
 }
 
 pub fn dispatch_ordered_collection(
@@ -143,6 +145,7 @@ pub fn dispatch_ordered_collection(
     receiver: Value,
     selector: Symbol,
     args: &[Value],
+    sender: Option<&FrameRef>,
 ) -> Option<EvalResult> {
     if selector.as_str() == "add:" {
         let Value::Obj(obj) = &receiver else {
@@ -159,5 +162,5 @@ pub fn dispatch_ordered_collection(
         }
         return Some(Ok(value));
     }
-    dispatch_common(interp, receiver, selector, args)
+    dispatch_common(interp, receiver, selector, args, sender)
 }

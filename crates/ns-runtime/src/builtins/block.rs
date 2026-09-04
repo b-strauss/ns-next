@@ -12,6 +12,7 @@ pub fn dispatch(
     receiver: Value,
     selector: Symbol,
     args: &[Value],
+    sender: Option<&FrameRef>,
 ) -> Option<EvalResult> {
     let Value::Obj(obj) = &receiver else {
         return None;
@@ -25,7 +26,7 @@ pub fn dispatch(
     };
     match selector.as_str() {
         "value" | "value:" | "value:value:" | "value:value:value:" => {
-            Some(super::call_block(interp, &receiver, args.to_vec()))
+            Some(super::call_block(interp, &receiver, args.to_vec(), sender))
         }
         "numArgs" => Some(Ok(Value::SmallInt(closure.params.len() as i64))),
         _ => None,

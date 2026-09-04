@@ -139,9 +139,10 @@ impl Interpreter {
         receiver: &Value,
         selector: Symbol,
         args: &[Value],
+        sender: Option<&FrameRef>,
     ) -> Option<EvalResult> {
         if let Some(result) =
-            crate::builtins::dispatch_native(self, kind, receiver.clone(), selector, args)
+            crate::builtins::dispatch_native(self, kind, receiver.clone(), selector, args, sender)
         {
             return Some(result);
         }
@@ -154,6 +155,7 @@ impl Interpreter {
             receiver.clone(),
             selector,
             args,
+            sender,
         )
     }
 
@@ -166,7 +168,13 @@ impl Interpreter {
         bindings: &Rc<HashMap<Span, Binding>>,
         sender: Option<FrameRef>,
     ) -> EvalResult {
-        match self.dispatch_native_inheriting_object(kind, &receiver, selector, &args) {
+        match self.dispatch_native_inheriting_object(
+            kind,
+            &receiver,
+            selector,
+            &args,
+            sender.as_ref(),
+        ) {
             Some(result) => result,
             None => self.does_not_understand(receiver, selector, args, bindings, sender),
         }
@@ -227,6 +235,7 @@ impl Interpreter {
                     &receiver,
                     dnu_selector,
                     &[message_arg],
+                    sender.as_ref(),
                 ) {
                     Some(result) => result,
                     None => Err(Signal::Error(NewspeakError {

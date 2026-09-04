@@ -286,7 +286,8 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
     });
 
     let mut interp = Interpreter::new();
-    let result = eval::invoke_closure(&mut interp, &closure, vec![], &bindings);
+    // No sender: this closure is invoked directly, not from a live send.
+    let result = eval::invoke_closure(&mut interp, &closure, vec![], &bindings, None);
 
     // This is exactly the check `Interpreter::invoke_method` performs to
     // convert a matching `Signal::Return` back into an ordinary value
@@ -333,7 +334,7 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
     // First invocation succeeds and (as `raise_return` does on every
     // successful return) marks `home` `uncontinuable` -- modeling the home
     // method having now returned.
-    let first = eval::invoke_closure(&mut interp, &closure, vec![], &bindings);
+    let first = eval::invoke_closure(&mut interp, &closure, vec![], &bindings, None);
     assert!(
         matches!(first, Err(Signal::Return(ref target, Value::SmallInt(1))) if Rc::ptr_eq(target, &home))
     );
@@ -345,7 +346,7 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
     // Second invocation of the same (now-escaped) block: its home has
     // already returned, so this must be the spec's `cannotReturn` case --
     // a `NewspeakError`, not another `Signal::Return`, and not a panic.
-    let second = eval::invoke_closure(&mut interp, &closure, vec![], &bindings);
+    let second = eval::invoke_closure(&mut interp, &closure, vec![], &bindings, None);
     match second {
         Err(Signal::Error(NewspeakError { message, .. })) => {
             assert!(

@@ -333,3 +333,62 @@ fn block_called_with_too_many_arguments_is_a_newspeak_error_not_a_panic() {
         err.message
     );
 }
+
+/// Final-review finding I6: `invoke_closure` used to hard-code
+/// `sender: None` on every closure `Frame` it built, cutting the liveness
+/// spec's reified call chain (`Frame.sender`) at every block invocation
+/// boundary. The caller is now threaded through `dispatch_native` ->
+/// `block::dispatch` -> `call_block` -> `invoke_closure`.
+///
+/// Observing a closure activation's own frame from outside needs a handle
+/// on it: `[ [1] ] value` gives one, because evaluating the *inner* block
+/// literal captures the outer block's activation as the inner closure's
+/// `captured_frame`. So `m`'s result is a closure whose `captured_frame` is
+/// exactly the frame `invoke_closure` built for `[ [1] ]` -- and that
+/// frame's `sender` must be `m`'s own live method activation, not `None`.
+#[test]
+fn an_invoked_blocks_frame_records_its_sender() {
+    let src =
+        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^[ [1] ] value )\n) : ()";
+    let (mut interp, class, resolved) = load(src);
+    let receiver = expect_ok(
+        interp.instantiate(class, vec![], &resolved.bindings),
+        "instantiate",
+    );
+    let result = expect_ok(
+        interp.send(
+            receiver.clone(),
+            Symbol::intern("m"),
+            vec![],
+            &resolved.bindings,
+            None,
+        ),
+        "[ [1] ] value",
+    );
+
+    let Value::Obj(obj) = &result else {
+        panic!("expected the inner block literal as a Value::Obj, got {result:?}");
+    };
+    let outer_block_frame = match &obj.borrow().data {
+        ObjectData::Closure(c) => c.captured_frame.clone(),
+        other => panic!("expected ObjectData::Closure, got {other:?}"),
+    };
+
+    let borrowed = outer_block_frame.borrow();
+    let sender = borrowed
+        .sender
+        .as_ref()
+        .expect("an invoked block's frame must record the activation that invoked it");
+    let sender = sender.borrow();
+    assert!(
+        matches!(sender.kind, ns_runtime::FrameKind::Method(_)),
+        "the block's sender must be `m`'s own method activation"
+    );
+    match (&sender.receiver, &receiver) {
+        (Value::Obj(a), Value::Obj(b)) => assert!(
+            Rc::ptr_eq(a, b),
+            "the sender frame's receiver must be the instance `m` was sent to"
+        ),
+        other => panic!("expected two Value::Obj receivers, got {other:?}"),
+    }
+}

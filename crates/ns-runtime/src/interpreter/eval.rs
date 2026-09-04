@@ -294,7 +294,14 @@ fn dispatch_lexical_send(
             Some(frame.clone()),
         ),
         Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(interp, kind, o.clone(), selector, &args) {
+            match crate::builtins::dispatch_native(
+                interp,
+                kind,
+                o.clone(),
+                selector,
+                &args,
+                Some(frame),
+            ) {
                 Some(result) => result,
                 None => interp.send(o, selector, args, bindings, Some(frame.clone())),
             }
@@ -355,6 +362,7 @@ fn dispatch_super_send(
                 self_value.clone(),
                 selector,
                 &args,
+                Some(frame),
             ) {
                 Some(result) => result,
                 None => interp.send(self_value, selector, args, bindings, Some(frame.clone())),
@@ -452,11 +460,21 @@ fn eval_block_literal(
 /// `value`, `value:`, `value:value:`, etc. Public because block-invocation
 /// selectors are Milestone 1 *native* methods on `BuiltinClass::Block`, not
 /// user-overridable Newspeak methods.
+///
+/// `sender` is the activation performing the invocation, threaded here from
+/// the send that reached the block-invoking native primitive (finding I6).
+/// It becomes the new closure activation's own `Frame.sender`, exactly as
+/// `Interpreter::invoke_method` does for a method activation, so the
+/// liveness spec's reified call chain (`Frame.sender`) stays walkable across
+/// a block invocation boundary instead of being cut by an unconditional
+/// `None`. `None` is still legitimate for an invocation with no enclosing
+/// activation at all (a direct entry-point call).
 pub fn invoke_closure(
     interp: &mut Interpreter,
     closure: &Rc<ClosureData>,
     args: Vec<Value>,
     bindings: &Rc<HashMap<Span, Binding>>,
+    sender: Option<FrameRef>,
 ) -> EvalResult {
     // Task 10 fix: reject a wrong argument count as a NewspeakError up
     // front, before it can reach `read_local`. Without this guard, a call
@@ -486,7 +504,7 @@ pub fn invoke_closure(
         args,
         temps: vec![Value::Nil; closure.body.temps.len()],
         pc: 0,
-        sender: None,
+        sender,
         home: Some(closure.home.clone()),
         current_class,
         kind: FrameKind::Closure(closure.clone()),
