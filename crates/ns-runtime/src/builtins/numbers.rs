@@ -46,7 +46,10 @@ pub fn dispatch_integer(
                 receiver: Value::SmallInt(n),
                 message: "division by zero".to_string(),
             }),
-            Some(m) => Ok(Value::SmallInt(n.div_euclid(m))),
+            Some(m) => n
+                .checked_div_euclid(m)
+                .map(Value::SmallInt)
+                .ok_or_else(|| overflow("//")),
             None => Err(overflow("//")),
         }),
         "<" => Some(Ok(Value::Bool(arg_int().is_some_and(|m| n < m)))),

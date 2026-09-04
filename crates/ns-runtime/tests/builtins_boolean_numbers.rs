@@ -105,3 +105,36 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
         other => panic!("expected Value::SmallInt(1), got {other:?}"),
     }
 }
+
+/// Regression coverage for the `ClosureData.bindings` fix: the block body
+/// here (`[ x ]`) reads `x`, a slot on the enclosing class, resolved as a
+/// `Binding::LexicalSend` keyed by this block's own `Span` in the resolver's
+/// bindings map. If `invoke_block` (or `invoke_closure`'s caller more
+/// generally) invoked this closure with a fresh, empty bindings map instead
+/// of the one the block was actually resolved under (the bug the brief
+/// flagged), `x`'s `Span` would not be present in that empty map and
+/// `eval_ident` would fall through to its `None` arm -- an "unresolved
+/// identifier" `NewspeakError`, not `SmallInt(5)`.
+#[test]
+fn if_true_block_body_resolves_an_enclosing_slot_reference() {
+    let src = "Newspeak3\n'T'\nclass Foo = Object new (|x = 5.|) (\n  public m = ( ^true ifTrue: [ x ] ifFalse: [ 0 ] )\n) : ()";
+    let (mut interp, class, resolved) = load(src);
+
+    let receiver = expect_ok(
+        interp.instantiate(class, vec![], &resolved.bindings),
+        "instantiate",
+    );
+
+    let result = interp.send(
+        receiver,
+        Symbol::intern("m"),
+        vec![],
+        &resolved.bindings,
+        None,
+    );
+
+    match expect_ok(result, "true ifTrue: [ x ] ifFalse: [ 0 ]") {
+        Value::SmallInt(5) => {}
+        other => panic!("expected Value::SmallInt(5), got {other:?}"),
+    }
+}
