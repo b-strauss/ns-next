@@ -61,6 +61,23 @@ Rust-built minimal core library, Milestone 1 can:
 Broad execution conformance against the real repo is a later-milestone
 concern and is out of scope here.
 
+### Corpus parse result (Milestone 1)
+
+As of `93e165a`, `cargo test -p ns-syntax --test corpus` parses 210 of 211
+corpus files (99.5%). Blacklisted files and reasons are in
+`corpus/blacklist.toml`.
+
+Typed-Newspeak declaration syntax is parsed but discarded (there is no
+Milestone 1 type AST): `<Type>` annotations on parameters and slots, `^<Type>`
+return annotations, `[T]` type parameters on class names and selectors, and
+`where { ... }` constraint clauses. The eventual-send operator `<-:` is
+likewise accepted and dropped.
+
+The one remaining deferred construct is the negative-literal vs. subtraction
+lexer ambiguity: source that writes `expr -1` for `expr - 1` (one file,
+`NewspeakColorizationForSqueak.ns`). Revisiting the Milestone 1 lexer rule
+(`a -42` lexes as a negative literal) is deferred to Milestone 2.
+
 ## Source Format
 
 A Newspeak source file (`.ns`) has the shape:

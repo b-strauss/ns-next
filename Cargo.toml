@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/ns-syntax", "crates/ns-cli"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.98"
+license = "MIT"
+
+[workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
+insta = "1"
+toml = "0.8"

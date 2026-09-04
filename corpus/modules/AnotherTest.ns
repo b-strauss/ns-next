@@ -1,0 +1,10 @@
+Newspeak3
+'Newspeak'
+class AnotherTest new = Object new (
+	|
+		slot1
+		slot2
+	|
+) (
+	lazy public klassName = class name.
+) : ()
