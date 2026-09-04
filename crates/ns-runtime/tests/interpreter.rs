@@ -363,3 +363,65 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
         ),
     }
 }
+
+/// Final-review finding I1: `Frame.uncontinuable` used to be set only by
+/// `Interpreter::raise_return`, i.e. only when the home method activation
+/// itself executed an explicit `^`. A method that returns *normally* (falls
+/// off the end) left its frame continuable forever, so a block captured
+/// during it and invoked afterwards would raise a `Signal::Return` at a
+/// frame whose Rust-level `invoke_method` call had already returned -- with
+/// no live catcher left, that escaped all the way out of the entry send and
+/// surfaced as the interpreter-invariant-shaped "internal: non-local return
+/// escaped the entry send" rather than the spec's `cannotReturn` case.
+///
+/// `capture` here has no explicit `^` at all: it stores `[^1]` into a slot
+/// and falls off the end (returning self). `runIt`, a *later, separate*
+/// send, then invokes that now-escaped block.
+#[test]
+fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() {
+    let src = "Newspeak3\n'T'\nclass Foo = Object new (|b.|) (\n  public capture = ( b:: [^1] )\n  public runIt = ( ^b value )\n) : ()";
+    let module = ns_syntax::parse(src).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        src.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interp = Interpreter::bootstrap();
+    let class = interp.load_module(&resolved);
+    let bindings = resolved.bindings.clone();
+    let receiver = match interp.instantiate(class, vec![], &bindings) {
+        Ok(v) => v,
+        Err(Signal::Error(e)) => panic!("instantiate: unexpected Signal::Error: {}", e.message),
+        Err(Signal::Return(..)) => panic!("instantiate: unexpected Signal::Return"),
+    };
+
+    // `capture` returns normally -- no `^` anywhere in its body.
+    match interp.send(
+        receiver.clone(),
+        Symbol::intern("capture"),
+        vec![],
+        &bindings,
+        None,
+    ) {
+        Ok(_) => {}
+        Err(Signal::Error(e)) => panic!("capture: unexpected Signal::Error: {}", e.message),
+        Err(Signal::Return(..)) => panic!("capture: unexpected Signal::Return"),
+    }
+
+    // The captured block's home activation is now dead: `^1` inside it must
+    // be the spec's `cannotReturn` case, a `NewspeakError` -- never a
+    // `Signal::Return` leaking out of `send`, and never a panic.
+    match interp.send(receiver, Symbol::intern("runIt"), vec![], &bindings, None) {
+        Err(Signal::Error(NewspeakError { message, .. })) => assert!(
+            message.to_lowercase().contains("cannotreturn")
+                || message.to_lowercase().contains("cannot return"),
+            "expected a cannotReturn-shaped error message, got: {message}"
+        ),
+        Ok(v) => panic!("expected a cannotReturn NewspeakError, got Ok({v:?})"),
+        Err(Signal::Return(..)) => panic!(
+            "a non-local return into an already-returned home method escaped `send` as a raw \
+             Signal::Return -- the home frame was never marked uncontinuable"
+        ),
+    }
+}

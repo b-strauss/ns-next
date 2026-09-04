@@ -246,6 +246,18 @@ impl Interpreter {
 
     /// Creates a `Frame`, runs the method body, and unwinds a matching
     /// `Signal::Return` back into an ordinary value.
+    ///
+    /// The frame is marked `uncontinuable` on *every* path out, not only
+    /// when the body executed an explicit `^` (which is all `raise_return`
+    /// itself ever marked): a method activation is dead the moment
+    /// `invoke_method` hands control back to its own caller, whether it
+    /// returned via `^`, fell off the end, or unwound something else. A
+    /// block captured during the activation and invoked afterwards then
+    /// sees the correct `cannotReturn` `NewspeakError` from `raise_return`,
+    /// instead of raising a `Signal::Return` at a frame whose Rust-level
+    /// `invoke_method` call has already returned -- which had no live
+    /// catcher left and surfaced as the interpreter-invariant-shaped
+    /// "internal: non-local return escaped the entry send".
     pub fn invoke_method(
         &mut self,
         receiver: Value,
@@ -268,7 +280,9 @@ impl Interpreter {
             uncontinuable: false,
         }));
         let stmts = &method.body.stmts;
-        match self.run_statements(stmts, &frame, &bindings) {
+        let result = self.run_statements(stmts, &frame, &bindings);
+        frame.borrow_mut().uncontinuable = true;
+        match result {
             Ok(value) => Ok(value),
             Err(Signal::Return(target, value)) if Rc::ptr_eq(&target, &frame) => Ok(value),
             Err(other) => Err(other),
