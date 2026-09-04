@@ -5,5 +5,7 @@
 //! `docs/superpowers/specs/2026-09-01-ns-next-runtime-design.md`.
 
 pub mod symbol;
+pub mod types;
 
 pub use symbol::Symbol;
+pub use types::*;
