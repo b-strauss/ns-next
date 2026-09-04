@@ -353,6 +353,24 @@ changes.
 
 #### Dispatch
 
+**Every send is a virtual call; there is no static dispatch to fall back
+on.** §2.1: "A synchronous message send is like a virtual method call." §2.3
+makes this a hard language rule: "Methods are always virtual (i.e., subject
+to override)" — the opposite default from Java/C++, where a method is
+non-virtual unless declared otherwise. This holds for ordinary sends
+(`lookupPublic` walks `o`'s *actual runtime class*, never a statically known
+type), for non-`private` `LexicalSend`s (`lookupProtected` walks the kth
+enclosing object's actual runtime class), and even for `super` sends (a
+runtime `definingClass` walk, not a fixed compile-time target). **The one
+exception is `private`**, and the spec is precise about why: "the code could
+be predetermined — but the receiver could not" (§5.9) — a private method
+can't be overridden, so its body is fixed, but *which object* it runs on
+still depends on the runtime kth-enclosing-object navigation. Practical
+consequence for later milestones: since there is no static dispatch to fall
+back on outside the `private` case, inline caches (`2026-09-04-ns-next-liveness-images-vm-design.md`'s
+call-site identity + dependency-keyed caches) are not an optional speedup —
+they are the central mechanism that makes dispatch affordable at all.
+
 **Corrected against `newspeak-spec.pdf` §5.5, §5.9, §5.10; access defaults
 per §6.3.1.** The previous revision of this section used one plain
 "walk `methods` then `superclass`" algorithm for every kind of send. The
