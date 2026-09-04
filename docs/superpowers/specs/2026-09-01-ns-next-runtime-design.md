@@ -1,6 +1,6 @@
 # ns-next — Newspeak Runtime, Milestone 1 Design
 
-Status: approved for planning
+Status: implemented (Milestone 1 complete)
 Date: 2026-09-01
 Author: Benjamin
 

@@ -1,6 +1,6 @@
 # ns-next — Liveness, Images, and VM Architecture Constraints
 
-Status: draft for review
+Status: active — binding constraint for all milestones
 Date: 2026-09-04
 Author: Benjamin
 

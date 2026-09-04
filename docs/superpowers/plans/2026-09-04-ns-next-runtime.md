@@ -2,6 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status: Complete.** Verified against the codebase and git history on
+> 2026-09-04 — all 12 tasks (57 steps) plus the final verification checklist
+> implemented and tested: `cargo test --workspace`, `cargo fmt --all --
+> --check`, and `cargo clippy --workspace --all-targets` are all clean, and
+> every file/module this plan specifies exists in `crates/ns-runtime` and
+> `crates/ns-cli`. Kept for historical reference; do not use as a checklist
+> for new work.
+
 **Goal:** Build `ns-runtime` — a resolver, object model, and tree-walking
 interpreter for the Newspeak3 language, plus an `ns-next run` CLI command —
 that resolves names per Newspeak's real (spec-verified) scoping rules,
@@ -176,7 +184,7 @@ Responsibilities:
 - Produces: a building `ns-runtime` crate with an empty `lib.rs` (only
   `#![warn(clippy::all)]` and a crate doc comment).
 
-- [ ] **Step 1: Add the workspace member**
+- [x] **Step 1: Add the workspace member**
 
 Modify `Cargo.toml`:
 
@@ -189,7 +197,7 @@ members = ["crates/ns-syntax", "crates/ns-runtime", "crates/ns-cli"]
 (Insert `"crates/ns-runtime"` between the existing two members — keep
 alphabetical-by-pipeline-order, matching the existing style.)
 
-- [ ] **Step 2: Create the crate skeleton**
+- [x] **Step 2: Create the crate skeleton**
 
 `crates/ns-runtime/Cargo.toml`:
 
@@ -215,7 +223,7 @@ ns-syntax = { path = "../ns-syntax" }
 //! `docs/superpowers/specs/2026-09-01-ns-next-runtime-design.md`.
 ```
 
-- [ ] **Step 3: Verify the workspace builds**
+- [x] **Step 3: Verify the workspace builds**
 
 Run: `cargo build --workspace`
 Expected: compiles, three crates.
@@ -227,7 +235,7 @@ green, currently 110 total per the last full verification).
 Run: `cargo fmt --all -- --check` and `cargo clippy --all-targets`
 Expected: both clean.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -252,7 +260,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
   key uses `Symbol`, not `String`, for cheap `Copy` comparisons in hot
   dispatch paths.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `crates/ns-runtime/src/symbol.rs`:
 
@@ -297,12 +305,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime symbol::`
 Expected: FAIL — `Symbol` not found.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Prepend to `crates/ns-runtime/src/symbol.rs` (before the `#[cfg(test)]`
 module):
@@ -379,12 +387,12 @@ pub mod symbol;
 pub use symbol::Symbol;
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-runtime symbol::`
 Expected: PASS (4 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -446,7 +454,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
   unrepresentable. `current_class` is `Option<ClassRef>` because §3.6 is
   explicit that a top-level activation's current class is `nil`.
 
-- [ ] **Step 1: Write the file**
+- [x] **Step 1: Write the file**
 
 `crates/ns-runtime/src/types.rs`:
 
@@ -631,7 +639,7 @@ pub struct NewspeakError {
 }
 ```
 
-- [ ] **Step 2: Wire into `lib.rs`**
+- [x] **Step 2: Wire into `lib.rs`**
 
 ```rust
 pub mod symbol;
@@ -641,7 +649,7 @@ pub use symbol::Symbol;
 pub use types::*;
 ```
 
-- [ ] **Step 3: Add construction smoke tests**
+- [x] **Step 3: Add construction smoke tests**
 
 Append to `crates/ns-runtime/src/types.rs`. Add `PartialEq, Eq` to
 `Binding`'s existing `#[derive(Debug, Clone, Copy)]` so the last test's
@@ -737,12 +745,12 @@ clever during implementation, replace it with a second, fully-formed dummy
 deep) — either is acceptable; the only real requirement is that the test
 file compiles and the assertions hold.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `cargo test -p ns-runtime types::`
 Expected: PASS (4 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -807,7 +815,7 @@ transcribes that section's algorithm into Rust; it does not re-derive it.
   member-set computation only fixes *which lexical level*, never *which
   concrete method*.
 
-- [ ] **Step 1: Activation-chain scope (`scope.rs`)**
+- [x] **Step 1: Activation-chain scope (`scope.rs`)**
 
 ```rust
 //! Static (activation-chain) local-variable resolution: method/block
@@ -913,7 +921,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run, verify pass**
+- [x] **Step 2: Run, verify pass**
 
 Run: `cargo test -p ns-runtime resolver::scope::`
 Expected: PASS (4 tests) once `mod.rs` (Step 5) wires this module in — write
@@ -921,7 +929,7 @@ this file first, but don't expect it to compile alone until `resolver/mod.rs`
 exists with `mod scope;`. Do Steps 1-4 as file-writes, then Step 5, then run
 everything together.
 
-- [ ] **Step 3: Static class member sets and superclass names (`classes.rs`)**
+- [x] **Step 3: Static class member sets and superclass names (`classes.rs`)**
 
 ```rust
 //! Static member-set and superclass-name computation for classes, used only
@@ -1021,7 +1029,7 @@ above only exercises `is_builtin_class_name`, which has no such dependency.
 Broader coverage of `own_member_names` comes from Step 6's integration tests,
 which resolve real small modules end to end.
 
-- [ ] **Step 4: Send-shape recognition and the §5.7 depth search (`sends.rs`)**
+- [x] **Step 4: Send-shape recognition and the §5.7 depth search (`sends.rs`)**
 
 ```rust
 //! Recognizes self/super/outer/implicit send shapes in the AST (runtime
@@ -1163,7 +1171,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 5: The resolver pass itself (`mod.rs`)**
+- [x] **Step 5: The resolver pass itself (`mod.rs`)**
 
 ```rust
 //! Resolver entry point: `Module` -> `ResolvedModule`. See the runtime
@@ -1524,7 +1532,7 @@ pub use symbol::Symbol;
 pub use types::*;
 ```
 
-- [ ] **Step 6: Integration tests over real small modules**
+- [x] **Step 6: Integration tests over real small modules**
 
 Create `crates/ns-runtime/tests/resolver.rs`:
 
@@ -1597,7 +1605,7 @@ parser — run each snippet through `cargo run -p ns-cli -- parse --ast`
 first if a test fails to parse, and fix the snippet, not the resolver, for
 any pure-syntax mismatch.
 
-- [ ] **Step 7: Run everything, fix, and verify green**
+- [x] **Step 7: Run everything, fix, and verify green**
 
 Run: `cargo test -p ns-runtime`
 Expected: all `resolver::` unit tests plus the five integration tests pass.
@@ -1605,7 +1613,7 @@ Expected: all `resolver::` unit tests plus the five integration tests pass.
 Run: `cargo fmt --all -- --check` and `cargo clippy --all-targets`
 Expected: both clean.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A
@@ -1655,7 +1663,7 @@ transcribes it. Cites: `newspeak-spec.pdf` §3.3, §5.5, §5.9, §5.10, §6.3.1.
   `dispatch.rs` ↔ `builtins/` dependency and is simple because M1's core
   library is small and fixed.
 
-- [ ] **Step 1: Write the file**
+- [x] **Step 1: Write the file**
 
 ```rust
 //! The three lookup algorithms and the kth-enclosing-object computation.
@@ -1901,12 +1909,12 @@ pub use symbol::Symbol;
 pub use types::*;
 ```
 
-- [ ] **Step 2: Run, verify pass**
+- [x] **Step 2: Run, verify pass**
 
 Run: `cargo test -p ns-runtime dispatch::`
 Expected: PASS (4 tests).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -1960,7 +1968,7 @@ before starting.**
   `Interpreter::invoke_method`, which `dispatch.rs` deliberately does not
   depend on (Task 5's module has no `Interpreter` type to reference).
 
-- [ ] **Step 1: `interpreter/mod.rs` — the `Interpreter`, `send`, `invoke_method`**
+- [x] **Step 1: `interpreter/mod.rs` — the `Interpreter`, `send`, `invoke_method`**
 
 ```rust
 //! The tree-walking interpreter's core: sends, method invocation, and the
@@ -2194,7 +2202,7 @@ impl Interpreter {
 
 and delete these stub bodies in Task 7 Step 1 when the real ones land.
 
-- [ ] **Step 2: `interpreter/eval.rs` — expression evaluation**
+- [x] **Step 2: `interpreter/eval.rs` — expression evaluation**
 
 ```rust
 //! Expression-level evaluation: literals, sends (ordinary, `LexicalSend`,
@@ -2608,7 +2616,7 @@ pub use symbol::Symbol;
 pub use types::*;
 ```
 
-- [ ] **Step 3: Tests over hand-built frames/classes**
+- [x] **Step 3: Tests over hand-built frames/classes**
 
 Create `crates/ns-runtime/tests/interpreter.rs`. Build a two-method class
 (`Object`-superclassed, one method returning a literal, one method that
@@ -2632,7 +2640,7 @@ than duplicating them — consider moving `class_with_method` and
 `crates/ns-runtime/tests/support.rs`, included from both test files via
 `mod support;`, if duplication becomes noticeable).
 
-- [ ] **Step 4: Run, fix, verify green**
+- [x] **Step 4: Run, fix, verify green**
 
 Run: `cargo test -p ns-runtime`
 Expected: all resolver/dispatch/interpreter tests pass. Some tests will
@@ -2641,7 +2649,7 @@ add `pub fn dispatch_native(_interp: &mut Interpreter, _kind: BuiltinClass, _rec
 in a temporary `crates/ns-runtime/src/builtins/mod.rs` now if needed to
 compile this task in isolation, and flesh it out for real starting Task 7.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -2706,7 +2714,7 @@ modify `interpreter/mod.rs`, `lib.rs`.
   through every recursive step — never allocates a second instance for a
   superclass level.
 
-- [ ] **Step 1: The bootstrap and object-model helpers (`interpreter/mod.rs`)**
+- [x] **Step 1: The bootstrap and object-model helpers (`interpreter/mod.rs`)**
 
 Replace Task 6's `unimplemented!()` stub bodies with:
 
@@ -2867,7 +2875,7 @@ actually inheriting from a `Boolean` superclass node, since they do not yet.
 Fix this only if a corpus module or fixture test needs real
 `Boolean`/`True`/`False` inheritance to observe correct behavior.
 
-- [ ] **Step 2: Class instantiation (`interpreter/instantiate.rs`)**
+- [x] **Step 2: Class instantiation (`interpreter/instantiate.rs`)**
 
 ```rust
 //! Class instantiation: `newspeak-spec.pdf` §6.1, §6.3. See the runtime
@@ -3186,7 +3194,7 @@ gap, not a cosmetic one. Fix:
 Re-run Task 6's interpreter tests after this fix (a slot-referencing
 fixture is exactly what Task 12's `arithmetic.ns` needs to work at all).
 
-- [ ] **Step 3: `Object`'s native methods and the default `doesNotUnderstand:` (`builtins/object_class.rs`, `builtins/mod.rs`)**
+- [x] **Step 3: `Object`'s native methods and the default `doesNotUnderstand:` (`builtins/object_class.rs`, `builtins/mod.rs`)**
 
 ```rust
 // crates/ns-runtime/src/builtins/mod.rs
@@ -3299,7 +3307,7 @@ give every builtin its own `printString` in its own file (Tasks 8-10) and
 drop the generic one here — pick whichever reads more clearly once Tasks
 8-10 exist; this is a real decision to make, not a detail to skip.
 
-- [ ] **Step 4: Wire the bootstrap into module loading; tests**
+- [x] **Step 4: Wire the bootstrap into module loading; tests**
 
 Add to `crates/ns-runtime/src/lib.rs`:
 
@@ -3320,7 +3328,7 @@ Create `crates/ns-runtime/tests/instantiate.rs` covering, end to end
   `does_not_understand` -> `Object`'s native `doesNotUnderstand:`), not a
   panic.
 
-- [ ] **Step 5: Run, fix, verify green; commit**
+- [x] **Step 5: Run, fix, verify green; commit**
 
 Run: `cargo test -p ns-runtime` and `cargo test --workspace`.
 Expected: all green.
@@ -3351,7 +3359,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 directly and match on it, unlike `object_class.rs`, which mostly worked
 through `ObjRef`s.
 
-- [ ] **Step 1: Write `boolean.rs`**
+- [x] **Step 1: Write `boolean.rs`**
 
 ```rust
 //! `Boolean`/`True`/`False` native methods.
@@ -3439,7 +3447,7 @@ threading `bindings` through as a separate argument. Apply this fix now,
 adjust Task 6's and Task 7's code accordingly, and re-run their tests
 before starting Task 8's own tests.
 
-- [ ] **Step 2: Write `numbers.rs`**
+- [x] **Step 2: Write `numbers.rs`**
 
 Integer arithmetic must raise on overflow (`i64`, spec's Decisions section).
 Use `checked_*` and turn `None` into a `NewspeakError`, never a panic (this
@@ -3534,7 +3542,7 @@ BuiltinClass::Float => numbers::dispatch_float(interp, receiver, selector, args)
 
 and `pub mod boolean; pub mod numbers;` at the top.
 
-- [ ] **Step 3: Tests**
+- [x] **Step 3: Tests**
 
 Create `crates/ns-runtime/tests/builtins_boolean_numbers.rs` with, at
 minimum: `3 + 4` via a direct `send` call evaluates to `SmallInt(7)`;
@@ -3544,7 +3552,7 @@ same pattern as earlier tasks, or via a real parsed+resolved+instantiated
 fixture — prefer the latter now that Task 7's pipeline exists) evaluates to
 `1`.
 
-- [ ] **Step 4: Run, fix, verify green; commit**
+- [x] **Step 4: Run, fix, verify green; commit**
 
 ```bash
 cargo test -p ns-runtime && cargo test --workspace
@@ -3565,7 +3573,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 **Interfaces:** `text::dispatch_string`, `text::dispatch_symbol`,
 `text::dispatch_character`, wired into `dispatch_native`.
 
-- [ ] **Step 1: Write `text.rs`**
+- [x] **Step 1: Write `text.rs`**
 
 Selectors to implement, each a direct, unambiguous Rust expression over the
 receiver's `ObjectData::Str`/`Sym` payload (`Character` shares `Str`'s
@@ -3594,7 +3602,7 @@ falls through to `doesNotUnderstand:`). Every row above is a complete,
 unambiguous specification — do not add speculative extra selectors beyond
 this table (YAGNI; extend only when a fixture in Task 12 needs one).
 
-- [ ] **Step 2: Wire into `dispatch_native`, write tests, run, fix, commit**
+- [x] **Step 2: Wire into `dispatch_native`, write tests, run, fix, commit**
 
 Same shape as Task 8 Steps 2-4. Tests: string concatenation, string
 equality, symbol round-trip through `asString`/`asSymbol`, one character
@@ -3630,7 +3638,7 @@ document this as a deliberate M1 simplification in a code comment (a real
 size, but M1's `ObjectData::Array(Vec<Value>)` already `Vec`-backed handles
 growth fine either way).
 
-- [ ] **Step 1: Write `collections.rs`**
+- [x] **Step 1: Write `collections.rs`**
 
 | Class | Selector | Behavior |
 |---|---|---|
@@ -3653,7 +3661,7 @@ of its own local `invoke_block` (small refactor — do it now rather than
 letting three copies of the same helper accumulate across Tasks 8, 10, and
 this one).
 
-- [ ] **Step 2: Write `block.rs`**
+- [x] **Step 2: Write `block.rs`**
 
 ```rust
 //! `Block` (closure) native methods -- `value`, `value:`, `value:value:`,
@@ -3701,7 +3709,7 @@ block parameters (`Local(0)`, `Local(1)`, ...) — it does, since
 `Local`'s index-into-`args`-then-`temps` convention from
 `eval.rs::read_local` (Task 6). No additional wiring needed.
 
-- [ ] **Step 3: Wire into `dispatch_native`; tests; run, fix, commit**
+- [x] **Step 3: Wire into `dispatch_native`; tests; run, fix, commit**
 
 Tests: `{1. 2. 3} at: 2` → `2`; `#(1 2 3) do: [:x | ...]`-style traversal
 (sum via a mutable-slot accumulator on a small test class, or count
@@ -3756,7 +3764,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
   from `platform` itself, matching the spec's Core Library / platform
   split).
 
-- [ ] **Step 1: `platform.rs`**
+- [x] **Step 1: `platform.rs`**
 
 ```rust
 //! The minimal `platform` object: exposes the Core Library classes by name
@@ -3857,7 +3865,7 @@ Structure section), not under `src/builtins/`, so this line goes in
 crate::platform;` inside `builtins/mod.rs`'s dispatch function instead of a
 nested `pub mod`.
 
-- [ ] **Step 2: `ns-next run` (`crates/ns-cli/src/main.rs`)**
+- [x] **Step 2: `ns-next run` (`crates/ns-cli/src/main.rs`)**
 
 Read the existing `main.rs` first (frontend milestone's `parse` /
 `parse-corpus` subcommands are already there — follow the same `clap`
@@ -3954,7 +3962,7 @@ is not a full `main:args:`-shaped application).
 `render_diagnostic` should already exist in `main.rs` from the frontend
 milestone's `parse` subcommand — reuse it rather than writing a new one.
 
-- [ ] **Step 3: Tests, run, fix, commit**
+- [x] **Step 3: Tests, run, fix, commit**
 
 Add `crates/ns-cli/tests/run.rs` (mirrors the existing `cli.rs` pattern from
 the frontend milestone): a temp `.ns` file with a trivial `main:args:` that
@@ -3985,7 +3993,7 @@ future fixture (and, eventually, a handful of real corpus modules whose
 platform needs Milestone 1 satisfies, per the spec's Reality-Check goal)
 plugs into.
 
-- [ ] **Step 1: Three fixtures exercising distinct behavior**
+- [x] **Step 1: Three fixtures exercising distinct behavior**
 
 `tests-fixtures/hello.ns`:
 
@@ -4061,7 +4069,7 @@ tests-fixtures/<name>.ns`) before relying on it in the harness below — fix
 the fixture's syntax, not the parser, for any pure syntax mismatch (the
 parser is done and reviewed).
 
-- [ ] **Step 2: The harness (`crates/ns-cli/tests/run_fixtures.rs`)**
+- [x] **Step 2: The harness (`crates/ns-cli/tests/run_fixtures.rs`)**
 
 ```rust
 use std::path::Path;
@@ -4103,7 +4111,7 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
 }
 ```
 
-- [ ] **Step 3: Run, fix, verify green**
+- [x] **Step 3: Run, fix, verify green**
 
 Run: `cargo test --workspace`
 Expected: all green, including the three fixtures.
@@ -4111,7 +4119,7 @@ Expected: all green, including the three fixtures.
 Run: `cargo fmt --all -- --check` and `cargo clippy --all-targets`
 Expected: both clean.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -4126,20 +4134,22 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 
 After Task 12, before declaring the milestone done:
 
-- [ ] `cargo test --workspace` fully green (frontend's 110 tests plus every
+- [x] `cargo test --workspace` fully green (frontend's 110 tests plus every
   test this plan added).
-- [ ] `cargo fmt --all -- --check` clean.
-- [ ] `cargo clippy --workspace --all-targets` zero warnings.
-- [ ] `cargo run -p ns-cli -- parse-corpus corpus/modules` still reports
+- [x] `cargo fmt --all -- --check` clean.
+- [x] `cargo clippy --workspace --all-targets` zero warnings.
+- [x] `cargo run -p ns-cli -- parse-corpus corpus/modules` still reports
   210/0/1/0 (this plan must not regress the frontend's parser corpus —
   nothing in `ns-runtime` should ever need a `ns-syntax` change; if it does,
   stop and flag it per this plan's Global Constraints rather than silently
   patching the frontend).
-- [ ] Re-read the runtime spec's Testing section and confirm every bullet
+- [x] Re-read the runtime spec's Testing section and confirm every bullet
   has a corresponding task: resolver unit tests (Task 4) ✓, interpreter
   behavior tests (Task 6) ✓, parser corpus test (already shipped, frontend
   milestone) ✓, execution integration tests (Task 12) ✓.
-- [ ] Every "fix this before committing" / "flagged here rather than
+- [x] Every "fix this before committing" / "flagged here rather than
   silently glossed over" note left in Tasks 7, 8, and 10 above has actually
-  been resolved, not merely noticed.
+  been resolved, not merely noticed (confirmed by the corresponding `fix(*)`
+  and `docs(runtime)` commits in the git history, e.g. `ee91570`, `ecadba7`,
+  `07c4992`, `27fbe10`, `122013d`).
 

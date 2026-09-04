@@ -2,6 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status: Complete.** Verified against the codebase and git history on
+> 2026-09-04 — all 14 tasks (75 steps) implemented and tested:
+> `cargo test --workspace`, `cargo fmt --all -- --check`, and `cargo clippy
+> --workspace --all-targets` are all clean, and every file/module this plan
+> specifies exists in `crates/ns-syntax` and `crates/ns-cli`. Kept for
+> historical reference; do not use as a checklist for new work.
+
 **Goal:** Build `ns-syntax` (lexer + parser + AST for the official `Newspeak3` textual syntax) and a `ns-next` CLI that can parse single files and the whole official Newspeak repo as a corpus.
 
 **Architecture:** A Cargo workspace. `ns-syntax` is a dependency-light library: a hand-written single-pass lexer produces `Token`s with byte-offset `Span`s, and a hand-written recursive-descent + Pratt parser produces a `Module` AST. Both collect `Diagnostic`s instead of panicking on bad input. `ns-cli` is a thin binary wrapping the library. The parser is validated against a vendored snapshot of every `.ns` file in `newspeaklanguage/newspeak`.
@@ -87,7 +94,7 @@ Responsibilities:
 - Consumes: nothing.
 - Produces: a building workspace with two crates; `ns_syntax` exposes an empty `lib.rs` (only `#![warn(clippy::all)]` for now); `corpus/modules/` populated.
 
-- [ ] **Step 1: Create the workspace manifest**
+- [x] **Step 1: Create the workspace manifest**
 
 `Cargo.toml`:
 
@@ -115,7 +122,7 @@ channel = "1.98.0"
 components = ["rustfmt", "clippy"]
 ```
 
-- [ ] **Step 2: Create the `ns-syntax` crate skeleton**
+- [x] **Step 2: Create the `ns-syntax` crate skeleton**
 
 `crates/ns-syntax/Cargo.toml`:
 
@@ -140,7 +147,7 @@ toml.workspace = true
 //! Lexer, AST, and parser for the Newspeak3 textual syntax.
 ```
 
-- [ ] **Step 3: Create the `ns-cli` crate skeleton**
+- [x] **Step 3: Create the `ns-cli` crate skeleton**
 
 `crates/ns-cli/Cargo.toml`:
 
@@ -171,7 +178,7 @@ fn main() {
 }
 ```
 
-- [ ] **Step 4: Vendor the corpus**
+- [x] **Step 4: Vendor the corpus**
 
 Clone the upstream repo to a temp location, record the exact commit, and copy files:
 
@@ -226,7 +233,7 @@ grammar this parser follows.
 entry = []
 ```
 
-- [ ] **Step 5: Verify the workspace builds**
+- [x] **Step 5: Verify the workspace builds**
 
 Run: `cargo build --workspace`
 Expected: compiles, produces `ns-next` binary.
@@ -237,7 +244,7 @@ Expected: passes, 0 tests.
 Run: `cargo fmt --all -- --check` and `cargo clippy --all-targets`
 Expected: both clean.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -261,7 +268,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
   - `Severity` enum: `Error`, `Warning`.
   - `Diagnostic { span: Span, message: String, severity: Severity }` with `Diagnostic::error(span: Span, message: impl Into<String>) -> Diagnostic`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `crates/ns-syntax/src/span.rs`:
 
@@ -295,12 +302,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p ns-syntax span::`
 Expected: FAIL — `Span` not found.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Prepend to `crates/ns-syntax/src/span.rs`:
 
@@ -372,12 +379,12 @@ pub use diagnostic::{Diagnostic, Severity};
 pub use span::Span;
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ns-syntax span::`
 Expected: PASS (3 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -410,7 +417,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - `binSel = specialCharacter | ('-' , (specialCharacter | '-')*)` where `specialCharacter` is one of `+ - * / ~ < > = & | @ % , ? !` (and `-`). Binary selectors are maximal runs of these. **But** `|` alone is `Bar`, `||` is `DoubleBar`, `=` alone is `Equals`, `<` / `>` alone are `LessThan` / `GreaterThan`, and a leading `::=` / `:=` are matched first. Resolve by: try the fixed punctuation tokens first at each position, then fall back to a binary-selector run.
 - Reserved words are matched from an `Identifier` lexeme: `class`, `private`, `public`, `protected`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `crates/ns-syntax/src/lexer.rs`:
 
@@ -469,12 +476,12 @@ mod tests {
 
 *(This test references `Number` and `Eoi` — add those `TokenKind` variants now even though `Number` is lexed in Task 4 and `Eoi` emission is finalized in Task 5.)*
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p ns-syntax lexer::`
 Expected: FAIL — `Lexer` / `token` module not found.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 `crates/ns-syntax/src/token.rs`:
 
@@ -721,12 +728,12 @@ pub mod lexer;
 pub mod token;
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ns-syntax lexer::`
 Expected: PASS (6 tests). The `setter_keyword` test needs `x::` → `SetterKeyword`; verify `x:: 3` does not consume the space.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -753,7 +760,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 
 **Note on leading `-`:** the grammar puts `-` inside `decimalNum`, but `a - b` must lex as three tokens. Rule: the lexer emits a negative `Number` only when the `-` is immediately followed by a digit **and** the previous emitted token is not one that can end an expression (`Identifier`, `Number`, `String`, `Symbol`, `CharConstant`, `RParen`, `RBracket`, `RBrace`). Otherwise `-` starts a `BinarySelector`. Put this decision in `lex_operator` / a shared helper.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `lexer.rs` tests:
 
@@ -804,12 +811,12 @@ fn unterminated_string_is_diagnostic() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-syntax lexer::`
 Expected: FAIL — stubs emit wrong token counts.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Replace the Task 3 stubs in `lexer.rs`:
 
@@ -985,12 +992,12 @@ fn prev_ends_value(&self) -> bool {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-syntax lexer::`
 Expected: PASS (all lexer tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -1015,7 +1022,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
   - `(* :literalmessage: ... *)` is still skipped at lex time (the parser does not see it in Milestone 1); just treat it as an ordinary nesting comment.
   - Whitespace (space, tab, CR, LF, form feed) is trivia.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
@@ -1047,12 +1054,12 @@ fn token_stream_ends_with_eoi() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-syntax`
 Expected: FAIL — `crate::lex` missing; comments currently lex as `LParen`/`BinarySelector`/`RParen`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Replace `skip_trivia` in `lexer.rs`:
 
@@ -1112,12 +1119,12 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
 
 and `pub use token::{Token, TokenKind};`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-syntax`
 Expected: PASS (all lexer + api tests).
 
-- [ ] **Step 5: Sanity-check against the real grammar file**
+- [x] **Step 5: Sanity-check against the real grammar file**
 
 Run a throwaway check that the lexer does not choke on the vendored grammar:
 
@@ -1133,7 +1140,7 @@ fn lexes_vendored_grammar_without_error() {
 Run: `cargo test -p ns-syntax lexes_vendored_grammar`
 Expected: PASS. If it fails, fix the lexer (do not edit the grammar file); the failure is a real lexical case (likely radix numbers, `<...>` patterns, or a `specialCharacter` not in `SPECIAL`).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -1330,15 +1337,15 @@ pub struct Ident {
 }
 ```
 
-- [ ] **Step 1: Write the file** exactly as above.
+- [x] **Step 1: Write the file** exactly as above.
 
-- [ ] **Step 2: Wire into `lib.rs`**
+- [x] **Step 2: Wire into `lib.rs`**
 
 ```rust
 pub mod ast;
 ```
 
-- [ ] **Step 3: Add a construction smoke test**
+- [x] **Step 3: Add a construction smoke test**
 
 `crates/ns-syntax/src/ast.rs` (append):
 
@@ -1356,12 +1363,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Build**
+- [x] **Step 4: Build**
 
 Run: `cargo test -p ns-syntax ast::`
 Expected: PASS (1 test); no clippy warnings.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -1389,7 +1396,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
   - `Parser::parse_primary(&mut self) -> Expr` — identifier, literal, `( expr )`, block, dynamic array `{ ... }`. Literal parsing lives here: int/float (classified by presence of `.`/`e` in the lexeme, radix always Int), string, symbol, char, and the keyword identifiers `nil`/`true`/`false` (recognized here, not in the lexer).
 - Recovery: on an unexpected token, push one diagnostic, synthesize a `Literal::Nil` node spanning the bad token, and do **not** advance past a structural token (`RParen`, `RBracket`, `Dot`, `Eoi`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `crates/ns-syntax/src/parser/mod.rs`:
 
@@ -1463,12 +1470,12 @@ impl<'a> Parser<'a> {
 
 *(`parse_expression` is implemented in Task 8; for Task 7 make it temporarily delegate to `parse_primary`.)*
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-syntax parser::`
 Expected: FAIL — `Parser` methods missing.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `parser/mod.rs` cursor helpers:
 
@@ -1667,12 +1674,12 @@ impl<'a> Parser<'a> {
 
 Update `lib.rs`: `mod parser;` (private for now).
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-syntax parser::`
 Expected: PASS (4 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -1697,7 +1704,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
   - `setterKeyword` form: `recv foo:: expr` parses as a keyword send with selector `foo:` and one argument. (Grammar's `setterKeyword star , sendExpression`; Milestone 1 treats a single leading `id::` as sugar for `id: <sendExpression>` sent to the enclosing receiver — implement the common `recv x:: v` case; a bare leading `x:: v` with no receiver is `self x: v` and is left to the resolver, so parse it as a `Send` with receiver `Expr::Ident("self")`... **no** — instead represent it as `Assign { target, value }` because `x:: v` is semantically a slot write. Document this choice in a comment.)
   - Cascades: `recv m1; m2; m3` where `m1..m3` are unary/binary/keyword messages sent to `recv`. Binds looser than a single message, tighter than assignment.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
@@ -1744,12 +1751,12 @@ fn cascade() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-syntax parser::`
 Expected: FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Replace `parse_expression` and add the precedence ladder in `expr.rs`:
 
@@ -1928,12 +1935,12 @@ pub(super) fn literal_span(l: &Literal) -> crate::span::Span {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-syntax parser::`
 Expected: PASS (Task 7 + Task 8 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -1960,7 +1967,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
   - Literal arrays `#( ... )`: a `Symbol` token whose lexeme is exactly `#` is impossible (lexer requires a body), so `#(` arrives as `Symbol("#")`? No — fix: in the lexer, `#` followed by `(` must emit `Pound` then `LParen`. Update Task 3/4 note: **`#` immediately followed by `(` emits `Pound`**, and the parser turns `Pound LParen ... RParen` into a `Literal::Array`. Add that lexer case and a test in this task.
   - `parse_literal_array(&mut self) -> Literal` — inside `#( )`, elements are literals; bare identifiers `foo` become `Literal::Symbol("foo")` (Smalltalk rule), nested `( )` are nested arrays, `#` is optional before symbols.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
@@ -2004,12 +2011,12 @@ fn return_statement_in_body() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-syntax parser::`
 Expected: FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Lexer change (`lexer.rs`, in `lex_symbol` or `lex_one`): when `#` is followed by `(`, emit `Pound` and return without consuming `(`:
 
@@ -2182,12 +2189,12 @@ fn parse_array_element(&mut self) -> Literal {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-syntax`
 Expected: PASS (all lexer + parser tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -2210,7 +2217,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
   - `Parser::parse_method_decl(&mut self) -> MethodDecl` — `accessModifier? messagePattern '=' '(' codeBody ')'`.
   - `Parser::parse_access_modifier(&mut self) -> Option<AccessModifier>`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[cfg(test)]
@@ -2251,12 +2258,12 @@ mod method_tests {
 
 Add test helpers to `Parser` (behind `#[cfg(test)]`): `parse_method_decl_for_test`, `diags_is_empty`, `debug_diags`.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-syntax method_tests`
 Expected: FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```rust
 impl<'a> Parser<'a> {
@@ -2315,12 +2322,12 @@ impl<'a> Parser<'a> {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-syntax method_tests`
 Expected: PASS (3 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -2342,7 +2349,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
   - `Parser::parse_slot_decls(&mut self) -> Vec<SlotDecl>` — parses `| slotDef* |` (sequential) or `|| slotDef* ||` (simultaneous). Milestone 1 records both the same way; the distinction is not semantically modeled yet (note in a comment). Each `slotDef` is `accessModifier? identifier (('=' | '::=') expression)? '.'`. A bare `identifier '.'` is `MutableBare`.
   - This shares the opening `Bar` / `DoubleBar` token with method-body temps and with binary-`|` expressions; here we are in *class-body position* so a leading `Bar`/`DoubleBar` is always a slot section.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[cfg(test)]
@@ -2381,12 +2388,12 @@ mod slot_tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-syntax slot_tests`
 Expected: FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```rust
 impl<'a> Parser<'a> {
@@ -2438,12 +2445,12 @@ impl<'a> Parser<'a> {
 
 Add `push_error(&mut self, span: Span, msg: &str)` helper to `mod.rs` if not present.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-syntax slot_tests`
 Expected: PASS (3 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -2472,7 +2479,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
   - `pub fn parse(src: &str) -> Result<ast::Module, Vec<Diagnostic>>` — lexes, then parses `languageId category classDecl`, `Eoi`. `languageId` is the first `Identifier` token (`Newspeak3`); `category` is the first `String` literal.
 - The rule for telling an init expression from a method: an init expression is any statement that is **not** `accessModifier? messagePattern '='` and not `class`. Implement by lookahead: if `peek() == Class` → nested class; else scan a `messagePattern` speculatively and check for a following `=` `(` — if present it's a method, otherwise rewind and parse a statement. Provide `Parser::checkpoint()` / `Parser::restore(cp)` (just save/restore `pos` and `diags.len()`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[cfg(test)]
@@ -2538,12 +2545,12 @@ class Outer usingPlatform: p = (
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-syntax class_tests`
 Expected: FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```rust
 impl<'a> Parser<'a> {
@@ -2781,12 +2788,12 @@ pub fn parse(src: &str) -> Result<ast::Module, Vec<Diagnostic>> {
 
 Add `Parser::into_diagnostics(self) -> Vec<Diagnostic>` and make `parse_module` / `Parser` reachable (`pub(crate)` is fine; `lib.rs` calls via `parser::Parser`).
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-syntax`
 Expected: PASS (all suites).
 
-- [ ] **Step 5: Snapshot test a realistic module**
+- [x] **Step 5: Snapshot test a realistic module**
 
 Add `crates/ns-syntax/tests/parse_snapshot.rs`:
 
@@ -2806,7 +2813,7 @@ class Hello usingPlatform: platform = (
 
 Run: `cargo test -p ns-syntax --test parse_snapshot`, then `cargo insta accept` (or review `.snap.new` and rename). Commit the snapshot.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -2830,7 +2837,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
   - `ns-next parse-corpus <DIR>` — walks `<DIR>` recursively for `*.ns`, parses each, honors a `blacklist.toml` next to `<DIR>` (i.e. `<DIR>/../blacklist.toml`, or `--blacklist <PATH>`). Prints a summary `parsed N, failed M, expected-fail K` and exits `1` if any file not on the blacklist failed, or any blacklisted file parsed.
 - Line/column: compute from the byte offset by counting `\n` up to `span.start`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `crates/ns-cli/tests/cli.rs`:
 
@@ -2868,12 +2875,12 @@ fn tempdir() -> std::path::PathBuf {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p ns-cli`
 Expected: FAIL — subcommands not implemented.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```rust
 #![warn(clippy::all)]
@@ -3042,17 +3049,17 @@ toml.workspace = true
 serde = { version = "1", features = ["derive"] }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-cli`
 Expected: PASS (2 tests).
 
-- [ ] **Step 5: Try it against the corpus (informational)**
+- [x] **Step 5: Try it against the corpus (informational)**
 
 Run: `cargo run -p ns-cli -- parse-corpus corpus/modules`
 Expected: prints a summary. Many failures are expected at this point — Task 14 triages them.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets
@@ -3078,7 +3085,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
   - every non-blacklisted file parses, and
   - every blacklisted file still fails (no stale entries).
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 `crates/ns-syntax/tests/corpus.rs`:
 
@@ -3153,12 +3160,12 @@ Add `serde` to `ns-syntax` dev-dependencies:
 serde = { version = "1", features = ["derive"] }
 ```
 
-- [ ] **Step 2: Run the test**
+- [x] **Step 2: Run the test**
 
 Run: `cargo test -p ns-syntax --test corpus`
 Expected: FAIL with a list of unparseable files.
 
-- [ ] **Step 3: Triage — iterate**
+- [x] **Step 3: Triage — iterate**
 
 For each failure, decide:
 - **Parser bug / missing common construct** → fix the parser (add a focused unit test in the relevant `parser` submodule first, then fix). Re-run.
@@ -3174,7 +3181,7 @@ Repeat until the corpus test passes. Keep a running note of each parser fix in i
 
 **Budget guidance:** aim for ≥90% of corpus files parsing. If a single construct blocks many files and is small, fix it; if it is large (full pragma-expression grammar, type annotations), blacklist the affected files with one shared reason and note it for Milestone 2.
 
-- [ ] **Step 4: Record the outcome**
+- [x] **Step 4: Record the outcome**
 
 Append to the spec, under "Reality Check":
 
@@ -3186,7 +3193,7 @@ files (P%). Blacklisted files and reasons are in `corpus/blacklist.toml`.
 The dominant deferred constructs are: <list>.
 ```
 
-- [ ] **Step 5: Full verification**
+- [x] **Step 5: Full verification**
 
 Run:
 ```
@@ -3196,7 +3203,7 @@ cargo test --workspace
 ```
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
