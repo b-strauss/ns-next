@@ -1,6 +1,17 @@
 use std::path::Path;
 use std::process::Command;
 
+/// Normalizes line endings before comparison. The CLI always writes `\n`
+/// (via `println!`/`print!` on any platform, Rust does not translate
+/// this), but the checked-in `.expected` fixture files can be checked out
+/// as `\r\n` on Windows when `core.autocrlf` is enabled -- a git checkout
+/// artifact, not a difference in program behavior. Comparing raw strings
+/// would make this test flaky across platforms/git configs; normalize
+/// both sides the same way instead.
+fn normalize_newlines(s: &str) -> String {
+    s.replace("\r\n", "\n")
+}
+
 #[test]
 fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
@@ -26,8 +37,8 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(
-            stdout.trim_end(),
-            expected.trim_end(),
+            normalize_newlines(stdout.trim_end()),
+            normalize_newlines(expected.trim_end()),
             "{} produced unexpected stdout",
             path.display()
         );
