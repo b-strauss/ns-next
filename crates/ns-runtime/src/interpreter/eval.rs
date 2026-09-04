@@ -57,11 +57,25 @@ fn eval_ident(
             vec![],
             bindings,
         ),
-        Some(Binding::SuperSend) | None => Err(Signal::Error(NewspeakError {
-            selector: Symbol::intern(&id.name),
-            receiver: frame.borrow().receiver.clone(),
-            message: format!("internal: unresolved identifier `{}`", id.name),
-        })),
+        // Gap 1 fix: the resolver (`resolve_ident`) records no `Binding`
+        // at all for a bare identifier that names a Milestone 1 builtin
+        // class (e.g. plain `OrderedCollection` in `OrderedCollection
+        // new`, outside any superclass clause) -- mirroring
+        // `resolve_superclass_clause`'s existing convention for the
+        // analogous superclass-clause case. Resolve such a name against
+        // the builtin table by name here, symmetrically, instead of
+        // treating an absent binding as always an internal resolver
+        // error.
+        Some(Binding::SuperSend) | None => {
+            if let Some(kind) = super::instantiate::builtin_kind_from_name(&id.name) {
+                return Ok(Value::Obj(interp.builtin_class(kind)));
+            }
+            Err(Signal::Error(NewspeakError {
+                selector: Symbol::intern(&id.name),
+                receiver: frame.borrow().receiver.clone(),
+                message: format!("internal: unresolved identifier `{}`", id.name),
+            }))
+        }
     }
 }
 
@@ -281,7 +295,7 @@ fn dispatch_lexical_send(
         ),
         Lookup::Native(kind) => {
             match crate::builtins::dispatch_native(interp, kind, o.clone(), selector, &args) {
-                Some(result) => result.map_err(Signal::Error),
+                Some(result) => result,
                 None => interp.send(o, selector, args, bindings, Some(frame.clone())),
             }
         }
@@ -342,7 +356,7 @@ fn dispatch_super_send(
                 selector,
                 &args,
             ) {
-                Some(result) => result.map_err(Signal::Error),
+                Some(result) => result,
                 None => interp.send(self_value, selector, args, bindings, Some(frame.clone())),
             }
         }

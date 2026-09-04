@@ -165,8 +165,7 @@ impl Interpreter {
         // Extend here if a fixture needs it (see `tests/instantiate.rs`'s
         // subclass test for how a fixture can route around this gap
         // without needing the extension).
-        if BUILTIN_NAMES.contains(&clause.receiver.name.as_str()) {
-            let kind = builtin_kind_from_name(&clause.receiver.name);
+        if let Some(kind) = builtin_kind_from_name(&clause.receiver.name) {
             return Some(self.builtin_class(kind));
         }
         None
@@ -339,24 +338,20 @@ impl Interpreter {
     }
 }
 
-const BUILTIN_NAMES: &[&str] = &[
-    "Object",
-    "Boolean",
-    "True",
-    "False",
-    "Integer",
-    "Float",
-    "String",
-    "Symbol",
-    "Character",
-    "Array",
-    "OrderedCollection",
-    "Nil",
-    "Block",
-];
-
-fn builtin_kind_from_name(name: &str) -> BuiltinClass {
-    match name {
+/// `pub(crate)` (rather than private) so `eval.rs`'s `eval_ident` can reuse
+/// this exact string->`BuiltinClass` mapping for Gap 1's bare-builtin-name
+/// fallback, instead of duplicating it. Returns `None` for any name that is
+/// not a Milestone 1 builtin class name (an explicit `Object` arm replaces
+/// the old catch-all default of `BuiltinClass::Object`, since a caller
+/// outside this module must be able to tell "unrecognized name" apart from
+/// a genuine `Object` match -- `resolve_superclass_receiver` above used to
+/// guard this call with a separate `BUILTIN_NAMES.contains` check for
+/// exactly that reason; that list is now redundant with this function's own
+/// match arms, so it was folded in here instead of kept as a second,
+/// duplicate source of truth).
+pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
+    Some(match name {
+        "Object" => BuiltinClass::Object,
         "Boolean" => BuiltinClass::Boolean,
         "True" => BuiltinClass::True,
         "False" => BuiltinClass::False,
@@ -369,8 +364,8 @@ fn builtin_kind_from_name(name: &str) -> BuiltinClass {
         "OrderedCollection" => BuiltinClass::OrderedCollection,
         "Nil" => BuiltinClass::Nil,
         "Block" => BuiltinClass::Block,
-        _ => BuiltinClass::Object,
-    }
+        _ => return None,
+    })
 }
 
 fn method_name(pattern: &ast::MessagePattern) -> String {

@@ -3,6 +3,7 @@
 //! (matches the reference library's common case; extend the match if a
 //! fixture needs more).
 
+use crate::interpreter::EvalResult;
 use crate::types::*;
 use crate::{Interpreter, Symbol};
 
@@ -11,7 +12,7 @@ pub fn dispatch(
     receiver: Value,
     selector: Symbol,
     args: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+) -> Option<EvalResult> {
     let Value::Obj(obj) = &receiver else {
         return None;
     };

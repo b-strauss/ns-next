@@ -246,6 +246,14 @@ impl Resolver {
     /// name itself as a zero-arg implicit send. `self`/`super` alone (no
     /// message) need no binding entry -- the interpreter special-cases
     /// them directly against the current `Frame` (see Task 6).
+    ///
+    /// Mirrors `resolve_superclass_clause`'s `None` prefix case: a bare
+    /// name that genuinely resolves nowhere lexically (`find_member_depth`
+    /// returns `None`, unlike `depth_search`'s always-defaults-to-0
+    /// behavior) is checked against `classes::is_builtin_class_name`
+    /// *before* falling back to a self send. A builtin match records no
+    /// `Binding` at all for this span -- the interpreter resolves it
+    /// against the builtin table by name instead (see `eval_ident`).
     fn resolve_ident(&mut self, id: &ast::Ident, scope: &mut ScopeStack, chain: &[EnclosingClass]) {
         if id.name == "self" || id.name == "super" {
             return;
@@ -255,9 +263,27 @@ impl Resolver {
             self.bindings.insert(id.span, binding);
             return;
         }
-        let depth = sends::depth_search(chain, name);
-        self.bindings
-            .insert(id.span, Binding::LexicalSend { depth });
+        match sends::find_member_depth(chain, name) {
+            Some(depth) => {
+                self.bindings
+                    .insert(id.span, Binding::LexicalSend { depth });
+            }
+            None if classes::is_builtin_class_name(name) => {
+                // No lexical declaration and none needed -- the base case
+                // that lets a bare builtin-class-name reference (e.g.
+                // `OrderedCollection new` outside any superclass clause)
+                // resolve against the builtin table instead of becoming a
+                // depth-0 self send.
+            }
+            None => {
+                // Not found at any lexical depth and not a builtin --
+                // per the spec, an implicit send that matches nothing
+                // falls back to a depth-0 self send (dispatch then
+                // naturally produces `doesNotUnderstand:`).
+                self.bindings
+                    .insert(id.span, Binding::LexicalSend { depth: 0 });
+            }
+        }
     }
 
     fn resolve_send(&mut self, send: &ast::Send, scope: &mut ScopeStack, chain: &[EnclosingClass]) {

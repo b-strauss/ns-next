@@ -224,6 +224,49 @@ fn method_frame() -> ns_runtime::FrameRef {
     }))
 }
 
+/// Gap 1 (Task 12 brief): sending a method whose body contains a bare
+/// `OrderedCollection new` (no `platform` prefix, outside any superclass
+/// clause) must produce a real, working `OrderedCollection` instance --
+/// `eval_ident`'s symmetric fix to the resolver's `resolve_ident` change,
+/// exercised end to end through a real `send`. Uses `Interpreter::bootstrap`
+/// (not `Interpreter::new`) since `builtin_class` requires the builtin
+/// class table to already be built.
+#[test]
+fn bare_builtin_class_name_reference_produces_a_working_instance() {
+    let src =
+        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public bar = ( ^OrderedCollection new )\n) : ()";
+    let (methods, bindings) = parse_methods(src);
+    let class = class_with_methods("Foo", methods);
+    let instance = instance_of(class);
+
+    let mut interp = Interpreter::bootstrap();
+    let result = interp.send(
+        Value::Obj(instance),
+        Symbol::intern("bar"),
+        vec![],
+        &bindings,
+        None,
+    );
+
+    match result {
+        Ok(Value::Obj(obj)) => {
+            assert!(
+                matches!(&obj.borrow().data, ObjectData::Array(elems) if elems.is_empty()),
+                "expected a fresh, empty OrderedCollection instance, got {:?}",
+                obj.borrow().data
+            );
+        }
+        Ok(other) => panic!("expected Value::Obj(<OrderedCollection instance>), got {other:?}"),
+        Err(Signal::Return(..)) => panic!(
+            "unexpected Signal::Return -- `send` should never see one escape `invoke_method`"
+        ),
+        Err(Signal::Error(e)) => panic!(
+            "unexpected Signal::Error (bare `OrderedCollection` should resolve to the builtin class, not doesNotUnderstand:): {}",
+            e.message
+        ),
+    }
+}
+
 #[test]
 fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
     // `[ ^1 ] value`, conceptually invoked from inside a method: the

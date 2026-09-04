@@ -1,5 +1,6 @@
 //! `Boolean`/`True`/`False` native methods.
 
+use crate::interpreter::EvalResult;
 use crate::types::*;
 use crate::{Interpreter, Symbol};
 
@@ -8,7 +9,7 @@ pub fn dispatch(
     receiver: Value,
     selector: Symbol,
     args: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+) -> Option<EvalResult> {
     let Value::Bool(b) = receiver else {
         return None;
     };

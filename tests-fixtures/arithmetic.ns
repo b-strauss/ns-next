@@ -1,0 +1,9 @@
+Newspeak3
+'Test'
+class Arithmetic usingPlatform: platform = Object new (
+	| result = 6 * 7. |
+) (
+	public main: p args: a = (
+		p transcript show: result printString; newLine
+	)
+) : ()

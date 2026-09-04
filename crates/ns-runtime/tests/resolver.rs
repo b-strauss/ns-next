@@ -48,6 +48,45 @@ fn outer_named_send_resolves_to_the_exact_depth() {
         .any(|b| matches!(b, Binding::LexicalSend { depth: 1 })));
 }
 
+/// Gap 1 (Task 12 brief): a bare reference to a builtin class name --
+/// outside any superclass clause -- must resolve without a `ResolveError`,
+/// and must record *no* `Binding` at all at that identifier's span,
+/// mirroring `resolve_superclass_clause`'s existing convention for the
+/// analogous superclass-clause case (see `classes::is_builtin_class_name`).
+/// Locates the exact span of the `OrderedCollection` identifier by walking
+/// the parsed AST directly, rather than scanning `bindings.values()`
+/// (which cannot distinguish "no binding recorded here" from "no bindings
+/// anywhere").
+#[test]
+fn bare_builtin_class_name_resolves_with_no_binding_at_its_span() {
+    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  bar = ( | c | c := OrderedCollection new. ^c )\n) : ()";
+    let module = ns_syntax::parse(src).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module.clone(),
+        src.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve must succeed -- a bare builtin class name is not a resolve error");
+
+    let method = &module.root_class.instance_side.methods[0];
+    let ns_syntax::ast::Stmt::Expr(ns_syntax::ast::Expr::Assign { value, .. }) =
+        &method.body.stmts[0]
+    else {
+        panic!("expected the method's first statement to be `c := OrderedCollection new.`");
+    };
+    let ns_syntax::ast::Expr::Send(send) = value.as_ref() else {
+        panic!("expected the assignment's value to be a `Send` (`OrderedCollection new`)");
+    };
+    let ns_syntax::ast::Expr::Ident(receiver_id) = &send.receiver else {
+        panic!("expected the send's receiver to be a bare `Ident` (`OrderedCollection`)");
+    };
+    assert_eq!(receiver_id.name, "OrderedCollection");
+    assert!(
+        resolved.bindings.get(&receiver_id.span).is_none(),
+        "a bare builtin class name reference must record no Binding at its span"
+    );
+}
+
 #[test]
 fn undeclared_outer_class_name_is_a_resolve_error() {
     let module = ns_syntax::parse(

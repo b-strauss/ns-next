@@ -12,6 +12,7 @@
 //! a literal array's fixed size; revisit if a later milestone needs the two
 //! to diverge (e.g. `Array` becoming genuinely fixed-size).
 
+use crate::interpreter::{EvalResult, Signal};
 use crate::types::*;
 use crate::{Interpreter, Symbol};
 
@@ -42,7 +43,7 @@ fn dispatch_common(
     receiver: Value,
     selector: Symbol,
     args: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+) -> Option<EvalResult> {
     let Value::Obj(obj) = &receiver else {
         return None;
     };
@@ -61,27 +62,38 @@ fn dispatch_common(
                     if *index >= 1 && (*index as usize) <= items.len() {
                         Ok(items[(*index as usize) - 1].clone())
                     } else {
-                        Err(out_of_range(&receiver, selector, *index, items.len()))
+                        Err(Signal::Error(out_of_range(
+                            &receiver,
+                            selector,
+                            *index,
+                            items.len(),
+                        )))
                     }
                 }
-                other => Err(not_an_integer(&receiver, selector, other)),
+                other => Err(Signal::Error(not_an_integer(&receiver, selector, other))),
             })
         }
+        // Task 12 fix: `do:` invokes its block argument via `call_block`,
+        // which now forwards a `Signal::Return` (a non-local `^expr` inside
+        // the block, e.g. `coll do: [:each | ... ifTrue: [^x]]`) straight
+        // through instead of converting it into a `NewspeakError` -- so
+        // this whole function's return type must be able to carry `Signal`,
+        // not just `NewspeakError`, and this arm's `?` does exactly that.
         "do:" => {
             let items = match &obj.borrow().data {
                 ObjectData::Array(items) => items.clone(),
                 _ => return None,
             };
             let Some(block) = args.first().cloned() else {
-                return Some(Err(NewspeakError {
+                return Some(Err(Signal::Error(NewspeakError {
                     selector,
                     receiver: receiver.clone(),
                     message: "do: requires a block argument".to_string(),
-                }));
+                })));
             };
             for item in items {
-                if let Err(e) = super::call_block(interp, &block, vec![item]) {
-                    return Some(Err(e));
+                if let Err(signal) = super::call_block(interp, &block, vec![item]) {
+                    return Some(Err(signal));
                 }
             }
             Some(Ok(receiver.clone()))
@@ -95,7 +107,7 @@ pub fn dispatch_array(
     receiver: Value,
     selector: Symbol,
     args: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+) -> Option<EvalResult> {
     if selector.as_str() == "at:put:" {
         let Value::Obj(obj) = &receiver else {
             return None;
@@ -106,10 +118,16 @@ pub fn dispatch_array(
         };
         let index = match args.first() {
             Some(Value::SmallInt(index)) => *index,
-            other => return Some(Err(not_an_integer(&receiver, selector, other))),
+            other => {
+                return Some(Err(Signal::Error(not_an_integer(
+                    &receiver, selector, other,
+                ))))
+            }
         };
         if index < 1 || (index as usize) > len {
-            return Some(Err(out_of_range(&receiver, selector, index, len)));
+            return Some(Err(Signal::Error(out_of_range(
+                &receiver, selector, index, len,
+            ))));
         }
         let value = args.get(1).cloned().unwrap_or(Value::Nil);
         if let ObjectData::Array(items) = &mut obj.borrow_mut().data {
@@ -125,7 +143,7 @@ pub fn dispatch_ordered_collection(
     receiver: Value,
     selector: Symbol,
     args: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+) -> Option<EvalResult> {
     if selector.as_str() == "add:" {
         let Value::Obj(obj) = &receiver else {
             return None;

@@ -122,7 +122,7 @@ impl Interpreter {
         sender: Option<FrameRef>,
     ) -> EvalResult {
         match crate::builtins::dispatch_native(self, kind, receiver.clone(), selector, &args) {
-            Some(result) => result.map_err(Signal::Error),
+            Some(result) => result,
             None => self.does_not_understand(receiver, selector, args, bindings, sender),
         }
     }
@@ -177,7 +177,7 @@ impl Interpreter {
                     dnu_selector,
                     &[message_arg],
                 ) {
-                    Some(result) => result.map_err(Signal::Error),
+                    Some(result) => result,
                     None => Err(Signal::Error(NewspeakError {
                         selector,
                         receiver,
