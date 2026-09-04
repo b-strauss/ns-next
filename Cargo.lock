@@ -229,6 +229,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ns-runtime"
+version = "0.1.0"
+dependencies = [
+ "ns-syntax",
+]
+
+[[package]]
 name = "ns-syntax"
 version = "0.1.0"
 dependencies = [
