@@ -444,6 +444,27 @@ pub fn invoke_closure(
     args: Vec<Value>,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
+    // Task 10 fix: reject a wrong argument count as a NewspeakError up
+    // front, before it can reach `read_local`. Without this guard, a call
+    // with too few args can panic outright -- `read_local`'s
+    // `i < borrowed.args.len()` check falls through to
+    // `temps[i - borrowed.args.len()]`, which is out of bounds whenever the
+    // missing args would have covered a param index that has no
+    // correspondingly-allocated temp slot -- and a call with too many args
+    // would silently misaddress temps instead of erroring. Never panic on
+    // this Newspeak-program-input path.
+    if args.len() != closure.params.len() {
+        let receiver = closure.captured_frame.borrow().receiver.clone();
+        return Err(Signal::Error(NewspeakError {
+            selector: Symbol::intern("value"),
+            receiver,
+            message: format!(
+                "wrong number of block arguments: block takes {}, got {}",
+                closure.params.len(),
+                args.len()
+            ),
+        }));
+    }
     let receiver = closure.captured_frame.borrow().receiver.clone();
     let current_class = closure.captured_frame.borrow().current_class.clone();
     let frame = Rc::new(RefCell::new(Frame {

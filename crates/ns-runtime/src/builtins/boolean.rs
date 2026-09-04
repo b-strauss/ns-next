@@ -13,14 +13,18 @@ pub fn dispatch(
         return None;
     };
     match selector.as_str() {
-        "ifTrue:ifFalse:" => Some(invoke_block(interp, if b { &args[0] } else { &args[1] })),
+        "ifTrue:ifFalse:" => Some(super::call_block(
+            interp,
+            if b { &args[0] } else { &args[1] },
+            vec![],
+        )),
         "ifTrue:" => Some(if b {
-            invoke_block(interp, &args[0])
+            super::call_block(interp, &args[0], vec![])
         } else {
             Ok(Value::Nil)
         }),
         "ifFalse:" => Some(if !b {
-            invoke_block(interp, &args[0])
+            super::call_block(interp, &args[0], vec![])
         } else {
             Ok(Value::Nil)
         }),
@@ -34,40 +38,15 @@ pub fn dispatch(
     }
 }
 
-fn invoke_block(interp: &mut Interpreter, value: &Value) -> Result<Value, NewspeakError> {
-    // `and:`/`or:`/`ifTrue:` etc. take a zero-arg block; invoking it is the
-    // same primitive `Block value` uses (Task 10) -- call through the
-    // shared closure-invocation entry point directly rather than a full
-    // `send`, since these are the language's fundamental control-flow
-    // primitives and must not depend on `Block`'s own native methods being
-    // registered yet in dispatch order.
-    match value {
-        Value::Obj(obj) => {
-            if let ObjectData::Closure(closure) = &obj.borrow().data {
-                let closure = std::rc::Rc::new(closure.clone());
-                let bindings = closure.bindings.clone();
-                return crate::interpreter::eval::invoke_closure(
-                    interp,
-                    &closure,
-                    vec![],
-                    &bindings,
-                )
-                .map_err(|signal| match signal {
-                    crate::interpreter::Signal::Error(e) => e,
-                    crate::interpreter::Signal::Return(..) => NewspeakError {
-                        selector: Symbol::intern("value"),
-                        receiver: value.clone(),
-                        message: "non-local return escaped a Boolean control-flow block"
-                            .to_string(),
-                    },
-                });
-            }
-            Ok(value.clone())
-        }
-        other => Ok(other.clone()),
-    }
-}
-
+/// `and:`/`or:`/`ifTrue:` etc. take a zero-arg block; invoking it goes
+/// through the shared `call_block` primitive (Task 10 refactor -- this used
+/// to be a local `invoke_block` copy of that same logic) rather than a full
+/// `send`, since these are the language's fundamental control-flow
+/// primitives and must not depend on `Block`'s own native methods being
+/// registered yet in dispatch order.
 fn truthy_arg(interp: &mut Interpreter, value: &Value) -> bool {
-    matches!(invoke_block(interp, value), Ok(Value::Bool(true)))
+    matches!(
+        super::call_block(interp, value, vec![]),
+        Ok(Value::Bool(true))
+    )
 }
