@@ -138,10 +138,17 @@ impl<'a> Lexer<'a> {
             }
             _ if SPECIAL.contains(&b) => self.lex_operator(),
             _ => {
-                self.pos += 1;
+                // Decode the real UTF-8 char at `self.pos` rather than
+                // Latin-1-decoding a single byte: `b as char` mangles a
+                // multi-byte codepoint (e.g. `é` -> `Ã©`, reported twice) and
+                // leaves the span ending mid-codepoint, which panics later in
+                // `Span::text`. Advance by the whole char; one diagnostic per
+                // stray char, span aligned to codepoint boundaries.
+                let ch = self.src[self.pos..].chars().next().unwrap_or('\u{FFFD}');
+                self.pos += ch.len_utf8();
                 self.diags.push(Diagnostic::error(
                     Span::new(start as u32, self.pos as u32),
-                    format!("unexpected character {:?}", b as char),
+                    format!("unexpected character {ch:?}"),
                 ));
             }
         }
@@ -331,9 +338,12 @@ impl<'a> Lexer<'a> {
 
     fn lex_char_constant(&mut self) {
         let start = self.pos;
-        self.pos += 1; // opening `"`
-        match self.peek() {
-            Some(_) => self.pos += 1,
+        self.pos += 1; // opening `"` (ASCII, one byte)
+                       // The character between the quotes may be any single codepoint,
+                       // including a multi-byte one (`"é"`). Advance by its full UTF-8 width
+                       // so the token span never ends mid-codepoint.
+        match self.src[self.pos..].chars().next() {
+            Some(ch) => self.pos += ch.len_utf8(),
             None => {
                 self.diags.push(Diagnostic::error(
                     Span::new(start as u32, self.pos as u32),
@@ -560,6 +570,37 @@ mod tests {
     fn token_stream_ends_with_eoi() {
         let tokens = crate::lex("foo").unwrap();
         assert_eq!(tokens.last().unwrap().kind, Eoi);
+    }
+
+    #[test]
+    fn stray_non_ascii_char_is_one_codepoint_aligned_diagnostic() {
+        let src = "é";
+        let (_tokens, diags) = Lexer::new(src).run();
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        // Span is codepoint-aligned: `text` must not panic and covers the char.
+        assert_eq!(diags[0].span.text(src), "é");
+    }
+
+    #[test]
+    fn char_constant_may_hold_a_multibyte_char() {
+        let src = "\"é\"";
+        let (tokens, diags) = Lexer::new(src).run();
+        assert!(diags.is_empty(), "{diags:?}");
+        let ccs: Vec<_> = tokens.iter().filter(|t| t.kind == CharConstant).collect();
+        assert_eq!(ccs.len(), 1);
+        assert_eq!(ccs[0].span.text(src), "\"é\"");
+    }
+
+    #[test]
+    fn literalmessage_pragma_comment_is_plain_trivia() {
+        // `(* :literalmessage: ... *)` is an ordinary block comment: no tokens,
+        // no diagnostics.
+        let (tokens, diags) = Lexer::new("(* :literalmessage: foo bar *)").run();
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(
+            tokens.into_iter().map(|t| t.kind).collect::<Vec<_>>(),
+            vec![Eoi]
+        );
     }
 
     #[test]

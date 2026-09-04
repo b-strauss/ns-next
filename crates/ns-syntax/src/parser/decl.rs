@@ -253,6 +253,10 @@ impl<'a> Parser<'a> {
             self.push_error(self.cur().span, "expected a language id (e.g. `Newspeak3`)");
             String::new()
         };
+        // DEVIATION (grammar line 202: `classCategory = string opt`): the
+        // grammar makes the category string optional; we require it and emit a
+        // diagnostic when it is absent. Every corpus module carries one;
+        // revisit in Milestone 2.
         let category = if self.at(T::String) {
             let t = self.bump();
             string_lexeme_body(self.text(t))
@@ -312,6 +316,12 @@ impl<'a> Parser<'a> {
             Some(self.parse_message_pattern())
         };
         self.expect(T::Equals);
+        // DEVIATION (grammar lines 49, 195, 214-221): mixin application
+        // `class C = Super <: Mixin (...) (...)` (the `inverseMixinOperator`
+        // `<:`, `mixinApplication` / `mixinAppSuffix`) is unimplemented for
+        // Milestone 1 — no corpus file uses `<:` in a superclass clause.
+        // `parse_superclass_clause` parses the receiver and its trailing
+        // message sends only; a following `<:` is left for the caller to flag.
         let superclass = if self.at(T::LParen) {
             None
         } else {
@@ -377,15 +387,15 @@ impl<'a> Parser<'a> {
     /// (`corpus/reference/NewspeakGrammar.ns:196`,
     /// `classComment = whitespace opt , comment`, where `comment` is a
     /// `(* ... *)` block form — `beginNSComment`/`endNSComment`, grammar
-    /// lines 152-153) it is a block comment, which the lexer drops as trivia;
-    /// that form is recovered here from the source gap between the opening `(`
-    /// and the next token. A leading `'...'` string literal is also accepted
-    /// (some sources write the class comment that way) and its contents kept.
+    /// lines 152-153) it is *exclusively* a block comment, which the lexer
+    /// drops as trivia; that form is recovered here from the source gap
+    /// between the opening `(` and the next token.
+    ///
+    /// A leading `'...'` string in the header body is NOT a class comment: per
+    /// grammar line 165 it is the first `initExprs` expression (e.g. its
+    /// receiver in `'hello' printLine.`). Consuming it here silently dropped a
+    /// valid init expression, so that branch was removed.
     fn take_class_comment(&mut self) -> Option<String> {
-        if self.at(T::String) {
-            let t = self.bump();
-            return Some(string_lexeme_body(self.text(t)));
-        }
         let prev_end = self.tokens.get(self.pos.checked_sub(1)?)?.span.end as usize;
         let cur_start = self.cur().span.start as usize;
         let gap = self.src.get(prev_end..cur_start)?.trim();
@@ -545,7 +555,21 @@ impl<'a> Parser<'a> {
                     );
                 }
                 _ if self.at_nested_class() => {
+                    // Recursion-depth guard for nested classes
+                    // (`class C = () ( class C = () ( … `). Without it deeply
+                    // nested classes recurse until an uncatchable stack
+                    // overflow. On exceeding the limit: one diagnostic, skip to
+                    // the nearest structural token, and stop the nested-class
+                    // loop for this body.
+                    if !self.enter() {
+                        self.leave();
+                        let t = self.cur();
+                        self.push_error(t.span, "class nesting too deep");
+                        self.skip_to_structural();
+                        break;
+                    }
                     nested_classes.push(self.parse_class_decl());
+                    self.leave();
                 }
                 _ if self.at_lazy_slot() => {
                     lazy_slots.push(self.parse_lazy_slot_decl());
@@ -732,11 +756,10 @@ impl<'a> Parser<'a> {
 }
 
 /// Contents of a `'...'` string lexeme with `''` unescaped. Safe on a
-/// truncated lexeme (returns "" rather than panicking).
+/// truncated lexeme (returns the input unchanged rather than panicking) via
+/// the shared [`super::lexeme_body`] helper.
 fn string_lexeme_body(raw: &str) -> String {
-    raw.get(1..raw.len().saturating_sub(1))
-        .unwrap_or("")
-        .replace("''", "'")
+    super::lexeme_body(raw).replace("''", "'")
 }
 
 #[cfg(test)]
@@ -1014,6 +1037,67 @@ class Outer usingPlatform: p = (
         let body = &m.root_class.instance_side;
         assert!(body.slots.is_empty());
         assert_eq!(body.methods.len(), 1);
+    }
+
+    // --- I2: a leading string in the class header body is an init expression,
+    // not a class comment. ---
+    #[test]
+    fn leading_string_in_header_is_an_init_expr_not_a_comment() {
+        let m = module("Newspeak3\n'X'\nclass C = ( 'hello' printLine. ) ()\n");
+        assert_eq!(m.root_class.class_comment, None);
+        let body = &m.root_class.instance_side;
+        assert_eq!(body.init_exprs.len(), 1);
+        let Stmt::Expr(Expr::Send(s)) = &body.init_exprs[0] else {
+            panic!("{:?}", body.init_exprs[0])
+        };
+        assert_eq!(s.message.selector, Selector::Unary("printLine".into()));
+        assert!(
+            matches!(s.receiver, Expr::Literal(Literal::String { .. })),
+            "{:?}",
+            s.receiver
+        );
+    }
+
+    // The block-comment path is untouched: `(* ... *)` in G1 still becomes the
+    // class comment.
+    #[test]
+    fn block_comment_in_header_is_still_the_class_comment() {
+        let m = module("Newspeak3\n'X'\nclass C = ( (* a comment *) ) ()\n");
+        assert_eq!(m.root_class.class_comment.as_deref(), Some(" a comment "));
+    }
+
+    // --- C1: recursion-depth guard. None of these may abort the process. ---
+    #[test]
+    fn deeply_nested_open_parens_do_not_overflow() {
+        assert!(crate::parse(&"(".repeat(10_000)).is_err());
+    }
+
+    #[test]
+    fn deeply_nested_open_brackets_do_not_overflow() {
+        assert!(crate::parse(&"[".repeat(10_000)).is_err());
+    }
+
+    #[test]
+    fn deeply_nested_but_closed_reports_depth_diagnostic() {
+        let src = format!("{}x{}", "(".repeat(5000), ")".repeat(5000));
+        let Err(diags) = crate::parse(&src) else {
+            panic!("expected Err")
+        };
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains("nested too deeply")));
+    }
+
+    #[test]
+    fn deeply_nested_classes_do_not_overflow() {
+        let src = "class C = () (".repeat(5000);
+        assert!(crate::parse(&src).is_err());
+    }
+
+    #[test]
+    fn shallow_nesting_still_parses_clean() {
+        let m = module("Newspeak3\n'X'\nclass C = ( ((((x)))). ) ()\n");
+        assert_eq!(m.root_class.instance_side.init_exprs.len(), 1);
     }
 }
 

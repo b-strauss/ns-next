@@ -3,7 +3,43 @@ use crate::ast::*;
 use crate::token::TokenKind as T;
 
 impl<'a> Parser<'a> {
+    /// Recursion-depth-guarded entry to `primary`. Deeply nested input
+    /// (`((((…`, `[[[[…`, `#((((…`, …) would otherwise recurse until the
+    /// process aborts with an uncatchable stack overflow, violating the
+    /// "malformed source produces `Diagnostic`s" contract. On exceeding
+    /// [`MAX_DEPTH`](super::MAX_DEPTH) we emit one diagnostic, skip forward to
+    /// the nearest structural token, and return a `Literal::Nil` recovery node
+    /// (matching the `_ =>` arm below).
     pub(super) fn parse_primary(&mut self) -> Expr {
+        let ok = self.enter();
+        let e = if ok {
+            self.parse_primary_inner()
+        } else {
+            let t = self.cur();
+            self.push_error(t.span, "expression nested too deeply");
+            self.skip_to_structural();
+            Expr::Literal(Literal::Nil { span: t.span })
+        };
+        self.leave();
+        e
+    }
+
+    /// Skip forward to the nearest structural token (`)` `]` `}` `.` or end of
+    /// input) without consuming end-of-input. Used to bail out of an
+    /// over-deep recursion onto a token the unwinding callers can resynchronise
+    /// on.
+    pub(super) fn skip_to_structural(&mut self) {
+        loop {
+            match self.peek() {
+                T::RParen | T::RBracket | T::RBrace | T::Dot | T::Eoi => break,
+                _ => {
+                    self.bump();
+                }
+            }
+        }
+    }
+
+    fn parse_primary_inner(&mut self) -> Expr {
         match self.peek() {
             T::LParen => {
                 self.bump();
@@ -87,7 +123,7 @@ impl<'a> Parser<'a> {
                 span: t.span,
             },
             T::CharConstant => {
-                let inner = &raw[1..raw.len() - 1];
+                let inner = super::lexeme_body(&raw);
                 Literal::Char {
                     value: inner.chars().next().unwrap_or('\u{0}'),
                     span: t.span,
@@ -165,7 +201,24 @@ impl<'a> Parser<'a> {
         }
     }
 
+    // Depth-guarded: nested `#( ( ( … ) ) )` literal arrays recurse here
+    // without passing through `parse_primary`, so this mouth needs its own
+    // guard sharing the same budget.
     fn parse_array_element(&mut self) -> Literal {
+        let ok = self.enter();
+        let lit = if ok {
+            self.parse_array_element_inner()
+        } else {
+            let t = self.cur();
+            self.push_error(t.span, "expression nested too deeply");
+            self.skip_to_structural();
+            Literal::Nil { span: t.span }
+        };
+        self.leave();
+        lit
+    }
+
+    fn parse_array_element_inner(&mut self) -> Literal {
         match self.peek() {
             T::LParen => {
                 let lp = self.bump();
@@ -506,14 +559,13 @@ pub(super) fn literal_span(l: &Literal) -> crate::span::Span {
 }
 
 fn unescape_string(raw: &str) -> String {
-    let inner = &raw[1..raw.len() - 1];
-    inner.replace("''", "'")
+    super::lexeme_body(raw).replace("''", "'")
 }
 
 fn symbol_body(raw: &str) -> String {
-    let body = &raw[1..]; // drop '#'
+    let body = raw.strip_prefix('#').unwrap_or(raw);
     if body.starts_with('\'') {
-        body[1..body.len() - 1].replace("''", "'")
+        super::lexeme_body(body).replace("''", "'")
     } else {
         body.to_string()
     }

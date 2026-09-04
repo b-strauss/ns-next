@@ -63,7 +63,13 @@ fn cmd_parse_corpus(dir: &Path, blacklist: Option<&Path>) -> ExitCode {
     let bl_path = blacklist
         .map(PathBuf::from)
         .unwrap_or_else(|| dir.parent().unwrap_or(dir).join("blacklist.toml"));
-    let blacklist = load_blacklist(&bl_path);
+    let blacklist = match load_blacklist(&bl_path) {
+        Ok(bl) => bl,
+        Err(e) => {
+            eprintln!("error: blacklist {}: {e}", bl_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
 
     let mut files: Vec<PathBuf> = Vec::new();
     collect_ns_files(dir, &mut files);
@@ -112,8 +118,16 @@ fn collect_ns_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn load_blacklist(path: &Path) -> std::collections::HashSet<String> {
-    #[derive(serde::Deserialize, Default)]
+/// Load the set of blacklisted file names.
+///
+/// A file that is present but unreadable or unparseable is a hard error
+/// (returns `Err`): silently treating it as an empty blacklist would make
+/// `parse-corpus` report phantom regressions with no explanation. A genuinely
+/// absent file is treated as an empty blacklist with a one-line note — the
+/// repo ships `corpus/blacklist.toml`, so absence is the unusual case and is
+/// most likely a caller passing a bare directory with no companion file.
+fn load_blacklist(path: &Path) -> Result<std::collections::HashSet<String>, String> {
+    #[derive(serde::Deserialize)]
     struct Bl {
         #[serde(default)]
         entry: Vec<Entry>,
@@ -124,9 +138,19 @@ fn load_blacklist(path: &Path) -> std::collections::HashSet<String> {
         #[allow(dead_code)]
         reason: String,
     }
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    let bl: Bl = toml::from_str(&text).unwrap_or_default();
-    bl.entry.into_iter().map(|e| e.file).collect()
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "note: no blacklist at {} (treating as empty)",
+                path.display()
+            );
+            return Ok(std::collections::HashSet::new());
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    let bl: Bl = toml::from_str(&text).map_err(|e| e.to_string())?;
+    Ok(bl.entry.into_iter().map(|e| e.file).collect())
 }
 
 fn print_diagnostics(file: &Path, src: &str, diags: &[Diagnostic]) {

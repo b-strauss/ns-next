@@ -7,11 +7,22 @@ use crate::ast::*;
 use crate::diagnostic::Diagnostic;
 use crate::token::{Token, TokenKind};
 
+/// Maximum nesting depth for the recursive parser productions guarded by
+/// [`Parser::enter`] / [`Parser::leave`] (`parse_primary`,
+/// `parse_array_element`, `parse_class_decl`). The deepest real corpus
+/// program nests in the single digits; 128 is far past any genuine program
+/// and well short of the (uncatchable) debug-build stack-overflow point at
+/// roughly 250 frames.
+const MAX_DEPTH: u32 = 128;
+
 pub struct Parser<'a> {
     src: &'a str,
     tokens: Vec<Token>,
     pos: usize,
     diags: Vec<Diagnostic>,
+    /// Current recursion depth across the guarded productions. Incremented by
+    /// [`Parser::enter`], decremented by [`Parser::leave`].
+    depth: u32,
 }
 
 impl<'a> Parser<'a> {
@@ -21,7 +32,22 @@ impl<'a> Parser<'a> {
             tokens,
             pos: 0,
             diags: Vec::new(),
+            depth: 0,
         }
+    }
+
+    /// Enter a guarded recursive production. Returns `false` once the nesting
+    /// limit is exceeded; the caller must then push a diagnostic, recover, and
+    /// return a placeholder node instead of recursing. Every call must be
+    /// paired with exactly one [`Parser::leave`] on every return path (both the
+    /// `true` and the `false` branch), so the count never leaks.
+    fn enter(&mut self) -> bool {
+        self.depth += 1;
+        self.depth <= MAX_DEPTH
+    }
+
+    fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     fn cur(&self) -> Token {
@@ -256,6 +282,22 @@ impl<'a> Parser<'a> {
     }
 
     // `parse_expression` and the full precedence ladder live in `expr.rs`.
+}
+
+/// Strip the first and last character from a lexeme — the quotes of a string
+/// literal, the `"` delimiters of a character constant, the inner `'...'` of a
+/// quoted symbol.
+///
+/// Panic-safe: a lexeme shorter than two characters is returned unchanged
+/// rather than sliced through a byte range that could underflow or land in the
+/// middle of a multi-byte UTF-8 sequence. Behaviour is identical to
+/// `&raw[1..raw.len() - 1]` for every well-formed ASCII-delimited lexeme.
+pub(super) fn lexeme_body(raw: &str) -> &str {
+    let mut chars = raw.char_indices();
+    match (chars.next(), chars.next_back()) {
+        (Some((_, first)), Some((last_start, _))) => &raw[first.len_utf8()..last_start],
+        _ => raw,
+    }
 }
 
 #[cfg(test)]
@@ -560,6 +602,52 @@ mod tests {
             s.message.selector,
             Selector::Keyword("when:fulfilled:".into())
         );
+    }
+
+    #[test]
+    fn lexeme_body_strips_first_and_last_char_safely() {
+        // Well-formed and degenerate inputs, plus a multi-byte body — none panic.
+        assert_eq!(lexeme_body(""), "");
+        assert_eq!(lexeme_body("'"), "'");
+        assert_eq!(lexeme_body("''"), "");
+        assert_eq!(lexeme_body("'x'"), "x");
+        assert_eq!(lexeme_body("#sym"), "sy");
+        assert_eq!(lexeme_body("'é'"), "é");
+    }
+
+    #[test]
+    fn pattern_literal_produces_a_pattern_node() {
+        // `parse_pattern_literal` fires for a `<...>` in expression position.
+        let Expr::Send(s) = parse_expr("bar: <at: 1>") else {
+            panic!()
+        };
+        assert!(
+            matches!(s.message.args[0], Expr::Literal(Literal::Pattern { .. })),
+            "{:?}",
+            s.message.args[0]
+        );
+    }
+
+    #[test]
+    fn char_constant_produces_a_char_literal() {
+        let Expr::Literal(Literal::Char { value, .. }) = parse_expr("\"a\"") else {
+            panic!()
+        };
+        assert_eq!(value, 'a');
+    }
+
+    #[test]
+    fn deeply_nested_parens_recover_without_overflow() {
+        // Public `parse` must return diagnostics, not abort. Completes fast.
+        let src = "(".repeat(10_000);
+        let tokens = crate::lex(&src).expect("lex");
+        let mut p = Parser::new(&src, tokens);
+        let _ = p.parse_expr_for_test();
+        assert!(!p.diags.is_empty());
+        assert!(p
+            .diags
+            .iter()
+            .any(|d| d.message.contains("nested too deeply")));
     }
 
     #[test]
