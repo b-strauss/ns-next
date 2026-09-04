@@ -112,6 +112,51 @@ impl Interpreter {
         }
     }
 
+    /// Native dispatch that still inherits `Object`'s own native methods.
+    ///
+    /// `dispatch::walk` deliberately treats a class tagged
+    /// `builtin: Some(kind)` as a *dispatch leaf*: it returns
+    /// `Lookup::Native(kind)` the moment it reaches one, without continuing
+    /// up that class's own superclass chain (Task 5's design note -- that
+    /// early return is what keeps `lookupPublic`'s `hard_stop_on_mismatch`
+    /// semantics uniform, and restructuring it is out of scope). Every
+    /// non-`Object` builtin's superclass is `Object` (see
+    /// `build_builtin_classes` below), and none of `numbers`/`text`/
+    /// `collections`/`block`/`boolean` implements `class`/`==`/`=`/`hash`/
+    /// `printString`/`doesNotUnderstand:` itself -- so without this helper
+    /// those `Object` methods would be unreachable on *every* non-`Object`
+    /// receiver, and `Object`'s spec-required `doesNotUnderstand:` would
+    /// never fire for a builtin at all.
+    ///
+    /// Restores exactly the one missing inheritance step, at the consuming
+    /// call site rather than inside `walk`: try `kind`'s own native table
+    /// first (so a builtin that *does* implement a selector still wins),
+    /// then `Object`'s. Returns `None` only when neither implements
+    /// `selector`.
+    fn dispatch_native_inheriting_object(
+        &mut self,
+        kind: BuiltinClass,
+        receiver: &Value,
+        selector: Symbol,
+        args: &[Value],
+    ) -> Option<EvalResult> {
+        if let Some(result) =
+            crate::builtins::dispatch_native(self, kind, receiver.clone(), selector, args)
+        {
+            return Some(result);
+        }
+        if kind == BuiltinClass::Object {
+            return None;
+        }
+        crate::builtins::dispatch_native(
+            self,
+            BuiltinClass::Object,
+            receiver.clone(),
+            selector,
+            args,
+        )
+    }
+
     fn dispatch_native_or_dnu(
         &mut self,
         kind: BuiltinClass,
@@ -121,7 +166,7 @@ impl Interpreter {
         bindings: &Rc<HashMap<Span, Binding>>,
         sender: Option<FrameRef>,
     ) -> EvalResult {
-        match crate::builtins::dispatch_native(self, kind, receiver.clone(), selector, &args) {
+        match self.dispatch_native_inheriting_object(kind, &receiver, selector, &args) {
             Some(result) => result,
             None => self.does_not_understand(receiver, selector, args, bindings, sender),
         }
@@ -170,10 +215,16 @@ impl Interpreter {
                 let selector_value = self.new_symbol(selector);
                 let args_value = Value::Obj(self.new_array(args));
                 let message_arg = Value::Obj(self.new_array(vec![selector_value, args_value]));
-                match crate::builtins::dispatch_native(
-                    self,
+                // Same two-step fallback as `dispatch_native_or_dnu`: `kind`
+                // is whatever builtin class `walk` stopped at, and no
+                // builtin implements `doesNotUnderstand:` itself, so
+                // without the `Object` step this would always miss and fall
+                // into the internal-error arm below instead of running
+                // `builtins::object_class`'s real, spec-shaped
+                // `doesNotUnderstand:`.
+                match self.dispatch_native_inheriting_object(
                     kind,
-                    receiver.clone(),
+                    &receiver,
                     dnu_selector,
                     &[message_arg],
                 ) {
