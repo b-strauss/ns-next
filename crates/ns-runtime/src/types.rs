@@ -98,6 +98,12 @@ pub struct ClosureData {
     /// The lexically enclosing *method* activation -- see the design note
     /// above on why this is a `FrameRef`, not an `ObjRef`.
     pub home: FrameRef,
+    /// The resolver's bindings map the block literal's body was originally
+    /// resolved under. Any `LexicalSend`, `SuperSend`, or local-variable
+    /// reference inside the block body needs this exact map to resolve --
+    /// invoking the closure with a different (e.g. empty) map would break
+    /// such references. Cloning an `Rc` here is cheap.
+    pub bindings: Rc<HashMap<Span, Binding>>,
 }
 
 // ---------- Resolver output ----------

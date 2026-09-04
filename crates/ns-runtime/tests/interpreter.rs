@@ -233,15 +233,16 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
     let block_body = parse_block_body(
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public withBlock = ( [ ^1 ] )\n) : ()",
     );
+    let bindings = Rc::new(HashMap::new());
     let closure = Rc::new(ClosureData {
         params: vec![],
         body: Rc::new(block_body),
         captured_frame: home.clone(),
         home: home.clone(),
+        bindings: bindings.clone(),
     });
 
     let mut interp = Interpreter::new();
-    let bindings = Rc::new(HashMap::new());
     let result = eval::invoke_closure(&mut interp, &closure, vec![], &bindings);
 
     // This is exactly the check `Interpreter::invoke_method` performs to
@@ -275,15 +276,16 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
     let block_body = parse_block_body(
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public withBlock = ( [ ^1 ] )\n) : ()",
     );
+    let bindings = Rc::new(HashMap::new());
     let closure = Rc::new(ClosureData {
         params: vec![],
         body: Rc::new(block_body),
         captured_frame: home.clone(),
         home: home.clone(),
+        bindings: bindings.clone(),
     });
 
     let mut interp = Interpreter::new();
-    let bindings = Rc::new(HashMap::new());
 
     // First invocation succeeds and (as `raise_return` does on every
     // successful return) marks `home` `uncontinuable` -- modeling the home

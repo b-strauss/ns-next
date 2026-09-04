@@ -414,7 +414,7 @@ fn eval_block_literal(
     interp: &mut Interpreter,
     block: &ast::BlockExpr,
     frame: &FrameRef,
-    _bindings: &Rc<HashMap<Span, Binding>>,
+    bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     let home = match &frame.borrow().kind {
         FrameKind::Method(_) | FrameKind::TopLevel => frame.clone(),
@@ -429,6 +429,7 @@ fn eval_block_literal(
         body: Rc::new(block.body.clone()),
         captured_frame: frame.clone(),
         home,
+        bindings: bindings.clone(),
     });
     Ok(Value::Obj(interp.new_closure(closure)))
 }

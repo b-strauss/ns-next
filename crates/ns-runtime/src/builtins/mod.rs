@@ -2,6 +2,8 @@
 //! classes. `BuiltinClass::Object` (Task 7) is the first real arm; the rest
 //! land in Tasks 8-10.
 
+pub mod boolean;
+pub mod numbers;
 pub mod object_class;
 
 use crate::types::*;
@@ -19,8 +21,11 @@ pub fn dispatch_native(
 ) -> Option<Result<Value, NewspeakError>> {
     match kind {
         BuiltinClass::Object => object_class::dispatch(interp, receiver, selector, args),
-        // BuiltinClass::Boolean | True | False -> Task 8
-        // BuiltinClass::Integer | Float -> Task 9 (numbers)
+        BuiltinClass::Boolean | BuiltinClass::True | BuiltinClass::False => {
+            boolean::dispatch(interp, receiver, selector, args)
+        }
+        BuiltinClass::Integer => numbers::dispatch_integer(interp, receiver, selector, args),
+        BuiltinClass::Float => numbers::dispatch_float(interp, receiver, selector, args),
         // BuiltinClass::Str | Sym | Character -> Task 9 (text)
         // BuiltinClass::Array | OrderedCollection -> Task 10
         // BuiltinClass::Block -> Task 10
