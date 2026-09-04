@@ -228,7 +228,12 @@ parameters (e.g. `platform`).
 
 - `Value = Nil | Bool(bool) | SmallInt(i64) | Float(f64) | Obj(ObjRef)`
   where `ObjRef = Rc<RefCell<Object>>`.
-- `Object { class: ClassRef, data: ObjectData }`.
+- `Object { class: ClassRef, identity_hash: u32, data: ObjectData }`. The
+  identity hash is a **monotonic counter value assigned at allocation**, not
+  derived from the `Rc` pointer address — required by
+  `2026-09-04-ns-next-liveness-images-vm-design.md`'s stable-identity
+  constraint, since a hash derived from the address would break the moment a
+  later milestone's GC moves the object or `become:` swaps its identity.
 - `ObjectData = Instance(Vec<Value>) | Str(String) | Sym(Symbol) |
   Array(Vec<Value>) | Closure(ClosureData) | Class(ClassData)`.
 - `ClassData { name: Symbol, superclass: Option<ClassRef>, methods:
@@ -238,6 +243,53 @@ parameters (e.g. `platform`).
 - `ClosureData { params, captured_frame: FrameRef, body, home: ObjRef }`
   — captures its defining frame for closure semantics and its home
   context for non-local return.
+
+#### Source Retention and Provenance
+
+Per the liveness/VM constraints spec, every class and method keeps enough
+information to recover its exact source text and where it came from — needed
+later for the debugger and for exporting an image back to `.ns` files, and
+cheap to carry from M1 onward.
+
+- Each loaded module keeps its full original source as one `Rc<str>`,
+  attached to the `Module`/`ResolvedModule` (not duplicated per node).
+- Every `ClassDecl` / `MethodDecl` already carries a `Span` (from `ns-syntax`).
+  Source text for any node is recovered on demand as
+  `span.text(&module_source)` — no per-node string copy.
+- `SourceOrigin` — for M1, always `SourceOrigin::File(PathBuf)`, attached
+  once per module. Modeled as an enum specifically so a later milestone can
+  add `SourceOrigin::Debugger { at: Timestamp }` for code entered live,
+  without changing the type other call sites depend on.
+
+#### Activation Records (Frame)
+
+Per the liveness/VM constraints spec, a Newspeak-level activation is never
+represented only by Rust locals or the Rust call stack. Milestone 1 stays a
+tree-walking interpreter (no bytecode compiler — that is a Milestone 2
+concern), but every activation is still an explicit, heap-reachable `Frame`:
+
+```
+struct Frame {
+    receiver: Value,
+    args: Vec<Value>,
+    temps: Vec<Value>,      // indexable by resolver slot index, growable
+    pc: usize,              // index into the enclosing CodeBody.stmts —
+                             // M1's "program counter" is a statement index,
+                             // not a byte/bytecode offset
+    sender: Option<FrameRef>,
+    home: Option<FrameRef>, // the enclosing method activation, for blocks
+    method: MethodRef,      // resolved fresh each call; never a baked-in
+                             // pointer into a specific compiled body
+}
+```
+
+The interpreter still uses Rust recursion for control flow (evaluating a
+`Send` recurses into evaluating its receiver and arguments), but every
+Newspeak-level call pushes a `Frame` onto an explicit, independently walkable
+frame stack. This is what a later milestone's debugger and mirrors reflect
+over, and what an image snapshot serializes — nothing about it changes when
+M2 replaces the tree-walk with bytecode; only how a `Frame`'s `pc` advances
+changes.
 
 #### Dispatch
 
@@ -257,9 +309,10 @@ raises a runtime error carrying the selector and receiver.
    evaluates slot initializers in the instance's context in declaration
    order, runs `initExprs`, and returns the instance.
 
-The exact `classHeader` / `superclassClause` behavior for real modules
-(notably the `= Object new (` idiom seen in some modules) is pinned down
-against `NewspeakParsing.ns` during implementation.
+See "Open Questions Resolved During Implementation" below for why step 1 needs
+no special-casing for the `= Object new (` idiom, or any other superclass
+expression: it is always just "evaluate the expression, take the result's
+class."
 
 #### Core Library (native, in Rust)
 
@@ -346,9 +399,26 @@ action. Upstream license is preserved alongside the files.
 
 ## Open Questions Resolved During Implementation
 
-- Exact semantics of the `superclassClause` in real modules (the
-  `= Object new (` idiom): to be confirmed against `NewspeakParsing.ns`.
-- Precise character-constant lexing — the `characterConstant` production
-  wraps a single char (quotes and space included) in `"` delimiters;
-  edge cases (`""""` for the quote character) to be confirmed against
-  `NewspeakGrammar.ns`.
+- **`superclassClause` semantics (the `= Object new (` idiom) — RESOLVED.**
+  The grammar (`NewspeakGrammar.ns:203`) defines
+  `superclassClause = superclassPrefix opt , unaryMsg , message opt` — an
+  ordinary message-send expression, nothing syntactically special (all 211
+  corpus files already parse it under this rule). The corpus's own
+  `BankAccount.ns` / `BankAccountExemplarDemo.ns` — despite the name — confirm
+  there is no exemplar/prototype state propagation: their
+  `(* :exemplar: BankAccount balance: 100 *)` comments are literal-message
+  *tooling pragmas* (already skipped as ordinary trivia), unrelated to
+  inheritance. The actual semantics are exactly what "Class Instantiation"
+  above already states: **the superclass-clause expression is evaluated once,
+  and the resulting value's `class` is the superclass.** `SomeClass new` is
+  simply the idiomatic way to say "my superclass is `SomeClass`" — you never
+  reference a class bare in this position, you evaluate to an instance and
+  take its class. No special-casing needed in the resolver or interpreter.
+- **Character-constant lexing edge case (`""""` for the quote character) —
+  RESOLVED, already correct.** `ns-syntax`'s `lex_char_constant` consumes
+  exactly one character between `"` delimiters regardless of what that
+  character is (including `"` itself), matching
+  `characterConstant = "\"" , charIncludingQuotesAndSpace , "\""`. Confirmed
+  against a real corpus file: `corpus/modules/VCSSmalltalkSourceMirrors.ns`
+  uses `""""` and is one of the 210 corpus files that already parse
+  successfully. No further lexer work needed.
