@@ -22,15 +22,20 @@ use crate::{platform, Interpreter, Symbol};
 /// `blocks_and_return.ns` fixture depends on this propagating all the way
 /// out to the enclosing method activation rather than being swallowed here.
 ///
-/// Only `boolean::dispatch`, `collections::dispatch_ordered_collection`
-/// (via its shared `dispatch_common` for `do:`), and `block::dispatch` ever
-/// invoke a block (`call_block`, below) and so are the only per-class
-/// `dispatch` functions whose own signature must carry `Signal` rather than
-/// just `NewspeakError` -- the rest (`object_class`, `numbers`, `text::*`,
-/// `collections::dispatch_array`, `platform`) never invoke a block and keep
-/// their original `Result<Value, NewspeakError>` signature, wrapped into
-/// `EvalResult` right here at the single point where every arm's result
-/// must agree on one type.
+/// Five functions ever invoke a block (`call_block`, below), directly or
+/// transitively, and so are the ones whose own signature must carry
+/// `Signal` rather than just `NewspeakError`: `boolean::dispatch` (`ifTrue:`/
+/// `ifFalse:`/`and:`/`or:`/etc.), `collections::dispatch_common` (the `do:`
+/// arm, shared by both `Array` and `OrderedCollection`),
+/// `collections::dispatch_array` and `collections::dispatch_ordered_collection`
+/// (both fall through to `dispatch_common` for any selector they don't
+/// handle themselves, so `do:` reaches them too -- their own signatures must
+/// match `dispatch_common`'s even though neither has a directly-block-
+/// invoking arm of its own), and `block::dispatch` (`value`/`value:`/...).
+/// The rest (`object_class`, `numbers`, `text::*`, `platform`) never invoke
+/// a block and keep their original `Result<Value, NewspeakError>` signature,
+/// wrapped into `EvalResult` right here at the single point where every arm
+/// of this function's own `match` must agree on one type.
 pub fn dispatch_native(
     interp: &mut Interpreter,
     kind: BuiltinClass,

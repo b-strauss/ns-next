@@ -1,6 +1,6 @@
 //! `Boolean`/`True`/`False` native methods.
 
-use crate::interpreter::EvalResult;
+use crate::interpreter::{EvalResult, Signal};
 use crate::types::*;
 use crate::{Interpreter, Symbol};
 
@@ -30,8 +30,27 @@ pub fn dispatch(
             Ok(Value::Nil)
         }),
         "not" => Some(Ok(Value::Bool(!b))),
-        "&" | "and:" => Some(Ok(Value::Bool(b && truthy_arg(interp, &args[0])))),
-        "|" | "or:" => Some(Ok(Value::Bool(b || truthy_arg(interp, &args[0])))),
+        // Fix (controller review, second pass): `b && truthy_arg(...)` /
+        // `b || truthy_arg(...)` used to silently collapse *any*
+        // non-`Ok(Value::Bool(true))` outcome of the block argument --
+        // including a live `Signal::Return` (`x and: [^expr]`) and a
+        // genuine `Signal::Error` -- into plain `false`, discarding both.
+        // Written as explicit `if`/`else` branches instead so the block's
+        // own `Result` (now `Result<bool, Signal>`, propagated via `?` in
+        // `truthy_arg`) flows through `.map(Value::Bool)` into this arm's
+        // own `EvalResult`, while still preserving the exact same
+        // short-circuit behavior as before (`false and: [...]`/
+        // `true or: [...]` never invoke the block at all).
+        "&" | "and:" => Some(if b {
+            truthy_arg(interp, &args[0]).map(Value::Bool)
+        } else {
+            Ok(Value::Bool(false))
+        }),
+        "|" | "or:" => Some(if b {
+            Ok(Value::Bool(true))
+        } else {
+            truthy_arg(interp, &args[0]).map(Value::Bool)
+        }),
         "printString" => Some(Ok(Value::Obj(
             interp.new_string(if b { "true" } else { "false" }.to_string()),
         ))),
@@ -45,9 +64,17 @@ pub fn dispatch(
 /// `send`, since these are the language's fundamental control-flow
 /// primitives and must not depend on `Block`'s own native methods being
 /// registered yet in dispatch order.
-fn truthy_arg(interp: &mut Interpreter, value: &Value) -> bool {
-    matches!(
-        super::call_block(interp, value, vec![]),
-        Ok(Value::Bool(true))
-    )
+///
+/// Returns `Result<bool, Signal>` (not a bare `bool`) so a `Signal::Return`
+/// or `Signal::Error` escaping the block propagates via `?` to `dispatch`'s
+/// `"&"`/`"and:"`/`"|"`/`"or:"` arms above, instead of being silently
+/// collapsed into `false` the way the pre-fix version did. A block result
+/// that is `Ok` but not exactly `Value::Bool(true)` (a non-Boolean value, or
+/// `Value::Bool(false)`) still maps to plain `Ok(false)`, matching the
+/// pre-fix behavior for that case exactly -- only the `Err` case changed.
+fn truthy_arg(interp: &mut Interpreter, value: &Value) -> Result<bool, Signal> {
+    match super::call_block(interp, value, vec![])? {
+        Value::Bool(true) => Ok(true),
+        _ => Ok(false),
+    }
 }

@@ -37,6 +37,16 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     }
 }
 
+fn as_string(value: &Value) -> String {
+    match value {
+        Value::Obj(obj) => match &obj.borrow().data {
+            ns_runtime::ObjectData::Str(s) => s.clone(),
+            other => panic!("expected ObjectData::Str, got {other:?}"),
+        },
+        other => panic!("expected Value::Obj, got {other:?}"),
+    }
+}
+
 #[test]
 fn integer_addition_via_direct_send_evaluates_correctly() {
     let mut interp = Interpreter::bootstrap();
@@ -137,4 +147,76 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
         Value::SmallInt(5) => {}
         other => panic!("expected Value::SmallInt(5), got {other:?}"),
     }
+}
+
+/// Controller review fix (second pass): `and:`'s block argument invocation
+/// used to go through `truthy_arg`, which collapsed *any* non-`Ok(Bool(true))`
+/// outcome -- including a live `Signal::Return` -- into plain `false`. A
+/// non-local return inside an `and:` block must actually unwind past the
+/// `and:` send, not get swallowed. `m`'s body sends `true and: [^'escaped']`
+/// as a bare statement (its value discarded either way) followed by a
+/// second, distinguishing statement `^'fell through'` -- if the bug were
+/// still present, `and:` would silently evaluate to `false`, execution
+/// would fall through to the second statement, and `m` would return
+/// `'fell through'`; with the fix, the block's `^'escaped'` must unwind
+/// `m`'s own activation directly (the block's home, since the block literal
+/// is evaluated directly inside `m`'s own frame), so `m` returns `'escaped'`
+/// and the second statement never runs at all.
+#[test]
+fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
+    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( true and: [^'escaped']. ^'fell through' )\n) : ()";
+    let (mut interp, class, resolved) = load(src);
+
+    let receiver = expect_ok(
+        interp.instantiate(class, vec![], &resolved.bindings),
+        "instantiate",
+    );
+
+    let result = interp.send(
+        receiver,
+        Symbol::intern("m"),
+        vec![],
+        &resolved.bindings,
+        None,
+    );
+
+    assert_eq!(
+        as_string(&expect_ok(result, "true and: [^'escaped']. ^'fell through'")),
+        "escaped",
+        "the block's non-local return must unwind `m`'s own activation directly, not be swallowed into `false` and fall through to the second statement"
+    );
+}
+
+/// Quick sanity check (controller review, second pass): the fix above must
+/// not regress `and:`/`or:`'s short-circuit behavior -- the untaken block
+/// argument must still never be invoked at all. Uses the same
+/// distinguishing-statement technique: if the short-circuited block *were*
+/// wrongly invoked, its `^'wrongly invoked'` would unwind `m` directly and
+/// this test would see that value instead of `'correct'`.
+#[test]
+fn and_or_short_circuit_never_invokes_the_untaken_block() {
+    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( false and: [^'wrongly invoked']. true or: [^'wrongly invoked']. ^'correct' )\n) : ()";
+    let (mut interp, class, resolved) = load(src);
+
+    let receiver = expect_ok(
+        interp.instantiate(class, vec![], &resolved.bindings),
+        "instantiate",
+    );
+
+    let result = interp.send(
+        receiver,
+        Symbol::intern("m"),
+        vec![],
+        &resolved.bindings,
+        None,
+    );
+
+    assert_eq!(
+        as_string(&expect_ok(
+            result,
+            "false and: [...]. true or: [...]. ^'correct'"
+        )),
+        "correct",
+        "false and: [...] and true or: [...] must never invoke their block argument at all"
+    );
 }
