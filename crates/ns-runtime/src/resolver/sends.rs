@@ -1,0 +1,178 @@
+//! Recognizes self/super/outer/implicit send shapes in the AST (runtime
+//! spec's "AST recognition" note) and runs the §5.7 depth search for
+//! implicit and bare-name sends.
+
+use ns_syntax::ast::{Expr, Selector};
+
+use crate::Symbol;
+
+/// One entry in the lexical class-nesting chain currently open while
+/// walking a method body, innermost first. `members` is that class's own +
+/// statically-inherited member-name set (built by the caller in `mod.rs`
+/// via `classes::own_member_names` plus superclass-chain lookups).
+pub(super) struct EnclosingClass<'a> {
+    pub name: Symbol,
+    pub members: &'a std::collections::HashSet<Symbol>,
+}
+
+/// Runs the §5.7 depth search: the smallest `k` (0 = innermost enclosing
+/// class) whose member set contains `selector`. Falls back to depth `0`
+/// (self send) if nothing matches anywhere, per the spec ("otherwise, the
+/// implicit receiver send is equivalent to a self send") -- runtime
+/// dispatch on that then naturally produces `doesNotUnderstand:`.
+pub(super) fn depth_search(chain: &[EnclosingClass], selector: Symbol) -> u16 {
+    for (k, class) in chain.iter().enumerate() {
+        if class.members.contains(&selector) {
+            return k as u16;
+        }
+    }
+    0
+}
+
+/// Like `depth_search`, but returns `None` instead of defaulting to depth 0
+/// when no lexical level's member set contains `selector`. Used where the
+/// caller must distinguish "found nowhere" from "found at depth 0" -- e.g.
+/// resolving a superclass-clause receiver (runtime spec's Resolver section:
+/// "Object is looked up exactly like a method or slot name would be"),
+/// where "not found anywhere" must fall through to the builtin-class-name
+/// check rather than silently becoming a self send.
+pub(super) fn find_member_depth(chain: &[EnclosingClass], selector: Symbol) -> Option<u16> {
+    chain
+        .iter()
+        .position(|class| class.members.contains(&selector))
+        .map(|k| k as u16)
+}
+
+/// Finds the exact depth of the lexically enclosing class named `name`, for
+/// an explicit `outer name m` send. `Err` is a compile-time error per
+/// §5.9 ("It is a compile time error if N is not the name of a class whose
+/// declaration lexically encloses the outer send").
+pub(super) fn depth_of_named_outer(chain: &[EnclosingClass], name: Symbol) -> Option<u16> {
+    chain
+        .iter()
+        .position(|class| class.name == name)
+        .map(|k| k as u16)
+}
+
+/// Recognizes whether `send.receiver` is the parser's implicit-keyword-send
+/// marker: `Ident { name: "self", span }` with a **zero-width** span
+/// (`span.start == span.end`), synthesized by
+/// `crates/ns-syntax/src/parser/expr.rs:339-344`. A real, non-zero-width
+/// `self` is a genuine explicit self send (§5.8, always depth 0, no
+/// search).
+pub(super) fn is_synthesized_implicit_receiver(receiver: &Expr) -> bool {
+    matches!(
+        receiver,
+        Expr::Ident(id) if id.name == "self" && id.span.start == id.span.end
+    )
+}
+
+pub(super) fn is_explicit_self(receiver: &Expr) -> bool {
+    matches!(receiver, Expr::Ident(id) if id.name == "self" && id.span.start != id.span.end)
+}
+
+pub(super) fn is_explicit_super(receiver: &Expr) -> bool {
+    matches!(receiver, Expr::Ident(id) if id.name == "super")
+}
+
+/// Recognizes the `outer N m` two-hop shape: `receiver` is itself a `Send`
+/// whose own receiver is `Ident("outer")` and whose message is a unary send
+/// to an uppercase-starting selector. Returns that selector's name if so.
+/// The inner "send N to outer" step is never dispatched as a real message —
+/// callers that get `Some(name)` back must resolve `name`'s depth via
+/// `depth_of_named_outer` and use the *outer* `Send`'s own message/selector
+/// (`send.message`) as the actual send, discarding the inner shape.
+pub(super) fn outer_class_name(receiver: &Expr) -> Option<&str> {
+    let Expr::Send(inner) = receiver else {
+        return None;
+    };
+    let Expr::Ident(outer_ident) = &inner.receiver else {
+        return None;
+    };
+    if outer_ident.name != "outer" {
+        return None;
+    }
+    match &inner.message.selector {
+        Selector::Unary(name) if name.chars().next().is_some_and(char::is_uppercase) => {
+            Some(name.as_str())
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn class<'a>(name: &str, members: &'a HashSet<Symbol>) -> EnclosingClass<'a> {
+        EnclosingClass {
+            name: Symbol::intern(name),
+            members,
+        }
+    }
+
+    #[test]
+    fn depth_search_finds_the_innermost_match() {
+        let mut inner_members = HashSet::new();
+        inner_members.insert(Symbol::intern("foo"));
+        let outer_members = HashSet::new();
+        let chain = [
+            class("Inner", &inner_members),
+            class("Outer", &outer_members),
+        ];
+        assert_eq!(depth_search(&chain, Symbol::intern("foo")), 0);
+    }
+
+    #[test]
+    fn depth_search_falls_through_to_an_outer_level() {
+        let inner_members = HashSet::new();
+        let mut outer_members = HashSet::new();
+        outer_members.insert(Symbol::intern("foo"));
+        let chain = [
+            class("Inner", &inner_members),
+            class("Outer", &outer_members),
+        ];
+        assert_eq!(depth_search(&chain, Symbol::intern("foo")), 1);
+    }
+
+    #[test]
+    fn find_member_depth_returns_none_when_nothing_matches() {
+        let members = HashSet::new();
+        let chain = [class("Inner", &members)];
+        assert_eq!(find_member_depth(&chain, Symbol::intern("nowhere")), None);
+    }
+
+    #[test]
+    fn find_member_depth_finds_a_real_match() {
+        let mut outer_members = HashSet::new();
+        outer_members.insert(Symbol::intern("Foo"));
+        let inner_members = HashSet::new();
+        let chain = [
+            class("Inner", &inner_members),
+            class("Outer", &outer_members),
+        ];
+        assert_eq!(find_member_depth(&chain, Symbol::intern("Foo")), Some(1));
+    }
+
+    #[test]
+    fn depth_search_defaults_to_zero_when_nothing_matches() {
+        let members = HashSet::new();
+        let chain = [class("Inner", &members)];
+        assert_eq!(depth_search(&chain, Symbol::intern("nowhere")), 0);
+    }
+
+    #[test]
+    fn depth_of_named_outer_finds_an_exact_class() {
+        let members = HashSet::new();
+        let chain = [class("Inner", &members), class("Outer", &members)];
+        assert_eq!(
+            depth_of_named_outer(&chain, Symbol::intern("Outer")),
+            Some(1)
+        );
+        assert_eq!(
+            depth_of_named_outer(&chain, Symbol::intern("Missing")),
+            None
+        );
+    }
+}
