@@ -11,7 +11,7 @@ milestone.
 |---|---|---|---|---|
 | M1 — Frontend | Complete | 2026-09-01 | [runtime-design](superpowers/specs/2026-09-01-ns-next-runtime-design.md) | [frontend](superpowers/plans/2026-09-01-ns-next-frontend.md) |
 | M1 — Runtime | Complete | 2026-09-04 | [runtime-design](superpowers/specs/2026-09-01-ns-next-runtime-design.md), [liveness/VM constraints](superpowers/specs/2026-09-04-ns-next-liveness-images-vm-design.md) | [runtime](superpowers/plans/2026-09-04-ns-next-runtime.md) |
-| M2 — Bytecode + VM | In design | — | TBD | TBD |
+| M2 — Bytecode + VM | Spec written, plan pending | — | [bytecode-vm-design](superpowers/specs/2026-09-04-ns-next-bytecode-vm-design.md) | TBD |
 | M3 — Inline caches + GC | Not started | — | — | — |
 | M4–M5 — JIT | Not started | — | — | — |
 
@@ -32,13 +32,22 @@ heap-reachable `Frame` activations, class instantiation per the
 deferred-superclass-message model, a small Rust-native core library, and
 the `ns-next run` CLI command. 57 commits, all tests green.
 
-## M2 — Bytecode + VM (in design)
+## M2 — Bytecode + VM (spec written, plan pending)
 
-Replaces the M1 tree-walker with a bytecode compiler and interpreter.
-Required by `2026-09-04-ns-next-liveness-images-vm-design.md`: a safepoint
+Replaces the M1 tree-walker with a register-based bytecode compiler and
+VM, keeping the M1 tree-walker as a permanent `--engine=tree-walk`
+differential-testing oracle. Required by
+`2026-09-04-ns-next-liveness-images-vm-design.md`: a safepoint
 abstract-state map, a statement→PC table per method, architecture-neutral
 versioned bytecode, a defined and versioned image serialization format
-(bootstrap from source), and stable call-site identity. Object model
-stays `Rc<RefCell<Object>>` for M2 — the arena/handle rewrite is a later
-milestone. Design in progress; this row and the table above get filled in
-once the spec and plan are written.
+(bootstrap from source, `ns-next snapshot`/`load`), and stable call-site
+identity (with a reserved, inert inline-cache slot per send for M3).
+Adds baseline-compiler control-flow inlining (`ifTrue:ifFalse:`,
+`whileTrue:`, etc., guarded, with a correctness-preserving fallback to a
+real virtual send) per the project's performance-priority decision.
+Object model stays `Rc<RefCell<Object>>` for M2 — the arena/handle
+rewrite is deferred to M3, alongside the real GC (image format is
+defined against the logical value model so that later swap won't break
+image compatibility). Design spec written and committed
+(`92f511b`, 2026-09-04); the checkbox-level implementation plan is the
+next step (`writing-plans`).
