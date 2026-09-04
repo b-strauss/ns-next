@@ -256,11 +256,15 @@ fn dispatch_super_send(
     args: Vec<Value>,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let current_class = frame
-        .borrow()
-        .current_class
-        .clone()
-        .expect("super send inside a frame with no current_class (top-level?)");
+    let Some(current_class) = frame.borrow().current_class.clone() else {
+        return Err(Signal::Error(NewspeakError {
+            selector,
+            receiver: frame.borrow().receiver.clone(),
+            message:
+                "super send with no enclosing current_class (used outside a method activation)"
+                    .to_string(),
+        }));
+    };
     let superclass = {
         let borrowed = current_class.borrow();
         match &borrowed.data {
