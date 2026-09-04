@@ -250,11 +250,15 @@ section modeled:
   slot writes (via the write's setter-keyword selector — see "Setter sends"
   below), and references to nested-class accessor methods found at that
   lexical depth. Runtime dispatch is in "Dispatch" below.
-- `LexicalClass(ClassId)` — a nested or enclosing class **name used as a
-  bare value**, not sent a message (e.g. the receiver part of a superclass
-  clause, evaluated once at class-declaration time — see "Class
-  Instantiation"). Not itself a send, though the *resolution* of that bare
-  name still walks the same lexical/inheritance search as step 2 above.
+- **No separate "class value" binding.** A nested/enclosing class name is
+  *itself* referenced via the ordinary `LexicalSend` mechanism (§2.2.1: a
+  reference to a nested class is not syntactically distinguished from a
+  method or slot reference) — dispatch happens to land on that class's
+  auto-generated accessor (§6.4). This includes the superclass clause's
+  `receiver` part (§6.1 evaluates it "as if it occurred inside an instance
+  method" of the enclosing class) — same mechanism, evaluated at a specific
+  time (class-declaration time; see "Class Instantiation"), not a distinct
+  binding kind.
 - `SuperSend` — a `super m` send (§5.10). Not depth-based: resolved at
   runtime against the *current activation's* `current_class` (see
   "Activation Records" below), which need not be `self`'s own class.
@@ -272,6 +276,37 @@ that shape is fine to keep; this is purely a note for how the resolver must
 the value is built via a full recursive `parse_expression()` call, so it
 already captures a complete cascade/keyword `sendExpression` per §5.4.3's
 grammar — no frontend change needed.
+
+**AST recognition, checked against the shipped parser.** The frontend already
+normalizes several send shapes the resolver must recognize:
+
+- **Bare unary implicit send** (`foo`, no message following): parses as a
+  plain `Expr::Ident` — not wrapped in `Send` at all. Per §5.4.3, a bare
+  identifier used as a `primary` *is itself* an implicit-receiver unary send.
+  So every standalone `Expr::Ident` the resolver encounters (whatever
+  position it appears in) needs the full Local → OuterLocal → §5.7
+  depth-search resolution, *unless* it is literally `self` or `super` — see
+  below.
+- **Implicit-receiver keyword send** (`foo: 1 bar: 2`, no explicit receiver):
+  `crates/ns-syntax/src/parser/expr.rs:339-344` already synthesizes the
+  receiver as `Expr::Ident { name: "self", span: Span::new(at, at) }` — a
+  **zero-width span** at the selector's start. This is the resolver's
+  discriminator: a `Send` whose receiver is `Ident{"self", span}` with
+  `span.start == span.end` is a true implicit send (run the §5.7
+  depth-search); one with a real, non-zero-width span is a genuine explicit
+  `self` send (§5.8 — depth is unconditionally `0`, no search). Binary sends
+  are never implicit (§5.4.3), so no equivalent synthesis exists for them.
+- **`outer N m`**: parses as an ordinary two-hop unary chain — no dedicated
+  AST shape (confirmed empirically against `corpus/modules/AccessModifierTesting.ns`,
+  which uses this extensively; see "Documented Deviations" below). The
+  resolver must pattern-match `Send { receiver: Send { receiver:
+  Ident{"outer"}, message: MessageSend { selector: Unary(n), .. } }, message:
+  {selector: s, ..} }` where `n` starts uppercase, treat the *whole* shape as
+  one `outer N s` send (§5.9 — compile-time error if `n` does not name a
+  lexically enclosing class), and never dispatch the inner "send `n` to
+  `outer`" step as a real message.
+- **`super m`**: receiver is `Expr::Ident{"super", ..}` with a real span —
+  always explicit per grammar (no implicit form).
 
 #### Object Model
 
