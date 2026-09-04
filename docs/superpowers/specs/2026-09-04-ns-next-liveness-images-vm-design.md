@@ -51,6 +51,10 @@ descendant). The Milestone 1 design is in
 6. **Performance must eventually approach Java.** Not in Milestone 1, but the
    architecture must not foreclose it.
 
+7. **Real concurrency, not a single global event loop.** The system must
+   eventually run genuinely in parallel across cores. Raw shared-memory OS
+   threads are explicitly not the goal — see "Concurrency" below for what is.
+
 ## The unifying principle
 
 **The bytecode / interpreter level is the single source of truth for program
@@ -224,6 +228,100 @@ live).
 - Working with no image at all is the normal case: `ns-next run` / a live
   session that loads modules from files and never takes a snapshot.
 
+## Concurrency: actors, not threads
+
+Newspeak already has an answer to concurrency, and it is not shared-memory
+threading. It is visible directly in the vendored corpus
+(`corpus/modules/Actors.ns`, `ActorsForJS.ns`) and partially in the grammar
+already: the `<-` eventual-send operator (`<-:` in the token stream; parsed
+and currently erased for Milestone 1) is the syntactic surface of an
+actor/vat model with asynchronous message sends and promises, in the lineage
+of the E language (Mark Miller) that strongly influenced Newspeak's design.
+
+**The language-level model, as the corpus shows it:**
+
+- An actor never holds a direct reference to another actor's objects — only a
+  `FarReference`. There is no shared mutable state across actors.
+- Cross-actor sends go through `eventualSend:arguments:`, which enqueues a
+  `PendingDelivery` in the target actor's mailbox and immediately returns a
+  promise (`InternalLocalPromise` / `InternalRemotePromise`).
+- The promise is resolved later through a `Resolver` — "the authority to
+  resolve a Promise and the control facet of its eventual resolution."
+- Each actor runs its own sequential mailbox-processing loop
+  (`internalActor startEventLoop` in the reference implementation).
+
+**This eliminates data races by construction, with no locks in the language.**
+Code inside one actor is always sequential and never has to reason about
+concurrent mutation of its own state.
+
+**Why this is not "a JS event loop," if built correctly on ns-next:** the
+reference implementations (Squeak backend, JS backend) multiplex every actor
+onto a *single* host event loop only because their hosts — one Squeak VM, one
+browser thread — are themselves single-threaded. That is a constraint of those
+hosts, not of the language semantics: nothing in the actor model requires a
+single shared loop, only that actors not alias each other's mutable state.
+
+`ns-next` is a fresh native VM without that constraint, so it should give
+actors real parallelism:
+
+- **Per actor:** one logical event loop (drain the mailbox, process, repeat).
+  User code inside an actor stays simple — no locks, no threads to reason
+  about.
+- **Across actors:** an **M:N scheduler** multiplexing many lightweight actors
+  onto a real OS thread pool sized to the core count — the same shape as Java
+  virtual threads (Project Loom) multiplexing onto carrier threads, Erlang/BEAM's
+  process scheduler, or Go's goroutines onto `GOMAXPROCS` threads. Because
+  actors share no mutable state, running many of them truly in parallel across
+  cores is safe by construction.
+
+The result is many small, genuinely parallel event loops instead of one global
+one — not a JS-style single event loop, and not raw shared-memory threading
+either.
+
+**How this interacts with the rest of this spec:**
+
+- **`become:` / live class mutation:** instance data is actor-isolated, which
+  narrows the blast radius of an instance migration. Classes and code remain
+  shared (Newspeak has no global object namespace, but code is not the same as
+  object identity) and continue to go through the dependency-keyed cache
+  invalidation described above.
+- **GC:** an actor is a natural per-heap GC scope. Stop-the-world pauses can
+  stay local to one actor instead of the whole world — directly serves the
+  near-Java performance goal, the same way per-process heaps keep BEAM's GC
+  pauses small.
+- **Images:** an actor/vat is the natural snapshot unit. A whole-world snapshot
+  is the union of every actor's state plus its mailbox and any in-flight
+  promises; a partial/single-actor snapshot is also meaningful. This resolves
+  the image-granularity question in "Open questions" toward "per-actor is the
+  primitive; whole-world is a composition of per-actor snapshots," though the
+  exact treatment of in-flight cross-actor promises at snapshot time still
+  needs design work.
+- **Debugger:** suspend/inspect/edit-and-continue naturally scopes to one
+  actor's reified Frame chain, consistent with "Reified activations" above.
+  Whether a suspended actor's mailbox keeps draining into other, unaffected
+  actors while it is paused is an open question (see below) — the answer
+  should be yes for actors other than the one being debugged, to keep the
+  "not a single global loop" property under debugging too.
+
+**Explicit non-goal:** raw OS threads sharing one mutable object heap are not
+the default concurrency model. Classic Smalltalk's single-OS-thread green
+scheduler (see below) worked around exactly the hazard this design solves
+properly: a highly mutable, live-editable, globally reachable object graph is
+treacherous under shared-memory concurrency. If narrowly-scoped data
+parallelism over provably non-aliased or frozen data (e.g. a `parallelDo:`
+primitive over an immutable collection) is ever added, it is a deliberate,
+narrow exception — not the default model, and not exposed as general-purpose
+shared-memory threads with locks.
+
+**What other Smalltalk implementations do, for contrast:** Squeak/Pharo's
+`Process` / `Semaphore` / `Delay` / `ProcessorScheduler` are green threads —
+cooperative plus priority-preemptive — multiplexed onto a *single* OS thread.
+There is no mainstream real parallel execution of Smalltalk code across cores;
+the same globally-shared, live-mutable object graph that motivates this
+document's liveness requirements is exactly what makes that hard to add safely
+after the fact. Newspeak's actor isolation is the principled fix, not a
+workaround.
+
 ## Performance and the tiered execution model
 
 Near-Java performance for a fully-live dynamic language comes from **inline-cache
@@ -255,6 +353,46 @@ anyway.
 | **M3** — inline caches + GC | Dependency-keyed, globally-flushable caches. `become:` / forwarding support in the GC and object model; instance migration. |
 | **M4–M5** — JIT | Deopt metadata from every safepoint. Tiered promotion driven by IC feedback. Snapshot tears down JIT state cleanly. |
 
+## Developer tooling for the VM itself
+
+Distinct from the Newspeak-level debugger (which serves *programs running on*
+ns-next), the VM implementation needs its own introspection tooling — the
+`d8`-equivalent developers use to see what the runtime itself is doing:
+bytecode disassembly, inline-cache transition traces, deoptimization reasons,
+generated-code/IR dumps, heap and GC statistics, and a REPL to poke at a live
+image.
+
+This is cheap here specifically because of the unifying principle above: the
+mirror API and the per-safepoint abstract-state map already expose everything
+such tooling needs. A `d8`-style shell is, in the overwhelming majority of its
+commands, a thin CLI over the **same reflective core** the debugger, the
+MirrorBuilder, and image snapshot already use — not a separate introspection
+path. Treat "can the VM-developer tooling be built entirely on mirrors, with no
+private backdoor into runtime internals" as a running completeness check on the
+mirror API: a tool that needs to bypass mirrors to see something is evidence
+the reflective API is missing a capability, not evidence that tooling needs
+special access.
+
+**Where it lives:** as subcommands/flags on the existing `ns-next` binary, not
+a separate binary — `ns-next` has exactly one embedding today, unlike V8, which
+splits `d8` out because V8 embeds into many hosts. Revisit only if tooling later
+needs privileged access (e.g. raw memory introspection) that the production
+binary should not ship with; that would be a deliberate exception, not the
+default.
+
+**Grows incrementally with the milestones already listed above:**
+
+| Milestone | Tooling added |
+|---|---|
+| M1 | `ns-next repl` — evaluate Newspeak expressions against a running interpreter. (`ns-next parse --ast` already exists from the frontend.) |
+| M2 | `ns-next disasm <file> <selector>` — bytecode disassembly. Close to free: the format is already architecture-neutral and versioned for the image. |
+| M3 | Inline-cache transition tracing (uninitialized → monomorphic → polymorphic → megamorphic) per call site; heap/GC statistics (pause times, promotion rates per generation). |
+| M4–M5 | Deoptimization tracing (reason + site, read directly off the abstract-state map); generated-code / IR dumps per tier. |
+
+A `--bench` mode with warm-up-aware counters belongs here too, and doubles as
+the harness for the tree-walker-vs-bytecode microbenchmark already recommended
+for the M1→M2 transition.
+
 ## Tensions and non-goals
 
 - **Debugging and JIT-optimizing the same frame at once** is not supported;
@@ -280,15 +418,32 @@ anyway.
 - **TruffleSqueak / GraalSqueak** — full Smalltalk debugging together with
   near-JVM performance via Graal partial evaluation and deopt: existence proof
   that requirements 2 and 6 combine.
+- **V8's `d8`** and HotSpot's diagnostic flags (`-XX:+PrintCompilation`,
+  `-XX:+PrintInlining`, JITWatch, JFR) — the shape of VM-developer tooling to
+  match, built here on top of the mirror API instead of a separate
+  introspection path.
+- **The E language** (Mark Miller) — origin of eventual send and the vat model
+  that Newspeak's actor library already follows in the vendored corpus.
+  **Erlang/BEAM**'s M:N process scheduler and per-process heaps, and **Java
+  virtual threads** (Project Loom) — the carrier-thread multiplexing shape to
+  match for running many actors in real parallel across a small OS thread
+  pool.
 
 ## Open questions
 
 - Register vs. stack bytecode for Newspeak's uniformly message-based semantics.
 - Whether M1 should already emit a trivial bytecode (to exercise the
   abstract-state-map design) rather than pure AST walking.
-- Image granularity: one monolithic world image only, or also partial images /
-  module-scoped snapshots.
+- Image granularity: "Concurrency" above leans toward per-actor snapshots as
+  the primitive, composed into a whole-world image — but the exact treatment
+  of in-flight cross-actor promises and mailboxes at snapshot time still needs
+  design work.
 - Identity-hash width and its interaction with a future tagged-pointer
   representation.
-- Concurrency model (actors are a later milestone) and its effect on what "the
-  entire live world" means for a snapshot.
+- Whether a suspended (debugged) actor's mailbox keeps draining, and how far
+  the M:N actor scheduler should be visible to or configurable by user code
+  (e.g. actor placement/affinity) versus staying fully opaque.
+- How much of the actor/vat runtime (mailboxes, promises, far references, the
+  M:N scheduler) belongs in Rust core versus how much can stay Newspeak code
+  over Rust primitives, mirroring how `Actors.ns` layers over a
+  platform-provided `ProcessActor` in the reference implementation.
