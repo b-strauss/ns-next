@@ -17,8 +17,9 @@ use super::{EvalResult, Interpreter, Signal};
 impl Interpreter {
     /// Materializes the module's root `ClassDecl` into a real class object.
     /// The superclass clause's *receiver* is resolved here (once); its
-    /// trailing *message* is stored, deferred, for `instantiate` to evaluate
-    /// later -- see the task's design note.
+    /// trailing *message* is a known Milestone 1 gap -- it is neither stored
+    /// on `ClassData` nor ever evaluated (see `run_superclass_initializer`'s
+    /// doc comment below for what that costs).
     pub fn load_module(&mut self, resolved: &ResolvedModule) -> ClassRef {
         self.load_class(&resolved.module.root_class, None)
     }
@@ -130,13 +131,15 @@ impl Interpreter {
     /// without this check `ClassName new` would unconditionally end in
     /// `doesNotUnderstand:`, for every class, every time.
     ///
-    /// No double-dispatch risk against the superclass clause's own
-    /// deferred factory message (e.g. `Object new` in
-    /// `class Foo = Object new (...) ...`): that message is evaluated by
-    /// `run_superclass_initializer` below, which recurses directly into
-    /// `run_superclass_initializer`/`run_own_slots`/`run_own_init_exprs`
-    /// and never calls `Interpreter::send` (nor, therefore, this method)
-    /// at all -- confirmed by inspection of every call site in this file.
+    /// No double-dispatch risk against the superclass clause's own factory
+    /// message (e.g. `Object new` in `class Foo = Object new (...) ...`):
+    /// that message is never evaluated at all in Milestone 1 (a known gap --
+    /// see `run_superclass_initializer` below), so there is nothing here to
+    /// double-dispatch against. `run_superclass_initializer` recurses
+    /// directly into `run_superclass_initializer`/`run_own_slots`/
+    /// `run_own_init_exprs` and never calls `Interpreter::send` (nor,
+    /// therefore, this method) at all -- confirmed by inspection of every
+    /// call site in this file.
     pub(super) fn try_factory_send(
         &mut self,
         receiver: &Value,
