@@ -5,6 +5,7 @@
 pub mod boolean;
 pub mod numbers;
 pub mod object_class;
+pub mod text;
 
 use crate::types::*;
 use crate::{Interpreter, Symbol};
@@ -26,7 +27,9 @@ pub fn dispatch_native(
         }
         BuiltinClass::Integer => numbers::dispatch_integer(interp, receiver, selector, args),
         BuiltinClass::Float => numbers::dispatch_float(interp, receiver, selector, args),
-        // BuiltinClass::Str | Sym | Character -> Task 9 (text)
+        BuiltinClass::Str => text::dispatch_string(interp, receiver, selector, args),
+        BuiltinClass::Sym => text::dispatch_symbol(interp, receiver, selector, args),
+        BuiltinClass::Character => text::dispatch_character(interp, receiver, selector, args),
         // BuiltinClass::Array | OrderedCollection -> Task 10
         // BuiltinClass::Block -> Task 10
         _ => None,
