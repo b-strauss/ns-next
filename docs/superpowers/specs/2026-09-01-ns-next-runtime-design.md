@@ -145,6 +145,18 @@ grammar in the official repo). Key productions:
 `NewspeakGrammar.ns` is vendored into the repo so the parser can be checked
 against it during implementation.
 
+**`newspeak-spec.pdf`** (Gilad Bracha's "Newspeak Programming Language Draft
+Specification", v0.106, `corpus/reference/newspeak-spec.pdf`) is vendored
+alongside the grammar. Where `NewspeakGrammar.ns` is authoritative for
+*syntax*, this document is authoritative for *semantics* — name resolution
+(§5.7-5.10), dispatch and access control (§5.5, §5.9, §6.3.1), and
+instantiation (§6.1, §6.3) are specified there in more precise detail than
+this design doc previously carried, and several corrections below are sourced
+from it. It is explicitly a draft ("incomplete...everything is subject to
+change... in some cases the implementation deviates from this specification")
+— where the vendored corpus's actual parse/run behavior and the spec text
+disagree, prefer matching the corpus, and note the discrepancy.
+
 ## Architecture
 
 ### Crate Layout
@@ -200,29 +212,66 @@ execute.
 Input: `Module`. Output: `ResolvedModule` — the same tree with each
 `Ident` annotated with a `Binding`, plus per-scope slot layout metadata.
 
+**Corrected against `newspeak-spec.pdf` §2.3.1 and §5.7-§5.10.** Newspeak's
+real resolution algorithm is two-phase, not a single linear scope walk, and
+collapses more cases into one mechanism than the previous revision of this
+section modeled:
+
+1. **Local names are static, resolved purely lexically**, walking the
+   activation chain outward: current method/block temps and parameters, then
+   each enclosing block/closure's temps and parameters, innermost first. No
+   dispatch is involved — this is a direct frame-slot read.
+2. **Everything else — method calls, slot reads, slot writes, and bare
+   nested/enclosing class-name references — is a *send*, not a direct
+   field access**, per §2.2.1 ("references to methods without arguments are
+   not distinguished from references to slots... or to nested classes").
+   Concretely (§5.7): search the enclosing **class declarations** (not
+   activations — those were already covered by step 1) from innermost
+   outward — depth `k=0` is the class immediately enclosing the current
+   method, `k=1` its enclosing class, and so on — for the smallest `k` whose
+   class (including everything it inherits) has a member named `s`. That
+   fixes the target as an outer-send at depth `k`; `k=0` is what's
+   colloquially called a self send (§5.8 defines `self m` as literally
+   `outer C m` where `C` is the immediately-enclosing class). If no lexical
+   level has anything named `s`, it still resolves as depth `0` — the
+   runtime dispatch below then naturally produces `doesNotUnderstand:`.
+   `super` sends (§5.10) are a *third*, unrelated mechanism — see "Dispatch"
+   below.
+
 `Binding` variants:
 
-- `Local(u16)` — slot in the current activation frame.
+- `Local(u16)` — slot in the current activation frame. Static, no dispatch.
 - `OuterLocal { depth: u16, index: u16 }` — a captured method/block
-  variable `depth` frames out.
-- `SelfSlot(Symbol)` — send an accessor message to `self`.
-- `OuterSlot { depth: u16, name: Symbol }` — accessor on an enclosing
-  object `depth` links out along the `outer` chain.
-- `LexicalClass(ClassId)` — a nested or enclosing class name used as a
-  value.
-- `ImplicitSelfSend(Symbol)` — a bare lowercase name treated as a unary
-  send to `self`.
+  variable `depth` activations out. Static, no dispatch.
+- `LexicalSend { depth: u16 }` — replaces the previous revision's
+  `SelfSlot` / `OuterSlot` / `ImplicitSelfSend`, which modeled these as three
+  separate cases; per the spec they are one mechanism (an outer-send at
+  depth `k`, §5.7-§5.9). Covers implicit-receiver method calls, slot reads,
+  slot writes (via the write's setter-keyword selector — see "Setter sends"
+  below), and references to nested-class accessor methods found at that
+  lexical depth. Runtime dispatch is in "Dispatch" below.
+- `LexicalClass(ClassId)` — a nested or enclosing class **name used as a
+  bare value**, not sent a message (e.g. the receiver part of a superclass
+  clause, evaluated once at class-declaration time — see "Class
+  Instantiation"). Not itself a send, though the *resolution* of that bare
+  name still walks the same lexical/inheritance search as step 2 above.
+- `SuperSend` — a `super m` send (§5.10). Not depth-based: resolved at
+  runtime against the *current activation's* `current_class` (see
+  "Activation Records" below), which need not be `self`'s own class.
 
-Resolution order for a name in a method body: method temps/params →
-enclosing block temps/params (innermost out) → receiver slots (`self`) →
-slots and nested-class names of lexically enclosing classes (`outer`
-chain), outward to the top-level class → the top-level class's factory
-parameters (e.g. `platform`).
-
-- A lowercase name with no binding that could be a unary send to `self`
-  becomes `ImplicitSelfSend`.
-- An uppercase name with no binding is a resolution error carrying the
-  offending span.
+**Setter sends.** `id:: e` (§5.4.3) desugars to sending the keyword message
+`id: e` and yielding `e` as the expression's value (not the setter method's
+own return value, which is `self` per §6.3.2). The resolver must treat the
+`id` in an `Expr::Assign` node exactly as it would treat an implicit-receiver
+keyword send to `id:` — full `LexicalSend` depth search, private-vs-virtual
+dispatch, the works — not as a distinct "slot write" primitive. The frontend
+AST already represents `id:: e` as `Expr::Assign { target, value }` (a
+Milestone-1 parser simplification, `== x := v` per its own code comment) —
+that shape is fine to keep; this is purely a note for how the resolver must
+*interpret* it. Checked against `crates/ns-syntax/src/parser/expr.rs:290`:
+the value is built via a full recursive `parse_expression()` call, so it
+already captures a complete cascade/keyword `sendExpression` per §5.4.3's
+grammar — no frontend change needed.
 
 #### Object Model
 
@@ -278,10 +327,21 @@ struct Frame {
                              // not a byte/bytecode offset
     sender: Option<FrameRef>,
     home: Option<FrameRef>, // the enclosing method activation, for blocks
+    current_class: ClassRef,// see below — NOT necessarily receiver's class
     method: MethodRef,      // resolved fresh each call; never a baked-in
                              // pointer into a specific compiled body
 }
 ```
+
+`current_class` is required by `newspeak-spec.pdf` §3.6 ("The current class...
+is `definingClass(s, C)` where `s` is the selector of `p` and `C` is the class
+of the current instance, unless explicitly specified otherwise") — it is the
+class that actually **defines** the running method, not necessarily the
+receiver's own concrete class, and it is what subsequent `self`/`outer`/
+`super` sends inside that method resolve relative to. Set by the dispatch
+step that creates the activation (see "Dispatch" below), never derived from
+the receiver at read time — this is what makes chained `super` sends inside
+inherited methods resolve correctly through a deep hierarchy.
 
 The interpreter still uses Rust recursion for control flow (evaluating a
 `Send` recurses into evaluating its receiver and arguments), but every
@@ -293,26 +353,106 @@ changes.
 
 #### Dispatch
 
-Look up the selector in the receiver class's `methods`, then
-`native_methods`, then walk `superclass`. On a miss, send
-`doesNotUnderstand:` with a message object; the default implementation
-raises a runtime error carrying the selector and receiver.
+**Corrected against `newspeak-spec.pdf` §5.5, §5.9, §5.10; access defaults
+per §6.3.1.** The previous revision of this section used one plain
+"walk `methods` then `superclass`" algorithm for every kind of send. The
+spec actually defines *three* different lookup shapes, gated by access
+modifiers — a real behavioral difference the M1 interpreter must implement,
+not just an editorial nuance:
+
+- **`lookupPublic(selector, class)`** — used for **ordinary** sends (an
+  explicit, non-`self`/`super`/`outer` receiver, §5.5). Walk from `class` up
+  the superclass chain. At each level: if the mixin declares `selector` as
+  `public`, that is the match. If the mixin declares `selector` at all but as
+  `protected` (or `private`), **the search stops there and fails** — a
+  non-public declaration *shadows* a public implementation further up the
+  chain; it does not merely hide the name from external callers while
+  leaving an inherited public version reachable. Only when the mixin does
+  not declare `selector` at all does the walk continue to the superclass.
+- **`lookupProtected(selector, class)`** — used for the runtime half of a
+  `LexicalSend` (§5.9) whose statically-determined target is **not**
+  `private`. Same chain walk, but matches `public` **or** `protected`;
+  a `private` declaration at an intermediate level is transparently skipped
+  (the walk continues past it, unlike `lookupPublic`'s hard stop).
+- **Direct, non-virtual dispatch** — a `LexicalSend` whose
+  statically-determined target (at its resolved depth `k`) is declared
+  `private` bypasses both lookups above: invoke exactly that method,
+  ignoring the enclosing object's actual runtime class entirely. (Private
+  members are never overridden, so there is nothing to look up.)
+- **`SuperSend` (§5.10)** looks up `selector` starting at the superclass of
+  the *current activation's* `current_class` (not `self`'s own class), via
+  the plain "defined for" walk (§3.5) — `public` and `protected` both match
+  at every level (no `lookupPublic`-style hard stop). On success, the new
+  activation's `current_class` is set to `definingClass(selector,
+  superclass)` — see "Activation Records" above for why this matters for
+  chained `super` sends.
+- **`doesNotUnderstand:` is exempt from every access check above.** `Object`'s
+  own implementation must be `protected` (§5.5), so if its dispatch used
+  `lookupPublic` an ordinary send could never reach it. DNU is resolved via
+  the plain presence-only "defined for" relation (§3.5): the first
+  `doesNotUnderstand:` found walking the receiver's class chain, regardless
+  of access modifier.
+- **Default access, when unmarked, is `protected`** (§6.3.1) — this is
+  binding, not cosmetic: it determines whether a member participates in
+  `lookupPublic` at all. A top-level class's own access is always `public`,
+  regardless of what is written on it.
+
+For the `LexicalSend` case as a whole: compute `o` = the `k`th enclosing
+object of `self` with respect to the current class (§3.3 — walked over the
+*actual* enclosing-object chain matched against mixin applications, not a
+naive lexical-nesting count, so that subclassing across a nesting boundary
+still resolves correctly), then apply the private/`lookupProtected` rule
+above using `o`'s *actual runtime class*. This is what makes public/protected
+`LexicalSend`s virtual (overridable in a subclass) while private ones are
+not.
 
 #### Class Instantiation
 
-1. The `superclassClause` expression is evaluated once, in the enclosing
-   lexical scope, to yield the superclass (default `Object` when absent).
-2. A class object (`ObjectData::Class`) is created, its `enclosing` set to
-   the defining object, its method dictionaries populated from the AST.
-3. Sending the factory keyword message (e.g. `usingPlatform:`) to the
-   class object allocates an instance, binds the factory parameters,
-   evaluates slot initializers in the instance's context in declaration
-   order, runs `initExprs`, and returns the instance.
+**Corrected against `newspeak-spec.pdf` §6.1 and §6.3.** An earlier revision
+of this section concluded, from the grammar shape alone, that "the
+superclass-clause expression is evaluated once, and the resulting value's
+`class` is the superclass" — this conflated two things the spec keeps
+separate, and is corrected here; see the retraction in "Open Questions
+Resolved During Implementation" below.
 
-See "Open Questions Resolved During Implementation" below for why step 1 needs
-no special-casing for the `= Object new (` idiom, or any other superclass
-expression: it is always just "evaluate the expression, take the result's
-class."
+A superclass clause `[prefix] receiver [message]` (e.g. `Object new`, or
+`balance: b` in `= Object new (...)`, or `Bla bar` in `Bla bar = (...)`) has
+its two parts evaluated at **different times**:
+
+- The `receiver` part alone (`Object`) is "the class determined by the
+  inheritance clause" (§6.1) — evaluated **once, when the class declaration
+  itself is evaluated**, via the *same* name resolution as any other
+  identifier (§5.7-§5.9; class names are not a separate namespace — `Object`
+  is looked up exactly like a method or slot name would be). Its value fixes
+  the actual superclass, directly — there is no intermediate "evaluate
+  `Object new`, allocate an instance, take that instance's class" step.
+- The trailing `message` part (`new`) is "the message determined by the
+  inheritance clause" and is **not evaluated at class-declaration time**. It
+  is deferred and evaluated fresh on **every instantiation** of the
+  (sub)class, in the context of that instantiation's own
+  instance-initializer activation — so the subclass's own factory parameters
+  are in scope when it runs.
+
+Instantiation, when the factory message is sent to a class object (§6.3):
+
+1. **One** instance `o` is allocated — distinct identity, every slot declared
+   by the class and its superclasses initially `nil`. There is *no* separate
+   instance allocated per level of the inheritance chain: `o` is the same
+   object threaded through every step below.
+2. An instance-initializer activation `i` is created, with the same
+   arguments as the factory message.
+3. In the context of `i`, the class's superclass clause's *deferred message*
+   is evaluated (this class's factory parameters are in scope) — the result
+   is sent to the superclass's own instance initializer, invoked on the
+   *same* `o`. This recurses up the chain to `Object`.
+4. Once the superclass chain above has fully run, this class's own slot
+   clauses execute on `o`, in declaration order.
+5. This class's own `initExprs` statement sequence executes on `o`.
+6. `i` returns `o` to the factory method, which returns it to the caller.
+
+Step 3 is why a class body has no access to the factory's actual parameters
+except through slots explicitly extracted in the initializer (§6.3) — only
+`i` sees them, not the class body proper.
 
 #### Core Library (native, in Rust)
 
@@ -397,23 +537,63 @@ action. Upstream license is preserved alongside the files.
 - **Hand-written lexer and parser** — no parser-generator dependency;
   checked against `NewspeakGrammar.ns`.
 
+## Documented Deviations from the Language Specification (Milestone 1)
+
+Places where M1's design deliberately simplifies `newspeak-spec.pdf`,
+recorded here per this plan's Global Constraint that a grammar/spec
+deviation gets noted rather than left implicit:
+
+- **No metaclass architecture.** §3.2: every class is formally an instance of
+  its own flat metaclass, itself a subclass of `Class`, an instance of
+  `Metaclass`. M1's `ClassData.class_side: Option<ClassRef>` is a side-table
+  standing in for this — class-side methods are stored directly rather than
+  materialized as a real metaclass instance. No M1 program sends a message
+  to a metaclass object itself, so this is unobservable for now; revisit if
+  a later milestone needs metaclasses to be first-class values (mirrors
+  almost certainly will).
+- **No "value object" concept.** §3.1.1 defines a formal, deeply-immutable
+  "value object" notion (numbers, strings, symbols, characters, booleans,
+  module definitions, and any class inheriting `Value` whose slots are all
+  immutable value objects) — the mechanism that lets an object cross an
+  actor boundary by copy instead of by far reference (§3.7). M1 has no
+  actors, so this is moot for now, but the Concurrency section of
+  `2026-09-04-ns-next-liveness-images-vm-design.md` should adopt this exact
+  spec vocabulary and mechanism — not the looser "provably non-aliased or
+  frozen data" phrasing it currently uses — once concurrency is implemented.
+- **`self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved.**
+  §4.1 lists all six as reserved words — illegal as ordinary identifiers. The
+  shipped M1 lexer treats them as ordinary identifiers: `true`/`false`/`nil`
+  are recognized as literals and `self`/`super`/`outer` are recognized
+  contextually, by name, at the parser/resolver level (confirmed working —
+  `self foo`, `super foo`, and general expression-level `outer N foo` all
+  parse correctly today; `outer N foo` was checked directly against
+  `corpus/modules/AccessModifierTesting.ns`, which uses it extensively, via
+  `cargo run -p ns-cli -- parse`). This only under-rejects programs that
+  illegally use these six names as ordinary identifiers; it does not affect
+  any correct program, and no corpus file exercises the illegal form. Not
+  worth fixing now — revisit only if it ever causes an observable problem.
+
 ## Open Questions Resolved During Implementation
 
-- **`superclassClause` semantics (the `= Object new (` idiom) — RESOLVED.**
-  The grammar (`NewspeakGrammar.ns:203`) defines
-  `superclassClause = superclassPrefix opt , unaryMsg , message opt` — an
-  ordinary message-send expression, nothing syntactically special (all 211
-  corpus files already parse it under this rule). The corpus's own
-  `BankAccount.ns` / `BankAccountExemplarDemo.ns` — despite the name — confirm
-  there is no exemplar/prototype state propagation: their
-  `(* :exemplar: BankAccount balance: 100 *)` comments are literal-message
-  *tooling pragmas* (already skipped as ordinary trivia), unrelated to
-  inheritance. The actual semantics are exactly what "Class Instantiation"
-  above already states: **the superclass-clause expression is evaluated once,
-  and the resulting value's `class` is the superclass.** `SomeClass new` is
-  simply the idiomatic way to say "my superclass is `SomeClass`" — you never
-  reference a class bare in this position, you evaluate to an instance and
-  take its class. No special-casing needed in the resolver or interpreter.
+- **`superclassClause` semantics (the `= Object new (` idiom) — RESOLVED,
+  CORRECTING an earlier pass of this section.** An earlier revision, working
+  from the grammar shape alone
+  (`NewspeakGrammar.ns:203`: `superclassClause = superclassPrefix opt ,
+  unaryMsg , message opt` — an ordinary message-send expression, nothing
+  syntactically special, which is still correct and is why all 211 corpus
+  files parse it), concluded: "the superclass-clause expression is evaluated
+  once, and the resulting value's `class` is the superclass." **That
+  conclusion was wrong in a load-bearing way.** Reading the actual language
+  specification (`newspeak-spec.pdf` §6.1, §6.3 — now vendored in
+  `corpus/reference/`) shows the *receiver* part (`Object`) and the
+  *trailing message* part (`new`) of the clause are evaluated at different
+  times, and there is no "allocate an instance, take its class" step at all
+  — see "Class Instantiation" above for the corrected model in full. The
+  corpus's own `BankAccount.ns` / `BankAccountExemplarDemo.ns` finding still
+  stands unchanged: their `(* :exemplar: BankAccount balance: 100 *)`
+  comments are literal-message *tooling pragmas* (already skipped as
+  ordinary trivia), unrelated to inheritance — that part of the earlier
+  analysis was correct and needed no fix.
 - **Character-constant lexing edge case (`""""` for the quote character) —
   RESOLVED, already correct.** `ns-syntax`'s `lex_char_constant` consumes
   exactly one character between `"` delimiters regardless of what that
