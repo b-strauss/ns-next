@@ -220,3 +220,157 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
         "false and: [...] and true or: [...] must never invoke their block argument at all"
     );
 }
+
+/// Final-review finding I7: Milestone 1 has no Integer/Float coercion. That
+/// is a documented gap, but it used to fail *dishonestly*: `1 + 1.5` went
+/// through `arg_int()`, which only accepts `Value::SmallInt`, and reported
+/// the resulting `None` as an "Integer overflow". The gap stays; the message
+/// now says what actually happened.
+#[test]
+fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
+    let mut interp = Interpreter::bootstrap();
+    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
+
+    let result = interp.send(
+        Value::SmallInt(1),
+        Symbol::intern("+"),
+        vec![Value::Float(1.5)],
+        &bindings,
+        None,
+    );
+
+    match result {
+        Err(Signal::Error(e)) => {
+            assert!(
+                !e.message.to_lowercase().contains("overflow"),
+                "a type mismatch must not be reported as an overflow: {}",
+                e.message
+            );
+            assert!(
+                e.message.contains("coercion"),
+                "expected the message to name the missing Integer/Float coercion, got: {}",
+                e.message
+            );
+        }
+        Ok(v) => panic!("expected a NewspeakError for `1 + 1.5`, got Ok({v:?})"),
+        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
+    }
+}
+
+/// Same finding, the comparison half: an ordering comparison against a
+/// type-mismatched argument used to answer a silent `false`.
+#[test]
+fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
+    let mut interp = Interpreter::bootstrap();
+    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
+
+    let result = interp.send(
+        Value::SmallInt(1),
+        Symbol::intern("<"),
+        vec![Value::Float(1.5)],
+        &bindings,
+        None,
+    );
+
+    match result {
+        Err(Signal::Error(e)) => assert!(e.message.contains("coercion"), "got: {}", e.message),
+        Ok(Value::Bool(false)) => {
+            panic!("`1 < 1.5` silently answered false instead of reporting the type mismatch")
+        }
+        Ok(v) => panic!("expected a NewspeakError, got Ok({v:?})"),
+        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
+    }
+}
+
+/// `=` is the deliberate exception: a type-mismatched argument is `false`,
+/// never an error (Object's own `=` convention). This pins that the I7
+/// change did not turn equality into an error too.
+#[test]
+fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
+    let mut interp = Interpreter::bootstrap();
+    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
+
+    let result = interp.send(
+        Value::SmallInt(1),
+        Symbol::intern("="),
+        vec![Value::Float(1.0)],
+        &bindings,
+        None,
+    );
+
+    match expect_ok(result, "1 = 1.0") {
+        Value::Bool(false) => {}
+        other => panic!("expected Value::Bool(false), got {other:?}"),
+    }
+}
+
+/// The one direction Milestone 1 *does* widen: `Float`'s own arithmetic
+/// accepts an `Integer` argument (lossless), and must keep doing so.
+#[test]
+fn float_arithmetic_still_widens_an_integer_argument() {
+    let mut interp = Interpreter::bootstrap();
+    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
+
+    let result = interp.send(
+        Value::Float(1.5),
+        Symbol::intern("+"),
+        vec![Value::SmallInt(1)],
+        &bindings,
+        None,
+    );
+
+    match expect_ok(result, "1.5 + 1") {
+        Value::Float(f) => assert!((f - 2.5).abs() < f64::EPSILON, "expected 2.5, got {f}"),
+        other => panic!("expected Value::Float(2.5), got {other:?}"),
+    }
+}
+
+/// A genuine overflow must still be reported as an overflow -- the I7 change
+/// only split the *type mismatch* case out of that message.
+#[test]
+fn a_real_integer_overflow_is_still_reported_as_an_overflow() {
+    let mut interp = Interpreter::bootstrap();
+    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
+
+    let result = interp.send(
+        Value::SmallInt(i64::MAX),
+        Symbol::intern("*"),
+        vec![Value::SmallInt(2)],
+        &bindings,
+        None,
+    );
+
+    match result {
+        Err(Signal::Error(e)) => assert!(
+            e.message.to_lowercase().contains("overflow"),
+            "expected an overflow-shaped message, got: {}",
+            e.message
+        ),
+        Ok(v) => panic!("expected a NewspeakError, got Ok({v:?})"),
+        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
+    }
+}
+
+/// Final-review finding I5, end to end: a radix integer literal in real
+/// source now evaluates instead of failing with a misleading "integer
+/// literal out of i64 range".
+#[test]
+fn a_radix_integer_literal_evaluates() {
+    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^16r1F )\n) : ()";
+    let (mut interp, class, resolved) = load(src);
+    let receiver = expect_ok(
+        interp.instantiate(class, vec![], &resolved.bindings),
+        "instantiate",
+    );
+    let result = interp.send(
+        receiver,
+        Symbol::intern("m"),
+        vec![],
+        &resolved.bindings,
+        None,
+    );
+    match expect_ok(result, "^16r1F") {
+        Value::SmallInt(31) => {}
+        other => panic!("expected Value::SmallInt(31), got {other:?}"),
+    }
+}
