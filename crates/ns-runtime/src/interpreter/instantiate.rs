@@ -30,6 +30,31 @@ impl Interpreter {
     /// `&ast::ClassDecl`; a `&Rc<ast::ClassDecl>` parameter here would not
     /// type-check against that call site. This is the kind of small,
     /// mechanical fix every task in this plan has needed at least once.
+    ///
+    /// # Milestone 1 known gaps
+    ///
+    /// **Nested classes are not loaded.** This function never recurses into
+    /// `decl.instance_side.nested_classes` (nor the class side's), and
+    /// `enclosing` is therefore always `None` for every class it builds. The
+    /// *resolver* fully supports nesting -- it resolves `outer C foo` and
+    /// depth-k implicit sends statically, and `dispatch::kth_enclosing_object`
+    /// implements the runtime half -- but with no nested class ever loaded and
+    /// no `ClassData.enclosing` ever set, any send that actually needs a
+    /// depth > 0 enclosing object resolves statically and then fails at
+    /// runtime (`kth_enclosing_object` returns `Value::Nil` as soon as it
+    /// asks for an enclosing object that is not there). Loading nested
+    /// classes is a substantial feature -- it needs a load order, a mutual
+    /// reference story between an instance and its enclosing object, and the
+    /// accessor a nested class declaration implicitly defines -- and no
+    /// Milestone 1 fixture or corpus module needs it.
+    ///
+    /// **Class-side methods are discarded.** `class_side` below is set to
+    /// `None` unconditionally: `decl.class_side`'s methods are parsed,
+    /// resolved, and then dropped here. Class-side / class methods are out of
+    /// scope for Milestone 1 (there are no metaclasses either -- every class
+    /// object's own `.class` is the one shared `Object`-tagged placeholder),
+    /// so there is nothing anywhere in the crate that would consume a
+    /// class-side entry if one were stored.
     fn load_class(&mut self, decl: &ast::ClassDecl, enclosing: Option<ObjRef>) -> ClassRef {
         let superclass = self.resolve_superclass_receiver(decl);
         let mut methods = HashMap::new();
@@ -65,7 +90,12 @@ impl Interpreter {
                 // initExprs, evaluated for real by `run_own_init_exprs`
                 // below (Step 5 of the spec's six numbered steps).
                 init_exprs: decl.instance_side.init_exprs.clone(),
-                class_side: None, // wired below once class-side methods exist
+                // Milestone 1 known gap (see this function's doc comment):
+                // class-side methods are out of scope, so `decl.class_side`
+                // is discarded here rather than stored. Nothing in the crate
+                // reads `ClassData.class_side`; it exists for a later
+                // milestone.
+                class_side: None,
                 enclosing,
                 factory: Some(Rc::new(decl.factory.clone().unwrap_or(
                     ast::MessagePattern::Unary {
@@ -217,6 +247,39 @@ impl Interpreter {
         Ok(receiver)
     }
 
+    /// Runs the superclass chain's instance initializers, deepest first
+    /// (spec step 3).
+    ///
+    /// # Milestone 1 known gaps
+    ///
+    /// **The superclass clause's message is never evaluated.** The spec has
+    /// the subclass's initializer evaluate the superclass clause's trailing
+    /// factory message (`Object new` in `class Foo = Object new (...)`, or
+    /// `Super usingPlatform: p` with real arguments) in the *subclass's* own
+    /// initializer context, and pass its arguments to the superclass's
+    /// instance initializer. This function does none of that: it walks
+    /// straight up `ClassData.superclass` and runs each level's slots and
+    /// initExprs. The clause's message is not even carried on `ClassData` --
+    /// `load_class` stores only `factory`, this class's *own* primary factory
+    /// pattern, while the clause's own message list lives on
+    /// `ast::SuperclassClause::messages`.
+    ///
+    /// This is fine exactly when the superclass factory message has no
+    /// behavior beyond structural instantiation -- true for every Milestone 1
+    /// fixture and for `Object new`, which is what every fixture and corpus
+    /// module in this milestone actually writes -- and is a real gap for a
+    /// superclass factory message that carries arguments or side effects.
+    ///
+    /// **Every level runs in the subclass's frame.** `subclass_frame` is
+    /// reused for every superclass level, so a superclass's own slot
+    /// initializers and initExprs see the *subclass's* factory arguments
+    /// rather than their own. Correcting this means building one activation
+    /// per level from the (unevaluated, see above) superclass clause's
+    /// arguments -- the same missing piece. Milestone 1 never links a
+    /// user-defined superclass through the ordinary pipeline anyway (see
+    /// `resolve_superclass_receiver`: only builtin superclass names resolve,
+    /// and builtins have no slots or initExprs), so no shipped path can
+    /// currently observe the difference.
     fn run_superclass_initializer(
         &mut self,
         class: &ClassRef,
@@ -234,28 +297,24 @@ impl Interpreter {
         let Some(superclass) = superclass else {
             return Ok(()); // reached Object (or a builtin) -- native classes have no init_exprs to run
         };
-        // The deferred factory message, evaluated now, in the *subclass's*
-        // own initializer context (subclass_frame) so its factory
-        // parameters are in scope -- the spec's core correction from the
-        // earlier draft of this design.
-        // Milestone 1: the superclass clause's message is not carried on
-        // ClassData today (`load_class` only stores `factory`, the primary
-        // factory pattern -- the *superclass clause's own* message is a
-        // separate AST field on `ast::SuperclassClause`). Evaluate it here
-        // directly from the AST rather than threading a new ClassData field
-        // through Task 7 Step 1's already-large bootstrap change:
-        let _ = instance; // reserved for a fixture that needs superclass-clause args; M1's Object/builtins take none
-                          // Recurse first -- the *superclass's own* superclass initializer
-                          // must run before the superclass's own slots/initExprs, exactly the
-                          // same "deepest first" ordering this function's caller applies one
-                          // level up (see the comment at the `instantiate` call site above).
-                          // The brief's original draft of this function ran only one level
-                          // (this class's immediate superclass) with no further recursion,
-                          // which contradicts its own "deepest (Object) first" framing for
-                          // any hierarchy more than two levels deep (Sub -> Mid -> Object):
-                          // Mid's own superclass initializer (i.e. Object's, a no-op today,
-                          // but not a no-op in general once user classes can chain three or
-                          // more deep) would silently never run. Fixed by recursing here.
+        // NOTE: the superclass clause's deferred factory message is NOT
+        // evaluated here -- see this function's "Milestone 1 known gaps"
+        // doc comment above for what that costs and why it is deferred.
+        // `instance` is threaded through only for the recursive calls below
+        // (it is the object every level's slots are written into); no
+        // superclass-clause argument is computed from it today.
+        //
+        // Recurse first -- the *superclass's own* superclass initializer
+        // must run before the superclass's own slots/initExprs, exactly the
+        // same "deepest first" ordering this function's caller applies one
+        // level up (see the comment at the `instantiate` call site above).
+        // The brief's original draft of this function ran only one level
+        // (this class's immediate superclass) with no further recursion,
+        // which contradicts its own "deepest (Object) first" framing for
+        // any hierarchy more than two levels deep (Sub -> Mid -> Object):
+        // Mid's own superclass initializer (i.e. Object's, a no-op today,
+        // but not a no-op in general once user classes can chain three or
+        // more deep) would silently never run. Fixed by recursing here.
         self.run_superclass_initializer(&superclass, instance, subclass_frame, bindings)?;
         self.run_own_slots(&superclass, instance, subclass_frame, bindings)?;
         self.run_own_init_exprs(&superclass, subclass_frame, bindings)?;
