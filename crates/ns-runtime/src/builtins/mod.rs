@@ -10,7 +10,7 @@ pub mod object_class;
 pub mod text;
 
 use crate::types::*;
-use crate::{Interpreter, Symbol};
+use crate::{platform, Interpreter, Symbol};
 
 /// `None` = this builtin does not implement `selector` (let the caller fall
 /// through to `doesNotUnderstand:`). `Some(Err(_))` = a genuine Newspeak-
@@ -37,6 +37,7 @@ pub fn dispatch_native(
             collections::dispatch_ordered_collection(interp, receiver, selector, args)
         }
         BuiltinClass::Block => block::dispatch(interp, receiver, selector, args),
+        BuiltinClass::Platform => platform::dispatch(interp, receiver, selector, args),
         _ => None,
     }
 }

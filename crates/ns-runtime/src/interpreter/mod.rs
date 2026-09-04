@@ -27,6 +27,7 @@ pub type EvalResult = Result<Value, Signal>;
 pub struct Interpreter {
     next_identity_hash: u32,
     builtin_classes: Option<HashMap<BuiltinClass, ClassRef>>,
+    platform_singleton: Option<Value>,
 }
 
 impl Default for Interpreter {
@@ -40,6 +41,7 @@ impl Interpreter {
         Interpreter {
             next_identity_hash: 1,
             builtin_classes: None,
+            platform_singleton: None,
         }
     }
 
@@ -47,6 +49,7 @@ impl Interpreter {
         let mut interp = Interpreter {
             next_identity_hash: 1,
             builtin_classes: None,
+            platform_singleton: None,
         };
         interp.builtin_classes = Some(build_builtin_classes(&mut interp));
         interp
@@ -68,6 +71,17 @@ impl Interpreter {
     }
 
     /// An ordinary (explicit-receiver) send: `newspeak-spec.pdf` §5.5.
+    ///
+    /// Checked first, before any lookup: `ClassName new` (or a class's own
+    /// non-default factory selector) never has a real method to find --
+    /// every class object's own `.class` is a shared placeholder with an
+    /// empty method table (see `build_builtin_classes` below), so an
+    /// ordinary `lookup_public` search would just fall through to
+    /// `doesNotUnderstand:` every time. `try_factory_send`
+    /// (`instantiate.rs`) recognizes the shape and routes to
+    /// `instantiate` directly; see its own doc comment for why this can
+    /// never double-fire against the superclass clause's own deferred
+    /// factory message (`run_superclass_initializer` never calls `send`).
     pub fn send(
         &mut self,
         receiver: Value,
@@ -76,6 +90,9 @@ impl Interpreter {
         bindings: &Rc<HashMap<Span, Binding>>,
         sender: Option<FrameRef>,
     ) -> EvalResult {
+        if let Some(result) = self.try_factory_send(&receiver, selector, &args, bindings) {
+            return result;
+        }
         let class = self.class_of(&receiver);
         match dispatch::lookup_public(&class, selector) {
             Lookup::Method(method, defining_class) => self.invoke_method(
@@ -321,6 +338,31 @@ impl Interpreter {
         let class = self.builtin_class(BuiltinClass::Block);
         self.new_instance_object(class, ObjectData::Closure((*closure).clone()))
     }
+
+    /// The `platform` object (runtime spec's Core Library section):
+    /// memoized on first call, so every reference within one interpreter
+    /// sees the same object identity.
+    pub fn platform(&mut self) -> Value {
+        if let Some(p) = &self.platform_singleton {
+            return p.clone();
+        }
+        let class = self.builtin_class(BuiltinClass::Platform);
+        let obj = self.new_instance_object(class, ObjectData::Instance(vec![]));
+        let value = Value::Obj(obj);
+        self.platform_singleton = Some(value.clone());
+        value
+    }
+
+    /// A `Transcript`-style stdout stream object -- see `crate::platform`'s
+    /// module doc for how its payload shape (a one-field, always-`Nil`
+    /// `Instance`) tells it apart from the `platform` singleton itself
+    /// (a zero-field `Instance`). `pub(crate)`, not `pub`: only
+    /// `crate::platform::dispatch` (`platform transcript`) ever needs to
+    /// mint one.
+    pub(crate) fn new_stream_object(&mut self) -> ObjRef {
+        let class = self.builtin_class(BuiltinClass::Platform);
+        self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil]))
+    }
 }
 
 /// Milestone 1 (no metaclasses -- see the runtime spec's "Documented
@@ -362,6 +404,7 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
         BuiltinClass::OrderedCollection,
         BuiltinClass::Nil,
         BuiltinClass::Block,
+        BuiltinClass::Platform,
     ];
     let class_of_class = build_self_referential_object_class();
     let mut map = HashMap::new();

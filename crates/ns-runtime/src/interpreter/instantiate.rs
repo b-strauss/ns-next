@@ -80,6 +80,79 @@ impl Interpreter {
         }))
     }
 
+    /// Intercepts an ordinary explicit-receiver send (`Interpreter::send`'s
+    /// call site, above -- checked *before* `dispatch::lookup_public`) when
+    /// `receiver` is a class object and `selector` is that class's own
+    /// factory selector: `class_data.factory`'s pattern if the class
+    /// declared one (every user-defined class does -- `load_class` above
+    /// always fills this in, defaulting to a bare `new` pattern when the
+    /// source class decl left it out), or a bare `new` selector for a
+    /// builtin (`factory` is always `None` there, per
+    /// `build_builtin_classes`). Returns `None` for anything else --
+    /// including a `new`-selector send to a *non*-class object, or a
+    /// class object receiving some other selector -- letting the caller
+    /// fall through to ordinary dispatch.
+    ///
+    /// No user-overridable `new` method is ever registered anywhere to
+    /// find (every `BuiltinClass`-tagged placeholder's method table is
+    /// empty, and a user class's own `.class` is that same shared
+    /// placeholder -- Milestone 1's "no metaclasses" simplification), so
+    /// without this check `ClassName new` would unconditionally end in
+    /// `doesNotUnderstand:`, for every class, every time.
+    ///
+    /// No double-dispatch risk against the superclass clause's own
+    /// deferred factory message (e.g. `Object new` in
+    /// `class Foo = Object new (...) ...`): that message is evaluated by
+    /// `run_superclass_initializer` below, which recurses directly into
+    /// `run_superclass_initializer`/`run_own_slots`/`run_own_init_exprs`
+    /// and never calls `Interpreter::send` (nor, therefore, this method)
+    /// at all -- confirmed by inspection of every call site in this file.
+    pub(super) fn try_factory_send(
+        &mut self,
+        receiver: &Value,
+        selector: Symbol,
+        args: &[Value],
+        bindings: &Rc<HashMap<Span, Binding>>,
+    ) -> Option<EvalResult> {
+        let Value::Obj(obj) = receiver else {
+            return None;
+        };
+        let (factory_selector, builtin) = {
+            let borrowed = obj.borrow();
+            let ObjectData::Class(class_data) = &borrowed.data else {
+                return None;
+            };
+            let factory_selector = match &class_data.factory {
+                Some(pattern) => Symbol::intern(&method_name(pattern)),
+                None => Symbol::intern("new"),
+            };
+            (factory_selector, class_data.builtin)
+        };
+        if selector != factory_selector {
+            return None;
+        }
+        let class_ref = obj.clone();
+        Some(match builtin {
+            // `Array`/`OrderedCollection`'s Milestone 1 representation is
+            // `ObjectData::Array`, not the generic `instantiate()`'s
+            // `ObjectData::Instance` -- `builtins::collections`' dispatch
+            // functions (Task 10) pattern-match on `ObjectData::Array`
+            // directly, so handing them a generic instance payload would
+            // leave every native method on the result silently unable to
+            // find its data (falling straight through to
+            // `doesNotUnderstand:` on the very next send). Built directly
+            // with `new_instance_object`, tagged with `class_ref` itself
+            // (the receiver's own class -- *not* `Interpreter::new_array`,
+            // which unconditionally tags its result `BuiltinClass::Array`;
+            // using that here would make `OrderedCollection new`'s result
+            // dispatch through `dispatch_array`, which has no `add:`).
+            Some(BuiltinClass::OrderedCollection) | Some(BuiltinClass::Array) => Ok(Value::Obj(
+                self.new_instance_object(class_ref, ObjectData::Array(vec![])),
+            )),
+            _ => self.instantiate(class_ref, args.to_vec(), bindings),
+        })
+    }
+
     fn resolve_superclass_receiver(&mut self, decl: &ast::ClassDecl) -> Option<ClassRef> {
         let Some(clause) = &decl.superclass else {
             return Some(self.builtin_class(BuiltinClass::Object));

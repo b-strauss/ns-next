@@ -7,6 +7,7 @@
 pub mod builtins;
 pub mod dispatch;
 pub mod interpreter;
+pub mod platform;
 pub mod resolver;
 pub mod symbol;
 pub mod types;

@@ -88,6 +88,7 @@ pub enum BuiltinClass {
     OrderedCollection,
     Nil,
     Block,
+    Platform,
 }
 
 #[derive(Debug, Clone)]

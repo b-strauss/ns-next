@@ -27,12 +27,24 @@ enum Cmd {
         #[arg(long)]
         blacklist: Option<PathBuf>,
     },
+    /// Parse, resolve, bootstrap, load, instantiate, and run a .ns file
+    /// end to end.
+    Run {
+        file: PathBuf,
+        /// The entry selector to send after instantiation, e.g.
+        /// `main:args:` (the default, per the spec's Core Library
+        /// convention) or `--send someSelector` for a fixture that isn't
+        /// a full `main:args:`-shaped application.
+        #[arg(long, default_value = "main:args:")]
+        send: String,
+    },
 }
 
 fn main() -> ExitCode {
     match Cli::parse().command {
         Cmd::Parse { file, ast } => cmd_parse(&file, ast),
         Cmd::ParseCorpus { dir, blacklist } => cmd_parse_corpus(&dir, blacklist.as_deref()),
+        Cmd::Run { file, send } => cmd_run(&file, &send),
     }
 }
 
@@ -57,6 +69,89 @@ fn cmd_parse(file: &Path, ast: bool) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Parses, resolves, bootstraps, loads, instantiates, and sends `send` to a
+/// single `.ns` file's root class -- `ns-next run`. Note on the brief's
+/// original draft: it calls a `render_diagnostic` helper that does not
+/// actually exist anywhere in this file (only `print_diagnostics`, which
+/// already prints straight to stderr rather than returning a `String`) --
+/// reusing `print_diagnostics` here instead, exactly as `cmd_parse` above
+/// already does for a parse failure.
+fn cmd_run(file: &Path, send: &str) -> ExitCode {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: reading {}: {e}", file.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let module = match ns_syntax::parse(&source) {
+        Ok(m) => m,
+        Err(diags) => {
+            print_diagnostics(file, &source, &diags);
+            return ExitCode::FAILURE;
+        }
+    };
+    let resolved = match ns_runtime::resolve(
+        module,
+        source.into(),
+        ns_runtime::SourceOrigin::File(file.to_path_buf()),
+    ) {
+        Ok(r) => r,
+        Err(errors) => {
+            for e in errors {
+                eprintln!("resolve error: {}", e.message);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    let bindings = resolved.bindings.clone();
+    let mut interp = ns_runtime::Interpreter::bootstrap();
+    let class = interp.load_module(&resolved);
+    let platform = interp.platform();
+    // `usingPlatform: platform`'s one factory parameter (`newspeak-spec.pdf`
+    // §8.4's Core Library factory convention).
+    let instance = match interp.instantiate(class, vec![platform.clone()], &bindings) {
+        Ok(v) => v,
+        Err(signal) => return report_signal(signal),
+    };
+    // `main:args:`'s two parameters: Milestone 1 passes `Nil` for the
+    // environment-args list -- no real command-line-argument passthrough
+    // into Newspeak yet (add it only if a Task 12 fixture needs it).
+    let selector = ns_runtime::Symbol::intern(send);
+    match interp.send(
+        instance,
+        selector,
+        vec![platform, ns_runtime::Value::Nil],
+        &bindings,
+        None,
+    ) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(ns_runtime::Signal::Error(e)) => {
+            eprintln!("Uncaught Newspeak error: {}", e.message);
+            ExitCode::FAILURE
+        }
+        Err(ns_runtime::Signal::Return(..)) => {
+            eprintln!("internal: non-local return escaped the entry send");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn report_signal(signal: ns_runtime::Signal) -> ExitCode {
+    match signal {
+        ns_runtime::Signal::Error(e) => {
+            eprintln!(
+                "Uncaught Newspeak error during instantiation: {}",
+                e.message
+            );
+        }
+        ns_runtime::Signal::Return(..) => {
+            eprintln!("internal: non-local return escaped instantiation");
+        }
+    }
+    ExitCode::FAILURE
 }
 
 fn cmd_parse_corpus(dir: &Path, blacklist: Option<&Path>) -> ExitCode {
