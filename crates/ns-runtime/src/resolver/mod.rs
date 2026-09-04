@@ -138,11 +138,30 @@ impl Resolver {
                 self.resolve_method(method, &class_chain);
             }
         }
-        // Slot initializers execute in the instance initializer's context
-        // (spec's Class Instantiation section) -- resolve them with an
-        // activation scope of zero locals, same class chain.
+        // Slot initializers and initExprs execute in the instance
+        // initializer's activation (the runtime spec's Class Instantiation
+        // section, step 2: that activation has "the same arguments as the
+        // factory message"), so this class's *own* factory parameters are
+        // locals there -- exactly the way a method's own parameters are
+        // locals in its body. `| t = platform transcript. |` inside
+        // `class M usingPlatform: platform = Object new (...)` is the
+        // single most common real Newspeak module idiom and depends on it.
+        //
+        // A class declaration with no explicit factory pattern
+        // (`class C = Super (...)`) contributes no parameters, matching
+        // `interpreter/instantiate.rs`'s `load_class`, which defaults such
+        // a class's `ClassData.factory` to a bare unary `new` pattern.
+        // Parameter order here is the same order `LocalScope::new` indexes
+        // by, which is the order `Interpreter::instantiate` fills
+        // `Frame.args` with its `factory_args` -- so `Binding::Local(i)`
+        // reads the right argument at runtime.
+        let factory_params: Vec<Symbol> = decl
+            .factory
+            .as_ref()
+            .map(pattern_param_names)
+            .unwrap_or_default();
         let mut scope = ScopeStack::new();
-        scope.push(LocalScope::new(&[]));
+        scope.push(LocalScope::new(&factory_params));
         for slot in &decl.instance_side.slots {
             if let Some(init) = &slot.init {
                 self.resolve_expr(init, &mut scope, &class_chain);

@@ -149,6 +149,116 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
     }
 }
 
+/// Final-review finding C2: the class's *own* factory parameters are locals
+/// in the instance-initializer activation (the runtime spec's Class
+/// Instantiation section, step 2 -- "the same arguments as the factory
+/// message"), so a slot initializer may reference them. This is the
+/// `class M usingPlatform: platform = Object new (| t = platform ... |)`
+/// idiom every real Newspeak module is built out of; before the fix the
+/// resolver pushed an empty `LocalScope` here and `platform` fell through to
+/// a `LexicalSend`, failing at runtime with `doesNotUnderstand: #platform`.
+#[test]
+fn a_factory_parameter_is_visible_in_a_slot_initializer() {
+    let src = "Newspeak3\n'T'\nclass M usingPlatform: platform = Object new (|t = platform.|) (public getT = (^t)) : ()";
+    let (mut interp, class, resolved) = load(src);
+
+    let receiver = expect_ok(
+        interp.instantiate(class, vec![Value::SmallInt(99)], &resolved.bindings),
+        "instantiate",
+    );
+
+    let result = interp.send(
+        receiver,
+        Symbol::intern("getT"),
+        vec![],
+        &resolved.bindings,
+        None,
+    );
+
+    match result {
+        Ok(Value::SmallInt(99)) => {}
+        Ok(other) => {
+            panic!("expected the slot to hold the factory argument (SmallInt(99)), got {other:?}")
+        }
+        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
+        Err(Signal::Error(e)) => panic!("unexpected Signal::Error: {}", e.message),
+    }
+}
+
+/// The same, but the factory parameter is the *receiver* of a send inside
+/// the slot initializer, and the whole thing runs through a real factory
+/// send (`M usingPlatform: 99`) rather than a direct `instantiate` call --
+/// i.e. exactly the path `ns-next run` takes.
+#[test]
+fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
+    let src = "Newspeak3\n'T'\nclass M usingPlatform: p = Object new (|t = p printString.|) (public getT = (^t)) : ()";
+    let (mut interp, class, resolved) = load(src);
+
+    let receiver = expect_ok(
+        interp.send(
+            Value::Obj(class),
+            Symbol::intern("usingPlatform:"),
+            vec![Value::SmallInt(99)],
+            &resolved.bindings,
+            None,
+        ),
+        "M usingPlatform: 99",
+    );
+
+    let result = expect_ok(
+        interp.send(
+            receiver,
+            Symbol::intern("getT"),
+            vec![],
+            &resolved.bindings,
+            None,
+        ),
+        "getT",
+    );
+
+    match &result {
+        Value::Obj(obj) => match &obj.borrow().data {
+            ns_runtime::ObjectData::Str(s) => assert_eq!(s, "99"),
+            other => panic!("expected ObjectData::Str(\"99\"), got {other:?}"),
+        },
+        other => panic!("expected Value::Obj(<String>), got {other:?}"),
+    }
+}
+
+/// An `initExprs` statement (the class header's trailing statements, spec
+/// step 5) sees the factory parameters too -- same activation, same scope.
+#[test]
+fn a_factory_parameter_is_visible_in_an_init_expr() {
+    let src = "Newspeak3\n'T'\nclass M usingPlatform: p = Object new (|t.| t:: p.) (public getT = (^t)) : ()";
+    let module = ns_syntax::parse(src).expect("parse");
+    assert_eq!(
+        module.root_class.instance_side.init_exprs.len(),
+        1,
+        "this fixture is only meaningful if the header's `t:: p.` really parsed as an initExpr"
+    );
+    let (mut interp, class, resolved) = load(src);
+
+    let receiver = expect_ok(
+        interp.instantiate(class, vec![Value::SmallInt(7)], &resolved.bindings),
+        "instantiate",
+    );
+
+    let result = interp.send(
+        receiver,
+        Symbol::intern("getT"),
+        vec![],
+        &resolved.bindings,
+        None,
+    );
+
+    match result {
+        Ok(Value::SmallInt(7)) => {}
+        Ok(other) => panic!("expected SmallInt(7) assigned by the initExpr, got {other:?}"),
+        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
+        Err(Signal::Error(e)) => panic!("unexpected Signal::Error: {}", e.message),
+    }
+}
+
 #[test]
 fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new () () : ()";
