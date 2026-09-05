@@ -97,6 +97,14 @@ impl Interpreter {
         h
     }
 
+    /// After `image::load`: never hand out an identity hash a loaded object
+    /// already carries (spec: "Identity hashes").
+    pub(crate) fn advance_identity_hash_past(&mut self, max: u32) {
+        if self.next_identity_hash <= max {
+            self.next_identity_hash = max + 1;
+        }
+    }
+
     /// An ordinary (explicit-receiver) send: `newspeak-spec.pdf` §5.5.
     ///
     /// Checked first, before any lookup: `ClassName new` (or a class's own

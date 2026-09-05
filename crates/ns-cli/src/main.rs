@@ -40,6 +40,23 @@ enum Cmd {
         #[arg(long, value_enum, default_value_t = EngineArg::Bytecode)]
         engine: EngineArg,
     },
+    /// Run a file under the bytecode engine, then serialize the resulting
+    /// (quiesced) world to an image file.
+    Snapshot {
+        file: PathBuf,
+        out: PathBuf,
+        /// A selector to send (with `[platform, nil]`, as `run` does)
+        /// before snapshotting; its result becomes a second root.
+        #[arg(long)]
+        send: Option<String>,
+    },
+    /// Deserialize an image and optionally send one further message to
+    /// its root instance (`[platform, nil]`, as `run` does).
+    Load {
+        image: PathBuf,
+        #[arg(long)]
+        send: Option<String>,
+    },
     /// Compile one method (or, with --initializer, the root class's
     /// instance initializer) and print its bytecode. Compile only: nothing
     /// is instantiated or run.
@@ -68,6 +85,8 @@ fn main() -> ExitCode {
         Cmd::Parse { file, ast } => cmd_parse(&file, ast),
         Cmd::ParseCorpus { dir, blacklist } => cmd_parse_corpus(&dir, blacklist.as_deref()),
         Cmd::Run { file, send, engine } => cmd_run(&file, &send, engine),
+        Cmd::Snapshot { file, out, send } => cmd_snapshot(&file, &out, send.as_deref()),
+        Cmd::Load { image, send } => cmd_load(&image, send.as_deref()),
         Cmd::Disasm {
             file,
             selector,
@@ -102,9 +121,7 @@ fn cmd_parse(file: &Path, ast: bool) -> ExitCode {
 /// A module read, parsed, and resolved -- everything `run`, `disasm`, and
 /// `snapshot` share before an interpreter exists.
 struct LoadedSource {
-    #[allow(dead_code)]
     source: String,
-    #[allow(dead_code)]
     origin: ns_runtime::SourceOrigin,
     resolved: ns_runtime::ResolvedModule,
 }
@@ -201,6 +218,110 @@ fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
         instance,
         selector,
         vec![platform, ns_runtime::Value::Nil],
+        &bindings,
+        None,
+    ))
+}
+
+/// `ns-next snapshot`: `run`'s pipeline up to (and optionally including)
+/// the entry send, then a serialized image of the resulting world. Always
+/// the bytecode engine -- a tree-walker closure carries `ClosureBody::Ast`,
+/// which the format has no representation for, and the image's own code
+/// table is what a later `load` runs.
+fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>) -> ExitCode {
+    let loaded = match load_source(file) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+    let bindings = loaded.resolved.bindings.clone();
+    let (mut interp, class) = bootstrap_with_engine(&loaded, EngineArg::Bytecode);
+    let platform = interp.platform();
+    let instance = match interp.instantiate(class.clone(), vec![platform.clone()], &bindings) {
+        Ok(v) => v,
+        Err(signal) => return report_signal(signal),
+    };
+    let mut roots = vec![instance.clone()];
+    if let Some(selector) = send {
+        let args = vec![platform.clone(), ns_runtime::Value::Nil];
+        match interp.send(
+            instance,
+            ns_runtime::Symbol::intern(selector),
+            args,
+            &bindings,
+            None,
+        ) {
+            Ok(result) => roots.push(result),
+            Err(signal) => return report_entry_send(Err(signal)),
+        }
+    }
+    let module = interp
+        .compiled_module()
+        .expect("bootstrap_with_engine installed the bytecode engine");
+    let bytes = match ns_runtime::image::snapshot(
+        &loaded.source,
+        &loaded.origin,
+        &class,
+        module,
+        &platform,
+        &roots,
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: snapshot failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match std::fs::write(out, bytes) {
+        Ok(()) => {
+            println!("wrote {}", out.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: writing {}: {e}", out.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `ns-next load`: deserialize a world and, with `--send`, send one
+/// message to its root instance with the same `[platform, nil]` convention
+/// `run` uses -- and report it through the same `report_entry_send`, so a
+/// `load --send main:args:` of a snapshot prints exactly what `run` prints
+/// and nothing else. A malformed image is a message, never a stack trace.
+fn cmd_load(image: &Path, send: Option<&str>) -> ExitCode {
+    let bytes = match std::fs::read(image) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: reading {}: {e}", image.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let ns_runtime::image::LoadedImage {
+        mut interp,
+        root_class: _,
+        bindings,
+        roots,
+    } = match ns_runtime::image::load(&bytes) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("error: loading {}: {e}", image.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(selector) = send else {
+        println!("loaded {}: {} root value(s)", image.display(), roots.len());
+        return ExitCode::SUCCESS;
+    };
+    let Some(instance) = roots.into_iter().next() else {
+        eprintln!("error: image has no root instance to send to");
+        return ExitCode::FAILURE;
+    };
+    let platform = interp.platform();
+    let args = vec![platform, ns_runtime::Value::Nil];
+    report_entry_send(interp.send(
+        instance,
+        ns_runtime::Symbol::intern(selector),
+        args,
         &bindings,
         None,
     ))

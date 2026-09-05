@@ -1,5 +1,6 @@
 //! Image format round-trip tests, built up task by task: header + scalars
-//! (Task 12), the code table (Task 13), the object + frame tables (Task 14).
+//! (Task 12), the code table (Task 13), the object + frame tables (Task 14),
+//! whole-image `snapshot`/`load` and the two verification passes (Task 15).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -8,7 +9,9 @@ use std::rc::Rc;
 use ns_runtime::bytecode::{
     class_key, method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
 };
+use ns_runtime::image;
 use ns_runtime::image::{decode, encode};
+use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
     compiler, Binding, BuiltinClass, ClassRef, ClosureBody, Engine, FrameKind, Interpreter,
     ObjectData, Signal, SourceOrigin, Symbol, Value,
@@ -1667,5 +1670,950 @@ fn a_closure_record_declaring_too_many_parameters_is_a_decode_error() {
             params: 1,
             num_args: 0
         }
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Task 15: whole-image `snapshot`/`load`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_counter() {
+    let src = "Newspeak3\n'T'\nclass Counter = Object new (\n  | n ::= 0. |\n) (\n  public bump = ( n := n + 1. ^n )\n) : ()";
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let instance = expect_ok(
+        interp.instantiate(class.clone(), vec![], &bindings),
+        "instantiate",
+    );
+    expect_ok(
+        interp.send(
+            instance.clone(),
+            Symbol::intern("bump"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "bump",
+    );
+    let platform = interp.platform();
+    let bytes = image::snapshot(
+        src,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().unwrap(),
+        &platform,
+        std::slice::from_ref(&instance),
+    )
+    .expect("snapshot");
+    let max_hash = obj(&instance).borrow().identity_hash;
+
+    let mut loaded = image::load(&bytes).expect("load");
+    assert!(
+        loaded.interp.compiled_module().is_some(),
+        "the bytecode engine is installed"
+    );
+    assert!(Rc::ptr_eq(
+        &obj(&loaded.roots[0]).borrow().class,
+        &loaded.root_class
+    ));
+    let bindings = loaded.bindings.clone();
+    let n = expect_ok(
+        loaded.interp.send(
+            loaded.roots[0].clone(),
+            Symbol::intern("bump"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "bump",
+    );
+    assert!(
+        matches!(n, Value::SmallInt(2)),
+        "slot state survived: 1 before the snapshot, 2 after"
+    );
+    let fresh = loaded.interp.new_string("fresh".to_string());
+    assert!(
+        fresh.borrow().identity_hash > max_hash,
+        "no hash collision with loaded objects"
+    );
+}
+
+#[test]
+fn load_refuses_a_version_mismatch() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let platform = interp.platform();
+    let mut bytes = image::snapshot(
+        src,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().unwrap(),
+        &platform,
+        &[],
+    )
+    .unwrap();
+    bytes[4..8].copy_from_slice(&9999u32.to_le_bytes());
+    let err = load_err(&bytes);
+    assert!(err.contains("version"), "{err}");
+}
+
+/// `image::load`'s error message. Never `expect_err`: that would `Debug`
+/// the `Ok` side, and a `LoadedImage`'s roots can hold a class object --
+/// the bootstrap `Object` class is its own `.class`, so `Debug` recurses
+/// forever. `LoadedImage` deliberately does not derive it.
+fn load_err(bytes: &[u8]) -> String {
+    match image::load(bytes) {
+        Ok(_) => panic!("expected a load error, got a loaded image"),
+        Err(e) => e,
+    }
+}
+
+#[test]
+fn the_source_origin_round_trips_through_the_image() {
+    let mut w = encode::Writer::new();
+    encode::encode_source_origin(&mut w, &Origin::File(PathBuf::from("some/where.ns")));
+    let bytes = w.into_bytes();
+    let mut r = decode::Reader::new(&bytes);
+    let SourceOrigin::File(path) = decode::decode_source_origin(&mut r).expect("origin");
+    assert_eq!(path, PathBuf::from("some/where.ns"));
+}
+
+#[test]
+fn an_invalid_source_origin_tag_is_a_decode_error_not_a_panic() {
+    let bytes = vec![200u8];
+    let mut r = decode::Reader::new(&bytes);
+    // `SourceOrigin` is not `PartialEq`, so this matches rather than
+    // comparing -- and names the variant it expects either way.
+    match decode::decode_source_origin(&mut r) {
+        Err(decode::DecodeError::InvalidTag {
+            what: "source origin",
+            tag: 200,
+        }) => {}
+        Err(e) => panic!("expected InvalidTag{{source origin, 200}}, got: {e}"),
+        Ok(SourceOrigin::File(path)) => panic!("expected an error, got origin {}", path.display()),
+    }
+}
+
+#[test]
+fn a_snapshot_of_a_tree_walker_closure_is_refused_rather_than_written() {
+    // `snapshot` is only ever called under the bytecode engine (the CLI
+    // installs it before instantiating). A tree-walker closure carries
+    // `ClosureBody::Ast`, which the format has no representation for: the
+    // encoder must refuse rather than write an image nothing could read.
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
+    let (mut interp, class, bindings) = load(src);
+    let instance = expect_ok(
+        interp.instantiate(class.clone(), vec![], &bindings),
+        "instantiate",
+    );
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let platform = interp.platform();
+    let err = image::snapshot(
+        src,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        &[instance],
+    )
+    .expect_err("a tree-walker closure cannot be encoded");
+    assert!(err.contains("ClosureBody::Ast"), "{err}");
+}
+
+#[test]
+fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n  public run = ( ^blk value )\n) : ()";
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let instance = expect_ok(
+        interp.instantiate(class.clone(), vec![], &bindings),
+        "instantiate",
+    );
+    let platform = interp.platform();
+    let bytes = image::snapshot(
+        src,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        &[instance],
+    )
+    .expect("snapshot");
+    for cut in 0..bytes.len() {
+        // Never `{:?}` the `Ok` side: a `LoadedImage`'s roots can hold a
+        // class object, whose `Debug` recurses forever.
+        assert!(
+            image::load(&bytes[..cut]).is_err(),
+            "a truncated image must never load"
+        );
+    }
+    image::load(&bytes).expect("the untruncated image still loads");
+}
+
+// ---------------------------------------------------------------------------
+// Task 15: `verify_code_table` -- decoding is byte-safe, but a decoded body
+// is not yet *coherent*. Every case below decodes cleanly and would panic
+// (or silently misaddress a register) inside `vm::run_code`.
+// ---------------------------------------------------------------------------
+
+/// A `CompiledCode` the compiler would never emit: the verification tests
+/// craft bodies directly rather than round-tripping a module.
+fn code_with(
+    kind: CodeKind,
+    num_args: u16,
+    num_registers: u16,
+    instrs: Vec<Instr>,
+) -> Rc<CompiledCode> {
+    Rc::new(CompiledCode {
+        kind,
+        instrs,
+        num_args,
+        num_registers,
+        statement_pc: vec![],
+        call_sites: vec![],
+        source: Span::new(0, 0),
+    })
+}
+
+fn table_of(codes: Vec<Rc<CompiledCode>>) -> decode::DecodedCodeTable {
+    decode::DecodedCodeTable {
+        codes,
+        methods: vec![],
+        initializer: None,
+    }
+}
+
+#[test]
+fn a_real_modules_decoded_code_table_verifies() {
+    // The control for every rejection below: everything the compiler emits
+    // for a module using blocks, non-local return, loops and literal arrays
+    // passes the structural pass unchanged.
+    let (_interp, class, bindings) = load(RICH);
+    let module = compiler::compile_module(&class, &bindings);
+    let (table, _ids) = round_trip_code_table(&module, &class);
+    decode::verify_code_table(&table).expect("compiler-emitted code is structurally sound");
+}
+
+#[test]
+fn a_jump_target_past_the_end_of_its_body_is_refused() {
+    let table = table_of(vec![code_with(
+        CodeKind::Method,
+        0,
+        1,
+        vec![Instr::Jump { target: 7 }],
+    )]);
+    let err = decode::verify_code_table(&table).expect_err("out-of-range jump");
+    assert_eq!(
+        err,
+        decode::DecodeError::JumpTargetOutOfRange {
+            target: 7,
+            instrs: 1
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "jump target 7 is not an instruction index in a body of 1 instruction(s)"
+    );
+}
+
+#[test]
+fn every_conditional_jump_target_is_checked_too() {
+    // One case per jump-carrying instruction: a check that only covered
+    // `Jump` would leave three unchecked `pc` writes in `run_code`.
+    for instr in [
+        Instr::JumpIfNotBoolean { reg: 0, target: 9 },
+        Instr::BranchIfFalse { reg: 0, target: 9 },
+        Instr::BranchIfTrue { reg: 0, target: 9 },
+    ] {
+        let table = table_of(vec![code_with(
+            CodeKind::Method,
+            0,
+            1,
+            vec![instr, Instr::Return { reg: 0 }],
+        )]);
+        assert_eq!(
+            decode::verify_code_table(&table),
+            Err(decode::DecodeError::JumpTargetOutOfRange {
+                target: 9,
+                instrs: 2
+            })
+        );
+    }
+}
+
+#[test]
+fn a_register_past_the_bodys_register_file_is_refused() {
+    // `read_local`/`write_local` split at `args.len()` and index `temps`
+    // unchecked, so register 5 in a two-register body is an out-of-bounds
+    // index, not a wrong answer.
+    let table = table_of(vec![code_with(
+        CodeKind::Method,
+        0,
+        2,
+        vec![Instr::Move { dst: 5, src: 0 }, Instr::Return { reg: 0 }],
+    )]);
+    let err = decode::verify_code_table(&table).expect_err("out-of-range register");
+    assert_eq!(
+        err,
+        decode::DecodeError::RegisterOutOfRange {
+            reg: 5,
+            num_registers: 2
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "register r5 is outside a body with 2 register(s)"
+    );
+}
+
+#[test]
+fn a_register_in_a_send_argument_list_is_checked_too() {
+    let table = table_of(vec![code_with(
+        CodeKind::Method,
+        0,
+        1,
+        vec![
+            Instr::SendPublic {
+                selector: Symbol::intern("foo:"),
+                receiver_reg: 0,
+                arg_regs: vec![0, 4],
+                dst: 0,
+                call_site: CallSite { call_site_id: 0 },
+            },
+            Instr::Return { reg: 0 },
+        ],
+    )]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::RegisterOutOfRange {
+            reg: 4,
+            num_registers: 1
+        })
+    );
+}
+
+#[test]
+fn a_body_that_runs_past_its_last_instruction_is_refused() {
+    // `run_code` fetches `code.instrs[pc]` after every fall-through, so a
+    // body whose last instruction is not a return or a jump indexes one
+    // past the end. An empty body indexes past the end immediately.
+    for instrs in [vec![], vec![Instr::LoadSelf { dst: 0 }]] {
+        let table = table_of(vec![code_with(CodeKind::Method, 0, 1, instrs)]);
+        assert_eq!(
+            decode::verify_code_table(&table),
+            Err(decode::DecodeError::UnterminatedBody)
+        );
+    }
+}
+
+#[test]
+fn more_arguments_than_registers_is_refused() {
+    // Every engine hook sizes a frame's temps as `num_registers -
+    // num_args`; that `u16` subtraction underflows here.
+    let table = table_of(vec![code_with(
+        CodeKind::Method,
+        3,
+        1,
+        vec![Instr::Return { reg: 0 }],
+    )]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::ArgsExceedRegisters {
+            num_args: 3,
+            num_registers: 1
+        })
+    );
+}
+
+#[test]
+fn a_make_closure_naming_a_method_body_is_refused() {
+    // A closure activation is a `FrameKind::Closure` frame, and
+    // `frame_at_depth` only hops through those -- so running a method body
+    // as a block body would break the lexical-chain reasoning the outer
+    // local check below rests on.
+    let method = code_with(CodeKind::Method, 0, 1, vec![Instr::Return { reg: 0 }]);
+    let parent = code_with(
+        CodeKind::Method,
+        0,
+        1,
+        vec![
+            Instr::MakeClosure {
+                dst: 0,
+                params: Rc::new(vec![]),
+                code: method.clone(),
+            },
+            Instr::Return { reg: 0 },
+        ],
+    );
+    let table = table_of(vec![method, parent]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::WrongCodeKind { expected: "block" })
+    );
+}
+
+#[test]
+fn a_make_closure_whose_parameters_disagree_with_its_body_is_refused() {
+    // The `MakeClosure` mirror of `ClosureArityMismatch`: `params` and the
+    // body's `num_args` are separate wire fields here too, and
+    // `invoke_closure` reads one while the frame is sized from the other.
+    let block = code_with(
+        CodeKind::Block,
+        1,
+        2,
+        vec![Instr::ImplicitReturn { reg: 0 }],
+    );
+    let parent = code_with(
+        CodeKind::Method,
+        0,
+        1,
+        vec![
+            Instr::MakeClosure {
+                dst: 0,
+                params: Rc::new(vec![]),
+                code: block.clone(),
+            },
+            Instr::Return { reg: 0 },
+        ],
+    );
+    let table = table_of(vec![block, parent]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::ClosureArityMismatch {
+            params: 0,
+            num_args: 1
+        })
+    );
+}
+
+#[test]
+fn a_block_body_created_by_two_make_closures_is_refused() {
+    // `lower_block_literal` wraps every block body in a fresh `Rc` used by
+    // exactly one `MakeClosure`, which is what makes "the body one hop out"
+    // well defined. A body with two creators has two different register
+    // files an outer local could mean.
+    let block = code_with(
+        CodeKind::Block,
+        0,
+        1,
+        vec![Instr::ImplicitReturn { reg: 0 }],
+    );
+    let make = |dst| Instr::MakeClosure {
+        dst,
+        params: Rc::new(vec![]),
+        code: block.clone(),
+    };
+    let parent = code_with(
+        CodeKind::Method,
+        0,
+        2,
+        vec![make(0), make(1), Instr::Return { reg: 0 }],
+    );
+    let table = table_of(vec![block, parent]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::SharedBlockBody)
+    );
+}
+
+#[test]
+fn a_make_closure_naming_a_body_outside_the_table_is_refused() {
+    // `decode_instr` resolves a `MakeClosure`'s code id against the table,
+    // but `DecodedCodeTable` is a plain public struct: an `Rc` from
+    // somewhere else must not be trusted to have been verified.
+    let stranger = code_with(
+        CodeKind::Block,
+        0,
+        1,
+        vec![Instr::ImplicitReturn { reg: 0 }],
+    );
+    let parent = code_with(
+        CodeKind::Method,
+        0,
+        1,
+        vec![
+            Instr::MakeClosure {
+                dst: 0,
+                params: Rc::new(vec![]),
+                code: stranger,
+            },
+            Instr::Return { reg: 0 },
+        ],
+    );
+    let table = table_of(vec![parent]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::CodeNotInTable)
+    );
+}
+
+/// `[block, parent]` as the encoder writes them (post-order), where
+/// `parent` has `parent_registers` registers and `block` reads
+/// `outer_index` from `outer_depth` frames out.
+fn outer_local_table(
+    parent_registers: u16,
+    outer_depth: u16,
+    outer_index: u16,
+) -> decode::DecodedCodeTable {
+    let block = code_with(
+        CodeKind::Block,
+        0,
+        1,
+        vec![
+            Instr::LoadOuterLocal {
+                dst: 0,
+                depth: outer_depth,
+                index: outer_index,
+            },
+            Instr::ImplicitReturn { reg: 0 },
+        ],
+    );
+    let parent = code_with(
+        CodeKind::Method,
+        0,
+        parent_registers,
+        vec![
+            Instr::MakeClosure {
+                dst: 0,
+                params: Rc::new(vec![]),
+                code: block.clone(),
+            },
+            Instr::Return { reg: 0 },
+        ],
+    );
+    table_of(vec![block, parent])
+}
+
+#[test]
+fn an_outer_local_within_its_lexical_parents_register_file_verifies() {
+    decode::verify_code_table(&outer_local_table(4, 1, 3)).expect("r3 of a four-register parent");
+}
+
+#[test]
+fn an_outer_local_past_its_lexical_parents_register_file_is_refused() {
+    // `LoadOuterLocal`'s index addresses the *outer* frame, so the body's
+    // own `num_registers` says nothing about it: the bound is the register
+    // file of the body one `MakeClosure` hop out.
+    let err = decode::verify_code_table(&outer_local_table(2, 1, 3)).expect_err("out of range");
+    assert_eq!(
+        err,
+        decode::DecodeError::OuterLocalOutOfRange {
+            depth: 1,
+            index: 3,
+            num_registers: 2
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "outer local r3 at depth 1 is outside the enclosing body's 2 register(s)"
+    );
+}
+
+#[test]
+fn an_outer_local_at_depth_zero_is_bounded_by_its_own_register_file() {
+    // `frame_at_depth(frame, 0)` is the frame itself.
+    assert_eq!(
+        decode::verify_code_table(&outer_local_table(4, 0, 3)),
+        Err(decode::DecodeError::OuterLocalOutOfRange {
+            depth: 0,
+            index: 3,
+            num_registers: 1
+        })
+    );
+}
+
+#[test]
+fn an_outer_local_deeper_than_the_lexical_nesting_is_bounded_by_the_outermost_body() {
+    // `frame_at_depth` stops hopping at a non-closure activation, so a
+    // depth past the nesting lands on the outermost frame -- the method's,
+    // with two registers here, not the block's own.
+    assert_eq!(
+        decode::verify_code_table(&outer_local_table(2, 9, 3)),
+        Err(decode::DecodeError::OuterLocalOutOfRange {
+            depth: 9,
+            index: 3,
+            num_registers: 2
+        })
+    );
+}
+
+#[test]
+fn a_store_to_an_outer_local_is_checked_like_a_load() {
+    let block = code_with(
+        CodeKind::Block,
+        0,
+        1,
+        vec![
+            Instr::StoreOuterLocal {
+                src: 0,
+                depth: 1,
+                index: 6,
+            },
+            Instr::ImplicitReturn { reg: 0 },
+        ],
+    );
+    let parent = code_with(
+        CodeKind::Method,
+        0,
+        2,
+        vec![
+            Instr::MakeClosure {
+                dst: 0,
+                params: Rc::new(vec![]),
+                code: block.clone(),
+            },
+            Instr::Return { reg: 0 },
+        ],
+    );
+    assert_eq!(
+        decode::verify_code_table(&table_of(vec![block, parent])),
+        Err(decode::DecodeError::OuterLocalOutOfRange {
+            depth: 1,
+            index: 6,
+            num_registers: 2
+        })
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Task 15: `install_code_table`'s arity and kind reconciliation.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_at_install() {
+    // A method frame's `args` come from the send, so their count is the
+    // selector's arity; the frame's temps are sized from the *body's*
+    // `num_args`. A body claiming a different arity leaves `read_local`
+    // indexing `temps` past its end.
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo: a = ( ^a )\n) : ()";
+    let (_interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    let (mut table, _ids) = round_trip_code_table(&module, &class);
+    let id = table.methods[0].1 as usize;
+    let mut body = (*table.codes[id]).clone();
+    body.num_args = 2;
+    table.codes[id] = Rc::new(body);
+    let err = decode::install_code_table(&table, &class, &bindings).expect_err("arity mismatch");
+    assert_eq!(
+        err,
+        decode::DecodeError::CodeArityMismatch {
+            what: "method `foo:`".to_string(),
+            params: 1,
+            num_args: 2
+        }
+    );
+}
+
+#[test]
+fn a_method_root_naming_a_block_body_is_refused_at_install() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( ^1 )\n) : ()";
+    let (_interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    let (mut table, _ids) = round_trip_code_table(&module, &class);
+    let id = table.methods[0].1 as usize;
+    let mut body = (*table.codes[id]).clone();
+    body.kind = CodeKind::Block;
+    table.codes[id] = Rc::new(body);
+    // `CompiledModule` is not `PartialEq`; match rather than compare.
+    match decode::install_code_table(&table, &class, &bindings) {
+        Err(err) => assert_eq!(
+            err,
+            decode::DecodeError::WrongCodeKind { expected: "method" }
+        ),
+        Ok(_) => panic!("expected a decode error, got an installed module"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task 15: `verify_graph` -- reconciling decoded frames and closures with
+// the code that runs in them.
+// ---------------------------------------------------------------------------
+
+const ONE_METHOD: &str =
+    "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( ^1 )\n) : ()";
+
+fn class_method_key(class: &ClassRef, selector: &str) -> usize {
+    let borrowed = class.borrow();
+    let ObjectData::Class(data) = &borrowed.data else {
+        panic!("not a class")
+    };
+    method_key(&data.methods[&Symbol::intern(selector)])
+}
+
+/// A world whose code table is `[block, foo]` -- `foo`'s body is the one
+/// `MakeClosure` that creates `block` -- with the reloaded class's `foo`
+/// installed against that body. Everything a decoded closure over `block`
+/// needs to verify: its lexical parent is `foo`, which has two registers.
+fn closure_world() -> (GraphFixture, decode::DecodedCodeTable, CompiledModule) {
+    let (mut interp, class, bindings) = load(ONE_METHOD);
+    let platform = interp.platform();
+    let block = code_with(
+        CodeKind::Block,
+        0,
+        1,
+        vec![Instr::ImplicitReturn { reg: 0 }],
+    );
+    let parent = code_with(
+        CodeKind::Method,
+        0,
+        2,
+        vec![
+            Instr::MakeClosure {
+                dst: 0,
+                params: Rc::new(vec![]),
+                code: block.clone(),
+            },
+            Instr::Return { reg: 0 },
+        ],
+    );
+    let table = decode::DecodedCodeTable {
+        codes: vec![block, parent.clone()],
+        methods: vec![("foo".to_string(), 1)],
+        initializer: None,
+    };
+    let mut module = CompiledModule {
+        methods: HashMap::new(),
+        initializers: HashMap::new(),
+        bindings: bindings.clone(),
+    };
+    module
+        .methods
+        .insert(class_method_key(&class, "foo"), parent);
+    let fixture = GraphFixture {
+        codes: table.codes.clone(),
+        interp,
+        class,
+        bindings,
+        platform,
+    };
+    (fixture, table, module)
+}
+
+/// A graph section holding one closure object over code id 0 and the one
+/// frame it names as its `captured_frame` and `home`, written by `frame`.
+fn closure_over_frame(frame: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 1, 1);
+    w.write_u8(0); // class tag: builtin
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
+    w.write_u32(1); // identity hash
+    w.write_u8(4); // object body: Closure
+    w.write_u16(0); // no parameters
+    w.write_u32(0); // code id 0 -- the block body
+    w.write_u32(0); // captured frame id
+    w.write_u32(0); // home frame id
+    frame(&mut w);
+    w.write_u32(1); // one root...
+    w.write_u8(5);
+    w.write_u32(0); // ...the closure
+    w.into_bytes()
+}
+
+/// Frame 0 as an activation of method `foo` with `temps` temporaries.
+fn foo_frame(temps: u32) -> impl FnOnce(&mut encode::Writer) {
+    move |w: &mut encode::Writer| {
+        w.write_u8(0); // receiver: nil
+        w.write_u32(0); // no args
+        w.write_u32(temps);
+        for _ in 0..temps {
+            w.write_u8(0); // each temp: nil
+        }
+        w.write_u32(0); // pc
+        w.write_bool(false); // no sender
+        w.write_bool(false); // no home
+        w.write_bool(false); // no current class
+        w.write_u8(0); // frame kind: Method
+        w.write_str("foo");
+        w.write_bool(false); // continuable
+    }
+}
+
+#[test]
+fn a_closure_captured_by_its_lexical_parents_activation_verifies() {
+    // The control for the two rejections below: a decoded closure whose
+    // captured frame really is an activation of the body its own body is
+    // nested in, sized exactly as that body prescribes.
+    let (fixture, table, module) = closure_world();
+    let graph = fixture
+        .decode(&closure_over_frame(foo_frame(2)))
+        .expect("decode");
+    decode::verify_graph(&graph, &table, &module).expect("the captured frame runs `foo`");
+}
+
+#[test]
+fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
+    // `foo`'s body has two registers; this activation has one. A
+    // `LoadOuterLocal` of r1 from the closure would index `temps[1]` of a
+    // one-element `temps` -- an unchecked out-of-bounds index in
+    // `eval::read_local`, reached from a version-matching image.
+    let (fixture, table, module) = closure_world();
+    let graph = fixture
+        .decode(&closure_over_frame(foo_frame(1)))
+        .expect("decode");
+    let err = decode::verify_graph(&graph, &table, &module).expect_err("undersized frame");
+    assert_eq!(
+        err,
+        decode::DecodeError::FrameRegisterFile {
+            args: 0,
+            locals: 1,
+            num_args: 0,
+            num_registers: 2
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "a decoded frame holds 0 argument(s) and 1 local(s), but the code that runs in it takes 0 argument(s) in 2 register(s)"
+    );
+}
+
+#[test]
+fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused() {
+    // The frame is well-formed on its own; what is crafted is the *link*.
+    // Nothing else in the format ties a closure's captured frame to its
+    // body's lexical parent, and the whole outer-local bound rests on it.
+    let (fixture, table, module) = closure_world();
+    let graph = fixture
+        .decode(&closure_over_frame(|w: &mut encode::Writer| {
+            w.write_u8(0); // receiver: nil
+            w.write_u32(0); // no args
+            w.write_u32(0); // no temps
+            w.write_u32(0); // pc
+            w.write_bool(false); // no sender
+            w.write_bool(false); // no home
+            w.write_bool(false); // no current class
+            w.write_u8(2); // frame kind: TopLevel -- runs no code at all
+            w.write_bool(false); // continuable
+        }))
+        .expect("decode");
+    assert_eq!(
+        decode::verify_graph(&graph, &table, &module),
+        Err(decode::DecodeError::CapturedFrameMismatch)
+    );
+}
+
+#[test]
+fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_locals() {
+    // The end-to-end control: a quiesced world holding a closure over a
+    // method activation, through the real sections and back.
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | held ::= nil. |\n) (\n  public keep = ( | t | t := 7. held := [ t ]. ^held )\n) : ()";
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let instance = expect_ok(
+        interp.instantiate(class.clone(), vec![], &bindings),
+        "instantiate",
+    );
+    expect_ok(
+        interp.send(
+            instance.clone(),
+            Symbol::intern("keep"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "keep",
+    );
+    let platform = interp.platform();
+    let bytes = image::snapshot(
+        src,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        &[instance],
+    )
+    .expect("snapshot");
+    let mut loaded = image::load(&bytes).expect("load");
+    let bindings = loaded.bindings.clone();
+    let held = expect_ok(
+        loaded.interp.send(
+            loaded.roots[0].clone(),
+            Symbol::intern("keep"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "keep",
+    );
+    let value = expect_ok(
+        loaded
+            .interp
+            .send(held, Symbol::intern("value"), vec![], &bindings, None),
+        "value",
+    );
+    assert!(
+        matches!(value, Value::SmallInt(7)),
+        "the loaded closure reads its captured local"
+    );
+}
+
+#[test]
+fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() {
+    // The chain case: `[:x | [ x ] ] value: 5` leaves the inner closure
+    // captured by a *block* activation, so `verify_graph` has to follow one
+    // closure record's captured frame into another's, and the inner body's
+    // `LoadOuterLocal` really does hop two frames at run time. Sending
+    // `value` after the load is what proves the reconstructed chain reads
+    // the right register.
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | held ::= nil. |\n) (\n  public keep = ( held := [:x | [ x ] ] value: 5. ^held )\n) : ()";
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let instance = expect_ok(
+        interp.instantiate(class.clone(), vec![], &bindings),
+        "instantiate",
+    );
+    expect_ok(
+        interp.send(
+            instance.clone(),
+            Symbol::intern("keep"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "keep",
+    );
+    let platform = interp.platform();
+    let bytes = image::snapshot(
+        src,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        std::slice::from_ref(&instance),
+    )
+    .expect("snapshot");
+    let mut loaded = image::load(&bytes).expect("load");
+    let bindings = loaded.bindings.clone();
+    let ObjectData::Instance(fields) = &obj(&loaded.roots[0]).borrow().data else {
+        panic!("expected an instance")
+    };
+    let held = fields[0].clone();
+    let captured = {
+        let borrowed = obj(&held).borrow();
+        let ObjectData::Closure(closure) = &borrowed.data else {
+            panic!("the slot holds the inner closure")
+        };
+        closure.captured_frame.clone()
+    };
+    assert!(
+        matches!(&captured.borrow().kind, FrameKind::Closure(_)),
+        "the inner closure was captured by the outer block's activation"
+    );
+    let value = expect_ok(
+        loaded
+            .interp
+            .send(held, Symbol::intern("value"), vec![], &bindings, None),
+        "value",
+    );
+    assert!(
+        matches!(value, Value::SmallInt(5)),
+        "the loaded closure reads `x` two frames out"
     );
 }

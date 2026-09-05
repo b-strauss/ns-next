@@ -9,7 +9,7 @@ use crate::bytecode::{
 };
 use crate::types::{
     BuiltinClass, ClassRef, ClosureBody, ClosureData, FrameKind, FrameRef, ObjRef, ObjectData,
-    Value,
+    SourceOrigin, Value,
 };
 
 pub const MAGIC: &[u8; 4] = b"NSIM";
@@ -77,6 +77,17 @@ impl Writer {
 pub fn write_header(w: &mut Writer) {
     w.write_raw(MAGIC);
     w.write_u32(FORMAT_VERSION);
+}
+
+/// The module's provenance, stored so `load` can re-resolve the image's
+/// source exactly as it was resolved when the snapshot was taken.
+pub fn encode_source_origin(w: &mut Writer, origin: &SourceOrigin) {
+    match origin {
+        SourceOrigin::File(path) => {
+            w.write_u8(0);
+            w.write_str(&path.to_string_lossy());
+        }
+    }
 }
 
 /// Encodes the four non-`Obj` `Value` variants (tags 0-4); returns `false`

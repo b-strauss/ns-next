@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_syntax::ast;
@@ -11,9 +12,10 @@ use ns_syntax::Span;
 use crate::bytecode::{
     class_key, method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
 };
+use crate::interpreter::instantiate;
 use crate::types::{
     Binding, BuiltinClass, ClassRef, ClosureBody, ClosureData, Frame, FrameKind, FrameRef, ObjRef,
-    Object, ObjectData, Value,
+    Object, ObjectData, SourceOrigin, Value,
 };
 use crate::Interpreter;
 use crate::Symbol;
@@ -69,6 +71,72 @@ pub enum DecodeError {
     /// method the image was never compiled with, so the installed module
     /// would have a hole the engine hook cannot dispatch through.
     MissingSelector(String),
+    /// A compiled body installed where a body of another kind belongs, or
+    /// named as a closure's body when it is not a block body. The kinds are
+    /// not interchangeable: a block body runs in a `FrameKind::Closure`
+    /// activation and a method's or initializer's does not, which is what
+    /// `frame_at_depth` (and so `verify_code_table`'s outer-local bound)
+    /// walks.
+    WrongCodeKind {
+        expected: &'static str,
+    },
+    /// A method's -- or the instance initializer's -- compiled body takes a
+    /// different number of arguments than the reloaded source declares. The
+    /// frame's `args` come from the send (or the factory), its `temps` from
+    /// the body's `num_args`; a disagreement leaves `read_local` indexing
+    /// `temps` past its end.
+    CodeArityMismatch {
+        what: String,
+        params: usize,
+        num_args: u16,
+    },
+    /// A body with no instructions, or one whose last instruction falls
+    /// through: `run_code` fetches `instrs[pc]` after every fall-through,
+    /// so either runs off the end of the vector.
+    UnterminatedBody,
+    /// A register operand outside its own body's register file.
+    RegisterOutOfRange {
+        reg: u16,
+        num_registers: u16,
+    },
+    /// An outer-local operand outside the register file of the body it
+    /// addresses -- the one `depth` closure hops out.
+    OuterLocalOutOfRange {
+        depth: u16,
+        index: u16,
+        num_registers: u16,
+    },
+    /// A jump target that is not an instruction index of its own body.
+    JumpTargetOutOfRange {
+        target: u32,
+        instrs: usize,
+    },
+    /// More arguments than registers: every engine hook sizes a frame's
+    /// temps as `num_registers - num_args`, which underflows here.
+    ArgsExceedRegisters {
+        num_args: u16,
+        num_registers: u16,
+    },
+    /// A `MakeClosure` (or a closure record) naming a body that is not in
+    /// the code table it is verified against.
+    CodeNotInTable,
+    /// One block body created by more than one `MakeClosure`. The compiler
+    /// wraps every block body in its own `Rc`, used exactly once, which is
+    /// what makes "the body one closure hop out" well defined.
+    SharedBlockBody,
+    /// A decoded frame's register file does not match the body that runs in
+    /// it, so a register index the body considers in range would index
+    /// `args`/`temps` out of range.
+    FrameRegisterFile {
+        args: usize,
+        locals: usize,
+        num_args: u16,
+        num_registers: u16,
+    },
+    /// A decoded closure's captured frame is not an activation of the body
+    /// its own body is lexically nested in -- the link every
+    /// `LoadOuterLocal`/`StoreOuterLocal` bound rests on.
+    CapturedFrameMismatch,
 }
 
 impl std::fmt::Display for DecodeError {
@@ -104,6 +172,67 @@ impl std::fmt::Display for DecodeError {
             DecodeError::MissingSelector(s) => write!(
                 f,
                 "the reloaded source defines method `{s}`, which the image has no compiled code for"
+            ),
+            DecodeError::WrongCodeKind { expected } => {
+                write!(f, "image code is not a {expected} body")
+            }
+            DecodeError::CodeArityMismatch {
+                what,
+                params,
+                num_args,
+            } => write!(
+                f,
+                "the image's compiled {what} takes {num_args} argument(s), but the reloaded source declares {params}"
+            ),
+            DecodeError::UnterminatedBody => write!(
+                f,
+                "image code body does not end in a return or a jump, so it would run past its last instruction"
+            ),
+            DecodeError::RegisterOutOfRange {
+                reg,
+                num_registers,
+            } => write!(
+                f,
+                "register r{reg} is outside a body with {num_registers} register(s)"
+            ),
+            DecodeError::OuterLocalOutOfRange {
+                depth,
+                index,
+                num_registers,
+            } => write!(
+                f,
+                "outer local r{index} at depth {depth} is outside the enclosing body's {num_registers} register(s)"
+            ),
+            DecodeError::JumpTargetOutOfRange { target, instrs } => write!(
+                f,
+                "jump target {target} is not an instruction index in a body of {instrs} instruction(s)"
+            ),
+            DecodeError::ArgsExceedRegisters {
+                num_args,
+                num_registers,
+            } => write!(
+                f,
+                "image code takes {num_args} argument(s) but declares only {num_registers} register(s)"
+            ),
+            DecodeError::CodeNotInTable => {
+                write!(f, "image code refers to a body outside its code table")
+            }
+            DecodeError::SharedBlockBody => write!(
+                f,
+                "one block body in the image is created by more than one MakeClosure"
+            ),
+            DecodeError::FrameRegisterFile {
+                args,
+                locals,
+                num_args,
+                num_registers,
+            } => write!(
+                f,
+                "a decoded frame holds {args} argument(s) and {locals} local(s), but the code that runs in it takes {num_args} argument(s) in {num_registers} register(s)"
+            ),
+            DecodeError::CapturedFrameMismatch => write!(
+                f,
+                "a decoded closure's captured frame does not run the body its own body is nested in"
             ),
         }
     }
@@ -206,6 +335,19 @@ pub fn read_header(r: &mut Reader) -> Result<(), DecodeError> {
         });
     }
     Ok(())
+}
+
+/// The inverse of `encode::encode_source_origin`. `load` re-resolves the
+/// image's stored source against the origin it decodes here, so a loaded
+/// world reports the same provenance the snapshotted one did.
+pub fn decode_source_origin(r: &mut Reader) -> Result<SourceOrigin, DecodeError> {
+    match r.read_u8()? {
+        0 => Ok(SourceOrigin::File(PathBuf::from(r.read_str()?))),
+        tag => Err(DecodeError::InvalidTag {
+            what: "source origin",
+            tag,
+        }),
+    }
 }
 
 pub fn decode_scalar_value(r: &mut Reader) -> Result<Value, DecodeError> {
@@ -325,9 +467,21 @@ pub fn install_code_table(
             .methods
             .get(&Symbol::intern(selector))
             .ok_or_else(|| DecodeError::UnknownSelector(selector.clone()))?;
-        module
-            .methods
-            .insert(method_key(decl), code_at(table, *id)?);
+        let code = code_at(table, *id)?;
+        // The frame an installed body runs in is built by the shared
+        // orchestration, not by the body: `invoke_method` fills `args` from
+        // the send (so, from the selector's arity) and sizes `temps` from
+        // the body's `num_args`. A body whose arity disagrees with the
+        // reloaded declaration therefore leaves `read_local` splitting a
+        // frame it does not fit -- reading `temps` past its end for a body
+        // that claims too many arguments. Only this function sees both.
+        check_code_arity(
+            &code,
+            CodeKind::Method,
+            format!("method `{selector}`"),
+            instantiate::pattern_param_count(&decl.pattern),
+        )?;
+        module.methods.insert(method_key(decl), code);
     }
     // The other direction: a method the reloaded source defines but the
     // image has no code for would leave `module.methods` with a hole, and
@@ -346,13 +500,290 @@ pub fn install_code_table(
         return Err(DecodeError::MissingSelector((*selector).to_string()));
     }
     if let Some(id) = table.initializer {
-        module
-            .initializers
-            .insert(class_key(root_class), code_at(table, id)?);
+        let code = code_at(table, id)?;
+        // The same reconciliation for the initializer, whose `num_args` is
+        // the class's factory parameter count (`compile_initializer`) and
+        // whose frame's `args` are the factory arguments `instantiate`
+        // checked against that same pattern.
+        check_code_arity(
+            &code,
+            CodeKind::Initializer,
+            "instance initializer".to_string(),
+            data.factory
+                .as_deref()
+                .map(instantiate::pattern_param_count)
+                .unwrap_or(0),
+        )?;
+        module.initializers.insert(class_key(root_class), code);
     }
     Ok(module)
 }
 
+/// One installed body against the reloaded declaration it is installed for:
+/// the same kind, and the same number of arguments.
+fn check_code_arity(
+    code: &CompiledCode,
+    kind: CodeKind,
+    what: String,
+    params: usize,
+) -> Result<(), DecodeError> {
+    if code.kind != kind {
+        return Err(DecodeError::WrongCodeKind {
+            expected: match kind {
+                CodeKind::Method => "method",
+                CodeKind::Block => "block",
+                CodeKind::Initializer => "initializer",
+            },
+        });
+    }
+    if code.num_args as usize != params {
+        return Err(DecodeError::CodeArityMismatch {
+            what,
+            params,
+            num_args: code.num_args,
+        });
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Structural verification of a decoded code table.
+//
+// Decoding is byte-safe: every id, tag and length is checked as it is read.
+// It does not make the result *coherent*. `vm::run_code` indexes
+// `code.instrs[pc]` directly, and `eval::read_local`/`write_local` index a
+// frame's `args`/`temps` directly, so a jump target, a register operand or
+// an arity that decoded cleanly can still panic the process the first time
+// the body runs. Everything below is a bounded, linear pass over the flat,
+// topologically ordered table -- no traversal, no recursion -- and reports
+// a `DecodeError` rather than leaving the VM to trip over it.
+// ---------------------------------------------------------------------------
+
+/// `Rc` pointer -> code-table index, the inverse of `encode::CodeIds`.
+fn code_index(table: &DecodedCodeTable) -> HashMap<usize, usize> {
+    table
+        .codes
+        .iter()
+        .enumerate()
+        .map(|(i, code)| (Rc::as_ptr(code) as usize, i))
+        .collect()
+}
+
+/// For each body, the body whose `MakeClosure` creates it -- the lexical
+/// parent, and so (`vm::run_code`'s `MakeClosure` arm sets
+/// `captured_frame` to the creating activation) the activation one
+/// `LoadOuterLocal` hop out. `None` for a method or initializer body, and
+/// for a block body nothing creates.
+///
+/// Checks every `MakeClosure` on the way, because each is what makes the
+/// relation single-valued and meaningful: the named body must be in this
+/// table, must be a block body, must agree with the instruction's own
+/// parameter list about its arity, and must have exactly one creator.
+fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, DecodeError> {
+    let index_of = code_index(table);
+    let mut parents: Vec<Option<usize>> = vec![None; table.codes.len()];
+    for (i, code) in table.codes.iter().enumerate() {
+        for instr in &code.instrs {
+            let Instr::MakeClosure {
+                params,
+                code: block,
+                ..
+            } = instr
+            else {
+                continue;
+            };
+            let id = *index_of
+                .get(&(Rc::as_ptr(block) as usize))
+                .ok_or(DecodeError::CodeNotInTable)?;
+            if block.kind != CodeKind::Block {
+                return Err(DecodeError::WrongCodeKind { expected: "block" });
+            }
+            // The `MakeClosure` mirror of `decode_closure_record`'s check:
+            // `invoke_closure` validates the call against `params.len()`
+            // but sizes the register file from the body's `num_args`.
+            if params.len() != block.num_args as usize {
+                return Err(DecodeError::ClosureArityMismatch {
+                    params: params.len(),
+                    num_args: block.num_args,
+                });
+            }
+            if parents[id].is_some() {
+                return Err(DecodeError::SharedBlockBody);
+            }
+            parents[id] = Some(i);
+        }
+    }
+    Ok(parents)
+}
+
+/// Every decoded body checked against what `vm::run_code` will do with it:
+/// its arity fits its register file, it cannot run past its last
+/// instruction, every jump target is one of its own instructions, every
+/// register operand is inside its own register file, and every outer local
+/// is inside the register file of the body it addresses.
+pub fn verify_code_table(table: &DecodedCodeTable) -> Result<(), DecodeError> {
+    let parents = lexical_parents(table)?;
+    for (i, code) in table.codes.iter().enumerate() {
+        verify_body(code)?;
+        verify_outer_locals(table, &parents, i, code)?;
+    }
+    Ok(())
+}
+
+fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
+    // Every engine hook sizes a frame's temps as `num_registers -
+    // num_args`, a `u16` subtraction.
+    if code.num_args > code.num_registers {
+        return Err(DecodeError::ArgsExceedRegisters {
+            num_args: code.num_args,
+            num_registers: code.num_registers,
+        });
+    }
+    // `run_code` fetches `instrs[pc]` at the top of the loop and again
+    // after every fall-through, so an empty body -- or one whose last
+    // instruction falls through -- indexes past the end of the vector.
+    match code.instrs.last() {
+        Some(
+            Instr::Return { .. }
+            | Instr::ImplicitReturn { .. }
+            | Instr::NonLocalReturn { .. }
+            | Instr::Jump { .. },
+        ) => {}
+        _ => return Err(DecodeError::UnterminatedBody),
+    }
+    for instr in &code.instrs {
+        for reg in own_registers(instr) {
+            if reg >= code.num_registers {
+                return Err(DecodeError::RegisterOutOfRange {
+                    reg,
+                    num_registers: code.num_registers,
+                });
+            }
+        }
+        if let Some(target) = jump_target(instr) {
+            if target as usize >= code.instrs.len() {
+                return Err(DecodeError::JumpTargetOutOfRange {
+                    target,
+                    instrs: code.instrs.len(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every operand that addresses a register of the *executing* frame.
+/// `LoadOuterLocal`/`StoreOuterLocal`'s `index` is deliberately absent: it
+/// addresses another frame's register file, and `verify_outer_locals`
+/// bounds it against that one.
+fn own_registers(instr: &Instr) -> Vec<u16> {
+    match instr {
+        Instr::LoadLiteral { dst, .. }
+        | Instr::LoadSelf { dst }
+        | Instr::LoadBuiltinClass { dst, .. }
+        | Instr::MakeClosure { dst, .. } => vec![*dst],
+        Instr::Move { dst, src } => vec![*dst, *src],
+        // `slot` is a register index too: `run_code` writes it with
+        // `write_local`, exactly as it does a `Move`'s `dst`.
+        Instr::StoreLocal { src, slot } => vec![*src, *slot],
+        Instr::LoadOuterLocal { dst, .. } => vec![*dst],
+        Instr::StoreOuterLocal { src, .. } => vec![*src],
+        Instr::SendLexical { arg_regs, dst, .. } | Instr::SendSuper { arg_regs, dst, .. } => {
+            let mut regs = arg_regs.clone();
+            regs.push(*dst);
+            regs
+        }
+        Instr::SendPublic {
+            receiver_reg,
+            arg_regs,
+            dst,
+            ..
+        } => {
+            let mut regs = arg_regs.clone();
+            regs.push(*receiver_reg);
+            regs.push(*dst);
+            regs
+        }
+        Instr::MakeArray { dst, elem_regs } => {
+            let mut regs = elem_regs.clone();
+            regs.push(*dst);
+            regs
+        }
+        Instr::InitSlot { src, .. } => vec![*src],
+        Instr::Return { reg }
+        | Instr::ImplicitReturn { reg }
+        | Instr::NonLocalReturn { reg }
+        | Instr::JumpIfNotBoolean { reg, .. }
+        | Instr::BranchIfFalse { reg, .. }
+        | Instr::BranchIfTrue { reg, .. } => vec![*reg],
+        Instr::Jump { .. } => vec![],
+    }
+}
+
+fn jump_target(instr: &Instr) -> Option<u32> {
+    match instr {
+        Instr::Jump { target }
+        | Instr::JumpIfNotBoolean { target, .. }
+        | Instr::BranchIfFalse { target, .. }
+        | Instr::BranchIfTrue { target, .. } => Some(*target),
+        _ => None,
+    }
+}
+
+fn verify_outer_locals(
+    table: &DecodedCodeTable,
+    parents: &[Option<usize>],
+    index: usize,
+    code: &CompiledCode,
+) -> Result<(), DecodeError> {
+    for instr in &code.instrs {
+        let (depth, local) = match instr {
+            Instr::LoadOuterLocal { depth, index, .. }
+            | Instr::StoreOuterLocal { depth, index, .. } => (*depth, *index),
+            _ => continue,
+        };
+        let enclosing = &table.codes[enclosing_body(table, parents, index, depth)];
+        if local >= enclosing.num_registers {
+            return Err(DecodeError::OuterLocalOutOfRange {
+                depth,
+                index: local,
+                num_registers: enclosing.num_registers,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// `eval::frame_at_depth`'s static counterpart: the body of the activation
+/// `depth` hops out from an activation of `table.codes[at]`.
+///
+/// The two agree because `verify_graph` and `vm::run_code` between them
+/// keep every closure's `captured_frame` an activation of its body's
+/// lexical parent -- created that way at run time, checked on load -- and
+/// because only a block body ever runs in a `FrameKind::Closure`
+/// activation (`lexical_parents` and `verify_graph` both refuse any other
+/// kind as a closure body). `frame_at_depth` stops hopping at a
+/// non-closure activation, so a depth past the lexical nesting lands on
+/// the outermost body rather than running off the chain; a block body no
+/// `MakeClosure` creates stops there too, and stopping is the conservative
+/// answer -- no activation of it can exist for `verify_graph` to admit.
+fn enclosing_body(
+    table: &DecodedCodeTable,
+    parents: &[Option<usize>],
+    mut at: usize,
+    depth: u16,
+) -> usize {
+    for _ in 0..depth {
+        if table.codes[at].kind != CodeKind::Block {
+            break;
+        }
+        match parents[at] {
+            Some(parent) => at = parent,
+            None => break,
+        }
+    }
+    at
+}
 /// `decode_code_table` validates every id it reads, but `DecodedCodeTable`
 /// is a plain public struct: an id is re-checked before it indexes.
 fn code_at(table: &DecodedCodeTable, id: u32) -> Result<Rc<CompiledCode>, DecodeError> {
@@ -669,6 +1100,11 @@ pub struct DecodedGraph {
     /// The largest identity hash of any decoded object -- `load` advances
     /// the interpreter's allocation counter past it.
     pub max_identity_hash: u32,
+    /// The two decoded tables themselves, in image order. The roots reach
+    /// most of them, but `verify_graph` must see *every* record -- a frame
+    /// no root reaches can still be some closure's captured frame.
+    pub objects: Vec<ObjRef>,
+    pub frames: Vec<FrameRef>,
 }
 
 /// The two placeholder-allocated tables, indexed by the ids in the stream.
@@ -953,5 +1389,123 @@ pub fn decode_graph_section(
     Ok(DecodedGraph {
         roots,
         max_identity_hash,
+        objects,
+        frames,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Reconciling the decoded graph with the code that runs in it.
+//
+// `decode_graph_section` reads frames and closures in isolation: it has no
+// selector-to-body mapping, so it can check a closure record's own two
+// halves (`ClosureArityMismatch`) and nothing more. Once the code table is
+// installed as a `CompiledModule`, every frame's body can be resolved --
+// and must be, because `eval::read_local` splits a frame at `args.len()`
+// and indexes `temps` unchecked. A crafted frame that is smaller than the
+// body addressing it is an out-of-bounds index reached from a
+// version-matching image.
+// ---------------------------------------------------------------------------
+
+/// The compiled body that runs (or ran) in `frame`, or `None` when the
+/// image gives it none: a `TopLevel` frame, or an initializer frame for a
+/// class the module has no initializer for. Neither can be entered --
+/// nothing re-activates a decoded frame, and no closure may be captured by
+/// one (`verify_closure` refuses that) -- so there is nothing to reconcile.
+fn frame_body(frame: &Frame, module: &CompiledModule) -> Option<Rc<CompiledCode>> {
+    match &frame.kind {
+        FrameKind::Method(decl) => module.methods.get(&method_key(decl)).cloned(),
+        FrameKind::Initializer(class) => module.initializers.get(&class_key(class)).cloned(),
+        FrameKind::Closure(closure) => match &closure.body {
+            ClosureBody::Compiled(code) => Some(code.clone()),
+            // Unreachable from the wire: the format has no representation
+            // for a tree-walker closure (`encode_closure_record` refuses
+            // one outright), so this is the exhaustiveness arm.
+            ClosureBody::Ast(_) => None,
+        },
+        FrameKind::TopLevel => None,
+    }
+}
+
+/// Every decoded frame and every decoded closure against the code table
+/// `install_code_table` was handed, closing the two gaps a per-record
+/// decoder cannot see:
+///
+/// 1. A frame's register file must match the body that runs in it -- the
+///    same `args` count, and at least as many registers. (At least, not
+///    exactly: `run_own_initializer` *grows* the initializer frame's temps
+///    to fit each class in the chain, so a legitimate initializer frame can
+///    be wider than the body being verified against it.)
+/// 2. A closure's `captured_frame` must be an activation of the body its
+///    own body is lexically nested in. Nothing else in the format ties the
+///    two together, and `verify_code_table`'s outer-local bound -- which
+///    walks the *static* `MakeClosure` nesting -- is only a bound on the
+///    real `frame_at_depth` walk because of this.
+pub fn verify_graph(
+    graph: &DecodedGraph,
+    table: &DecodedCodeTable,
+    module: &CompiledModule,
+) -> Result<(), DecodeError> {
+    // Recomputed rather than threaded through from `verify_code_table`:
+    // one more linear pass over the code table at load time, in exchange
+    // for a function that is safe to call on its own.
+    let parents = lexical_parents(table)?;
+    let index_of = code_index(table);
+    for frame in &graph.frames {
+        let borrowed = frame.borrow();
+        let Some(code) = frame_body(&borrowed, module) else {
+            continue;
+        };
+        if borrowed.args.len() != code.num_args as usize
+            || borrowed.args.len() + borrowed.temps.len() < code.num_registers as usize
+        {
+            return Err(DecodeError::FrameRegisterFile {
+                args: borrowed.args.len(),
+                locals: borrowed.temps.len(),
+                num_args: code.num_args,
+                num_registers: code.num_registers,
+            });
+        }
+    }
+    for object in &graph.objects {
+        if let ObjectData::Closure(closure) = &object.borrow().data {
+            verify_closure(closure, table, &parents, &index_of, module)?;
+        }
+    }
+    for frame in &graph.frames {
+        if let FrameKind::Closure(closure) = &frame.borrow().kind {
+            verify_closure(closure, table, &parents, &index_of, module)?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_closure(
+    closure: &ClosureData,
+    table: &DecodedCodeTable,
+    parents: &[Option<usize>],
+    index_of: &HashMap<usize, usize>,
+    module: &CompiledModule,
+) -> Result<(), DecodeError> {
+    let ClosureBody::Compiled(code) = &closure.body else {
+        // As in `frame_body`: the format cannot express an AST body.
+        return Err(DecodeError::WrongCodeKind { expected: "block" });
+    };
+    if code.kind != CodeKind::Block {
+        return Err(DecodeError::WrongCodeKind { expected: "block" });
+    }
+    let id = *index_of
+        .get(&(Rc::as_ptr(code) as usize))
+        .ok_or(DecodeError::CodeNotInTable)?;
+    // A body no `MakeClosure` creates has no lexical parent to check
+    // against, and `enclosing_body` would stop at the body itself -- a
+    // bound the real chain need not respect. Refusing keeps the two walks
+    // in step.
+    let parent = parents[id].ok_or(DecodeError::CapturedFrameMismatch)?;
+    let running = frame_body(&closure.captured_frame.borrow(), module)
+        .ok_or(DecodeError::CapturedFrameMismatch)?;
+    if !Rc::ptr_eq(&running, &table.codes[parent]) {
+        return Err(DecodeError::CapturedFrameMismatch);
+    }
+    Ok(())
 }
