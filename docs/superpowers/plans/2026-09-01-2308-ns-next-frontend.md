@@ -15,7 +15,7 @@
 
 **Tech Stack:** Rust 1.98 (edition 2021), `clap` (CLI arg parsing), `insta` (AST snapshot tests), `toml` (reading the corpus blacklist). No parser generator.
 
-**Spec:** `docs/superpowers/specs/2026-09-01-ns-next-runtime-design.md` — read it before starting. This plan implements only the "ns-syntax" and the `parse` / `parse-corpus` parts of the "ns-cli" sections. The resolver, object model, interpreter, core library, and `ns-next run` are a separate plan.
+**Spec:** `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md` — read it before starting. This plan implements only the "ns-syntax" and the `parse` / `parse-corpus` parts of the "ns-cli" sections. The resolver, object model, interpreter, core library, and `ns-next run` are a separate plan.
 
 ## Global Constraints
 
@@ -3077,7 +3077,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - Create: `crates/ns-syntax/tests/corpus.rs`
 - Modify: `corpus/blacklist.toml`
 - Modify: `crates/ns-syntax/src/*` (parser fixes discovered here)
-- Modify: `docs/superpowers/specs/2026-09-01-ns-next-runtime-design.md` (record final corpus pass rate)
+- Modify: `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md` (record final corpus pass rate)
 
 **Interfaces:**
 - Consumes: `ns_syntax::parse`, `corpus/modules/*.ns`, `corpus/blacklist.toml`.
@@ -3258,7 +3258,7 @@ One inconsistency fixed inline: Task 7 lists `parse_literal` handling `nil/true/
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-09-01-ns-next-frontend.md`. Two execution options:
+Plan complete and saved to `docs/superpowers/plans/2026-09-01-2308-ns-next-frontend.md`. Two execution options:
 
 **1. Subagent-Driven (recommended)** — a fresh subagent per task, review between tasks, fast iteration.
 

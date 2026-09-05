@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust 1.98 (edition 2021), no new external dependencies (`insta` is already a workspace dev-dependency and is added to `ns-cli`'s dev-dependencies for `disasm` snapshots). Image encoding is hand-rolled (`Vec<u8>` + explicit little-endian byte writes/reads), not `serde`/`bincode` — consistent with the project's "no new dependency unless needed" stance and the spec's own canonical-encoding requirement.
 
-**Spec:** `docs/superpowers/specs/2026-09-04-ns-next-bytecode-vm-design.md` (revised 2026-09-05 — read its "Open Questions Resolved During Planning" section, which records every completeness correction this plan is built on) — read it in full before starting; this plan implements it section by section. It in turn depends on `docs/superpowers/specs/2026-09-01-ns-next-runtime-design.md` (the Milestone 1 object model, resolver, dispatch, and Class Instantiation this milestone reuses) and `docs/superpowers/specs/2026-09-04-ns-next-liveness-images-vm-design.md` (the cross-milestone constraints this milestone's safepoints/image format satisfy). Read the actual Milestone 1 source cited in each task's design notes (`crates/ns-runtime/src/interpreter/{mod,eval,instantiate}.rs`, `dispatch.rs`, `builtins/`) before touching it — every task's notes cite the exact function it depends on, and those citations were verified against the source on 2026-09-05.
+**Spec:** `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md` (revised 2026-09-05 — read its "Open Questions Resolved During Planning" section, which records every completeness correction this plan is built on) — read it in full before starting; this plan implements it section by section. It in turn depends on `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md` (the Milestone 1 object model, resolver, dispatch, and Class Instantiation this milestone reuses) and `docs/superpowers/specs/2026-09-04-1153-ns-next-liveness-images-vm-design.md` (the cross-milestone constraints this milestone's safepoints/image format satisfy). Read the actual Milestone 1 source cited in each task's design notes (`crates/ns-runtime/src/interpreter/{mod,eval,instantiate}.rs`, `dispatch.rs`, `builtins/`) before touching it — every task's notes cite the exact function it depends on, and those citations were verified against the source on 2026-09-05.
 
 ## Global Constraints
 
@@ -24,7 +24,7 @@
 - **`Instr` is a plain, `match`-dispatched Rust enum, never hand-packed bytes.** "Architecture-neutral, versioned" is a property of `image::encode`/`decode`'s wire format, not of `Instr`'s in-memory shape.
 - **Control-flow inlining is gated at compile time** (ordinary send, fixed selector, syntactic zero-parameter zero-temporary block literals in every block position — and the receiver, for `whileTrue:`/`whileFalse:`), **and every inlined case keeps a runtime guard whose failure path is a real virtual send through `interpreter/`**: the original selector for `ifTrue:`-family/`and:`/`or:`, `mustBeBoolean` for a non-Boolean `whileTrue:`/`whileFalse:` condition. Never skip the fallback.
 - **`Signal` has no `Debug` impl** (M1 decision — it holds a `FrameRef` cycle). Tests never call `.expect()`/`.unwrap()` or `{:?}` on an `EvalResult`; they unwrap through an `expect_ok` helper (shown in every test file that needs one). **Never `{:?}` a `Value`** either — the bootstrap `Object` class is its own `.class`, so `Debug` on any `Value::Obj` recurses forever.
-- **Never mutate `docs/superpowers/specs/2026-09-04-ns-next-bytecode-vm-design.md`, `docs/superpowers/specs/2026-09-01-ns-next-runtime-design.md`, or `docs/superpowers/specs/2026-09-04-ns-next-liveness-images-vm-design.md` while executing this plan.** If implementation reveals one of them is wrong, stop and flag it (per the subagent-driven-development skill's ruling process) rather than silently diverging.
+- **Never mutate `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`, `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md`, or `docs/superpowers/specs/2026-09-04-1153-ns-next-liveness-images-vm-design.md` while executing this plan.** If implementation reveals one of them is wrong, stop and flag it (per the subagent-driven-development skill's ruling process) rather than silently diverging.
 - **Commits:** conventional-commit style (`feat:`, `test:`, `fix:`, `docs:`, `chore:`). Commit at the end of every task. Keep the trailer `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`. Never override git author/committer identity with `-c`. Never add a `Claude-Session:` trailer.
 - **This milestone must not regress Milestone 1.** `cargo run -p ns-cli -- parse-corpus corpus/modules` must still report `parsed 210, failed 0, expected-fail 1, stale 0` at the end (Task 17), and nothing under `crates/ns-syntax` is touched.
 
@@ -121,7 +121,7 @@ Responsibilities and split rationale:
 
 ```rust
 //! The bytecode instruction set and compiled-code data shapes. Pure data --
-//! see `docs/superpowers/specs/2026-09-04-ns-next-bytecode-vm-design.md`'s
+//! see `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`'s
 //! `bytecode.rs` section. `Instr` is a plain Rust enum, `match`-dispatched
 //! by `vm.rs`; "architecture-neutral, versioned" describes `image::encode`'s
 //! wire format for a `CompiledCode`, not this in-memory type.
@@ -412,7 +412,7 @@ In `crates/ns-runtime/src/interpreter/eval.rs`, change `fn parse_int_literal(tex
 ```rust
 //! `Expr`/`Stmt` -> `Instr` lowering, register allocation, and the scope
 //! stack that maps resolver depths onto runtime frame hops. See
-//! `docs/superpowers/specs/2026-09-04-ns-next-bytecode-vm-design.md`'s
+//! `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`'s
 //! `bytecode.rs` and "Control-flow inlining" sections.
 
 use std::collections::HashMap;
@@ -798,7 +798,7 @@ fn lower_literal(lit: &ast::Literal) -> BcLiteral {
 
 ```rust
 //! Bytecode compiler entry points. See
-//! `docs/superpowers/specs/2026-09-04-ns-next-bytecode-vm-design.md`.
+//! `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`.
 
 pub(crate) mod lower;
 ```
@@ -1593,7 +1593,7 @@ Expected: FAIL — `compiler::compile_module`/`compile_initializer` not found.
 ```rust
 //! Bytecode compiler entry points: `compile_method`, `compile_initializer`,
 //! `compile_module`. See
-//! `docs/superpowers/specs/2026-09-04-ns-next-bytecode-vm-design.md`.
+//! `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`.
 //! Compiling an already-resolved module is a total, deterministic lowering
 //! that can never raise a `NewspeakError`; a failure here is an `ns-runtime`
 //! bug and panics.
@@ -2233,7 +2233,7 @@ In `instantiate`, replace `kind: FrameKind::TopLevel, // an initializer is its o
 //! hooks for any user-defined target. No dispatch logic, no
 //! `doesNotUnderstand:`, no native dispatch, and no error text of its own
 //! live here -- that is what makes the tree-walker a byte-for-byte oracle.
-//! See `docs/superpowers/specs/2026-09-04-ns-next-bytecode-vm-design.md`,
+//! See `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`,
 //! "`vm.rs` and the engine hook".
 
 use std::collections::HashMap;
@@ -4488,7 +4488,7 @@ pub fn decode_scalar_value(r: &mut Reader) -> Result<Value, DecodeError> {
 ```rust
 //! Image serialization: a versioned, architecture-neutral encoding of a
 //! live `ns-next` world, decoded on load (never a memory dump). See
-//! `docs/superpowers/specs/2026-09-04-ns-next-bytecode-vm-design.md`'s
+//! `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`'s
 //! "Image format" section. Layout: header, source text, `SourceOrigin`,
 //! code table, object table, frame table, roots.
 
@@ -6198,7 +6198,7 @@ Replace `crates/ns-runtime/src/image/mod.rs` with:
 ```rust
 //! Image serialization: a versioned, architecture-neutral encoding of a
 //! live `ns-next` world, decoded on load (never a memory dump). See
-//! `docs/superpowers/specs/2026-09-04-ns-next-bytecode-vm-design.md`'s
+//! `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`'s
 //! "Image format" section. Layout: header, source text, `SourceOrigin`,
 //! code table, object table, frame table, roots.
 
@@ -6459,7 +6459,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 
 ## Self-Review Notes (from writing this plan)
 
-**Spec coverage**, checked section by section against `docs/superpowers/specs/2026-09-04-ns-next-bytecode-vm-design.md` (revised 2026-09-05):
+**Spec coverage**, checked section by section against `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md` (revised 2026-09-05):
 
 - Goals: every method body, block body, and instance initializer compiled — Tasks 5 (`compile_module`), 6 (hooks 1-2), 7 (hook 3); "no Newspeak-level code is tree-walked under `--engine=bytecode`" enforced by `ClosureBody` (Task 6) and proven by `vm_initializer.rs`'s closure-body assertion (Task 7). Control-flow inlining with guard + fallback — Task 10. Statement→PC table / safepoints — `CompiledCode.statement_pc` (Task 1, filled by Tasks 2-5; inlined statements inside the enclosing range, Task 10). Call-site identity / inert IC slot — Task 1, threaded from Task 3. Image format save/load — Tasks 12-15. Tree-walker retained and differential-tested — Tasks 8, 10. `disasm` — Task 11. The three natives — Task 9.
 - `bytecode.rs` section: the full opcode list including `MalformedInt` — Task 1; register model and per-statement allocator — Task 2; inlined statements as sub-expressions — Task 10.

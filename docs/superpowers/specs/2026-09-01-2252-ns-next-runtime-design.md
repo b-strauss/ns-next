@@ -18,7 +18,7 @@ add a bytecode compiler and stack VM, a real garbage collector, bignums,
 actors, and a reflection (mirrors) API. The architecture is chosen so those
 can be added without restructuring the frontend.
 
-**Read `2026-09-04-ns-next-liveness-images-vm-design.md` before implementing
+**Read `2026-09-04-1153-ns-next-liveness-images-vm-design.md` before implementing
 this milestone.** It is a cross-cutting constraints spec that binds every
 milestone, this one included: even though M1 implements none of live
 debugging, mirrors, portable images, or actors (see Non-Goals below), its
@@ -315,7 +315,7 @@ normalizes several send shapes the resolver must recognize:
 - `Object { class: ClassRef, identity_hash: u32, data: ObjectData }`. The
   identity hash is a **monotonic counter value assigned at allocation**, not
   derived from the `Rc` pointer address — required by
-  `2026-09-04-ns-next-liveness-images-vm-design.md`'s stable-identity
+  `2026-09-04-1153-ns-next-liveness-images-vm-design.md`'s stable-identity
   constraint, since a hash derived from the address would break the moment a
   later milestone's GC moves the object or `become:` swaps its identity.
 - `ObjectData = Instance(Vec<Value>) | Str(String) | Sym(Symbol) |
@@ -402,7 +402,7 @@ be predetermined — but the receiver could not" (§5.9) — a private method
 can't be overridden, so its body is fixed, but *which object* it runs on
 still depends on the runtime kth-enclosing-object navigation. Practical
 consequence for later milestones: since there is no static dispatch to fall
-back on outside the `private` case, inline caches (`2026-09-04-ns-next-liveness-images-vm-design.md`'s
+back on outside the `private` case, inline caches (`2026-09-04-1153-ns-next-liveness-images-vm-design.md`'s
 call-site identity + dependency-keyed caches) are not an optional speedup —
 they are the central mechanism that makes dispatch affordable at all.
 
@@ -610,7 +610,7 @@ deviation gets noted rather than left implicit:
   immutable value objects) — the mechanism that lets an object cross an
   actor boundary by copy instead of by far reference (§3.7). M1 has no
   actors, so this is moot for now, but the Concurrency section of
-  `2026-09-04-ns-next-liveness-images-vm-design.md` should adopt this exact
+  `2026-09-04-1153-ns-next-liveness-images-vm-design.md` should adopt this exact
   spec vocabulary and mechanism — not the looser "provably non-aliased or
   frozen data" phrasing it currently uses — once concurrency is implemented.
 - **`self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved.**

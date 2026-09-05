@@ -1,6 +1,6 @@
 //! End-to-end class instantiation tests: `ns_syntax::parse` -> `resolve` ->
 //! `Interpreter::bootstrap()` -> `load_module` -> `instantiate` -> `send`.
-//! See `docs/superpowers/specs/2026-09-01-ns-next-runtime-design.md`'s
+//! See `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md`'s
 //! Class Instantiation section for the six numbered steps this exercises.
 
 use ns_runtime::{Interpreter, Signal, Symbol, Value};

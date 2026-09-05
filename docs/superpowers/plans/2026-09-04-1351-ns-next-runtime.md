@@ -30,7 +30,7 @@ what the workspace already has (`ns-runtime` depends only on `ns-syntax` and
 the standard library — no parser generator, no async runtime; M1 is
 single-threaded).
 
-**Spec:** `docs/superpowers/specs/2026-09-01-ns-next-runtime-design.md` — read
+**Spec:** `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md` — read
 it before starting, in full; this plan implements it section by section and
 cites section headings throughout rather than re-deriving them. That spec in
 turn cites `corpus/reference/newspeak-spec.pdf` (Gilad Bracha's official
@@ -38,7 +38,7 @@ Newspeak language specification, vendored in the repo) by section number
 (`§N.N`) for the precise semantics — **read the cited `§` sections of the PDF
 directly** when a task references one; this plan does not reproduce the full
 text of every citation. Also read
-`docs/superpowers/specs/2026-09-04-ns-next-liveness-images-vm-design.md` — the
+`docs/superpowers/specs/2026-09-04-1153-ns-next-liveness-images-vm-design.md` — the
 cross-cutting constraints spec — before Task 3 (it governs the shape of
 `Frame`, `Object`, and `ResolvedMethod`).
 
@@ -87,7 +87,7 @@ cross-cutting constraints spec — before Task 3 (it governs the shape of
   within a task are fine. Keep the trailer `Co-Authored-By: Claude Sonnet 5
   <noreply@anthropic.com>`. Never override git author/committer identity
   with `-c` — the user's own gitconfig is correct as-is.
-- **Never mutate `docs/superpowers/specs/2026-09-01-ns-next-runtime-design.md`
+- **Never mutate `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md`
   or the liveness spec while executing this plan.** If implementation
   reveals the spec is wrong, stop and flag it (per the subagent-driven-
   development skill's ruling process) rather than silently diverging — the
@@ -220,7 +220,7 @@ ns-syntax = { path = "../ns-syntax" }
 
 //! Name resolution, object model, and tree-walking interpreter for the
 //! Newspeak3 language (Milestone 1). See
-//! `docs/superpowers/specs/2026-09-01-ns-next-runtime-design.md`.
+//! `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md`.
 ```
 
 - [x] **Step 3: Verify the workspace builds**
@@ -461,7 +461,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 ```rust
 //! Core runtime data types: the object model, activation records, and the
 //! resolver's output shape. Pure data -- see
-//! `docs/superpowers/specs/2026-09-01-ns-next-runtime-design.md`'s Object
+//! `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md`'s Object
 //! Model, Activation Records, and Resolver sections.
 
 use std::cell::RefCell;
@@ -769,7 +769,7 @@ entire Resolver section (including its "AST recognition" note) in one pass,
 because the pieces are too interdependent to review in isolation — a
 reviewer needs the whole pass to judge correctness.
 
-**Read `2026-09-01-ns-next-runtime-design.md`'s Resolver section in full
+**Read `2026-09-01-2252-ns-next-runtime-design.md`'s Resolver section in full
 before starting** (including the "AST recognition" note). This task
 transcribes that section's algorithm into Rust; it does not re-derive it.
 

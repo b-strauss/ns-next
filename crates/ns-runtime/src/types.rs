@@ -1,6 +1,6 @@
 //! Core runtime data types: the object model, activation records, and the
 //! resolver's output shape. Pure data -- see
-//! `docs/superpowers/specs/2026-09-01-ns-next-runtime-design.md`'s Object
+//! `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md`'s Object
 //! Model, Activation Records, and Resolver sections.
 
 use std::cell::RefCell;

@@ -9,9 +9,9 @@ milestone.
 
 | Milestone | Status | Completed | Spec | Plan(s) |
 |---|---|---|---|---|
-| M1 — Frontend | Complete | 2026-09-01 | [runtime-design](superpowers/specs/2026-09-01-ns-next-runtime-design.md) | [frontend](superpowers/plans/2026-09-01-ns-next-frontend.md) |
-| M1 — Runtime | Complete | 2026-09-04 | [runtime-design](superpowers/specs/2026-09-01-ns-next-runtime-design.md), [liveness/VM constraints](superpowers/specs/2026-09-04-ns-next-liveness-images-vm-design.md) | [runtime](superpowers/plans/2026-09-04-ns-next-runtime.md) |
-| M2 — Bytecode + VM | Plan written, implementation pending | — | [bytecode-vm-design](superpowers/specs/2026-09-04-ns-next-bytecode-vm-design.md) | [bytecode-vm](superpowers/plans/2026-09-04-ns-next-bytecode-vm.md) |
+| M1 — Frontend | Complete | 2026-09-01 | [runtime-design](superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md) | [frontend](superpowers/plans/2026-09-01-2308-ns-next-frontend.md) |
+| M1 — Runtime | Complete | 2026-09-04 | [runtime-design](superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md), [liveness/VM constraints](superpowers/specs/2026-09-04-1153-ns-next-liveness-images-vm-design.md) | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
+| M2 — Bytecode + VM | Plan written, implementation pending | — | [bytecode-vm-design](superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md) | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Inline caches + GC | Not started | — | — | — |
 | M4–M5 — JIT | Not started | — | — | — |
 
@@ -37,7 +37,7 @@ the `ns-next run` CLI command. 57 commits, all tests green.
 Replaces the M1 tree-walker with a register-based bytecode compiler and
 VM, keeping the M1 tree-walker as a permanent `--engine=tree-walk`
 differential-testing oracle. Required by
-`2026-09-04-ns-next-liveness-images-vm-design.md`: a safepoint
+`2026-09-04-1153-ns-next-liveness-images-vm-design.md`: a safepoint
 abstract-state map, a statement→PC table per method, architecture-neutral
 versioned bytecode, a defined and versioned image serialization format
 (bootstrap from source, `ns-next snapshot`/`load`), and stable call-site
@@ -56,6 +56,6 @@ initializers compile to bytecode too, not just methods and blocks), native
 `whileTrue:`/`whileFalse:`/`ifFalse:ifTrue:` complete the core library's
 control-flow surface, and inlined blocks get precise lexical-addressing and
 allocation rules. The 16-task checkbox-level implementation plan
-(`superpowers/plans/2026-09-04-ns-next-bytecode-vm.md`) is rewritten on that
+(`superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md`) is rewritten on that
 basis and committed. Implementation via `subagent-driven-development` or
 `executing-plans` is the next step.

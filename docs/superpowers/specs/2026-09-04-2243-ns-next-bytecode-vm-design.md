@@ -12,13 +12,13 @@ Milestone 2 replaces Milestone 1's AST tree-walking interpreter as the
 primary execution path with a bytecode compiler and a register-based
 bytecode VM, and adds a versioned, architecture-neutral image
 serialization format with save/load CLI support. It implements the M2
-row of `2026-09-04-ns-next-liveness-images-vm-design.md`'s "What to
+row of `2026-09-04-1153-ns-next-liveness-images-vm-design.md`'s "What to
 build in, and when" table: the safepoint abstract-state map, a
 statement→PC table per method, architecture-neutral versioned bytecode,
 a defined and versioned image format bootstrapped from source, and
 stable call-site identity.
 
-**Read `2026-09-01-ns-next-runtime-design.md`, `2026-09-04-ns-next-liveness-images-vm-design.md`,
+**Read `2026-09-01-2252-ns-next-runtime-design.md`, `2026-09-04-1153-ns-next-liveness-images-vm-design.md`,
 and this document in full before implementing.** This milestone builds
 directly on the Milestone 1 resolver and object model — `ResolvedModule`,
 `Symbol`, `Object`/`ObjectData`/`ClassData`, `Value`, and `dispatch.rs`'s

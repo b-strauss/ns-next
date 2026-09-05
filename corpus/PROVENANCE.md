@@ -34,6 +34,6 @@ in places (noted in its own front matter) — where it and the vendored corpus's
 actual behavior disagree, prefer the corpus and note the discrepancy.
 
 Refresh procedure: re-download from the URL above, update the version and
-retrieved date here, and re-check `docs/superpowers/specs/2026-09-01-ns-next-runtime-design.md`'s
+retrieved date here, and re-check `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md`'s
 section citations still point at the same content (section numbers could
 shift between spec versions).

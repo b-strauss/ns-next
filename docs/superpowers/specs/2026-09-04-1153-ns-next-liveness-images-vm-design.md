@@ -14,7 +14,7 @@ cheap to design for early and expensive — sometimes impossible — to retrofit
 
 `ns-next` is a native Rust runtime for Newspeak (Gilad Bracha's Smalltalk
 descendant). The Milestone 1 design is in
-`2026-09-01-ns-next-runtime-design.md`; the frontend (lexer, AST, parser, CLI
+`2026-09-01-2252-ns-next-runtime-design.md`; the frontend (lexer, AST, parser, CLI
 `parse` / `parse-corpus`) is implemented. This spec constrains the runtime crate
 (`ns-runtime`) that comes next, and the VM milestones after it.
 
