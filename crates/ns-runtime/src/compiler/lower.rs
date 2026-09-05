@@ -56,6 +56,10 @@ pub(crate) struct Lowerer<'a> {
     statement_index: usize,
     statement_pc: Vec<(usize, Range<usize>)>,
     call_sites: Vec<CallSite>,
+    /// The most recent top-level `Stmt::Expr`'s value register, for
+    /// `finish_body`'s block case and (Task 11) for reading an inlined
+    /// block's result.
+    last_expr_reg: Option<u16>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -80,6 +84,7 @@ impl<'a> Lowerer<'a> {
             statement_index: 0,
             statement_pc: Vec::new(),
             call_sites: Vec::new(),
+            last_expr_reg: None,
         }
     }
 
@@ -101,15 +106,132 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn lower_statement(&mut self, stmt: &Stmt) {
         self.next_scratch = self.base;
         let start = self.instrs.len();
-        match stmt {
-            Stmt::Expr(e) => {
-                self.lower_expr(e);
-            }
-            Stmt::Return(_) => unimplemented!("Stmt::Return is lowered starting in Task 4"),
-        }
+        self.lower_stmt_inner(stmt);
         let end = self.instrs.len();
         self.statement_pc.push((self.statement_index, start..end));
         self.statement_index += 1;
+    }
+
+    /// The initializer's per-slot statement: the slot's initializer
+    /// expression, then `InitSlot` (M1's `run_own_slots` writes the field
+    /// directly, never through a setter send). One `statement_pc` entry.
+    pub(crate) fn lower_slot_init(&mut self, init: &Expr, field_index: u32) {
+        self.next_scratch = self.base;
+        let start = self.instrs.len();
+        let src = self.lower_expr(init);
+        self.emit(Instr::InitSlot { src, field_index });
+        let end = self.instrs.len();
+        self.statement_pc.push((self.statement_index, start..end));
+        self.statement_index += 1;
+    }
+
+    /// Lowers a statement without touching the allocator or the PC table --
+    /// shared by `lower_statement` and (Task 11) inlined block bodies.
+    /// Returns the value register for a `Stmt::Expr` (or a discarded
+    /// initializer `^`), `None` when a return instruction was emitted.
+    fn lower_stmt_inner(&mut self, stmt: &Stmt) -> Option<u16> {
+        match stmt {
+            Stmt::Expr(e) => {
+                let reg = self.lower_expr(e);
+                self.last_expr_reg = Some(reg);
+                Some(reg)
+            }
+            Stmt::Return(e) => {
+                let reg = self.lower_expr(e);
+                match self.return_instr(reg) {
+                    Some(instr) => {
+                        self.emit(instr);
+                        self.last_expr_reg = None;
+                        None
+                    }
+                    None => {
+                        self.last_expr_reg = Some(reg);
+                        Some(reg)
+                    }
+                }
+            }
+        }
+    }
+
+    /// What a `^` means here -- the spec's per-code-kind table. `None` is
+    /// "evaluate and discard" (a top-level `^` in `initExprs`, exactly as
+    /// M1's `run_own_init_exprs`). Inside an inlined block (`scopes.last()
+    /// == Inlined`, Task 11) an initializer's `^` must instead raise the
+    /// same `Signal::Return` M1's real block would, so it becomes
+    /// `NonLocalReturn`.
+    fn return_instr(&self, reg: u16) -> Option<Instr> {
+        let inside_inlined = self.scopes.last() == Some(&ScopeKind::Inlined);
+        match (self.kind, inside_inlined) {
+            (CodeKind::Method, _) => Some(Instr::Return { reg }),
+            (CodeKind::Block, _) => Some(Instr::NonLocalReturn { reg }),
+            (CodeKind::Initializer, false) => None,
+            (CodeKind::Initializer, true) => Some(Instr::NonLocalReturn { reg }),
+        }
+    }
+
+    fn emit_nil(&mut self) -> u16 {
+        let dst = self.alloc_scratch();
+        self.emit(Instr::LoadLiteral {
+            dst,
+            literal: BcLiteral::Nil,
+        });
+        dst
+    }
+
+    /// Appends the body's terminating instruction if `stmts` (the body just
+    /// lowered) did not already end in one, so `vm::run_code` never has to
+    /// handle "fell off the end". A method returns `self`; an initializer
+    /// always returns `self` (its top-level `^` never emits a return); a
+    /// block returns its last statement's value, `nil` if it has none.
+    pub(crate) fn finish_body(&mut self, stmts: &[Stmt]) {
+        let ends_in_return = matches!(stmts.last(), Some(Stmt::Return(_)));
+        match self.kind {
+            CodeKind::Method if ends_in_return => {}
+            CodeKind::Method | CodeKind::Initializer => {
+                let dst = self.alloc_scratch();
+                self.emit(Instr::LoadSelf { dst });
+                self.emit(Instr::ImplicitReturn { reg: dst });
+            }
+            CodeKind::Block if ends_in_return => {}
+            CodeKind::Block => {
+                let reg = match self.last_expr_reg {
+                    Some(r) => r,
+                    None => self.emit_nil(),
+                };
+                self.emit(Instr::ImplicitReturn { reg });
+            }
+        }
+    }
+
+    /// Compiles a block literal into its own `CompiledCode` with a nested
+    /// `Lowerer` that inherits this one's whole scope stack, and emits
+    /// `MakeClosure`. `captured_frame`/`home`/`bindings` are supplied by the
+    /// VM at run time (spec: "Blocks and closures").
+    fn lower_block_literal(&mut self, block: &ast::BlockExpr) -> u16 {
+        let params: Vec<crate::Symbol> = block
+            .params
+            .iter()
+            .map(|p| crate::Symbol::intern(&p.name))
+            .collect();
+        let mut inner = Lowerer::new(
+            CodeKind::Block,
+            params.len() as u16,
+            block.body.temps.len() as u16,
+            self.bindings,
+            self.scopes.clone(),
+        );
+        for stmt in &block.body.stmts {
+            inner.lower_statement(stmt);
+        }
+        inner.finish_body(&block.body.stmts);
+        let code = inner.finish(block.span);
+        let dst = self.alloc_scratch();
+        self.emit(Instr::MakeClosure {
+            dst,
+            params: Rc::new(params),
+            code: Rc::new(code),
+        });
+        dst
     }
 
     /// Returns the register holding `expr`'s value.
@@ -127,8 +249,13 @@ impl<'a> Lowerer<'a> {
             Expr::Assign { target, value, .. } => self.lower_assign(target, value),
             Expr::Send(send) => self.lower_send(send),
             Expr::Cascade(cascade) => self.lower_cascade(cascade),
-            Expr::Block(_) => unimplemented!("blocks are lowered starting in Task 4"),
-            Expr::DynamicArray { .. } => unimplemented!("arrays are lowered starting in Task 4"),
+            Expr::Block(block) => self.lower_block_literal(block),
+            Expr::DynamicArray { elements, .. } => {
+                let elem_regs: Vec<u16> = elements.iter().map(|e| self.lower_expr(e)).collect();
+                let dst = self.alloc_scratch();
+                self.emit(Instr::MakeArray { dst, elem_regs });
+                dst
+            }
         }
     }
 
@@ -690,5 +817,253 @@ mod tests {
         // No inlining anywhere: hops == depth.
         assert_eq!(hops_for_depth(&[Frame, Frame, Frame], 2), 2);
         assert_eq!(hops_for_depth(&[Frame], 0), 0);
+    }
+
+    fn lower_whole_method(src: &str, index: usize) -> CompiledCode {
+        let (method, bindings) = resolve_method(src, index);
+        let mut lowerer = method_lowerer(&method, &bindings);
+        for stmt in &method.body.stmts {
+            lowerer.lower_statement(stmt);
+        }
+        lowerer.finish_body(&method.body.stmts);
+        lowerer.finish(method.span)
+    }
+
+    #[test]
+    fn a_method_with_no_explicit_return_implicitly_returns_self() {
+        let code = lower_whole_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( 1 + 1 )\n) : ()",
+            0,
+        );
+        assert_eq!(
+            &code.instrs[code.instrs.len() - 2..],
+            &[Instr::LoadSelf { dst: 3 }, Instr::ImplicitReturn { reg: 3 }]
+        );
+    }
+
+    #[test]
+    fn an_explicit_method_return_is_a_plain_return_with_nothing_appended() {
+        let code = lower_whole_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n) : ()",
+            0,
+        );
+        assert_eq!(
+            code.instrs,
+            vec![
+                Instr::LoadLiteral {
+                    dst: 0,
+                    literal: BcLiteral::SmallInt(1)
+                },
+                Instr::Return { reg: 0 },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_block_literal_compiles_to_its_own_code_carried_by_make_closure() {
+        let code = lower_whole_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^[ :x | x ] )\n) : ()",
+            0,
+        );
+        let Some(Instr::MakeClosure {
+            dst: 0,
+            params,
+            code: block,
+        }) = code.instrs.first()
+        else {
+            panic!("expected a MakeClosure instruction, got {:?}", code.instrs);
+        };
+        assert_eq!(params.as_slice(), &[crate::Symbol::intern("x")]);
+        assert_eq!(block.kind, CodeKind::Block);
+        assert_eq!(block.num_args, 1);
+        // `x` is the block's own register 0: read with no instruction, then
+        // returned as the block's implicit value.
+        assert_eq!(block.instrs, vec![Instr::ImplicitReturn { reg: 0 }]);
+        assert_eq!(block.statement_pc, vec![(0, 0..0)]);
+    }
+
+    #[test]
+    fn a_block_reads_and_writes_enclosing_locals_through_outer_local_instructions() {
+        let code = lower_whole_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo: x = ( | t | ^[ t := x ] )\n) : ()",
+            0,
+        );
+        let Some(Instr::MakeClosure { code: block, .. }) = code.instrs.first() else {
+            panic!()
+        };
+        assert_eq!(
+            block.instrs,
+            vec![
+                Instr::LoadOuterLocal {
+                    dst: 0,
+                    depth: 1,
+                    index: 0
+                }, // x
+                Instr::StoreOuterLocal {
+                    src: 0,
+                    depth: 1,
+                    index: 1
+                }, // t
+                Instr::ImplicitReturn { reg: 0 },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_doubly_nested_block_counts_two_frame_hops() {
+        let code = lower_whole_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo: x = ( ^[ [ x ] ] )\n) : ()",
+            0,
+        );
+        let Some(Instr::MakeClosure { code: outer, .. }) = code.instrs.first() else {
+            panic!()
+        };
+        let Some(Instr::MakeClosure { code: inner, .. }) = outer.instrs.first() else {
+            panic!()
+        };
+        assert_eq!(
+            inner.instrs[0],
+            Instr::LoadOuterLocal {
+                dst: 0,
+                depth: 2,
+                index: 0
+            }
+        );
+    }
+
+    #[test]
+    fn a_return_inside_a_block_is_a_non_local_return() {
+        let code = lower_whole_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^[ ^1 ] )\n) : ()",
+            0,
+        );
+        let Some(Instr::MakeClosure { code: block, .. }) = code.instrs.first() else {
+            panic!()
+        };
+        assert_eq!(
+            block.instrs,
+            vec![
+                Instr::LoadLiteral {
+                    dst: 0,
+                    literal: BcLiteral::SmallInt(1)
+                },
+                Instr::NonLocalReturn { reg: 0 },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_block_returns_nil_and_a_multi_statement_block_returns_its_last_value() {
+        let code = lower_whole_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( [ ] value. ^[ 1. 2 ] value )\n) : ()",
+            0,
+        );
+        let Some(Instr::MakeClosure { code: empty, .. }) = code.instrs.first() else {
+            panic!()
+        };
+        assert_eq!(
+            empty.instrs,
+            vec![
+                Instr::LoadLiteral {
+                    dst: 0,
+                    literal: BcLiteral::Nil
+                },
+                Instr::ImplicitReturn { reg: 0 }
+            ]
+        );
+        let Some(Instr::MakeClosure { code: two, .. }) = code.instrs.get(2) else {
+            panic!("{:?}", code.instrs)
+        };
+        assert_eq!(
+            two.instrs,
+            vec![
+                Instr::LoadLiteral {
+                    dst: 0,
+                    literal: BcLiteral::SmallInt(1)
+                },
+                Instr::LoadLiteral {
+                    dst: 0,
+                    literal: BcLiteral::SmallInt(2)
+                },
+                Instr::ImplicitReturn { reg: 0 },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_dynamic_array_literal_lowers_to_make_array() {
+        let (method, bindings) = resolve_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^{ 1. 2. 3 } )\n) : ()",
+            0,
+        );
+        let mut lowerer = method_lowerer(&method, &bindings);
+        let dst = lowerer.lower_expr(return_expr(&method));
+        let code = lowerer.finish(method.span);
+        assert_eq!(
+            code.instrs,
+            vec![
+                Instr::LoadLiteral {
+                    dst: 0,
+                    literal: BcLiteral::SmallInt(1)
+                },
+                Instr::LoadLiteral {
+                    dst: 1,
+                    literal: BcLiteral::SmallInt(2)
+                },
+                Instr::LoadLiteral {
+                    dst: 2,
+                    literal: BcLiteral::SmallInt(3)
+                },
+                Instr::MakeArray {
+                    dst: 3,
+                    elem_regs: vec![0, 1, 2]
+                },
+            ]
+        );
+        assert_eq!(dst, 3);
+    }
+
+    #[test]
+    fn an_initializer_discards_a_top_level_return_and_always_returns_self() {
+        let (method, bindings) = resolve_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n) : ()",
+            0,
+        );
+        // Reuse `foo`'s `^1` as if it were an initExpr: kind Initializer, 0 args.
+        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, 0, &bindings, vec![]);
+        lowerer.lower_statement(&method.body.stmts[0]);
+        lowerer.finish_body(&method.body.stmts);
+        let code = lowerer.finish(method.span);
+        assert_eq!(
+            code.instrs,
+            vec![
+                Instr::LoadLiteral {
+                    dst: 0,
+                    literal: BcLiteral::SmallInt(1)
+                },
+                Instr::LoadSelf { dst: 1 },
+                Instr::ImplicitReturn { reg: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_slot_initializer_is_one_statement_ending_in_init_slot() {
+        let (method, bindings) = resolve_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^6 * 7 )\n) : ()",
+            0,
+        );
+        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, 0, &bindings, vec![]);
+        lowerer.lower_slot_init(return_expr(&method), 4);
+        let code = lowerer.finish(method.span);
+        // `6`, `7`, the `*` send, then the field write: four instructions.
+        assert!(matches!(
+            code.instrs.last(),
+            Some(Instr::InitSlot {
+                src: 2,
+                field_index: 4
+            })
+        ));
+        assert_eq!(code.statement_pc, vec![(0, 0..4)]);
     }
 }
