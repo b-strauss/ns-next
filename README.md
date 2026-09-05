@@ -45,10 +45,8 @@ kept as a non-regression gate for the parser.
 
 ## Usage
 
-Run a Newspeak file end to end — parse, resolve, bootstrap, load, instantiate, and send
-the entry selector:
-
 ```bash
+# run a file end to end: parse, resolve, bootstrap, load, instantiate, send the entry selector
 cargo run -p ns-cli -- run tests-fixtures/hello.ns
 ```
 
@@ -57,27 +55,27 @@ engines are available and must produce identical output — the tree-walker is k
 differential oracle for the bytecode engine, which is the default:
 
 ```bash
+# the same program under the Milestone 1 tree-walking interpreter
 cargo run -p ns-cli -- run tests-fixtures/while_loop.ns --engine tree-walk
 ```
 
-Print the bytecode of a single method (compile only — nothing is instantiated or run):
-
 ```bash
+# print one method's bytecode; compile only, nothing is instantiated or run
 cargo run -p ns-cli -- disasm tests-fixtures/blocks_and_return.ns find:in:
 ```
 
-Serialize a world to an image and load it back:
-
 ```bash
+# serialize a running world to an image, then load it back and send it a message
 cargo run -p ns-cli -- snapshot tests-fixtures/instance_init.ns world.img
-```
-
-```bash
 cargo run -p ns-cli -- load world.img --send main:args:
 ```
 
-`parse` checks a single file and reports whether it parsed, with `--ast` to print the
-syntax tree. `ns-next <command> --help` documents the remaining flags.
+```bash
+# check that a file parses; --ast prints the syntax tree
+cargo run -p ns-cli -- parse tests-fixtures/hello.ns
+```
+
+`ns-next <command> --help` documents the remaining flags.
 
 ## Repository layout
 
