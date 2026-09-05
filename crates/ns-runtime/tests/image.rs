@@ -992,12 +992,21 @@ fn instances_and_arrays_round_trip_with_shared_identity_preserved() {
 
 #[test]
 fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
+    // Two objects, the higher hash first: the object table is walked in
+    // root order, so the maximum is *not* the last one seen and
+    // `assert_eq!` can tell a real fold from a stale field or a running
+    // counter.
     let (_i, _c, original, decoded, max) = round_trip_graph(EMPTY, |interp, _, _| {
-        vec![Value::Obj(interp.new_string("x".to_string()))]
+        let first = Value::Obj(interp.new_string("x".to_string()));
+        let second = Value::Obj(interp.new_string("y".to_string()));
+        vec![second, first]
     });
-    let hash = obj(&original[0]).borrow().identity_hash;
-    assert_eq!(obj(&decoded[0]).borrow().identity_hash, hash);
-    assert!(max >= hash);
+    let higher = obj(&original[0]).borrow().identity_hash;
+    let lower = obj(&original[1]).borrow().identity_hash;
+    assert!(higher > lower, "the allocator hands out ascending hashes");
+    assert_eq!(obj(&decoded[0]).borrow().identity_hash, higher);
+    assert_eq!(obj(&decoded[1]).borrow().identity_hash, lower);
+    assert_eq!(max, higher);
 }
 
 #[test]
@@ -1378,6 +1387,11 @@ fn an_invalid_class_tag_is_a_decode_error_not_a_panic() {
     let mut w = encode::Writer::new();
     graph_counts(&mut w, 1, 0);
     w.write_u8(200); // neither `Builtin` (0) nor `UserRoot` (1)
+                     // Padded out to the shortest object record the wire admits, so
+                     // `bounded_count` admits the announced record and the class tag itself
+                     // is what the decoder rejects.
+    w.write_u32(1); // identity hash
+    w.write_u8(1); // object body: Str
     let bytes = w.into_bytes();
     assert_eq!(
         GraphFixture::new().decode_err(&bytes),
@@ -1406,6 +1420,9 @@ fn one_frame_prefix() -> encode::Writer {
 fn an_invalid_frame_kind_tag_is_a_decode_error_not_a_panic() {
     let mut w = one_frame_prefix();
     w.write_u8(200);
+    // Padded out to the shortest frame record the wire admits (see the
+    // class-tag test), so the kind tag is what the decoder rejects.
+    w.write_bool(false); // continuable
     let bytes = w.into_bytes();
     assert_eq!(
         GraphFixture::new().decode_err(&bytes),
@@ -1546,4 +1563,109 @@ fn a_top_level_frame_kind_decodes() {
         .expect("a TopLevel frame");
     assert!(decoded.roots.is_empty());
     assert_eq!(decoded.max_identity_hash, 0);
+}
+
+/// A block `CompiledCode` taking `num_args` arguments in `num_args + 1`
+/// registers -- enough for the graph decoder, which never runs it.
+fn block_code(num_args: u16) -> Rc<CompiledCode> {
+    Rc::new(CompiledCode {
+        kind: CodeKind::Block,
+        instrs: vec![Instr::ImplicitReturn { reg: 0 }],
+        num_args,
+        num_registers: num_args + 1,
+        statement_pc: vec![],
+        call_sites: vec![],
+        source: Span::new(0, 0),
+    })
+}
+
+/// A graph section holding one closure object and the one `TopLevel` frame
+/// it points at, with `params` declared parameters against code id 0.
+/// Every field but the parameter count is well-formed, so *only* the
+/// arity reconciliation can reject it.
+fn closure_object_with_param_count(params: &[&str]) -> Vec<u8> {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 1, 1);
+    w.write_u8(0); // class tag: builtin
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
+    w.write_u32(1); // identity hash
+    w.write_u8(4); // object body: Closure
+    w.write_u16(params.len() as u16);
+    for p in params {
+        w.write_str(p);
+    }
+    w.write_u32(0); // code id
+    w.write_u32(0); // captured frame id -- frame 0 exists
+    w.write_u32(0); // home frame id -- frame 0 exists
+    w.write_u8(0); // frame 0: receiver nil
+    w.write_u32(0); // no args
+    w.write_u32(0); // no temps
+    w.write_u32(0); // pc
+    w.write_bool(false); // no sender
+    w.write_bool(false); // no home
+    w.write_bool(false); // no current class
+    w.write_u8(2); // frame kind: TopLevel
+    w.write_bool(false); // continuable
+    w.write_u32(1); // one root...
+    w.write_u8(5);
+    w.write_u32(0); // ...the closure
+    w.into_bytes()
+}
+
+#[test]
+fn a_well_formed_closure_record_whose_arity_agrees_still_decodes() {
+    // The control for the two rejection tests below: the same section
+    // shape, with the parameter count the code actually declares. Without
+    // it, a reconciliation that rejected *everything* would look correct.
+    let mut fixture = GraphFixture::new();
+    fixture.codes.push(block_code(1));
+    let decoded = fixture
+        .decode(&closure_object_with_param_count(&["x"]))
+        .expect("arity agrees");
+    let ObjectData::Closure(c) = &obj(&decoded.roots[0]).borrow().data else {
+        panic!("expected a closure")
+    };
+    assert_eq!(c.params, vec![Symbol::intern("x")]);
+}
+
+#[test]
+fn a_closure_record_declaring_too_few_parameters_is_a_decode_error() {
+    // `invoke_closure` checks the *call's* arity against `params.len()`
+    // but sizes the register file from the *code*
+    // (`num_registers - num_args`), and `eval::read_local` then indexes
+    // `temps[i - args.len()]` unchecked. So this section -- otherwise
+    // entirely well-formed, as the control above proves -- would decode
+    // cleanly and panic the process the first time the closure is sent
+    // `value`. `decode_closure_record` is the only place that sees both
+    // halves of the arity.
+    let mut fixture = GraphFixture::new();
+    fixture.codes.push(block_code(1));
+    let err = fixture.decode_err(&closure_object_with_param_count(&[]));
+    assert_eq!(
+        err,
+        decode::DecodeError::ClosureArityMismatch {
+            params: 0,
+            num_args: 1
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "closure record declares 0 parameters but the code it names takes 1"
+    );
+}
+
+#[test]
+fn a_closure_record_declaring_too_many_parameters_is_a_decode_error() {
+    // The mirror case does not panic -- it silently misaddresses temps as
+    // arguments -- so nothing downstream would ever report it.
+    let mut fixture = GraphFixture::new();
+    fixture.codes.push(block_code(0));
+    let err = fixture.decode_err(&closure_object_with_param_count(&["x"]));
+    assert_eq!(
+        err,
+        decode::DecodeError::ClosureArityMismatch {
+            params: 1,
+            num_args: 0
+        }
+    );
 }

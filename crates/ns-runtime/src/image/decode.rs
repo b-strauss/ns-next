@@ -45,6 +45,21 @@ pub enum DecodeError {
     BadCodeId(u32),
     BadObjectId(u32),
     BadFrameId(u32),
+    /// A closure record's parameter list and the code it names disagree
+    /// about how many arguments the closure takes. The two are separate
+    /// fields on the wire, so only a decode-time reconciliation can catch
+    /// a crafted mismatch -- and it must, because the two halves are read
+    /// by different parts of `invoke_closure`: it checks the *call's*
+    /// arity against `params.len()` but sizes the register file from the
+    /// *code* (`num_registers - num_args`). Disagreement leaves
+    /// `eval::read_local` computing `temps[i - args.len()]` past the end
+    /// of `temps` -- an unchecked index panic from a version-matching
+    /// image -- or, the other way round, silently misaddressing temps as
+    /// arguments.
+    ClosureArityMismatch {
+        params: usize,
+        num_args: u16,
+    },
     /// The image's root object is not a class, so it has no methods to
     /// install a code table against.
     NotAClass,
@@ -75,6 +90,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::BadCodeId(id) => write!(f, "code id {id} out of range"),
             DecodeError::BadObjectId(id) => write!(f, "object id {id} out of range"),
             DecodeError::BadFrameId(id) => write!(f, "frame id {id} out of range"),
+            DecodeError::ClosureArityMismatch { params, num_args } => write!(
+                f,
+                "closure record declares {params} parameters but the code it names takes {num_args}"
+            ),
             DecodeError::NotAClass => {
                 write!(f, "the image's root object is not a class")
             }
@@ -738,6 +757,15 @@ fn decode_closure_record(
         .get(code_id as usize)
         .cloned()
         .ok_or(DecodeError::BadCodeId(code_id))?;
+    // The one place in the format that can see both halves of a closure's
+    // arity. Checked before the frame ids are read, so a mismatch is
+    // reported as itself rather than as whatever the next field trips on.
+    if params.len() != code.num_args as usize {
+        return Err(DecodeError::ClosureArityMismatch {
+            params: params.len(),
+            num_args: code.num_args,
+        });
+    }
     let captured_frame = decode_frame_id(r, tables)?;
     let home = decode_frame_id(r, tables)?;
     Ok(ClosureData {
@@ -755,6 +783,14 @@ fn decode_closure_record(
 
 /// Re-resolves a `FrameKind::Method` against the *reloaded* class's method
 /// map: the image names the method by selector, never by identity.
+///
+/// Always `ctx.root_class`, even though the frame record carries a
+/// `current_class` of its own that was decoded a few bytes earlier: the
+/// same single-user-class invariant `encode_class_tag` documents means the
+/// only class that can define a method here *is* the root class. When
+/// nested classes load, this must resolve against the frame's own
+/// `current_class` instead -- and until then, doing so would be a
+/// distinction without a difference that reads like a guarantee.
 fn method_decl(ctx: &DecodeContext, selector: String) -> Result<Rc<ast::MethodDecl>, DecodeError> {
     let found = {
         let borrowed = ctx.root_class.borrow();
@@ -824,14 +860,30 @@ fn placeholder_frame() -> Frame {
     }
 }
 
+/// The smallest object record the wire admits: a `UserRoot` class tag (1),
+/// an identity hash (4), and a body tag (1). Every body adds at least four
+/// more bytes, so this is a floor, not a typical size.
+const MIN_OBJECT_RECORD_BYTES: usize = 6;
+
+/// The smallest frame record the wire admits: a `nil` receiver (1), empty
+/// `args` and `temps` counts (4 + 4), a `pc` (4), absent `sender`, `home`
+/// and `current_class` (1 + 1 + 1), a `TopLevel` kind tag (1), and
+/// `uncontinuable` (1). Every other frame kind is larger.
+const MIN_FRAME_RECORD_BYTES: usize = 18;
+
 /// A record count read from an untrusted stream, refused before it is used
-/// to *allocate*. Every object record costs at least six bytes and every
-/// frame record at least eighteen, so one byte apiece is a conservative
-/// lower bound: a count above the bytes still unread cannot describe what
-/// follows. Without this a crafted `u32::MAX` would allocate billions of
-/// placeholders and abort the process before the read could fail.
-fn bounded_count(count: usize, r: &Reader) -> Result<usize, DecodeError> {
-    if count > r.remaining() {
+/// to *allocate*. The bytes still unread bound how many records can really
+/// follow: at `bytes_per_record` apiece, a count above
+/// `remaining / bytes_per_record` cannot describe what comes next. Without
+/// this a crafted `u32::MAX` would allocate billions of placeholders and
+/// abort the process before the read could fail.
+///
+/// Dividing (rather than comparing against `remaining` itself) is what
+/// keeps the bound proportional to the real record sizes: at one byte
+/// apiece a 100 MB image could still drive ~22 GB of placeholder
+/// allocation before the first record failed to read.
+fn bounded_count(count: usize, bytes_per_record: usize, r: &Reader) -> Result<usize, DecodeError> {
+    if count > r.remaining() / bytes_per_record {
         return Err(DecodeError::UnexpectedEof);
     }
     Ok(count)
@@ -850,8 +902,8 @@ pub fn decode_graph_section(
     r: &mut Reader,
     ctx: &DecodeContext,
 ) -> Result<DecodedGraph, DecodeError> {
-    let object_count = bounded_count(r.read_u32()? as usize, r)?;
-    let frame_count = bounded_count(r.read_u32()? as usize, r)?;
+    let object_count = bounded_count(r.read_u32()? as usize, MIN_OBJECT_RECORD_BYTES, r)?;
+    let frame_count = bounded_count(r.read_u32()? as usize, MIN_FRAME_RECORD_BYTES, r)?;
     let placeholder_class = ctx.interp.builtin_class(BuiltinClass::Object);
     let objects: Vec<ObjRef> = (0..object_count)
         .map(|_| {

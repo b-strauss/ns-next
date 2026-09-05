@@ -588,6 +588,15 @@ impl GraphTable {
 /// class: `Interpreter::load_module` does not load nested classes (see its
 /// "Milestone 1 known gaps" note), so the only non-builtin class object any
 /// value can point at is the module's root class.
+///
+/// That invariant is load-bearing and this function cannot check it: it is
+/// handed a `ClassRef` with no root class to compare against, so a second
+/// user-defined class would silently encode as `UserRoot` and decode as the
+/// root -- a wrong class, not a decode error. The milestone that loads
+/// nested classes must replace tag 1 with something that names *which*
+/// user class (a path, or an index into a class table) and bump
+/// `FORMAT_VERSION`; threading a root class through for enforcement now
+/// would only turn a currently-impossible case into a check.
 pub fn encode_class_tag(w: &mut Writer, class: &ClassRef) {
     let builtin = match &class.borrow().data {
         ObjectData::Class(data) => data.builtin,
