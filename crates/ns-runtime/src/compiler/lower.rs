@@ -125,9 +125,8 @@ impl<'a> Lowerer<'a> {
             }
             Expr::Ident(id) => self.lower_ident_read(id),
             Expr::Assign { target, value, .. } => self.lower_assign(target, value),
-            Expr::Send(_) | Expr::Cascade(_) => {
-                unimplemented!("sends/cascades are lowered starting in Task 3")
-            }
+            Expr::Send(send) => self.lower_send(send),
+            Expr::Cascade(cascade) => self.lower_cascade(cascade),
             Expr::Block(_) => unimplemented!("blocks are lowered starting in Task 4"),
             Expr::DynamicArray { .. } => unimplemented!("arrays are lowered starting in Task 4"),
         }
@@ -170,8 +169,25 @@ impl<'a> Lowerer<'a> {
                 });
                 dst
             }
-            Some(Binding::LexicalSend { .. }) | Some(Binding::SuperSend) | None => {
-                unimplemented!("implicit/lexical/builtin-name reads are lowered starting in Task 3")
+            Some(Binding::LexicalSend { depth }) => {
+                let depth = *depth;
+                self.emit_lexical_send(depth, crate::Symbol::intern(&id.name), vec![])
+            }
+            // M1's resolver never attaches `SuperSend` to a bare identifier (only to
+            // a `super m` send's own span) -- grouped with `None` here because both
+            // fall to the same builtin-name fallback, mirroring `eval_ident`.
+            Some(Binding::SuperSend) | None => {
+                match crate::interpreter::instantiate::builtin_kind_from_name(&id.name) {
+                    Some(kind) => {
+                        let dst = self.alloc_scratch();
+                        self.emit(Instr::LoadBuiltinClass { dst, kind });
+                        dst
+                    }
+                    None => panic!(
+                        "internal: unresolved identifier `{}` (the resolver should have rejected this)",
+                        id.name
+                    ),
+                }
             }
         }
     }
@@ -201,13 +217,104 @@ impl<'a> Lowerer<'a> {
                     });
                 }
             }
-            Some(Binding::LexicalSend { .. }) | Some(Binding::SuperSend) | None => {
-                unimplemented!("setter-send assignment is lowered starting in Task 3")
+            Some(Binding::LexicalSend { depth }) => {
+                let depth = *depth;
+                let setter = crate::Symbol::intern(&format!("{}:", target.name));
+                self.emit_lexical_send(depth, setter, vec![v]);
             }
+            Some(Binding::SuperSend) | None => panic!(
+                "internal: unresolved setter target `{}` (the resolver should have rejected this)",
+                target.name
+            ),
         }
         // An assignment's own value is `value`'s value (runtime spec's
         // "Setter sends" note) -- already sitting in register `v`.
         v
+    }
+
+    /// One `Send*` instruction's `CallSite`: the instruction's own
+    /// about-to-be-pushed index, always in sync with `instrs`.
+    fn next_call_site(&self) -> CallSite {
+        CallSite {
+            call_site_id: self.instrs.len() as u16,
+        }
+    }
+
+    fn emit_send(&mut self, build: impl FnOnce(u16, CallSite) -> Instr) -> u16 {
+        let dst = self.alloc_scratch();
+        let call_site = self.next_call_site();
+        self.emit(build(dst, call_site));
+        self.call_sites.push(call_site);
+        dst
+    }
+
+    fn emit_lexical_send(
+        &mut self,
+        depth: u16,
+        selector: crate::Symbol,
+        arg_regs: Vec<u16>,
+    ) -> u16 {
+        self.emit_send(|dst, call_site| Instr::SendLexical {
+            depth,
+            selector,
+            arg_regs,
+            dst,
+            call_site,
+        })
+    }
+
+    pub(crate) fn emit_ordinary_send_with_receiver(
+        &mut self,
+        receiver_reg: u16,
+        message: &ast::MessageSend,
+    ) -> u16 {
+        let selector = selector_of(message);
+        let arg_regs = self.lower_args(message);
+        self.emit_send(|dst, call_site| Instr::SendPublic {
+            selector,
+            receiver_reg,
+            arg_regs,
+            dst,
+            call_site,
+        })
+    }
+
+    fn lower_args(&mut self, message: &ast::MessageSend) -> Vec<u16> {
+        message.args.iter().map(|a| self.lower_expr(a)).collect()
+    }
+
+    fn lower_send(&mut self, send: &ast::Send) -> u16 {
+        match self.bindings.get(&send.span) {
+            Some(Binding::SuperSend) => {
+                let selector = selector_of(&send.message);
+                let arg_regs = self.lower_args(&send.message);
+                self.emit_send(|dst, call_site| Instr::SendSuper {
+                    selector,
+                    arg_regs,
+                    dst,
+                    call_site,
+                })
+            }
+            Some(Binding::LexicalSend { depth }) => {
+                let depth = *depth;
+                let selector = selector_of(&send.message);
+                let arg_regs = self.lower_args(&send.message);
+                self.emit_lexical_send(depth, selector, arg_regs)
+            }
+            _ => {
+                let receiver_reg = self.lower_expr(&send.receiver);
+                self.emit_ordinary_send_with_receiver(receiver_reg, &send.message)
+            }
+        }
+    }
+
+    fn lower_cascade(&mut self, cascade: &ast::Cascade) -> u16 {
+        let receiver_reg = self.lower_expr(&cascade.receiver);
+        let mut result = self.emit_ordinary_send_with_receiver(receiver_reg, &cascade.first);
+        for m in &cascade.rest {
+            result = self.emit_ordinary_send_with_receiver(receiver_reg, m);
+        }
+        result
     }
 
     pub(crate) fn finish(self, source: Span) -> CompiledCode {
@@ -219,6 +326,14 @@ impl<'a> Lowerer<'a> {
             statement_pc: self.statement_pc,
             call_sites: self.call_sites,
             source,
+        }
+    }
+}
+
+pub(crate) fn selector_of(message: &ast::MessageSend) -> crate::Symbol {
+    match &message.selector {
+        ast::Selector::Unary(s) | ast::Selector::Binary(s) | ast::Selector::Keyword(s) => {
+            crate::Symbol::intern(s)
         }
     }
 }
@@ -422,6 +537,145 @@ mod tests {
                 literal: BcLiteral::SmallInt(255)
             }]
         );
+    }
+
+    #[test]
+    fn an_ordinary_send_evaluates_receiver_then_args() {
+        let (method, bindings) = resolve_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo: x = ( ^3 + x )\n) : ()",
+            0,
+        );
+        let mut lowerer = method_lowerer(&method, &bindings);
+        let dst = lowerer.lower_expr(return_expr(&method));
+        let code = lowerer.finish(method.span);
+        assert_eq!(
+            code.instrs,
+            vec![
+                Instr::LoadLiteral {
+                    dst: 1,
+                    literal: BcLiteral::SmallInt(3)
+                },
+                Instr::SendPublic {
+                    selector: crate::Symbol::intern("+"),
+                    receiver_reg: 1,
+                    arg_regs: vec![0],
+                    dst: 2,
+                    call_site: CallSite { call_site_id: 1 },
+                },
+            ]
+        );
+        assert_eq!(dst, 2);
+        assert_eq!(code.num_registers, 3);
+        assert_eq!(code.call_sites, vec![CallSite { call_site_id: 1 }]);
+    }
+
+    #[test]
+    fn a_bare_implicit_send_lowers_to_send_lexical() {
+        // `foo`'s body (`^bar`) resolves `bar` as an implicit-receiver unary
+        // send at depth 0 (`bar` is a sibling method) -- `Binding::LexicalSend`.
+        let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  bar = ( ^42 )\n  foo = ( ^bar )\n) : ()";
+        let (foo, bindings) = resolve_method(src, 1);
+        let mut lowerer = method_lowerer(&foo, &bindings);
+        let dst = lowerer.lower_expr(return_expr(&foo));
+        let code = lowerer.finish(foo.span);
+        assert_eq!(
+            code.instrs,
+            vec![Instr::SendLexical {
+                depth: 0,
+                selector: crate::Symbol::intern("bar"),
+                arg_regs: vec![],
+                dst: 0,
+                call_site: CallSite { call_site_id: 0 },
+            }]
+        );
+        assert_eq!(dst, 0);
+    }
+
+    #[test]
+    fn a_keyword_implicit_send_and_a_super_send_lower_without_a_receiver_register() {
+        let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  at: i put: v = ( ^v )\n  foo = ( at: 1 put: 2. ^super printString )\n) : ()";
+        let (foo, bindings) = resolve_method(src, 1);
+        let mut lowerer = method_lowerer(&foo, &bindings);
+        lowerer.lower_statement(&foo.body.stmts[0]);
+        let code = lowerer.finish(foo.span);
+        assert!(matches!(
+            &code.instrs[2],
+            Instr::SendLexical { depth: 0, selector, arg_regs, .. }
+                if selector.as_str() == "at:put:" && arg_regs.len() == 2
+        ));
+        let (foo, bindings) = resolve_method(src, 1);
+        let mut lowerer = method_lowerer(&foo, &bindings);
+        lowerer.lower_expr(match &foo.body.stmts[1] {
+            Stmt::Return(e) => e,
+            _ => panic!(),
+        });
+        let code = lowerer.finish(foo.span);
+        assert!(matches!(
+            &code.instrs[0],
+            Instr::SendSuper { selector, arg_regs, dst: 0, .. }
+                if selector.as_str() == "printString" && arg_regs.is_empty()
+        ));
+    }
+
+    #[test]
+    fn a_slot_assignment_lowers_to_a_setter_lexical_send() {
+        let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  bump = ( n := n + 1 )\n) : ()";
+        let (bump, bindings) = resolve_method(src, 0);
+        let mut lowerer = method_lowerer(&bump, &bindings);
+        lowerer.lower_statement(&bump.body.stmts[0]);
+        let code = lowerer.finish(bump.span);
+        assert!(matches!(
+            code.instrs.last(),
+            Some(Instr::SendLexical { depth: 0, selector, arg_regs, .. })
+                if selector.as_str() == "n:" && arg_regs.len() == 1
+        ));
+    }
+
+    #[test]
+    fn a_bare_builtin_class_name_lowers_to_load_builtin_class() {
+        let src =
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^OrderedCollection )\n) : ()";
+        let (foo, bindings) = resolve_method(src, 0);
+        let mut lowerer = method_lowerer(&foo, &bindings);
+        let dst = lowerer.lower_expr(return_expr(&foo));
+        let code = lowerer.finish(foo.span);
+        assert_eq!(
+            code.instrs,
+            vec![Instr::LoadBuiltinClass {
+                dst: 0,
+                kind: crate::types::BuiltinClass::OrderedCollection
+            }]
+        );
+        assert_eq!(dst, 0);
+    }
+
+    #[test]
+    fn a_cascade_reuses_one_receiver_register_across_every_message() {
+        let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( | c | c := OrderedCollection new. c add: 1; add: 2 )\n) : ()";
+        let (foo, bindings) = resolve_method(src, 0);
+        let mut lowerer = method_lowerer(&foo, &bindings); // temp `c` is register 0
+        lowerer.lower_statement(&foo.body.stmts[0]);
+        lowerer.lower_statement(&foo.body.stmts[1]);
+        let code = lowerer.finish(foo.span);
+        let receiver_regs: Vec<u16> = code
+            .instrs
+            .iter()
+            .filter_map(|i| match i {
+                Instr::SendPublic { receiver_reg, .. } => Some(*receiver_reg),
+                _ => None,
+            })
+            .collect();
+        // `OrderedCollection new`, then the cascade's two `add:` sends.
+        assert_eq!(receiver_regs.len(), 3);
+        assert_eq!(
+            receiver_regs[1], 0,
+            "`c` is register 0, read with no instruction"
+        );
+        assert_eq!(
+            receiver_regs[1], receiver_regs[2],
+            "both cascade sends share one receiver register"
+        );
+        assert_eq!(code.call_sites.len(), 3);
     }
 
     #[test]
