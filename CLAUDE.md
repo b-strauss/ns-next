@@ -60,6 +60,8 @@ unwrap through a local `expect_ok` helper — copy the one in a neighbouring tes
 ## Working in this repository
 
 ```bash
+# build every crate
+cargo build --workspace
 # the full suite, including the differential harness that compares the two engines
 cargo test --workspace
 # before every commit
@@ -69,6 +71,9 @@ cargo clippy --workspace --all-targets
 # non-regression gate: must report "parsed 210, failed 0, expected-fail 1, stale 0"
 cargo run -p ns-cli -- parse-corpus corpus/modules
 ```
+
+Never judge performance from a debug build — `cargo build --workspace --release` is the
+one to measure.
 
 A file that legitimately cannot parse yet belongs in `corpus/blacklist.toml`. Nothing
 under `crates/ns-syntax` should change for runtime work.

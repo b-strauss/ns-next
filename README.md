@@ -29,6 +29,8 @@ other tooling is needed; the project has no external runtime dependencies.
 ## Build and test
 
 ```bash
+# build every crate; the ns-next binary lands in target/debug
+cargo build --workspace
 # the full suite, including the differential harness over both engines
 cargo test --workspace
 # formatting
@@ -37,6 +39,14 @@ cargo fmt --all
 cargo clippy --workspace --all-targets
 # parser corpus gate: must report "parsed 210, failed 0, expected-fail 1, stale 0"
 cargo run -p ns-cli -- parse-corpus corpus/modules
+```
+
+An optimized build, which is the one to measure — the debug build is slow enough to
+mislead:
+
+```bash
+# the binary lands in target/release
+cargo build --workspace --release
 ```
 
 The differential harness runs every fixture under both engines and compares exit status,
