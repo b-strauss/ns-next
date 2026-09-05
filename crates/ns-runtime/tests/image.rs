@@ -2617,3 +2617,147 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
         "the loaded closure reads `x` two frames out"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 15, review fix round 1: two crafted-image paths that still reached a
+// panic after the first commit.
+// ---------------------------------------------------------------------------
+
+/// A root class with one slot, so `class_has_initializer_code` is true and
+/// `instantiate` *must* find compiled initializer code for it.
+const NEEDS_INITIALIZER: &str =
+    "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 1. |\n) (\n  public n = ( ^n )\n) : ()";
+
+#[test]
+fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_at_install() {
+    // `run_own_initializer` panics -- "internal: class has no compiled
+    // instance initializer" -- when the class has initializer code and the
+    // module has none. The reloaded source decides the first half and the
+    // image the second, so an image whose initializer flag is cleared makes
+    // the *first* `X new` after a load abort the process. This is the
+    // initializer's `MissingSelector`.
+    let (_interp, class, bindings) = load(NEEDS_INITIALIZER);
+    let module = compiler::compile_module(&class, &bindings);
+    let (mut table, _ids) = round_trip_code_table(&module, &class);
+    assert!(
+        table.initializer.is_some(),
+        "the fixture's class really does compile an initializer"
+    );
+    table.initializer = None;
+    match decode::install_code_table(&table, &class, &bindings) {
+        Err(err) => {
+            assert_eq!(err, decode::DecodeError::MissingInitializer);
+            assert_eq!(
+                err.to_string(),
+                "the reloaded source's root class needs an instance initializer, which the image has no compiled code for"
+            );
+        }
+        Ok(_) => panic!("expected a decode error, got an installed module"),
+    }
+}
+
+#[test]
+fn a_whole_image_missing_its_initializer_is_refused_by_load() {
+    // The same crafting one level up, through the real sections: a module
+    // whose `initializers` map has been emptied encodes an image with the
+    // initializer flag cleared, and every other check passes -- a quiesced
+    // snapshot has no initializer frame for `verify_graph` to catch.
+    let (mut interp, class, bindings) = load(NEEDS_INITIALIZER);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let instance = expect_ok(
+        interp.instantiate(class.clone(), vec![], &bindings),
+        "instantiate",
+    );
+    let platform = interp.platform();
+    let doctored = CompiledModule {
+        methods: interp
+            .compiled_module()
+            .expect("bytecode engine")
+            .methods
+            .clone(),
+        initializers: HashMap::new(),
+        bindings: bindings.clone(),
+    };
+    let bytes = image::snapshot(
+        NEEDS_INITIALIZER,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        &doctored,
+        &platform,
+        std::slice::from_ref(&instance),
+    )
+    .expect("snapshot");
+    let err = load_err(&bytes);
+    assert!(
+        err.contains("instance initializer"),
+        "load must refuse it rather than let `X new` panic later: {err}"
+    );
+}
+
+#[test]
+fn an_identity_hash_at_the_ceiling_is_refused_rather_than_overflowing_the_counter() {
+    // `load` hands the maximum decoded hash to
+    // `advance_identity_hash_past`, which computes `max + 1`: an overflow
+    // panic under this workspace's dev profile, and a wrap to 0 -- so a
+    // collision with every loaded object -- in release.
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 1, 0);
+    w.write_u8(0); // class tag: builtin
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Str));
+    w.write_u32(u32::MAX); // identity hash, at the ceiling
+    w.write_u8(1); // object body: Str
+    w.write_str("x");
+    w.write_u32(0); // no roots -- otherwise complete, so the hash is what
+                    // the decoder rejects, not a truncation
+    let bytes = w.into_bytes();
+    let err = GraphFixture::new().decode_err(&bytes);
+    assert_eq!(err, decode::DecodeError::IdentityHashExhausted);
+    assert_eq!(
+        err.to_string(),
+        "an image object's identity hash is 4294967295, leaving no hash for a loaded world to allocate next"
+    );
+}
+
+#[test]
+fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
+    // The step the ceiling check alone does not cover: a maximum of
+    // `u32::MAX - 1` is a legal image, and it leaves the counter at
+    // `u32::MAX` -- where `alloc_identity_hash`'s own `+= 1` used to
+    // overflow on the very first allocation after the load. Saturating
+    // there costs a shared hash (identity is `Rc` identity, never the
+    // hash) instead of aborting the process.
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let instance = expect_ok(
+        interp.instantiate(class.clone(), vec![], &bindings),
+        "instantiate",
+    );
+    obj(&instance).borrow_mut().identity_hash = u32::MAX - 1;
+    let platform = interp.platform();
+    let bytes = image::snapshot(
+        src,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        std::slice::from_ref(&instance),
+    )
+    .expect("snapshot");
+    let mut loaded = image::load(&bytes).expect("load");
+    assert_eq!(
+        obj(&loaded.roots[0]).borrow().identity_hash,
+        u32::MAX - 1,
+        "the image's hash is preserved, not clamped"
+    );
+    let first = loaded.interp.new_string("a".to_string());
+    let second = loaded.interp.new_string("b".to_string());
+    assert_eq!(first.borrow().identity_hash, u32::MAX);
+    assert_eq!(
+        second.borrow().identity_hash,
+        u32::MAX,
+        "an exhausted counter shares its last hash instead of overflowing"
+    );
+}

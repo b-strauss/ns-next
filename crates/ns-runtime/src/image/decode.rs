@@ -71,6 +71,14 @@ pub enum DecodeError {
     /// method the image was never compiled with, so the installed module
     /// would have a hole the engine hook cannot dispatch through.
     MissingSelector(String),
+    /// `MissingSelector` for the instance initializer: the reloaded root
+    /// class declares slots or `initExpr`s, so instantiating it runs
+    /// compiled initializer code -- which this image does not carry.
+    /// `run_own_initializer` panics on that invariant rather than failing,
+    /// and the class it panics for is the one the image's own source
+    /// declares, so only refusing here keeps a crafted image from aborting
+    /// the process at the first `X new`.
+    MissingInitializer,
     /// A compiled body installed where a body of another kind belongs, or
     /// named as a closure's body when it is not a block body. The kinds are
     /// not interchangeable: a block body runs in a `FrameKind::Closure`
@@ -137,6 +145,15 @@ pub enum DecodeError {
     /// its own body is lexically nested in -- the link every
     /// `LoadOuterLocal`/`StoreOuterLocal` bound rests on.
     CapturedFrameMismatch,
+    /// An object's identity hash is `u32::MAX`, so there is no hash a
+    /// loaded world could allocate *next*:
+    /// `Interpreter::advance_identity_hash_past` would have to compute
+    /// `u32::MAX + 1` (an overflow panic in this workspace's dev profile,
+    /// and a wrap to 0 -- colliding with the loaded objects it exists to
+    /// avoid -- in release), and even saturating it would only move the
+    /// overflow to `alloc_identity_hash`'s own `+= 1`. Refusing the image
+    /// is the only answer that neither panics nor collides.
+    IdentityHashExhausted,
 }
 
 impl std::fmt::Display for DecodeError {
@@ -172,6 +189,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::MissingSelector(s) => write!(
                 f,
                 "the reloaded source defines method `{s}`, which the image has no compiled code for"
+            ),
+            DecodeError::MissingInitializer => write!(
+                f,
+                "the reloaded source's root class needs an instance initializer, which the image has no compiled code for"
             ),
             DecodeError::WrongCodeKind { expected } => {
                 write!(f, "image code is not a {expected} body")
@@ -233,6 +254,11 @@ impl std::fmt::Display for DecodeError {
             DecodeError::CapturedFrameMismatch => write!(
                 f,
                 "a decoded closure's captured frame does not run the body its own body is nested in"
+            ),
+            DecodeError::IdentityHashExhausted => write!(
+                f,
+                "an image object's identity hash is {}, leaving no hash for a loaded world to allocate next",
+                u32::MAX
             ),
         }
     }
@@ -499,22 +525,35 @@ pub fn install_code_table(
     if let Some(selector) = missing.first() {
         return Err(DecodeError::MissingSelector((*selector).to_string()));
     }
-    if let Some(id) = table.initializer {
-        let code = code_at(table, id)?;
-        // The same reconciliation for the initializer, whose `num_args` is
-        // the class's factory parameter count (`compile_initializer`) and
-        // whose frame's `args` are the factory arguments `instantiate`
-        // checked against that same pattern.
-        check_code_arity(
-            &code,
-            CodeKind::Initializer,
-            "instance initializer".to_string(),
-            data.factory
-                .as_deref()
-                .map(instantiate::pattern_param_count)
-                .unwrap_or(0),
-        )?;
-        module.initializers.insert(class_key(root_class), code);
+    match table.initializer {
+        Some(id) => {
+            let code = code_at(table, id)?;
+            // The same reconciliation for the initializer, whose `num_args`
+            // is the class's factory parameter count
+            // (`compile_initializer`) and whose frame's `args` are the
+            // factory arguments `instantiate` checked against that same
+            // pattern.
+            check_code_arity(
+                &code,
+                CodeKind::Initializer,
+                "instance initializer".to_string(),
+                data.factory
+                    .as_deref()
+                    .map(instantiate::pattern_param_count)
+                    .unwrap_or(0),
+            )?;
+            module.initializers.insert(class_key(root_class), code);
+        }
+        // And the initializer's `MissingSelector`: a class with slots or
+        // `initExpr`s runs compiled initializer code on every `X new`, and
+        // `run_own_initializer` *panics* when the module has none. The
+        // reloaded source decides whether the class needs it, and the image
+        // decides whether it carries it -- two halves only this function
+        // sees, exactly as for the method table above.
+        None if instantiate::class_has_initializer_code(root_class) => {
+            return Err(DecodeError::MissingInitializer)
+        }
+        None => {}
     }
     Ok(module)
 }
@@ -720,13 +759,31 @@ fn own_registers(instr: &Instr) -> Vec<u16> {
     }
 }
 
+/// Exhaustive, like `own_registers` and for the same reason: a new
+/// jump-carrying `Instr` variant must fail to compile here rather than slip
+/// through a wildcard and reach `run_code`'s `pc` unchecked.
 fn jump_target(instr: &Instr) -> Option<u32> {
     match instr {
         Instr::Jump { target }
         | Instr::JumpIfNotBoolean { target, .. }
         | Instr::BranchIfFalse { target, .. }
         | Instr::BranchIfTrue { target, .. } => Some(*target),
-        _ => None,
+        Instr::LoadLiteral { .. }
+        | Instr::LoadSelf { .. }
+        | Instr::LoadBuiltinClass { .. }
+        | Instr::Move { .. }
+        | Instr::StoreLocal { .. }
+        | Instr::LoadOuterLocal { .. }
+        | Instr::StoreOuterLocal { .. }
+        | Instr::SendLexical { .. }
+        | Instr::SendPublic { .. }
+        | Instr::SendSuper { .. }
+        | Instr::MakeClosure { .. }
+        | Instr::MakeArray { .. }
+        | Instr::InitSlot { .. }
+        | Instr::Return { .. }
+        | Instr::ImplicitReturn { .. }
+        | Instr::NonLocalReturn { .. } => None,
     }
 }
 
@@ -1361,6 +1418,12 @@ pub fn decode_graph_section(
     for obj in &objects {
         let class = decode_class_tag(r, ctx)?;
         let identity_hash = r.read_u32()?;
+        // Checked here, the one place identity hashes are read: `load`
+        // hands the maximum straight to `advance_identity_hash_past`, which
+        // must be able to allocate past it.
+        if identity_hash == u32::MAX {
+            return Err(DecodeError::IdentityHashExhausted);
+        }
         max_identity_hash = max_identity_hash.max(identity_hash);
         let data = match r.read_u8()? {
             0 => ObjectData::Instance(decode_values(r, ctx, &tables)?),

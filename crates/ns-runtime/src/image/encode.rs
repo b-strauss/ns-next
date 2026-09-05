@@ -13,9 +13,16 @@ use crate::types::{
 };
 
 pub const MAGIC: &[u8; 4] = b"NSIM";
-/// Versions the whole layout *and* the compiler's codegen: any change to
-/// `Instr`, to what the compiler emits, or to any section below bumps it.
-/// A mismatch is refused on load, never migrated (Milestone 2 Non-Goals).
+/// Versions the whole layout *and* the compiler's codegen: from the first
+/// image any released build can write, any change to `Instr`, to what the
+/// compiler emits, or to any section of the layout bumps it. A mismatch is
+/// refused on load, never migrated (Milestone 2 Non-Goals).
+///
+/// Version 1 covers the layout as `image::snapshot` finally writes it,
+/// source and `SourceOrigin` sections included. Those two arrived after the
+/// constant did, but within this milestone: until `snapshot` existed no
+/// build wrote a whole image, so no reader can hold a version-1 image
+/// without them and there is nothing for a bump to distinguish.
 pub const FORMAT_VERSION: u32 = 1;
 
 #[derive(Default)]

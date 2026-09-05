@@ -545,7 +545,12 @@ pub(crate) fn pattern_param_count(pattern: &ast::MessagePattern) -> usize {
 
 /// Whether `class` declares any slot or `initExpr` at all -- `false` for
 /// every `BuiltinClass` and for a non-class object.
-fn class_has_initializer_code(class: &ClassRef) -> bool {
+///
+/// `pub(crate)` for `image::decode::install_code_table`, which must refuse
+/// an image that has no compiled initializer for a class that needs one
+/// rather than let `run_own_initializer` below panic on the invariant.
+/// One definition of "needs initializer code", not one per caller.
+pub(crate) fn class_has_initializer_code(class: &ClassRef) -> bool {
     let borrowed = class.borrow();
     match &borrowed.data {
         ObjectData::Class(data) => !(data.instance_slots.is_empty() && data.init_exprs.is_empty()),

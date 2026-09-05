@@ -91,14 +91,31 @@ impl Interpreter {
             .clone()
     }
 
+    /// Saturating, not wrapping and not panicking: identity hashes are not
+    /// required to be unique (`dispatch.rs`'s placeholder class objects
+    /// already share hash 0, and `hash` is the only thing that reads one --
+    /// object identity is `Rc` identity, never the hash), so a world that
+    /// exhausts the counter is better served by handing out a shared
+    /// `u32::MAX` than by aborting the process. Reachable in *one*
+    /// allocation once `image::load` may set the counter from a file:
+    /// `advance_identity_hash_past` puts it wherever the image's maximum
+    /// says, so the `+= 1` here is on an image-controlled path.
     pub fn alloc_identity_hash(&mut self) -> u32 {
         let h = self.next_identity_hash;
-        self.next_identity_hash += 1;
+        self.next_identity_hash = self.next_identity_hash.saturating_add(1);
         h
     }
 
     /// After `image::load`: never hand out an identity hash a loaded object
     /// already carries (spec: "Identity hashes").
+    ///
+    /// `max < u32::MAX` is the caller's guarantee, and an enforced one:
+    /// `image::decode` refuses an image carrying `u32::MAX` outright
+    /// (`DecodeError::IdentityHashExhausted`), because there is no counter
+    /// value past it. That refusal is what keeps `max + 1` here in range;
+    /// `alloc_identity_hash`'s own saturation is what keeps the *next*
+    /// allocation in range when the image's maximum is one below the
+    /// ceiling.
     pub(crate) fn advance_identity_hash_past(&mut self, max: u32) {
         if self.next_identity_hash <= max {
             self.next_identity_hash = max + 1;
