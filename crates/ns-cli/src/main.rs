@@ -40,6 +40,17 @@ enum Cmd {
         #[arg(long, value_enum, default_value_t = EngineArg::Bytecode)]
         engine: EngineArg,
     },
+    /// Compile one method (or, with --initializer, the root class's
+    /// instance initializer) and print its bytecode. Compile only: nothing
+    /// is instantiated or run.
+    Disasm {
+        file: PathBuf,
+        /// The method selector, e.g. `main:args:`.
+        selector: Option<String>,
+        /// Disassemble the root class's compiled instance initializer instead.
+        #[arg(long)]
+        initializer: bool,
+    },
 }
 
 /// `--engine`: which evaluator runs Newspeak-level code. `bytecode` is the
@@ -57,6 +68,11 @@ fn main() -> ExitCode {
         Cmd::Parse { file, ast } => cmd_parse(&file, ast),
         Cmd::ParseCorpus { dir, blacklist } => cmd_parse_corpus(&dir, blacklist.as_deref()),
         Cmd::Run { file, send, engine } => cmd_run(&file, &send, engine),
+        Cmd::Disasm {
+            file,
+            selector,
+            initializer,
+        } => cmd_disasm(&file, selector.as_deref(), initializer),
     }
 }
 
@@ -203,6 +219,54 @@ fn report_signal(signal: ns_runtime::Signal) -> ExitCode {
         }
     }
     ExitCode::FAILURE
+}
+
+/// `ns-next disasm`: bootstrap and load (so `compile_initializer` sees the
+/// loaded class's `slot_index`), then compile exactly one method or the
+/// initializer and print its bytecode listing. Never instantiates and
+/// never installs the bytecode engine -- compile only.
+fn cmd_disasm(file: &Path, selector: Option<&str>, initializer: bool) -> ExitCode {
+    let loaded = match load_source(file) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+    let bindings = loaded.resolved.bindings.clone();
+    let (_interp, class) = bootstrap_with_engine(&loaded, EngineArg::TreeWalk);
+    let (code, name) = match (selector, initializer) {
+        (None, true) => {
+            let class_name = match &class.borrow().data {
+                ns_runtime::ObjectData::Class(data) => data.name.to_string(),
+                _ => "?".to_string(),
+            };
+            (
+                ns_runtime::compiler::compile_initializer(&class, &bindings),
+                class_name,
+            )
+        }
+        (Some(selector), false) => {
+            let method = match &class.borrow().data {
+                ns_runtime::ObjectData::Class(data) => data
+                    .methods
+                    .get(&ns_runtime::Symbol::intern(selector))
+                    .cloned(),
+                _ => None,
+            };
+            let Some(method) = method else {
+                eprintln!("error: no method `{selector}` found on the root class");
+                return ExitCode::FAILURE;
+            };
+            (
+                ns_runtime::compiler::compile_method(&method, &bindings),
+                selector.to_string(),
+            )
+        }
+        _ => {
+            eprintln!("error: disasm takes exactly one of <selector> or --initializer");
+            return ExitCode::FAILURE;
+        }
+    };
+    print!("{}", ns_runtime::bytecode::disassemble(&code, &name));
+    ExitCode::SUCCESS
 }
 
 fn cmd_parse_corpus(dir: &Path, blacklist: Option<&Path>) -> ExitCode {

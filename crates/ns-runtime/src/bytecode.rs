@@ -218,6 +218,138 @@ pub fn class_key(class: &ClassRef) -> usize {
     Rc::as_ptr(class) as *const () as usize
 }
 
+/// A human-readable listing of `code` for `ns-next disasm`. Nested block
+/// code is printed indented under its `MakeClosure`. Pure formatting.
+pub fn disassemble(code: &CompiledCode, name: &str) -> String {
+    let mut out = String::new();
+    write_code(&mut out, code, name, 0);
+    out
+}
+
+fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize) {
+    use std::fmt::Write;
+    let pad = " ".repeat(indent);
+    let kind = match code.kind {
+        CodeKind::Method => "method",
+        CodeKind::Block => "block",
+        CodeKind::Initializer => "initializer",
+    };
+    writeln!(
+        out,
+        "{pad}{kind} {name} (args {}, registers {})",
+        code.num_args, code.num_registers
+    )
+    .expect("writing to a String cannot fail");
+    for (idx, instr) in code.instrs.iter().enumerate() {
+        let stmt = code
+            .statement_pc
+            .iter()
+            .find(|(_, range)| range.contains(&idx))
+            .map(|(s, _)| format!("stmt {s}"))
+            .unwrap_or_else(|| "-".to_string());
+        writeln!(out, "{pad}{idx:4}  {stmt:>7}  {}", format_instr(instr))
+            .expect("writing to a String cannot fail");
+        if let Instr::MakeClosure { code: block, .. } = instr {
+            write_code(out, block, "block", indent + 8);
+        }
+    }
+}
+
+fn regs(regs: &[u16]) -> String {
+    regs.iter()
+        .map(|r| format!("r{r}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_instr(instr: &Instr) -> String {
+    match instr {
+        Instr::LoadLiteral { dst, literal } => {
+            format!("LoadLiteral r{dst}, {}", format_literal(literal))
+        }
+        Instr::LoadSelf { dst } => format!("LoadSelf r{dst}"),
+        Instr::LoadBuiltinClass { dst, kind } => format!("LoadBuiltinClass r{dst}, {kind:?}"),
+        Instr::Move { dst, src } => format!("Move r{dst}, r{src}"),
+        Instr::StoreLocal { src, slot } => format!("StoreLocal r{slot} <- r{src}"),
+        Instr::LoadOuterLocal { dst, depth, index } => {
+            format!("LoadOuterLocal r{dst}, depth {depth} index {index}")
+        }
+        Instr::StoreOuterLocal { src, depth, index } => {
+            format!("StoreOuterLocal depth {depth} index {index} <- r{src}")
+        }
+        Instr::SendLexical {
+            depth,
+            selector,
+            arg_regs,
+            dst,
+            call_site,
+        } => format!(
+            "SendLexical r{dst} <- depth {depth} #{selector} ({}) @{}",
+            regs(arg_regs),
+            call_site.call_site_id
+        ),
+        Instr::SendPublic {
+            selector,
+            receiver_reg,
+            arg_regs,
+            dst,
+            call_site,
+        } => format!(
+            "SendPublic r{dst} <- r{receiver_reg} #{selector} ({}) @{}",
+            regs(arg_regs),
+            call_site.call_site_id
+        ),
+        Instr::SendSuper {
+            selector,
+            arg_regs,
+            dst,
+            call_site,
+        } => format!(
+            "SendSuper r{dst} <- #{selector} ({}) @{}",
+            regs(arg_regs),
+            call_site.call_site_id
+        ),
+        Instr::MakeClosure { dst, params, .. } => format!(
+            "MakeClosure r{dst}, [{}] ->",
+            params
+                .iter()
+                .map(|p| format!(":{p}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        Instr::MakeArray { dst, elem_regs } => format!("MakeArray r{dst}, ({})", regs(elem_regs)),
+        Instr::InitSlot { src, field_index } => format!("InitSlot field {field_index} <- r{src}"),
+        Instr::Return { reg } => format!("Return r{reg}"),
+        Instr::ImplicitReturn { reg } => format!("ImplicitReturn r{reg}"),
+        Instr::NonLocalReturn { reg } => format!("NonLocalReturn r{reg}"),
+        Instr::Jump { target } => format!("Jump -> {target}"),
+        Instr::JumpIfNotBoolean { reg, target } => format!("JumpIfNotBoolean r{reg} -> {target}"),
+        Instr::BranchIfFalse { reg, target } => format!("BranchIfFalse r{reg} -> {target}"),
+        Instr::BranchIfTrue { reg, target } => format!("BranchIfTrue r{reg} -> {target}"),
+    }
+}
+
+fn format_literal(literal: &Literal) -> String {
+    match literal {
+        Literal::Nil => "nil".to_string(),
+        Literal::Bool(b) => b.to_string(),
+        Literal::SmallInt(n) => n.to_string(),
+        Literal::Float(f) => format!("{f:?}"),
+        Literal::Str(s) => format!("'{s}'"),
+        Literal::Sym(s) => format!("#{s}"),
+        Literal::Char(c) => format!("\"{c}\""),
+        Literal::Array(elements) => format!(
+            "#({})",
+            elements
+                .iter()
+                .map(format_literal)
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        Literal::MalformedInt(text) => format!("malformed-int '{text}'"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +432,91 @@ mod tests {
         let other = Rc::new(module.root_class.instance_side.methods[0].clone());
         assert_eq!(method_key(&method), method_key(&same));
         assert_ne!(method_key(&method), method_key(&other));
+    }
+
+    #[test]
+    fn disassemble_lists_instructions_with_statement_labels_and_nested_blocks() {
+        let block = Rc::new(CompiledCode {
+            kind: CodeKind::Block,
+            instrs: vec![
+                Instr::LoadOuterLocal {
+                    dst: 0,
+                    depth: 1,
+                    index: 0,
+                },
+                Instr::NonLocalReturn { reg: 0 },
+            ],
+            num_args: 0,
+            num_registers: 1,
+            statement_pc: vec![(0, 0..2)],
+            call_sites: vec![],
+            source: Span::new(0, 5),
+        });
+        let code = CompiledCode {
+            kind: CodeKind::Method,
+            instrs: vec![
+                Instr::MakeClosure {
+                    dst: 1,
+                    params: Rc::new(vec![]),
+                    code: block,
+                },
+                Instr::SendPublic {
+                    selector: Symbol::intern("value"),
+                    receiver_reg: 1,
+                    arg_regs: vec![],
+                    dst: 2,
+                    call_site: CallSite { call_site_id: 1 },
+                },
+                Instr::LoadSelf { dst: 3 },
+                Instr::ImplicitReturn { reg: 3 },
+            ],
+            num_args: 1,
+            num_registers: 4,
+            statement_pc: vec![(0, 0..2)],
+            call_sites: vec![CallSite { call_site_id: 1 }],
+            source: Span::new(0, 10),
+        };
+        let text = disassemble(&code, "foo:");
+        let expected = "\
+method foo: (args 1, registers 4)
+   0   stmt 0  MakeClosure r1, [] ->
+        block block (args 0, registers 1)
+           0   stmt 0  LoadOuterLocal r0, depth 1 index 0
+           1   stmt 0  NonLocalReturn r0
+   1   stmt 0  SendPublic r2 <- r1 #value () @1
+   2        -  LoadSelf r3
+   3        -  ImplicitReturn r3
+";
+        assert_eq!(text, expected);
+    }
+
+    #[test]
+    fn format_literal_covers_every_variant() {
+        let lits = vec![
+            Literal::Nil,
+            Literal::Bool(true),
+            Literal::SmallInt(-3),
+            Literal::Float(2.5),
+            Literal::Str("s".to_string()),
+            Literal::Sym(Symbol::intern("sym")),
+            Literal::Char('c'),
+            Literal::Array(vec![Literal::SmallInt(1), Literal::Nil]),
+            Literal::MalformedInt("16r1.8".to_string()),
+        ];
+        let rendered: Vec<String> = lits.iter().map(format_literal).collect();
+        assert_eq!(
+            rendered,
+            vec![
+                "nil",
+                "true",
+                "-3",
+                "2.5",
+                "'s'",
+                "#sym",
+                "\"c\"",
+                "#(1 nil)",
+                "malformed-int '16r1.8'"
+            ]
+        );
     }
 }

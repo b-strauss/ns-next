@@ -105,8 +105,10 @@ fn every_tests_fixtures_ns_file_behaves_identically_under_both_engines() {
         checked += 1;
     }
     assert!(
-        checked >= 4,
-        "expected the 3 Milestone 1 fixtures plus instance_init.ns"
+        checked >= 6,
+        "expected all 6 tests-fixtures/*.ns fixtures (arithmetic, \
+         blocks_and_return, control_flow_fallback, hello, instance_init, \
+         while_loop)"
     );
 }
 

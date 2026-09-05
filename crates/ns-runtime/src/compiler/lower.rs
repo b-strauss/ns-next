@@ -358,6 +358,16 @@ impl<'a> Lowerer<'a> {
     /// One `Send*` instruction's `CallSite`: the instruction's own
     /// about-to-be-pushed index, always in sync with `instrs`.
     fn next_call_site(&self) -> CallSite {
+        // `call_site_id` is `u16` -- spec-mandated, Milestone 3's
+        // inline-cache slot -- so a body of more than 65535 instructions
+        // would silently alias two call sites onto the same id. Inlining
+        // raises instructions-per-body, so this is no longer purely
+        // theoretical; make the ceiling an explicit assertion rather than a
+        // silent truncation.
+        debug_assert!(
+            self.instrs.len() < u16::MAX as usize,
+            "internal: more than 65535 instructions in one body -- call_site_id (u16) would alias"
+        );
         CallSite {
             call_site_id: self.instrs.len() as u16,
         }
@@ -548,6 +558,14 @@ impl<'a> Lowerer<'a> {
     /// `on_false`, anything else runs `on_fallback` (a real send). Each
     /// returns the register holding its value; the chosen one is `Move`d into
     /// `dst`.
+    ///
+    /// The three arms are mutually exclusive -- at most one of them ever
+    /// executes for a given evaluation -- so the scratch allocator is reset
+    /// to its pre-arm mark before each one, letting arms reuse the same
+    /// registers instead of stacking their high-water marks. `guard_reg` and
+    /// `dst` (and any already-evaluated sibling register, e.g. another
+    /// argument of the enclosing send) are all allocated before `mark` is
+    /// taken, so the reset can never touch a register that outlives its arm.
     fn emit_guarded_branch(
         &mut self,
         guard_reg: u16,
@@ -556,6 +574,7 @@ impl<'a> Lowerer<'a> {
         on_false: impl FnOnce(&mut Self) -> u16,
         on_fallback: impl FnOnce(&mut Self) -> u16,
     ) {
+        let mark = self.next_scratch;
         let not_bool_jump = self.emit(Instr::JumpIfNotBoolean {
             reg: guard_reg,
             target: 0,
@@ -564,6 +583,7 @@ impl<'a> Lowerer<'a> {
             reg: guard_reg,
             target: 0,
         });
+        self.next_scratch = mark;
         let true_result = on_true(self);
         self.emit(Instr::Move {
             dst,
@@ -572,6 +592,7 @@ impl<'a> Lowerer<'a> {
         let after_true_jump = self.emit(Instr::Jump { target: 0 });
         let false_label = self.here();
         self.patch_target(false_jump, false_label);
+        self.next_scratch = mark;
         let false_result = on_false(self);
         self.emit(Instr::Move {
             dst,
@@ -580,6 +601,7 @@ impl<'a> Lowerer<'a> {
         let after_false_jump = self.emit(Instr::Jump { target: 0 });
         let fallback_label = self.here();
         self.patch_target(not_bool_jump, fallback_label);
+        self.next_scratch = mark;
         let fallback_result = on_fallback(self);
         self.emit(Instr::Move {
             dst,
@@ -588,6 +610,7 @@ impl<'a> Lowerer<'a> {
         let end_label = self.here();
         self.patch_target(after_true_jump, end_label);
         self.patch_target(after_false_jump, end_label);
+        self.next_scratch = mark;
     }
 
     /// `ifTrue:`/`ifFalse:`/`ifTrue:ifFalse:`/`ifFalse:ifTrue:`: an absent
@@ -679,9 +702,15 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn finish(self, source: Span) -> CompiledCode {
         // Control-flow inlining is the only source of jumps, and every one of
         // its labels is a `here()` that `finish_body`'s terminator guarantees
-        // is a real instruction index. An out-of-range (or never-patched
-        // dangling) target is a compiler bug, not a program error, so it is a
-        // `debug_assert!` -- checked on every debug test run, free in release.
+        // is a real instruction index, so a target must be in range. This
+        // check does *not* catch a never-patched target: an unpatched
+        // `target` field stays `0`, which is always in range and would pass
+        // silently here. Completeness against that failure mode instead
+        // comes from each emitter's own emit/patch pairing (every `emit(...
+        // { target: 0 })` in this module is paired with a `patch_target`
+        // call before `finish` runs) -- an out-of-range target is a compiler
+        // bug, not a program error, so it is a `debug_assert!` -- checked on
+        // every debug test run, free in release.
         debug_assert!(
             self.instrs
                 .iter()
@@ -1241,6 +1270,29 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_inlined_block_yields_nil() {
+        // No existing test lowers a literally empty inlined block --
+        // `lower_inline_block_body`'s "no statements" path (`result` stays
+        // `None`, falling back to `emit_nil`) was previously exercised only
+        // indirectly.
+        let code = compile_foo("x ifTrue: [] ifFalse: [2]");
+        assert!(has(&code, |i| matches!(
+            i,
+            Instr::LoadLiteral {
+                literal: BcLiteral::Nil,
+                ..
+            }
+        )));
+        assert!(has(&code, |i| matches!(
+            i,
+            Instr::LoadLiteral {
+                literal: BcLiteral::SmallInt(2),
+                ..
+            }
+        )));
+    }
+
+    #[test]
     fn a_dynamic_array_literal_lowers_to_make_array() {
         let (method, bindings) = resolve_method(
             "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^{ 1. 2. 3 } )\n) : ()",
@@ -1537,6 +1589,20 @@ mod tests {
             i,
             Instr::SendPublic { selector, .. } if selector.as_str() == "or:"
         )));
+    }
+
+    #[test]
+    fn mutually_exclusive_branch_arms_reuse_registers_instead_of_stacking() {
+        // Each arm needs several live registers on its own (a chain of two
+        // binary sends holding both operands alive), but the arms never run
+        // together -- register count must stay bounded by the costliest
+        // single arm, not grow with the sum of all three arms' code size.
+        // Before the `emit_guarded_branch` scratch-allocator reset, this
+        // body compiled to 15 registers; the arms now share scratch space
+        // and it compiles to 7 (`self` r0, `x` r1, guard+dst r2-r3, and the
+        // costliest arm's own 3 scratch registers r4-r6).
+        let code = compile_foo("x ifTrue: [(x + 1) + (x + 2)] ifFalse: [(x + 3) + (x + 4)]");
+        assert_eq!(code.num_registers, 7, "{:#?}", code.instrs);
     }
 
     #[test]

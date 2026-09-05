@@ -41,6 +41,18 @@ pub(crate) fn recognize(send: &ast::Send) -> Option<InlineForm<'_>> {
         return None;
     };
     let args = &send.message.args;
+    // The resolver/parser guarantee `args.len()` matches the selector's own
+    // colon count; each arm below indexes `args` at a fixed position with
+    // the arity only implicit in the selector string it matched on. Name
+    // the invariant so a mismatch surfaces as this assertion, not a bare
+    // slice-index panic.
+    let expected_arity = selector.matches(':').count();
+    debug_assert_eq!(
+        args.len(),
+        expected_arity,
+        "internal: keyword selector `{selector}` expects {expected_arity} argument(s), got {}",
+        args.len()
+    );
     match selector.as_str() {
         "ifTrue:ifFalse:" => Some(InlineForm::IfTrueIfFalse(
             as_inlinable_block(&args[0])?,
