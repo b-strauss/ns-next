@@ -91,13 +91,24 @@ pub enum BuiltinClass {
     Platform,
 }
 
+/// A closure's body: the AST the tree-walker created it from, or the
+/// compiled code the bytecode VM created it from. `eval::invoke_closure`
+/// dispatches on this, so a closure always runs with the engine that
+/// created it -- the invariant "under `--engine=bytecode` no Newspeak-level
+/// code is tree-walked" is enforced by the type, not by a runtime flag.
+#[derive(Debug, Clone)]
+pub enum ClosureBody {
+    Ast(Rc<ast::CodeBody>),
+    Compiled(Rc<crate::bytecode::CompiledCode>),
+}
+
 #[derive(Debug, Clone)]
 pub struct ClosureData {
     pub params: Vec<Symbol>,
-    pub body: Rc<ast::CodeBody>,
+    pub body: ClosureBody,
     pub captured_frame: FrameRef,
-    /// The lexically enclosing *method* activation -- see the design note
-    /// above on why this is a `FrameRef`, not an `ObjRef`.
+    /// The lexically enclosing *method* (or initializer) activation -- see
+    /// the design note above on why this is a `FrameRef`, not an `ObjRef`.
     pub home: FrameRef,
     /// The resolver's bindings map the block literal's body was originally
     /// resolved under. Any `LexicalSend`, `SuperSend`, or local-variable
@@ -149,7 +160,16 @@ pub type FrameRef = Rc<RefCell<Frame>>;
 pub enum FrameKind {
     Method(Rc<ast::MethodDecl>),
     Closure(Rc<ClosureData>),
+    /// A top-of-chain activation with no method or class of its own. Not
+    /// built by anything in Milestone 2 (an instance initializer is
+    /// `Initializer`); kept for the image format's frame table and a later
+    /// REPL/top-level activation.
     TopLevel,
+    /// An instance-initializer activation (Class Instantiation step 2)
+    /// running `class`'s slot initializers and `initExprs` -- names the code
+    /// it executes so a bytecode `pc` is interpretable through the
+    /// initializer cache.
+    Initializer(ClassRef),
 }
 
 #[derive(Debug)]
@@ -157,13 +177,18 @@ pub struct Frame {
     pub receiver: Value,
     pub args: Vec<Value>,
     /// Indexable by resolver slot index, growable (liveness spec's
-    /// reified-activation constraint). `pc` is a statement index into the
-    /// enclosing `CodeBody.stmts`, not a byte/bytecode offset (Milestone 1
-    /// has no bytecode).
+    /// reified-activation constraint). `pc` means two different things
+    /// depending on which engine built this frame's code: under
+    /// `Engine::TreeWalk` it is a statement index into the enclosing
+    /// `CodeBody.stmts`; under `Engine::Bytecode` (`vm::run_code`) it is an
+    /// instruction index into the enclosing `CompiledCode.instrs`. Which one
+    /// applies is determined by the engine active when the frame ran, not by
+    /// anything stored on the frame itself.
     pub temps: Vec<Value>,
     pub pc: usize,
     pub sender: Option<FrameRef>,
-    /// Set only for `FrameKind::Closure` -- the enclosing method activation.
+    /// Set only for `FrameKind::Closure` -- the enclosing method or
+    /// initializer activation.
     pub home: Option<FrameRef>,
     /// `None` only for `FrameKind::TopLevel` (`newspeak-spec.pdf` §3.6: a
     /// top-level activation's current class is `nil`).

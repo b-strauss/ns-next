@@ -70,16 +70,40 @@ fn eval_ident(
             if let Some(kind) = super::instantiate::builtin_kind_from_name(&id.name) {
                 return Ok(Value::Obj(interp.builtin_class(kind)));
             }
-            Err(Signal::Error(NewspeakError {
-                selector: Symbol::intern(&id.name),
-                receiver: frame.borrow().receiver.clone(),
-                message: format!("internal: unresolved identifier `{}`", id.name),
-            }))
+            let receiver = frame.borrow().receiver.clone();
+            Err(unresolved_identifier_error(&id.name, receiver))
         }
     }
 }
 
-fn read_local(frame: &FrameRef, index: u16) -> Value {
+/// The program-level error a bare identifier raises when it has no binding
+/// and names no builtin class -- in Milestone 1 and 2 reachable only for a
+/// bare `super`, which `resolver::resolve_ident` deliberately leaves
+/// unbound and which the lexer deliberately does not reserve.
+///
+/// Shared with the bytecode engine (`bytecode::Literal::UnresolvedIdent`,
+/// raised by `vm::make_value`) so the two engines cannot drift apart in
+/// wording: the tree-walker is the differential oracle down to the byte.
+pub(crate) fn unresolved_identifier_error(name: &str, receiver: Value) -> Signal {
+    Signal::Error(NewspeakError {
+        selector: Symbol::intern(name),
+        receiver,
+        message: format!("internal: unresolved identifier `{name}`"),
+    })
+}
+
+/// The error a lexer-accepted integer literal that `parse_int_literal`
+/// rejects raises when it is *evaluated*. Shared with the bytecode engine
+/// (`bytecode::Literal::MalformedInt`) for the same reason.
+pub(crate) fn malformed_int_error(message: String) -> Signal {
+    Signal::Error(NewspeakError {
+        selector: Symbol::intern("parse"),
+        receiver: Value::Nil,
+        message,
+    })
+}
+
+pub(crate) fn read_local(frame: &FrameRef, index: u16) -> Value {
     let borrowed = frame.borrow();
     let i = index as usize;
     if i < borrowed.args.len() {
@@ -89,7 +113,7 @@ fn read_local(frame: &FrameRef, index: u16) -> Value {
     }
 }
 
-fn write_local(frame: &FrameRef, index: u16, value: Value) {
+pub(crate) fn write_local(frame: &FrameRef, index: u16, value: Value) {
     let mut borrowed = frame.borrow_mut();
     let i = index as usize;
     if i < borrowed.args.len() {
@@ -100,7 +124,7 @@ fn write_local(frame: &FrameRef, index: u16, value: Value) {
     }
 }
 
-fn frame_at_depth(frame: &FrameRef, depth: u16) -> FrameRef {
+pub(crate) fn frame_at_depth(frame: &FrameRef, depth: u16) -> FrameRef {
     let mut current = frame.clone();
     for _ in 0..depth {
         let next = match &current.borrow().kind {
@@ -110,6 +134,34 @@ fn frame_at_depth(frame: &FrameRef, depth: u16) -> FrameRef {
         current = next;
     }
     current
+}
+
+/// The `home` a closure created in `frame` gets: a method, top-level, or
+/// initializer activation is its own home; a closure activation's home is
+/// its own `home`. Shared by the tree-walker's `eval_block_literal` and
+/// the VM's `MakeClosure`.
+pub(crate) fn home_of(frame: &FrameRef) -> FrameRef {
+    match &frame.borrow().kind {
+        FrameKind::Method(_) | FrameKind::TopLevel | FrameKind::Initializer(_) => frame.clone(),
+        FrameKind::Closure(closure) => closure.home.clone(),
+    }
+}
+
+/// Writes `value` into instance field `index` on `instance`'s
+/// `ObjectData::Instance` fields -- silently skipped when `instance` is not
+/// an object, or is an object with some other `ObjectData` shape, or
+/// `index` is out of range. Shared by `instantiate::run_own_slots` (the
+/// tree-walker's per-slot-initializer write) and `vm::run_code`'s
+/// `Instr::InitSlot` arm (the bytecode engine's equivalent), instead of the
+/// same four-line downcast-bounds-check-assign shape living in both places.
+pub(crate) fn store_instance_field(instance: &Value, index: usize, value: Value) {
+    if let Value::Obj(obj) = instance {
+        if let ObjectData::Instance(fields) = &mut obj.borrow_mut().data {
+            if index < fields.len() {
+                fields[index] = value;
+            }
+        }
+    }
 }
 
 fn read_outer_local(frame: &FrameRef, depth: u16, index: u16) -> Value {
@@ -137,7 +189,7 @@ fn write_outer_local(frame: &FrameRef, depth: u16, index: u16, value: Value) {
 ///
 /// Returns the `NewspeakError` message on failure (never panics -- this is a
 /// Newspeak-program-input path).
-fn parse_int_literal(text: &str) -> Result<i64, String> {
+pub(crate) fn parse_int_literal(text: &str) -> Result<i64, String> {
     let Some((radix_part, digits)) = text.split_once('r') else {
         return text
             .parse::<i64>()
@@ -177,13 +229,7 @@ fn parse_int_literal(text: &str) -> Result<i64, String> {
 fn eval_literal(interp: &mut Interpreter, lit: &ast::Literal) -> EvalResult {
     Ok(match lit {
         ast::Literal::Int { text, .. } => {
-            let n = parse_int_literal(text).map_err(|message| {
-                Signal::Error(NewspeakError {
-                    selector: Symbol::intern("parse"),
-                    receiver: Value::Nil,
-                    message,
-                })
-            })?;
+            let n = parse_int_literal(text).map_err(malformed_int_error)?;
             Value::SmallInt(n)
         }
         ast::Literal::Float { text, .. } => {
@@ -285,7 +331,7 @@ fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
 /// dispatch privately (direct, non-virtual) if the target is `private` at
 /// depth `k`, otherwise virtually via `lookup_protected` on `o`'s actual
 /// class.
-fn dispatch_lexical_send(
+pub(crate) fn dispatch_lexical_send(
     interp: &mut Interpreter,
     frame: &FrameRef,
     depth: u16,
@@ -369,7 +415,7 @@ fn dispatch_lexical_send(
 /// new activation's `current_class` is `definingClass(selector, superclass)`
 /// -- `invoke_method`'s `defining_class` argument (from `lookup_defined_for`)
 /// already carries that.
-fn dispatch_super_send(
+pub(crate) fn dispatch_super_send(
     interp: &mut Interpreter,
     frame: &FrameRef,
     selector: Symbol,
@@ -492,17 +538,14 @@ fn eval_block_literal(
     frame: &FrameRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let home = match &frame.borrow().kind {
-        FrameKind::Method(_) | FrameKind::TopLevel => frame.clone(),
-        FrameKind::Closure(closure) => closure.home.clone(),
-    };
+    let home = home_of(frame);
     let closure = Rc::new(ClosureData {
         params: block
             .params
             .iter()
             .map(|p| Symbol::intern(&p.name))
             .collect(),
-        body: Rc::new(block.body.clone()),
+        body: ClosureBody::Ast(Rc::new(block.body.clone())),
         captured_frame: frame.clone(),
         home,
         bindings: bindings.clone(),
@@ -553,10 +596,17 @@ pub fn invoke_closure(
     }
     let receiver = closure.captured_frame.borrow().receiver.clone();
     let current_class = closure.captured_frame.borrow().current_class.clone();
+    // Hook 2 (spec: "`vm.rs` and the engine hook"): the frame is built the
+    // same way for both engines; only the body's evaluation differs, and
+    // which engine that is was decided when the closure was created.
+    let temp_count = match &closure.body {
+        ClosureBody::Ast(body) => body.temps.len(),
+        ClosureBody::Compiled(code) => (code.num_registers - code.num_args) as usize,
+    };
     let frame = Rc::new(RefCell::new(Frame {
         receiver,
         args,
-        temps: vec![Value::Nil; closure.body.temps.len()],
+        temps: vec![Value::Nil; temp_count],
         pc: 0,
         sender,
         home: Some(closure.home.clone()),
@@ -564,18 +614,23 @@ pub fn invoke_closure(
         kind: FrameKind::Closure(closure.clone()),
         uncontinuable: false,
     }));
-    let mut last = Value::Nil;
-    for (i, stmt) in closure.body.stmts.iter().enumerate() {
-        frame.borrow_mut().pc = i;
-        match stmt {
-            ast::Stmt::Expr(e) => last = eval_expr(interp, e, &frame, bindings)?,
-            ast::Stmt::Return(e) => {
-                let value = eval_expr(interp, e, &frame, bindings)?;
-                return Err(super::Interpreter::raise_return_pub(interp, &frame, value));
+    match &closure.body {
+        ClosureBody::Compiled(code) => crate::vm::run_code(interp, &frame, code, bindings),
+        ClosureBody::Ast(body) => {
+            let mut last = Value::Nil;
+            for (i, stmt) in body.stmts.iter().enumerate() {
+                frame.borrow_mut().pc = i;
+                match stmt {
+                    ast::Stmt::Expr(e) => last = eval_expr(interp, e, &frame, bindings)?,
+                    ast::Stmt::Return(e) => {
+                        let value = eval_expr(interp, e, &frame, bindings)?;
+                        return Err(super::Interpreter::raise_return_pub(interp, &frame, value));
+                    }
+                }
             }
+            Ok(last)
         }
     }
-    Ok(last)
 }
 
 #[cfg(test)]

@@ -13,6 +13,7 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
+use crate::bytecode::{method_key, CompiledModule};
 use crate::dispatch::{self, Lookup};
 use crate::types::*;
 use crate::Symbol;
@@ -24,10 +25,20 @@ pub enum Signal {
 
 pub type EvalResult = Result<Value, Signal>;
 
+/// Which engine evaluates method bodies, block bodies, and instance
+/// initializers. Everything else -- dispatch, `doesNotUnderstand:`, native
+/// dispatch, instantiation, frame construction -- is shared. See the M2
+/// spec's "`vm.rs` and the engine hook".
+pub enum Engine {
+    TreeWalk,
+    Bytecode(CompiledModule),
+}
+
 pub struct Interpreter {
     next_identity_hash: u32,
     builtin_classes: Option<HashMap<BuiltinClass, ClassRef>>,
     platform_singleton: Option<Value>,
+    engine: Engine,
 }
 
 impl Default for Interpreter {
@@ -42,6 +53,7 @@ impl Interpreter {
             next_identity_hash: 1,
             builtin_classes: None,
             platform_singleton: None,
+            engine: Engine::TreeWalk,
         }
     }
 
@@ -50,9 +62,24 @@ impl Interpreter {
             next_identity_hash: 1,
             builtin_classes: None,
             platform_singleton: None,
+            engine: Engine::TreeWalk,
         };
         interp.builtin_classes = Some(build_builtin_classes(&mut interp));
         interp
+    }
+
+    /// Switches engines. Call after `load_module` and `compile_module`; the
+    /// default is `TreeWalk`, so every Milestone 1 caller keeps its
+    /// behavior.
+    pub fn set_engine(&mut self, engine: Engine) {
+        self.engine = engine;
+    }
+
+    pub fn compiled_module(&self) -> Option<&CompiledModule> {
+        match &self.engine {
+            Engine::Bytecode(module) => Some(module),
+            Engine::TreeWalk => None,
+        }
     }
 
     pub fn builtin_class(&self, kind: BuiltinClass) -> ClassRef {
@@ -64,10 +91,35 @@ impl Interpreter {
             .clone()
     }
 
+    /// Saturating, not wrapping and not panicking: identity hashes are not
+    /// required to be unique (`dispatch.rs`'s placeholder class objects
+    /// already share hash 0, and `hash` is the only thing that reads one --
+    /// object identity is `Rc` identity, never the hash), so a world that
+    /// exhausts the counter is better served by handing out a shared
+    /// `u32::MAX` than by aborting the process. Reachable in *one*
+    /// allocation once `image::load` may set the counter from a file:
+    /// `advance_identity_hash_past` puts it wherever the image's maximum
+    /// says, so the `+= 1` here is on an image-controlled path.
     pub fn alloc_identity_hash(&mut self) -> u32 {
         let h = self.next_identity_hash;
-        self.next_identity_hash += 1;
+        self.next_identity_hash = self.next_identity_hash.saturating_add(1);
         h
+    }
+
+    /// After `image::load`: never hand out an identity hash a loaded object
+    /// already carries (spec: "Identity hashes").
+    ///
+    /// `max < u32::MAX` is the caller's guarantee, and an enforced one:
+    /// `image::decode` refuses an image carrying `u32::MAX` outright
+    /// (`DecodeError::IdentityHashExhausted`), because there is no counter
+    /// value past it. That refusal is what keeps `max + 1` here in range;
+    /// `alloc_identity_hash`'s own saturation is what keeps the *next*
+    /// allocation in range when the image's maximum is one below the
+    /// ceiling.
+    pub(crate) fn advance_identity_hash_past(&mut self, max: u32) {
+        if self.next_identity_hash <= max {
+            self.next_identity_hash = max + 1;
+        }
     }
 
     /// An ordinary (explicit-receiver) send: `newspeak-spec.pdf` §5.5.
@@ -276,7 +328,25 @@ impl Interpreter {
         bindings: Rc<HashMap<Span, Binding>>,
         sender: Option<FrameRef>,
     ) -> EvalResult {
-        let temp_count = method.body.temps.len();
+        // Hook 1 (spec: "`vm.rs` and the engine hook"): the frame, the
+        // `uncontinuable` marking, and the `Signal::Return` catch are
+        // shared; only the body's evaluation differs.
+        let compiled = match &self.engine {
+            Engine::TreeWalk => None,
+            Engine::Bytecode(module) => Some(
+                module
+                    .methods
+                    .get(&method_key(&method))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        panic!("internal: dispatched method has no compiled form (compile_module coverage gap)")
+                    }),
+            ),
+        };
+        let temp_count = match &compiled {
+            Some(code) => (code.num_registers - code.num_args) as usize,
+            None => method.body.temps.len(),
+        };
         let frame = Rc::new(RefCell::new(Frame {
             receiver,
             args,
@@ -288,8 +358,10 @@ impl Interpreter {
             kind: FrameKind::Method(method.clone()),
             uncontinuable: false,
         }));
-        let stmts = &method.body.stmts;
-        let result = self.run_statements(stmts, &frame, &bindings);
+        let result = match &compiled {
+            Some(code) => crate::vm::run_code(self, &frame, code, &bindings),
+            None => self.run_statements(&method.body.stmts, &frame, &bindings),
+        };
         frame.borrow_mut().uncontinuable = true;
         match result {
             Ok(value) => Ok(value),
@@ -330,7 +402,7 @@ impl Interpreter {
 
     fn raise_return(&self, frame: &FrameRef, value: Value) -> Signal {
         let target = match &frame.borrow().kind {
-            FrameKind::Method(_) | FrameKind::TopLevel => frame.clone(),
+            FrameKind::Method(_) | FrameKind::TopLevel | FrameKind::Initializer(_) => frame.clone(),
             FrameKind::Closure(closure) => closure.home.clone(),
         };
         if target.borrow().uncontinuable {

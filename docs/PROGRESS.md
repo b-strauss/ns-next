@@ -11,7 +11,7 @@ milestone.
 |---|---|---|---|---|
 | M1 — Frontend | Complete | 2026-09-01 | [runtime-design](superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md) | [frontend](superpowers/plans/2026-09-01-2308-ns-next-frontend.md) |
 | M1 — Runtime | Complete | 2026-09-04 | [runtime-design](superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md), [liveness/VM constraints](superpowers/specs/2026-09-04-1153-ns-next-liveness-images-vm-design.md) | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
-| M2 — Bytecode + VM | Plan written, implementation pending | — | [bytecode-vm-design](superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md) | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
+| M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm-design](superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md) | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Inline caches + GC | Not started | — | — | — |
 | M4–M5 — JIT | Not started | — | — | — |
 
@@ -32,30 +32,32 @@ heap-reachable `Frame` activations, class instantiation per the
 deferred-superclass-message model, a small Rust-native core library, and
 the `ns-next run` CLI command. 57 commits, all tests green.
 
-## M2 — Bytecode + VM (plan written, implementation pending)
+## M2 — Bytecode + VM (complete, 2026-09-05)
 
 Replaces the M1 tree-walker with a register-based bytecode compiler and
-VM, keeping the M1 tree-walker as a permanent `--engine=tree-walk`
-differential-testing oracle. Required by
-`2026-09-04-1153-ns-next-liveness-images-vm-design.md`: a safepoint
-abstract-state map, a statement→PC table per method, architecture-neutral
-versioned bytecode, a defined and versioned image serialization format
-(bootstrap from source, `ns-next snapshot`/`load`), and stable call-site
-identity (with a reserved, inert inline-cache slot per send for M3).
-Adds baseline-compiler control-flow inlining (`ifTrue:ifFalse:`,
-`whileTrue:`, etc., guarded, with a correctness-preserving fallback to a
-real virtual send) per the project's performance-priority decision.
-Object model stays `Rc<RefCell<Object>>` for M2 — the arena/handle
-rewrite is deferred to M3, alongside the real GC (image format is
-defined against the logical value model so that later swap won't break
-image compatibility). Design spec committed at `92f511b` and revised on
-2026-09-05 after a section-by-section completeness check against the M1
-runtime spec, the liveness spec, and the M1 source: dispatch orchestration
-is shared between engines via three body-execution hooks (so instance
-initializers compile to bytecode too, not just methods and blocks), native
-`whileTrue:`/`whileFalse:`/`ifFalse:ifTrue:` complete the core library's
-control-flow surface, and inlined blocks get precise lexical-addressing and
-allocation rules. The 16-task checkbox-level implementation plan
-(`superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md`) is rewritten on that
-basis and committed. Implementation via `subagent-driven-development` or
-`executing-plans` is the next step.
+VM, keeping the M1 tree-walker permanently as `--engine=tree-walk` — a
+byte-for-byte (stdout, stderr, exit status) differential-testing oracle,
+selectable alongside the new default, `--engine=bytecode`. Every method
+body, block body, and instance initializer compiles to bytecode and runs
+through the shared dispatch orchestration (`interpreter/`'s send/DNU/
+lexical/super/native/instantiate logic, unchanged, consulted at three
+body-execution hooks) — no Newspeak-level code is tree-walked under the
+bytecode engine. Adds baseline-compiler control-flow inlining
+(`ifTrue:ifFalse:`, `whileTrue:`, `whileFalse:`, `and:`, `or:`, etc.),
+each guarded by a runtime receiver-class check with a correctness-
+preserving fallback to a real virtual send, per the project's
+performance-priority decision. Adds `ns-next disasm` for human-readable
+bytecode listings, and a versioned image serialization format whose
+code, object, and frame tables round-trip, exposed via `ns-next
+snapshot`/`load`. Required by
+`2026-09-04-1153-ns-next-liveness-images-vm-design.md`: a statement→PC
+table per method (the safepoint abstract-state map) and stable call-site
+identity with a reserved, inert inline-cache slot per send — both
+carried by every `CompiledCode` now so Milestone 3 (inline caches) needs
+no bytecode format break. Object model stays `Rc<RefCell<Object>>` for
+M2 — the arena/handle rewrite is deferred to M3, alongside the real GC
+(the image format is defined against the logical value model so that
+later swap won't break image compatibility). Design spec committed at
+`92f511b`, revised 2026-09-05; implemented and tested across commits
+`2962c46..215ae2d` (`cargo test --workspace` green, corpus count
+unchanged at 210/0/1/0).

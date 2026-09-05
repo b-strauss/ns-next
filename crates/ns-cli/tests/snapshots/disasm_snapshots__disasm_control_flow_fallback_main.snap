@@ -1,0 +1,53 @@
+---
+source: crates/ns-cli/tests/disasm_snapshots.rs
+expression: "disasm(\"control_flow_fallback.ns\", &[\"main:args:\"])"
+---
+method main:args: (args 2, registers 10)
+   0   stmt 0  SendPublic r2 <- r0 #transcript () @0
+   1   stmt 0  SendLexical r3 <- depth 0 #me () @1
+   2   stmt 0  JumpIfNotBoolean r3 -> 10
+   3   stmt 0  BranchIfFalse r3 -> 7
+   4   stmt 0  LoadLiteral r5, 'inlined'
+   5   stmt 0  Move r4, r5
+   6   stmt 0  Jump -> 14
+   7   stmt 0  LoadLiteral r5, 'fell back'
+   8   stmt 0  Move r4, r5
+   9   stmt 0  Jump -> 14
+  10   stmt 0  MakeClosure r5, [] ->
+        block block (args 0, registers 1)
+           0   stmt 0  LoadLiteral r0, 'inlined'
+           1        -  ImplicitReturn r0
+  11   stmt 0  MakeClosure r6, [] ->
+        block block (args 0, registers 1)
+           0   stmt 0  LoadLiteral r0, 'fell back'
+           1        -  ImplicitReturn r0
+  12   stmt 0  SendPublic r7 <- r3 #ifTrue:ifFalse: (r5, r6) @12
+  13   stmt 0  Move r4, r7
+  14   stmt 0  SendPublic r5 <- r2 #show: (r4) @14
+  15   stmt 0  SendPublic r6 <- r2 #newLine () @15
+  16   stmt 1  SendPublic r2 <- r0 #transcript () @16
+  17   stmt 1  LoadLiteral r3, 3
+  18   stmt 1  LoadLiteral r4, 4
+  19   stmt 1  SendPublic r5 <- r3 #< (r4) @19
+  20   stmt 1  JumpIfNotBoolean r5 -> 28
+  21   stmt 1  BranchIfFalse r5 -> 25
+  22   stmt 1  LoadLiteral r7, 'fast path'
+  23   stmt 1  Move r6, r7
+  24   stmt 1  Jump -> 32
+  25   stmt 1  LoadLiteral r7, '?'
+  26   stmt 1  Move r6, r7
+  27   stmt 1  Jump -> 32
+  28   stmt 1  MakeClosure r7, [] ->
+        block block (args 0, registers 1)
+           0   stmt 0  LoadLiteral r0, 'fast path'
+           1        -  ImplicitReturn r0
+  29   stmt 1  MakeClosure r8, [] ->
+        block block (args 0, registers 1)
+           0   stmt 0  LoadLiteral r0, '?'
+           1        -  ImplicitReturn r0
+  30   stmt 1  SendPublic r9 <- r5 #ifTrue:ifFalse: (r7, r8) @30
+  31   stmt 1  Move r6, r9
+  32   stmt 1  SendPublic r7 <- r2 #show: (r6) @32
+  33   stmt 1  SendPublic r8 <- r2 #newLine () @33
+  34        -  LoadSelf r9
+  35        -  ImplicitReturn r9

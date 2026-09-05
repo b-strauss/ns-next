@@ -279,7 +279,7 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
     let bindings = Rc::new(HashMap::new());
     let closure = Rc::new(ClosureData {
         params: vec![],
-        body: Rc::new(block_body),
+        body: ns_runtime::ClosureBody::Ast(Rc::new(block_body)),
         captured_frame: home.clone(),
         home: home.clone(),
         bindings: bindings.clone(),
@@ -323,7 +323,7 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
     let bindings = Rc::new(HashMap::new());
     let closure = Rc::new(ClosureData {
         params: vec![],
-        body: Rc::new(block_body),
+        body: ns_runtime::ClosureBody::Ast(Rc::new(block_body)),
         captured_frame: home.clone(),
         home: home.clone(),
         bindings: bindings.clone(),
