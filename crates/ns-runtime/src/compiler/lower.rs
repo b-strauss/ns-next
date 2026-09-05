@@ -3,13 +3,6 @@
 //! `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`'s
 //! `bytecode.rs` and "Control-flow inlining" sections.
 //!
-//! `Lowerer` has no caller outside `#[cfg(test)]` yet -- Task 5 wraps it
-//! into `compile_method`/`compile_initializer`/`compile_module`. Until then
-//! the non-test build sees every `pub(crate)` item here as unreachable;
-//! `dead_code` is silenced for that reason alone and should come back on
-//! its own once Task 5 lands the call sites.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
