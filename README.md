@@ -30,22 +30,15 @@ other tooling is needed; the project has no external runtime dependencies.
 
 ```bash
 cargo test --workspace
-```
-
-```bash
 cargo fmt --all
-```
-
-```bash
 cargo clippy --workspace --all-targets
-```
-
-The parser is checked against a vendored corpus of real Newspeak modules. This command is
-a non-regression gate and must report `parsed 210, failed 0, expected-fail 1, stale 0`:
-
-```bash
 cargo run -p ns-cli -- parse-corpus corpus/modules
 ```
+
+The test suite includes a harness that runs every fixture under both engines and compares
+exit status, stdout and stderr byte for byte. The last command checks the parser against a
+vendored corpus of real Newspeak modules; it is a non-regression gate and must report
+`parsed 210, failed 0, expected-fail 1, stale 0`.
 
 ## Usage
 
