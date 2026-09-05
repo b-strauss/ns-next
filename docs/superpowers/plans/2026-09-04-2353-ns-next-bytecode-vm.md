@@ -10,11 +10,16 @@
 > expected-fail 1, stale 0`; every planned commit message matches the actual
 > git log verbatim. Five additional `fix(runtime):` commits beyond the 15
 > planned `feat` commits (`cc8ced7`, `cacbdba`, `27194d3`, `f632675`,
-> `215ae2d`) hardened edge cases surfaced by later tasks' own tests
-> (an off-by-one call-site assertion, literal-nesting bounds, a decoded
+> `215ae2d`) fixed findings from code review of each task's own diff (an
+> off-by-one call-site assertion, literal-nesting bounds, a decoded
 > closure's parameter count, and two crafted images that still reached a
-> panic) — see `task-16-report.md` for detail. Kept for historical
-> reference; do not use as a checklist for new work.
+> panic) — see those commits' messages for detail. Two ticked "write the
+> decoder" steps (Task 13 Step 4, Task 14 Step 5) are done but their shipped
+> code deliberately differs from the plan's literal listing: bounded literal
+> nesting, a closure-arity check, and three new decode-time refusals
+> (not-a-class, missing selector, missing initializer), each closing a path
+> where a crafted image reached a panic or a process abort. Kept for
+> historical reference; do not use as a checklist for new work.
 
 **Goal:** Add a register-based bytecode compiler and VM to `ns-runtime`, selectable via `ns-next run --engine=bytecode` (the new default), that compiles and executes every method body, block body, **and instance initializer** through the Milestone 1 interpreter's *shared* dispatch orchestration — with baseline control-flow inlining, a statement-boundary safepoint/PC table, reserved inline-cache slots, `ns-next disasm`, and a versioned image save/load format (`ns-next snapshot`/`ns-next load`) whose code, object, and frame tables round-trip — while keeping the Milestone 1 tree-walker as a permanent `--engine=tree-walk` reference path that is a byte-for-byte oracle (exit status, stdout, stderr).
 
