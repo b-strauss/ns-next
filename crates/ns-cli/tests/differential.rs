@@ -206,3 +206,69 @@ fn a_return_out_of_an_inlined_loop_body_agrees_under_both_engines() {
     assert!(outcome.ok, "{}", outcome.stderr);
     assert_eq!(outcome.stdout, "4\n10\n");
 }
+
+/// The shape class that produced the C1 defect: a send's operands mutating
+/// each other's inputs. Every consumer reads its operand registers when the
+/// *instruction* executes, so a named local read earlier in the same
+/// statement must not still be sitting in that local's own storage. One
+/// case per consumer -- keyword arguments, a binary send's right operand
+/// mutating the left, dynamic-array elements, and an inlined arm (whose
+/// statements run inside the enclosing statement's operand sequence).
+#[test]
+fn operands_that_mutate_each_other_evaluate_in_the_same_order_under_both_engines() {
+    let outcome = assert_engines_agree_on_source(
+        "operand-order",
+        "Newspeak3\n'T'\nclass OperandOrder usingPlatform: platform = Object new (\n) (\n\tfirst: x second: y = ( ^x )\n\tkeywordArgs = ( | t | t := 1. ^self first: t second: (t := 9) )\n\tbinaryOperand = ( | t | t := 2. ^t + (t := 30) )\n\tarrayElements = ( | t | t := 1. ^{t. t := 5. t} at: 1 )\n\tinlinedArm = ( | t | t := 2. ^t + (true ifTrue: [t := 9. 1] ifFalse: [2]) )\n\tpublic main: p args: a = (\n\t\tp transcript show: self keywordArgs printString; newLine.\n\t\tp transcript show: self binaryOperand printString; newLine.\n\t\tp transcript show: self arrayElements printString; newLine.\n\t\tp transcript show: self inlinedArm printString; newLine\n\t)\n) : ()\n",
+    );
+    assert!(outcome.ok, "{}", outcome.stderr);
+    assert_eq!(
+        outcome.stdout, "1\n32\n1\n3\n",
+        "every operand keeps the value it had when it was evaluated"
+    );
+}
+
+/// The same invariant when the write happens inside a *callee*: a closure
+/// built in an earlier statement assigns the local while a send in this
+/// statement is running, so no assignment appears in the operand list at
+/// all. Covers a cascade receiver (live across the cascade's own sends) and
+/// an assignment's value handed on through a setter send.
+#[test]
+fn an_operand_written_by_a_callee_agrees_under_both_engines() {
+    let outcome = assert_engines_agree_on_source(
+        "operand-callee",
+        "Newspeak3\n'T'\nclass CalleeClobber usingPlatform: platform = Object new (\n\t| c ::= nil. |\n) (\n\tfirst: x second: y = ( ^x )\n\thook: v = ( c value. ^v )\n\tsetterValue = ( | t | t := 1. c := [t := 9]. ^self first: (hook := t) second: 1 )\n\targThroughASend = ( | t | t := 1. c := [t := 9]. ^self first: t second: (self hook: 0) )\n\tcascadeReceiver = (\n\t\t| t orig |\n\t\torig := OrderedCollection new.\n\t\tt := orig.\n\t\tc := [t := OrderedCollection new].\n\t\tt add: 1; add: (self hook: 2).\n\t\t^orig size\n\t)\n\tpublic main: p args: a = (\n\t\tp transcript show: self setterValue printString; newLine.\n\t\tp transcript show: self argThroughASend printString; newLine.\n\t\tp transcript show: self cascadeReceiver printString; newLine\n\t)\n) : ()\n",
+    );
+    assert!(outcome.ok, "{}", outcome.stderr);
+    assert_eq!(
+        outcome.stdout, "1\n1\n2\n",
+        "a callee's write to a local must not reach an operand already evaluated"
+    );
+}
+
+/// A bare `super` parses and resolves (Milestone 1 does not lexer-reserve
+/// it) but has no binding, so it is a program-level error raised when it is
+/// evaluated -- never a compile-time panic under the default engine.
+#[test]
+fn a_bare_super_is_the_same_program_error_under_both_engines() {
+    let outcome = assert_engines_agree_on_source(
+        "bare-super",
+        "Newspeak3\n'T'\nclass BareSuper usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\t^super\n\t)\n) : ()\n",
+    );
+    assert!(!outcome.ok);
+    assert_eq!(
+        outcome.stderr, "Uncaught Newspeak error: internal: unresolved identifier `super`\n",
+        "the deferred literal must raise eval.rs's own error, word for word"
+    );
+}
+
+/// The error is raised where the identifier is *evaluated*, not when the
+/// method is compiled: everything before it still runs.
+#[test]
+fn a_bare_super_raises_only_when_it_is_reached_under_both_engines() {
+    let outcome = assert_engines_agree_on_source(
+        "bare-super-deferred",
+        "Newspeak3\n'T'\nclass DeferredSuper usingPlatform: platform = Object new (\n) (\n\tunreached = ( ^super )\n\tpublic main: p args: a = (\n\t\tp transcript show: 'before'; newLine.\n\t\t^self unreached\n\t)\n) : ()\n",
+    );
+    assert!(!outcome.ok);
+    assert_eq!(outcome.stdout, "before\n");
+}
