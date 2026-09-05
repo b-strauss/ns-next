@@ -2,6 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status: Complete.** Verified against the codebase and git history on
+> 2026-09-05 (commit range `2962c46..215ae2d`) — all 16 tasks (105 steps)
+> implemented and tested: `cargo test --workspace`, `cargo fmt --all --
+> --check`, and `cargo clippy --workspace --all-targets` are all clean;
+> `parse-corpus corpus/modules` is unchanged at `parsed 210, failed 0,
+> expected-fail 1, stale 0`; every planned commit message matches the actual
+> git log verbatim. Five additional `fix(runtime):` commits beyond the 15
+> planned `feat` commits (`cc8ced7`, `cacbdba`, `27194d3`, `f632675`,
+> `215ae2d`) hardened edge cases surfaced by later tasks' own tests
+> (an off-by-one call-site assertion, literal-nesting bounds, a decoded
+> closure's parameter count, and two crafted images that still reached a
+> panic) — see `task-16-report.md` for detail. Kept for historical
+> reference; do not use as a checklist for new work.
+
 **Goal:** Add a register-based bytecode compiler and VM to `ns-runtime`, selectable via `ns-next run --engine=bytecode` (the new default), that compiles and executes every method body, block body, **and instance initializer** through the Milestone 1 interpreter's *shared* dispatch orchestration — with baseline control-flow inlining, a statement-boundary safepoint/PC table, reserved inline-cache slots, `ns-next disasm`, and a versioned image save/load format (`ns-next snapshot`/`ns-next load`) whose code, object, and frame tables round-trip — while keeping the Milestone 1 tree-walker as a permanent `--engine=tree-walk` reference path that is a byte-for-byte oracle (exit status, stdout, stderr).
 
 **Architecture:** New modules inside `ns-runtime` (`bytecode.rs`, `compiler/`, `vm.rs`, `image/`), consuming the unchanged Milestone 1 `ResolvedModule`, `dispatch.rs`, and object model. `interpreter/` becomes the **shared dispatch orchestration** for both engines: `Interpreter::send`, `doesNotUnderstand:`, the lexical/super/native dispatch functions, `invoke_method`'s and `invoke_closure`'s frame construction, and `instantiate`'s six-step algorithm are all unchanged in behavior and gain exactly one `engine` field (`Engine::TreeWalk | Engine::Bytecode(CompiledModule)`) consulted at three body-execution hooks — method body, block body, instance initializer — that route to `vm::run_code` under the bytecode engine. `vm.rs` is a `match` loop over `Instr` with **no dispatch logic, no error text, and no `doesNotUnderstand:` of its own**; every `Send*` calls straight back into `interpreter/`. That sharing is what makes the tree-walker a differential-testing oracle for stderr, not only stdout.
@@ -115,7 +129,7 @@ Responsibilities and split rationale:
 - The whole enum is defined now (the spec has one list) rather than opcode-by-opcode; each opcode's *emitter* still lands in the task that first needs it, and `vm::run_code` (Task 7) handles every variant from day one.
 - `PartialEq` on `Instr`/`CompiledCode` exists for `assert_eq!` in tests and for the image round-trip property `decode(encode(code)) == code` (Task 14).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `crates/ns-runtime/src/bytecode.rs`:
 
@@ -206,12 +220,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime bytecode::`
 Expected: FAIL — `Instr`/`CompiledCode`/`CallSite`/`Literal`/`CodeKind`/`method_key` not found (the module is not yet declared in `lib.rs`, so the first failure is "unresolved module"; wire Step 4 first if you prefer a compile error naming the missing types).
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Insert into `crates/ns-runtime/src/bytecode.rs`, after the `use` lines and before the `#[cfg(test)]` module:
 
@@ -356,16 +370,16 @@ pub fn class_key(class: &ClassRef) -> usize {
 }
 ```
 
-- [ ] **Step 4: Wire into `lib.rs`**
+- [x] **Step 4: Wire into `lib.rs`**
 
 In `crates/ns-runtime/src/lib.rs`, add `pub mod bytecode;` alongside the other `pub mod` lines (keep them alphabetical: `builtins`, `bytecode`, `dispatch`, ...). Update the crate doc comment's first line to "Name resolution, object model, tree-walking interpreter, and bytecode compiler/VM for the Newspeak3 language (Milestones 1-2)."
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `cargo test -p ns-runtime bytecode::`
 Expected: PASS (5 tests).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -401,11 +415,11 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - `Expr::Send`/`Expr::Cascade`/`Expr::Block`/`Expr::DynamicArray` and `Stmt::Return` are `unimplemented!()` stubs in this task (Tasks 3-4 fill them in) — the same incremental-stub convention Milestone 1's lexer plan used.
 - `parse_int_literal` is reused, not duplicated: it becomes `pub(crate)` in `eval.rs` (Global Constraints). Its `Err(message)` becomes `Literal::MalformedInt(text)`; the VM re-runs it for the identical error.
 
-- [ ] **Step 1: Make `parse_int_literal` `pub(crate)`**
+- [x] **Step 1: Make `parse_int_literal` `pub(crate)`**
 
 In `crates/ns-runtime/src/interpreter/eval.rs`, change `fn parse_int_literal(text: &str) -> Result<i64, String>` to `pub(crate) fn parse_int_literal(text: &str) -> Result<i64, String>`. No other change.
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 `crates/ns-runtime/src/compiler/lower.rs`:
 
@@ -576,12 +590,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime compiler::lower::`
 Expected: FAIL — `Lowerer`/`ScopeKind`/`hops_for_depth` not found.
 
-- [ ] **Step 4: Write the implementation**
+- [x] **Step 4: Write the implementation**
 
 Insert into `crates/ns-runtime/src/compiler/lower.rs` before the `#[cfg(test)]` module:
 
@@ -803,16 +817,16 @@ fn lower_literal(lit: &ast::Literal) -> BcLiteral {
 pub(crate) mod lower;
 ```
 
-- [ ] **Step 5: Wire into `lib.rs`**
+- [x] **Step 5: Wire into `lib.rs`**
 
 Add `pub mod compiler;` to `crates/ns-runtime/src/lib.rs` (alphabetical, after `bytecode`).
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run: `cargo test -p ns-runtime compiler::lower::`
 Expected: PASS (7 tests). Also run `cargo test -p ns-runtime` — every M1 test still passes (`parse_int_literal`'s visibility change is behavior-neutral).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -839,7 +853,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - `lower_send`'s ordinary arm is written as `receiver` + `emit_ordinary_send_with_receiver` on purpose: Task 11 inserts the `control_flow::recognize` check in front of exactly that arm.
 - A bare identifier with no binding and no builtin-name match is a resolver invariant violation → `panic!` (contrast `eval_ident`, which returns an "internal:" `NewspeakError` because it re-evaluates at run time; the compiler sees output the resolver already validated).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `crates/ns-runtime/src/compiler/lower.rs`'s test module:
 
@@ -969,12 +983,12 @@ fn a_cascade_reuses_one_receiver_register_across_every_message() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime compiler::lower::`
 Expected: FAIL — the `unimplemented!()` stubs panic.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `crates/ns-runtime/src/compiler/lower.rs`, replace the `Some(Binding::LexicalSend { .. }) | Some(Binding::SuperSend) | None` arm of `lower_ident_read` with:
 
@@ -1095,12 +1109,12 @@ pub(crate) fn selector_of(message: &ast::MessageSend) -> crate::Symbol {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-runtime compiler::lower::`
 Expected: PASS (13 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -1128,7 +1142,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - `last_expr_reg` records where the most recent top-level `Stmt::Expr`'s value landed, for `finish_body`'s block case and (Task 11) for reading an inlined block's result.
 - `lower_slot_init` is the initializer's per-slot "statement": the initializer expression, then `InitSlot { src, field_index }`, recorded as its own `statement_pc` entry — spec: "every slot initializer and every `initExpr` counts as one statement".
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `crates/ns-runtime/src/compiler/lower.rs`'s test module:
 
@@ -1291,12 +1305,12 @@ fn a_slot_initializer_is_one_statement_ending_in_init_slot() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime compiler::lower::`
 Expected: FAIL — `finish_body`/`lower_slot_init` not found; `Expr::Block`/`Expr::DynamicArray`/`Stmt::Return` still `unimplemented!()`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `crates/ns-runtime/src/compiler/lower.rs`, add the field `last_expr_reg: Option<u16>` to `Lowerer` (initialize it to `None` in `new`). Replace `lower_statement` with:
 
@@ -1434,12 +1448,12 @@ Expr::DynamicArray { elements, .. } => {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-runtime compiler::lower::`
 Expected: PASS (23 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -1470,7 +1484,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - **`compile_initializer` reads the *loaded* class**, not the AST: `ClassData.instance_slots` (declaration order, as `run_own_slots` iterates), `ClassData.slot_index` (the absolute field index `InitSlot` needs), `ClassData.init_exprs`, and `ClassData.factory` (the parameter count — `num_args`; the resolver scoped slot initializers and `initExprs` with exactly those parameters as `Binding::Local(i)`, `resolver/mod.rs`'s `resolve_class`). A class with no slots and no `initExprs` still compiles to `LoadSelf` + `ImplicitReturn` so `disasm --initializer` always has something to show; hook 3 skips such classes before looking them up.
 - The initializer's `source` span is the merge of every lowered slot's and `initExpr`'s span (`Span::new(0, 0)` when there is nothing) — `ClassData` carries no span of its own.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `crates/ns-runtime/tests/compiler.rs`:
 
@@ -1581,12 +1595,12 @@ fn an_uninitialized_slot_emits_nothing() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime --test compiler`
 Expected: FAIL — `compiler::compile_module`/`compile_initializer` not found.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `crates/ns-runtime/src/compiler/mod.rs`:
 
@@ -1732,12 +1746,12 @@ fn literal_span(lit: &ast::Literal) -> Span {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-runtime --test compiler`
 Expected: PASS (4 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -1780,7 +1794,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - **`instantiate` builds `FrameKind::Initializer(class)` frames from this task on**, under both engines (the frame is shared code). `FrameKind::TopLevel` stays in the enum (spec).
 - Tests drive the bytecode engine **through `Interpreter::send`** with `Engine::Bytecode` installed — there is no separate `Vm` object to call. Every test file in this milestone that unwraps an `EvalResult` uses the `expect_ok` helper shown below (`Signal` has no `Debug`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `crates/ns-runtime/tests/vm.rs`:
 
@@ -2023,12 +2037,12 @@ fn the_tree_walk_engine_is_still_the_default() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime --test vm`
 Expected: FAIL to compile — `Engine`, `ClosureBody`, `set_engine`, `compiled_module` not found.
 
-- [ ] **Step 3: `types.rs` — `ClosureBody` and `FrameKind::Initializer`**
+- [x] **Step 3: `types.rs` — `ClosureBody` and `FrameKind::Initializer`**
 
 In `crates/ns-runtime/src/types.rs`, replace `ClosureData`'s `body` field and add the enum directly above the struct:
 
@@ -2079,7 +2093,7 @@ pub enum FrameKind {
 
 Update the `Frame.home` doc comment to "Set only for `FrameKind::Closure` -- the enclosing method or initializer activation." and `Frame.current_class`'s to "`None` only for `FrameKind::TopLevel`".
 
-- [ ] **Step 4: `interpreter/eval.rs` — visibility, `home_of`, `ClosureBody::Ast`, hook 2**
+- [x] **Step 4: `interpreter/eval.rs` — visibility, `home_of`, `ClosureBody::Ast`, hook 2**
 
 Change these signatures (bodies unchanged): `pub(crate) fn read_local`, `pub(crate) fn write_local`, `pub(crate) fn frame_at_depth`, `pub(crate) fn dispatch_lexical_send`, `pub(crate) fn dispatch_super_send`.
 
@@ -2142,7 +2156,7 @@ Replace `invoke_closure`'s body after the arity guard (from `let receiver = ...`
     }
 ```
 
-- [ ] **Step 5: `interpreter/mod.rs` — `Engine`, the field, hook 1, `raise_return`**
+- [x] **Step 5: `interpreter/mod.rs` — `Engine`, the field, hook 1, `raise_return`**
 
 Add `use crate::bytecode::{method_key, CompiledModule};` to the imports. Add, above `pub struct Interpreter`:
 
@@ -2217,11 +2231,11 @@ Replace `invoke_method`'s body with:
 
 In `raise_return`, change the target match's first arm to `FrameKind::Method(_) | FrameKind::TopLevel | FrameKind::Initializer(_) => frame.clone(),`.
 
-- [ ] **Step 6: `interpreter/instantiate.rs` — `Initializer` frames**
+- [x] **Step 6: `interpreter/instantiate.rs` — `Initializer` frames**
 
 In `instantiate`, replace `kind: FrameKind::TopLevel, // an initializer is its own kind of top-of-chain activation for M1` with `kind: FrameKind::Initializer(class.clone()),`. Nothing else changes in this file yet (hook 3 is Task 7).
 
-- [ ] **Step 7: `vm.rs`**
+- [x] **Step 7: `vm.rs`**
 
 `crates/ns-runtime/src/vm.rs`:
 
@@ -2415,16 +2429,16 @@ fn make_value(interp: &mut Interpreter, literal: &Literal) -> EvalResult {
 }
 ```
 
-- [ ] **Step 8: Wire into `lib.rs`**
+- [x] **Step 8: Wire into `lib.rs`**
 
 Add `pub mod vm;` and change the re-export line to `pub use interpreter::{Engine, Interpreter, Signal};`.
 
-- [ ] **Step 9: Run tests to verify they pass**
+- [x] **Step 9: Run tests to verify they pass**
 
 Run: `cargo test -p ns-runtime`
 Expected: PASS — the 14 new `vm` tests and every existing M1 test (tree-walk is still the default, `types.rs`'s own `frame_kind_top_level_has_no_current_class` still compiles). Two M1 tests construct a `ClosureData` by hand — `crates/ns-runtime/tests/interpreter.rs` lines 280-282 and 324-326 (`body: Rc::new(block_body)`) — update both to `body: ns_runtime::ClosureBody::Ast(Rc::new(block_body))`; a mechanical change, no behavior change.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -2451,7 +2465,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - A class with no slots and no `initExprs` (every `BuiltinClass`, e.g. `Object` at the top of every chain) is a no-op under both engines and is skipped *before* the cache lookup; a user class missing from `CompiledModule.initializers` is a `compile_module` coverage bug (`panic!`).
 - Every M1 instantiation gap is carried forward in both engines (spec): the superclass clause's deferred factory message is never evaluated; every level runs in the subclass's frame; a `^` inside a block in initializer code escapes `instantiate` as `Signal::Return` and the frame is never marked `uncontinuable`. Do not "fix" any of these here — they are shared-code changes for a later milestone.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `crates/ns-runtime/tests/vm_initializer.rs`:
 
@@ -2572,12 +2586,12 @@ fn a_factory_arity_mismatch_is_still_the_shared_error() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime --test vm_initializer`
 Expected: `a_closure_created_in_a_slot_initializer_is_compiled...` FAILS (the closure is `ClosureBody::Ast` — the initializer is still tree-walked under `Engine::Bytecode`); the value-comparison tests pass already (the tree-walker computes the same values), which is exactly the point — hook 3 must change *how* without changing *what*.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `crates/ns-runtime/src/interpreter/instantiate.rs`, change the imports line `use super::{EvalResult, Interpreter, Signal};` to `use super::{Engine, EvalResult, Interpreter, Signal};`. In `instantiate`, replace
 
@@ -2680,12 +2694,12 @@ fn class_has_initializer_code(class: &ClassRef) -> bool {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-runtime`
 Expected: PASS (6 new tests; every existing `instantiate`/`factory_send` test unchanged under the default tree-walk engine).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -2713,7 +2727,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - **The differential harness is the spec's "Testing" section**: every `tests-fixtures/*.ns` under both engines, exit status + stdout + stderr identical, no exemptions. It is green as soon as this task lands (control-flow inlining, Task 10, is a pure optimization of behavior that already agrees). It also carries an inline-source helper for cases that must not be fixtures (M1's `run_fixtures.rs` asserts every fixture exits `0`): a `doesNotUnderstand:` comparison lands here now; Task 10 adds the control-flow error cases.
 - **`instance_init.ns`** exercises the hook-3 path end to end: a slot initializer reading the factory parameter (`platform transcript`), a slot initializer with a literal, an `initExpr` that sends and assigns, and an `initExpr` with output — so the fixture proves both engines run the initializer, in order, once.
 
-- [ ] **Step 1: Add the fixture**
+- [x] **Step 1: Add the fixture**
 
 `tests-fixtures/instance_init.ns`:
 
@@ -2740,7 +2754,7 @@ hi 2
 
 Confirm it parses and runs under the tree-walker before relying on it: `cargo run -p ns-cli -- run tests-fixtures/instance_init.ns` must print exactly the two expected lines (this exercises only M1 code — fix the fixture, never the parser, on any mismatch).
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 `crates/ns-cli/tests/differential.rs`:
 
@@ -2851,12 +2865,12 @@ fn a_does_not_understand_error_is_identical_under_both_engines() {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `cargo test -p ns-cli --test differential`
 Expected: FAIL — `--engine` is not a recognized argument (every invocation exits non-zero with clap's usage error on stderr, so the first assertion that a fixture succeeded fails).
 
-- [ ] **Step 4: Write the implementation**
+- [x] **Step 4: Write the implementation**
 
 In `crates/ns-cli/src/main.rs`, add the engine argument type and thread it through `Cmd::Run`:
 
@@ -2985,12 +2999,12 @@ fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
 
 `report_signal` (instantiation failures) and everything else in the file stay as they are. `LoadedSource.source`/`origin` are unused until Task 11/15 — add `#[allow(dead_code)]` on those two fields for now and remove it in Task 15.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `cargo test -p ns-cli`
 Expected: PASS — the new `differential` tests, and every existing `run_fixtures.rs`/`run.rs` test (they never pass `--engine`, so they now exercise the *default*, `bytecode`, end to end for the first time — including `run_supports_a_custom_entry_selector_via_send`, which sends two arguments to a one-parameter method under bytecode).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -3019,7 +3033,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - The `bindings` an `Interpreter::send` needs come from the condition closure's own `ClosureData.bindings` (there is one module; any closure's map is the module's map).
 - A `Signal::Return` escaping either block (`[...] whileTrue: [... ifTrue: [^x]]`) propagates through the loop via `?`, as `do:` already does.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `crates/ns-runtime/tests/builtins_control_flow.rs`:
 
@@ -3118,12 +3132,12 @@ fn if_false_if_true_picks_the_right_block() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime --test builtins_control_flow`
 Expected: FAIL — every loop/`ifFalse:ifTrue:` send `doesNotUnderstand:`s.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `crates/ns-runtime/src/builtins/block.rs`, update the module doc comment's first line to "`Block` (closure) native methods -- `value`..`value:value:value:`, `numArgs`, and (Milestone 2) `whileTrue:`/`whileFalse:`." Change the imports to `use crate::interpreter::EvalResult;` plus `use std::collections::HashMap; use std::rc::Rc; use ns_syntax::Span;`, and add two arms to `dispatch`'s `match selector.as_str()`:
 
@@ -3176,12 +3190,12 @@ In `crates/ns-runtime/src/builtins/boolean.rs`, add one arm to `dispatch` direct
         )),
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p ns-runtime --test builtins_control_flow`
 Expected: PASS (5 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -3215,7 +3229,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - **`whileTrue:`/`whileFalse:`** are a real back-edge loop; the guard is on the condition *value* and its failure path is `SendPublic mustBeBoolean` on the guard register — Task 9's native does the same, so nothing re-runs the condition and both engines agree. The loop's value is `nil`.
 - Jump targets are patched after the fact via `patch_target`; a label is `here()` = the index the next emitted instruction will get. Every `Jump` to an "end" label lands on the enclosing code's next instruction, which always exists because `finish_body` terminates every body.
 
-- [ ] **Step 1: Write `control_flow::recognize` and its tests**
+- [x] **Step 1: Write `control_flow::recognize` and its tests**
 
 `crates/ns-runtime/src/compiler/control_flow.rs`:
 
@@ -3343,12 +3357,12 @@ mod tests {
 
 Add `pub(crate) mod control_flow;` to `crates/ns-runtime/src/compiler/mod.rs` (above `pub(crate) mod lower;`).
 
-- [ ] **Step 2: Run to verify the recognition tests pass**
+- [x] **Step 2: Run to verify the recognition tests pass**
 
 Run: `cargo test -p ns-runtime control_flow::`
 Expected: PASS (5 tests) — `recognize` depends on nothing Step 3 adds.
 
-- [ ] **Step 3: Write the failing `lower.rs` tests**
+- [x] **Step 3: Write the failing `lower.rs` tests**
 
 Add to `crates/ns-runtime/src/compiler/lower.rs`'s test module:
 
@@ -3475,12 +3489,12 @@ fn inlined_statements_are_inside_the_enclosing_statements_pc_range() {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they fail**
+- [x] **Step 4: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime compiler::lower::`
 Expected: FAIL — `lower_send`'s ordinary arm does not consult `recognize` yet (no `JumpIfNotBoolean` anywhere).
 
-- [ ] **Step 5: Write the implementation**
+- [x] **Step 5: Write the implementation**
 
 In `crates/ns-runtime/src/compiler/lower.rs`, add `use super::control_flow::{self, InlineForm};` to the imports, and add to `impl<'a> Lowerer<'a>`:
 
@@ -3675,12 +3689,12 @@ _ => {
 }
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run: `cargo test -p ns-runtime`
 Expected: PASS (every `compiler::` test, and every `vm`/`vm_initializer` test still green — `if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks` now runs inlined and must produce the same values).
 
-- [ ] **Step 7: Add the two fixtures**
+- [x] **Step 7: Add the two fixtures**
 
 `tests-fixtures/while_loop.ns`:
 
@@ -3729,7 +3743,7 @@ fast path
 
 Confirm both run under `--engine tree-walk` first (`cargo run -p ns-cli -- run tests-fixtures/while_loop.ns --engine tree-walk`) — that exercises Task 9's natives only.
 
-- [ ] **Step 8: Add the inline-source differential tests**
+- [x] **Step 8: Add the inline-source differential tests**
 
 Add to `crates/ns-cli/tests/differential.rs`:
 
@@ -3766,12 +3780,12 @@ fn a_variable_block_receiver_takes_the_native_loop_under_both_engines() {
 }
 ```
 
-- [ ] **Step 9: Run the full suite**
+- [x] **Step 9: Run the full suite**
 
 Run: `cargo test --workspace`
 Expected: PASS — `run_fixtures.rs` (5 fixtures, all exit `0`), `differential.rs` (every fixture agrees; the three inline sources agree, including the two that exit non-zero with identical stderr).
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -3800,7 +3814,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - `disasm` bootstraps and loads (so `compile_initializer` sees the loaded class's `slot_index`) but never instantiates and never installs the bytecode engine — compile only.
 - Output format, fixed so the `insta` snapshots are stable: a header line `<kind> <name> (args N, registers M)`, then one line per instruction: `<index:4>  <stmt N or ->  <mnemonic operands>`; a nested block's listing follows its `MakeClosure` line, indented by 8 spaces. Registers print as `rN`, selectors as `#sel`, call sites as `@N`, jump targets as `-> N`.
 
-- [ ] **Step 1: Write the failing unit test**
+- [x] **Step 1: Write the failing unit test**
 
 Add to `crates/ns-runtime/src/bytecode.rs`'s test module:
 
@@ -3871,12 +3885,12 @@ fn format_literal_covers_every_variant() {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `cargo test -p ns-runtime bytecode::`
 Expected: FAIL — `disassemble`/`format_literal` not found.
 
-- [ ] **Step 3: Write `disassemble`**
+- [x] **Step 3: Write `disassemble`**
 
 Add to `crates/ns-runtime/src/bytecode.rs` (before the test module):
 
@@ -3982,7 +3996,7 @@ fn format_literal(literal: &Literal) -> String {
 
 Run: `cargo test -p ns-runtime bytecode::` — Expected: PASS (7 tests).
 
-- [ ] **Step 4: Add the `insta` dev-dependency and write the failing CLI snapshot tests**
+- [x] **Step 4: Add the `insta` dev-dependency and write the failing CLI snapshot tests**
 
 In `crates/ns-cli/Cargo.toml`, add:
 
@@ -4058,12 +4072,12 @@ fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
 }
 ```
 
-- [ ] **Step 5: Run to verify they fail**
+- [x] **Step 5: Run to verify they fail**
 
 Run: `cargo test -p ns-cli --test disasm_snapshots`
 Expected: FAIL — `disasm` is not a recognized subcommand.
 
-- [ ] **Step 6: Write the CLI command**
+- [x] **Step 6: Write the CLI command**
 
 In `crates/ns-cli/src/main.rs`, add a `Disasm` variant to `Cmd`:
 
@@ -4130,17 +4144,17 @@ fn cmd_disasm(file: &Path, selector: Option<&str>, initializer: bool) -> ExitCod
 }
 ```
 
-- [ ] **Step 7: Accept the baseline snapshots**
+- [x] **Step 7: Accept the baseline snapshots**
 
 Run: `cargo test -p ns-cli --test disasm_snapshots`
 Expected: the six snapshot tests fail with `.snap.new` files created under `crates/ns-cli/tests/snapshots/` (no prior baseline); `disasm_rejects_...` passes. **Review every printed listing** before accepting: `arithmetic.ns --initializer` must show one `InitSlot field 0`; `find:in:` must show a nested block with `NonLocalReturn`; `while_loop.ns` must show two backward `Jump -> N` and two `SendPublic ... #mustBeBoolean` but no `#whileTrue:`/`#whileFalse:` send; `control_flow_fallback.ns` must show `JumpIfNotBoolean` guards plus `SendPublic ... #ifTrue:ifFalse:` fallbacks with two `MakeClosure`s each; `instance_init.ns --initializer` must show three `InitSlot`s then the two `initExpr` statements. Then accept with `cargo insta accept` (or, without the `cargo-insta` subcommand installed, `INSTA_UPDATE=always cargo test -p ns-cli --test disasm_snapshots`), and commit the `.snap` files.
 
-- [ ] **Step 8: Run tests to verify they pass**
+- [x] **Step 8: Run tests to verify they pass**
 
 Run: `cargo test -p ns-cli --test disasm_snapshots`
 Expected: PASS (7 tests) against the committed baseline.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -4169,7 +4183,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - **Refuse on any version mismatch** — `read_header` returns `Err(DecodeError::VersionMismatch { .. })`; no migration. `FORMAT_VERSION` also versions the compiler's codegen (spec: "Code table"): any change to `Instr` or to what the compiler emits bumps it.
 - A corrupt-but-version-matching image is a `DecodeError` (never a panic) at the byte level — cheap to keep honest, and the CLI turns it into an error message.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `crates/ns-runtime/tests/image.rs`:
 
@@ -4258,12 +4272,12 @@ fn integers_and_strings_are_little_endian_and_length_prefixed() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime --test image`
 Expected: FAIL — `ns_runtime::image` not found.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `crates/ns-runtime/src/image/encode.rs`:
 
@@ -4496,16 +4510,16 @@ pub mod decode;
 pub mod encode;
 ```
 
-- [ ] **Step 4: Wire into `lib.rs`**
+- [x] **Step 4: Wire into `lib.rs`**
 
 Add `pub mod image;` to `crates/ns-runtime/src/lib.rs` (alphabetical, after `dispatch`).
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `cargo test -p ns-runtime --test image`
 Expected: PASS (6 tests).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -4534,7 +4548,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - `BuiltinClass` gets an explicit `u8` tag table in both directions (never `as u8` on the enum — declaration order is not a wire format). A test round-trips all fourteen variants.
 - `Instr` tags are `0..=19` in declaration order of Task 1's enum; `Literal` tags `0..=8`; `CodeKind` `0..=2`. The test `every_instr_variant_round_trips` is the guard that no variant is forgotten on either side.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `crates/ns-runtime/tests/image.rs`:
 
@@ -4709,12 +4723,12 @@ fn every_builtin_class_tag_round_trips() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime --test image`
 Expected: FAIL — `encode_code_table`/`decode_code_table`/`install_code_table`/`builtin_class_tag` not found.
 
-- [ ] **Step 3: Write the encoder**
+- [x] **Step 3: Write the encoder**
 
 Add to `crates/ns-runtime/src/image/encode.rs`:
 
@@ -5023,7 +5037,7 @@ fn encode_literal(w: &mut Writer, literal: &Literal) {
 }
 ```
 
-- [ ] **Step 4: Write the decoder**
+- [x] **Step 4: Write the decoder**
 
 Add to `crates/ns-runtime/src/image/decode.rs`:
 
@@ -5295,12 +5309,12 @@ fn decode_literal(r: &mut Reader) -> Result<Literal, DecodeError> {
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `cargo test -p ns-runtime --test image`
 Expected: PASS (11 tests).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -5332,7 +5346,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - A `Method` frame kind is encoded as its selector and re-resolved against the reloaded class's method map; `instantiate::method_name` (the M1 `MessagePattern` → selector helper) becomes `pub(crate)` for that — never a second copy.
 - Identity hashes are preserved verbatim; `decode_graph_section` reports the maximum seen so `load` (Task 15) can advance the allocation counter past it. The bootstrap and `load_module` allocate hashes in the same deterministic order as the original run, so re-bootstrapped classes get the same hashes they had — no collision with loaded objects.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `crates/ns-runtime/tests/image.rs`:
 
@@ -5508,16 +5522,16 @@ fn a_tree_walker_closure_is_a_snapshot_error_not_a_silent_omission() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime --test image`
 Expected: FAIL — `encode_graph_section`/`DecodeContext`/`decode_graph_section` not found.
 
-- [ ] **Step 3: Make `method_name` `pub(crate)`**
+- [x] **Step 3: Make `method_name` `pub(crate)`**
 
 In `crates/ns-runtime/src/interpreter/instantiate.rs`, change `fn method_name(pattern: &ast::MessagePattern) -> String` to `pub(crate) fn method_name(...)`. No other change.
 
-- [ ] **Step 4: Write the encoder**
+- [x] **Step 4: Write the encoder**
 
 Add to `crates/ns-runtime/src/image/encode.rs` (extend the `use crate::types::...` line to also import `ClosureBody, ClosureData, FrameKind, FrameRef, ObjRef, Value`):
 
@@ -5806,7 +5820,7 @@ pub fn encode_graph_section(
 }
 ```
 
-- [ ] **Step 5: Write the decoder**
+- [x] **Step 5: Write the decoder**
 
 Add to `crates/ns-runtime/src/image/decode.rs` (extend the `use crate::types::...` line to also import `ClosureBody, ClosureData, Frame, FrameKind, FrameRef, Object, ObjRef, Value`; add `use std::cell::RefCell;` and `use crate::Interpreter;`):
 
@@ -5985,12 +5999,12 @@ pub fn decode_graph_section(r: &mut Reader, ctx: &DecodeContext) -> Result<Decod
 }
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run: `cargo test -p ns-runtime --test image`
 Expected: PASS (19 tests).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -6022,7 +6036,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - **`snapshot` always runs under the bytecode engine**; roots are the root instance and, with `--send`, the entry send's result (a quiesced world — Non-Goals). **`load --send`** sends with the same `[platform, nil]` convention as `run` and prints exactly what `run` prints (nothing beyond the program's own output) — so a `load --send main:args:` of a snapshot is directly comparable to a `run`. Without `--send`, `load` prints one summary line.
 - `LoadedSource.source`/`origin` (Task 8) are now used; remove their `#[allow(dead_code)]`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `crates/ns-runtime/tests/image.rs`:
 
@@ -6148,12 +6162,12 @@ fn load_without_send_prints_a_summary_and_a_corrupt_image_is_reported() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p ns-runtime --test image` and `cargo test -p ns-cli --test snapshot_load`
 Expected: FAIL — `image::snapshot`/`image::load` not found; `snapshot`/`load` are not recognized subcommands.
 
-- [ ] **Step 3: `SourceOrigin` encoding and the hash-counter advance**
+- [x] **Step 3: `SourceOrigin` encoding and the hash-counter advance**
 
 Add to `crates/ns-runtime/src/image/encode.rs` (extend the types import with `SourceOrigin`):
 
@@ -6191,7 +6205,7 @@ Add to `impl Interpreter` in `crates/ns-runtime/src/interpreter/mod.rs` (next to
     }
 ```
 
-- [ ] **Step 4: `snapshot` and `load`**
+- [x] **Step 4: `snapshot` and `load`**
 
 Replace `crates/ns-runtime/src/image/mod.rs` with:
 
@@ -6288,7 +6302,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
 }
 ```
 
-- [ ] **Step 5: The CLI commands**
+- [x] **Step 5: The CLI commands**
 
 In `crates/ns-cli/src/main.rs`, add two `Cmd` variants:
 
@@ -6392,12 +6406,12 @@ fn cmd_load(image: &Path, send: Option<&str>) -> ExitCode {
 }
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run: `cargo test --workspace`
 Expected: PASS — the two new `image` tests, the three `snapshot_load` tests, and everything before them.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets
@@ -6414,22 +6428,22 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `docs/PROGRESS.md`
 
-- [ ] **Step 1: Full workspace test suite**
+- [x] **Step 1: Full workspace test suite**
 
 Run: `cargo test --workspace`
 Expected: every test from every prior task passes — including the differential harness over all six `tests-fixtures/*.ns` files (`hello`, `arithmetic`, `blocks_and_return`, `instance_init`, `while_loop`, `control_flow_fallback`) plus its three inline sources, the `disasm` snapshots, and `snapshot_load`.
 
-- [ ] **Step 2: Formatting and lints**
+- [x] **Step 2: Formatting and lints**
 
 Run: `cargo fmt --all -- --check` — Expected: clean.
 Run: `cargo clippy --workspace --all-targets` — Expected: zero warnings.
 
-- [ ] **Step 3: No Milestone 1 frontend regression**
+- [x] **Step 3: No Milestone 1 frontend regression**
 
 Run: `cargo run -p ns-cli -- parse-corpus corpus/modules`
 Expected: `parsed 210, failed 0, expected-fail 1, stale 0` — identical to Milestone 1's own final count. This milestone touches nothing under `crates/ns-syntax` (`git diff --stat 1e3dfe7 -- crates/ns-syntax` must be empty).
 
-- [ ] **Step 4: Manual sanity checks of the default engine and the tooling**
+- [x] **Step 4: Manual sanity checks of the default engine and the tooling**
 
 Run: `cargo run -p ns-cli -- run tests-fixtures/blocks_and_return.ns` (no `--engine` flag — confirms the *default* is `bytecode`).
 Expected: identical stdout to `tests-fixtures/blocks_and_return.expected`.
@@ -6440,11 +6454,11 @@ Expected: a readable listing with two backward `Jump -> N` and no `#whileTrue:`/
 Run: `cargo run -p ns-cli -- snapshot tests-fixtures/instance_init.ns /tmp/ii.img` then `cargo run -p ns-cli -- load /tmp/ii.img --send main:args:` (any writable path in place of `/tmp`).
 Expected: the first prints `init ran` then `wrote ...`; the second prints exactly `hi 2`.
 
-- [ ] **Step 5: Spec re-read**
+- [x] **Step 5: Spec re-read**
 
 Re-read the M2 spec's "Testing" section and confirm every bullet has a test: differential (Task 8/10, `differential.rs`), bytecode snapshot tests (Task 11), control-flow fallback tests (Task 10 — fixture + inline DNU + `mustBeBoolean`), image round-trip tests (Tasks 13-15 — object graphs, shared references, the whole code table with `decode(encode(code)) == code`, closures in a synthetic paused frame chain, identity hashes, class-tag resolution to the same live `ClassRef`), `disasm` tests (Task 11).
 
-- [ ] **Step 6: Update the progress tracker and commit**
+- [x] **Step 6: Update the progress tracker and commit**
 
 In `docs/PROGRESS.md`: change the M2 row's status to `Complete` with today's date; retitle the `## M2 — Bytecode + VM (plan written, implementation pending)` heading to `## M2 — Bytecode + VM (complete, <date>)`; replace the paragraph's last two sentences ("Design spec committed at `92f511b`; ... is the next step.") with one sentence stating the milestone is implemented and tested (`cargo test --workspace` green, corpus count unchanged), naming the commit range. Then, if Steps 1-5 required any fixes, commit them with an appropriately scoped message first (`fix(runtime): ...`), and commit the tracker:
 
