@@ -230,6 +230,66 @@ impl<'a> Lowerer<'a> {
         dst
     }
 
+    /// Copies `reg` into a fresh scratch register when it is one of this
+    /// frame's *named* locals and `clobbered` says something lowered
+    /// between here and the consuming instruction can write it.
+    ///
+    /// `lower_expr`'s contract is that the register it returns still holds
+    /// that value when its consumer executes -- every consumer defers the
+    /// read to instruction-execution time. A named local's register
+    /// (`< base`) is live storage, so an operand that has to survive a
+    /// write to it is copied out first. A register `>= base` needs no copy:
+    /// no `Binding` can name it, so only this body's own instructions ever
+    /// write it, and the scratch allocator never reuses a live one.
+    fn materialize(&mut self, reg: u16, clobbered: bool) -> u16 {
+        if !clobbered || reg >= self.base {
+            return reg;
+        }
+        let dst = self.alloc_scratch();
+        self.emit(Instr::Move { dst, src: reg });
+        dst
+    }
+
+    /// Lowers one operand of a multi-operand instruction. `rest` is
+    /// everything lowered after this operand but before that instruction
+    /// executes -- the arguments still to come, for instance.
+    fn lower_operand(&mut self, expr: &Expr, rest: &[Expr]) -> u16 {
+        let clobbered = rest.iter().any(|e| self.may_clobber_locals(e));
+        let reg = self.lower_expr(expr);
+        self.materialize(reg, clobbered)
+    }
+
+    /// Whether lowering `expr` can emit an instruction that writes one of
+    /// this frame's named locals: a `StoreLocal`/`StoreOuterLocal` from an
+    /// assignment, or *any* send -- a send runs user code, and that code can
+    /// assign this frame's locals through a closure that captured the frame.
+    /// The closure need not appear in `expr` at all (an earlier statement
+    /// may have built and stored it), so every send counts.
+    ///
+    /// Conservative in one direction only: answering `true` costs one
+    /// `Move`, answering `false` when a write can happen is the C1 defect.
+    fn may_clobber_locals(&self, expr: &Expr) -> bool {
+        match expr {
+            // `LoadLiteral` and `MakeClosure` allocate; neither runs user
+            // code nor writes a named local.
+            Expr::Literal(_) | Expr::Block(_) => false,
+            Expr::Ident(id) => match self.bindings.get(&id.span) {
+                // A register read (`LoadOuterLocal` at worst).
+                Some(Binding::Local(_) | Binding::OuterLocal { .. }) => false,
+                // An implicit receiverless send -- real dispatch.
+                Some(Binding::LexicalSend { .. }) => true,
+                // `self`, a bare builtin class name, and the deferred
+                // unresolved-identifier case: a single register load each.
+                Some(Binding::SuperSend) | None => false,
+            },
+            Expr::Assign { .. } | Expr::Send(_) | Expr::Cascade(_) => true,
+            // `MakeArray` itself cannot; its elements can.
+            Expr::DynamicArray { elements, .. } => {
+                elements.iter().any(|e| self.may_clobber_locals(e))
+            }
+        }
+    }
+
     /// Returns the register holding `expr`'s value.
     pub(crate) fn lower_expr(&mut self, expr: &Expr) -> u16 {
         match expr {
@@ -247,7 +307,9 @@ impl<'a> Lowerer<'a> {
             Expr::Cascade(cascade) => self.lower_cascade(cascade),
             Expr::Block(block) => self.lower_block_literal(block),
             Expr::DynamicArray { elements, .. } => {
-                let elem_regs: Vec<u16> = elements.iter().map(|e| self.lower_expr(e)).collect();
+                let elem_regs: Vec<u16> = (0..elements.len())
+                    .map(|i| self.lower_operand(&elements[i], &elements[i + 1..]))
+                    .collect();
                 let dst = self.alloc_scratch();
                 self.emit(Instr::MakeArray { dst, elem_regs });
                 dst
@@ -316,7 +378,19 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_assign(&mut self, target: &ast::Ident, value: &Expr) -> u16 {
-        let v = self.lower_expr(value);
+        let mut v = self.lower_expr(value);
+        // A setter send runs user code before this expression's own value is
+        // handed on, so a named local's register would no longer hold what
+        // was assigned. (The `StoreLocal`/`StoreOuterLocal` cases below need
+        // no copy: the only named local a `StoreLocal` can write while `v`
+        // is live is `v` itself -- `t := t` -- which leaves it unchanged,
+        // and a `StoreOuterLocal` writes a different frame.)
+        if matches!(
+            self.bindings.get(&target.span),
+            Some(Binding::LexicalSend { .. })
+        ) {
+            v = self.materialize(v, true);
+        }
         match self.bindings.get(&target.span) {
             Some(Binding::Local(slot)) => {
                 let (_, index) = self.local_target(0, *slot);
@@ -413,8 +487,12 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    /// Every argument is live until the send instruction reads it, so each
+    /// one has to survive whatever the arguments after it emit.
     fn lower_args(&mut self, message: &ast::MessageSend) -> Vec<u16> {
-        message.args.iter().map(|a| self.lower_expr(a)).collect()
+        (0..message.args.len())
+            .map(|i| self.lower_operand(&message.args[i], &message.args[i + 1..]))
+            .collect()
     }
 
     fn lower_send(&mut self, send: &ast::Send) -> u16 {
@@ -454,14 +532,26 @@ impl<'a> Lowerer<'a> {
                         }
                     };
                 }
-                let receiver_reg = self.lower_expr(&send.receiver);
+                // The receiver is read by the send instruction, so it has to
+                // survive its own arguments' lowering.
+                let receiver_reg = self.lower_operand(&send.receiver, &send.message.args);
                 self.emit_ordinary_send_with_receiver(receiver_reg, &send.message)
             }
         }
     }
 
     fn lower_cascade(&mut self, cascade: &ast::Cascade) -> u16 {
+        // The one receiver register is read again by every message of the
+        // cascade, so it has to survive the earlier *sends* too, not just
+        // the arguments lowered between them.
+        let clobbered = !cascade.rest.is_empty()
+            || cascade
+                .first
+                .args
+                .iter()
+                .any(|a| self.may_clobber_locals(a));
         let receiver_reg = self.lower_expr(&cascade.receiver);
+        let receiver_reg = self.materialize(receiver_reg, clobbered);
         let mut result = self.emit_ordinary_send_with_receiver(receiver_reg, &cascade.first);
         for m in &cascade.rest {
             result = self.emit_ordinary_send_with_receiver(receiver_reg, m);
@@ -856,6 +946,75 @@ mod tests {
         assert_eq!(code.num_args, 1);
     }
 
+    /// The C1 invariant: the register `lower_expr` returns must still hold
+    /// that value when its consumer executes. A named local's own register
+    /// is live storage, so an operand that has to survive an argument which
+    /// can write it is copied into a scratch first.
+    #[test]
+    fn an_operand_that_a_later_argument_can_write_is_copied_out_of_its_local() {
+        let (method, bindings) = resolve_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo: x bar: y = ( ^x )\n  m = ( | t | t := 1. ^self foo: t bar: (t := 9) )\n) : ()",
+            1,
+        );
+        let mut lowerer = method_lowerer(&method, &bindings); // temp `t` is register 0
+        for stmt in &method.body.stmts {
+            lowerer.lower_statement(stmt);
+        }
+        let code = lowerer.finish(method.span);
+        // An explicit `self` receiver is a depth-0 lexical send.
+        let Some(Instr::SendLexical { arg_regs, .. }) = code
+            .instrs
+            .iter()
+            .find(|i| matches!(i, Instr::SendLexical { .. }))
+        else {
+            panic!("expected the keyword send");
+        };
+        assert_ne!(
+            arg_regs[0], 0,
+            "`t` is register 0; the first argument must not be its live register"
+        );
+        assert!(
+            code.instrs.contains(&Instr::Move {
+                dst: arg_regs[0],
+                src: 0
+            }),
+            "the copy out of `t` is a Move emitted before the assignment"
+        );
+    }
+
+    /// ... and the fast path is kept: an operand no later operand can write
+    /// still costs zero instructions.
+    #[test]
+    fn an_operand_no_later_argument_can_write_stays_in_its_own_register() {
+        let (method, bindings) = resolve_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  m: a with: b = ( ^a foo: b bar: 3 )\n) : ()",
+            0,
+        );
+        let mut lowerer = method_lowerer(&method, &bindings); // params a, b = registers 0, 1
+        lowerer.lower_expr(return_expr(&method));
+        let code = lowerer.finish(method.span);
+        assert!(
+            !code.instrs.iter().any(|i| matches!(i, Instr::Move { .. })),
+            "no operand needs a copy here: {:?}",
+            code.instrs
+        );
+        assert_eq!(
+            code.instrs
+                .iter()
+                .filter_map(|i| match i {
+                    Instr::SendPublic {
+                        receiver_reg,
+                        arg_regs,
+                        ..
+                    } => Some((*receiver_reg, arg_regs.clone())),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![(0, vec![1, 2])],
+            "receiver and first argument are read straight out of their own registers"
+        );
+    }
+
     #[test]
     fn assigning_a_named_temp_emits_store_local_and_records_the_statement_range() {
         let (method, bindings) = resolve_method(
@@ -1074,9 +1233,19 @@ mod tests {
             .collect();
         // `OrderedCollection new`, then the cascade's two `add:` sends.
         assert_eq!(receiver_regs.len(), 3);
-        assert_eq!(
-            receiver_regs[1], 0,
-            "`c` is register 0, read with no instruction"
+        // `c` is register 0, but the cascade's receiver has to survive the
+        // sends between the messages -- any of which can reassign `c` --
+        // so it is copied into a scratch register first.
+        assert!(
+            receiver_regs[1] >= 1,
+            "the cascade receiver must not be `c`'s own live register"
+        );
+        assert!(
+            code.instrs.contains(&Instr::Move {
+                dst: receiver_regs[1],
+                src: 0
+            }),
+            "the copy out of `c` is a Move"
         );
         assert_eq!(
             receiver_regs[1], receiver_regs[2],
