@@ -784,12 +784,47 @@ propagated as the M1 `Signal` `Result` through `vm::run_code`'s
 recursion exactly as M1 propagated it through the tree-walker's
 recursion; the CLI renders an uncaught error identically under both
 engines because the rendering and every error-producing site are shared
-code. `panic!`/
-`debug_assert!` only for `ns-runtime`-internal invariant violations
-(compiler bugs, VM dispatch-loop bugs, a corrupt-but-version-matching
-image — the last is a defensive `debug_assert!` in `decode.rs`, since a
-version-matching image is assumed well-formed, not a hostile input
-format in Milestone 2's scope).
+code. `panic!`/`debug_assert!` only for `ns-runtime`-internal invariant
+violations (compiler bugs, VM dispatch-loop bugs).
+
+**An image is untrusted input** (amended 2026-09-06, after
+implementation; this paragraph replaces an earlier one that called a
+version-matching image "assumed well-formed, not a hostile input format
+in Milestone 2's scope"). That earlier assumption holds only while an
+image never leaves the process that wrote it, which `ns-next
+snapshot`/`load` makes false: an image is a file the user hands the
+runtime, possibly from another machine, an older build, or a damaged
+disk — and the liveness spec's portable, architecture-neutral images
+make it an interchange format by design. So **no byte sequence may
+cause a panic or a process abort**: every id, tag, count and length is
+validated before it indexes, allocates or slices, recursion on
+attacker-controlled depth is bounded, and every failure is a
+`DecodeError` the CLI renders as a message. This was already what the
+Milestone 2 implementation plan required of `decode.rs` ("a
+corrupt-but-version-matching image is a `DecodeError` (never a panic) at
+the byte level"); the amendment brings this document in line with its
+own plan and with the shipped code.
+
+Byte-level validity is not structural coherence, so `image::load` runs
+two verification passes over the decoded material **before installing
+the engine**, and both report a `DecodeError`:
+
+- `verify_code_table` — every jump target is a valid instruction index
+  in its own body, every register index is below that body's
+  `num_registers`, every `MakeClosure` code id resolves.
+- `verify_graph`/`verify_closure` — every decoded frame's
+  `args`/`temps` lengths agree with the code that would run in it, and
+  a closure's captured frame is an activation of its body's lexical
+  parent.
+
+**Scope, stated so later milestones do not over-rely on it:** these are
+targeted checks on exactly the paths that could otherwise reach an
+unchecked index at run time. They are not a full bytecode verifier —
+there is no type-safety or stack-discipline proof. **Open point:**
+`verify_closure`'s captured-frame rule currently rests on Milestone 1's
+single-user-class invariant (see "Image format" on the `UserRoot` class
+tag). The milestone that loads nested classes must revisit it, or it
+will start refusing legitimate images.
 
 ## Testing
 
