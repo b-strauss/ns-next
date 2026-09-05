@@ -37,14 +37,26 @@ enum Cmd {
         /// a full `main:args:`-shaped application.
         #[arg(long, default_value = "main:args:")]
         send: String,
+        #[arg(long, value_enum, default_value_t = EngineArg::Bytecode)]
+        engine: EngineArg,
     },
+}
+
+/// `--engine`: which evaluator runs Newspeak-level code. `bytecode` is the
+/// default; `tree-walk` is the Milestone 1 interpreter, kept permanently as
+/// the differential-testing oracle (M2 spec, "`ns-cli` additions").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum EngineArg {
+    Bytecode,
+    TreeWalk,
 }
 
 fn main() -> ExitCode {
     match Cli::parse().command {
         Cmd::Parse { file, ast } => cmd_parse(&file, ast),
         Cmd::ParseCorpus { dir, blacklist } => cmd_parse_corpus(&dir, blacklist.as_deref()),
-        Cmd::Run { file, send } => cmd_run(&file, &send),
+        Cmd::Run { file, send, engine } => cmd_run(&file, &send, engine),
     }
 }
 
@@ -71,62 +83,72 @@ fn cmd_parse(file: &Path, ast: bool) -> ExitCode {
     }
 }
 
-/// Parses, resolves, bootstraps, loads, instantiates, and sends `send` to a
-/// single `.ns` file's root class -- `ns-next run`. Note on the brief's
-/// original draft: it calls a `render_diagnostic` helper that does not
-/// actually exist anywhere in this file (only `print_diagnostics`, which
-/// already prints straight to stderr rather than returning a `String`) --
-/// reusing `print_diagnostics` here instead, exactly as `cmd_parse` above
-/// already does for a parse failure.
-fn cmd_run(file: &Path, send: &str) -> ExitCode {
+/// A module read, parsed, and resolved -- everything `run`, `disasm`, and
+/// `snapshot` share before an interpreter exists.
+struct LoadedSource {
+    #[allow(dead_code)]
+    source: String,
+    #[allow(dead_code)]
+    origin: ns_runtime::SourceOrigin,
+    resolved: ns_runtime::ResolvedModule,
+}
+
+/// Reads, parses, and resolves `file`, reporting diagnostics exactly as
+/// the Milestone 1 `run` did. `Err` carries the exit code to return.
+fn load_source(file: &Path) -> Result<LoadedSource, ExitCode> {
     let source = match std::fs::read_to_string(file) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: reading {}: {e}", file.display());
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
     let module = match ns_syntax::parse(&source) {
         Ok(m) => m,
         Err(diags) => {
             print_diagnostics(file, &source, &diags);
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
-    let resolved = match ns_runtime::resolve(
-        module,
-        source.into(),
-        ns_runtime::SourceOrigin::File(file.to_path_buf()),
-    ) {
+    let origin = ns_runtime::SourceOrigin::File(file.to_path_buf());
+    let resolved = match ns_runtime::resolve(module, source.as_str().into(), origin.clone()) {
         Ok(r) => r,
         Err(errors) => {
             for e in errors {
                 eprintln!("resolve error: {}", e.message);
             }
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
-    let bindings = resolved.bindings.clone();
+    Ok(LoadedSource {
+        source,
+        origin,
+        resolved,
+    })
+}
+
+/// Bootstraps an interpreter, loads the module's root class, and installs
+/// the requested engine -- *before* anything is instantiated, so the root
+/// class's instance initializer runs under it too (M2 spec, "`ns-cli`
+/// additions").
+fn bootstrap_with_engine(
+    loaded: &LoadedSource,
+    engine: EngineArg,
+) -> (ns_runtime::Interpreter, ns_runtime::ClassRef) {
     let mut interp = ns_runtime::Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
-    let platform = interp.platform();
-    // `usingPlatform: platform`'s one factory parameter (`newspeak-spec.pdf`
-    // §8.4's Core Library factory convention).
-    let instance = match interp.instantiate(class, vec![platform.clone()], &bindings) {
-        Ok(v) => v,
-        Err(signal) => return report_signal(signal),
-    };
-    // `main:args:`'s two parameters: Milestone 1 passes `Nil` for the
-    // environment-args list -- no real command-line-argument passthrough
-    // into Newspeak yet (add it only if a Task 12 fixture needs it).
-    let selector = ns_runtime::Symbol::intern(send);
-    match interp.send(
-        instance,
-        selector,
-        vec![platform, ns_runtime::Value::Nil],
-        &bindings,
-        None,
-    ) {
+    let class = interp.load_module(&loaded.resolved);
+    if engine == EngineArg::Bytecode {
+        let compiled = ns_runtime::compiler::compile_module(&class, &loaded.resolved.bindings);
+        interp.set_engine(ns_runtime::Engine::Bytecode(compiled));
+    }
+    (interp, class)
+}
+
+/// Renders the entry send's outcome exactly as Milestone 1's `run` did --
+/// these strings are compared byte for byte across engines by the
+/// differential harness, so they are shared and never duplicated.
+fn report_entry_send(result: Result<ns_runtime::Value, ns_runtime::Signal>) -> ExitCode {
+    match result {
         Ok(_) => ExitCode::SUCCESS,
         Err(ns_runtime::Signal::Error(e)) => {
             eprintln!("Uncaught Newspeak error: {}", e.message);
@@ -137,6 +159,35 @@ fn cmd_run(file: &Path, send: &str) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `ns-next run`: parse, resolve, bootstrap, load, install the engine,
+/// instantiate the root class with `platform`, send the entry selector
+/// with `[platform, nil]`, report.
+fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
+    let loaded = match load_source(file) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+    let bindings = loaded.resolved.bindings.clone();
+    let (mut interp, class) = bootstrap_with_engine(&loaded, engine);
+    let platform = interp.platform();
+    // `usingPlatform: platform`'s one factory parameter (`newspeak-spec.pdf`
+    // §8.4's Core Library factory convention).
+    let instance = match interp.instantiate(class, vec![platform.clone()], &bindings) {
+        Ok(v) => v,
+        Err(signal) => return report_signal(signal),
+    };
+    // `main:args:`'s two parameters: `Nil` for the environment-args list --
+    // no command-line-argument passthrough into Newspeak yet.
+    let selector = ns_runtime::Symbol::intern(send);
+    report_entry_send(interp.send(
+        instance,
+        selector,
+        vec![platform, ns_runtime::Value::Nil],
+        &bindings,
+        None,
+    ))
 }
 
 fn report_signal(signal: ns_runtime::Signal) -> ExitCode {
