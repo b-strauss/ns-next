@@ -21,6 +21,12 @@ pub fn dispatch(
             vec![],
             sender,
         )),
+        "ifFalse:ifTrue:" => Some(super::call_block(
+            interp,
+            if b { &args[1] } else { &args[0] },
+            vec![],
+            sender,
+        )),
         "ifTrue:" => Some(if b {
             super::call_block(interp, &args[0], vec![], sender)
         } else {
