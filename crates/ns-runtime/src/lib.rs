@@ -8,6 +8,7 @@ pub mod builtins;
 pub mod bytecode;
 pub mod compiler;
 pub mod dispatch;
+pub mod image;
 pub mod interpreter;
 pub mod platform;
 pub mod resolver;
