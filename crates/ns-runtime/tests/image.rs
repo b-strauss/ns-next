@@ -260,6 +260,7 @@ fn every_instr_once() -> CompiledCode {
                     Literal::Sym(Symbol::intern("y")),
                     Literal::Char('z'),
                     Literal::MalformedInt("16r1.8".into()),
+                    Literal::UnresolvedIdent("super".into()),
                 ]),
             },
             Instr::LoadSelf { dst: 1 },
@@ -567,7 +568,7 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
 #[test]
 fn an_invalid_literal_tag_and_a_bad_char_are_decode_errors_not_panics() {
     for (payload, what) in [
-        (vec![9u8], "literal"),
+        (vec![10u8], "literal"),
         (vec![6u8, 0x00, 0xd8, 0x00, 0x00], "char"),
     ] {
         let mut w = encode::Writer::new();

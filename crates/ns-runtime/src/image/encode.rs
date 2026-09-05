@@ -23,6 +23,12 @@ pub const MAGIC: &[u8; 4] = b"NSIM";
 /// constant did, but within this milestone: until `snapshot` existed no
 /// build wrote a whole image, so no reader can hold a version-1 image
 /// without them and there is nothing for a bump to distinguish.
+///
+/// Literal tag 9 (`UnresolvedIdent`) was added by the same reasoning, and
+/// deliberately: it is a pure addition to the literal tag space made
+/// before any released build could write an image, so no version-1 image
+/// in anyone's hands can be misread because of it. The next such change
+/// after a release bumps the version.
 pub const FORMAT_VERSION: u32 = 1;
 
 #[derive(Default)]
@@ -459,6 +465,10 @@ fn encode_literal(w: &mut Writer, literal: &Literal) {
         Literal::MalformedInt(text) => {
             w.write_u8(8);
             w.write_str(text);
+        }
+        Literal::UnresolvedIdent(name) => {
+            w.write_u8(9);
+            w.write_str(name);
         }
     }
 }

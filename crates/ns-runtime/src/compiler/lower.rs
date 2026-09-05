@@ -368,10 +368,22 @@ impl<'a> Lowerer<'a> {
                         self.emit(Instr::LoadBuiltinClass { dst, kind });
                         dst
                     }
-                    None => panic!(
-                        "internal: unresolved identifier `{}` (the resolver should have rejected this)",
-                        id.name
-                    ),
+                    // Not a compiler-invariant violation: `resolve_ident`
+                    // deliberately records no binding for `super`, and the
+                    // lexer deliberately does not reserve it, so `^super`
+                    // is a program M1 accepts and rejects at *evaluation*
+                    // time. Compilation cannot raise a `NewspeakError`, so
+                    // the error is deferred exactly like `MalformedInt`:
+                    // the VM raises `eval`'s own error when the
+                    // instruction executes.
+                    None => {
+                        let dst = self.alloc_scratch();
+                        self.emit(Instr::LoadLiteral {
+                            dst,
+                            literal: BcLiteral::UnresolvedIdent(id.name.clone()),
+                        });
+                        dst
+                    }
                 }
             }
         }
@@ -1012,6 +1024,27 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(0, vec![1, 2])],
             "receiver and first argument are read straight out of their own registers"
+        );
+    }
+
+    /// C2: a bare `super` is a program-level error M1 raises at evaluation
+    /// time, not a compiler-invariant violation, so it must lower to the
+    /// deferred literal rather than panic.
+    #[test]
+    fn a_bare_super_lowers_to_a_deferred_error_literal_not_a_panic() {
+        let (method, bindings) = resolve_method(
+            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^super )\n) : ()",
+            0,
+        );
+        let mut lowerer = method_lowerer(&method, &bindings);
+        lowerer.lower_expr(return_expr(&method));
+        let code = lowerer.finish(method.span);
+        assert_eq!(
+            code.instrs,
+            vec![Instr::LoadLiteral {
+                dst: 0,
+                literal: BcLiteral::UnresolvedIdent("super".to_string()),
+            }]
         );
     }
 

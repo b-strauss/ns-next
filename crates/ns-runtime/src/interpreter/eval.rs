@@ -70,13 +70,37 @@ fn eval_ident(
             if let Some(kind) = super::instantiate::builtin_kind_from_name(&id.name) {
                 return Ok(Value::Obj(interp.builtin_class(kind)));
             }
-            Err(Signal::Error(NewspeakError {
-                selector: Symbol::intern(&id.name),
-                receiver: frame.borrow().receiver.clone(),
-                message: format!("internal: unresolved identifier `{}`", id.name),
-            }))
+            let receiver = frame.borrow().receiver.clone();
+            Err(unresolved_identifier_error(&id.name, receiver))
         }
     }
+}
+
+/// The program-level error a bare identifier raises when it has no binding
+/// and names no builtin class -- in Milestone 1 and 2 reachable only for a
+/// bare `super`, which `resolver::resolve_ident` deliberately leaves
+/// unbound and which the lexer deliberately does not reserve.
+///
+/// Shared with the bytecode engine (`bytecode::Literal::UnresolvedIdent`,
+/// raised by `vm::make_value`) so the two engines cannot drift apart in
+/// wording: the tree-walker is the differential oracle down to the byte.
+pub(crate) fn unresolved_identifier_error(name: &str, receiver: Value) -> Signal {
+    Signal::Error(NewspeakError {
+        selector: Symbol::intern(name),
+        receiver,
+        message: format!("internal: unresolved identifier `{name}`"),
+    })
+}
+
+/// The error a lexer-accepted integer literal that `parse_int_literal`
+/// rejects raises when it is *evaluated*. Shared with the bytecode engine
+/// (`bytecode::Literal::MalformedInt`) for the same reason.
+pub(crate) fn malformed_int_error(message: String) -> Signal {
+    Signal::Error(NewspeakError {
+        selector: Symbol::intern("parse"),
+        receiver: Value::Nil,
+        message,
+    })
 }
 
 pub(crate) fn read_local(frame: &FrameRef, index: u16) -> Value {
@@ -205,13 +229,7 @@ pub(crate) fn parse_int_literal(text: &str) -> Result<i64, String> {
 fn eval_literal(interp: &mut Interpreter, lit: &ast::Literal) -> EvalResult {
     Ok(match lit {
         ast::Literal::Int { text, .. } => {
-            let n = parse_int_literal(text).map_err(|message| {
-                Signal::Error(NewspeakError {
-                    selector: Symbol::intern("parse"),
-                    receiver: Value::Nil,
-                    message,
-                })
-            })?;
+            let n = parse_int_literal(text).map_err(malformed_int_error)?;
             Value::SmallInt(n)
         }
         ast::Literal::Float { text, .. } => {

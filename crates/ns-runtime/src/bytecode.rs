@@ -25,6 +25,13 @@ use crate::Symbol;
 /// error M1 raises *when the literal is evaluated*; compilation cannot
 /// raise a `NewspeakError`, so the VM re-runs `parse_int_literal` when the
 /// instruction executes and raises the identical error then.
+///
+/// `UnresolvedIdent` is the same deferral for the other program-level
+/// error a *resolved* module can still carry: an identifier with no
+/// binding that names no builtin class -- in practice a bare `super`,
+/// which `resolver::resolve_ident` leaves unbound and the lexer does not
+/// reserve. Neither variant is a lowered `ast::Literal`; both are payloads
+/// of a `LoadLiteral` that raises instead of producing a value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Nil,
@@ -37,6 +44,7 @@ pub enum Literal {
     /// Element literals, recursively -- mirrors `ast::Literal::Array`.
     Array(Vec<Literal>),
     MalformedInt(String),
+    UnresolvedIdent(String),
 }
 
 /// One send instruction's stable identity -- the instruction's own index
@@ -347,6 +355,7 @@ fn format_literal(literal: &Literal) -> String {
                 .join(" ")
         ),
         Literal::MalformedInt(text) => format!("malformed-int '{text}'"),
+        Literal::UnresolvedIdent(name) => format!("unresolved-ident '{name}'"),
     }
 }
 

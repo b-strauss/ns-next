@@ -15,12 +15,11 @@ use ns_syntax::Span;
 
 use crate::bytecode::{CompiledCode, Instr, Literal};
 use crate::interpreter::eval::{
-    dispatch_lexical_send, dispatch_super_send, frame_at_depth, home_of, parse_int_literal,
-    read_local, store_instance_field, write_local,
+    dispatch_lexical_send, dispatch_super_send, frame_at_depth, home_of, malformed_int_error,
+    parse_int_literal, read_local, store_instance_field, unresolved_identifier_error, write_local,
 };
-use crate::interpreter::{EvalResult, Interpreter, Signal};
+use crate::interpreter::{EvalResult, Interpreter};
 use crate::types::*;
-use crate::Symbol;
 
 /// Runs `code` on `frame` until a terminating instruction. `frame` was built
 /// by the shared orchestration (`invoke_method`, `invoke_closure`, or
@@ -38,7 +37,7 @@ pub fn run_code(
         frame.borrow_mut().pc = pc;
         match &code.instrs[pc] {
             Instr::LoadLiteral { dst, literal } => {
-                let v = make_value(interp, literal)?;
+                let v = make_value(interp, frame, literal)?;
                 write_local(frame, *dst, v);
             }
             Instr::LoadSelf { dst } => {
@@ -174,10 +173,10 @@ fn collect(frame: &FrameRef, regs: &[u16]) -> Vec<Value> {
 }
 
 /// Materializes a literal exactly as `eval::eval_literal` does -- including
-/// the deferred `MalformedInt` case, which re-runs the shared
-/// `parse_int_literal` and raises M1's own error (selector `parse`,
-/// receiver `nil`, the parser's message).
-fn make_value(interp: &mut Interpreter, literal: &Literal) -> EvalResult {
+/// the two deferred error cases, `MalformedInt` and `UnresolvedIdent`.
+/// Both raise through `eval.rs`'s own constructors rather than rebuilding
+/// the error here, so the two engines cannot drift apart in wording.
+fn make_value(interp: &mut Interpreter, frame: &FrameRef, literal: &Literal) -> EvalResult {
     Ok(match literal {
         Literal::Nil => Value::Nil,
         Literal::Bool(b) => Value::Bool(*b),
@@ -189,19 +188,17 @@ fn make_value(interp: &mut Interpreter, literal: &Literal) -> EvalResult {
         Literal::Array(elements) => {
             let mut values = Vec::with_capacity(elements.len());
             for e in elements {
-                values.push(make_value(interp, e)?);
+                values.push(make_value(interp, frame, e)?);
             }
             Value::Obj(interp.new_array(values))
         }
         Literal::MalformedInt(text) => match parse_int_literal(text) {
             Ok(n) => Value::SmallInt(n),
-            Err(message) => {
-                return Err(Signal::Error(NewspeakError {
-                    selector: Symbol::intern("parse"),
-                    receiver: Value::Nil,
-                    message,
-                }))
-            }
+            Err(message) => return Err(malformed_int_error(message)),
         },
+        Literal::UnresolvedIdent(name) => {
+            let receiver = frame.borrow().receiver.clone();
+            return Err(unresolved_identifier_error(name, receiver));
+        }
     })
 }

@@ -1128,6 +1128,7 @@ fn decode_literal(r: &mut Reader, depth: usize) -> Result<Literal, DecodeError> 
             Literal::Array(elements)
         }
         8 => Literal::MalformedInt(r.read_str()?),
+        9 => Literal::UnresolvedIdent(r.read_str()?),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "literal",
