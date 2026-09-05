@@ -10,13 +10,15 @@ use std::rc::Rc;
 use ns_syntax::ast::{self, Expr, Stmt};
 use ns_syntax::Span;
 
+use super::control_flow::{self, InlineForm};
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instr, Literal as BcLiteral};
 use crate::interpreter::eval::parse_int_literal;
 use crate::types::Binding;
 
 /// One entry of the compile-time scope stack. The resolver counts every
 /// block literal as one scope; at run time only `Frame` scopes cost a
-/// `captured_frame` hop -- an `Inlined` scope (Task 11) has no frame.
+/// `captured_frame` hop -- an `Inlined` scope (control-flow inlining) has
+/// no frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScopeKind {
     Frame,
@@ -40,7 +42,8 @@ pub(crate) struct Lowerer<'a> {
     kind: CodeKind,
     num_args: u16,
     /// Innermost last. The last entry is this body's own `Frame` scope
-    /// until Task 11 pushes `Inlined` entries above it.
+    /// with `Inlined` entries pushed above it while an inlined block body
+    /// is being lowered.
     scopes: Vec<ScopeKind>,
     instrs: Vec<Instr>,
     base: u16,
@@ -50,7 +53,7 @@ pub(crate) struct Lowerer<'a> {
     statement_pc: Vec<(usize, Range<usize>)>,
     call_sites: Vec<CallSite>,
     /// The most recent top-level `Stmt::Expr`'s value register, for
-    /// `finish_body`'s block case and (Task 11) for reading an inlined
+    /// `finish_body`'s block case and for reading an inlined
     /// block's result.
     last_expr_reg: Option<u16>,
 }
@@ -119,7 +122,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Lowers a statement without touching the allocator or the PC table --
-    /// shared by `lower_statement` and (Task 11) inlined block bodies.
+    /// shared by `lower_statement` and `lower_inline_block_body`.
     /// Returns the value register for a `Stmt::Expr` (or a discarded
     /// initializer `^`), `None` when a return instruction was emitted.
     fn lower_stmt_inner(&mut self, stmt: &Stmt) -> Option<u16> {
@@ -149,7 +152,7 @@ impl<'a> Lowerer<'a> {
     /// What a `^` means here -- the spec's per-code-kind table. `None` is
     /// "evaluate and discard" (a top-level `^` in `initExprs`, exactly as
     /// M1's `run_own_init_exprs`). Inside an inlined block (`scopes.last()
-    /// == Inlined`, Task 11) an initializer's `^` must instead raise the
+    /// == Inlined`) an initializer's `^` must instead raise the
     /// same `Signal::Return` M1's real block would, so it becomes
     /// `NonLocalReturn`.
     fn return_instr(&self, reg: u16) -> Option<Instr> {
@@ -422,6 +425,24 @@ impl<'a> Lowerer<'a> {
                 self.emit_lexical_send(depth, selector, arg_regs)
             }
             _ => {
+                // The inlining gate: only an ordinary explicit-receiver send
+                // is ever offered to `recognize` (M2 spec, "Control-flow
+                // inlining"). Every recognized form still keeps a runtime
+                // guard whose failure path is a real virtual send, so
+                // inlining stays a pure optimization.
+                if let Some(form) = control_flow::recognize(send) {
+                    return match form {
+                        InlineForm::IfTrueIfFalse(t, f) => self.lower_if(send, Some(t), Some(f)),
+                        InlineForm::IfTrue(t) => self.lower_if(send, Some(t), None),
+                        InlineForm::IfFalse(f) => self.lower_if(send, None, Some(f)),
+                        InlineForm::And(b) => self.lower_and_or(send, b, true),
+                        InlineForm::Or(b) => self.lower_and_or(send, b, false),
+                        InlineForm::WhileTrue { cond, body } => self.lower_while(cond, body, true),
+                        InlineForm::WhileFalse { cond, body } => {
+                            self.lower_while(cond, body, false)
+                        }
+                    };
+                }
                 let receiver_reg = self.lower_expr(&send.receiver);
                 self.emit_ordinary_send_with_receiver(receiver_reg, &send.message)
             }
@@ -437,7 +458,243 @@ impl<'a> Lowerer<'a> {
         result
     }
 
+    /// The index the next emitted instruction will get -- a forward label.
+    fn here(&self) -> u32 {
+        self.instrs.len() as u32
+    }
+
+    fn patch_target(&mut self, at: usize, target: u32) {
+        match &mut self.instrs[at] {
+            Instr::Jump { target: t }
+            | Instr::JumpIfNotBoolean { target: t, .. }
+            | Instr::BranchIfFalse { target: t, .. }
+            | Instr::BranchIfTrue { target: t, .. } => *t = target,
+            other => unreachable!("internal: patch_target on a non-jump instruction {other:?}"),
+        }
+    }
+
+    /// Lowers `block`'s statements directly into the current instruction
+    /// stream -- no `MakeClosure`, no new activation. The block's statements
+    /// are sub-expressions of the enclosing statement: no `statement_pc`
+    /// entries, and the scratch allocator resets only to the watermark at the
+    /// block's start (never to `base`, which would clobber the enclosing
+    /// statement's live registers). Pushes `ScopeKind::Inlined` so local
+    /// references inside (and in nested real blocks) drop one frame hop.
+    /// Returns the register holding the block's value (`nil` if it has no
+    /// statements).
+    fn lower_inline_block_body(&mut self, block: &ast::BlockExpr) -> u16 {
+        debug_assert!(
+            block.params.is_empty() && block.body.temps.is_empty(),
+            "internal: the inlining gate admits only parameterless, temp-less blocks"
+        );
+        self.scopes.push(ScopeKind::Inlined);
+        let mark = self.next_scratch;
+        let mut result = None;
+        for stmt in &block.body.stmts {
+            self.next_scratch = mark;
+            result = self.lower_stmt_inner(stmt);
+        }
+        self.scopes.pop();
+        match result {
+            Some(reg) => reg,
+            None => self.emit_nil(),
+        }
+    }
+
+    /// `builtins::boolean::truthy_arg`'s rule in bytecode: only exactly
+    /// `Bool(true)` is true; a non-`true` `Bool` or a non-`Bool` is false.
+    fn emit_coerce_to_bool(&mut self, src: u16) -> u16 {
+        let dst = self.alloc_scratch();
+        let not_bool_jump = self.emit(Instr::JumpIfNotBoolean {
+            reg: src,
+            target: 0,
+        });
+        let false_jump = self.emit(Instr::BranchIfFalse {
+            reg: src,
+            target: 0,
+        });
+        self.emit(Instr::LoadLiteral {
+            dst,
+            literal: BcLiteral::Bool(true),
+        });
+        let after_true_jump = self.emit(Instr::Jump { target: 0 });
+        let false_label = self.here();
+        self.patch_target(not_bool_jump, false_label);
+        self.patch_target(false_jump, false_label);
+        self.emit(Instr::LoadLiteral {
+            dst,
+            literal: BcLiteral::Bool(false),
+        });
+        let end_label = self.here();
+        self.patch_target(after_true_jump, end_label);
+        dst
+    }
+
+    /// The guard-failure path of an inlined loop: what the native
+    /// `whileTrue:`/`whileFalse:` does with a non-Boolean condition value.
+    fn emit_must_be_boolean(&mut self, reg: u16) -> u16 {
+        let selector = crate::Symbol::intern("mustBeBoolean");
+        self.emit_send(|dst, call_site| Instr::SendPublic {
+            selector,
+            receiver_reg: reg,
+            arg_regs: vec![],
+            dst,
+            call_site,
+        })
+    }
+
+    /// The shared shape behind every one-shot inlined form: `guard_reg`
+    /// exactly `Bool(true)` runs `on_true`, exactly `Bool(false)` runs
+    /// `on_false`, anything else runs `on_fallback` (a real send). Each
+    /// returns the register holding its value; the chosen one is `Move`d into
+    /// `dst`.
+    fn emit_guarded_branch(
+        &mut self,
+        guard_reg: u16,
+        dst: u16,
+        on_true: impl FnOnce(&mut Self) -> u16,
+        on_false: impl FnOnce(&mut Self) -> u16,
+        on_fallback: impl FnOnce(&mut Self) -> u16,
+    ) {
+        let not_bool_jump = self.emit(Instr::JumpIfNotBoolean {
+            reg: guard_reg,
+            target: 0,
+        });
+        let false_jump = self.emit(Instr::BranchIfFalse {
+            reg: guard_reg,
+            target: 0,
+        });
+        let true_result = on_true(self);
+        self.emit(Instr::Move {
+            dst,
+            src: true_result,
+        });
+        let after_true_jump = self.emit(Instr::Jump { target: 0 });
+        let false_label = self.here();
+        self.patch_target(false_jump, false_label);
+        let false_result = on_false(self);
+        self.emit(Instr::Move {
+            dst,
+            src: false_result,
+        });
+        let after_false_jump = self.emit(Instr::Jump { target: 0 });
+        let fallback_label = self.here();
+        self.patch_target(not_bool_jump, fallback_label);
+        let fallback_result = on_fallback(self);
+        self.emit(Instr::Move {
+            dst,
+            src: fallback_result,
+        });
+        let end_label = self.here();
+        self.patch_target(after_true_jump, end_label);
+        self.patch_target(after_false_jump, end_label);
+    }
+
+    /// `ifTrue:`/`ifFalse:`/`ifTrue:ifFalse:`/`ifFalse:ifTrue:`: an absent
+    /// branch is `nil`, matching `builtins::boolean`'s one-armed arms.
+    fn lower_if(
+        &mut self,
+        send: &ast::Send,
+        true_block: Option<&ast::BlockExpr>,
+        false_block: Option<&ast::BlockExpr>,
+    ) -> u16 {
+        let guard_reg = self.lower_expr(&send.receiver);
+        let dst = self.alloc_scratch();
+        self.emit_guarded_branch(
+            guard_reg,
+            dst,
+            |lw| match true_block {
+                Some(b) => lw.lower_inline_block_body(b),
+                None => lw.emit_nil(),
+            },
+            |lw| match false_block {
+                Some(b) => lw.lower_inline_block_body(b),
+                None => lw.emit_nil(),
+            },
+            |lw| lw.emit_ordinary_send_with_receiver(guard_reg, &send.message),
+        );
+        dst
+    }
+
+    /// `and:`/`or:`: the short-circuit arm is the receiver's own Boolean
+    /// value, the other arm the block's value coerced by `truthy_arg`'s rule.
+    fn lower_and_or(&mut self, send: &ast::Send, block: &ast::BlockExpr, is_and: bool) -> u16 {
+        let guard_reg = self.lower_expr(&send.receiver);
+        let dst = self.alloc_scratch();
+        let evaluate_and_coerce = |lw: &mut Self| {
+            let b = lw.lower_inline_block_body(block);
+            lw.emit_coerce_to_bool(b)
+        };
+        let fallback =
+            |lw: &mut Self| lw.emit_ordinary_send_with_receiver(guard_reg, &send.message);
+        if is_and {
+            self.emit_guarded_branch(guard_reg, dst, evaluate_and_coerce, |_| guard_reg, fallback);
+        } else {
+            self.emit_guarded_branch(guard_reg, dst, |_| guard_reg, evaluate_and_coerce, fallback);
+        }
+        dst
+    }
+
+    /// A real loop: condition, guard, exit branch, body, back-edge. A
+    /// non-Boolean condition value takes the `mustBeBoolean` path and ends the
+    /// loop with that send's value; a normal exit leaves `nil` in `dst`.
+    fn lower_while(
+        &mut self,
+        cond: &ast::BlockExpr,
+        body: &ast::BlockExpr,
+        while_true: bool,
+    ) -> u16 {
+        let dst = self.emit_nil();
+        let loop_start = self.here();
+        let guard_reg = self.lower_inline_block_body(cond);
+        let not_bool_jump = self.emit(Instr::JumpIfNotBoolean {
+            reg: guard_reg,
+            target: 0,
+        });
+        let exit_jump = if while_true {
+            self.emit(Instr::BranchIfFalse {
+                reg: guard_reg,
+                target: 0,
+            })
+        } else {
+            self.emit(Instr::BranchIfTrue {
+                reg: guard_reg,
+                target: 0,
+            })
+        };
+        self.lower_inline_block_body(body);
+        self.emit(Instr::Jump { target: loop_start });
+        let fallback_label = self.here();
+        self.patch_target(not_bool_jump, fallback_label);
+        let fallback_result = self.emit_must_be_boolean(guard_reg);
+        self.emit(Instr::Move {
+            dst,
+            src: fallback_result,
+        });
+        let end_label = self.here();
+        self.patch_target(exit_jump, end_label);
+        dst
+    }
+
     pub(crate) fn finish(self, source: Span) -> CompiledCode {
+        // Control-flow inlining is the only source of jumps, and every one of
+        // its labels is a `here()` that `finish_body`'s terminator guarantees
+        // is a real instruction index. An out-of-range (or never-patched
+        // dangling) target is a compiler bug, not a program error, so it is a
+        // `debug_assert!` -- checked on every debug test run, free in release.
+        debug_assert!(
+            self.instrs
+                .iter()
+                .filter_map(|i| match i {
+                    Instr::Jump { target }
+                    | Instr::JumpIfNotBoolean { target, .. }
+                    | Instr::BranchIfFalse { target, .. }
+                    | Instr::BranchIfTrue { target, .. } => Some(*target as usize),
+                    _ => None,
+                })
+                .all(|t| t < self.instrs.len()),
+            "internal: a jump target does not name an instruction of this body"
+        );
         CompiledCode {
             kind: self.kind,
             instrs: self.instrs,
@@ -1058,5 +1315,238 @@ mod tests {
             })
         ));
         assert_eq!(code.statement_pc, vec![(0, 0..4)]);
+    }
+
+    /// Compiles `foo: x = ( ^<body> )` and returns the method's code.
+    fn compile_foo(body: &str) -> CompiledCode {
+        let full =
+            format!("Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo: x = ( ^{body} )\n) : ()");
+        lower_whole_method(&full, 0)
+    }
+
+    fn has<F: Fn(&Instr) -> bool>(code: &CompiledCode, pred: F) -> bool {
+        code.instrs.iter().any(pred)
+    }
+
+    #[test]
+    fn if_true_if_false_with_literal_blocks_compiles_to_a_guarded_branch_with_a_fallback_send() {
+        let code = compile_foo("x ifTrue: [1] ifFalse: [2]");
+        assert!(
+            has(&code, |i| matches!(
+                i,
+                Instr::JumpIfNotBoolean { reg: 0, .. }
+            )),
+            "{:#?}",
+            code.instrs
+        );
+        assert!(has(&code, |i| matches!(
+            i,
+            Instr::BranchIfFalse { reg: 0, .. }
+        )));
+        assert!(has(&code, |i| matches!(
+            i,
+            Instr::LoadLiteral {
+                literal: BcLiteral::SmallInt(1),
+                ..
+            }
+        )));
+        assert!(has(&code, |i| matches!(
+            i,
+            Instr::LoadLiteral {
+                literal: BcLiteral::SmallInt(2),
+                ..
+            }
+        )));
+        // The fallback path is a real send of the original selector with real closures.
+        assert!(has(&code, |i| matches!(
+            i,
+            Instr::SendPublic { selector, receiver_reg: 0, .. } if selector.as_str() == "ifTrue:ifFalse:"
+        )));
+        assert_eq!(
+            code.instrs
+                .iter()
+                .filter(|i| matches!(i, Instr::MakeClosure { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_non_literal_block_argument_is_an_ordinary_send_with_no_guard() {
+        let code = compile_foo("x ifTrue: x ifFalse: [2]");
+        assert!(has(&code, |i| matches!(
+            i,
+            Instr::SendPublic { selector, .. } if selector.as_str() == "ifTrue:ifFalse:"
+        )));
+        assert!(!has(&code, |i| matches!(i, Instr::JumpIfNotBoolean { .. })));
+    }
+
+    #[test]
+    fn a_block_with_temporaries_is_not_inlined() {
+        let code = compile_foo("x ifTrue: [ | t | t := 1. t ] ifFalse: [2]");
+        assert!(!has(&code, |i| matches!(i, Instr::JumpIfNotBoolean { .. })));
+        assert!(has(&code, |i| matches!(
+            i,
+            Instr::MakeClosure { code, .. } if code.num_registers - code.num_args >= 1
+        )));
+    }
+
+    #[test]
+    fn while_true_compiles_to_a_back_edge_jump_and_a_must_be_boolean_fallback() {
+        let code = compile_foo("[x] whileTrue: [x]");
+        let back_edge = code
+            .instrs
+            .iter()
+            .enumerate()
+            .find_map(|(i, instr)| match instr {
+                Instr::Jump { target } if (*target as usize) < i => Some(*target),
+                _ => None,
+            });
+        assert!(
+            back_edge.is_some(),
+            "expected a backward Jump, got {:#?}",
+            code.instrs
+        );
+        assert!(has(&code, |i| matches!(
+            i,
+            Instr::SendPublic { selector, .. } if selector.as_str() == "mustBeBoolean"
+        )));
+        assert!(!has(&code, |i| matches!(
+            i,
+            Instr::SendPublic { selector, .. } if selector.as_str() == "whileTrue:"
+        )));
+        assert!(
+            !has(&code, |i| matches!(i, Instr::MakeClosure { .. })),
+            "an inlined loop materializes no closures"
+        );
+        assert!(has(&code, |i| matches!(i, Instr::BranchIfFalse { .. })));
+        let code = compile_foo("[x] whileFalse: [x]");
+        assert!(has(&code, |i| matches!(i, Instr::BranchIfTrue { .. })));
+    }
+
+    #[test]
+    fn a_reference_inside_an_inlined_block_addresses_the_enclosing_frame_directly() {
+        // `x` inside the inlined block is `OuterLocal { depth: 1, index: 0 }`
+        // to the resolver; at run time it is the current frame's register 0.
+        let code = compile_foo("x ifTrue: [x] ifFalse: [nil]");
+        assert!(!has(&code, |i| matches!(i, Instr::LoadOuterLocal { .. })));
+        assert!(has(&code, |i| matches!(i, Instr::Move { src: 0, .. })));
+    }
+
+    #[test]
+    fn a_real_block_nested_in_an_inlined_block_counts_one_hop_fewer() {
+        // `[ x ]` sits two resolver scopes below the method (inner block ->
+        // inlined block -> method) but only one frame below it at run time.
+        let code = compile_foo("x ifTrue: [ [ x ] value ] ifFalse: [nil]");
+        let nested = code.instrs.iter().find_map(|i| match i {
+            Instr::MakeClosure { code, .. } => Some(code.clone()),
+            _ => None,
+        });
+        let nested = nested.expect("the true branch creates a closure");
+        assert_eq!(
+            nested.instrs[0],
+            Instr::LoadOuterLocal {
+                dst: 0,
+                depth: 1,
+                index: 0
+            }
+        );
+    }
+
+    #[test]
+    fn a_return_inside_an_inlined_block_follows_the_enclosing_code_kind() {
+        let code = compile_foo("x ifTrue: [^1] ifFalse: [^2]");
+        assert_eq!(
+            code.instrs
+                .iter()
+                .filter(|i| matches!(i, Instr::Return { .. }))
+                .count(),
+            3,
+            "{:#?}",
+            code.instrs
+        );
+        assert!(!has(&code, |i| matches!(i, Instr::NonLocalReturn { .. })));
+        // Inside a block body the same `^` is a non-local return.
+        let code = compile_foo("[ x ifTrue: [^1] ifFalse: [^2] ]");
+        let Some(Instr::MakeClosure { code: block, .. }) = code.instrs.first() else {
+            panic!()
+        };
+        assert!(block
+            .instrs
+            .iter()
+            .any(|i| matches!(i, Instr::NonLocalReturn { .. })));
+    }
+
+    #[test]
+    fn inlined_statements_do_not_clobber_live_registers_of_the_enclosing_statement() {
+        // `x foo: (x bar) with: (x ifTrue: [x baz. 1] ifFalse: [2])`: the
+        // first argument's register must survive the inlined `x baz` statement.
+        let code = compile_foo("x foo: (x bar) with: (x ifTrue: [x baz. 1] ifFalse: [2])");
+        let bar_dst = code
+            .instrs
+            .iter()
+            .find_map(|i| match i {
+                Instr::SendPublic { selector, dst, .. } if selector.as_str() == "bar" => Some(*dst),
+                _ => None,
+            })
+            .expect("a bar send");
+        let baz_dst = code
+            .instrs
+            .iter()
+            .find_map(|i| match i {
+                Instr::SendPublic { selector, dst, .. } if selector.as_str() == "baz" => Some(*dst),
+                _ => None,
+            })
+            .expect("a baz send");
+        assert_ne!(bar_dst, baz_dst);
+        let Some(Instr::SendPublic {
+            selector, arg_regs, ..
+        }) = code.instrs.iter().rev().find(
+            |i| matches!(i, Instr::SendPublic { selector, .. } if selector.as_str() == "foo:with:"),
+        )
+        else {
+            panic!("expected a foo:with: send")
+        };
+        assert_eq!(selector.as_str(), "foo:with:");
+        assert_eq!(arg_regs[0], bar_dst);
+    }
+
+    #[test]
+    fn and_or_coerce_the_block_value_and_short_circuit() {
+        let code = compile_foo("x and: [x]");
+        assert!(has(&code, |i| matches!(
+            i,
+            Instr::LoadLiteral {
+                literal: BcLiteral::Bool(true),
+                ..
+            }
+        )));
+        assert!(has(&code, |i| matches!(
+            i,
+            Instr::LoadLiteral {
+                literal: BcLiteral::Bool(false),
+                ..
+            }
+        )));
+        assert!(has(&code, |i| matches!(
+            i,
+            Instr::SendPublic { selector, .. } if selector.as_str() == "and:"
+        )));
+        let code = compile_foo("x or: [x]");
+        assert!(has(&code, |i| matches!(
+            i,
+            Instr::SendPublic { selector, .. } if selector.as_str() == "or:"
+        )));
+    }
+
+    #[test]
+    fn inlined_statements_are_inside_the_enclosing_statements_pc_range() {
+        let code = compile_foo("x ifTrue: [x foo. x bar] ifFalse: [nil]");
+        assert_eq!(
+            code.statement_pc.len(),
+            1,
+            "the inlined statements are part of statement 0"
+        );
+        assert_eq!(code.statement_pc[0].1, 0..code.instrs.len());
     }
 }

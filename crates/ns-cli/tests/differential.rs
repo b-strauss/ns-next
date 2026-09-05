@@ -130,3 +130,77 @@ fn a_does_not_understand_error_is_identical_under_both_engines() {
         outcome.stderr
     );
 }
+
+#[test]
+fn a_non_boolean_receiver_of_an_inlined_selector_does_not_understand_under_both_engines() {
+    let outcome = assert_engines_agree_on_source(
+        "if-dnu",
+        "Newspeak3\n'T'\nclass IfDnu usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\t3 ifTrue: ['a'] ifFalse: ['b']\n\t)\n) : ()\n",
+    );
+    assert!(!outcome.ok);
+    assert!(
+        outcome
+            .stderr
+            .contains("does not understand #ifTrue:ifFalse:"),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn a_non_boolean_while_condition_fails_with_must_be_boolean_under_both_engines() {
+    let outcome = assert_engines_agree_on_source(
+        "while-must-be-boolean",
+        "Newspeak3\n'T'\nclass WhileMbb usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\tp transcript show: 'before'; newLine.\n\t\t[p transcript show: 'cond'; newLine. 3] whileTrue: [nil]\n\t)\n) : ()\n",
+    );
+    assert!(!outcome.ok);
+    assert_eq!(
+        outcome.stdout, "before\ncond\n",
+        "the condition body must run exactly once"
+    );
+    assert!(
+        outcome
+            .stderr
+            .contains("does not understand #mustBeBoolean"),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn a_variable_block_receiver_takes_the_native_loop_under_both_engines() {
+    let outcome = assert_engines_agree_on_source(
+        "while-variable",
+        "Newspeak3\n'T'\nclass WhileVar usingPlatform: platform = Object new (\n\t| n ::= 0. |\n) (\n\tpublic main: p args: a = (\n\t\t| cond |\n\t\tcond := [n < 3].\n\t\tcond whileTrue: [n := n + 1].\n\t\tp transcript show: n printString; newLine\n\t)\n) : ()\n",
+    );
+    assert!(outcome.ok, "{}", outcome.stderr);
+    assert_eq!(outcome.stdout, "3\n");
+}
+
+/// Beyond the brief's three: `and:`/`or:` short-circuiting (which side
+/// effects run) and `truthy_arg`'s coercion of a non-Boolean block value are
+/// the inlined shapes with no end-to-end coverage above.
+#[test]
+fn and_or_short_circuit_and_coerce_identically_under_both_engines() {
+    let outcome = assert_engines_agree_on_source(
+        "and-or",
+        "Newspeak3\n'T'\nclass AndOr usingPlatform: platform = Object new (\n\t| log ::= ''. |\n) (\n\tnote: s = ( log := log, s. ^true )\n\tpublic main: p args: a = (\n\t\tp transcript show: (true and: [self note: 'A']) printString; newLine.\n\t\tp transcript show: (false and: [self note: 'B']) printString; newLine.\n\t\tp transcript show: (true or: [self note: 'C']) printString; newLine.\n\t\tp transcript show: (false or: [self note: 'D']) printString; newLine.\n\t\tp transcript show: (true and: [3]) printString; newLine.\n\t\tp transcript show: log; newLine\n\t)\n) : ()\n",
+    );
+    assert!(outcome.ok, "{}", outcome.stderr);
+    assert_eq!(
+        outcome.stdout, "true\nfalse\ntrue\ntrue\nfalse\nAD\n",
+        "only the non-short-circuited arms may run, and a non-Boolean block value coerces to false"
+    );
+}
+
+/// A `^` inside an inlined loop body unwinds out of the whole loop, and a
+/// closure built inside an inlined branch still reaches the enclosing frame.
+#[test]
+fn a_return_out_of_an_inlined_loop_body_agrees_under_both_engines() {
+    let outcome = assert_engines_agree_on_source(
+        "inlined-return",
+        "Newspeak3\n'T'\nclass InlinedReturn usingPlatform: platform = Object new (\n) (\n\tcount: limit = (\n\t\t| i |\n\t\ti := 0.\n\t\t[true] whileTrue: [\n\t\t\ti := i + 1.\n\t\t\ti > limit ifTrue: [^i]].\n\t\t^0\n\t)\n\tcapture: x = (\n\t\t| c |\n\t\tx > 0 ifTrue: [c := [x * 2]] ifFalse: [c := [x]].\n\t\t^c value\n\t)\n\tpublic main: p args: a = (\n\t\tp transcript show: (self count: 3) printString; newLine.\n\t\tp transcript show: (self capture: 5) printString; newLine\n\t)\n) : ()\n",
+    );
+    assert!(outcome.ok, "{}", outcome.stderr);
+    assert_eq!(outcome.stdout, "4\n10\n");
+}

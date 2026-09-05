@@ -5,6 +5,7 @@
 //! that can never raise a `NewspeakError`; a failure here is an `ns-runtime`
 //! bug and panics.
 
+pub(crate) mod control_flow;
 pub(crate) mod lower;
 
 use std::collections::HashMap;

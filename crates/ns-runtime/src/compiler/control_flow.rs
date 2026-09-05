@@ -1,0 +1,129 @@
+//! Compile-time recognition of the standard Smalltalk control-flow
+//! "special selectors" for inlining. Pure recognition only -- no bytecode
+//! emission lives here (see `lower.rs`'s `lower_if`/`lower_and_or`/
+//! `lower_while`). M2 spec, "Control-flow inlining".
+
+use ns_syntax::ast;
+
+pub(crate) enum InlineForm<'a> {
+    /// `ifTrue:ifFalse:` and (arguments swapped) `ifFalse:ifTrue:`.
+    IfTrueIfFalse(&'a ast::BlockExpr, &'a ast::BlockExpr),
+    IfTrue(&'a ast::BlockExpr),
+    IfFalse(&'a ast::BlockExpr),
+    And(&'a ast::BlockExpr),
+    Or(&'a ast::BlockExpr),
+    WhileTrue {
+        cond: &'a ast::BlockExpr,
+        body: &'a ast::BlockExpr,
+    },
+    WhileFalse {
+        cond: &'a ast::BlockExpr,
+        body: &'a ast::BlockExpr,
+    },
+}
+
+/// The gate's per-block condition: a syntactic block literal with no
+/// parameters and no temporaries. A block with temporaries gets a fresh
+/// activation (and fresh temps) per invocation in M1, which a closure
+/// created inside a loop body could observe; a register cannot reproduce
+/// that, so such blocks keep M1's real-send semantics.
+fn as_inlinable_block(expr: &ast::Expr) -> Option<&ast::BlockExpr> {
+    match expr {
+        ast::Expr::Block(b) if b.params.is_empty() && b.body.temps.is_empty() => Some(b),
+        _ => None,
+    }
+}
+
+/// Only ever offered ordinary explicit-receiver sends (see `lower_send`);
+/// looks at the message shape and the argument/receiver expressions only.
+pub(crate) fn recognize(send: &ast::Send) -> Option<InlineForm<'_>> {
+    let ast::Selector::Keyword(selector) = &send.message.selector else {
+        return None;
+    };
+    let args = &send.message.args;
+    match selector.as_str() {
+        "ifTrue:ifFalse:" => Some(InlineForm::IfTrueIfFalse(
+            as_inlinable_block(&args[0])?,
+            as_inlinable_block(&args[1])?,
+        )),
+        "ifFalse:ifTrue:" => Some(InlineForm::IfTrueIfFalse(
+            as_inlinable_block(&args[1])?,
+            as_inlinable_block(&args[0])?,
+        )),
+        "ifTrue:" => Some(InlineForm::IfTrue(as_inlinable_block(&args[0])?)),
+        "ifFalse:" => Some(InlineForm::IfFalse(as_inlinable_block(&args[0])?)),
+        "and:" => Some(InlineForm::And(as_inlinable_block(&args[0])?)),
+        "or:" => Some(InlineForm::Or(as_inlinable_block(&args[0])?)),
+        "whileTrue:" => Some(InlineForm::WhileTrue {
+            cond: as_inlinable_block(&send.receiver)?,
+            body: as_inlinable_block(&args[0])?,
+        }),
+        "whileFalse:" => Some(InlineForm::WhileFalse {
+            cond: as_inlinable_block(&send.receiver)?,
+            body: as_inlinable_block(&args[0])?,
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_send(src: &str) -> ast::Send {
+        let full =
+            format!("Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^{src} )\n) : ()");
+        let module = ns_syntax::parse(&full).expect("parse");
+        match &module.root_class.instance_side.methods[0].body.stmts[0] {
+            ast::Stmt::Return(ast::Expr::Send(send)) => (**send).clone(),
+            other => panic!("expected a return-of-send statement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recognizes_if_true_if_false_with_literal_blocks() {
+        assert!(matches!(
+            recognize(&parse_send("x ifTrue: [1] ifFalse: [2]")),
+            Some(InlineForm::IfTrueIfFalse(..))
+        ));
+        assert!(matches!(
+            recognize(&parse_send("x ifFalse: [1] ifTrue: [2]")),
+            Some(InlineForm::IfTrueIfFalse(..))
+        ));
+        assert!(matches!(
+            recognize(&parse_send("x and: [y]")),
+            Some(InlineForm::And(_))
+        ));
+    }
+
+    #[test]
+    fn does_not_recognize_a_non_literal_block_argument() {
+        assert!(recognize(&parse_send("x ifTrue: y ifFalse: [2]")).is_none());
+    }
+
+    #[test]
+    fn does_not_recognize_a_block_with_parameters_or_temporaries() {
+        assert!(recognize(&parse_send("x ifTrue: [:p | p] ifFalse: [2]")).is_none());
+        assert!(recognize(&parse_send("x ifTrue: [ | t | t ] ifFalse: [2]")).is_none());
+    }
+
+    #[test]
+    fn recognizes_while_only_when_receiver_and_argument_are_both_block_literals() {
+        assert!(matches!(
+            recognize(&parse_send("[x] whileTrue: [y]")),
+            Some(InlineForm::WhileTrue { .. })
+        ));
+        assert!(matches!(
+            recognize(&parse_send("[x] whileFalse: [y]")),
+            Some(InlineForm::WhileFalse { .. })
+        ));
+        assert!(recognize(&parse_send("x whileTrue: [y]")).is_none());
+    }
+
+    #[test]
+    fn ignores_unary_binary_and_unrelated_keyword_selectors() {
+        assert!(recognize(&parse_send("x foo")).is_none());
+        assert!(recognize(&parse_send("x + [1]")).is_none());
+        assert!(recognize(&parse_send("x at: [1]")).is_none());
+    }
+}
