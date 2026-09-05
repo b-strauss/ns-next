@@ -29,16 +29,19 @@ other tooling is needed; the project has no external runtime dependencies.
 ## Build and test
 
 ```bash
+# the full suite, including the differential harness over both engines
 cargo test --workspace
+# formatting
 cargo fmt --all
+# lints, must be warning-free
 cargo clippy --workspace --all-targets
+# parser corpus gate: must report "parsed 210, failed 0, expected-fail 1, stale 0"
 cargo run -p ns-cli -- parse-corpus corpus/modules
 ```
 
-The test suite includes a harness that runs every fixture under both engines and compares
-exit status, stdout and stderr byte for byte. The last command checks the parser against a
-vendored corpus of real Newspeak modules; it is a non-regression gate and must report
-`parsed 210, failed 0, expected-fail 1, stale 0`.
+The differential harness runs every fixture under both engines and compares exit status,
+stdout and stderr byte for byte. The corpus is a vendored set of real Newspeak modules,
+kept as a non-regression gate for the parser.
 
 ## Usage
 
