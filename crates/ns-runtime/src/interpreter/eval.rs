@@ -137,7 +137,7 @@ fn write_outer_local(frame: &FrameRef, depth: u16, index: u16, value: Value) {
 ///
 /// Returns the `NewspeakError` message on failure (never panics -- this is a
 /// Newspeak-program-input path).
-fn parse_int_literal(text: &str) -> Result<i64, String> {
+pub(crate) fn parse_int_literal(text: &str) -> Result<i64, String> {
     let Some((radix_part, digits)) = text.split_once('r') else {
         return text
             .parse::<i64>()
