@@ -365,8 +365,9 @@ impl<'a> Lowerer<'a> {
         // theoretical; make the ceiling an explicit assertion rather than a
         // silent truncation.
         debug_assert!(
-            self.instrs.len() < u16::MAX as usize,
-            "internal: more than 65535 instructions in one body -- call_site_id (u16) would alias"
+            self.instrs.len() <= u16::MAX as usize,
+            "internal: more than {} instructions in one body -- call_site_id (u16) would alias",
+            u16::MAX
         );
         CallSite {
             call_site_id: self.instrs.len() as u16,
