@@ -13,8 +13,9 @@ pub mod platform;
 pub mod resolver;
 pub mod symbol;
 pub mod types;
+pub mod vm;
 
-pub use interpreter::{Interpreter, Signal};
+pub use interpreter::{Engine, Interpreter, Signal};
 pub use resolver::resolve;
 pub use symbol::Symbol;
 pub use types::*;

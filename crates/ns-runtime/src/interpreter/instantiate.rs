@@ -269,7 +269,7 @@ impl Interpreter {
             sender: None,
             home: None,
             current_class: Some(class.clone()),
-            kind: FrameKind::TopLevel, // an initializer is its own kind of top-of-chain activation for M1
+            kind: FrameKind::Initializer(class.clone()),
             uncontinuable: false,
         }));
 
