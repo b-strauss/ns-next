@@ -114,7 +114,7 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn lower_slot_init(&mut self, init: &Expr, field_index: u32) {
         self.next_scratch = self.base;
         let start = self.instrs.len();
-        let src = self.lower_expr(init);
+        let src = self.lower_expr_consumed_immediately(init);
         self.emit(Instr::InitSlot { src, field_index });
         let end = self.instrs.len();
         self.statement_pc.push((self.statement_index, start..end));
@@ -128,12 +128,12 @@ impl<'a> Lowerer<'a> {
     fn lower_stmt_inner(&mut self, stmt: &Stmt) -> Option<u16> {
         match stmt {
             Stmt::Expr(e) => {
-                let reg = self.lower_expr(e);
+                let reg = self.lower_expr_consumed_immediately(e);
                 self.last_expr_reg = Some(reg);
                 Some(reg)
             }
             Stmt::Return(e) => {
-                let reg = self.lower_expr(e);
+                let reg = self.lower_expr_consumed_immediately(e);
                 match self.return_instr(reg) {
                     Some(instr) => {
                         self.emit(instr);
@@ -259,6 +259,27 @@ impl<'a> Lowerer<'a> {
         self.materialize(reg, clobbered)
     }
 
+    /// Lowers an expression whose value is consumed by the very next
+    /// instruction this body emits, or by nothing at all.
+    ///
+    /// This is the other half of `lower_operand`'s rule. An operand has to
+    /// survive whatever is lowered after it; here nothing is, so no user
+    /// code can run between the expression's last instruction and its
+    /// consumer, and `lower_assign` can skip the copy that would otherwise
+    /// protect its value from the setter send it just emitted.
+    ///
+    /// The three positions with that property are a statement, a `^`, and a
+    /// slot initializer. They route through this one function rather than
+    /// deciding for themselves, so a fourth cannot be added later and
+    /// silently get the pessimized form -- or, worse, be given the cheap
+    /// form without the property actually holding.
+    fn lower_expr_consumed_immediately(&mut self, expr: &Expr) -> u16 {
+        match expr {
+            Expr::Assign { target, value, .. } => self.lower_assign(target, value, false),
+            _ => self.lower_expr(expr),
+        }
+    }
+
     /// Whether lowering `expr` can emit an instruction that writes one of
     /// this frame's named locals: a `StoreLocal`/`StoreOuterLocal` from an
     /// assignment, or *any* send -- a send runs user code, and that code can
@@ -302,7 +323,7 @@ impl<'a> Lowerer<'a> {
                 dst
             }
             Expr::Ident(id) => self.lower_ident_read(id),
-            Expr::Assign { target, value, .. } => self.lower_assign(target, value),
+            Expr::Assign { target, value, .. } => self.lower_assign(target, value, true),
             Expr::Send(send) => self.lower_send(send),
             Expr::Cascade(cascade) => self.lower_cascade(cascade),
             Expr::Block(block) => self.lower_block_literal(block),
@@ -389,7 +410,16 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_assign(&mut self, target: &ast::Ident, value: &Expr) -> u16 {
+    /// `value_outlives_setter` is false only where this expression's value
+    /// is consumed by the next instruction emitted, or by nothing at all --
+    /// see `lower_expr_consumed_immediately`, the only caller that passes
+    /// false.
+    fn lower_assign(
+        &mut self,
+        target: &ast::Ident,
+        value: &Expr,
+        value_outlives_setter: bool,
+    ) -> u16 {
         let mut v = self.lower_expr(value);
         // A setter send runs user code before this expression's own value is
         // handed on, so a named local's register would no longer hold what
@@ -397,10 +427,12 @@ impl<'a> Lowerer<'a> {
         // no copy: the only named local a `StoreLocal` can write while `v`
         // is live is `v` itself -- `t := t` -- which leaves it unchanged,
         // and a `StoreOuterLocal` writes a different frame.)
-        if matches!(
-            self.bindings.get(&target.span),
-            Some(Binding::LexicalSend { .. })
-        ) {
+        if value_outlives_setter
+            && matches!(
+                self.bindings.get(&target.span),
+                Some(Binding::LexicalSend { .. })
+            )
+        {
             v = self.materialize(v, true);
         }
         match self.bindings.get(&target.span) {
@@ -1228,6 +1260,80 @@ mod tests {
             Some(Instr::SendLexical { depth: 0, selector, arg_regs, .. })
                 if selector.as_str() == "n:" && arg_regs.len() == 1
         ));
+    }
+
+    /// The copy `lower_assign` makes for a setter send protects the
+    /// assignment's *value* from the user code that setter runs. Where that
+    /// value is consumed by the next instruction this body emits -- the
+    /// three `lower_expr_consumed_immediately` positions -- nothing runs in
+    /// between, so the copy is pure overhead: one instruction, and one more
+    /// register in every activation's `temps`. The three tests below pin
+    /// the cheap form for each position; the guard that the copy is still
+    /// made where the value *does* outlive the setter is the differential
+    /// test `assert_engines_agree_on_source`'s `setterValue` case.
+    #[test]
+    fn a_slot_assignment_in_statement_position_does_not_copy_its_value() {
+        let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  m = ( | t | t := 1. n := t )\n) : ()";
+        let (method, bindings) = resolve_method(src, 0);
+        let mut lowerer = method_lowerer(&method, &bindings); // temp `t` is register 0
+        for stmt in &method.body.stmts {
+            lowerer.lower_statement(stmt);
+        }
+        let code = lowerer.finish(method.span);
+        assert!(
+            !code.instrs.iter().any(|i| matches!(i, Instr::Move { .. })),
+            "nothing consumes the assignment's value, so it needs no copy: {:?}",
+            code.instrs
+        );
+        let Some(Instr::SendLexical { arg_regs, .. }) = code
+            .instrs
+            .iter()
+            .find(|i| matches!(i, Instr::SendLexical { .. }))
+        else {
+            panic!("expected the setter send");
+        };
+        assert_eq!(arg_regs[0], 0, "the setter takes `t`'s own register");
+    }
+
+    #[test]
+    fn a_returned_slot_assignment_does_not_copy_its_value() {
+        let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  m = ( | t | t := 1. ^n := t )\n) : ()";
+        let (method, bindings) = resolve_method(src, 0);
+        let mut lowerer = method_lowerer(&method, &bindings); // temp `t` is register 0
+        for stmt in &method.body.stmts {
+            lowerer.lower_statement(stmt);
+        }
+        let code = lowerer.finish(method.span);
+        assert!(
+            !code.instrs.iter().any(|i| matches!(i, Instr::Move { .. })),
+            "the `Return` reads the value immediately after the setter send: {:?}",
+            code.instrs
+        );
+        assert_eq!(code.instrs.last(), Some(&Instr::Return { reg: 0 }));
+    }
+
+    #[test]
+    fn a_slot_initializer_that_assigns_a_slot_does_not_copy_its_value() {
+        // A method body stands in for the initializer expression, as in
+        // `a_slot_initializer_is_one_statement_ending_in_init_slot`; the
+        // parameter gives the assignment a named local to hand on.
+        let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  foo: p = ( ^n := p )\n) : ()";
+        let (method, bindings) = resolve_method(src, 0);
+        let mut lowerer = Lowerer::new(CodeKind::Initializer, 1, 0, &bindings, vec![]);
+        lowerer.lower_slot_init(return_expr(&method), 4);
+        let code = lowerer.finish(method.span);
+        assert!(
+            !code.instrs.iter().any(|i| matches!(i, Instr::Move { .. })),
+            "`InitSlot` reads the value immediately after the setter send: {:?}",
+            code.instrs
+        );
+        assert_eq!(
+            code.instrs.last(),
+            Some(&Instr::InitSlot {
+                src: 0,
+                field_index: 4
+            })
+        );
     }
 
     #[test]
