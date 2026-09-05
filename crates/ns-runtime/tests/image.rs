@@ -748,25 +748,27 @@ fn a_deeply_nested_literal_array_is_a_decode_error_not_a_stack_overflow() {
         decode::decode_code_table(&mut r),
         Err(decode::DecodeError::NestingTooDeep {
             what: "literal array",
-            limit: 64
+            limit: 128
         })
     );
     assert_eq!(
         decode::DecodeError::NestingTooDeep {
             what: "literal array",
-            limit: 64
+            limit: 128
         }
         .to_string(),
-        "literal array in image nests deeper than 64 levels"
+        "literal array in image nests deeper than 128 levels"
     );
 }
 
 #[test]
 fn a_literal_array_within_the_nesting_limit_still_decodes() {
-    // The ceiling must not reject anything a real program could produce.
-    let bytes = code_table_with_nested_literal_array(64);
+    // The ceiling must reach at least the parser's own `MAX_DEPTH` of 128 --
+    // see `the_deepest_literal_array_the_parser_accepts_survives_a_round_trip`
+    // for the end-to-end version of that claim.
+    let bytes = code_table_with_nested_literal_array(128);
     let mut r = decode::Reader::new(&bytes);
-    let table = decode::decode_code_table(&mut r).expect("64 levels is within the limit");
+    let table = decode::decode_code_table(&mut r).expect("128 levels is within the limit");
     assert_eq!(table.codes.len(), 1);
     assert!(matches!(
         table.codes[0].instrs[0],
@@ -813,4 +815,85 @@ fn installing_against_a_root_that_is_not_a_class_is_a_decode_error() {
         Err(e) => panic!("expected NotAClass, got a different error: {e}"),
         Ok(_) => panic!("expected NotAClass, got Ok"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Task 13, review fix round 2: the decoder's nesting ceiling must sit at or
+// above what `ns-syntax`'s parser lets a program contain, or the image
+// cannot read back what it just wrote.
+// ---------------------------------------------------------------------------
+
+/// A module whose one method returns a literal array nested `levels` deep:
+/// `#(` opens the first level and each further `(` opens another.
+fn source_with_nested_literal_array(levels: usize) -> String {
+    let open = "(".repeat(levels);
+    let close = ")".repeat(levels);
+    format!("Newspeak3\n'T'\nclass X = Object new (\n) (\n  arr = ( ^#{open}0{close} )\n) : ()")
+}
+
+/// The deepest literal-array nesting `ns-syntax`'s parser actually accepts,
+/// discovered at run time rather than restated, so this test tracks the
+/// parser's private `MAX_DEPTH` instead of assuming a number.
+fn deepest_literal_array_the_parser_accepts() -> usize {
+    let mut deepest = 0;
+    for levels in 1..1024 {
+        if ns_syntax::parse(&source_with_nested_literal_array(levels)).is_ok() {
+            deepest = levels;
+        } else {
+            break;
+        }
+    }
+    assert!(
+        deepest > 0,
+        "the parser accepts at least one level of nesting"
+    );
+    deepest
+}
+
+/// The deepest `Literal::Array` nesting any `LoadLiteral` in `code` carries.
+fn literal_array_depth(code: &CompiledCode) -> usize {
+    fn depth(literal: &Literal) -> usize {
+        match literal {
+            Literal::Array(elements) => 1 + elements.iter().map(depth).max().unwrap_or(0),
+            _ => 0,
+        }
+    }
+    code.instrs
+        .iter()
+        .filter_map(|instr| match instr {
+            Instr::LoadLiteral { literal, .. } => Some(depth(literal)),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+#[test]
+fn the_deepest_literal_array_the_parser_accepts_survives_a_round_trip() {
+    // The regression this pins: a decoder ceiling below the parser's bound
+    // makes the image unable to read back a program the compiler just wrote
+    // into it -- a clean `NestingTooDeep` on a perfectly legal source file.
+    let levels = deepest_literal_array_the_parser_accepts();
+    assert!(
+        levels > 64,
+        "the parser accepts deeper nesting than 64 levels ({levels}), which is why \
+         MAX_LITERAL_DEPTH cannot be 64"
+    );
+    let (_interp, class, bindings) = load(&source_with_nested_literal_array(levels));
+    let module = compiler::compile_module(&class, &bindings);
+    let original = method_code(&class, &module, "arr");
+    assert_eq!(
+        literal_array_depth(&original),
+        levels,
+        "the compiler lowered the whole nest"
+    );
+    let (table, _ids) = round_trip_code_table(&module, &class);
+    let (_, id) = table
+        .methods
+        .iter()
+        .find(|(selector, _)| selector == "arr")
+        .expect("arr is in the root list");
+    let decoded = &table.codes[*id as usize];
+    assert_eq!(**decoded, *original);
+    assert_eq!(literal_array_depth(decoded), levels);
 }

@@ -564,10 +564,26 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
 /// level costs only five bytes in the stream (`u8` tag + `u32` length), so
 /// without a ceiling a few kilobytes of crafted image would recurse until
 /// the stack overflows -- which aborts the process outright and cannot be
-/// caught, let alone reported as a `DecodeError`. Far above anything the
-/// compiler emits: `ast::Literal::Array` nesting comes from source text the
-/// parser has already depth-limited.
-const MAX_LITERAL_DEPTH: usize = 64;
+/// caught, let alone reported as a `DecodeError`.
+///
+/// The value is bracketed from both sides. Below, by what the encoder can
+/// legitimately produce: `ns-syntax`'s parser accepts literal-array nesting
+/// up to its own `parser::MAX_DEPTH` (128, shared across every guarded
+/// production, and spent on nested arrays by `parse_array_element`), and
+/// `compiler::lower::lower_literal` lowers all of it to nested
+/// `Literal::Array`s with no further limit. So this ceiling must be *at
+/// least* `MAX_DEPTH`, or an image would fail to read back a program the
+/// compiler had just written into it. Above, by the stack: decoding was
+/// measured to survive 700 levels and to overflow at 2000 in a debug build,
+/// so 128 keeps a wide margin.
+///
+/// `parser::MAX_DEPTH` is private to `ns-syntax`, and this milestone leaves
+/// that crate untouched, so the number is restated here rather than
+/// imported -- it must track `crates/ns-syntax/src/parser/mod.rs`'s
+/// `MAX_DEPTH`. `the_deepest_literal_array_the_parser_accepts_survives_a_round_trip`
+/// in `tests/image.rs` discovers the parser's real bound at run time instead
+/// of assuming it, so the two cannot drift apart silently.
+const MAX_LITERAL_DEPTH: usize = 128;
 
 fn decode_literal(r: &mut Reader, depth: usize) -> Result<Literal, DecodeError> {
     if depth > MAX_LITERAL_DEPTH {
