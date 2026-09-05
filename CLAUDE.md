@@ -59,17 +59,31 @@ unwrap through a local `expect_ok` helper — copy the one in a neighbouring tes
 
 ## Working in this repository
 
+The full suite, including the differential harness that compares the two engines:
+
 ```bash
-cargo test --workspace                            # full suite, including the differential harness
-cargo fmt --all                                   # before every commit
-cargo clippy --workspace --all-targets            # must be warning-free
+cargo test --workspace
+```
+
+Before every commit, and warning-free:
+
+```bash
+cargo fmt --all
+```
+
+```bash
+cargo clippy --workspace --all-targets
+```
+
+The parser corpus is a non-regression gate and must keep reporting
+`parsed 210, failed 0, expected-fail 1, stale 0`; a file that legitimately cannot parse
+yet belongs in `corpus/blacklist.toml`:
+
+```bash
 cargo run -p ns-cli -- parse-corpus corpus/modules
 ```
 
-The corpus command is a non-regression gate and must keep reporting
-`parsed 210, failed 0, expected-fail 1, stale 0`; a file that legitimately cannot parse
-yet belongs in `corpus/blacklist.toml`. Nothing under `crates/ns-syntax` should change
-for runtime work.
+Nothing under `crates/ns-syntax` should change for runtime work.
 
 Add no new external dependency without a reason that survives review — the image format
 is hand-rolled on purpose.
