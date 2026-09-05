@@ -45,9 +45,7 @@ cross-cutting constraints spec — before Task 3 (it governs the shape of
 ## Global Constraints
 
 - **Rust toolchain:** 1.98.0, pinned via `rust-toolchain.toml` (already in
-  the repo). `cargo` lives at `C:\Users\Benjamin\.cargo\bin\cargo.exe` and is
-  **not on PATH** in every shell — either add `%USERPROFILE%\.cargo\bin` to
-  PATH for the session or invoke cargo by full path.
+  the repo).
 - **Edition:** 2021.
 - **All code, identifiers, comments, and doc comments in English.**
 - **Lints:** `#![warn(clippy::all)]` at the crate root; `cargo clippy

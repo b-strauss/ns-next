@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Rust toolchain:** 1.98.0, pinned via `rust-toolchain.toml`. `cargo` lives at `C:\Users\Benjamin\.cargo\bin\cargo.exe` and is **not on PATH** in every shell — add `%USERPROFILE%\.cargo\bin` to PATH for the session or invoke cargo by full path.
+- **Rust toolchain:** 1.98.0, pinned via `rust-toolchain.toml`.
 - **Edition:** 2021.
 - **All code, identifiers, comments, and doc comments in English.**
 - **Lints:** `cargo clippy --workspace --all-targets` must be warning-free before every commit.
