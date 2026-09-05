@@ -48,7 +48,14 @@ real virtual send) per the project's performance-priority decision.
 Object model stays `Rc<RefCell<Object>>` for M2 — the arena/handle
 rewrite is deferred to M3, alongside the real GC (image format is
 defined against the logical value model so that later swap won't break
-image compatibility). Design spec committed at `92f511b`; the 15-task
-checkbox-level implementation plan (`superpowers/plans/2026-09-04-ns-next-bytecode-vm.md`)
-is written and committed. Implementation via `subagent-driven-development`
-or `executing-plans` is the next step.
+image compatibility). Design spec committed at `92f511b` and revised on
+2026-09-05 after a section-by-section completeness check against the M1
+runtime spec, the liveness spec, and the M1 source: dispatch orchestration
+is shared between engines via three body-execution hooks (so instance
+initializers compile to bytecode too, not just methods and blocks), native
+`whileTrue:`/`whileFalse:`/`ifFalse:ifTrue:` complete the core library's
+control-flow surface, and inlined blocks get precise lexical-addressing and
+allocation rules. The 16-task checkbox-level implementation plan
+(`superpowers/plans/2026-09-04-ns-next-bytecode-vm.md`) is rewritten on that
+basis and committed. Implementation via `subagent-driven-development` or
+`executing-plans` is the next step.
