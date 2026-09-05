@@ -1,15 +1,21 @@
 //! Canonical decoding, the inverse of `encode.rs`. A malformed byte stream
 //! is a `DecodeError`, never a panic.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use ns_syntax::ast;
 use ns_syntax::Span;
 
 use crate::bytecode::{
     class_key, method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
 };
-use crate::types::{Binding, BuiltinClass, ClassRef, ObjectData, Value};
+use crate::types::{
+    Binding, BuiltinClass, ClassRef, ClosureBody, ClosureData, Frame, FrameKind, FrameRef, ObjRef,
+    Object, ObjectData, Value,
+};
+use crate::Interpreter;
 use crate::Symbol;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -621,5 +627,279 @@ fn decode_literal(r: &mut Reader, depth: usize) -> Result<Literal, DecodeError> 
                 tag,
             })
         }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The object table and the frame table.
+// ---------------------------------------------------------------------------
+
+/// Everything the graph decoder resolves tags against: the live bootstrap
+/// (`interp`), the reloaded root class, the decoded code table, the
+/// reloaded module's bindings, and the interpreter's `platform` singleton.
+pub struct DecodeContext<'a> {
+    pub interp: &'a Interpreter,
+    pub root_class: &'a ClassRef,
+    pub codes: &'a [Rc<CompiledCode>],
+    pub bindings: &'a Rc<HashMap<Span, Binding>>,
+    pub platform: Value,
+}
+
+pub struct DecodedGraph {
+    pub roots: Vec<Value>,
+    /// The largest identity hash of any decoded object -- `load` advances
+    /// the interpreter's allocation counter past it.
+    pub max_identity_hash: u32,
+}
+
+/// The two placeholder-allocated tables, indexed by the ids in the stream.
+struct Tables<'a> {
+    objects: &'a [ObjRef],
+    frames: &'a [FrameRef],
+}
+
+pub fn decode_class_tag(r: &mut Reader, ctx: &DecodeContext) -> Result<ClassRef, DecodeError> {
+    match r.read_u8()? {
+        0 => Ok(ctx.interp.builtin_class(read_builtin_class(r)?)),
+        1 => Ok(ctx.root_class.clone()),
+        tag => Err(DecodeError::InvalidTag { what: "class", tag }),
+    }
+}
+
+fn decode_value(
+    r: &mut Reader,
+    ctx: &DecodeContext,
+    tables: &Tables,
+) -> Result<Value, DecodeError> {
+    match r.read_u8()? {
+        0 => Ok(Value::Nil),
+        1 => Ok(Value::Bool(false)),
+        2 => Ok(Value::Bool(true)),
+        3 => Ok(Value::SmallInt(r.read_i64()?)),
+        4 => Ok(Value::Float(r.read_f64()?)),
+        5 => {
+            let id = r.read_u32()?;
+            tables
+                .objects
+                .get(id as usize)
+                .cloned()
+                .map(Value::Obj)
+                .ok_or(DecodeError::BadObjectId(id))
+        }
+        6 => Ok(Value::Obj(decode_class_tag(r, ctx)?)),
+        7 => Ok(ctx.platform.clone()),
+        tag => Err(DecodeError::InvalidTag { what: "value", tag }),
+    }
+}
+
+fn decode_values(
+    r: &mut Reader,
+    ctx: &DecodeContext,
+    tables: &Tables,
+) -> Result<Vec<Value>, DecodeError> {
+    let n = r.read_u32()? as usize;
+    let mut values = reserve_for(n, r);
+    for _ in 0..n {
+        values.push(decode_value(r, ctx, tables)?);
+    }
+    Ok(values)
+}
+
+fn decode_frame_id(r: &mut Reader, tables: &Tables) -> Result<FrameRef, DecodeError> {
+    let id = r.read_u32()?;
+    tables
+        .frames
+        .get(id as usize)
+        .cloned()
+        .ok_or(DecodeError::BadFrameId(id))
+}
+
+fn decode_frame_ref(r: &mut Reader, tables: &Tables) -> Result<Option<FrameRef>, DecodeError> {
+    if r.read_bool()? {
+        Ok(Some(decode_frame_id(r, tables)?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn decode_closure_record(
+    r: &mut Reader,
+    ctx: &DecodeContext,
+    tables: &Tables,
+) -> Result<ClosureData, DecodeError> {
+    let n = r.read_u16()? as usize;
+    let mut params = reserve_for(n, r);
+    for _ in 0..n {
+        params.push(decode_symbol(r)?);
+    }
+    let code_id = r.read_u32()?;
+    let code = ctx
+        .codes
+        .get(code_id as usize)
+        .cloned()
+        .ok_or(DecodeError::BadCodeId(code_id))?;
+    let captured_frame = decode_frame_id(r, tables)?;
+    let home = decode_frame_id(r, tables)?;
+    Ok(ClosureData {
+        params,
+        // A decoded closure always carries compiled code: the encoder
+        // refuses a `ClosureBody::Ast` outright, so the format has no
+        // representation for one.
+        body: ClosureBody::Compiled(code),
+        captured_frame,
+        home,
+        // Never serialized -- the reloaded module's map is authoritative.
+        bindings: ctx.bindings.clone(),
+    })
+}
+
+/// Re-resolves a `FrameKind::Method` against the *reloaded* class's method
+/// map: the image names the method by selector, never by identity.
+fn method_decl(ctx: &DecodeContext, selector: String) -> Result<Rc<ast::MethodDecl>, DecodeError> {
+    let found = {
+        let borrowed = ctx.root_class.borrow();
+        match &borrowed.data {
+            ObjectData::Class(data) => data.methods.get(&Symbol::intern(&selector)).cloned(),
+            _ => None,
+        }
+    };
+    found.ok_or(DecodeError::UnknownSelector(selector))
+}
+
+fn decode_frame(
+    r: &mut Reader,
+    ctx: &DecodeContext,
+    tables: &Tables,
+) -> Result<Frame, DecodeError> {
+    let receiver = decode_value(r, ctx, tables)?;
+    let args = decode_values(r, ctx, tables)?;
+    let temps = decode_values(r, ctx, tables)?;
+    let pc = r.read_u32()? as usize;
+    let sender = decode_frame_ref(r, tables)?;
+    let home = decode_frame_ref(r, tables)?;
+    let current_class = if r.read_bool()? {
+        Some(decode_class_tag(r, ctx)?)
+    } else {
+        None
+    };
+    let kind = match r.read_u8()? {
+        0 => FrameKind::Method(method_decl(ctx, r.read_str()?)?),
+        1 => FrameKind::Closure(Rc::new(decode_closure_record(r, ctx, tables)?)),
+        2 => FrameKind::TopLevel,
+        3 => FrameKind::Initializer(decode_class_tag(r, ctx)?),
+        tag => {
+            return Err(DecodeError::InvalidTag {
+                what: "frame kind",
+                tag,
+            })
+        }
+    };
+    let uncontinuable = r.read_bool()?;
+    Ok(Frame {
+        receiver,
+        args,
+        temps,
+        pc,
+        sender,
+        home,
+        current_class,
+        kind,
+        uncontinuable,
+    })
+}
+
+/// A safe, fully initialized stand-in, overwritten in place by
+/// `decode_graph_section`'s second pass before anything can observe it.
+fn placeholder_frame() -> Frame {
+    Frame {
+        receiver: Value::Nil,
+        args: Vec::new(),
+        temps: Vec::new(),
+        pc: 0,
+        sender: None,
+        home: None,
+        current_class: None,
+        kind: FrameKind::TopLevel,
+        uncontinuable: false,
+    }
+}
+
+/// A record count read from an untrusted stream, refused before it is used
+/// to *allocate*. Every object record costs at least six bytes and every
+/// frame record at least eighteen, so one byte apiece is a conservative
+/// lower bound: a count above the bytes still unread cannot describe what
+/// follows. Without this a crafted `u32::MAX` would allocate billions of
+/// placeholders and abort the process before the read could fail.
+fn bounded_count(count: usize, r: &Reader) -> Result<usize, DecodeError> {
+    if count > r.remaining() {
+        return Err(DecodeError::UnexpectedEof);
+    }
+    Ok(count)
+}
+
+/// Two-pass decoding: placeholder-allocate every object and every frame,
+/// then fill each in place (so cycles and shared references round-trip
+/// with identity preserved), then decode the roots.
+///
+/// Both passes are flat loops over the two tables, and every reference
+/// between records is an id into them, never an inline nested record -- so
+/// no part of this decoder recurses on a depth the image controls. The one
+/// depth-bounded structure in the format, `Literal::Array`, lives in the
+/// code table (`decode_literal`'s `MAX_LITERAL_DEPTH`).
+pub fn decode_graph_section(
+    r: &mut Reader,
+    ctx: &DecodeContext,
+) -> Result<DecodedGraph, DecodeError> {
+    let object_count = bounded_count(r.read_u32()? as usize, r)?;
+    let frame_count = bounded_count(r.read_u32()? as usize, r)?;
+    let placeholder_class = ctx.interp.builtin_class(BuiltinClass::Object);
+    let objects: Vec<ObjRef> = (0..object_count)
+        .map(|_| {
+            Rc::new(RefCell::new(Object {
+                class: placeholder_class.clone(),
+                identity_hash: 0,
+                data: ObjectData::Instance(Vec::new()),
+            }))
+        })
+        .collect();
+    let frames: Vec<FrameRef> = (0..frame_count)
+        .map(|_| Rc::new(RefCell::new(placeholder_frame())))
+        .collect();
+    let tables = Tables {
+        objects: &objects,
+        frames: &frames,
+    };
+    let mut max_identity_hash = 0;
+    for obj in &objects {
+        let class = decode_class_tag(r, ctx)?;
+        let identity_hash = r.read_u32()?;
+        max_identity_hash = max_identity_hash.max(identity_hash);
+        let data = match r.read_u8()? {
+            0 => ObjectData::Instance(decode_values(r, ctx, &tables)?),
+            1 => ObjectData::Str(r.read_str()?),
+            2 => ObjectData::Sym(decode_symbol(r)?),
+            3 => ObjectData::Array(decode_values(r, ctx, &tables)?),
+            4 => ObjectData::Closure(decode_closure_record(r, ctx, &tables)?),
+            tag => {
+                return Err(DecodeError::InvalidTag {
+                    what: "object body",
+                    tag,
+                })
+            }
+        };
+        *obj.borrow_mut() = Object {
+            class,
+            identity_hash,
+            data,
+        };
+    }
+    for frame in &frames {
+        let decoded = decode_frame(r, ctx, &tables)?;
+        *frame.borrow_mut() = decoded;
+    }
+    let roots = decode_values(r, ctx, &tables)?;
+    Ok(DecodedGraph {
+        roots,
+        max_identity_hash,
     })
 }

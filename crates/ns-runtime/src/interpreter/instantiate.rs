@@ -515,7 +515,11 @@ pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
     })
 }
 
-fn method_name(pattern: &ast::MessagePattern) -> String {
+/// A `MessagePattern` rendered as the selector string it declares. Also the
+/// image encoder's `FrameKind::Method` representation: a frame names the
+/// method it activates by selector, re-resolved on load against the reloaded
+/// class's method map (`image::decode`).
+pub(crate) fn method_name(pattern: &ast::MessagePattern) -> String {
     match pattern {
         ast::MessagePattern::Unary { selector } => selector.name.clone(),
         ast::MessagePattern::Binary { selector, .. } => selector.name.clone(),
@@ -528,8 +532,10 @@ fn method_name(pattern: &ast::MessagePattern) -> String {
 /// The number of parameters a message pattern declares -- used by
 /// `instantiate`'s factory-arity guard above to compare a class's declared
 /// factory pattern against the actual `factory_args` supplied at the call
-/// site.
-fn pattern_param_count(pattern: &ast::MessagePattern) -> usize {
+/// site, and by `compiler` for a method's or an initializer's `num_args`
+/// (narrowed there to the `u16` `CompiledCode` stores it in). One
+/// implementation, not one per caller.
+pub(crate) fn pattern_param_count(pattern: &ast::MessagePattern) -> usize {
     match pattern {
         ast::MessagePattern::Unary { .. } => 0,
         ast::MessagePattern::Binary { .. } => 1,

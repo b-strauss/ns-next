@@ -7,7 +7,10 @@ use std::rc::Rc;
 use crate::bytecode::{
     class_key, method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
 };
-use crate::types::{BuiltinClass, ClassRef, ObjectData, Value};
+use crate::types::{
+    BuiltinClass, ClassRef, ClosureBody, ClosureData, FrameKind, FrameRef, ObjRef, ObjectData,
+    Value,
+};
 
 pub const MAGIC: &[u8; 4] = b"NSIM";
 /// Versions the whole layout *and* the compiler's codegen: any change to
@@ -77,7 +80,7 @@ pub fn write_header(w: &mut Writer) {
 }
 
 /// Encodes the four non-`Obj` `Value` variants (tags 0-4); returns `false`
-/// for `Value::Obj`, which the object-graph encoder (Task 14) handles.
+/// for `Value::Obj`, which `encode_value` (the object-graph encoder) handles.
 pub fn encode_scalar_value(w: &mut Writer, v: &Value) -> bool {
     match v {
         Value::Nil => w.write_u8(0),
@@ -119,8 +122,8 @@ fn u16_field(what: &str, n: usize) -> u16 {
 }
 
 /// `Rc<CompiledCode>` pointer -> code-table id, assigned by
-/// `encode_code_table`; the object/frame encoders (Task 14) use it for
-/// closures' code references.
+/// `encode_code_table`; `encode_closure_record` uses it for a
+/// closure's code reference.
 pub struct CodeIds {
     ids: HashMap<usize, u32>,
 }
@@ -440,4 +443,325 @@ fn encode_literal(w: &mut Writer, literal: &Literal) {
             w.write_str(text);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The object table and the frame table (the spec's "Object table", "Frame
+// table" and "Root/special-objects table" bullets).
+// ---------------------------------------------------------------------------
+
+fn is_same_object(a: &Value, b: &Value) -> bool {
+    matches!((a, b), (Value::Obj(x), Value::Obj(y)) if Rc::ptr_eq(x, y))
+}
+
+/// One entry of `GraphTable::build`'s explicit work stack: the traversal
+/// alternates between values and frames, so both live on the same stack.
+enum Pending {
+    Value(Value),
+    Frame(FrameRef),
+}
+
+/// Every heap object (instances, strings, symbols, arrays, closures) and
+/// every `Frame` reachable from the roots, in discovery order. Class
+/// objects are never entered (they are class tags), nor is the `platform`
+/// singleton (special-object tag).
+pub struct GraphTable {
+    objects: Vec<ObjRef>,
+    object_ids: HashMap<usize, u32>,
+    frames: Vec<FrameRef>,
+    frame_ids: HashMap<usize, u32>,
+}
+
+impl GraphTable {
+    /// Pre-order depth-first from the roots, over an *explicit* stack
+    /// rather than the Rust call stack. A live heap's object graph is as
+    /// deep as the program that built it -- a Newspeak program can chain a
+    /// million arrays or a million activations -- and recursing over it
+    /// would overflow the stack, which aborts the process instead of
+    /// failing. The order is exactly what the recursive formulation would
+    /// produce (children pushed in reverse so they pop in order), which is
+    /// what makes the encoding canonical.
+    pub fn build(roots: &[Value], platform: &Value) -> GraphTable {
+        let mut table = GraphTable {
+            objects: Vec::new(),
+            object_ids: HashMap::new(),
+            frames: Vec::new(),
+            frame_ids: HashMap::new(),
+        };
+        let mut stack: Vec<Pending> = roots
+            .iter()
+            .rev()
+            .map(|v| Pending::Value(v.clone()))
+            .collect();
+        while let Some(pending) = stack.pop() {
+            match pending {
+                Pending::Value(v) => table.visit_value(&v, platform, &mut stack),
+                Pending::Frame(f) => table.visit_frame(&f, &mut stack),
+            }
+        }
+        table
+    }
+
+    fn visit_value(&mut self, v: &Value, platform: &Value, stack: &mut Vec<Pending>) {
+        let Value::Obj(obj) = v else { return };
+        if is_same_object(v, platform) || matches!(obj.borrow().data, ObjectData::Class(_)) {
+            return;
+        }
+        let key = Rc::as_ptr(obj) as usize;
+        if self.object_ids.contains_key(&key) {
+            return;
+        }
+        self.object_ids
+            .insert(key, u32_field("object table id", self.objects.len()));
+        self.objects.push(obj.clone());
+        let before = stack.len();
+        match &obj.borrow().data {
+            ObjectData::Instance(fields) | ObjectData::Array(fields) => {
+                stack.extend(fields.iter().cloned().map(Pending::Value));
+            }
+            ObjectData::Closure(c) => {
+                stack.push(Pending::Frame(c.captured_frame.clone()));
+                stack.push(Pending::Frame(c.home.clone()));
+            }
+            ObjectData::Str(_) | ObjectData::Sym(_) | ObjectData::Class(_) => {}
+        }
+        stack[before..].reverse();
+    }
+
+    fn visit_frame(&mut self, frame: &FrameRef, stack: &mut Vec<Pending>) {
+        let key = Rc::as_ptr(frame) as usize;
+        if self.frame_ids.contains_key(&key) {
+            return;
+        }
+        self.frame_ids
+            .insert(key, u32_field("frame table id", self.frames.len()));
+        self.frames.push(frame.clone());
+        let before = stack.len();
+        {
+            let f = frame.borrow();
+            stack.push(Pending::Value(f.receiver.clone()));
+            stack.extend(f.args.iter().cloned().map(Pending::Value));
+            stack.extend(f.temps.iter().cloned().map(Pending::Value));
+            stack.extend(
+                f.sender
+                    .iter()
+                    .chain(f.home.iter())
+                    .cloned()
+                    .map(Pending::Frame),
+            );
+            // A `FrameKind::Closure` frame's own closure record is encoded
+            // inline, so its two frame references need ids too.
+            if let FrameKind::Closure(c) = &f.kind {
+                stack.push(Pending::Frame(c.captured_frame.clone()));
+                stack.push(Pending::Frame(c.home.clone()));
+            }
+        }
+        stack[before..].reverse();
+    }
+
+    pub fn object_id(&self, obj: &ObjRef) -> u32 {
+        *self
+            .object_ids
+            .get(&(Rc::as_ptr(obj) as usize))
+            .expect("object was visited by build()")
+    }
+
+    pub fn frame_id(&self, frame: &FrameRef) -> u32 {
+        *self
+            .frame_ids
+            .get(&(Rc::as_ptr(frame) as usize))
+            .expect("frame was visited by build()")
+    }
+
+    pub fn objects(&self) -> &[ObjRef] {
+        &self.objects
+    }
+
+    pub fn frames(&self) -> &[FrameRef] {
+        &self.frames
+    }
+}
+
+/// `Builtin(kind)` (0 + kind tag) or `UserRoot` (1) -- a class is never
+/// structurally serialized (spec: "Root/special-objects table"). `UserRoot`
+/// is unambiguous because a loaded world has exactly one user-defined
+/// class: `Interpreter::load_module` does not load nested classes (see its
+/// "Milestone 1 known gaps" note), so the only non-builtin class object any
+/// value can point at is the module's root class.
+pub fn encode_class_tag(w: &mut Writer, class: &ClassRef) {
+    let builtin = match &class.borrow().data {
+        ObjectData::Class(data) => data.builtin,
+        _ => panic!("internal: a class reference does not point at a class object"),
+    };
+    match builtin {
+        Some(kind) => {
+            w.write_u8(0);
+            w.write_u8(builtin_class_tag(kind));
+        }
+        None => w.write_u8(1),
+    }
+}
+
+/// The general `Value` encoder: scalar tags 0-4 (`encode_scalar_value`),
+/// 5 = object-table id, 6 = class tag, 7 = the `platform` singleton.
+pub fn encode_value(w: &mut Writer, v: &Value, table: &GraphTable, platform: &Value) {
+    if encode_scalar_value(w, v) {
+        return;
+    }
+    let Value::Obj(obj) = v else {
+        unreachable!("encode_scalar_value handles every non-Obj case")
+    };
+    if is_same_object(v, platform) {
+        w.write_u8(7);
+        return;
+    }
+    if matches!(obj.borrow().data, ObjectData::Class(_)) {
+        w.write_u8(6);
+        encode_class_tag(w, obj);
+        return;
+    }
+    w.write_u8(5);
+    w.write_u32(table.object_id(obj));
+}
+
+fn encode_values(w: &mut Writer, values: &[Value], table: &GraphTable, platform: &Value) {
+    w.write_u32(u32_field("value list length", values.len()));
+    for v in values {
+        encode_value(w, v, table, platform);
+    }
+}
+
+fn encode_frame_ref(w: &mut Writer, frame: Option<&FrameRef>, table: &GraphTable) {
+    match frame {
+        Some(f) => {
+            w.write_bool(true);
+            w.write_u32(table.frame_id(f));
+        }
+        None => w.write_bool(false),
+    }
+}
+
+/// `params`, `code_id`, `captured_frame` id, `home` id. `bindings` is not
+/// serialized (the reloaded module's map is used on load).
+fn encode_closure_record(
+    w: &mut Writer,
+    closure: &ClosureData,
+    table: &GraphTable,
+    code_ids: &CodeIds,
+) -> Result<(), String> {
+    let ClosureBody::Compiled(code) = &closure.body else {
+        return Err(
+            "image encoding cannot serialize a closure created by the tree-walker \
+                    (ClosureBody::Ast); snapshot always runs under the bytecode engine"
+                .to_string(),
+        );
+    };
+    w.write_u16(u16_field("closure parameter count", closure.params.len()));
+    for p in &closure.params {
+        w.write_str(p.as_str());
+    }
+    w.write_u32(code_ids.id_of(code));
+    w.write_u32(table.frame_id(&closure.captured_frame));
+    w.write_u32(table.frame_id(&closure.home));
+    Ok(())
+}
+
+fn encode_object(
+    w: &mut Writer,
+    obj: &ObjRef,
+    table: &GraphTable,
+    code_ids: &CodeIds,
+    platform: &Value,
+) -> Result<(), String> {
+    let borrowed = obj.borrow();
+    encode_class_tag(w, &borrowed.class);
+    w.write_u32(borrowed.identity_hash);
+    match &borrowed.data {
+        ObjectData::Instance(fields) => {
+            w.write_u8(0);
+            encode_values(w, fields, table, platform);
+        }
+        ObjectData::Str(s) => {
+            w.write_u8(1);
+            w.write_str(s);
+        }
+        ObjectData::Sym(s) => {
+            w.write_u8(2);
+            w.write_str(s.as_str());
+        }
+        ObjectData::Array(elements) => {
+            w.write_u8(3);
+            encode_values(w, elements, table, platform);
+        }
+        ObjectData::Closure(c) => {
+            w.write_u8(4);
+            encode_closure_record(w, c, table, code_ids)?;
+        }
+        ObjectData::Class(_) => {
+            unreachable!("class objects are never entered in the object table")
+        }
+    }
+    Ok(())
+}
+
+fn encode_frame(
+    w: &mut Writer,
+    frame: &FrameRef,
+    table: &GraphTable,
+    code_ids: &CodeIds,
+    platform: &Value,
+) -> Result<(), String> {
+    let f = frame.borrow();
+    encode_value(w, &f.receiver, table, platform);
+    encode_values(w, &f.args, table, platform);
+    encode_values(w, &f.temps, table, platform);
+    w.write_u32(u32_field("frame pc", f.pc));
+    encode_frame_ref(w, f.sender.as_ref(), table);
+    encode_frame_ref(w, f.home.as_ref(), table);
+    match &f.current_class {
+        Some(c) => {
+            w.write_bool(true);
+            encode_class_tag(w, c);
+        }
+        None => w.write_bool(false),
+    }
+    match &f.kind {
+        FrameKind::Method(decl) => {
+            w.write_u8(0);
+            w.write_str(&crate::interpreter::instantiate::method_name(&decl.pattern));
+        }
+        FrameKind::Closure(c) => {
+            w.write_u8(1);
+            encode_closure_record(w, c, table, code_ids)?;
+        }
+        FrameKind::TopLevel => w.write_u8(2),
+        FrameKind::Initializer(class) => {
+            w.write_u8(3);
+            encode_class_tag(w, class);
+        }
+    }
+    w.write_bool(f.uncontinuable);
+    Ok(())
+}
+
+/// The object table, the frame table, and the roots. Both counts come
+/// first so the decoder can placeholder-allocate both tables before
+/// filling either (objects and frames reference each other freely).
+pub fn encode_graph_section(
+    w: &mut Writer,
+    roots: &[Value],
+    platform: &Value,
+    code_ids: &CodeIds,
+) -> Result<(), String> {
+    let table = GraphTable::build(roots, platform);
+    w.write_u32(u32_field("object table entry count", table.objects().len()));
+    w.write_u32(u32_field("frame table entry count", table.frames().len()));
+    for obj in table.objects() {
+        encode_object(w, obj, &table, code_ids, platform)?;
+    }
+    for frame in table.frames() {
+        encode_frame(w, frame, &table, code_ids, platform)?;
+    }
+    encode_values(w, roots, &table, platform);
+    Ok(())
 }

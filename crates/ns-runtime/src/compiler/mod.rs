@@ -20,19 +20,20 @@ use crate::Symbol;
 
 use lower::Lowerer;
 
-fn pattern_param_count(pattern: &ast::MessagePattern) -> u16 {
-    match pattern {
-        ast::MessagePattern::Unary { .. } => 0,
-        ast::MessagePattern::Binary { .. } => 1,
-        ast::MessagePattern::Keyword { parts } => parts.len() as u16,
-    }
+/// `instantiate::pattern_param_count` narrowed to the `u16` `CompiledCode`
+/// stores an argument count in. A pattern's parameter count is bounded by
+/// the keyword parts a parser can produce for one message, so the cast can
+/// never truncate in practice; the count itself has exactly one definition,
+/// shared with the interpreter's factory-arity guard.
+fn num_args_of(pattern: &ast::MessagePattern) -> u16 {
+    crate::interpreter::instantiate::pattern_param_count(pattern) as u16
 }
 
 pub fn compile_method(
     method: &ast::MethodDecl,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> CompiledCode {
-    let num_args = pattern_param_count(&method.pattern);
+    let num_args = num_args_of(&method.pattern);
     let num_named_temps = method.body.temps.len() as u16;
     let mut lowerer = Lowerer::new(
         CodeKind::Method,
@@ -67,10 +68,7 @@ pub fn compile_initializer(
             data.instance_slots.clone(),
             data.slot_index.clone(),
             data.init_exprs.clone(),
-            data.factory
-                .as_deref()
-                .map(pattern_param_count)
-                .unwrap_or(0),
+            data.factory.as_deref().map(num_args_of).unwrap_or(0),
         )
     };
     let mut lowerer = Lowerer::new(CodeKind::Initializer, num_args, 0, bindings, vec![]);

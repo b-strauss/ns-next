@@ -10,7 +10,8 @@ use ns_runtime::bytecode::{
 };
 use ns_runtime::image::{decode, encode};
 use ns_runtime::{
-    compiler, Binding, BuiltinClass, ClassRef, Interpreter, ObjectData, SourceOrigin, Symbol, Value,
+    compiler, Binding, BuiltinClass, ClassRef, ClosureBody, Engine, FrameKind, Interpreter,
+    ObjectData, Signal, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
@@ -134,7 +135,8 @@ fn scalar_value_boundary_cases_round_trip() {
 #[test]
 fn encoding_an_obj_value_is_refused_not_scalarized() {
     // `Value::Obj` is not a scalar; `encode_scalar_value` must return `false`
-    // and write nothing, leaving Task 14's object-graph encoder in charge.
+    // and write nothing, leaving `encode_value`, the object-graph encoder,
+    // in charge.
     let mut interp = ns_runtime::Interpreter::bootstrap();
     let obj = Value::Obj(interp.new_string("hi".to_string()));
     let mut w = encode::Writer::new();
@@ -896,4 +898,652 @@ fn the_deepest_literal_array_the_parser_accepts_survives_a_round_trip() {
     let decoded = &table.codes[*id as usize];
     assert_eq!(**decoded, *original);
     assert_eq!(literal_array_depth(decoded), levels);
+}
+
+// ---------------------------------------------------------------------------
+// Task 14: the object table and the frame table.
+// ---------------------------------------------------------------------------
+
+fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+    match result {
+        Ok(v) => v,
+        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
+        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+    }
+}
+
+/// Loads `src` under the bytecode engine, lets `make_roots` build the
+/// roots, encodes code table + graph section, decodes both with the same
+/// `Reader`, and returns (interp, class, original roots, decoded roots,
+/// max identity hash).
+fn round_trip_graph(
+    src: &str,
+    make_roots: impl FnOnce(&mut Interpreter, &ClassRef, &Bindings) -> Vec<Value>,
+) -> (Interpreter, ClassRef, Vec<Value>, Vec<Value>, u32) {
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let roots = make_roots(&mut interp, &class, &bindings);
+    let platform = interp.platform();
+    let mut w = encode::Writer::new();
+    let ids = encode::encode_code_table(
+        &mut w,
+        interp
+            .compiled_module()
+            .expect("the bytecode engine is active"),
+        &class,
+    );
+    encode::encode_graph_section(&mut w, &roots, &platform, &ids).expect("encode graph");
+    let bytes = w.into_bytes();
+    let mut r = decode::Reader::new(&bytes);
+    let table = decode::decode_code_table(&mut r).expect("code table");
+    let decoded = {
+        let ctx = decode::DecodeContext {
+            interp: &interp,
+            root_class: &class,
+            codes: &table.codes,
+            bindings: &bindings,
+            platform: platform.clone(),
+        };
+        decode::decode_graph_section(&mut r, &ctx).expect("graph")
+    };
+    (
+        interp,
+        class,
+        roots,
+        decoded.roots,
+        decoded.max_identity_hash,
+    )
+}
+
+const EMPTY: &str = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+
+fn obj(v: &Value) -> &ns_runtime::ObjRef {
+    let Value::Obj(o) = v else {
+        panic!("expected an object")
+    };
+    o
+}
+
+#[test]
+fn instances_and_arrays_round_trip_with_shared_identity_preserved() {
+    let (_i, _c, original, decoded, _max) = round_trip_graph(EMPTY, |interp, _, _| {
+        let shared = Value::Obj(interp.new_string("shared".to_string()));
+        vec![Value::Obj(interp.new_array(vec![
+            shared.clone(),
+            shared,
+            Value::SmallInt(7),
+        ]))]
+    });
+    let ObjectData::Array(elements) = &obj(&decoded[0]).borrow().data else {
+        panic!("expected an array")
+    };
+    assert!(
+        Rc::ptr_eq(obj(&elements[0]), obj(&elements[1])),
+        "shared identity preserved"
+    );
+    assert!(
+        !Rc::ptr_eq(obj(&original[0]), obj(&decoded[0])),
+        "the decoded array is a new object"
+    );
+    assert!(matches!(&obj(&elements[0]).borrow().data, ObjectData::Str(s) if s == "shared"));
+    assert!(matches!(elements[2], Value::SmallInt(7)));
+}
+
+#[test]
+fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
+    let (_i, _c, original, decoded, max) = round_trip_graph(EMPTY, |interp, _, _| {
+        vec![Value::Obj(interp.new_string("x".to_string()))]
+    });
+    let hash = obj(&original[0]).borrow().identity_hash;
+    assert_eq!(obj(&decoded[0]).borrow().identity_hash, hash);
+    assert!(max >= hash);
+}
+
+#[test]
+fn class_references_resolve_to_the_same_live_class_objects() {
+    let (interp, class, _o, decoded, _max) = round_trip_graph(EMPTY, |interp, class, _| {
+        vec![
+            Value::Obj(interp.builtin_class(BuiltinClass::Integer)),
+            Value::Obj(class.clone()),
+        ]
+    });
+    assert!(Rc::ptr_eq(
+        obj(&decoded[0]),
+        &interp.builtin_class(BuiltinClass::Integer)
+    ));
+    assert!(Rc::ptr_eq(obj(&decoded[1]), &class));
+}
+
+#[test]
+fn the_platform_singleton_resolves_to_the_interpreters_own() {
+    let (mut interp, _c, _o, decoded, _max) =
+        round_trip_graph(EMPTY, |interp, _, _| vec![interp.platform()]);
+    assert!(Rc::ptr_eq(obj(&decoded[0]), obj(&interp.platform())));
+}
+
+#[test]
+fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | a = 1. b = 'two'. |\n) (\n) : ()";
+    let (_i, class, _o, decoded, _max) = round_trip_graph(src, |interp, class, bindings| {
+        vec![expect_ok(
+            interp.instantiate(class.clone(), vec![], bindings),
+            "instantiate",
+        )]
+    });
+    let instance = obj(&decoded[0]).borrow();
+    assert!(Rc::ptr_eq(&instance.class, &class));
+    let ObjectData::Instance(fields) = &instance.data else {
+        panic!("expected an instance")
+    };
+    assert!(matches!(fields[0], Value::SmallInt(1)));
+    assert!(matches!(&obj(&fields[1]).borrow().data, ObjectData::Str(s) if s == "two"));
+}
+
+#[test]
+fn a_closure_and_its_paused_frame_chain_round_trip() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  mk = ( ^[ 1 ] )\n  public outer = ( ^mk )\n) : ()";
+    let (_i, class, original, decoded, _max) = round_trip_graph(src, |interp, class, bindings| {
+        let instance = expect_ok(
+            interp.instantiate(class.clone(), vec![], bindings),
+            "instantiate",
+        );
+        let closure = expect_ok(
+            interp.send(instance, Symbol::intern("outer"), vec![], bindings, None),
+            "outer",
+        );
+        // Synthetic "paused" state: edit the home frame's pc and grow its
+        // register file before snapshotting.
+        {
+            let ObjectData::Closure(c) = &obj(&closure).borrow().data else {
+                panic!("expected a closure")
+            };
+            let mut home = c.home.borrow_mut();
+            home.pc = 1;
+            home.temps.push(Value::SmallInt(9));
+        }
+        vec![closure]
+    });
+    let original_code = {
+        let ObjectData::Closure(c) = &obj(&original[0]).borrow().data else {
+            panic!("expected a closure")
+        };
+        let ClosureBody::Compiled(code) = &c.body else {
+            panic!("the bytecode engine builds compiled closures")
+        };
+        code.clone()
+    };
+    let ObjectData::Closure(c) = &obj(&decoded[0]).borrow().data else {
+        panic!("expected a closure")
+    };
+    let ClosureBody::Compiled(code) = &c.body else {
+        panic!("decoded closures carry compiled code")
+    };
+    assert_eq!(**code, *original_code);
+    assert!(
+        Rc::ptr_eq(&c.captured_frame, &c.home),
+        "captured_frame and home were the same frame"
+    );
+    let home = c.home.borrow();
+    assert_eq!(home.pc, 1);
+    assert!(matches!(home.temps.last(), Some(Value::SmallInt(9))));
+    assert!(home.uncontinuable, "`mk` had returned");
+    let methods = {
+        let borrowed = class.borrow();
+        let ObjectData::Class(data) = &borrowed.data else {
+            panic!("not a class")
+        };
+        data.methods.clone()
+    };
+    let FrameKind::Method(decl) = &home.kind else {
+        panic!("home is a method frame")
+    };
+    assert!(
+        Rc::ptr_eq(decl, &methods[&Symbol::intern("mk")]),
+        "re-resolved against the class's method map"
+    );
+    assert!(Rc::ptr_eq(&obj(&home.receiver).borrow().class, &class));
+    assert!(Rc::ptr_eq(
+        home.current_class
+            .as_ref()
+            .expect("a method frame has a current class"),
+        &class
+    ));
+    let sender = home.sender.as_ref().expect("`mk` was sent from `outer`");
+    assert!(
+        !Rc::ptr_eq(sender, &c.home),
+        "the chain is two distinct frames, not one frame pointing at itself"
+    );
+    let FrameKind::Method(outer) = &sender.borrow().kind else {
+        panic!("the sender is a method frame")
+    };
+    assert!(Rc::ptr_eq(outer, &methods[&Symbol::intern("outer")]));
+}
+
+#[test]
+fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
+    let (_i, class, _o, decoded, _max) = round_trip_graph(src, |interp, class, bindings| {
+        vec![expect_ok(
+            interp.instantiate(class.clone(), vec![], bindings),
+            "instantiate",
+        )]
+    });
+    let instance = obj(&decoded[0]).borrow();
+    let ObjectData::Instance(fields) = &instance.data else {
+        panic!("expected an instance")
+    };
+    let ObjectData::Closure(c) = &obj(&fields[0]).borrow().data else {
+        panic!("slot holds a closure")
+    };
+    let FrameKind::Initializer(home_class) = &c.home.borrow().kind else {
+        panic!("home is the initializer frame")
+    };
+    assert!(Rc::ptr_eq(home_class, &class));
+}
+
+#[test]
+fn a_tree_walker_closure_is_a_snapshot_error_not_a_silent_omission() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public mk = ( ^[ 1 ] )\n) : ()";
+    let (mut interp, class, bindings) = load(src); // tree-walk engine
+    let instance = expect_ok(
+        interp.instantiate(class.clone(), vec![], &bindings),
+        "instantiate",
+    );
+    let closure = expect_ok(
+        interp.send(instance, Symbol::intern("mk"), vec![], &bindings, None),
+        "mk",
+    );
+    let platform = interp.platform();
+    let module = compiler::compile_module(&class, &bindings);
+    let mut w = encode::Writer::new();
+    let ids = encode::encode_code_table(&mut w, &module, &class);
+    let err =
+        encode::encode_graph_section(&mut w, &[closure], &platform, &ids).expect_err("Ast closure");
+    assert!(err.contains("tree-walker"), "{err}");
+}
+
+#[test]
+fn a_decoded_closure_carries_the_reloaded_modules_bindings() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let roots = vec![expect_ok(
+        interp.instantiate(class.clone(), vec![], &bindings),
+        "instantiate",
+    )];
+    let platform = interp.platform();
+    let mut w = encode::Writer::new();
+    let ids = encode::encode_code_table(
+        &mut w,
+        interp
+            .compiled_module()
+            .expect("the bytecode engine is active"),
+        &class,
+    );
+    encode::encode_graph_section(&mut w, &roots, &platform, &ids).expect("encode graph");
+    let bytes = w.into_bytes();
+    let mut r = decode::Reader::new(&bytes);
+    let table = decode::decode_code_table(&mut r).expect("code table");
+    // A *different* bindings map, standing in for the one a reload would
+    // build: every decoded closure must receive this one, proving
+    // `ClosureData.bindings` is never serialized.
+    let reloaded_bindings: Bindings = Rc::new(HashMap::new());
+    let ctx = decode::DecodeContext {
+        interp: &interp,
+        root_class: &class,
+        codes: &table.codes,
+        bindings: &reloaded_bindings,
+        platform: platform.clone(),
+    };
+    let decoded = decode::decode_graph_section(&mut r, &ctx).expect("graph");
+    let instance = obj(&decoded.roots[0]).borrow();
+    let ObjectData::Instance(fields) = &instance.data else {
+        panic!("expected an instance")
+    };
+    let ObjectData::Closure(c) = &obj(&fields[0]).borrow().data else {
+        panic!("slot holds a closure")
+    };
+    assert!(Rc::ptr_eq(&c.bindings, &reloaded_bindings));
+}
+
+#[test]
+fn the_graph_section_encoding_is_deterministic() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | a = 1. blk = [ 2 ]. s = 'three'. |\n) (\n) : ()";
+    let mut encodings = Vec::new();
+    for _ in 0..2 {
+        let (mut interp, class, bindings) = load(src);
+        let module = compiler::compile_module(&class, &bindings);
+        interp.set_engine(Engine::Bytecode(module));
+        let roots = vec![expect_ok(
+            interp.instantiate(class.clone(), vec![], &bindings),
+            "instantiate",
+        )];
+        let platform = interp.platform();
+        let mut w = encode::Writer::new();
+        let ids = encode::encode_code_table(
+            &mut w,
+            interp
+                .compiled_module()
+                .expect("the bytecode engine is active"),
+            &class,
+        );
+        encode::encode_graph_section(&mut w, &roots, &platform, &ids).expect("encode graph");
+        encodings.push(w.into_bytes());
+    }
+    assert_eq!(encodings[0], encodings[1]);
+}
+
+/// A world whose graph decoder can be fed hand-crafted bytes: an empty
+/// class, no compiled code, and the interpreter's own `platform`.
+struct GraphFixture {
+    interp: Interpreter,
+    class: ClassRef,
+    bindings: Bindings,
+    platform: Value,
+    codes: Vec<Rc<CompiledCode>>,
+}
+
+impl GraphFixture {
+    fn new() -> GraphFixture {
+        let (mut interp, class, bindings) = load(EMPTY);
+        let platform = interp.platform();
+        GraphFixture {
+            interp,
+            class,
+            bindings,
+            platform,
+            codes: Vec::new(),
+        }
+    }
+
+    fn decode(&self, bytes: &[u8]) -> Result<decode::DecodedGraph, decode::DecodeError> {
+        let ctx = decode::DecodeContext {
+            interp: &self.interp,
+            root_class: &self.class,
+            codes: &self.codes,
+            bindings: &self.bindings,
+            platform: self.platform.clone(),
+        };
+        decode::decode_graph_section(&mut decode::Reader::new(bytes), &ctx)
+    }
+
+    /// The `DecodeError` a hand-crafted graph section must produce. Never
+    /// `{:?}`s the success value: a decoded `Value` can be a class object,
+    /// and the bootstrap `Object` class is its own `.class`, so `Debug`
+    /// would recurse forever.
+    fn decode_err(&self, bytes: &[u8]) -> decode::DecodeError {
+        match self.decode(bytes) {
+            Ok(_) => panic!("expected a decode error, got a decoded graph"),
+            Err(e) => e,
+        }
+    }
+}
+
+/// `object_count`, `frame_count` -- the two counts every graph section
+/// starts with.
+fn graph_counts(w: &mut encode::Writer, objects: u32, frames: u32) {
+    w.write_u32(objects);
+    w.write_u32(frames);
+}
+
+/// A one-object graph section whose single object is an array of one
+/// element, written by `element`.
+fn one_array_object(element: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 1, 0);
+    w.write_u8(0); // class tag: builtin
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Array));
+    w.write_u32(5); // identity hash
+    w.write_u8(3); // object body: Array
+    w.write_u32(1); // one element
+    element(&mut w);
+    w.into_bytes()
+}
+
+#[test]
+fn an_object_id_out_of_range_is_a_decode_error_not_a_panic() {
+    let bytes = one_array_object(|w| {
+        w.write_u8(5); // value tag: object-table id
+        w.write_u32(99);
+    });
+    let err = GraphFixture::new().decode_err(&bytes);
+    assert_eq!(err, decode::DecodeError::BadObjectId(99));
+    assert_eq!(err.to_string(), "object id 99 out of range");
+}
+
+#[test]
+fn a_frame_id_out_of_range_is_a_decode_error_not_a_panic() {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 0, 1);
+    w.write_u8(0); // receiver: nil
+    w.write_u32(0); // no args
+    w.write_u32(0); // no temps
+    w.write_u32(0); // pc
+    w.write_bool(true); // has a sender...
+    w.write_u32(99); // ...whose id is out of range
+    let bytes = w.into_bytes();
+    let err = GraphFixture::new().decode_err(&bytes);
+    assert_eq!(err, decode::DecodeError::BadFrameId(99));
+    assert_eq!(err.to_string(), "frame id 99 out of range");
+}
+
+#[test]
+fn a_huge_object_or_frame_count_does_not_allocate_gigabytes() {
+    let fixture = GraphFixture::new();
+    for (objects, frames) in [(u32::MAX, 0), (0, u32::MAX)] {
+        let mut w = encode::Writer::new();
+        graph_counts(&mut w, objects, frames);
+        let bytes = w.into_bytes();
+        assert_eq!(
+            fixture.decode_err(&bytes),
+            decode::DecodeError::UnexpectedEof
+        );
+    }
+}
+
+#[test]
+fn an_invalid_value_tag_in_the_graph_is_a_decode_error_not_a_panic() {
+    let bytes = one_array_object(|w| w.write_u8(200));
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::InvalidTag {
+            what: "value",
+            tag: 200
+        }
+    );
+}
+
+#[test]
+fn an_invalid_object_body_tag_is_a_decode_error_not_a_panic() {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 1, 0);
+    w.write_u8(0);
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+    w.write_u32(1);
+    w.write_u8(200); // no such object body
+    let bytes = w.into_bytes();
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::InvalidTag {
+            what: "object body",
+            tag: 200
+        }
+    );
+}
+
+#[test]
+fn an_invalid_class_tag_is_a_decode_error_not_a_panic() {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 1, 0);
+    w.write_u8(200); // neither `Builtin` (0) nor `UserRoot` (1)
+    let bytes = w.into_bytes();
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::InvalidTag {
+            what: "class",
+            tag: 200
+        }
+    );
+}
+
+/// A one-frame graph section up to (but excluding) the frame-kind tag.
+fn one_frame_prefix() -> encode::Writer {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 0, 1);
+    w.write_u8(0); // receiver: nil
+    w.write_u32(0); // no args
+    w.write_u32(0); // no temps
+    w.write_u32(0); // pc
+    w.write_bool(false); // no sender
+    w.write_bool(false); // no home
+    w.write_bool(false); // no current class
+    w
+}
+
+#[test]
+fn an_invalid_frame_kind_tag_is_a_decode_error_not_a_panic() {
+    let mut w = one_frame_prefix();
+    w.write_u8(200);
+    let bytes = w.into_bytes();
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::InvalidTag {
+            what: "frame kind",
+            tag: 200
+        }
+    );
+}
+
+#[test]
+fn a_method_frame_naming_a_selector_the_class_lost_is_a_decode_error() {
+    let mut w = one_frame_prefix();
+    w.write_u8(0); // frame kind: Method
+    w.write_str("gone");
+    let bytes = w.into_bytes();
+    let err = GraphFixture::new().decode_err(&bytes);
+    assert_eq!(
+        err,
+        decode::DecodeError::UnknownSelector("gone".to_string())
+    );
+}
+
+#[test]
+fn a_closure_frames_code_id_out_of_range_is_a_decode_error_not_a_panic() {
+    let mut w = one_frame_prefix();
+    w.write_u8(1); // frame kind: Closure
+    w.write_u16(0); // no parameters
+    w.write_u32(42); // code id, out of range for an empty code table
+    let bytes = w.into_bytes();
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::BadCodeId(42)
+    );
+}
+
+#[test]
+fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let roots = vec![expect_ok(
+        interp.instantiate(class.clone(), vec![], &bindings),
+        "instantiate",
+    )];
+    let platform = interp.platform();
+    let mut w = encode::Writer::new();
+    let ids = encode::encode_code_table(
+        &mut w,
+        interp
+            .compiled_module()
+            .expect("the bytecode engine is active"),
+        &class,
+    );
+    let before = w.into_bytes().len();
+    let mut w = encode::Writer::new();
+    encode::encode_graph_section(&mut w, &roots, &platform, &ids).expect("encode graph");
+    let graph = w.into_bytes();
+    assert!(before > 0 && graph.len() > 8);
+    let ctx = decode::DecodeContext {
+        interp: &interp,
+        root_class: &class,
+        codes: &[],
+        bindings: &bindings,
+        platform: platform.clone(),
+    };
+    for cut in 1..graph.len() {
+        let mut r = decode::Reader::new(&graph[..cut]);
+        // Every prefix is either a clean `DecodeError` or -- for a prefix
+        // that happens to be self-consistent -- a successful decode. What
+        // it must never be is a panic.
+        let _ = decode::decode_graph_section(&mut r, &ctx);
+    }
+}
+
+#[test]
+fn a_closure_capturing_a_block_activation_round_trips() {
+    // `[:x | [ x ] ] value: 5` runs the outer block, so the inner closure's
+    // `captured_frame` is a *block activation* -- a `FrameKind::Closure`
+    // frame, the one frame kind the quiesced worlds above never produce.
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public mk = ( ^[:x | [ x ] ] value: 5 )\n) : ()";
+    let (_i, class, _o, decoded, _max) = round_trip_graph(src, |interp, class, bindings| {
+        let instance = expect_ok(
+            interp.instantiate(class.clone(), vec![], bindings),
+            "instantiate",
+        );
+        vec![expect_ok(
+            interp.send(instance, Symbol::intern("mk"), vec![], bindings, None),
+            "mk",
+        )]
+    });
+    let ObjectData::Closure(inner) = &obj(&decoded[0]).borrow().data else {
+        panic!("expected the inner closure")
+    };
+    assert!(
+        !Rc::ptr_eq(&inner.captured_frame, &inner.home),
+        "the inner closure was captured by the block activation, not by `mk`"
+    );
+    let captured = inner.captured_frame.borrow();
+    let FrameKind::Closure(outer) = &captured.kind else {
+        panic!("the captured frame is a block activation")
+    };
+    assert!(matches!(&outer.body, ClosureBody::Compiled(_)));
+    assert!(matches!(captured.args.first(), Some(Value::SmallInt(5))));
+    assert!(
+        Rc::ptr_eq(
+            captured
+                .home
+                .as_ref()
+                .expect("a block activation has a home"),
+            &inner.home
+        ),
+        "both closures share `mk`'s activation as their home"
+    );
+    let FrameKind::Method(decl) = &inner.home.borrow().kind else {
+        panic!("the home is `mk`'s method frame")
+    };
+    let borrowed = class.borrow();
+    let ObjectData::Class(data) = &borrowed.data else {
+        panic!("not a class")
+    };
+    assert!(Rc::ptr_eq(decl, &data.methods[&Symbol::intern("mk")]));
+}
+
+#[test]
+fn a_top_level_frame_kind_decodes() {
+    // Nothing in Milestone 2 *builds* a `FrameKind::TopLevel` frame (see
+    // `types::FrameKind`), so only a hand-written section can reach the
+    // decoder's tag-2 branch.
+    let mut w = one_frame_prefix();
+    w.write_u8(2); // frame kind: TopLevel
+    w.write_bool(false); // continuable
+    w.write_u32(0); // no roots
+    let bytes = w.into_bytes();
+    let decoded = GraphFixture::new()
+        .decode(&bytes)
+        .expect("a TopLevel frame");
+    assert!(decoded.roots.is_empty());
+    assert_eq!(decoded.max_identity_hash, 0);
 }
