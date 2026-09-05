@@ -702,3 +702,115 @@ fn a_huge_code_table_count_does_not_reserve_gigabytes() {
         Err(decode::DecodeError::UnexpectedEof)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 13, review fix round 1.
+// ---------------------------------------------------------------------------
+
+/// A one-entry code table whose single instruction loads a literal array
+/// nested `depth` levels deep. Each level costs five bytes in the stream
+/// (`u8` tag + `u32` element count), which is what makes unbounded
+/// recursion here cheap to weaponize.
+fn code_table_with_nested_literal_array(depth: usize) -> Vec<u8> {
+    let mut w = encode::Writer::new();
+    w.write_u32(1); // one code entry
+    w.write_u8(0); // CodeKind::Method
+    w.write_u16(0); // num_args
+    w.write_u16(1); // num_registers
+    w.write_u32(0); // source.start
+    w.write_u32(0); // source.end
+    w.write_u32(0); // no statement_pc entries
+    w.write_u32(0); // no call sites
+    w.write_u32(1); // one instruction ...
+    w.write_u8(0); // ... a LoadLiteral
+    w.write_u16(0); // dst
+    for _ in 0..depth {
+        w.write_u8(7); // Literal::Array ...
+        w.write_u32(1); // ... of exactly one element
+    }
+    w.write_u8(0); // Literal::Nil at the bottom
+    w.write_u32(0); // empty root list
+    w.write_bool(false); // no initializer
+    w.into_bytes()
+}
+
+#[test]
+fn a_deeply_nested_literal_array_is_a_decode_error_not_a_stack_overflow() {
+    // Comfortably past the depth that overflows the stack -- and aborts the
+    // process outright, uncatchably -- without the ceiling.
+    let bytes = code_table_with_nested_literal_array(2_000);
+    assert!(
+        bytes.len() < 16 * 1024,
+        "the whole attack is a few kilobytes"
+    );
+    let mut r = decode::Reader::new(&bytes);
+    assert_eq!(
+        decode::decode_code_table(&mut r),
+        Err(decode::DecodeError::NestingTooDeep {
+            what: "literal array",
+            limit: 64
+        })
+    );
+    assert_eq!(
+        decode::DecodeError::NestingTooDeep {
+            what: "literal array",
+            limit: 64
+        }
+        .to_string(),
+        "literal array in image nests deeper than 64 levels"
+    );
+}
+
+#[test]
+fn a_literal_array_within_the_nesting_limit_still_decodes() {
+    // The ceiling must not reject anything a real program could produce.
+    let bytes = code_table_with_nested_literal_array(64);
+    let mut r = decode::Reader::new(&bytes);
+    let table = decode::decode_code_table(&mut r).expect("64 levels is within the limit");
+    assert_eq!(table.codes.len(), 1);
+    assert!(matches!(
+        table.codes[0].instrs[0],
+        Instr::LoadLiteral {
+            literal: Literal::Array(_),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_selector_the_image_has_no_code_for_is_a_decode_error() {
+    let (_interp, class, bindings) = load(RICH);
+    let module = compiler::compile_module(&class, &bindings);
+    let (table, _ids) = round_trip_code_table(&module, &class);
+    // "Reload" of a source that has gained a method since the snapshot: the
+    // installed module would otherwise have a hole the engine hook panics on.
+    let grown = RICH.replace("  arr = ", "  extra = ( ^1 )\n  arr = ");
+    let (_interp2, class2, bindings2) = load(&grown);
+    match decode::install_code_table(&table, &class2, &bindings2) {
+        Err(decode::DecodeError::MissingSelector(selector)) => {
+            assert_eq!(selector, "extra");
+            assert_eq!(
+                decode::DecodeError::MissingSelector(selector).to_string(),
+                "the reloaded source defines method `extra`, which the image has no compiled code for"
+            );
+        }
+        Err(e) => panic!("expected MissingSelector, got a different error: {e}"),
+        Ok(_) => panic!("expected MissingSelector, got Ok"),
+    }
+}
+
+#[test]
+fn installing_against_a_root_that_is_not_a_class_is_a_decode_error() {
+    let (mut interp, class, bindings) = load(RICH);
+    let module = compiler::compile_module(&class, &bindings);
+    let (table, _ids) = round_trip_code_table(&module, &class);
+    let not_a_class = interp.new_string("not a class".to_string());
+    match decode::install_code_table(&table, &not_a_class, &bindings) {
+        Err(decode::DecodeError::NotAClass) => assert_eq!(
+            decode::DecodeError::NotAClass.to_string(),
+            "the image's root object is not a class"
+        ),
+        Err(e) => panic!("expected NotAClass, got a different error: {e}"),
+        Ok(_) => panic!("expected NotAClass, got Ok"),
+    }
+}

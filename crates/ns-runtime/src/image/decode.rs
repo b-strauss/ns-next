@@ -16,14 +16,38 @@ use crate::Symbol;
 pub enum DecodeError {
     UnexpectedEof,
     BadMagic,
-    VersionMismatch { found: u32, expected: u32 },
-    InvalidTag { what: &'static str, tag: u8 },
+    VersionMismatch {
+        found: u32,
+        expected: u32,
+    },
+    InvalidTag {
+        what: &'static str,
+        tag: u8,
+    },
     InvalidUtf8,
-    InvalidSpan { start: u32, end: u32 },
+    InvalidSpan {
+        start: u32,
+        end: u32,
+    },
+    /// A recursive section nested past its decoding ceiling. Refusing is
+    /// the only option: recursing on to a stack overflow aborts the
+    /// process and cannot be reported at all.
+    NestingTooDeep {
+        what: &'static str,
+        limit: usize,
+    },
     BadCodeId(u32),
     BadObjectId(u32),
     BadFrameId(u32),
+    /// The image's root object is not a class, so it has no methods to
+    /// install a code table against.
+    NotAClass,
+    /// The image's root list names a method the reloaded source dropped.
     UnknownSelector(String),
+    /// The mirror image of `UnknownSelector`: the reloaded source defines a
+    /// method the image was never compiled with, so the installed module
+    /// would have a hole the engine hook cannot dispatch through.
+    MissingSelector(String),
 }
 
 impl std::fmt::Display for DecodeError {
@@ -39,12 +63,22 @@ impl std::fmt::Display for DecodeError {
             DecodeError::InvalidSpan { start, end } => {
                 write!(f, "source span {start}..{end} ends before it starts")
             }
+            DecodeError::NestingTooDeep { what, limit } => {
+                write!(f, "{what} in image nests deeper than {limit} levels")
+            }
             DecodeError::BadCodeId(id) => write!(f, "code id {id} out of range"),
             DecodeError::BadObjectId(id) => write!(f, "object id {id} out of range"),
             DecodeError::BadFrameId(id) => write!(f, "frame id {id} out of range"),
+            DecodeError::NotAClass => {
+                write!(f, "the image's root object is not a class")
+            }
             DecodeError::UnknownSelector(s) => write!(
                 f,
                 "image refers to method `{s}`, which the reloaded source does not define"
+            ),
+            DecodeError::MissingSelector(s) => write!(
+                f,
+                "the reloaded source defines method `{s}`, which the image has no compiled code for"
             ),
         }
     }
@@ -259,9 +293,7 @@ pub fn install_code_table(
     };
     let borrowed = root_class.borrow();
     let ObjectData::Class(data) = &borrowed.data else {
-        return Err(DecodeError::UnknownSelector(
-            "<root class is not a class>".to_string(),
-        ));
+        return Err(DecodeError::NotAClass);
     };
     for (selector, id) in &table.methods {
         let decl = data
@@ -271,6 +303,22 @@ pub fn install_code_table(
         module
             .methods
             .insert(method_key(decl), code_at(table, *id)?);
+    }
+    // The other direction: a method the reloaded source defines but the
+    // image has no code for would leave `module.methods` with a hole, and
+    // dispatching it panics in the engine hook. That is the ordinary
+    // "source changed since the snapshot" path, so it is a decode error
+    // here rather than a crash later. Sorted, so the reported selector does
+    // not depend on `ClassData.methods`' `HashMap` order.
+    let mut missing: Vec<&str> = data
+        .methods
+        .iter()
+        .filter(|(_, decl)| !module.methods.contains_key(&method_key(decl)))
+        .map(|(selector, _)| selector.as_str())
+        .collect();
+    missing.sort_unstable();
+    if let Some(selector) = missing.first() {
+        return Err(DecodeError::MissingSelector((*selector).to_string()));
     }
     if let Some(id) = table.initializer {
         module
@@ -364,7 +412,7 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
             let dst = r.read_u16()?;
             Instr::LoadLiteral {
                 dst,
-                literal: decode_literal(r)?,
+                literal: decode_literal(r, 0)?,
             }
         }
         1 => Instr::LoadSelf { dst: r.read_u16()? },
@@ -512,7 +560,22 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
     })
 }
 
-fn decode_literal(r: &mut Reader) -> Result<Literal, DecodeError> {
+/// How deeply a `Literal::Array` may nest before decoding refuses. Each
+/// level costs only five bytes in the stream (`u8` tag + `u32` length), so
+/// without a ceiling a few kilobytes of crafted image would recurse until
+/// the stack overflows -- which aborts the process outright and cannot be
+/// caught, let alone reported as a `DecodeError`. Far above anything the
+/// compiler emits: `ast::Literal::Array` nesting comes from source text the
+/// parser has already depth-limited.
+const MAX_LITERAL_DEPTH: usize = 64;
+
+fn decode_literal(r: &mut Reader, depth: usize) -> Result<Literal, DecodeError> {
+    if depth > MAX_LITERAL_DEPTH {
+        return Err(DecodeError::NestingTooDeep {
+            what: "literal array",
+            limit: MAX_LITERAL_DEPTH,
+        });
+    }
     Ok(match r.read_u8()? {
         0 => Literal::Nil,
         1 => Literal::Bool(r.read_bool()?),
@@ -531,7 +594,7 @@ fn decode_literal(r: &mut Reader) -> Result<Literal, DecodeError> {
             let n = r.read_u32()? as usize;
             let mut elements = reserve_for(n, r);
             for _ in 0..n {
-                elements.push(decode_literal(r)?);
+                elements.push(decode_literal(r, depth + 1)?);
             }
             Literal::Array(elements)
         }
