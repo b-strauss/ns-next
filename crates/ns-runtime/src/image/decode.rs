@@ -1,7 +1,16 @@
 //! Canonical decoding, the inverse of `encode.rs`. A malformed byte stream
 //! is a `DecodeError`, never a panic.
 
-use crate::types::Value;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use ns_syntax::Span;
+
+use crate::bytecode::{
+    class_key, method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
+};
+use crate::types::{Binding, BuiltinClass, ClassRef, ObjectData, Value};
+use crate::Symbol;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
@@ -10,6 +19,7 @@ pub enum DecodeError {
     VersionMismatch { found: u32, expected: u32 },
     InvalidTag { what: &'static str, tag: u8 },
     InvalidUtf8,
+    InvalidSpan { start: u32, end: u32 },
     BadCodeId(u32),
     BadObjectId(u32),
     BadFrameId(u32),
@@ -26,6 +36,9 @@ impl std::fmt::Display for DecodeError {
             }
             DecodeError::InvalidTag { what, tag } => write!(f, "invalid {what} tag {tag}"),
             DecodeError::InvalidUtf8 => write!(f, "invalid UTF-8 in image string"),
+            DecodeError::InvalidSpan { start, end } => {
+                write!(f, "source span {start}..{end} ends before it starts")
+            }
             DecodeError::BadCodeId(id) => write!(f, "code id {id} out of range"),
             DecodeError::BadObjectId(id) => write!(f, "object id {id} out of range"),
             DecodeError::BadFrameId(id) => write!(f, "frame id {id} out of range"),
@@ -45,6 +58,13 @@ pub struct Reader<'a> {
 impl<'a> Reader<'a> {
     pub fn new(buf: &'a [u8]) -> Reader<'a> {
         Reader { buf, pos: 0 }
+    }
+
+    /// Bytes not yet consumed. Every item of a counted section costs at
+    /// least one byte, so this bounds how many can really follow -- see
+    /// `reserve_for`.
+    pub fn remaining(&self) -> usize {
+        self.buf.len() - self.pos
     }
 
     pub fn read_raw(&mut self, len: usize) -> Result<&'a [u8], DecodeError> {
@@ -138,4 +158,389 @@ pub fn decode_scalar_value(r: &mut Reader) -> Result<Value, DecodeError> {
         4 => Ok(Value::Float(r.read_f64()?)),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
     }
+}
+
+pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
+    Some(match tag {
+        0 => BuiltinClass::Object,
+        1 => BuiltinClass::Boolean,
+        2 => BuiltinClass::True,
+        3 => BuiltinClass::False,
+        4 => BuiltinClass::Integer,
+        5 => BuiltinClass::Float,
+        6 => BuiltinClass::Str,
+        7 => BuiltinClass::Sym,
+        8 => BuiltinClass::Character,
+        9 => BuiltinClass::Array,
+        10 => BuiltinClass::OrderedCollection,
+        11 => BuiltinClass::Nil,
+        12 => BuiltinClass::Block,
+        13 => BuiltinClass::Platform,
+        _ => return None,
+    })
+}
+
+pub fn read_builtin_class(r: &mut Reader) -> Result<BuiltinClass, DecodeError> {
+    let tag = r.read_u8()?;
+    builtin_class_from_tag(tag).ok_or(DecodeError::InvalidTag {
+        what: "builtin class",
+        tag,
+    })
+}
+
+/// The decoded code table before it is bound to a reloaded class.
+#[derive(Debug, PartialEq)]
+pub struct DecodedCodeTable {
+    pub codes: Vec<Rc<CompiledCode>>,
+    /// `(selector, code id)` per method of the root class, sorted by
+    /// selector exactly as encoded.
+    pub methods: Vec<(String, u32)>,
+    pub initializer: Option<u32>,
+}
+
+pub fn decode_code_table(r: &mut Reader) -> Result<DecodedCodeTable, DecodeError> {
+    let count = r.read_u32()? as usize;
+    let mut codes: Vec<Rc<CompiledCode>> = reserve_for(count, r);
+    for _ in 0..count {
+        let code = decode_code(r, &codes)?;
+        codes.push(Rc::new(code));
+    }
+    let method_count = r.read_u32()? as usize;
+    let mut methods = reserve_for(method_count, r);
+    for _ in 0..method_count {
+        let selector = r.read_str()?;
+        let id = r.read_u32()?;
+        check_code_id(id, &codes)?;
+        methods.push((selector, id));
+    }
+    let initializer = if r.read_bool()? {
+        let id = r.read_u32()?;
+        check_code_id(id, &codes)?;
+        Some(id)
+    } else {
+        None
+    };
+    Ok(DecodedCodeTable {
+        codes,
+        methods,
+        initializer,
+    })
+}
+
+/// `Vec::with_capacity` for a count read from an untrusted stream: every
+/// item costs at least one byte, so the bytes still unread are an upper
+/// bound on how many can really follow. Without the clamp a corrupt count
+/// prefix would reserve gigabytes and abort the process before the read
+/// could fail with `UnexpectedEof`.
+fn reserve_for<T>(count: usize, r: &Reader) -> Vec<T> {
+    Vec::with_capacity(count.min(r.remaining()))
+}
+
+fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError> {
+    if (id as usize) < codes.len() {
+        Ok(())
+    } else {
+        Err(DecodeError::BadCodeId(id))
+    }
+}
+
+/// Binds a decoded table to the *reloaded* root class: methods re-keyed by
+/// selector to the reloaded `Rc<MethodDecl>`s, the initializer to the
+/// reloaded class. The image's bytecode is what runs after a load.
+pub fn install_code_table(
+    table: &DecodedCodeTable,
+    root_class: &ClassRef,
+    bindings: &Rc<HashMap<Span, Binding>>,
+) -> Result<CompiledModule, DecodeError> {
+    let mut module = CompiledModule {
+        methods: HashMap::new(),
+        initializers: HashMap::new(),
+        bindings: bindings.clone(),
+    };
+    let borrowed = root_class.borrow();
+    let ObjectData::Class(data) = &borrowed.data else {
+        return Err(DecodeError::UnknownSelector(
+            "<root class is not a class>".to_string(),
+        ));
+    };
+    for (selector, id) in &table.methods {
+        let decl = data
+            .methods
+            .get(&Symbol::intern(selector))
+            .ok_or_else(|| DecodeError::UnknownSelector(selector.clone()))?;
+        module
+            .methods
+            .insert(method_key(decl), code_at(table, *id)?);
+    }
+    if let Some(id) = table.initializer {
+        module
+            .initializers
+            .insert(class_key(root_class), code_at(table, id)?);
+    }
+    Ok(module)
+}
+
+/// `decode_code_table` validates every id it reads, but `DecodedCodeTable`
+/// is a plain public struct: an id is re-checked before it indexes.
+fn code_at(table: &DecodedCodeTable, id: u32) -> Result<Rc<CompiledCode>, DecodeError> {
+    table
+        .codes
+        .get(id as usize)
+        .cloned()
+        .ok_or(DecodeError::BadCodeId(id))
+}
+
+fn decode_code(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<CompiledCode, DecodeError> {
+    let kind = match r.read_u8()? {
+        0 => CodeKind::Method,
+        1 => CodeKind::Block,
+        2 => CodeKind::Initializer,
+        tag => {
+            return Err(DecodeError::InvalidTag {
+                what: "code kind",
+                tag,
+            })
+        }
+    };
+    let num_args = r.read_u16()?;
+    let num_registers = r.read_u16()?;
+    let start = r.read_u32()?;
+    let end = r.read_u32()?;
+    if start > end {
+        return Err(DecodeError::InvalidSpan { start, end });
+    }
+    let source = Span::new(start, end);
+    let pc_count = r.read_u32()? as usize;
+    let mut statement_pc = reserve_for(pc_count, r);
+    for _ in 0..pc_count {
+        let stmt = r.read_u32()? as usize;
+        let range_start = r.read_u32()? as usize;
+        let range_end = r.read_u32()? as usize;
+        statement_pc.push((stmt, range_start..range_end));
+    }
+    let site_count = r.read_u32()? as usize;
+    let mut call_sites = reserve_for(site_count, r);
+    for _ in 0..site_count {
+        call_sites.push(decode_call_site(r)?);
+    }
+    let instr_count = r.read_u32()? as usize;
+    let mut instrs = reserve_for(instr_count, r);
+    for _ in 0..instr_count {
+        instrs.push(decode_instr(r, codes)?);
+    }
+    Ok(CompiledCode {
+        kind,
+        instrs,
+        num_args,
+        num_registers,
+        statement_pc,
+        call_sites,
+        source,
+    })
+}
+
+fn decode_call_site(r: &mut Reader) -> Result<CallSite, DecodeError> {
+    Ok(CallSite {
+        call_site_id: r.read_u16()?,
+    })
+}
+
+fn decode_regs(r: &mut Reader) -> Result<Vec<u16>, DecodeError> {
+    let n = r.read_u16()? as usize;
+    let mut regs = reserve_for(n, r);
+    for _ in 0..n {
+        regs.push(r.read_u16()?);
+    }
+    Ok(regs)
+}
+
+fn decode_symbol(r: &mut Reader) -> Result<Symbol, DecodeError> {
+    Ok(Symbol::intern(&r.read_str()?))
+}
+
+fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, DecodeError> {
+    Ok(match r.read_u8()? {
+        0 => {
+            let dst = r.read_u16()?;
+            Instr::LoadLiteral {
+                dst,
+                literal: decode_literal(r)?,
+            }
+        }
+        1 => Instr::LoadSelf { dst: r.read_u16()? },
+        2 => {
+            let dst = r.read_u16()?;
+            Instr::LoadBuiltinClass {
+                dst,
+                kind: read_builtin_class(r)?,
+            }
+        }
+        3 => {
+            let dst = r.read_u16()?;
+            Instr::Move {
+                dst,
+                src: r.read_u16()?,
+            }
+        }
+        4 => {
+            let src = r.read_u16()?;
+            Instr::StoreLocal {
+                src,
+                slot: r.read_u16()?,
+            }
+        }
+        5 => {
+            let dst = r.read_u16()?;
+            let depth = r.read_u16()?;
+            Instr::LoadOuterLocal {
+                dst,
+                depth,
+                index: r.read_u16()?,
+            }
+        }
+        6 => {
+            let src = r.read_u16()?;
+            let depth = r.read_u16()?;
+            Instr::StoreOuterLocal {
+                src,
+                depth,
+                index: r.read_u16()?,
+            }
+        }
+        7 => {
+            let depth = r.read_u16()?;
+            let selector = decode_symbol(r)?;
+            let arg_regs = decode_regs(r)?;
+            let dst = r.read_u16()?;
+            Instr::SendLexical {
+                depth,
+                selector,
+                arg_regs,
+                dst,
+                call_site: decode_call_site(r)?,
+            }
+        }
+        8 => {
+            let selector = decode_symbol(r)?;
+            let receiver_reg = r.read_u16()?;
+            let arg_regs = decode_regs(r)?;
+            let dst = r.read_u16()?;
+            Instr::SendPublic {
+                selector,
+                receiver_reg,
+                arg_regs,
+                dst,
+                call_site: decode_call_site(r)?,
+            }
+        }
+        9 => {
+            let selector = decode_symbol(r)?;
+            let arg_regs = decode_regs(r)?;
+            let dst = r.read_u16()?;
+            Instr::SendSuper {
+                selector,
+                arg_regs,
+                dst,
+                call_site: decode_call_site(r)?,
+            }
+        }
+        10 => {
+            let dst = r.read_u16()?;
+            let n = r.read_u16()? as usize;
+            let mut params = reserve_for(n, r);
+            for _ in 0..n {
+                params.push(decode_symbol(r)?);
+            }
+            let id = r.read_u32()?;
+            // Post-order guarantees a block's code precedes its parent's,
+            // so `codes` already holds it -- a forward or out-of-range id
+            // is corruption.
+            check_code_id(id, codes)?;
+            Instr::MakeClosure {
+                dst,
+                params: Rc::new(params),
+                code: codes[id as usize].clone(),
+            }
+        }
+        11 => {
+            let dst = r.read_u16()?;
+            Instr::MakeArray {
+                dst,
+                elem_regs: decode_regs(r)?,
+            }
+        }
+        12 => {
+            let src = r.read_u16()?;
+            Instr::InitSlot {
+                src,
+                field_index: r.read_u32()?,
+            }
+        }
+        13 => Instr::Return { reg: r.read_u16()? },
+        14 => Instr::ImplicitReturn { reg: r.read_u16()? },
+        15 => Instr::NonLocalReturn { reg: r.read_u16()? },
+        16 => Instr::Jump {
+            target: r.read_u32()?,
+        },
+        17 => {
+            let reg = r.read_u16()?;
+            Instr::JumpIfNotBoolean {
+                reg,
+                target: r.read_u32()?,
+            }
+        }
+        18 => {
+            let reg = r.read_u16()?;
+            Instr::BranchIfFalse {
+                reg,
+                target: r.read_u32()?,
+            }
+        }
+        19 => {
+            let reg = r.read_u16()?;
+            Instr::BranchIfTrue {
+                reg,
+                target: r.read_u32()?,
+            }
+        }
+        tag => {
+            return Err(DecodeError::InvalidTag {
+                what: "instruction",
+                tag,
+            })
+        }
+    })
+}
+
+fn decode_literal(r: &mut Reader) -> Result<Literal, DecodeError> {
+    Ok(match r.read_u8()? {
+        0 => Literal::Nil,
+        1 => Literal::Bool(r.read_bool()?),
+        2 => Literal::SmallInt(r.read_i64()?),
+        3 => Literal::Float(r.read_f64()?),
+        4 => Literal::Str(r.read_str()?),
+        5 => Literal::Sym(decode_symbol(r)?),
+        6 => {
+            let code = r.read_u32()?;
+            Literal::Char(char::from_u32(code).ok_or(DecodeError::InvalidTag {
+                what: "char",
+                tag: 6,
+            })?)
+        }
+        7 => {
+            let n = r.read_u32()? as usize;
+            let mut elements = reserve_for(n, r);
+            for _ in 0..n {
+                elements.push(decode_literal(r)?);
+            }
+            Literal::Array(elements)
+        }
+        8 => Literal::MalformedInt(r.read_str()?),
+        tag => {
+            return Err(DecodeError::InvalidTag {
+                what: "literal",
+                tag,
+            })
+        }
+    })
 }
