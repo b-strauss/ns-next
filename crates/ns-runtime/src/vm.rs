@@ -23,9 +23,19 @@ use crate::types::*;
 
 /// Runs `code` on `frame` until a terminating instruction. `frame` was built
 /// by the shared orchestration (`invoke_method`, `invoke_closure`, or
-/// `instantiate`) with `temps` sized to `code.num_registers - code.num_args`;
-/// `frame.pc` is kept at the executing instruction's index (the safepoint
-/// view -- `statement_pc` recovers the statement on demand).
+/// `instantiate`) with `temps` sized to `code.num_registers - code.num_args`.
+///
+/// `frame.pc` is the safepoint view (`statement_pc` recovers the statement
+/// from it on demand), and it is stored *only by the instructions that can
+/// hand `frame` to an observer*: every `Send*` (a nested activation runs
+/// with this frame as its sender), `MakeClosure` (the frame escapes into the
+/// object graph, where `image::encode_frame` can serialize it), and
+/// `NonLocalReturn` (control leaves with a signal). Nothing can read `pc`
+/// while a straight-line instruction executes: `run_code` never yields
+/// between them, and the only reader in the tree, `image::encode_frame`,
+/// runs on a frame that reached it through one of those three. Keeping the
+/// store out of the straight-line arms takes a `RefCell` borrow and a write
+/// off the hot path for a value nothing observes there.
 pub fn run_code(
     interp: &mut Interpreter,
     frame: &FrameRef,
@@ -34,7 +44,6 @@ pub fn run_code(
 ) -> EvalResult {
     let mut pc = 0usize;
     loop {
-        frame.borrow_mut().pc = pc;
         match &code.instrs[pc] {
             Instr::LoadLiteral { dst, literal } => {
                 let v = make_value(interp, frame, literal)?;
@@ -76,6 +85,7 @@ pub fn run_code(
             } => {
                 let receiver = read_local(frame, *receiver_reg);
                 let args = collect(frame, arg_regs);
+                frame.borrow_mut().pc = pc;
                 let result =
                     interp.send(receiver, *selector, args, bindings, Some(frame.clone()))?;
                 write_local(frame, *dst, result);
@@ -88,6 +98,7 @@ pub fn run_code(
                 ..
             } => {
                 let args = collect(frame, arg_regs);
+                frame.borrow_mut().pc = pc;
                 let result =
                     dispatch_lexical_send(interp, frame, *depth, *selector, args, bindings)?;
                 write_local(frame, *dst, result);
@@ -99,6 +110,7 @@ pub fn run_code(
                 ..
             } => {
                 let args = collect(frame, arg_regs);
+                frame.borrow_mut().pc = pc;
                 let result = dispatch_super_send(interp, frame, *selector, args, bindings)?;
                 write_local(frame, *dst, result);
             }
@@ -107,6 +119,7 @@ pub fn run_code(
                 params,
                 code: block,
             } => {
+                frame.borrow_mut().pc = pc;
                 let closure = Rc::new(ClosureData {
                     params: (**params).clone(),
                     body: ClosureBody::Compiled(block.clone()),
@@ -135,6 +148,7 @@ pub fn run_code(
             }
             Instr::NonLocalReturn { reg } => {
                 let v = read_local(frame, *reg);
+                frame.borrow_mut().pc = pc;
                 return Err(interp.raise_return_pub(frame, v));
             }
             Instr::Jump { target } => {
