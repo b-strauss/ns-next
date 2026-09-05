@@ -908,6 +908,45 @@ this design (not blocking Milestone 2, noted here so they aren't lost):
   unaffected by this milestone (hashes are serialized verbatim as
   whatever width M1 already uses).
 
+Deferred during implementation and review (recorded 2026-09-06, after
+the merge). None blocked the milestone; each was judged not worth fixing
+before it has a caller that cares. The first two are the ones a later
+milestone will actually run into:
+
+- **A profiler or debugger needs `frame.pc` back on every instruction.**
+  `vm::run_code` stores it only where control can leave the loop (every
+  `Send*`, `MakeClosure`, `NonLocalReturn`), which is exactly the set of
+  frames an observer can reach in this milestone — the argument is in
+  `run_code`'s doc comment. A normally-returned frame therefore carries
+  the `pc` of its last send, not of its return, and a sampling profiler
+  or a step-debugger would read a stale value. Either restore the store
+  or add an explicit safepoint poll when that arrives. Note also that
+  `pc` means a statement index under the tree-walker and an instruction
+  index under the VM, with nothing on the frame to say which
+  (`types.rs`, `Frame.pc`); Milestone 3 should resolve that rather than
+  inherit it.
+- **No golden-bytes test pins the image wire format.** Every tag test is
+  encode-then-decode against the same tables, so shifting both sides
+  together would go unnoticed while `FORMAT_VERSION` stays at 1. That is
+  harmless only while no image outlives the build that wrote it; couple
+  the golden-bytes fixture to the first `FORMAT_VERSION` bump.
+  Relatedly, `the_code_table_encoding_is_deterministic` would pass
+  without the sort that makes encoding deterministic (both encodes share
+  one `HashMap` instance); compiling the module twice would make it
+  prove its name.
+- `decode` does not enforce the `Frame` invariants `types.rs` documents
+  (`home` only for `FrameKind::Closure`, `current_class` `None` only for
+  `TopLevel`). A crafted section can produce an impossible-state frame;
+  no reader unwraps on either field today, so it is inert rather than a
+  panic path.
+- `encode_graph_section` leaves partial bytes in the `Writer` when it
+  returns `Err`. The only caller drops the writer, but the function does
+  not say the caller must.
+- `image::decode`'s `own_registers` allocates a `Vec` per instruction
+  during verification (load-time only, linear in code size).
+- `ns-next snapshot` prints `wrote <path>` on stdout rather than stderr,
+  so a caller parsing its stdout sees tool chatter.
+
 ## Open Questions Resolved During Planning
 
 Recorded 2026-09-05, while writing (and then re-checking) the
