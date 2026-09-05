@@ -21,8 +21,21 @@
 > `MissingInitializer` (added later, during Task 15's review round, though
 > it lives in this same function); Task 14 Step 5's `decode_closure_record`
 > gained a closure-arity check. Each closed a path where a crafted image
-> reached a panic or a process abort. Kept for
-> historical reference; do not use as a checklist for new work.
+> reached a panic or a process abort.
+>
+> **After this banner was written** (so the range above stops short of
+> them), a whole-branch review found two engine divergences the per-task
+> reviews had missed, both under the new default engine: `lower_ident_read`
+> returned a named local's own register as an expression's value, so a
+> write later in the same statement changed an already-evaluated operand
+> (`525803a`), and a bare `super` panicked the compiler where the
+> tree-walker raises a Newspeak error (`db81556`). Its other findings —
+> differential coverage for operand-mutating sends (`a484126`), storing
+> `frame.pc` only where control can leave `run_code` (`76dfcb4`), and an
+> encoding error rather than an abort for a method with no compiled code
+> (`89d041d`) — landed with them. The branch merged at `ff151fe`.
+>
+> Kept for historical reference; do not use as a checklist for new work.
 
 **Goal:** Add a register-based bytecode compiler and VM to `ns-runtime`, selectable via `ns-next run --engine=bytecode` (the new default), that compiles and executes every method body, block body, **and instance initializer** through the Milestone 1 interpreter's *shared* dispatch orchestration — with baseline control-flow inlining, a statement-boundary safepoint/PC table, reserved inline-cache slots, `ns-next disasm`, and a versioned image save/load format (`ns-next snapshot`/`ns-next load`) whose code, object, and frame tables round-trip — while keeping the Milestone 1 tree-walker as a permanent `--engine=tree-walk` reference path that is a byte-for-byte oracle (exit status, stdout, stderr).
 

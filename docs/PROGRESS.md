@@ -58,6 +58,13 @@ no bytecode format break. Object model stays `Rc<RefCell<Object>>` for
 M2 — the arena/handle rewrite is deferred to M3, alongside the real GC
 (the image format is defined against the logical value model so that
 later swap won't break image compatibility). Design spec committed at
-`92f511b`, revised 2026-09-05; implemented and tested across commits
-`2962c46..215ae2d` (`cargo test --workspace` green, corpus count
-unchanged at 210/0/1/0).
+`92f511b`, revised 2026-09-05; implemented on `feature/m2-bytecode-vm`
+and merged at `ff151fe` (`cargo test --workspace` green, corpus count
+unchanged at 210/0/1/0). A whole-branch review before the merge found
+two engine divergences the per-task reviews had missed — a local's
+register aliased as an expression's value, and a bare `super` panicking
+the compiler where the tree-walker raises a Newspeak error — both fixed
+on the branch. Two follow-ups landed on `master` afterwards: the design
+spec's "Error Handling" section now treats an image as untrusted input
+(`68598b6`, matching what shipped), and an assignment's value is copied
+only where it outlives its setter send (`58e5688`).
