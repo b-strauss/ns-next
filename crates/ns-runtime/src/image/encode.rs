@@ -186,11 +186,17 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
 /// with nested block code *before* the code that creates it, then the root
 /// list (`(selector, id)` sorted by selector, and the initializer id).
 /// Deterministic: the same module always encodes to the same bytes.
+///
+/// A method the class holds but the `CompiledModule` has no code for is an
+/// `Err`, not a panic: a method added to a live class after `compile_module`
+/// ran is exactly what the liveness spec's Req. 1 anticipates, so it is a
+/// refusal to snapshot this world, on the same footing as
+/// `encode_closure_record`'s tree-walker closure.
 pub fn encode_code_table(
     w: &mut Writer,
     module: &CompiledModule,
     root_class: &ClassRef,
-) -> CodeIds {
+) -> Result<CodeIds, String> {
     let mut order: Vec<Rc<CompiledCode>> = Vec::new();
     let mut ids = CodeIds {
         ids: HashMap::new(),
@@ -202,14 +208,15 @@ pub fn encode_code_table(
                 .methods
                 .iter()
                 .map(|(selector, decl)| {
-                    let code = module
-                        .methods
-                        .get(&method_key(decl))
-                        .expect("compile_module compiled every loaded method")
-                        .clone();
-                    (selector.as_str().to_string(), code)
+                    let code = module.methods.get(&method_key(decl)).ok_or_else(|| {
+                        format!(
+                            "image encoding has no compiled code for method #{selector} \
+                             (it was added to the class after the module was compiled)"
+                        )
+                    })?;
+                    Ok((selector.as_str().to_string(), code.clone()))
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, String>>()?,
             _ => Vec::new(),
         }
     };
@@ -239,7 +246,7 @@ pub fn encode_code_table(
         }
         None => w.write_bool(false),
     }
-    ids
+    Ok(ids)
 }
 
 /// Post-order: a block's code is appended (and gets its id) before the

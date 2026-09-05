@@ -345,7 +345,7 @@ fn round_trip_code_table(
     class: &ClassRef,
 ) -> (decode::DecodedCodeTable, encode::CodeIds) {
     let mut w = encode::Writer::new();
-    let ids = encode::encode_code_table(&mut w, module, class);
+    let ids = encode::encode_code_table(&mut w, module, class).expect("encode code table");
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
     (
@@ -625,7 +625,7 @@ fn a_truncated_code_table_is_a_decode_error_not_a_panic() {
     let (_interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(&class, &bindings);
     let mut w = encode::Writer::new();
-    encode::encode_code_table(&mut w, &module, &class);
+    encode::encode_code_table(&mut w, &module, &class).expect("encode code table");
     let bytes = w.into_bytes();
     for cut in [1usize, bytes.len() / 3, bytes.len() / 2, bytes.len() - 1] {
         let mut r = decode::Reader::new(&bytes[..cut]);
@@ -641,10 +641,38 @@ fn the_code_table_encoding_is_deterministic() {
     let (_interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(&class, &bindings);
     let mut first = encode::Writer::new();
-    encode::encode_code_table(&mut first, &module, &class);
+    encode::encode_code_table(&mut first, &module, &class).expect("encode code table");
     let mut second = encode::Writer::new();
-    encode::encode_code_table(&mut second, &module, &class);
+    encode::encode_code_table(&mut second, &module, &class).expect("encode code table");
     assert_eq!(first.into_bytes(), second.into_bytes());
+}
+
+/// A method installed on a live class after `compile_module` ran has no
+/// entry in the `CompiledModule` -- the liveness spec's Req. 1 anticipates
+/// exactly that. It is a refusal to snapshot, not a process abort.
+#[test]
+fn a_method_added_after_compile_module_is_an_encoding_error_not_a_panic() {
+    let (_interp, class, bindings) = load(RICH);
+    let module = compiler::compile_module(&class, &bindings);
+    {
+        // `method_key` is `Rc` pointer identity, so a fresh `Rc` around the
+        // same declaration is a method the compiled module has never seen.
+        let mut borrowed = class.borrow_mut();
+        let ObjectData::Class(data) = &mut borrowed.data else {
+            panic!("the root class is a class object");
+        };
+        let decl = data.methods.values().next().expect("RICH has methods");
+        let added = Rc::new((**decl).clone());
+        data.methods.insert(Symbol::intern("addedLater"), added);
+    }
+    let mut w = encode::Writer::new();
+    let Err(err) = encode::encode_code_table(&mut w, &module, &class) else {
+        panic!("a method with no compiled code must not encode");
+    };
+    assert!(
+        err.contains("#addedLater") && err.contains("after the module was compiled"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -936,7 +964,8 @@ fn round_trip_graph(
             .compiled_module()
             .expect("the bytecode engine is active"),
         &class,
-    );
+    )
+    .expect("encode code table");
     encode::encode_graph_section(&mut w, &roots, &platform, &ids).expect("encode graph");
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
@@ -1170,7 +1199,7 @@ fn a_tree_walker_closure_is_a_snapshot_error_not_a_silent_omission() {
     let platform = interp.platform();
     let module = compiler::compile_module(&class, &bindings);
     let mut w = encode::Writer::new();
-    let ids = encode::encode_code_table(&mut w, &module, &class);
+    let ids = encode::encode_code_table(&mut w, &module, &class).expect("encode code table");
     let err =
         encode::encode_graph_section(&mut w, &[closure], &platform, &ids).expect_err("Ast closure");
     assert!(err.contains("tree-walker"), "{err}");
@@ -1194,7 +1223,8 @@ fn a_decoded_closure_carries_the_reloaded_modules_bindings() {
             .compiled_module()
             .expect("the bytecode engine is active"),
         &class,
-    );
+    )
+    .expect("encode code table");
     encode::encode_graph_section(&mut w, &roots, &platform, &ids).expect("encode graph");
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
@@ -1241,7 +1271,8 @@ fn the_graph_section_encoding_is_deterministic() {
                 .compiled_module()
                 .expect("the bytecode engine is active"),
             &class,
-        );
+        )
+        .expect("encode code table");
         encode::encode_graph_section(&mut w, &roots, &platform, &ids).expect("encode graph");
         encodings.push(w.into_bytes());
     }
@@ -1481,7 +1512,8 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
             .compiled_module()
             .expect("the bytecode engine is active"),
         &class,
-    );
+    )
+    .expect("encode code table");
     let before = w.into_bytes().len();
     let mut w = encode::Writer::new();
     encode::encode_graph_section(&mut w, &roots, &platform, &ids).expect("encode graph");

@@ -32,7 +32,7 @@ pub fn snapshot(
     encode::write_header(&mut w);
     w.write_str(source);
     encode::encode_source_origin(&mut w, origin);
-    let ids = encode::encode_code_table(&mut w, module, root_class);
+    let ids = encode::encode_code_table(&mut w, module, root_class)?;
     encode::encode_graph_section(&mut w, roots, platform, &ids)?;
     Ok(w.into_bytes())
 }
