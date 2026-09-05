@@ -16,7 +16,7 @@ use ns_syntax::Span;
 use crate::bytecode::{CompiledCode, Instr, Literal};
 use crate::interpreter::eval::{
     dispatch_lexical_send, dispatch_super_send, frame_at_depth, home_of, parse_int_literal,
-    read_local, write_local,
+    read_local, store_instance_field, write_local,
 };
 use crate::interpreter::{EvalResult, Interpreter, Signal};
 use crate::types::*;
@@ -70,6 +70,9 @@ pub fn run_code(
                 receiver_reg,
                 arg_regs,
                 dst,
+                // `call_site` is deliberately ignored in this milestone --
+                // it is the reserved, inert inline-cache slot; no cache is
+                // wired up to read or write it yet.
                 ..
             } => {
                 let receiver = read_local(frame, *receiver_reg);
@@ -121,18 +124,12 @@ pub fn run_code(
                 write_local(frame, *dst, v);
             }
             Instr::InitSlot { src, field_index } => {
-                // Mirrors `instantiate::run_own_slots`: a direct field write
-                // on `self`, silently skipped for a non-instance receiver.
+                // Shares `store_instance_field` with
+                // `instantiate::run_own_slots`: a direct field write on
+                // `self`, silently skipped for a non-instance receiver.
                 let v = read_local(frame, *src);
                 let receiver = frame.borrow().receiver.clone();
-                if let Value::Obj(obj) = receiver {
-                    if let ObjectData::Instance(fields) = &mut obj.borrow_mut().data {
-                        let i = *field_index as usize;
-                        if i < fields.len() {
-                            fields[i] = v;
-                        }
-                    }
-                }
+                store_instance_field(&receiver, *field_index as usize, v);
             }
             Instr::Return { reg } | Instr::ImplicitReturn { reg } => {
                 return Ok(read_local(frame, *reg));

@@ -177,9 +177,13 @@ pub struct Frame {
     pub receiver: Value,
     pub args: Vec<Value>,
     /// Indexable by resolver slot index, growable (liveness spec's
-    /// reified-activation constraint). `pc` is a statement index into the
-    /// enclosing `CodeBody.stmts`, not a byte/bytecode offset (Milestone 1
-    /// has no bytecode).
+    /// reified-activation constraint). `pc` means two different things
+    /// depending on which engine built this frame's code: under
+    /// `Engine::TreeWalk` it is a statement index into the enclosing
+    /// `CodeBody.stmts`; under `Engine::Bytecode` (`vm::run_code`) it is an
+    /// instruction index into the enclosing `CompiledCode.instrs`. Which one
+    /// applies is determined by the engine active when the frame ran, not by
+    /// anything stored on the frame itself.
     pub temps: Vec<Value>,
     pub pc: usize,
     pub sender: Option<FrameRef>,

@@ -123,6 +123,23 @@ pub(crate) fn home_of(frame: &FrameRef) -> FrameRef {
     }
 }
 
+/// Writes `value` into instance field `index` on `instance`'s
+/// `ObjectData::Instance` fields -- silently skipped when `instance` is not
+/// an object, or is an object with some other `ObjectData` shape, or
+/// `index` is out of range. Shared by `instantiate::run_own_slots` (the
+/// tree-walker's per-slot-initializer write) and `vm::run_code`'s
+/// `Instr::InitSlot` arm (the bytecode engine's equivalent), instead of the
+/// same four-line downcast-bounds-check-assign shape living in both places.
+pub(crate) fn store_instance_field(instance: &Value, index: usize, value: Value) {
+    if let Value::Obj(obj) = instance {
+        if let ObjectData::Instance(fields) = &mut obj.borrow_mut().data {
+            if index < fields.len() {
+                fields[index] = value;
+            }
+        }
+    }
+}
+
 fn read_outer_local(frame: &FrameRef, depth: u16, index: u16) -> Value {
     read_local(&frame_at_depth(frame, depth), index)
 }

@@ -12,7 +12,7 @@ use ns_syntax::Span;
 use crate::types::*;
 use crate::Symbol;
 
-use super::{EvalResult, Interpreter, Signal};
+use super::{Engine, EvalResult, Interpreter, Signal};
 
 impl Interpreter {
     /// Materializes the module's root `ClassDecl` into a real class object.
@@ -280,11 +280,9 @@ impl Interpreter {
         // the superclass' instance initializer is then invoked on o").
         self.run_superclass_initializer(&class, &receiver, &frame, bindings)?;
 
-        // Step 4: this class's own slot clauses, in declaration order.
-        self.run_own_slots(&class, &receiver, &frame, bindings)?;
-
-        // Step 5: this class's own initExprs.
-        self.run_own_init_exprs(&class, &frame, bindings)?;
+        // Steps 4-5: this class's own slot clauses (declaration order),
+        // then its own initExprs -- engine hook 3.
+        self.run_own_initializer(&class, &receiver, &frame, bindings)?;
 
         // Step 6.
         Ok(receiver)
@@ -359,9 +357,60 @@ impl Interpreter {
         // but not a no-op in general once user classes can chain three or
         // more deep) would silently never run. Fixed by recursing here.
         self.run_superclass_initializer(&superclass, instance, subclass_frame, bindings)?;
-        self.run_own_slots(&superclass, instance, subclass_frame, bindings)?;
-        self.run_own_init_exprs(&superclass, subclass_frame, bindings)?;
+        self.run_own_initializer(&superclass, instance, subclass_frame, bindings)?;
         Ok(())
+    }
+
+    /// Engine hook 3 (M2 spec, "`vm.rs` and the engine hook"): Class
+    /// Instantiation steps 4-5 for one level of the chain -- this class's
+    /// own slot initializers, then its own `initExprs`, on the shared
+    /// initializer frame. The tree-walker runs `run_own_slots` +
+    /// `run_own_init_exprs`; the bytecode engine runs the class's compiled
+    /// initializer (`compiler::compile_initializer`) after growing the
+    /// frame's register file to fit it. Every M1 instantiation gap is
+    /// carried forward identically in both engines.
+    fn run_own_initializer(
+        &mut self,
+        class: &ClassRef,
+        instance: &Value,
+        frame: &FrameRef,
+        bindings: &Rc<HashMap<Span, Binding>>,
+    ) -> Result<(), Signal> {
+        let compiled = match &self.engine {
+            Engine::TreeWalk => None,
+            Engine::Bytecode(module) => {
+                if !class_has_initializer_code(class) {
+                    // Every BuiltinClass, and any class with nothing to run:
+                    // a no-op under both engines.
+                    return Ok(());
+                }
+                Some(
+                    module
+                        .initializers
+                        .get(&crate::bytecode::class_key(class))
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            panic!("internal: class has no compiled instance initializer (compile_module coverage gap)")
+                        }),
+                )
+            }
+        };
+        match compiled {
+            None => {
+                self.run_own_slots(class, instance, frame, bindings)?;
+                self.run_own_init_exprs(class, frame, bindings)
+            }
+            Some(code) => {
+                {
+                    let mut f = frame.borrow_mut();
+                    let needed = (code.num_registers - code.num_args) as usize;
+                    if f.temps.len() < needed {
+                        f.temps.resize(needed, Value::Nil);
+                    }
+                }
+                crate::vm::run_code(self, frame, &code, bindings).map(|_| ())
+            }
+        }
     }
 
     fn run_own_slots(
@@ -395,12 +444,8 @@ impl Interpreter {
                 // index here would silently overwrite an already-initialized
                 // superclass slot at the same low index instead of this
                 // class's own slot.
-                if let (Value::Obj(obj), Some(&index)) = (instance, slot_index.get(&name)) {
-                    if let ObjectData::Instance(fields) = &mut obj.borrow_mut().data {
-                        if index < fields.len() {
-                            fields[index] = value;
-                        }
-                    }
+                if let Some(&index) = slot_index.get(&name) {
+                    crate::interpreter::eval::store_instance_field(instance, index, value);
                 }
             }
         }
@@ -489,6 +534,16 @@ fn pattern_param_count(pattern: &ast::MessagePattern) -> usize {
         ast::MessagePattern::Unary { .. } => 0,
         ast::MessagePattern::Binary { .. } => 1,
         ast::MessagePattern::Keyword { parts } => parts.len(),
+    }
+}
+
+/// Whether `class` declares any slot or `initExpr` at all -- `false` for
+/// every `BuiltinClass` and for a non-class object.
+fn class_has_initializer_code(class: &ClassRef) -> bool {
+    let borrowed = class.borrow();
+    match &borrowed.data {
+        ObjectData::Class(data) => !(data.instance_slots.is_empty() && data.init_exprs.is_empty()),
+        _ => false,
     }
 }
 

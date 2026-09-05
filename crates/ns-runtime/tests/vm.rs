@@ -299,6 +299,36 @@ fn a_malformed_integer_literal_raises_the_identical_error_under_both_engines() {
 }
 
 #[test]
+fn a_dynamic_array_literal_evaluates_its_elements_under_bytecode() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( | a | a := {1. 2. 3}. ^a )\n) : ()";
+    let (mut interp, class, bindings) = setup(src);
+    let instance = new_instance(&mut interp, &class, &bindings);
+    let result = expect_ok(send(&mut interp, instance, "foo", vec![], &bindings), "foo");
+    let Value::Obj(obj) = &result else {
+        panic!("expected an array object")
+    };
+    let ObjectData::Array(elements) = &obj.borrow().data else {
+        panic!("expected ObjectData::Array")
+    };
+    assert_eq!(
+        elements.iter().map(int_of).collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+}
+
+#[test]
+fn a_method_that_falls_off_its_end_implicitly_returns_self() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( 1 + 1 )\n) : ()";
+    let (mut interp, class, bindings) = setup(src);
+    let instance = new_instance(&mut interp, &class, &bindings);
+    let result = expect_ok(
+        send(&mut interp, instance.clone(), "foo", vec![], &bindings),
+        "foo",
+    );
+    assert!(matches!((&result, &instance), (Value::Obj(a), Value::Obj(b)) if Rc::ptr_eq(a, b)));
+}
+
+#[test]
 fn the_tree_walk_engine_is_still_the_default() {
     let src =
         "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public makeBlock = ( ^[ 1 ] )\n) : ()";
