@@ -797,6 +797,17 @@ impl Interpreter {
         self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil]))
     }
 
+    /// The `platform collections` namespace object -- see `crate::platform`'s
+    /// module doc for how its payload shape (a two-field, always-`Nil`
+    /// `Instance`) tells it apart from the `platform` singleton and the
+    /// transcript stream. Like `new_stream_object`, it is allocated fresh
+    /// per send: the namespace is stateless, so identity across sends
+    /// carries no meaning that any caller could observe.
+    pub(crate) fn new_collections_namespace(&mut self) -> ObjRef {
+        let class = self.builtin_class(BuiltinClass::Platform);
+        self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil, Value::Nil]))
+    }
+
     /// A class object around an already-computed application. The one place
     /// the three-way invariant is established: a class object's `superclass`
     /// is linked exactly when its application's `superclass` is (callers

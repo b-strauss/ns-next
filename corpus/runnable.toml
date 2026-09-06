@@ -44,3 +44,23 @@ expected_status = 0
 expected_stdout = ""
 reason = "A `usingPlatform:` module whose nested classes form a real inheritance chain (`TextBlock`/`TextString` on `Text properties:`); `TextProperties` is a public nested class accessor."
 
+[[entry]]
+file = "Ducts.ns"
+send = "Duct"
+expected_status = 0
+expected_stdout = ""
+reason = "A `usingPlatform:` module that binds `platform collections List` in its module state, then answers the public nested class `Duct`. This entry is why `platform collections List` exists."
+
+[[entry]]
+file = "NewspeakASTs.ns"
+send = "AST"
+expected_status = 0
+expected_stdout = ""
+reason = "The largest module that runs: ~70 public nested AST classes over a shared `AST new` superclass, plus `platform collections List` in module state."
+
+[[entry]]
+file = "V5BytecodeSimulation.ns"
+send = "InstructionStream"
+expected_status = 0
+expected_stdout = ""
+reason = "Nested classes chained two deep on `InstructionStream new`, plus `platform collections List` in module state."
