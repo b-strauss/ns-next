@@ -288,25 +288,65 @@ Newspeak's architecture: reflection is mirror-based, so source access is a
 Design Principles for Meta-level Facilities", OOPSLA 2004). Whether upstream
 offers a build that exercises that separation was not established here.
 
-What this means for `ns-next`, if a source-free deployment artifact is wanted:
+### Direction: a source-free image is the target (decided 2026-09-06)
 
-- The requirement to preserve is "an image can be **exported back** to `.ns`",
-  not "an image stores the text". A decompiler satisfies it by another route —
-  and no spec here currently mentions one, so it would be new work.
-- Distinguish **source text** from the **provenance record** already required
-  above. A deployment artifact can keep provenance (file + span, or "entered in
-  the debugger at time T") for error reporting while dropping the text.
-- The blocker is representational, not conceptual: classes here hold
-  `Rc<MethodDecl>` — AST nodes — and the resolver's binding map is keyed by
-  `Span`, a byte range into the source text. Serializing classes as objects the
-  way upstream does requires methods that carry bytecode instead, which
-  presupposes the object-model rewrite this document already defers past
-  Milestone 2.
-- The retained tree-walking oracle executes the AST, so it cannot be fed by an
-  AST-free artifact. Decide its fate in the same design pass.
-- A side benefit: a source-free artifact removes the front end from the load
-  path, and with it the re-parsing of attacker-controlled text that the
-  Milestone 2 image format has to defend against today.
+Unlike upstream, `ns-next` will have a source-free image, and **a decompiler is
+the preferred way to make such an image readable again** — not an embedded copy
+of the text. That inverts the bullet above: the requirement to keep is "an
+image can be **exported back** to `.ns`", and a decompiler satisfies it from
+bytecode. No spec here describes one yet, so it is new work, and it is what
+makes this direction honest rather than a quiet loss of capability.
+
+Two things make this cheaper here than it would be upstream, both checked
+against the Milestone 2 code:
+
+- **Nothing in the bytecode engine looks a binding up by span.** All three
+  `bindings.get(&span)` call sites live in `interpreter/eval.rs`, i.e. in the
+  tree-walker; compiled code has its registers, hop counts and selectors baked
+  in. So `HashMap<Span, Binding>` — the structure that makes the source text
+  load-bearing today — is simply not needed by a bytecode-only image.
+- **Very little of a class is read at run time.** `instantiate.rs` needs the
+  factory pattern (selector and arity), the slot count, and whether the class
+  has initializer code at all; `instance_slots`/`slot_index`/`init_exprs` are
+  otherwise read on the tree-walk path.
+
+**The delta is one new section: a class table.** Class name, slot names with
+their indices, factory selector and arity — the replacement for "reconstruct
+the `ClassRef` graph by re-running the front end". Everything else a
+source-free image needs is already in the Milestone 2 format: the object graph
+with identity hashes, the frames, the code table (`num_args`, `num_registers`,
+`statement_pc`, call sites, a `source: Span` per body) and the root list, which
+already carries every method's selector.
+
+**Reflection survives this.** Object mirrors (class of, slots by name), class
+mirrors (name, slots, selectors, arity, instantiation) and activation mirrors
+over the reified frames all work from the class table plus what is already
+serialized, and `statement_pc` still maps a `pc` to a statement. The retained
+`Span`s keep **provenance** — file and range — so a debugger can point at the
+original source when it happens to be available, without the image carrying it.
+
+**Three tiers, not two:**
+
+1. **Full** — source and AST, as today. Development.
+2. **Reflective, source-free** — class table, code, spans as provenance. The
+   deployment target: reflection and debugging keep working, readability comes
+   from the decompiler.
+3. **Minimal** — drop `statement_pc`, spans and slot names. Smallest, and
+   reflection is effectively gone.
+
+**A debug variant may still embed the source** as optional metadata for tier 2,
+for the case where a debugger should show original text without shipping the
+files. That is a packaging switch, not a second format.
+
+**The tree-walker is not an obstacle to this.** It executes the AST and so
+cannot run from a source-free image — but it is expected to be removed anyway
+once the bytecode engine no longer needs an oracle to be checked against. Note
+that this contradicts the wording elsewhere that calls it "permanently
+maintained"; read that as "for as long as an AST engine exists", not forever.
+
+A side benefit: a source-free artifact removes the front end from the load
+path, and with it the re-parsing of attacker-controlled text that the
+Milestone 2 image format has to defend against today.
 
 ## Concurrency: actors, not threads
 
@@ -525,11 +565,14 @@ for the M1→M2 transition.
   design work.
 - Identity-hash width and its interaction with a future tagged-pointer
   representation.
-- Whether there should be a second, source-free deployment artifact beside the
-  live image, as Newspeak upstream has — and what then provides "export back to
-  `.ns`". See "Deployment artifacts without source" under "Source and images
-  together"; it depends on the object-model rewrite and on methods carrying
-  bytecode rather than AST.
+- The source-free image is decided (see "Direction for `ns-next`" under "Source
+  and images together"); what is open is the **decompiler** that has to provide
+  "export back to `.ns`" in its place — when it is built, how faithful its
+  output must be, and whether tier 2 keeps enough metadata (statement ranges,
+  slot and argument names) for it to produce something a person wants to read.
+- When the tree-walking engine is retired. It is the differential oracle for
+  the bytecode engine today and blocks nothing until then, but it is the reason
+  the AST — and therefore the source — is still load-bearing at run time.
 - Whether a suspended (debugged) actor's mailbox keeps draining, and how far
   the M:N actor scheduler should be visible to or configurable by user code
   (e.g. actor placement/affinity) versus staying fully opaque.
