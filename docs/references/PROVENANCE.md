@@ -28,10 +28,9 @@ their publishers grant.
   `corpus/reference/NewspeakGrammar.ns` covers only *syntax*. It is explicitly a draft
   and says so in its own front matter, and it can disagree with the reference
   implementation: **where the spec and the vendored corpus's actual behaviour
-  disagree, prefer the corpus** and note the discrepancy. This file was previously
-  `corpus/reference/newspeak-spec.pdf`; it never came from the `newspeaklanguage/newspeak`
-  repository and so did not belong under a corpus whose refresh means re-cloning that
-  repository at a new commit.
+  disagree, prefer the corpus** and note the discrepancy. It is not corpus material: it
+  has its own source and release cadence, independent of the `newspeaklanguage/newspeak`
+  repository the corpus is copied from.
 
   Refreshing it: re-download from the URL above, update the version here, and re-check
   that `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md`'s section
