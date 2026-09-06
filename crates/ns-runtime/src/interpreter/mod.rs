@@ -396,7 +396,7 @@ impl Interpreter {
     pub fn invoke_method(
         &mut self,
         receiver: Value,
-        method: Rc<ast::MethodDecl>,
+        method: Rc<crate::mixin::MixinMethod>,
         defining_class: ClassRef,
         args: Vec<Value>,
         bindings: Rc<HashMap<Span, Binding>>,
@@ -417,9 +417,12 @@ impl Interpreter {
                     }),
             ),
         };
+        // The tree-walker sizes the frame from the declaration's own named
+        // temporaries, and only ever runs a mixin built from source, so
+        // `decl` is always there when it is the one asking.
         let temp_count = match &compiled {
             Some(code) => (code.num_registers - code.num_args) as usize,
-            None => method.body.temps.len(),
+            None => method.decl.as_ref().map_or(0, |d| d.body.temps.len()),
         };
         let frame = Rc::new(RefCell::new(Frame {
             receiver,
@@ -433,9 +436,16 @@ impl Interpreter {
             uncontinuable: false,
             slot_base: 0, // a method body never contains InitSlot
         }));
-        let result = match &compiled {
-            Some(code) => crate::vm::run_code(self, &frame, code, &bindings),
-            None => self.run_statements(&method.body.stmts, &frame, &bindings),
+        let result = match (&compiled, &method.decl) {
+            (Some(code), _) => crate::vm::run_code(self, &frame, code, &bindings),
+            (None, Some(decl)) => self.run_statements(&decl.body.stmts, &frame, &bindings),
+            // Unreachable rather than merely unlikely: a mixin without
+            // declarations comes from an image, and `image::load` installs
+            // `Engine::Bytecode`, so such a method always arrives compiled.
+            (None, None) => panic!(
+                "internal: the tree-walking engine cannot run a method of a mixin \
+                 decoded from an image"
+            ),
         };
         frame.borrow_mut().uncontinuable = true;
         match result {
@@ -724,15 +734,15 @@ impl Interpreter {
         }
         let inherited = superclass.map_or(0, |s| s.num_slots);
         let mut slot_index = superclass.map_or_else(HashMap::new, |s| s.slot_index.clone());
-        for (i, slot) in mixin.instance_slots.iter().enumerate() {
-            slot_index.insert(Symbol::intern(&slot.name.name), inherited + i);
+        for (i, slot) in mixin.slots.iter().enumerate() {
+            slot_index.insert(slot.name, inherited + i);
         }
         // The nested-class cache slots. They are part of the instance layout
         // because the spec caches a nested class in the enclosing *object*;
         // a side table keyed by object would cost a hash lookup on a path
         // that is otherwise a slot read.
         let mut nested_slot = superclass.map_or_else(HashMap::new, |s| s.nested_slot.clone());
-        let mut next = inherited + mixin.instance_slots.len();
+        let mut next = inherited + mixin.slots.len();
         for nested in &mixin.nested {
             nested_slot.insert(nested.name, next);
             next += 1;
@@ -830,16 +840,9 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
 /// application cache keys the builtins apart from each other even though
 /// their mixins are structurally identical.
 fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
-    Rc::new(crate::mixin::Mixin {
-        name: Symbol::intern(&format!("{kind:?}")),
-        methods: HashMap::new(),
-        instance_slots: vec![],
-        init_exprs: vec![],
-        factory: None,
-        nested: vec![],
-        class_side: None,
-        decl: None,
-    })
+    Rc::new(crate::mixin::Mixin::empty(Symbol::intern(&format!(
+        "{kind:?}"
+    ))))
 }
 
 /// The empty mixin `metaclass_of` applies for a class that declares no
@@ -850,16 +853,10 @@ fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
 /// `apply_mixin` something to link the ancestor's metaclass application
 /// through.
 fn empty_class_side_mixin(owner_name: Symbol) -> Rc<crate::mixin::Mixin> {
-    Rc::new(crate::mixin::Mixin {
-        name: Symbol::intern(&format!("{} class", owner_name.as_str())),
-        methods: HashMap::new(),
-        instance_slots: vec![],
-        init_exprs: vec![],
-        factory: None,
-        nested: vec![],
-        class_side: None,
-        decl: None,
-    })
+    Rc::new(crate::mixin::Mixin::empty(Symbol::intern(&format!(
+        "{} class",
+        owner_name.as_str()
+    ))))
 }
 
 /// Builds the single, genuinely self-referential `Object`-tagged class

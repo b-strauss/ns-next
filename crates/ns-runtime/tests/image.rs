@@ -11,7 +11,7 @@ use ns_runtime::bytecode::{
     method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
 };
 use ns_runtime::image;
-use ns_runtime::image::{decode, encode, symbols};
+use ns_runtime::image::{decode, encode, mixins, symbols};
 use ns_runtime::mixin::mixin_key;
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
@@ -247,6 +247,61 @@ fn table_with(strings: &[&str]) -> symbols::Table {
     builder.build()
 }
 
+/// One hand-crafted mixin-table row: named by symbol `name_id`, with
+/// `methods` as `(selector symbol id, code id)` pairs and `nested` as row
+/// ids. Everything else in the row is empty -- these fixtures exist to
+/// drive one range check at a time, and writing the whole row shape out at
+/// each call site would bury the field under test.
+fn write_mixin_row(w: &mut encode::Writer, name_id: u32, methods: &[(u32, u32)], nested: &[u32]) {
+    w.write_u32(name_id);
+    w.write_u8(1); // AccessModifier::Protected
+    w.write_u32(0); // span.start
+    w.write_u32(0); // span.end
+    w.write_u32(0); // no slots
+    w.write_bool(false); // no factory
+    w.write_bool(false); // no initExprs
+    w.write_bool(false); // no superclass clause
+    w.write_u32(methods.len() as u32);
+    for (selector, code) in methods {
+        w.write_u32(*selector);
+        w.write_u8(1); // AccessModifier::Protected
+        w.write_u16(0); // num_args
+        w.write_u32(*code);
+    }
+    w.write_u32(nested.len() as u32);
+    for id in nested {
+        w.write_u32(*id);
+    }
+    w.write_bool(false); // no class side
+    w.write_bool(false); // no initializer
+    w.write_bool(false); // no superclass clause body
+    w.write_bool(false); // no superclass message body
+}
+
+/// A hand-crafted mixin table of exactly one leaf row.
+fn one_row_mixin_table(name_id: u32, methods: &[(u32, u32)]) -> Vec<u8> {
+    let mut w = encode::Writer::new();
+    w.write_u32(1);
+    write_mixin_row(&mut w, name_id, methods, &[]);
+    w.into_bytes()
+}
+
+/// A mixin table of `depth` rows, each nesting the next: a declaration tree
+/// as deep as it is large. Synthesised directly as bytes rather than by
+/// snapshotting real source, because no parser accepts 100_000 levels of
+/// nesting -- and the depth an image *claims* is exactly the input a
+/// decoder must never recurse on.
+fn mixin_chain(depth: u32) -> Vec<u8> {
+    let mut w = encode::Writer::new();
+    w.write_u32(depth);
+    for i in 0..depth {
+        let child = [i + 1];
+        let nested: &[u32] = if i + 1 < depth { &child } else { &[] };
+        write_mixin_row(&mut w, 0, &[], nested);
+    }
+    w.into_bytes()
+}
+
 const RICH: &str = "Newspeak3\n'T'\nclass Rich x: a = Object new (\n  | p = a. q ::= 0. |\n  q := p.\n) (\n  find: t in: c = ( c do: [:e | e = t ifTrue: [^e]]. ^nil )\n  loop = ( | n | n := 0. [n < 3] whileTrue: [n := n + 1]. ^n )\n  arr = ( ^{ 1. #(2 3). 'four' } )\n) : ()";
 
 fn every_instr_once() -> CompiledCode {
@@ -364,22 +419,28 @@ fn class_mixin_key(class: &ClassRef) -> usize {
     mixin_key(&data.application.mixin)
 }
 
-/// Encodes a module's code table into fresh bytes and decodes it back.
+/// Encodes a module's code table and mixin table into fresh bytes and
+/// decodes both back. The two travel together everywhere: the mixin table
+/// is what says which compiled body belongs to which declaration.
 fn round_trip_code_table(
     module: &CompiledModule,
     class: &ClassRef,
-) -> (decode::DecodedCodeTable, encode::CodeIds) {
+) -> (decode::DecodedCodeTable, mixins::Decoded, encode::CodeIds) {
     let mut w = encode::Writer::new();
     let mut symbols = symbols::Builder::new();
     let ids =
         encode::encode_code_table(&mut w, module, class, &mut symbols).expect("encode code table");
+    let mut mixin_w = encode::Writer::new();
+    mixins::encode(&mut mixin_w, class, module, &mut symbols, &ids).expect("encode mixin table");
     let bytes = w.into_bytes();
+    let mixin_bytes = mixin_w.into_bytes();
     let table = symbols.build();
     let mut r = decode::Reader::new(&bytes);
-    (
-        decode::decode_code_table(&mut r, &table).expect("decode code table"),
-        ids,
-    )
+    let codes = decode::decode_code_table(&mut r, &table).expect("decode code table");
+    let mut mixin_r = decode::Reader::new(&mixin_bytes);
+    let decoded_mixins =
+        mixins::decode(&mut mixin_r, &table, &codes.codes).expect("decode mixin table");
+    (codes, decoded_mixins, ids)
 }
 
 #[test]
@@ -391,8 +452,8 @@ fn every_instr_variant_round_trips() {
     module
         .initializers
         .insert(class_mixin_key(&class), synthetic.clone());
-    let (table, ids) = round_trip_code_table(&module, &class);
-    let root = &table.mixins[0];
+    let (table, decoded_mixins, ids) = round_trip_code_table(&module, &class);
+    let root = &decoded_mixins.code[0];
     let decoded = &table.codes[root.initializer.expect("initializer id") as usize];
     assert_eq!(**decoded, *synthetic);
     assert_eq!(
@@ -405,8 +466,8 @@ fn every_instr_variant_round_trips() {
 fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents() {
     let (_interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(&class, &bindings);
-    let (table, _ids) = round_trip_code_table(&module, &class);
-    let root = &table.mixins[0];
+    let (table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let root = &decoded_mixins.code[0];
     assert_eq!(root.methods.len(), 3);
     assert_eq!(
         root.methods
@@ -442,10 +503,11 @@ fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents()
 fn a_decoded_code_table_installs_against_a_reloaded_class() {
     let (_interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(&class, &bindings);
-    let (table, _ids) = round_trip_code_table(&module, &class);
+    let (table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
     // "Reload": a second, independent load of the same source.
     let (_interp2, class2, bindings2) = load(RICH);
-    let installed = decode::install_code_table(&table, &class2, &bindings2).expect("install");
+    let installed =
+        decode::install_code_table(&table, &decoded_mixins, &class2, &bindings2).expect("install");
     let borrowed = class2.borrow();
     let ObjectData::Class(data) = &borrowed.data else {
         panic!("not a class")
@@ -471,10 +533,14 @@ fn a_decoded_code_table_installs_against_a_reloaded_class() {
 fn an_unknown_selector_in_the_root_list_is_a_decode_error() {
     let (_interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(&class, &bindings);
-    let (table, _ids) = round_trip_code_table(&module, &class);
-    let (_interp2, class2, bindings2) =
-        load("Newspeak3\n'T'\nclass Other = Object new (\n) (\n) : ()");
-    match decode::install_code_table(&table, &class2, &bindings2) {
+    let (table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    // Same class name, so the positional correspondence stands and the
+    // *method* mismatch is what this test observes; a renamed class is its
+    // own error (`MixinNameMismatch`), covered separately below.
+    let (_interp2, class2, bindings2) = load(
+        "Newspeak3\n'T'\nclass Rich x: a = Object new (\n  | p = a. q ::= 0. |\n  q := p.\n) (\n) : ()",
+    );
+    match decode::install_code_table(&table, &decoded_mixins, &class2, &bindings2) {
         Err(decode::DecodeError::UnknownSelector(selector)) => {
             assert_eq!(selector, "arr");
             assert_eq!(
@@ -489,15 +555,9 @@ fn an_unknown_selector_in_the_root_list_is_a_decode_error() {
 
 #[test]
 fn a_root_list_code_id_out_of_range_is_a_decode_error_not_a_panic() {
-    let mut w = encode::Writer::new();
-    w.write_u32(0); // no code entries
-    w.write_u32(1); // one mixin section ...
-    w.write_u32(1); // ... with one method in its root list ...
-    w.write_u32(0); // selector id 0 ("foo")
-    w.write_u32(5); // ... pointing past the end of the table
-    let bytes = w.into_bytes();
+    let bytes = one_row_mixin_table(0, &[(0, 5)]);
     let mut r = decode::Reader::new(&bytes);
-    match decode::decode_code_table(&mut r, &table_with(&["foo"])) {
+    match mixins::decode(&mut r, &table_with(&["foo"]), &[]) {
         Err(decode::DecodeError::BadCodeId(id)) => {
             assert_eq!(id, 5);
             assert_eq!(
@@ -710,16 +770,35 @@ fn a_method_added_after_compile_module_is_an_encoding_error_not_a_panic() {
             )
         };
         let mut methods = old.methods.clone();
-        let decl = old.methods.values().next().expect("RICH has methods");
-        methods.insert(Symbol::intern("addedLater"), Rc::new((**decl).clone()));
+        let existing = old.methods.values().next().expect("RICH has methods");
+        methods.insert(
+            Symbol::intern("addedLater"),
+            Rc::new(ns_runtime::mixin::MixinMethod {
+                selector: Symbol::intern("addedLater"),
+                access: existing.access,
+                num_args: 0,
+                decl: existing.decl.clone(),
+            }),
+        );
         let grown = Rc::new(Mixin {
             name: old.name,
+            access: old.access,
             methods,
-            instance_slots: old.instance_slots.clone(),
+            slots: old
+                .slots
+                .iter()
+                .map(|slot| ns_runtime::mixin::MixinSlot {
+                    name: slot.name,
+                    decl: slot.decl.clone(),
+                })
+                .collect(),
+            factory: old.factory,
+            superclass: old.superclass,
+            has_init_exprs: old.has_init_exprs,
             init_exprs: old.init_exprs.clone(),
-            factory: old.factory.clone(),
             nested: old.nested.clone(),
             class_side: old.class_side.clone(),
+            span: old.span,
             decl: old.decl.clone(),
         });
         let application = interp.apply_mixin(&grown, super_application.as_ref());
@@ -882,12 +961,12 @@ fn a_literal_array_within_the_nesting_limit_still_decodes() {
 fn a_selector_the_image_has_no_code_for_is_a_decode_error() {
     let (_interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(&class, &bindings);
-    let (table, _ids) = round_trip_code_table(&module, &class);
+    let (table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
     // "Reload" of a source that has gained a method since the snapshot: the
     // installed module would otherwise have a hole the engine hook panics on.
     let grown = RICH.replace("  arr = ", "  extra = ( ^1 )\n  arr = ");
     let (_interp2, class2, bindings2) = load(&grown);
-    match decode::install_code_table(&table, &class2, &bindings2) {
+    match decode::install_code_table(&table, &decoded_mixins, &class2, &bindings2) {
         Err(decode::DecodeError::MissingSelector(selector)) => {
             assert_eq!(selector, "extra");
             assert_eq!(
@@ -904,9 +983,9 @@ fn a_selector_the_image_has_no_code_for_is_a_decode_error() {
 fn installing_against_a_root_that_is_not_a_class_is_a_decode_error() {
     let (mut interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(&class, &bindings);
-    let (table, _ids) = round_trip_code_table(&module, &class);
+    let (table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
     let not_a_class = interp.new_string("not a class".to_string());
-    match decode::install_code_table(&table, &not_a_class, &bindings) {
+    match decode::install_code_table(&table, &decoded_mixins, &not_a_class, &bindings) {
         Err(decode::DecodeError::NotAClass) => assert_eq!(
             decode::DecodeError::NotAClass.to_string(),
             "the image's root object is not a class"
@@ -986,8 +1065,8 @@ fn the_deepest_literal_array_the_parser_accepts_survives_a_round_trip() {
         levels,
         "the compiler lowered the whole nest"
     );
-    let (table, _ids) = round_trip_code_table(&module, &class);
-    let (_, id) = table.mixins[0]
+    let (table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let (_, id) = decoded_mixins.code[0]
         .methods
         .iter()
         .find(|(selector, _)| selector.as_str() == "arr")
@@ -2013,10 +2092,10 @@ fn code_with(
 
 fn table_of(codes: Vec<Rc<CompiledCode>>) -> decode::DecodedCodeTable {
     decode::DecodedCodeTable {
-        codes,
         // These tables only ever feed `verify_code_table`/`verify_graph`,
-        // which read `.codes` alone -- no mixin section is needed.
-        mixins: vec![],
+        // which read the code list alone -- the mixin table, which names
+        // which body belongs to which declaration, is a separate section.
+        codes,
     }
 }
 
@@ -2027,7 +2106,7 @@ fn a_real_modules_decoded_code_table_verifies() {
     // passes the structural pass unchanged.
     let (_interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(&class, &bindings);
-    let (table, _ids) = round_trip_code_table(&module, &class);
+    let (table, _decoded_mixins, _ids) = round_trip_code_table(&module, &class);
     decode::verify_code_table(&table).expect("compiler-emitted code is structurally sound");
 }
 
@@ -2425,12 +2504,13 @@ fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_at_install() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo: a = ( ^a )\n) : ()";
     let (_interp, class, bindings) = load(src);
     let module = compiler::compile_module(&class, &bindings);
-    let (mut table, _ids) = round_trip_code_table(&module, &class);
-    let id = table.mixins[0].methods[0].1 as usize;
+    let (mut table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let id = decoded_mixins.code[0].methods[0].1 as usize;
     let mut body = (*table.codes[id]).clone();
     body.num_args = 2;
     table.codes[id] = Rc::new(body);
-    let err = decode::install_code_table(&table, &class, &bindings).expect_err("arity mismatch");
+    let err = decode::install_code_table(&table, &decoded_mixins, &class, &bindings)
+        .expect_err("arity mismatch");
     assert_eq!(
         err,
         decode::DecodeError::CodeArityMismatch {
@@ -2446,13 +2526,13 @@ fn a_method_root_naming_a_block_body_is_refused_at_install() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( ^1 )\n) : ()";
     let (_interp, class, bindings) = load(src);
     let module = compiler::compile_module(&class, &bindings);
-    let (mut table, _ids) = round_trip_code_table(&module, &class);
-    let id = table.mixins[0].methods[0].1 as usize;
+    let (mut table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let id = decoded_mixins.code[0].methods[0].1 as usize;
     let mut body = (*table.codes[id]).clone();
     body.kind = CodeKind::Block;
     table.codes[id] = Rc::new(body);
     // `CompiledModule` is not `PartialEq`; match rather than compare.
-    match decode::install_code_table(&table, &class, &bindings) {
+    match decode::install_code_table(&table, &decoded_mixins, &class, &bindings) {
         Err(err) => assert_eq!(
             err,
             decode::DecodeError::WrongCodeKind { expected: "method" }
@@ -2505,9 +2585,6 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable, CompiledModule) {
     );
     let table = decode::DecodedCodeTable {
         codes: vec![block, parent.clone()],
-        // `verify_graph` (the only thing this fixture's table feeds) reads
-        // `.codes` alone -- no mixin section is needed here either.
-        mixins: vec![],
     };
     let mut module = CompiledModule {
         methods: HashMap::new(),
@@ -2776,13 +2853,13 @@ fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_at_install
     // initializer's `MissingSelector`.
     let (_interp, class, bindings) = load(NEEDS_INITIALIZER);
     let module = compiler::compile_module(&class, &bindings);
-    let (mut table, _ids) = round_trip_code_table(&module, &class);
+    let (table, mut decoded_mixins, _ids) = round_trip_code_table(&module, &class);
     assert!(
-        table.mixins[0].initializer.is_some(),
+        decoded_mixins.code[0].initializer.is_some(),
         "the fixture's class really does compile an initializer"
     );
-    table.mixins[0].initializer = None;
-    match decode::install_code_table(&table, &class, &bindings) {
+    decoded_mixins.code[0].initializer = None;
+    match decode::install_code_table(&table, &decoded_mixins, &class, &bindings) {
         Err(err) => {
             assert_eq!(err, decode::DecodeError::MissingInitializer);
             assert_eq!(
@@ -2973,8 +3050,9 @@ fn a_snapshotted_nested_mixins_method_and_initializer_survive_a_load() {
     // hand-built class object anyway (no accessor exists yet).
     let (_interp, class, bindings) = load(NESTED_MODULE);
     let module = compiler::compile_module(&class, &bindings);
-    let (table, _ids) = round_trip_code_table(&module, &class);
-    let installed = decode::install_code_table(&table, &class, &bindings).expect("install");
+    let (table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let installed =
+        decode::install_code_table(&table, &decoded_mixins, &class, &bindings).expect("install");
 
     let root_mixin = root_mixin_of(&class);
     let inner_mixin = &root_mixin.nested[0];
@@ -3280,14 +3358,14 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
 fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_refused() {
     let (_interp, class, bindings) = load(NESTED_SUPERCLASS_ARGS);
     let module = compiler::compile_module(&class, &bindings);
-    let (mut table, _ids) = round_trip_code_table(&module, &class);
-    let with_message = table
-        .mixins
+    let (table, mut decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let with_message = decoded_mixins
+        .code
         .iter()
         .position(|m| m.superclass_message.is_some())
         .expect("Derived's clause really does compile a message body");
-    table.mixins[with_message].superclass_message = None;
-    match decode::install_code_table(&table, &class, &bindings) {
+    decoded_mixins.code[with_message].superclass_message = None;
+    match decode::install_code_table(&table, &decoded_mixins, &class, &bindings) {
         Err(err) => {
             assert_eq!(err, decode::DecodeError::MissingSuperclassMessage);
             assert_eq!(
@@ -3486,24 +3564,18 @@ fn an_out_of_range_symbol_id_is_an_error_not_a_panic() {
 }
 
 /// The same hostile input, but at the level that actually raises
-/// `DecodeError::BadSymbolId`: a hand-crafted code table whose mixin
-/// section names a selector id past the end of an empty symbol table. The
+/// `DecodeError::BadSymbolId`: a hand-crafted mixin table whose one row
+/// names a selector id past the end of a one-entry symbol table. The
 /// end-to-end test above proves `load` as a whole refuses the image; this
-/// one proves it is specifically `decode_code_table`'s range check that
-/// catches it, not some unrelated failure earlier in the pipeline.
+/// one proves it is specifically the mixin table's range check that catches
+/// it, not some unrelated failure earlier in the pipeline.
 #[test]
 fn a_root_lists_selector_id_out_of_range_is_a_decode_error_not_a_panic() {
-    let mut w = encode::Writer::new();
-    w.write_u32(0); // no code entries
-    w.write_u32(1); // one mixin section ...
-    w.write_u32(1); // ... with one method in its root list ...
-    w.write_u32(5); // ... whose selector id is out of range for an empty table
-    w.write_u32(0); // code id (never reached -- the selector id is checked first)
-    let bytes = w.into_bytes();
+    let bytes = one_row_mixin_table(0, &[(5, 0)]);
     let mut r = decode::Reader::new(&bytes);
     assert_eq!(
-        decode::decode_code_table(&mut r, &symbols::Table::empty()),
-        Err(decode::DecodeError::BadSymbolId(5))
+        mixins::decode(&mut r, &table_with(&["X"]), &[]).err(),
+        Some(decode::DecodeError::BadSymbolId(5))
     );
 }
 
@@ -3540,4 +3612,258 @@ fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywh
         "a",
     );
     assert!(matches!(result, Value::SmallInt(42)));
+}
+
+// ---------------------------------------------------------------------------
+// Task 12: the mixin table. What the image says a declaration *is* -- its
+// name, slots, methods, factory, superclass clause, nesting and class side --
+// no longer comes back by re-parsing the image's own source text.
+// ---------------------------------------------------------------------------
+
+const TABLE_NESTED_SRC: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new (| s. |) (
+    public class Inner withV: a = Object new (| v = a. |) (
+        public value = ( ^v )
+    )
+) : (
+    public marker = ( ^2 )
+)
+";
+
+/// Decodes an image's symbol, code and mixin tables out of its own bytes,
+/// walking the earlier sections with the real decoders rather than
+/// hardcoded offsets that would drift as the format's earlier fields change.
+fn mixin_table_of(bytes: &[u8]) -> mixins::Decoded {
+    let mut r = decode::Reader::new(bytes);
+    decode::read_header(&mut r).expect("valid header");
+    r.read_str().expect("source");
+    decode::decode_source_origin(&mut r).expect("origin");
+    let symbols = symbols::decode(&mut r).expect("symbol table");
+    let codes = decode::decode_code_table(&mut r, &symbols).expect("code table");
+    mixins::decode(&mut r, &symbols, &codes.codes).expect("mixin table")
+}
+
+/// A complete image whose mixin table is `mixin_table` verbatim: a real
+/// header, a real (trivially parseable) source and origin, a real symbol
+/// table holding `strings`, and an empty code table. Everything before the
+/// mixin table comes from the real encoders, so a fixture built this way
+/// exercises the mixin table's own validation rather than an accident in an
+/// earlier section. Nothing follows the mixin table, so every test using
+/// this asserts an error -- the point is only ever *which* error, and that
+/// it is an error rather than an abort.
+fn image_with_mixin_table(strings: &[&str], mixin_table: &[u8]) -> Vec<u8> {
+    let mut w = encode::Writer::new();
+    encode::write_header(&mut w);
+    w.write_str(TRIVIAL_MODULE);
+    encode::encode_source_origin(&mut w, &Origin::File(PathBuf::from("t.ns")));
+    let mut builder = symbols::Builder::new();
+    for s in strings {
+        builder.intern(s);
+    }
+    builder.write(&mut w);
+    w.write_u32(0); // an empty code table
+    w.write_raw(mixin_table);
+    w.into_bytes()
+}
+
+#[test]
+fn a_nested_mixin_round_trips_through_the_table() {
+    let bytes = snapshot_of(TABLE_NESTED_SRC);
+    let decoded = mixin_table_of(&bytes);
+    let root = decoded.root().expect("a root row").clone();
+    assert_eq!(root.name, Symbol::intern("Outer"));
+    assert_eq!(
+        root.slots
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["s"]
+    );
+    assert!(
+        root.class_side.is_some(),
+        "a class side is a row of its own, referenced by id"
+    );
+    assert_eq!(root.nested.len(), 1);
+    let inner = &root.nested[0];
+    assert_eq!(inner.name, Symbol::intern("Inner"));
+    assert_eq!(
+        inner.access,
+        ns_syntax::ast::AccessModifier::Public,
+        "the accessor's accessibility travels with the declaration"
+    );
+    assert_eq!(
+        inner
+            .slots
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["v"]
+    );
+    let factory = inner.factory.expect("Inner declares a factory");
+    assert_eq!(factory.selector, Symbol::intern("withV:"));
+    assert_eq!(factory.num_args, 1);
+    let value = inner.methods[&Symbol::intern("value")].clone();
+    assert_eq!(value.num_args, 0);
+    assert_eq!(value.access, ns_syntax::ast::AccessModifier::Public);
+    // The point of the whole task: nothing in the rebuilt tree came from an
+    // `ast` node, and none was invented to fill a field either.
+    assert!(inner.decl.is_none(), "a decoded mixin has no declaration");
+    assert!(value.decl.is_none(), "nor does a decoded method");
+    assert!(inner.init_exprs.is_empty());
+}
+
+/// The nesting depth is input-controlled, so decoding must not recurse
+/// proportionally to it -- and neither must anything the decode hands back,
+/// since dropping a tree of `Rc<Mixin>` walks it recursively too. 100_000
+/// declared levels must produce an error, never an abort.
+#[test]
+fn a_deeply_nested_mixin_tree_does_not_blow_the_stack() {
+    let bytes = image_with_mixin_table(&["X"], &mixin_chain(100_000));
+    let Err(err) = ns_runtime::image::load(&bytes) else {
+        panic!("100_000 levels must be refused");
+    };
+    assert!(
+        err.contains("nests deeper than"),
+        "expected the nesting ceiling to be what refuses it, got: {err}"
+    );
+}
+
+/// The other side of the ceiling: a tree just inside it decodes, iteratively
+/// and completely. Without this, a decoder that refused *every* nested tree
+/// would pass the test above.
+#[test]
+fn a_mixin_tree_just_inside_the_nesting_ceiling_still_decodes() {
+    let bytes = mixin_chain(128);
+    let mut r = decode::Reader::new(&bytes);
+    let decoded = mixins::decode(&mut r, &table_with(&["X"]), &[]).expect("128 levels decode");
+    assert_eq!(decoded.mixins.len(), 128);
+    let mut level = decoded.root().expect("a root row").clone();
+    let mut depth = 1;
+    while let Some(next) = level.nested.first().cloned() {
+        level = next;
+        depth += 1;
+    }
+    assert_eq!(depth, 128, "every level is linked to its child");
+}
+
+#[test]
+fn a_mixin_id_pointing_past_the_table_is_an_error() {
+    let mut w = encode::Writer::new();
+    w.write_u32(1);
+    write_mixin_row(&mut w, 0, &[], &[7]); // one row, nesting a row that is not there
+    let table = w.into_bytes();
+    let mut r = decode::Reader::new(&table);
+    assert_eq!(
+        mixins::decode(&mut r, &table_with(&["X"]), &[]).err(),
+        Some(decode::DecodeError::BadMixinId(7))
+    );
+    // And end to end, through `load`, which must refuse rather than panic.
+    let bytes = image_with_mixin_table(&["X"], &table);
+    assert!(ns_runtime::image::load(&bytes).is_err());
+}
+
+/// A row that is not part of the declaration tree -- here, a row naming
+/// itself as its own nested declaration -- is refused rather than paired up
+/// wrongly. Row position is the whole correspondence between a row and the
+/// declaration it describes.
+#[test]
+fn a_mixin_table_that_is_not_a_declaration_tree_is_an_error() {
+    let mut w = encode::Writer::new();
+    w.write_u32(2);
+    write_mixin_row(&mut w, 0, &[], &[1]);
+    write_mixin_row(&mut w, 0, &[], &[1]); // row 1 nests itself
+    let bytes = w.into_bytes();
+    let mut r = decode::Reader::new(&bytes);
+    assert_eq!(
+        mixins::decode(&mut r, &table_with(&["X"]), &[]).err(),
+        Some(decode::DecodeError::MixinTableNotATree { row: 1 })
+    );
+}
+
+/// The one reader an earlier review found reading the factory selector out
+/// of `Mixin::decl`: `instantiate::eval_superclass_message` checks the
+/// selector a clause names against the superclass's primary factory
+/// selector. Read off a declaration, a decoded mixin (which has none) would
+/// fall back to `new`, and every class whose superclass has a keyword
+/// factory would raise a spurious "not the primary factory message" error on
+/// the first instantiation after a load. Both halves are asserted: that the
+/// table carries the selector and its arity, and that a real load then
+/// instantiates such a class without error.
+#[test]
+fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
+    let (mut interp, class, bindings) = load(NESTED_SUPERCLASS_ARGS);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        "instantiate Args",
+    );
+    let bytes = image::snapshot(
+        NESTED_SUPERCLASS_ARGS,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        std::slice::from_ref(&outer),
+    )
+    .expect("snapshot");
+
+    let decoded = mixin_table_of(&bytes);
+    let root = decoded.root().expect("a root row").clone();
+    let base = root
+        .nested
+        .iter()
+        .find(|m| m.name == Symbol::intern("Base"))
+        .expect("Base is a nested declaration");
+    let derived = root
+        .nested
+        .iter()
+        .find(|m| m.name == Symbol::intern("Derived"))
+        .expect("Derived is a nested declaration");
+    let base_factory = base.factory.expect("Base declares a factory");
+    assert_eq!(base_factory.selector, Symbol::intern("withBase:"));
+    assert_eq!(base_factory.num_args, 1);
+    let clause = derived.superclass.expect("Derived declares a clause");
+    assert_eq!(
+        clause.selector,
+        Symbol::intern("withBase:"),
+        "the clause's own selector, not the `new` default"
+    );
+    assert!(clause.has_args, "`Base withBase: 7` passes an argument");
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let reloaded = loaded.roots.first().cloned().expect("the snapshotted Args");
+    let derived_class = expect_ok(
+        loaded.interp.send(
+            reloaded,
+            Symbol::intern("Derived"),
+            vec![],
+            &loaded.bindings,
+            None,
+        ),
+        "Derived",
+    );
+    let Value::Obj(derived_class) = derived_class else {
+        panic!("the accessor must yield a class object")
+    };
+    let instance = expect_ok(
+        loaded
+            .interp
+            .instantiate(derived_class, vec![], &loaded.bindings),
+        "instantiate Derived",
+    );
+    let result = expect_ok(
+        loaded.interp.send(
+            instance,
+            Symbol::intern("value"),
+            vec![],
+            &loaded.bindings,
+            None,
+        ),
+        "value",
+    );
+    assert!(matches!(result, Value::SmallInt(7)));
 }

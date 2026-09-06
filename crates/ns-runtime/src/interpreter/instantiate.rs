@@ -9,11 +9,46 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
-use crate::mixin::Mixin;
+use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
 use crate::types::*;
 use crate::Symbol;
 
 use super::{Engine, EvalResult, Interpreter, Signal};
+
+/// A class body's methods as a mixin's method dictionary: everything a
+/// lookup or an engine hook reads is lifted out of the declaration here, so
+/// that a mixin decoded from an image -- which has no declaration at all --
+/// answers the same questions from the same fields.
+fn build_methods(body: &ast::ClassBody) -> HashMap<Symbol, Rc<MixinMethod>> {
+    body.methods
+        .iter()
+        .map(|m| {
+            let method = MixinMethod::from_decl(Rc::new(m.clone()));
+            (method.selector, Rc::new(method))
+        })
+        .collect()
+}
+
+fn build_slots(body: &ast::ClassBody) -> Vec<MixinSlot> {
+    body.slots
+        .iter()
+        .map(|s| MixinSlot::from_decl(Rc::new(s.clone())))
+        .collect()
+}
+
+/// The run-time-visible half of a superclass clause. The selector defaults
+/// to `new` for an omitted message, per `newspeak-spec.pdf` §6.1 -- resolved
+/// once, here, rather than at each of the two places that used to re-derive
+/// it from the declaration.
+fn superclass_clause_of(clause: &ast::SuperclassClause) -> SuperclassClause {
+    SuperclassClause {
+        selector: super::nested::superclass_clause_message(clause).map_or_else(
+            || Symbol::intern("new"),
+            crate::compiler::lower::selector_of,
+        ),
+        has_args: super::nested::superclass_clause_message_args_expr(clause).is_some(),
+    }
+}
 
 impl Interpreter {
     /// Materializes the module's root `ClassDecl` into a real class object.
@@ -69,16 +104,8 @@ impl Interpreter {
     /// has no accessor to dispatch to yet (Task 9). Reachable in the tree is
     /// as far as this task goes.
     fn build_mixin(&mut self, decl: &ast::ClassDecl) -> Rc<Mixin> {
-        let mut methods = HashMap::new();
-        for m in &decl.instance_side.methods {
-            methods.insert(Symbol::intern(&method_name(&m.pattern)), Rc::new(m.clone()));
-        }
-        let instance_slots: Vec<Rc<ast::SlotDecl>> = decl
-            .instance_side
-            .slots
-            .iter()
-            .map(|s| Rc::new(s.clone()))
-            .collect();
+        let methods = build_methods(&decl.instance_side);
+        let slots = build_slots(&decl.instance_side);
         let nested = decl
             .instance_side
             .nested_classes
@@ -91,22 +118,33 @@ impl Interpreter {
             .map(|side| self.build_class_side(side));
         Rc::new(Mixin {
             name: Symbol::intern(&decl.name.name),
+            access: crate::dispatch::effective_access(decl.access),
             methods,
-            instance_slots,
+            slots,
+            // §6.1: a class written without a factory pattern is
+            // instantiated by `new`, which is also what an omitted
+            // superclass-clause *message* defaults to -- the two halves of
+            // the same rule, so `class C = (...)` inherits from `Object`
+            // through `new` under both engines.
+            factory: Some(match &decl.factory {
+                Some(pattern) => Factory {
+                    selector: Symbol::intern(&method_name(pattern)),
+                    num_args: pattern_param_count(pattern),
+                },
+                None => Factory {
+                    selector: Symbol::intern("new"),
+                    num_args: 0,
+                },
+            }),
+            superclass: decl.superclass.as_ref().map(superclass_clause_of),
+            has_init_exprs: !decl.instance_side.init_exprs.is_empty(),
             // Class instantiation "must fix" #1: this class's own initExprs,
             // evaluated for real by `run_own_init_exprs` below (Step 5 of
             // the spec's six numbered steps).
             init_exprs: decl.instance_side.init_exprs.clone(),
-            factory: Some(Rc::new(decl.factory.clone().unwrap_or(
-                ast::MessagePattern::Unary {
-                    selector: ast::Ident {
-                        name: "new".to_string(),
-                        span: decl.span,
-                    },
-                },
-            ))),
             nested,
             class_side,
+            span: decl.span,
             decl: Some(Rc::new(decl.clone())),
         })
     }
@@ -119,21 +157,13 @@ impl Interpreter {
     /// `ClassBody` is not itself an `ast::ClassDecl`; there is no single
     /// declaration node to keep as provenance for it.
     fn build_class_side(&mut self, side: &ast::ClassBody) -> Rc<Mixin> {
-        let mut methods = HashMap::new();
-        for m in &side.methods {
-            methods.insert(Symbol::intern(&method_name(&m.pattern)), Rc::new(m.clone()));
-        }
-        let instance_slots: Vec<Rc<ast::SlotDecl>> =
-            side.slots.iter().map(|s| Rc::new(s.clone())).collect();
         Rc::new(Mixin {
-            name: Symbol::intern("class side"),
-            methods,
-            instance_slots,
+            methods: build_methods(side),
+            slots: build_slots(side),
+            has_init_exprs: !side.init_exprs.is_empty(),
             init_exprs: side.init_exprs.clone(),
-            factory: None,
-            nested: Vec::new(),
-            class_side: None,
-            decl: None,
+            span: side.span,
+            ..Mixin::empty(Symbol::intern("class side"))
         })
     }
 
@@ -297,8 +327,7 @@ impl Interpreter {
                     .application
                     .mixin
                     .factory
-                    .as_deref()
-                    .map(pattern_param_count),
+                    .map(|factory| factory.num_args),
                 _ => None,
             }
         };
@@ -399,29 +428,27 @@ impl Interpreter {
         let application = crate::dispatch::class_application(class);
         let clause = application
             .as_ref()
-            .and_then(|application| application.mixin.decl.as_ref())
-            .and_then(|decl| decl.superclass.as_ref());
-        let message = clause.and_then(super::nested::superclass_clause_message);
-        // §6.1: "if the message is omitted, it defaults to `new`" -- which
-        // is also what `build_mixin` defaults an omitted *factory pattern*
-        // to, so a class written `class C = (...)` inherits from `Object`
-        // through `new` under both halves of the same rule.
-        let selector = message.map_or_else(
-            || Symbol::intern("new"),
-            crate::compiler::lower::selector_of,
-        );
+            .and_then(|application| application.mixin.superclass);
+        // §6.1: "if the message is omitted, it defaults to `new`" -- already
+        // resolved into `SuperclassClause::selector` when the mixin was
+        // built, and read from there rather than from the declaration: a
+        // mixin decoded from an image has no declaration, and re-deriving
+        // the default here would answer `new` for every one of them, so a
+        // class whose superclass has a keyword factory would raise a
+        // spurious "not the primary factory message" error on the first
+        // instantiation after a load.
+        let selector = clause.map_or_else(|| Symbol::intern("new"), |clause| clause.selector);
         let expected = primary_factory_selector(superclass);
         if Some(selector) != expected {
             return Err(not_the_primary_factory_error(
                 class, superclass, selector, expected,
             ));
         }
-        let args_expr = clause.and_then(super::nested::superclass_clause_message_args_expr);
-        let Some(args_expr) = args_expr else {
+        if !clause.is_some_and(|clause| clause.has_args) {
             // `Object new` and every other argument-free clause: nothing to
             // evaluate, no activation built, nothing allocated.
             return Ok(vec![]);
-        };
+        }
         let compiled = match (&self.engine, &application) {
             (Engine::TreeWalk, _) | (_, None) => None,
             (Engine::Bytecode(module), Some(application)) => Some(
@@ -433,6 +460,18 @@ impl Interpreter {
                         panic!("internal: mixin whose superclass clause message takes arguments has no compiled form for it (compile_module coverage gap)")
                     }),
             ),
+        };
+        // The argument expressions are for the tree-walker alone, and
+        // building them clones the whole argument list -- on a path that
+        // runs at every instantiation, so it is built only when there is no
+        // compiled body to run instead.
+        let args_expr = match compiled {
+            Some(_) => None,
+            None => application
+                .as_ref()
+                .and_then(|application| application.mixin.decl.as_ref())
+                .and_then(|decl| decl.superclass.as_ref())
+                .and_then(super::nested::superclass_clause_message_args_expr),
         };
         // The message is evaluated on the instance being initialized and
         // with *this* level's factory arguments -- §6.2's "in the context of
@@ -446,7 +485,7 @@ impl Interpreter {
             class,
             FrameKind::SuperclassMessage(class.clone()),
             compiled,
-            &args_expr,
+            args_expr.as_ref(),
             bindings,
         )?;
         argument_list(class, value)
@@ -547,7 +586,17 @@ impl Interpreter {
         let slots = {
             let borrowed = class.borrow();
             match &borrowed.data {
-                ObjectData::Class(data) => data.application.mixin.instance_slots.clone(),
+                // Only the tree-walker reaches this function, and only for a
+                // mixin built from source, so every slot here has its
+                // declaration; a slot without one contributes no
+                // initializer, exactly as an uninitialized slot does.
+                ObjectData::Class(data) => data
+                    .application
+                    .mixin
+                    .slots
+                    .iter()
+                    .filter_map(|slot| slot.decl.clone())
+                    .collect::<Vec<_>>(),
                 _ => return Ok(()),
             }
         };
@@ -628,7 +677,7 @@ pub(crate) fn primary_factory_selector(class: &ClassRef) -> Option<Symbol> {
 /// `primary_factory_selector` for a caller that already holds the borrow.
 fn primary_factory_selector_of(data: &ClassData) -> Symbol {
     match &data.application.mixin.factory {
-        Some(pattern) => Symbol::intern(&method_name(pattern)),
+        Some(factory) => factory.selector,
         None => Symbol::intern("new"),
     }
 }
@@ -772,5 +821,5 @@ pub(crate) fn class_has_initializer_code(class: &ClassRef) -> bool {
 /// checked per mixin now that a code table covers the whole tree, not only
 /// the root.
 pub(crate) fn mixin_needs_initializer_code(mixin: &crate::mixin::Mixin) -> bool {
-    !(mixin.instance_slots.is_empty() && mixin.init_exprs.is_empty())
+    !mixin.slots.is_empty() || mixin.has_init_exprs
 }

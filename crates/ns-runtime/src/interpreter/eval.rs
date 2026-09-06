@@ -393,9 +393,7 @@ pub(crate) fn dispatch_lexical_send(
     // case out would make `private class N` unreachable from the class
     // that declares it while `private n = (...)` is reachable.
     match dispatch::lookup_defined_for(&class, selector) {
-        Lookup::Method(method, defining_class)
-            if dispatch::effective_access(method.access) == ast::AccessModifier::Private =>
-        {
+        Lookup::Method(method, defining_class) if method.access == ast::AccessModifier::Private => {
             return interp.invoke_method(
                 o,
                 method,

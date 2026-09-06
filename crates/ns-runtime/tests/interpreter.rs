@@ -93,20 +93,8 @@ fn class_with_methods(
 ) -> ns_runtime::ClassRef {
     let mut map = HashMap::new();
     for m in methods {
-        let selector = match &m.pattern {
-            ns_syntax::ast::MessagePattern::Unary { selector } => Symbol::intern(&selector.name),
-            ns_syntax::ast::MessagePattern::Binary { selector, .. } => {
-                Symbol::intern(&selector.name)
-            }
-            ns_syntax::ast::MessagePattern::Keyword { parts } => {
-                let full: String = parts
-                    .iter()
-                    .map(|(kw, _)| format!("{}:", kw.name))
-                    .collect();
-                Symbol::intern(&full)
-            }
-        };
-        map.insert(selector, m);
+        let method = ns_runtime::mixin::MixinMethod::from_decl(m);
+        map.insert(method.selector, Rc::new(method));
     }
     Rc::new(RefCell::new(Object {
         class: dummy_class(),
@@ -118,14 +106,8 @@ fn class_with_methods(
             // to cache against.
             application: Rc::new(MixinApplication {
                 mixin: Rc::new(Mixin {
-                    name: Symbol::intern(name),
                     methods: map,
-                    instance_slots: vec![],
-                    init_exprs: vec![],
-                    factory: None,
-                    nested: vec![],
-                    class_side: None,
-                    decl: None,
+                    ..Mixin::empty(Symbol::intern(name))
                 }),
                 superclass: None,
                 slot_index: HashMap::new(),
@@ -226,7 +208,9 @@ fn parse_block_body(src: &str) -> ns_syntax::ast::CodeBody {
 fn method_frame() -> ns_runtime::FrameRef {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^0 )\n) : ()";
     let module = ns_syntax::parse(src).expect("parse");
-    let method = Rc::new(module.root_class.instance_side.methods[0].clone());
+    let method = Rc::new(ns_runtime::mixin::MixinMethod::from_decl(Rc::new(
+        module.root_class.instance_side.methods[0].clone(),
+    )));
     Rc::new(RefCell::new(Frame {
         receiver: Value::Nil,
         args: vec![],

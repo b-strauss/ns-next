@@ -182,7 +182,7 @@ pub type FrameRef = Rc<RefCell<Frame>>;
 
 #[derive(Debug)]
 pub enum FrameKind {
-    Method(Rc<ast::MethodDecl>),
+    Method(Rc<crate::mixin::MixinMethod>),
     Closure(Rc<ClosureData>),
     /// A top-of-chain activation with no method or class of its own. Not
     /// built by anything in Milestone 2 (an instance initializer is
@@ -295,16 +295,7 @@ mod tests {
     /// module's tests stay free of the interpreter.
     fn empty_application(name: &str) -> Rc<crate::mixin::MixinApplication> {
         Rc::new(crate::mixin::MixinApplication {
-            mixin: Rc::new(crate::mixin::Mixin {
-                name: Symbol::intern(name),
-                methods: HashMap::new(),
-                instance_slots: vec![],
-                init_exprs: vec![],
-                factory: None,
-                nested: vec![],
-                class_side: None,
-                decl: None,
-            }),
+            mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
             slot_index: HashMap::new(),
             nested_slot: HashMap::new(),

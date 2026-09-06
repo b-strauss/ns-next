@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-use ns_syntax::{ast, Span};
+use ns_syntax::Span;
 
 use crate::types::{Binding, BuiltinClass};
 use crate::Symbol;
@@ -271,7 +271,14 @@ pub struct CompiledModule {
     pub bindings: Rc<HashMap<Span, Binding>>,
 }
 
-pub fn method_key(method: &Rc<ast::MethodDecl>) -> usize {
+/// A method's identity: the `Rc<MixinMethod>` its own mixin's dictionary
+/// holds. Pointer identity rather than `(mixin, selector)` because dispatch
+/// already hands the entry itself to every consumer, so the key costs no
+/// hashing of a name that is about to be discarded -- and because a mixin
+/// decoded from an image gets its own `Rc` per method exactly as a mixin
+/// built from source does, which is what lets an image's compiled bodies be
+/// installed with no `ast::MethodDecl` in reach.
+pub fn method_key(method: &Rc<crate::mixin::MixinMethod>) -> usize {
     Rc::as_ptr(method) as *const () as usize
 }
 
@@ -487,9 +494,14 @@ mod tests {
     fn method_key_is_rc_pointer_identity() {
         let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n) : ()";
         let module = ns_syntax::parse(src).expect("parse");
-        let method = Rc::new(module.root_class.instance_side.methods[0].clone());
+        let entry = |i: usize| {
+            Rc::new(crate::mixin::MixinMethod::from_decl(Rc::new(
+                module.root_class.instance_side.methods[i].clone(),
+            )))
+        };
+        let method = entry(0);
         let same = method.clone();
-        let other = Rc::new(module.root_class.instance_side.methods[0].clone());
+        let other = entry(0);
         assert_eq!(method_key(&method), method_key(&same));
         assert_ne!(method_key(&method), method_key(&other));
     }

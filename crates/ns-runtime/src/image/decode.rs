@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_syntax::ast;
 use ns_syntax::Span;
 
 use crate::bytecode::{
@@ -22,7 +21,7 @@ use crate::types::{
 use crate::Interpreter;
 use crate::Symbol;
 
-use super::symbols;
+use super::{mixins, symbols};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
@@ -51,6 +50,20 @@ pub enum DecodeError {
     BadCodeId(u32),
     BadObjectId(u32),
     BadFrameId(u32),
+    /// A mixin-table row referenced a row id past the end of the table.
+    BadMixinId(u32),
+    /// The mixin table's rows are not `mixin::preorder` of row 0: a row is
+    /// named as a child by two rows or by none, a row is its own ancestor,
+    /// or the children are named out of the order the walk visits them in.
+    /// Row position is the whole correspondence between a row and the
+    /// declaration it describes, so a table that does not reproduce that
+    /// walk is refused outright rather than paired up wrongly.
+    MixinTableNotATree {
+        row: u32,
+    },
+    /// One mixin-table row named the same selector twice, which would leave
+    /// its rebuilt method dictionary smaller than its own code list.
+    DuplicateSelector(String),
     /// A selector or name reference (a send's selector, a method-dictionary
     /// key, a closure's parameter name, a `Sym` object's text, ...) that
     /// indexes past the end of the image's symbol table. Every such
@@ -112,6 +125,16 @@ pub enum DecodeError {
     MixinCountMismatch {
         image: usize,
         source: usize,
+    },
+    /// The image's mixin table and the reloaded source's mixin tree agree
+    /// about how many declarations there are but not about which one is at
+    /// a given position -- a class renamed, or the declarations reordered,
+    /// since the snapshot. Position is the whole correspondence, so pairing
+    /// them anyway would install one class's compiled bodies on another's
+    /// declarations.
+    MixinNameMismatch {
+        image: String,
+        source: String,
     },
     /// A compiled body installed where a body of another kind belongs, or
     /// named as a closure's body when it is not a block body. The kinds are
@@ -210,6 +233,16 @@ impl std::fmt::Display for DecodeError {
             DecodeError::BadObjectId(id) => write!(f, "object id {id} out of range"),
             DecodeError::BadFrameId(id) => write!(f, "frame id {id} out of range"),
             DecodeError::BadSymbolId(id) => write!(f, "symbol id {id} out of range"),
+            DecodeError::BadMixinId(id) => write!(f, "mixin id {id} out of range"),
+            DecodeError::MixinTableNotATree { row } => write!(
+                f,
+                "the image's mixin table is not a declaration tree: row {row} is reached out of \
+                 declaration order, twice, or not at all"
+            ),
+            DecodeError::DuplicateSelector(s) => write!(
+                f,
+                "a mixin-table row names method `{s}` more than once"
+            ),
             DecodeError::ClosureArityMismatch { params, num_args } => write!(
                 f,
                 "closure record declares {params} parameters but the code it names takes {num_args}"
@@ -240,6 +273,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::MixinCountMismatch { image, source } => write!(
                 f,
                 "the image carries {image} mixin section(s), but the reloaded source's class tree has {source} -- a nested class was added or removed since the snapshot"
+            ),
+            DecodeError::MixinNameMismatch { image, source } => write!(
+                f,
+                "the image's mixin table describes class `{image}` where the reloaded source has `{source}` -- a class was renamed or reordered since the snapshot"
             ),
             DecodeError::WrongCodeKind { expected } => {
                 write!(f, "image code is not a {expected} body")
@@ -471,27 +508,12 @@ pub fn read_builtin_class(r: &mut Reader) -> Result<BuiltinClass, DecodeError> {
     })
 }
 
-/// One decoded mixin's own section: `(selector, code id)` per method,
-/// sorted by selector exactly as encoded, its initializer's code id if it
-/// has one, and its superclass clause's if it has one. The selector is
-/// already a resolved `Symbol` -- looked up in the image's symbol table
-/// once, here, rather than re-interned at every later use.
-#[derive(Debug, PartialEq)]
-pub struct DecodedMixinSection {
-    pub methods: Vec<(Symbol, u32)>,
-    pub initializer: Option<u32>,
-    pub superclass_clause: Option<u32>,
-    pub superclass_message: Option<u32>,
-}
-
-/// The decoded code table before it is bound to a reloaded class.
-/// `mixins` is in `mixin::preorder` order -- `install_code_table` replays
-/// that same order over the *reloaded* mixin tree to bind each section back
-/// to the mixin it belongs to.
+/// The decoded code table: every compiled body the image carries, flat and
+/// in the order it was written. Which body belongs to which declaration is
+/// the mixin table's business (`image::mixins`), which names these by index.
 #[derive(Debug, PartialEq)]
 pub struct DecodedCodeTable {
     pub codes: Vec<Rc<CompiledCode>>,
-    pub mixins: Vec<DecodedMixinSection>,
 }
 
 pub fn decode_code_table(
@@ -504,46 +526,7 @@ pub fn decode_code_table(
         let code = decode_code(r, &codes, symbols)?;
         codes.push(Rc::new(code));
     }
-    let mixin_count = r.read_u32()? as usize;
-    let mut mixins: Vec<DecodedMixinSection> = reserve_for(mixin_count, r);
-    for _ in 0..mixin_count {
-        let method_count = r.read_u32()? as usize;
-        let mut methods = reserve_for(method_count, r);
-        for _ in 0..method_count {
-            let selector = decode_symbol(r, symbols)?;
-            let id = r.read_u32()?;
-            check_code_id(id, &codes)?;
-            methods.push((selector, id));
-        }
-        let initializer = if r.read_bool()? {
-            let id = r.read_u32()?;
-            check_code_id(id, &codes)?;
-            Some(id)
-        } else {
-            None
-        };
-        let superclass_clause = if r.read_bool()? {
-            let id = r.read_u32()?;
-            check_code_id(id, &codes)?;
-            Some(id)
-        } else {
-            None
-        };
-        let superclass_message = if r.read_bool()? {
-            let id = r.read_u32()?;
-            check_code_id(id, &codes)?;
-            Some(id)
-        } else {
-            None
-        };
-        mixins.push(DecodedMixinSection {
-            methods,
-            initializer,
-            superclass_clause,
-            superclass_message,
-        });
-    }
-    Ok(DecodedCodeTable { codes, mixins })
+    Ok(DecodedCodeTable { codes })
 }
 
 /// `Vec::with_capacity` for a count read from an untrusted stream: every
@@ -563,22 +546,30 @@ fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError>
     }
 }
 
-/// Binds a decoded table to the *reloaded* root class: methods re-keyed by
-/// selector to the reloaded `Rc<MethodDecl>`s, each initializer to the
-/// reloaded mixin it belongs to. The image's bytecode is what runs after a
-/// load.
+/// Binds a decoded image's compiled bodies to the *reloaded* root class:
+/// each method to the reloaded mixin's own `Rc<MixinMethod>`, each
+/// initializer to the reloaded mixin it belongs to. The image's bytecode is
+/// what runs after a load.
 ///
-/// Walks `table.mixins` against `mixin::preorder(reloaded root)` in
-/// lockstep: the two must enumerate the same mixins in the same order (no
-/// mixin identity survives a save/reload, so position is the only
-/// correspondence there is), which is why `encode_code_table` and
-/// `compile_module` both walk the same shared `preorder`. A length
-/// mismatch means the reloaded source's mixin tree has a different shape
-/// than the one the image was compiled from (a nested class added or
-/// removed) -- a decode error, not a panic or a silently truncated zip that
-/// would leave some mixin's methods uninstalled.
+/// Walks the decoded mixin table against `mixin::preorder(reloaded root)` in
+/// lockstep: the two must describe the same declarations in the same order,
+/// which is why `mixins::plan` and `compile_module` both walk the same
+/// shared `preorder`, and why `mixins::decode` refuses a table whose rows
+/// are not that walk. A length mismatch means the reloaded source's mixin
+/// tree has a different shape than the one the image was compiled from (a
+/// nested class added or removed) -- a decode error, not a panic or a
+/// silently truncated zip that would leave some mixin's methods
+/// uninstalled. A *name* mismatch at the same position means the shapes
+/// happen to agree while the declarations do not, which the row count alone
+/// cannot see: refusing is what stops one class's compiled bodies from being
+/// installed on another's declarations.
+///
+/// (Once `load` builds its class objects from the mixin table itself rather
+/// than from re-parsed source, this reconciliation has only one side left
+/// and goes away with the re-parse.)
 pub fn install_code_table(
     table: &DecodedCodeTable,
+    mixins: &mixins::Decoded,
     root_class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> Result<CompiledModule, DecodeError> {
@@ -598,13 +589,19 @@ pub fn install_code_table(
     };
     let mut mixin_order = Vec::new();
     crate::mixin::preorder(&root_mixin, &mut mixin_order);
-    if mixin_order.len() != table.mixins.len() {
+    if mixin_order.len() != mixins.code.len() {
         return Err(DecodeError::MixinCountMismatch {
-            image: table.mixins.len(),
+            image: mixins.code.len(),
             source: mixin_order.len(),
         });
     }
-    for (mixin, section) in mixin_order.iter().zip(&table.mixins) {
+    for ((mixin, decoded), section) in mixin_order.iter().zip(&mixins.mixins).zip(&mixins.code) {
+        if decoded.name != mixin.name {
+            return Err(DecodeError::MixinNameMismatch {
+                image: decoded.name.as_str().to_string(),
+                source: mixin.name.as_str().to_string(),
+            });
+        }
         for (selector, id) in &section.methods {
             let decl = mixin
                 .methods
@@ -623,7 +620,7 @@ pub fn install_code_table(
                 &code,
                 CodeKind::Method,
                 format!("method `{selector}`"),
-                instantiate::pattern_param_count(&decl.pattern),
+                decl.num_args,
             )?;
             module.methods.insert(method_key(decl), code);
         }
@@ -635,7 +632,7 @@ pub fn install_code_table(
         // reported selector does not depend on the mixin's method
         // `HashMap` order. Scoped to *this* mixin's own methods only --
         // `module.methods` accumulates every mixin's methods as the loop
-        // proceeds, but `method_key` is `Rc<MethodDecl>` identity, so
+        // proceeds, but `method_key` is `Rc<MixinMethod>` identity, so
         // checking `mixin.methods` here can never see a different mixin's
         // entry as if it were this one's.
         let mut missing: Vec<&str> = mixin
@@ -660,11 +657,7 @@ pub fn install_code_table(
                     &code,
                     CodeKind::Initializer,
                     "instance initializer".to_string(),
-                    mixin
-                        .factory
-                        .as_deref()
-                        .map(instantiate::pattern_param_count)
-                        .unwrap_or(0),
+                    mixin.factory.map_or(0, |factory| factory.num_args),
                 )?;
                 module.initializers.insert(mixin_key(mixin), code);
             }
@@ -700,13 +693,7 @@ pub fn install_code_table(
             // `interpreter::nested` panics when the module carries none.
             // Whether the reloaded source declares one and whether the
             // image carries it are two halves only this function sees.
-            None if mixin
-                .decl
-                .as_ref()
-                .is_some_and(|decl| decl.superclass.is_some()) =>
-            {
-                return Err(DecodeError::MissingSuperclassClause)
-            }
+            None if mixin.superclass.is_some() => return Err(DecodeError::MissingSuperclassClause),
             None => {}
         }
         match section.superclass_message {
@@ -722,11 +709,7 @@ pub fn install_code_table(
                     &code,
                     CodeKind::SuperclassMessage,
                     "superclass clause message".to_string(),
-                    mixin
-                        .factory
-                        .as_deref()
-                        .map(instantiate::pattern_param_count)
-                        .unwrap_or(0),
+                    mixin.factory.map_or(0, |factory| factory.num_args),
                 )?;
                 module.superclass_messages.insert(mixin_key(mixin), code);
             }
@@ -749,14 +732,9 @@ pub fn install_code_table(
 /// therefore needs a compiled body for them. Mirrors
 /// `instantiate::mixin_needs_initializer_code`: the one question
 /// `install_code_table` asks of the reloaded source, answered off the same
-/// definition `compiler::compile_superclass_message` compiles from.
+/// field `instantiate::eval_superclass_message` decides by at run time.
 fn mixin_needs_superclass_message_code(mixin: &Rc<crate::mixin::Mixin>) -> bool {
-    mixin
-        .decl
-        .as_ref()
-        .and_then(|decl| decl.superclass.as_ref())
-        .and_then(crate::interpreter::nested::superclass_clause_message_args_expr)
-        .is_some()
+    mixin.superclass.is_some_and(|clause| clause.has_args)
 }
 
 /// One installed body against the reloaded declaration it is installed for:
@@ -1507,7 +1485,10 @@ fn decode_closure_record(
 /// encodable, this must resolve against the frame's own `current_class`
 /// instead -- and until then, doing so would be a distinction without a
 /// difference that reads like a guarantee.
-fn method_decl(ctx: &DecodeContext, selector: Symbol) -> Result<Rc<ast::MethodDecl>, DecodeError> {
+fn method_decl(
+    ctx: &DecodeContext,
+    selector: Symbol,
+) -> Result<Rc<crate::mixin::MixinMethod>, DecodeError> {
     let found = {
         let borrowed = ctx.root_class.borrow();
         match &borrowed.data {

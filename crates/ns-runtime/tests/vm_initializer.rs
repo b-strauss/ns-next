@@ -142,7 +142,11 @@ fn a_factory_arity_mismatch_is_still_the_shared_error() {
 /// A bare `SlotDecl` with no initializer -- only its presence (for the slot
 /// count) matters here, exactly like `tests/mixin.rs`'s own helper of the
 /// same shape.
-fn slot_decl(name: &str) -> Rc<ns_syntax::ast::SlotDecl> {
+fn slot_decl(name: &str) -> ns_runtime::mixin::MixinSlot {
+    ns_runtime::mixin::MixinSlot::from_decl(raw_slot_decl(name))
+}
+
+fn raw_slot_decl(name: &str) -> Rc<ns_syntax::ast::SlotDecl> {
     Rc::new(ns_syntax::ast::SlotDecl {
         access: None,
         name: ns_syntax::ast::Ident {
@@ -227,20 +231,22 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     .expect("resolve");
     let bindings = resolved.bindings.clone();
     let decl = &resolved.module.root_class;
+    let factory_pattern = decl.factory.clone().expect("declares x:");
     let shared_mixin = Rc::new(Mixin {
-        name: Symbol::intern("Shared"),
-        methods: HashMap::new(),
-        instance_slots: decl
+        slots: decl
             .instance_side
             .slots
             .iter()
-            .map(|s| Rc::new(s.clone()))
+            .map(|s| ns_runtime::mixin::MixinSlot::from_decl(Rc::new(s.clone())))
             .collect(),
-        init_exprs: vec![],
-        factory: Some(Rc::new(decl.factory.clone().expect("declares x:"))),
-        nested: vec![],
-        class_side: None,
-        decl: None,
+        factory: Some(ns_runtime::mixin::Factory {
+            selector: Symbol::intern("x:"),
+            num_args: match &factory_pattern {
+                ns_syntax::ast::MessagePattern::Keyword { parts } => parts.len(),
+                _ => panic!("the fixture declares a keyword factory"),
+            },
+        }),
+        ..Mixin::empty(Symbol::intern("Shared"))
     });
 
     let mut interp = Interpreter::bootstrap();
@@ -250,14 +256,8 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     // application inherits two slots (own_slot_base must be 2), the other
     // inherits none (own_slot_base must be 0).
     let two_slots = Rc::new(Mixin {
-        name: Symbol::intern("TwoSlots"),
-        methods: HashMap::new(),
-        instance_slots: vec![slot_decl("p"), slot_decl("q")],
-        init_exprs: vec![],
-        factory: None,
-        nested: vec![],
-        class_side: None,
-        decl: None,
+        slots: vec![slot_decl("p"), slot_decl("q")],
+        ..Mixin::empty(Symbol::intern("TwoSlots"))
     });
     let two_slot_super = interp.apply_mixin(&two_slots, None);
 

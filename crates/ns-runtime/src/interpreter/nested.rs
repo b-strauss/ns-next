@@ -239,16 +239,15 @@ fn eval_superclass_clause(
     declaring_class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let clause = nested
-        .decl
-        .as_ref()
-        .and_then(|decl| decl.superclass.as_ref());
-    let Some(clause) = clause else {
+    // Whether there is a clause at all is read off the mixin, not off its
+    // declaration: a mixin decoded from an image has no declaration, and the
+    // answer decides whether any code runs.
+    if nested.superclass.is_none() {
         // No clause at all (`class N = (...)`): `Object`, the same default
         // `instantiate::resolve_superclass_receiver` gives a root class.
         // Neither engine runs any code for this, so neither can diverge.
         return Ok(Value::Obj(interp.builtin_class(BuiltinClass::Object)));
-    };
+    }
     let compiled = match &interp.engine {
         Engine::TreeWalk => None,
         Engine::Bytecode(module) => Some(
@@ -261,6 +260,17 @@ fn eval_superclass_clause(
                 }),
         ),
     };
+    // The clause's expression is for the tree-walker alone; the bytecode
+    // engine runs the body compiled for this mixin and never looks at it,
+    // so it is not built at all when there is one.
+    let expr = match compiled {
+        Some(_) => None,
+        None => nested
+            .decl
+            .as_ref()
+            .and_then(|decl| decl.superclass.as_ref())
+            .map(superclass_clause_expr),
+    };
     run_clause_body(
         interp,
         receiver,
@@ -268,7 +278,7 @@ fn eval_superclass_clause(
         declaring_class,
         FrameKind::SuperclassClause(declaring_class.clone()),
         compiled,
-        &superclass_clause_expr(clause),
+        expr.as_ref(),
         bindings,
     )
 }
@@ -298,7 +308,7 @@ pub(super) fn run_clause_body(
     current_class: &ClassRef,
     kind: FrameKind,
     compiled: Option<Rc<crate::bytecode::CompiledCode>>,
-    expr: &ast::Expr,
+    expr: Option<&ast::Expr>,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     let temp_count = compiled
@@ -316,9 +326,17 @@ pub(super) fn run_clause_body(
         uncontinuable: false,
         slot_base: 0, // no clause body ever contains InitSlot
     }));
-    let result = match &compiled {
-        Some(code) => crate::vm::run_code(interp, &frame, code, bindings),
-        None => crate::interpreter::eval::eval_expr(interp, expr, &frame, bindings),
+    let result = match (&compiled, expr) {
+        (Some(code), _) => crate::vm::run_code(interp, &frame, code, bindings),
+        (None, Some(expr)) => crate::interpreter::eval::eval_expr(interp, expr, &frame, bindings),
+        // The tree-walker evaluates the clause's own AST, and a mixin
+        // decoded from an image carries none. Unreachable rather than
+        // merely unlikely: `image::load` installs `Engine::Bytecode`, so a
+        // decoded mixin's clause always arrives here with a compiled body.
+        (None, None) => panic!(
+            "internal: the tree-walking engine cannot run a superclass clause \
+             of a mixin decoded from an image"
+        ),
     };
     frame.borrow_mut().uncontinuable = true;
     match result {

@@ -4,16 +4,13 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::bytecode::{
-    method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
-};
-use crate::mixin::mixin_key;
+use crate::bytecode::{CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal};
 use crate::types::{
     BuiltinClass, ClassRef, ClosureBody, ClosureData, FrameKind, FrameRef, ObjRef, ObjectData,
     SourceOrigin, Value,
 };
 
-use super::symbols;
+use super::{mixins, symbols};
 
 pub const MAGIC: &[u8; 4] = b"NSIM";
 /// Versions the whole layout *and* the compiler's codegen: from the first
@@ -32,6 +29,15 @@ pub const MAGIC: &[u8; 4] = b"NSIM";
 /// before any released build could write an image, so no version-1 image
 /// in anyone's hands can be misread because of it. The next such change
 /// after a release bumps the version.
+///
+/// Milestone 3's layout changes -- the symbol table, and the mixin table
+/// that took the per-mixin sections out of the code table -- do not bump it
+/// either, by an explicit decision (2026-09-06): the project has no external
+/// users, so images written before them are disposable and no migration path
+/// is owed to them. What still has to hold is that an old or corrupt image
+/// fails as a `DecodeError`, which comes from validating every id, tag,
+/// count and length before it indexes, allocates or slices -- not from this
+/// field.
 pub const FORMAT_VERSION: u32 = 1;
 
 #[derive(Default)]
@@ -184,39 +190,16 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
     }
 }
 
-/// One mixin's own section of the code table: its methods, sorted by
-/// selector, its initializer, and its superclass clause (each present
-/// exactly when `module` carries one for it).
-///
-/// The superclass clause has to travel with the rest: it is what the
-/// nested-class accessor runs to find a nested declaration's superclass,
-/// and under the bytecode engine there is nothing else for it to run --
-/// a reloaded module without it would panic on the first nested-class
-/// access, the same way a reloaded module without an initializer would
-/// panic on the first `new`.
-struct MixinSection {
-    methods: Vec<(String, Rc<CompiledCode>)>,
-    initializer: Option<Rc<CompiledCode>>,
-    superclass_clause: Option<Rc<CompiledCode>>,
-    /// The clause's deferred factory message's arguments, for the same
-    /// reason its receiver travels: `instantiate` runs this on every
-    /// instantiation of a class whose clause carries arguments, and under
-    /// the bytecode engine there is nothing else for it to run.
-    superclass_message: Option<Rc<CompiledCode>>,
-}
-
 /// The code table: every `CompiledCode` reachable from `module` -- every
-/// mixin's methods, every mixin's initializer, and every nested block body
-/// -- with nested block code *before* the code that creates it, then one
-/// section per mixin (review finding: a whole-tree `compile_module` that
-/// still serialized only the root silently narrowed the module on every
-/// `snapshot` -> `load` round trip, panicking on the first nested send
-/// afterward). Sections are written in `mixin::preorder` order -- the same
-/// order `compile_module` compiled in, and the same order `decode`'s
-/// `install_code_table` replays over the *reloaded* tree to bind each
-/// section back to the right mixin, since no mixin identity survives a
-/// save/reload. Deterministic: the same module always encodes to the same
-/// bytes.
+/// mixin's methods, every mixin's initializer, every superclass clause and
+/// clause-message body, and every nested block body -- with nested block
+/// code *before* the code that creates it. Flat and unnamed: *which* body
+/// belongs to which declaration is the mixin table's business
+/// (`image::mixins`), which addresses this table by id.
+///
+/// Collected in `mixin::preorder` order -- the same order `compile_module`
+/// compiled in and the same order the mixin table's rows are written in --
+/// so the same module always encodes to the same bytes.
 ///
 /// A method a mixin holds but the `CompiledModule` has no code for is an
 /// `Err`, not a panic: a method added to a live class after `compile_module`
@@ -233,98 +216,25 @@ pub fn encode_code_table(
     let mut ids = CodeIds {
         ids: HashMap::new(),
     };
-    let root_mixin: Option<Rc<crate::mixin::Mixin>> = {
-        let borrowed = root_class.borrow();
-        match &borrowed.data {
-            ObjectData::Class(data) => Some(data.application.mixin.clone()),
-            _ => None,
-        }
-    };
-    let mixin_order: Vec<Rc<crate::mixin::Mixin>> = match &root_mixin {
-        Some(mixin) => {
-            let mut v = Vec::new();
-            crate::mixin::preorder(mixin, &mut v);
-            v
-        }
-        None => Vec::new(),
-    };
-    let mut sections: Vec<MixinSection> = Vec::new();
-    for mixin in &mixin_order {
-        let mut methods: Vec<(String, Rc<CompiledCode>)> = mixin
-            .methods
-            .iter()
-            .map(|(selector, decl)| {
-                let code = module.methods.get(&method_key(decl)).ok_or_else(|| {
-                    format!(
-                        "image encoding has no compiled code for method #{selector} \
-                         (it was added to the class after the module was compiled)"
-                    )
-                })?;
-                Ok((selector.as_str().to_string(), code.clone()))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        // The mixin's method table is a `HashMap`; sorting is what makes
-        // the table canonical rather than iteration-order dependent.
-        methods.sort_by(|a, b| a.0.cmp(&b.0));
-        let initializer = module.initializers.get(&mixin_key(mixin)).cloned();
-        let superclass_clause = module.superclass_clauses.get(&mixin_key(mixin)).cloned();
-        let superclass_message = module.superclass_messages.get(&mixin_key(mixin)).cloned();
-        sections.push(MixinSection {
-            methods,
-            initializer,
-            superclass_clause,
-            superclass_message,
-        });
-    }
-    for section in &sections {
-        for (_, code) in &section.methods {
+    let rows = mixins::plan(root_class, module)?;
+    for row in &rows {
+        for (_, code) in &row.methods {
             collect_code(code, &mut order, &mut ids);
         }
-        if let Some(init) = &section.initializer {
-            collect_code(init, &mut order, &mut ids);
-        }
-        if let Some(clause) = &section.superclass_clause {
-            collect_code(clause, &mut order, &mut ids);
-        }
-        if let Some(message) = &section.superclass_message {
-            collect_code(message, &mut order, &mut ids);
+        for code in [
+            &row.initializer,
+            &row.superclass_clause,
+            &row.superclass_message,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            collect_code(code, &mut order, &mut ids);
         }
     }
     w.write_u32(u32_field("code table entry count", order.len()));
     for code in &order {
         encode_code(w, code, &ids, symbols);
-    }
-    w.write_u32(u32_field("mixin count", sections.len()));
-    for section in &sections {
-        w.write_u32(u32_field(
-            "mixin's method list length",
-            section.methods.len(),
-        ));
-        for (selector, code) in &section.methods {
-            w.write_u32(symbols.intern(selector));
-            w.write_u32(ids.id_of(code));
-        }
-        match &section.initializer {
-            Some(init) => {
-                w.write_bool(true);
-                w.write_u32(ids.id_of(init));
-            }
-            None => w.write_bool(false),
-        }
-        match &section.superclass_clause {
-            Some(clause) => {
-                w.write_bool(true);
-                w.write_u32(ids.id_of(clause));
-            }
-            None => w.write_bool(false),
-        }
-        match &section.superclass_message {
-            Some(message) => {
-                w.write_bool(true);
-                w.write_u32(ids.id_of(message));
-            }
-            None => w.write_bool(false),
-        }
     }
     Ok(ids)
 }
@@ -880,11 +790,9 @@ fn encode_frame(
         None => w.write_bool(false),
     }
     match &f.kind {
-        FrameKind::Method(decl) => {
+        FrameKind::Method(method) => {
             w.write_u8(0);
-            w.write_u32(
-                symbols.intern(&crate::interpreter::instantiate::method_name(&decl.pattern)),
-            );
+            w.write_u32(symbols.intern(method.selector.as_str()));
         }
         FrameKind::Closure(c) => {
             w.write_u8(1);

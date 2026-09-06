@@ -2,10 +2,11 @@
 //! live `ns-next` world, decoded on load (never a memory dump). See
 //! `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`'s
 //! "Image format" section. Layout: header, source text, `SourceOrigin`,
-//! symbol table, code table, object table, frame table, roots.
+//! symbol table, code table, mixin table, object table, frame table, roots.
 
 pub mod decode;
 pub mod encode;
+pub mod mixins;
 pub mod symbols;
 
 use std::collections::HashMap;
@@ -34,15 +35,19 @@ pub fn snapshot(
     w.write_str(source);
     encode::encode_source_origin(&mut w, origin);
 
-    // The code table and the graph section reference every selector and
-    // name by a symbol-table id, so both are encoded into their own buffers
-    // first (collecting those strings into `symbols` along the way) and
-    // only then does the finished table get written -- ahead of both, so a
-    // reader can decode it once before either section asks it to resolve an
-    // id.
+    // The code table, the mixin table and the graph section all reference
+    // selectors and names by a symbol-table id, so each is encoded into its
+    // own buffer first (collecting those strings into `symbols` along the
+    // way) and only then does the finished table get written -- ahead of all
+    // three, so a reader can decode it once before any of them asks it to
+    // resolve an id.
     let mut symbols = symbols::Builder::new();
     let mut code_w = encode::Writer::new();
     let ids = encode::encode_code_table(&mut code_w, module, root_class, &mut symbols)?;
+    // After the code table, whose ids its rows name; before the graph, whose
+    // class objects will name its rows (Task 13).
+    let mut mixin_w = encode::Writer::new();
+    let _mixin_ids = mixins::encode(&mut mixin_w, root_class, module, &mut symbols, &ids)?;
     let mut graph_w = encode::Writer::new();
     encode::encode_graph_section(
         &mut graph_w,
@@ -55,6 +60,7 @@ pub fn snapshot(
 
     symbols.write(&mut w);
     w.write_raw(&code_w.into_bytes());
+    w.write_raw(&mixin_w.into_bytes());
     w.write_raw(&graph_w.into_bytes());
     Ok(w.into_bytes())
 }
@@ -106,8 +112,9 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let symbols = symbols::decode(&mut r).map_err(|e| e.to_string())?;
     let table = decode::decode_code_table(&mut r, &symbols).map_err(|e| e.to_string())?;
     decode::verify_code_table(&table).map_err(|e| e.to_string())?;
-    let module =
-        decode::install_code_table(&table, &root_class, &bindings).map_err(|e| e.to_string())?;
+    let mixins = mixins::decode(&mut r, &symbols, &table.codes).map_err(|e| e.to_string())?;
+    let module = decode::install_code_table(&table, &mixins, &root_class, &bindings)
+        .map_err(|e| e.to_string())?;
     let platform = interp.platform();
     let graph = {
         let ctx = decode::DecodeContext {

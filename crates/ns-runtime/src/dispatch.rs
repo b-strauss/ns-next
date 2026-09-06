@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
-use crate::mixin::{Mixin, MixinApplication};
+use crate::mixin::{Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
 use crate::Symbol;
 
@@ -22,7 +22,7 @@ pub fn class_application(class: &ClassRef) -> Option<Rc<MixinApplication>> {
 }
 
 pub enum Lookup {
-    Method(Rc<ast::MethodDecl>, ClassRef),
+    Method(Rc<MixinMethod>, ClassRef),
     /// A nested class declaration, reached through the implicit accessor
     /// `newspeak-spec.pdf` §6 says every such declaration defines in its
     /// enclosing class. The `ClassRef` is the class object of the level that
@@ -41,13 +41,12 @@ pub fn effective_access(access: Option<ast::AccessModifier>) -> ast::AccessModif
 
 /// The accessibility of the implicit accessor a nested declaration defines:
 /// §6, "implicitly defines a method with the same name *and accessibility*
-/// in OC". Read off the declaration rather than stored on `Mixin`, because
-/// `Mixin` deliberately carries no field a `Mixin` synthesized without an
-/// `ast::ClassDecl` (a builtin's, a class side's) would have to invent; the
-/// image's mixin table is where accessibility gets a home of its own once a
-/// reloaded mixin has no declaration to read it from.
+/// in OC". Stored on the mixin, already defaulted, because the image's
+/// mixin table has to carry it: a decoded mixin has no `ast::ClassDecl` to
+/// read it back off, and a lookup that guessed would answer `Protected` for
+/// a declaration written `public class Inner = ...`.
 pub fn nested_access(mixin: &Mixin) -> ast::AccessModifier {
-    effective_access(mixin.decl.as_ref().and_then(|decl| decl.access))
+    mixin.access
 }
 
 /// §3.3: the enclosing object at lexical `depth` for an activation of a
@@ -173,7 +172,7 @@ fn walk(
         };
         let next = next_level(superclass, &application);
         if let Some(method) = application.mixin.methods.get(&selector).cloned() {
-            let access = effective_access(access_of(&method));
+            let access = method.access;
             return if accept(access) {
                 Lookup::Method(method, c)
             } else if hard_stop_on_mismatch {
@@ -241,10 +240,6 @@ fn next_level(
     let superclass = superclass?;
     let super_application = application.superclass.clone()?;
     Some((superclass, super_application))
-}
-
-fn access_of(method: &ast::MethodDecl) -> Option<ast::AccessModifier> {
-    method.access
 }
 
 /// `name`'s absolute instance-field index, if any. No chain walk: the
@@ -332,7 +327,7 @@ mod tests {
         let mut methods = HashMap::new();
         methods.insert(
             Symbol::intern(selector.trim_end_matches(':')),
-            Rc::new(method),
+            Rc::new(MixinMethod::from_decl(Rc::new(method))),
         );
         // The application chain must be linked wherever the class-object
         // chain is: `next_level` steps both, so a superclass linked on only
@@ -341,14 +336,8 @@ mod tests {
         let super_application = superclass.as_ref().and_then(class_application);
         let application = Rc::new(MixinApplication {
             mixin: Rc::new(crate::mixin::Mixin {
-                name: Symbol::intern(name),
                 methods,
-                instance_slots: vec![],
-                init_exprs: vec![],
-                factory: None,
-                nested: vec![],
-                class_side: None,
-                decl: None,
+                ..crate::mixin::Mixin::empty(Symbol::intern(name))
             }),
             superclass: super_application,
             slot_index: HashMap::new(),

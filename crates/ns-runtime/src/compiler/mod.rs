@@ -29,6 +29,16 @@ fn num_args_of(pattern: &ast::MessagePattern) -> u16 {
     crate::interpreter::instantiate::pattern_param_count(pattern) as u16
 }
 
+/// A mixin's primary factory parameter count, narrowed to the `u16` a
+/// `CompiledCode` stores its arity in. `0` for a mixin with no factory of
+/// its own -- a builtin's, a class side's.
+fn factory_num_args(mixin: &Rc<Mixin>) -> u16 {
+    // Same reasoning as `num_args_of` above: a factory's parameter count is
+    // the number of keyword parts one message pattern has, which no parser
+    // and no image (which stores it in a `u16` field) can push past `u16`.
+    mixin.factory.map_or(0, |factory| factory.num_args as u16)
+}
+
 pub fn compile_method(
     method: &ast::MethodDecl,
     bindings: &Rc<HashMap<Span, Binding>>,
@@ -90,13 +100,14 @@ fn compile_mixin_initializer(
     mixin: &Rc<Mixin>,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> CompiledCode {
-    let num_args = mixin.factory.as_deref().map(num_args_of).unwrap_or(0);
+    let num_args = factory_num_args(mixin);
     let mut lowerer = Lowerer::new(CodeKind::Initializer, num_args, 0, bindings, vec![]);
     let mut source: Option<Span> = None;
-    for (own_index, slot) in mixin.instance_slots.iter().enumerate() {
-        if let Some(init) = &slot.init {
+    for (own_index, slot) in mixin.slots.iter().enumerate() {
+        let Some(decl) = &slot.decl else { continue };
+        if let Some(init) = &decl.init {
             lowerer.lower_slot_init(init, own_index as u32);
-            source = Some(merge_span(source, slot.span));
+            source = Some(merge_span(source, decl.span));
         }
     }
     for stmt in &mixin.init_exprs {
@@ -160,7 +171,7 @@ fn compile_superclass_message(
 ) -> Option<CompiledCode> {
     let clause = mixin.decl.as_ref()?.superclass.as_ref()?;
     let args = crate::interpreter::nested::superclass_clause_message_args_expr(clause)?;
-    let num_args = mixin.factory.as_deref().map(num_args_of).unwrap_or(0);
+    let num_args = factory_num_args(mixin);
     let stmts = vec![Stmt::Return(args)];
     let mut lowerer = Lowerer::new(CodeKind::SuperclassMessage, num_args, 0, bindings, vec![]);
     for stmt in &stmts {
@@ -195,7 +206,11 @@ pub fn compile_module(
     crate::mixin::preorder(&root_mixin, &mut order);
     for mixin in &order {
         for method in mixin.methods.values() {
-            let compiled = compile_method(method, bindings);
+            // Compiling happens from source, so every entry here has its
+            // declaration; a mixin whose methods have none came from an
+            // image and already carries their compiled bodies.
+            let Some(decl) = &method.decl else { continue };
+            let compiled = compile_method(decl, bindings);
             module.methods.insert(method_key(method), Rc::new(compiled));
         }
         let compiled_init = compile_mixin_initializer(mixin, bindings);

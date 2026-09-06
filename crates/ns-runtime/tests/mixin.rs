@@ -1,11 +1,17 @@
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use ns_runtime::mixin::Mixin;
 use ns_runtime::{Interpreter, Symbol};
 use ns_syntax::{ast, span::Span};
 
-fn slot_decl(name: &str) -> Rc<ast::SlotDecl> {
+fn slot_decl(name: &str) -> ns_runtime::mixin::MixinSlot {
+    ns_runtime::mixin::MixinSlot {
+        name: Symbol::intern(name),
+        decl: Some(raw_slot_decl(name)),
+    }
+}
+
+fn raw_slot_decl(name: &str) -> Rc<ast::SlotDecl> {
     Rc::new(ast::SlotDecl {
         access: None,
         name: ast::Ident {
@@ -19,16 +25,7 @@ fn slot_decl(name: &str) -> Rc<ast::SlotDecl> {
 }
 
 fn bare_mixin(name: &str) -> Rc<Mixin> {
-    Rc::new(Mixin {
-        name: Symbol::intern(name),
-        methods: HashMap::new(),
-        instance_slots: Vec::new(),
-        init_exprs: Vec::new(),
-        factory: None,
-        nested: Vec::new(),
-        class_side: None,
-        decl: None,
-    })
+    Rc::new(Mixin::empty(Symbol::intern(name)))
 }
 
 #[test]
@@ -61,11 +58,11 @@ fn inherited_slots_are_counted_before_own_slots() {
     // map both inherited and own slots to their absolute offsets.
     let mut interp = Interpreter::bootstrap();
     let mut sup = bare_mixin("Sup");
-    Rc::get_mut(&mut sup).unwrap().instance_slots = vec![slot_decl("a"), slot_decl("b")];
+    Rc::get_mut(&mut sup).unwrap().slots = vec![slot_decl("a"), slot_decl("b")];
     let sup_app = interp.apply_mixin(&sup, None);
 
     let mut sub = bare_mixin("Sub");
-    Rc::get_mut(&mut sub).unwrap().instance_slots = vec![slot_decl("c")];
+    Rc::get_mut(&mut sub).unwrap().slots = vec![slot_decl("c")];
     let sub_app = interp.apply_mixin(&sub, Some(&sup_app));
 
     // Slot count includes inherited and own.
@@ -189,7 +186,7 @@ fn inherited_nested_declarations_keep_their_declaring_levels_slot() {
     let mut sup = bare_mixin("Sup");
     {
         let sup = Rc::get_mut(&mut sup).unwrap();
-        sup.instance_slots = vec![slot_decl("a")];
+        sup.slots = vec![slot_decl("a")];
         sup.nested = vec![bare_mixin("Inner")];
     }
     let sup_app = interp.apply_mixin(&sup, None);
@@ -198,7 +195,7 @@ fn inherited_nested_declarations_keep_their_declaring_levels_slot() {
     assert_eq!(sup_app.num_slots, 2);
 
     let mut sub = bare_mixin("Sub");
-    Rc::get_mut(&mut sub).unwrap().instance_slots = vec![slot_decl("own")];
+    Rc::get_mut(&mut sub).unwrap().slots = vec![slot_decl("own")];
     let sub_app = interp.apply_mixin(&sub, Some(&sup_app));
     assert_eq!(
         sub_app.nested_slot[&Symbol::intern("Inner")],
