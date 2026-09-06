@@ -3867,3 +3867,137 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
     );
     assert!(matches!(result, Value::SmallInt(7)));
 }
+
+// ---------------------------------------------------------------------------
+// Task 12, fix round 1: the mixin table's nesting ceiling against the
+// parser's. A limit below what the front end accepts would refuse to
+// round-trip a program the runtime already runs from source.
+// ---------------------------------------------------------------------------
+
+/// `class C0 = Object new () ( public class C1 = ... )` -- `nested` class
+/// declarations under a root, with a class side on the innermost when
+/// `class_side` is set. A class side is a `Mixin` child link that the parser
+/// does not count as a nesting level, so it is exactly the level that makes
+/// the two ceilings differ by more than the uncounted root.
+fn nested_module_source(nested: usize, class_side: bool) -> String {
+    let mut src = String::from("Newspeak3\n'T'\nclass C0 = Object new () (\n");
+    for i in 1..=nested {
+        src.push_str(&format!("public class C{i} = Object new () (\n"));
+    }
+    src.push_str(if class_side { ") : ()\n" } else { ")\n" });
+    for _ in 1..=nested {
+        src.push_str(")\n");
+    }
+    src
+}
+
+/// The deepest nested-class chain `ns-syntax` accepts, discovered rather
+/// than restated: the parser's `MAX_DEPTH` is private to that crate, so
+/// hardcoding it here would be the second copy that drifts. Probing keeps
+/// this test honest if the parser's ceiling ever moves.
+fn deepest_parseable_nesting() -> usize {
+    // Far past the parser's own limit; a cap only so a parser that lost its
+    // guard fails this test instead of looping.
+    const PROBE_CEILING: usize = 512;
+    for nested in 1..=PROBE_CEILING {
+        if ns_syntax::parse(&nested_module_source(nested, true)).is_err() {
+            return nested - 1;
+        }
+    }
+    panic!("the parser accepted {PROBE_CEILING} levels of class nesting: it has no ceiling to derive the image's from");
+}
+
+/// The boundary the review found: the parser counts only *nested* classes,
+/// so a module it accepts has one more `Mixin` than its limit says, and a
+/// class side on the innermost class adds one more link again. An image
+/// ceiling set to the parser's own number refuses the two deepest legal
+/// programs -- a valid construct the runtime runs happily from source but
+/// could not save and reload.
+#[test]
+fn the_deepest_module_the_parser_accepts_round_trips() {
+    let nested = deepest_parseable_nesting();
+    let src = nested_module_source(nested, true);
+    let bytes = snapshot_of(&src);
+    let decoded = mixin_table_of(&bytes);
+    assert_eq!(
+        decoded.mixins.len(),
+        nested + 2,
+        "a root the parser does not count, {nested} nested classes, and the innermost class's class side"
+    );
+    let mut level = decoded.root().expect("a root row").clone();
+    let mut depth = 1;
+    while let Some(next) = level.nested.first().cloned() {
+        level = next;
+        depth += 1;
+    }
+    assert_eq!(depth, nested + 1, "every declared level survived the table");
+    assert!(
+        level.class_side.is_some(),
+        "the innermost class's class side is the deepest link of all"
+    );
+    assert!(
+        ns_runtime::image::load(&bytes).is_ok(),
+        "the deepest module the parser accepts must also load"
+    );
+}
+
+/// A chain of mixins deeper than the table's ceiling, assembled directly
+/// rather than parsed -- the only way to build one, since the ceiling is
+/// derived from the parser's.
+fn deep_mixin_chain(levels: usize) -> Rc<Mixin> {
+    let mut mixin = Rc::new(Mixin::empty(Symbol::intern("C0")));
+    for i in 1..levels {
+        mixin = Rc::new(Mixin {
+            nested: vec![mixin],
+            ..Mixin::empty(Symbol::intern(&format!("C{i}")))
+        });
+    }
+    mixin
+}
+
+/// An image nested past the decoder's ceiling must be refused when it is
+/// *written*. Writing one cleanly and discovering it is unloadable turns a
+/// local mistake into a failure on whatever machine tries to open it.
+#[test]
+fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
+    let mut interp = Interpreter::bootstrap();
+    // Two levels past the deepest module the parser will produce, so the
+    // refusal cannot be blamed on an off-by-one at the boundary.
+    let mixin = deep_mixin_chain(deepest_parseable_nesting() + 4);
+    let application = interp.apply_mixin(&mixin, None);
+    let identity_hash = interp.alloc_identity_hash();
+    let class: ClassRef = Rc::new(RefCell::new(Object {
+        class: interp.builtin_class(BuiltinClass::Object),
+        identity_hash,
+        data: ObjectData::Class(ClassData {
+            application,
+            enclosing: None,
+            declaring_class: None,
+            superclass: None,
+            builtin: None,
+            metaclass: None,
+        }),
+    }));
+    let module = CompiledModule {
+        methods: HashMap::new(),
+        initializers: HashMap::new(),
+        superclass_clauses: HashMap::new(),
+        superclass_messages: HashMap::new(),
+        bindings: Rc::new(HashMap::new()),
+    };
+    let platform = interp.platform();
+    let Err(err) = image::snapshot(
+        TRIVIAL_MODULE,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        &module,
+        &platform,
+        &[],
+    ) else {
+        panic!("a class tree past the ceiling must not encode");
+    };
+    assert!(
+        err.contains("nested") && err.contains("130"),
+        "the refusal must name the ceiling it enforces, got: {err}"
+    );
+}

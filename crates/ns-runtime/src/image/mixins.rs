@@ -33,17 +33,47 @@ use super::decode::{reserve_for, DecodeError, Reader};
 use super::encode::{u32_field, CodeIds, Writer};
 use super::symbols;
 
-/// How deep a decoded declaration tree may nest.
+/// `ns-syntax`'s own nesting ceiling: the parser refuses a module whose
+/// classes nest deeper than this (`MAX_DEPTH` in
+/// `crates/ns-syntax/src/parser/mod.rs`, which is private to that crate, so
+/// the number has to be restated rather than imported).
+///
+/// It counts *nested* classes only: `parser/decl.rs` calls `Parser::enter`
+/// where a class body starts a nested class declaration, and nowhere for the
+/// module's root class.
+const PARSER_MAX_NESTED_CLASS_DEPTH: usize = 128;
+
+/// How deep a declaration tree may nest, counted in `Rc<Mixin>` links from
+/// the root -- the depth `check_preorder` measures on the way in and `plan`
+/// measures on the way out.
 ///
 /// The depth is attacker-controlled, and three separate walks over a decoded
 /// tree recurse on it: `mixin::preorder`, `Rc<Mixin>`'s own drop glue, and
 /// `Debug`. Decoding itself is iterative, so this ceiling is not what keeps
 /// the *decoder* off the stack -- it is what keeps everything downstream of
-/// a successful decode off it. Set to the same 128 the format's only other
-/// depth-bounded structure (`decode::MAX_LITERAL_DEPTH`) uses: real Newspeak
-/// nests classes a handful of levels deep, and a corpus module anywhere near
-/// this is already unreadable.
-const MAX_MIXIN_DEPTH: usize = 128;
+/// a successful decode off it.
+///
+/// Derived from the front end's ceiling rather than chosen independently: a
+/// limit below what the parser accepts would refuse to round-trip a program
+/// the runtime already runs happily from source, and this project does not
+/// exclude a valid construct for being unusual. The two extra levels are
+/// exactly the difference between what the parser counts and what a `Mixin`
+/// tree links:
+///
+/// - the parser does not count the root class, so the deepest chain it
+///   accepts is `PARSER_MAX_NESTED_CLASS_DEPTH` nested classes *under* a
+///   root -- one more `Mixin` than the parser's number;
+/// - `Mixin::class_side` is a child link in the tree but not a parser
+///   nesting level, and the innermost class of that chain may have one --
+///   one more level again, at the bottom.
+///
+/// `the_deepest_module_the_parser_accepts_round_trips` in
+/// `crates/ns-runtime/tests/image.rs` pins the relationship from the other
+/// end: it discovers the parser's real limit by probing rather than
+/// restating it, builds the deepest module that limit allows, and requires
+/// it to snapshot and load. If the parser's ceiling moves, that test fails
+/// here.
+const MAX_MIXIN_DEPTH: usize = PARSER_MAX_NESTED_CLASS_DEPTH + 2;
 
 // ---------------------------------------------------------------------------
 // Encoding
@@ -132,7 +162,44 @@ pub fn plan(root_class: &ClassRef, module: &CompiledModule) -> Result<Vec<Row>, 
             superclass_message: module.superclass_messages.get(&mixin_key(mixin)).cloned(),
         });
     }
+    // Refused here, not left for the reader: an image nested past the
+    // decoder's ceiling would write cleanly and then be unloadable
+    // everywhere, turning a local mistake into someone else's failure.
+    // Unreachable for a tree built from parsed source (the ceiling is
+    // derived from the parser's own), so what this catches is a mixin tree
+    // assembled programmatically.
+    let depth = depth_of(&rows);
+    if depth > MAX_MIXIN_DEPTH {
+        return Err(format!(
+            "image encoding refuses a class tree nested {depth} levels deep: \
+             the mixin table's ceiling is {MAX_MIXIN_DEPTH} levels, and an \
+             image past it could never be loaded"
+        ));
+    }
     Ok(rows)
+}
+
+/// The tree's depth in `Mixin` links, counting the root as level 1.
+///
+/// One reverse pass: `plan` emits rows in `mixin::preorder`, so every
+/// child's row id is greater than its parent's and a row's children are
+/// already measured when it is reached. Iterative for the same reason the
+/// decoder's walk is -- and, unlike the decoder's, over a tree this process
+/// built, so the loop is here to share one definition of "depth" with
+/// `check_preorder` rather than to survive hostile input.
+fn depth_of(rows: &[Row]) -> usize {
+    let mut depth = vec![0usize; rows.len()];
+    for (i, row) in rows.iter().enumerate().rev() {
+        let deepest_child = row
+            .nested
+            .iter()
+            .chain(row.class_side.iter())
+            .map(|id| depth[*id as usize])
+            .max()
+            .unwrap_or(0);
+        depth[i] = deepest_child + 1;
+    }
+    depth.into_iter().max().unwrap_or(0)
 }
 
 /// Explicit wire tags for `AccessModifier` -- never `as u8` on the enum,
