@@ -104,5 +104,5 @@ docs/                progress tracker, design specs, implementation plans
 
 ## License
 
-MIT, per the workspace manifest. The vendored corpus under `corpus/` is third-party
+MIT — see [LICENSE](LICENSE). The vendored corpus under `corpus/` is third-party
 material with its own terms — see `corpus/PROVENANCE.md` and `corpus/UPSTREAM-LICENSE`.
