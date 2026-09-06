@@ -257,11 +257,24 @@ toolchain the application class is saved as a `.ns` file and built into a
 ([newspeak](https://github.com/newspeaklanguage/newspeak)).
 
 A deployed `.vfuel` **does carry full source text**, checked directly rather
-than assumed: `HopscotchWebIDE.vfuel` (3.00 MB, fetched from
-`newspeaklanguage.org/samples/`) contains complete class definitions with their
-doc comments — `class JSForPrimordialSoup usingPlatform: platform = (` followed
-by its slot declarations, and multi-paragraph `(* … *)` commentary. Long text
-runs account for roughly 1.4 MB of the 3.0 MB. So upstream's second artifact is
+than assumed. Four artifacts from `newspeaklanguage.org/samples/` were
+inspected, and long text runs are a near-constant share of each:
+`CounterApp.vfuel` 1.27 MB (44%), `TodoMVCApp.vfuel` 1.28 MB (44%),
+`Particles.vfuel` 1.26 MB (44%), `HopscotchWebIDE.vfuel` 3.00 MB (46%). The
+IDE was checked first and is the misleading sample — it browses source for a
+living — so the three ordinary applications are the ones that settle it:
+nothing is stripped at packaging time.
+
+What they contain is not only the application's own code. `CounterApp` — a
+counter with a button — holds 152 distinct class definitions with their source
+and doc comments, `AST2ByteCodeCompiler` and `ASTTraverser` among them: a
+deployed counter ships the compiler. That follows from the mechanism rather
+than from an oversight, since serialization starts at the application object
+and everything is reachable from the platform it holds; there is no step at
+which anything is judged unnecessary at run time. It is also why roughly
+1.27 MB is the floor for any deployed app.
+
+So upstream's second artifact is
 *not* a source-free one; it is a serialized object graph that happens to
 include the source strings hanging off its method and class objects, next to
 the bytecode those same objects carry (the serialized image contains the source
