@@ -39,6 +39,12 @@ pub struct Interpreter {
     builtin_classes: Option<HashMap<BuiltinClass, ClassRef>>,
     platform_singleton: Option<Value>,
     engine: Engine,
+    /// (mixin identity, superclass application identity) -> behaviour.
+    /// Keyed on the superclass's *application*, never on a superclass class
+    /// object: a nested superclass has one class object per enclosing
+    /// instance, so a class-object key would never hit and every instance
+    /// would get its own behaviour.
+    applications: HashMap<(usize, usize), Rc<crate::mixin::MixinApplication>>,
 }
 
 impl Default for Interpreter {
@@ -54,6 +60,7 @@ impl Interpreter {
             builtin_classes: None,
             platform_singleton: None,
             engine: Engine::TreeWalk,
+            applications: HashMap::new(),
         }
     }
 
@@ -63,6 +70,7 @@ impl Interpreter {
             builtin_classes: None,
             platform_singleton: None,
             engine: Engine::TreeWalk,
+            applications: HashMap::new(),
         };
         interp.builtin_classes = Some(build_builtin_classes(&mut interp));
         interp
@@ -508,6 +516,33 @@ impl Interpreter {
     pub(crate) fn new_stream_object(&mut self) -> ObjRef {
         let class = self.builtin_class(BuiltinClass::Platform);
         self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil]))
+    }
+
+    pub fn apply_mixin(
+        &mut self,
+        mixin: &Rc<crate::mixin::Mixin>,
+        superclass: Option<&Rc<crate::mixin::MixinApplication>>,
+    ) -> Rc<crate::mixin::MixinApplication> {
+        let key = (
+            crate::mixin::mixin_key(mixin),
+            superclass.map_or(0, crate::mixin::application_key),
+        );
+        if let Some(existing) = self.applications.get(&key) {
+            return existing.clone();
+        }
+        let inherited = superclass.map_or(0, |s| s.num_slots);
+        let mut slot_index = superclass.map_or_else(HashMap::new, |s| s.slot_index.clone());
+        for (i, slot) in mixin.instance_slots.iter().enumerate() {
+            slot_index.insert(Symbol::intern(&slot.name.name), inherited + i);
+        }
+        let application = Rc::new(crate::mixin::MixinApplication {
+            mixin: mixin.clone(),
+            superclass: superclass.cloned(),
+            num_slots: inherited + mixin.instance_slots.len(),
+            slot_index,
+        });
+        self.applications.insert(key, application.clone());
+        application
     }
 }
 

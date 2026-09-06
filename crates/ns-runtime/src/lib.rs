@@ -10,6 +10,7 @@ pub mod compiler;
 pub mod dispatch;
 pub mod image;
 pub mod interpreter;
+pub mod mixin;
 pub mod platform;
 pub mod resolver;
 pub mod symbol;
@@ -17,6 +18,7 @@ pub mod types;
 pub mod vm;
 
 pub use interpreter::{Engine, Interpreter, Signal};
+pub use mixin::{Mixin, MixinApplication};
 pub use resolver::resolve;
 pub use symbol::Symbol;
 pub use types::*;
