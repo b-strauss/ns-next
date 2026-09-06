@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
-use crate::mixin::MixinApplication;
+use crate::mixin::{Mixin, MixinApplication};
 use crate::types::*;
 use crate::Symbol;
 
@@ -23,12 +23,31 @@ pub fn class_application(class: &ClassRef) -> Option<Rc<MixinApplication>> {
 
 pub enum Lookup {
     Method(Rc<ast::MethodDecl>, ClassRef),
+    /// A nested class declaration, reached through the implicit accessor
+    /// `newspeak-spec.pdf` §6 says every such declaration defines in its
+    /// enclosing class. The `ClassRef` is the class object of the level that
+    /// declares it -- the same "defining class" a `Lookup::Method` reports,
+    /// so a caller can treat both arms uniformly; the nested class object
+    /// itself does not exist until `interpreter::nested::nested_class`
+    /// materializes it for a particular receiver.
+    NestedClass(Rc<Mixin>, ClassRef),
     Native(BuiltinClass),
     NotFound,
 }
 
 pub fn effective_access(access: Option<ast::AccessModifier>) -> ast::AccessModifier {
     access.unwrap_or(ast::AccessModifier::Protected)
+}
+
+/// The accessibility of the implicit accessor a nested declaration defines:
+/// §6, "implicitly defines a method with the same name *and accessibility*
+/// in OC". Read off the declaration rather than stored on `Mixin`, because
+/// `Mixin` deliberately carries no field a `Mixin` synthesized without an
+/// `ast::ClassDecl` (a builtin's, a class side's) would have to invent; the
+/// image's mixin table is where accessibility gets a home of its own once a
+/// reloaded mixin has no declaration to read it from.
+pub fn nested_access(mixin: &Mixin) -> ast::AccessModifier {
+    effective_access(mixin.decl.as_ref().and_then(|decl| decl.access))
 }
 
 /// §3.3, simplified for Milestone 1 -- see the task's design note.
@@ -117,6 +136,31 @@ fn walk(
             let access = effective_access(access_of(&method));
             return if accept(access) {
                 Lookup::Method(method, c)
+            } else if hard_stop_on_mismatch {
+                Lookup::NotFound
+            } else {
+                level = next;
+                continue;
+            };
+        }
+        // §6: a nested declaration is a member of its enclosing class on
+        // exactly the same footing as a method, so it is searched at the
+        // same level and under the same access rules -- after the method
+        // dictionary, because a method is the only thing that can shadow
+        // an accessor the compiler generated implicitly. A linear scan of
+        // `nested` costs nothing on the hot path: it runs only once the
+        // method dictionary has already missed, and `nested` is empty for
+        // every builtin and for most user classes.
+        if let Some(nested) = application
+            .mixin
+            .nested
+            .iter()
+            .find(|nested| nested.name == selector)
+            .cloned()
+        {
+            let access = nested_access(&nested);
+            return if accept(access) {
+                Lookup::NestedClass(nested, c)
             } else if hard_stop_on_mismatch {
                 Lookup::NotFound
             } else {

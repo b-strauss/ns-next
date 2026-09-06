@@ -165,6 +165,14 @@ impl<'a> Lowerer<'a> {
             (CodeKind::Block, _) => Some(Instr::NonLocalReturn { reg }),
             (CodeKind::Initializer, false) => None,
             (CodeKind::Initializer, true) => Some(Instr::NonLocalReturn { reg }),
+            // The clause body is a single synthetic `^ec`
+            // (`compiler::compile_superclass_clause`), so its top-level `^`
+            // is what hands the class object back; a `^` written inside a
+            // block argument of the clause's own message unwinds to the
+            // activation the accessor built, exactly as it would in any
+            // other body.
+            (CodeKind::SuperclassClause, false) => Some(Instr::Return { reg }),
+            (CodeKind::SuperclassClause, true) => Some(Instr::NonLocalReturn { reg }),
         }
     }
 
@@ -181,10 +189,19 @@ impl<'a> Lowerer<'a> {
     /// lowered) did not already end in one, so `vm::run_code` never has to
     /// handle "fell off the end". A method returns `self`; an initializer
     /// always returns `self` (its top-level `^` never emits a return); a
-    /// block returns its last statement's value, `nil` if it has none.
+    /// block returns its last statement's value, `nil` if it has none; a
+    /// superclass clause returns the value of the one expression it is.
     pub(crate) fn finish_body(&mut self, stmts: &[Stmt]) {
         let ends_in_return = matches!(stmts.last(), Some(Stmt::Return(_)));
         match self.kind {
+            CodeKind::SuperclassClause if ends_in_return => {}
+            CodeKind::SuperclassClause => {
+                let reg = match self.last_expr_reg {
+                    Some(r) => r,
+                    None => self.emit_nil(),
+                };
+                self.emit(Instr::ImplicitReturn { reg });
+            }
             CodeKind::Method if ends_in_return => {}
             CodeKind::Method | CodeKind::Initializer => {
                 let dst = self.alloc_scratch();

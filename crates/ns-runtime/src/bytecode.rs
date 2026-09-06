@@ -194,6 +194,15 @@ pub enum CodeKind {
     Method,
     Block,
     Initializer,
+    /// A class declaration's superclass clause: the expression
+    /// `newspeak-spec.pdf` §6.1 calls `ec`, compiled as a zero-argument body
+    /// that evaluates it and returns the class object it produced. It is a
+    /// code kind of its own rather than a `Method` with no declaration
+    /// because the frame it runs in belongs to the *enclosing* class and
+    /// carries no factory arguments -- `image::decode` reconciles an
+    /// installed body against what it is installed for by kind, so the two
+    /// must not be confusable there.
+    SuperclassClause,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -232,6 +241,14 @@ pub struct CompiledCode {
 pub struct CompiledModule {
     pub methods: HashMap<usize, Rc<CompiledCode>>,
     pub initializers: HashMap<usize, Rc<CompiledCode>>,
+    /// Each mixin's superclass clause, keyed by `mixin_key` for the same
+    /// reason `initializers` is: the clause is evaluated once per enclosing
+    /// instance (the nested-class accessor runs it), but it is one piece of
+    /// code shared by every application of the mixin. Absent for a mixin
+    /// that declares no superclass clause -- `interpreter::nested` then
+    /// uses `Object`, exactly as `instantiate::resolve_superclass_receiver`
+    /// does for a root class without one.
+    pub superclass_clauses: HashMap<usize, Rc<CompiledCode>>,
     /// The module's resolver output, carried so the hooks can pass it to
     /// the shared orchestration's `bindings` parameters.
     pub bindings: Rc<HashMap<Span, Binding>>,
@@ -256,6 +273,7 @@ fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize) 
         CodeKind::Method => "method",
         CodeKind::Block => "block",
         CodeKind::Initializer => "initializer",
+        CodeKind::SuperclassClause => "superclass clause",
     };
     writeln!(
         out,

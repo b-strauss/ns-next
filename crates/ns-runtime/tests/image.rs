@@ -2462,6 +2462,7 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable, CompiledModule) {
     let mut module = CompiledModule {
         methods: HashMap::new(),
         initializers: HashMap::new(),
+        superclass_clauses: HashMap::new(),
         bindings: bindings.clone(),
     };
     module
@@ -2759,6 +2760,13 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
             .methods
             .clone(),
         initializers: HashMap::new(),
+        // Left intact: this fixture doctors *only* the initializer map, so
+        // the refusal it asserts cannot be the superclass clause's.
+        superclass_clauses: interp
+            .compiled_module()
+            .expect("bytecode engine")
+            .superclass_clauses
+            .clone(),
         bindings: bindings.clone(),
     };
     let bytes = image::snapshot(
@@ -2968,6 +2976,73 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
         &inner_mixin,
         Some(&object_application),
     );
+    let inner_instance = expect_ok(
+        loaded
+            .interp
+            .instantiate(inner_class, vec![], &loaded.bindings),
+        "instantiate Inner",
+    );
+    let result = expect_ok(
+        loaded.interp.send(
+            inner_instance,
+            Symbol::intern("value"),
+            vec![],
+            &loaded.bindings,
+            None,
+        ),
+        "send value",
+    );
+    match result {
+        Value::SmallInt(9) => {}
+        _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
+    }
+}
+
+#[test]
+fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
+    // The accessor evaluates the nested declaration's superclass clause,
+    // and under `Engine::Bytecode` the only thing it can evaluate is the
+    // compiled clause body the code table carries. A reloaded image whose
+    // sections dropped it would panic on the first `Inner` access here --
+    // which is why `MixinSection` carries the clause alongside the
+    // initializer, and `install_code_table` refuses an image missing one.
+    let (mut interp, class, bindings) = load(NESTED_MODULE);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        "instantiate Outer",
+    );
+    let bytes = image::snapshot(
+        NESTED_MODULE,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        std::slice::from_ref(&outer),
+    )
+    .expect("snapshot");
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let reloaded_outer = loaded
+        .roots
+        .first()
+        .cloned()
+        .expect("the snapshotted Outer");
+    let inner_class = expect_ok(
+        loaded.interp.send(
+            reloaded_outer,
+            Symbol::intern("Inner"),
+            vec![],
+            &loaded.bindings,
+            None,
+        ),
+        "Inner",
+    );
+    let Value::Obj(inner_class) = inner_class else {
+        panic!("the accessor must yield a class object")
+    };
     let inner_instance = expect_ok(
         loaded
             .interp

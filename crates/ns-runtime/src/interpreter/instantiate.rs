@@ -40,17 +40,10 @@ impl Interpreter {
             .as_ref()
             .and_then(crate::dispatch::class_application);
         let application = self.apply_mixin(&mixin, super_application.as_ref());
-        let identity_hash = self.alloc_identity_hash();
-        Rc::new(RefCell::new(Object {
-            class: self.builtin_class(BuiltinClass::Object), // M1 simplification, see Task 7 Step 1
-            identity_hash,
-            data: ObjectData::Class(ClassData {
-                application,
-                enclosing: None, // the module's root class has no enclosing object
-                superclass,
-                builtin: None,
-            }),
-        }))
+        // `enclosing: None` -- the module's root class has no enclosing
+        // object. Every other class object in the system comes from
+        // `interpreter::nested`, which passes the receiver.
+        self.new_class_object(application, None, superclass)
     }
 
     /// Note on the brief's original signature: `decl` is taken here as

@@ -81,6 +81,12 @@ pub enum DecodeError {
     /// declares, so only refusing here keeps a crafted image from aborting
     /// the process at the first `X new`.
     MissingInitializer,
+    /// The reloaded source declares a superclass clause for a mixin the
+    /// image carries no compiled clause for. The nested-class accessor runs
+    /// that code on the first access to the declaration, and panics on the
+    /// invariant when the module has none -- the same reason
+    /// `MissingInitializer` is a refusal rather than a deferred crash.
+    MissingSuperclassClause,
     /// The image's code table has a different number of mixin sections than
     /// `mixin::preorder` finds in the reloaded source's mixin tree -- a
     /// nested class added or removed since the snapshot. No mixin identity
@@ -207,6 +213,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::MissingInitializer => write!(
                 f,
                 "the reloaded source's root class needs an instance initializer, which the image has no compiled code for"
+            ),
+            DecodeError::MissingSuperclassClause => write!(
+                f,
+                "the reloaded source declares a superclass clause the image has no compiled code for"
             ),
             DecodeError::MixinCountMismatch { image, source } => write!(
                 f,
@@ -434,12 +444,13 @@ pub fn read_builtin_class(r: &mut Reader) -> Result<BuiltinClass, DecodeError> {
 }
 
 /// One decoded mixin's own section: `(selector, code id)` per method,
-/// sorted by selector exactly as encoded, and its initializer's code id if
-/// it has one.
+/// sorted by selector exactly as encoded, its initializer's code id if it
+/// has one, and its superclass clause's if it has one.
 #[derive(Debug, PartialEq)]
 pub struct DecodedMixinSection {
     pub methods: Vec<(String, u32)>,
     pub initializer: Option<u32>,
+    pub superclass_clause: Option<u32>,
 }
 
 /// The decoded code table before it is bound to a reloaded class.
@@ -477,9 +488,17 @@ pub fn decode_code_table(r: &mut Reader) -> Result<DecodedCodeTable, DecodeError
         } else {
             None
         };
+        let superclass_clause = if r.read_bool()? {
+            let id = r.read_u32()?;
+            check_code_id(id, &codes)?;
+            Some(id)
+        } else {
+            None
+        };
         mixins.push(DecodedMixinSection {
             methods,
             initializer,
+            superclass_clause,
         });
     }
     Ok(DecodedCodeTable { codes, mixins })
@@ -524,6 +543,7 @@ pub fn install_code_table(
     let mut module = CompiledModule {
         methods: HashMap::new(),
         initializers: HashMap::new(),
+        superclass_clauses: HashMap::new(),
         bindings: bindings.clone(),
     };
     let root_mixin = {
@@ -617,6 +637,35 @@ pub fn install_code_table(
             }
             None => {}
         }
+        match section.superclass_clause {
+            Some(id) => {
+                let code = code_at(table, id)?;
+                // A clause body takes no arguments: it is evaluated in an
+                // activation the *accessor* builds on the enclosing object,
+                // not in one carrying the nested class's factory arguments.
+                check_code_arity(
+                    &code,
+                    CodeKind::SuperclassClause,
+                    "superclass clause".to_string(),
+                    0,
+                )?;
+                module.superclass_clauses.insert(mixin_key(mixin), code);
+            }
+            // The same reconciliation as the initializer's: a reloaded
+            // mixin that declares a superclass clause has its accessor run
+            // that clause's code on the first nested-class access, and
+            // `interpreter::nested` panics when the module carries none.
+            // Whether the reloaded source declares one and whether the
+            // image carries it are two halves only this function sees.
+            None if mixin
+                .decl
+                .as_ref()
+                .is_some_and(|decl| decl.superclass.is_some()) =>
+            {
+                return Err(DecodeError::MissingSuperclassClause)
+            }
+            None => {}
+        }
     }
     Ok(module)
 }
@@ -635,6 +684,7 @@ fn check_code_arity(
                 CodeKind::Method => "method",
                 CodeKind::Block => "block",
                 CodeKind::Initializer => "initializer",
+                CodeKind::SuperclassClause => "superclass clause",
             },
         });
     }
@@ -919,6 +969,7 @@ fn decode_code(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<CompiledCod
         0 => CodeKind::Method,
         1 => CodeKind::Block,
         2 => CodeKind::Initializer,
+        3 => CodeKind::SuperclassClause,
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "code kind",

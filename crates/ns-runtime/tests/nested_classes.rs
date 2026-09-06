@@ -1,0 +1,318 @@
+//! The implicit nested-class accessor (`newspeak-spec.pdf` §6): a nested
+//! declaration `N` inside `OC` defines a method `N` on `OC` that lazily
+//! evaluates the declaration with the receiver as enclosing object and
+//! caches the resulting class object per receiver.
+//!
+//! Every behavioural test runs under both engines: the superclass clause is
+//! Newspeak code, so a tree-walked clause under `--engine=bytecode` would be
+//! exactly the kind of silent divergence the differential gate exists to
+//! catch, and a unit test that only ever runs the tree-walker cannot see it.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use ns_runtime::{
+    compiler, Binding, Engine, Interpreter, ObjectData, Signal, SourceOrigin, Symbol, Value,
+};
+use ns_syntax::Span;
+
+type Bindings = Rc<HashMap<Span, Binding>>;
+
+fn load(src: &str, bytecode: bool) -> (Interpreter, ns_runtime::ClassRef, Bindings) {
+    let module = ns_syntax::parse(src).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        Rc::from(src),
+        SourceOrigin::File(PathBuf::from("t.ns")),
+    )
+    .expect("resolve");
+    let bindings = resolved.bindings.clone();
+    let mut interp = Interpreter::bootstrap();
+    let class = interp.load_module(&resolved);
+    if bytecode {
+        let compiled = compiler::compile_module(&class, &bindings);
+        interp.set_engine(Engine::Bytecode(compiled));
+    }
+    (interp, class, bindings)
+}
+
+/// `Signal` carries no `Debug` impl, so `Result::expect` isn't usable on an
+/// `EvalResult` -- unwrap by hand, naming which variant leaked.
+fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+    match result {
+        Ok(v) => v,
+        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
+        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+    }
+}
+
+fn expect_error(result: Result<Value, Signal>, what: &str) -> String {
+    match result {
+        Ok(_) => panic!("{what}: expected a Signal::Error"),
+        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
+        Err(Signal::Error(e)) => e.message,
+    }
+}
+
+const SRC: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new () (
+    public class Inner = Object new (| v. |) (
+        public value = ( ^42 )
+    )
+    public makeInner = ( ^Inner new )
+    public innerClass = ( ^Inner )
+)
+";
+
+fn accessor_is_stable(bytecode: bool) {
+    let (mut interp, class, bindings) = load(SRC, bytecode);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
+    );
+    let first = expect_ok(
+        interp.send(
+            outer.clone(),
+            Symbol::intern("innerClass"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "first Inner",
+    );
+    let second = expect_ok(
+        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None),
+        "second Inner",
+    );
+    let (Value::Obj(a), Value::Obj(b)) = (&first, &second) else {
+        panic!("a nested class access must yield a class object");
+    };
+    assert!(Rc::ptr_eq(a, b), "spec 6: cached within r");
+}
+
+#[test]
+fn the_accessor_returns_the_same_class_object_every_time() {
+    accessor_is_stable(false);
+}
+
+#[test]
+fn the_accessor_returns_the_same_class_object_every_time_under_bytecode() {
+    accessor_is_stable(true);
+}
+
+fn distinct_per_receiver(bytecode: bool) {
+    let (mut interp, class, bindings) = load(SRC, bytecode);
+    let platform = interp.platform();
+    let one = expect_ok(
+        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        "instantiate first Outer",
+    );
+    let two = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate second Outer",
+    );
+    let a = expect_ok(
+        interp.send(one, Symbol::intern("innerClass"), vec![], &bindings, None),
+        "first",
+    );
+    let b = expect_ok(
+        interp.send(two, Symbol::intern("innerClass"), vec![], &bindings, None),
+        "second",
+    );
+    let (Value::Obj(a), Value::Obj(b)) = (&a, &b) else {
+        panic!("class objects")
+    };
+    assert!(!Rc::ptr_eq(a, b), "spec 6: a distinct class per instance");
+    let (da, db) = (a.borrow(), b.borrow());
+    let (ObjectData::Class(da), ObjectData::Class(db)) = (&da.data, &db.data) else {
+        panic!("class data")
+    };
+    assert!(
+        Rc::ptr_eq(&da.application, &db.application),
+        "spec 6.2: applications of one mixin share code and structure -- this \
+         is what keeps a call site monomorphic across enclosing instances"
+    );
+}
+
+#[test]
+fn two_enclosing_instances_get_distinct_nested_classes() {
+    distinct_per_receiver(false);
+}
+
+#[test]
+fn two_enclosing_instances_get_distinct_nested_classes_under_bytecode() {
+    distinct_per_receiver(true);
+}
+
+fn enclosing_object_is_the_receiver(bytecode: bool) {
+    let (mut interp, class, bindings) = load(SRC, bytecode);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
+    );
+    let inner = expect_ok(
+        interp.send(
+            outer.clone(),
+            Symbol::intern("innerClass"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "Inner",
+    );
+    let (Value::Obj(inner), Value::Obj(outer)) = (&inner, &outer) else {
+        panic!("class object and instance")
+    };
+    let borrowed = inner.borrow();
+    let ObjectData::Class(data) = &borrowed.data else {
+        panic!("class data")
+    };
+    let enclosing = data
+        .enclosing
+        .as_ref()
+        .expect("spec 6: a nested class's one piece of state is its enclosing object");
+    assert!(Rc::ptr_eq(enclosing, outer));
+}
+
+#[test]
+fn the_nested_class_remembers_its_enclosing_object() {
+    enclosing_object_is_the_receiver(false);
+}
+
+#[test]
+fn the_nested_class_remembers_its_enclosing_object_under_bytecode() {
+    enclosing_object_is_the_receiver(true);
+}
+
+fn instantiating_the_nested_class(bytecode: bool) {
+    let (mut interp, class, bindings) = load(SRC, bytecode);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
+    );
+    let instance = expect_ok(
+        interp.send(outer, Symbol::intern("makeInner"), vec![], &bindings, None),
+        "makeInner",
+    );
+    let value = expect_ok(
+        interp.send(instance, Symbol::intern("value"), vec![], &bindings, None),
+        "value",
+    );
+    let Value::SmallInt(value) = value else {
+        panic!("expected a SmallInt from `Inner new value`")
+    };
+    assert_eq!(value, 42);
+}
+
+#[test]
+fn a_nested_class_can_be_instantiated_through_its_accessor() {
+    instantiating_the_nested_class(false);
+}
+
+#[test]
+fn a_nested_class_can_be_instantiated_through_its_accessor_under_bytecode() {
+    instantiating_the_nested_class(true);
+}
+
+/// `newspeak-spec.pdf` §6.1: "It is a run time error if ec does not evaluate
+/// to a class object C." A program error, not an interpreter invariant --
+/// the same `NewspeakError` under both engines, never a panic.
+const NON_CLASS_SUPERCLASS_SRC: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new (| notAClass = 7. |) (
+    public class Inner = notAClass new () ()
+    public innerClass = ( ^Inner )
+)
+";
+
+fn non_class_superclass_clause(bytecode: bool) {
+    let (mut interp, class, bindings) = load(NON_CLASS_SUPERCLASS_SRC, bytecode);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
+    );
+    let message = expect_error(
+        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None),
+        "innerClass",
+    );
+    assert!(
+        message.contains("did not evaluate to a class object"),
+        "unexpected message: {message}"
+    );
+}
+
+#[test]
+fn a_superclass_clause_that_is_not_a_class_is_a_program_error() {
+    non_class_superclass_clause(false);
+}
+
+#[test]
+fn a_superclass_clause_that_is_not_a_class_is_a_program_error_under_bytecode() {
+    non_class_superclass_clause(true);
+}
+
+/// §6: the implicit accessor has the declaration's own accessibility. The
+/// default (no modifier) is `protected`, so an ordinary explicit-receiver
+/// send must not reach it -- and `lookupPublic`'s hard-stop rule means the
+/// search stops at the declaration rather than continuing up the chain.
+const PROTECTED_NESTED_SRC: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new () (
+    class Hidden = Object new () (
+        public value = ( ^7 )
+    )
+    public reach = ( ^Hidden new value )
+)
+";
+
+fn protected_nested_access(bytecode: bool) {
+    let (mut interp, class, bindings) = load(PROTECTED_NESTED_SRC, bytecode);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
+    );
+    // Lexically, from inside Outer: reachable, and it really is a class.
+    let value = expect_ok(
+        interp.send(
+            outer.clone(),
+            Symbol::intern("reach"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "reach",
+    );
+    let Value::SmallInt(value) = value else {
+        panic!("expected a SmallInt from `Hidden new value`")
+    };
+    assert_eq!(value, 7);
+    // From outside, as an ordinary send: not reachable.
+    let message = expect_error(
+        interp.send(outer, Symbol::intern("Hidden"), vec![], &bindings, None),
+        "Hidden",
+    );
+    assert!(
+        message.contains("does not understand"),
+        "unexpected message: {message}"
+    );
+}
+
+#[test]
+fn a_nested_class_defaults_to_protected_accessibility() {
+    protected_nested_access(false);
+}
+
+#[test]
+fn a_nested_class_defaults_to_protected_accessibility_under_bytecode() {
+    protected_nested_access(true);
+}

@@ -5,6 +5,7 @@
 
 pub mod eval;
 pub mod instantiate;
+pub(crate) mod nested;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -163,6 +164,13 @@ impl Interpreter {
                 bindings.clone(),
                 sender,
             ),
+            // §6: the implicit accessor a nested declaration defines is
+            // reached exactly like any other member, and it ignores `args`
+            // -- the accessor is unary, so a send that supplied arguments
+            // did not name it (`walk` matched on the bare selector).
+            Lookup::NestedClass(mixin, _) => {
+                nested::nested_class(self, &receiver, &mixin, bindings)
+            }
             Lookup::Native(kind) => {
                 self.dispatch_native_or_dnu(kind, receiver, selector, args, bindings, sender)
             }
@@ -305,7 +313,13 @@ impl Interpreter {
                     })),
                 }
             }
-            Lookup::NotFound => Err(Signal::Error(NewspeakError {
+            // A nested declaration can never be the `doesNotUnderstand:`
+            // handler: `walk` matches a declaration by name, and a class
+            // name is never a keyword selector. Folded into `NotFound`
+            // rather than given an arm of its own so the unreachable case
+            // still reports the ordinary "nothing handles this" error
+            // instead of a second, differently-worded one.
+            Lookup::NotFound | Lookup::NestedClass(..) => Err(Signal::Error(NewspeakError {
                 selector,
                 receiver,
                 message: format!("doesNotUnderstand: {selector} (and no doesNotUnderstand: found anywhere in the class chain)"),
@@ -517,6 +531,36 @@ impl Interpreter {
     pub(crate) fn new_stream_object(&mut self) -> ObjRef {
         let class = self.builtin_class(BuiltinClass::Platform);
         self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil]))
+    }
+
+    /// A class object around an already-computed application. The one place
+    /// the three-way invariant is established: a class object's `superclass`
+    /// is linked exactly when its application's `superclass` is (callers
+    /// derive `application` from `superclass` through `apply_mixin`), which
+    /// is what `dispatch::next_level` relies on when it steps both chains
+    /// together.
+    ///
+    /// `class` is the shared `Object` placeholder -- Milestone 1's "no
+    /// metaclasses" simplification, still in force until Task 8 gives a
+    /// class object a real class side.
+    pub(crate) fn new_class_object(
+        &mut self,
+        application: Rc<crate::mixin::MixinApplication>,
+        enclosing: Option<ObjRef>,
+        superclass: Option<ClassRef>,
+    ) -> ClassRef {
+        let class = self.builtin_class(BuiltinClass::Object);
+        let identity_hash = self.alloc_identity_hash();
+        Rc::new(RefCell::new(Object {
+            class,
+            identity_hash,
+            data: ObjectData::Class(ClassData {
+                application,
+                enclosing,
+                superclass,
+                builtin: None,
+            }),
+        }))
     }
 
     pub fn apply_mixin(

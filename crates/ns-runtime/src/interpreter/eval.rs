@@ -371,9 +371,17 @@ pub(crate) fn dispatch_lexical_send(
     }
     // Check for a private declaration *at exactly this class* first (the
     // non-virtual case -- private members are never overridden, so there
-    // is no search: newspeak-spec.pdf §5.9).
-    if let Lookup::Method(method, defining_class) = dispatch::lookup_defined_for(&class, selector) {
-        if dispatch::effective_access(method.access) == ast::AccessModifier::Private {
+    // is no search: newspeak-spec.pdf §5.9). A `private class N` is a
+    // private declaration on exactly the same footing (§6: the implicit
+    // accessor has the declaration's own accessibility), and it has to be
+    // caught here too: `lookup_protected` below skips a private
+    // declaration transparently and keeps walking, so leaving the nested
+    // case out would make `private class N` unreachable from the class
+    // that declares it while `private n = (...)` is reachable.
+    match dispatch::lookup_defined_for(&class, selector) {
+        Lookup::Method(method, defining_class)
+            if dispatch::effective_access(method.access) == ast::AccessModifier::Private =>
+        {
             return interp.invoke_method(
                 o,
                 method,
@@ -383,6 +391,12 @@ pub(crate) fn dispatch_lexical_send(
                 Some(frame.clone()),
             );
         }
+        Lookup::NestedClass(mixin, _)
+            if dispatch::nested_access(&mixin) == ast::AccessModifier::Private =>
+        {
+            return crate::interpreter::nested::nested_class(interp, &o, &mixin, bindings);
+        }
+        _ => {}
     }
     match dispatch::lookup_protected(&class, selector) {
         Lookup::Method(method, defining_class) => interp.invoke_method(
@@ -393,6 +407,9 @@ pub(crate) fn dispatch_lexical_send(
             bindings.clone(),
             Some(frame.clone()),
         ),
+        Lookup::NestedClass(mixin, _) => {
+            crate::interpreter::nested::nested_class(interp, &o, &mixin, bindings)
+        }
         Lookup::Native(kind) => {
             match crate::builtins::dispatch_native(
                 interp,
@@ -455,6 +472,13 @@ pub(crate) fn dispatch_super_send(
             bindings.clone(),
             Some(frame.clone()),
         ),
+        // `super N` for a nested class the superclass declares. The
+        // receiver stays `self` (§5.10), which is also the enclosing object
+        // the accessor caches against -- so `super N` and `N` name the same
+        // class object whenever they resolve to the same declaration.
+        Lookup::NestedClass(mixin, _) => {
+            crate::interpreter::nested::nested_class(interp, &self_value, &mixin, bindings)
+        }
         Lookup::Native(kind) => {
             match crate::builtins::dispatch_native(
                 interp,

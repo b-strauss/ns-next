@@ -107,6 +107,37 @@ fn compile_mixin_initializer(
     lowerer.finish(source.unwrap_or(Span::new(0, 0)))
 }
 
+/// A mixin's superclass clause as executable code: the expression
+/// `newspeak-spec.pdf` §6.1 calls `ec`, lowered as a single synthetic `^ec`
+/// so the body ends in the `Return` that hands the class object back.
+///
+/// The expression itself comes from `interpreter::nested`'s
+/// `superclass_clause_expr`, the *one* definition of what a superclass
+/// clause evaluates -- the tree-walker evaluates that same `ast::Expr`
+/// directly. Building a second, compiler-local notion of "the clause's
+/// expression" here is exactly how the two engines would come to disagree
+/// about a clause that is anything more interesting than a builtin class
+/// name.
+///
+/// Returns `None` for a mixin with no clause (a class side, a builtin, or
+/// `class C = (...)`), which the accessor answers with `Object` under both
+/// engines without running any code at all.
+fn compile_superclass_clause(
+    mixin: &Rc<Mixin>,
+    bindings: &Rc<HashMap<Span, Binding>>,
+) -> Option<CompiledCode> {
+    let clause = mixin.decl.as_ref()?.superclass.as_ref()?;
+    let stmts = vec![Stmt::Return(
+        crate::interpreter::nested::superclass_clause_expr(clause),
+    )];
+    let mut lowerer = Lowerer::new(CodeKind::SuperclassClause, 0, 0, bindings, vec![]);
+    for stmt in &stmts {
+        lowerer.lower_statement(stmt);
+    }
+    lowerer.finish_body(&stmts);
+    Some(lowerer.finish(clause.span))
+}
+
 pub fn compile_module(
     root_class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
@@ -121,6 +152,7 @@ pub fn compile_module(
     let mut module = CompiledModule {
         methods: HashMap::new(),
         initializers: HashMap::new(),
+        superclass_clauses: HashMap::new(),
         bindings: bindings.clone(),
     };
     // `crate::mixin::preorder` is also what `image::encode`/`decode` walk
@@ -137,6 +169,11 @@ pub fn compile_module(
         module
             .initializers
             .insert(mixin_key(mixin), Rc::new(compiled_init));
+        if let Some(clause) = compile_superclass_clause(mixin, bindings) {
+            module
+                .superclass_clauses
+                .insert(mixin_key(mixin), Rc::new(clause));
+        }
     }
     module
 }

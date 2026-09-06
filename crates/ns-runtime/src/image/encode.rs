@@ -30,7 +30,14 @@ pub const MAGIC: &[u8; 4] = b"NSIM";
 /// before any released build could write an image, so no version-1 image
 /// in anyone's hands can be misread because of it. The next such change
 /// after a release bumps the version.
-pub const FORMAT_VERSION: u32 = 1;
+///
+/// Version 2 adds each mixin section's superclass-clause code id and the
+/// `SuperclassClause` code-kind tag it uses. Unlike the two additions
+/// above, this one changes the *shape* of an existing section rather than
+/// extending a tag space, so a version-1 image would be misparsed from the
+/// first mixin section onward -- hence a bump rather than the same
+/// pure-addition reasoning.
+pub const FORMAT_VERSION: u32 = 2;
 
 #[derive(Default)]
 pub struct Writer {
@@ -183,11 +190,19 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
 }
 
 /// One mixin's own section of the code table: its methods, sorted by
-/// selector, and its initializer (present exactly when `module` carries
-/// one for it).
+/// selector, its initializer, and its superclass clause (each present
+/// exactly when `module` carries one for it).
+///
+/// The superclass clause has to travel with the rest: it is what the
+/// nested-class accessor runs to find a nested declaration's superclass,
+/// and under the bytecode engine there is nothing else for it to run --
+/// a reloaded module without it would panic on the first nested-class
+/// access, the same way a reloaded module without an initializer would
+/// panic on the first `new`.
 struct MixinSection {
     methods: Vec<(String, Rc<CompiledCode>)>,
     initializer: Option<Rc<CompiledCode>>,
+    superclass_clause: Option<Rc<CompiledCode>>,
 }
 
 /// The code table: every `CompiledCode` reachable from `module` -- every
@@ -251,9 +266,11 @@ pub fn encode_code_table(
         // the table canonical rather than iteration-order dependent.
         methods.sort_by(|a, b| a.0.cmp(&b.0));
         let initializer = module.initializers.get(&mixin_key(mixin)).cloned();
+        let superclass_clause = module.superclass_clauses.get(&mixin_key(mixin)).cloned();
         sections.push(MixinSection {
             methods,
             initializer,
+            superclass_clause,
         });
     }
     for section in &sections {
@@ -262,6 +279,9 @@ pub fn encode_code_table(
         }
         if let Some(init) = &section.initializer {
             collect_code(init, &mut order, &mut ids);
+        }
+        if let Some(clause) = &section.superclass_clause {
+            collect_code(clause, &mut order, &mut ids);
         }
     }
     w.write_u32(u32_field("code table entry count", order.len()));
@@ -282,6 +302,13 @@ pub fn encode_code_table(
             Some(init) => {
                 w.write_bool(true);
                 w.write_u32(ids.id_of(init));
+            }
+            None => w.write_bool(false),
+        }
+        match &section.superclass_clause {
+            Some(clause) => {
+                w.write_bool(true);
+                w.write_u32(ids.id_of(clause));
             }
             None => w.write_bool(false),
         }
@@ -312,6 +339,7 @@ fn encode_code(w: &mut Writer, code: &CompiledCode, ids: &CodeIds) {
         CodeKind::Method => 0,
         CodeKind::Block => 1,
         CodeKind::Initializer => 2,
+        CodeKind::SuperclassClause => 3,
     });
     w.write_u16(code.num_args);
     w.write_u16(code.num_registers);
