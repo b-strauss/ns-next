@@ -1,0 +1,15 @@
+Newspeak3
+'Test'
+class NestedAccess usingPlatform: p = Object new (| t ::= p transcript. |) (
+    public class Inner = Object new () (
+        public value = ( ^42 )
+    )
+    public main: platform args: args = (
+        | a b inst |
+        a := Inner.
+        b := Inner.
+        t show: (a == b) printString; newLine.
+        inst := a new.
+        t show: inst value printString; newLine.
+    )
+)

@@ -1,0 +1,9 @@
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new (| t ::= p transcript. |) (
+    public class Inner = Object new () (
+        public shout = ( outer Outer say: 'from inner' )
+    )
+    say: s = ( t show: s; newLine )
+    public main: platform args: args = ( ^Inner new shout )
+)
