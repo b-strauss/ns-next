@@ -519,29 +519,39 @@ impl Interpreter {
     /// the same class object the same metaclass identity, which a later
     /// milestone's inline caches need.
     ///
-    /// Returns `None` when `class`'s own mixin declares no class side --
-    /// deliberately just its own, not an ancestor's: the full §3.2 model
-    /// (every class an instance of a unique metaclass, with metaclasses
-    /// inheriting from each other exactly as classes do) is out of scope for
-    /// this milestone, so a subclass that declares no class side of its own
-    /// does not inherit an ancestor's class-side methods, even though a
-    /// class object one level up the metaclass chain, if it existed, would
-    /// answer them. This is the milestone's documented deviation, not an
-    /// oversight; see the design spec's "How far the metaclass model goes".
+    /// Returns `None` only when neither `class`'s own mixin nor any
+    /// ancestor's declares a class side -- a class side is inherited down
+    /// the ordinary subclass chain exactly like any other mixin member,
+    /// single inheritance and nothing more. What stays out of scope is
+    /// §3.2's *reification* of that fact: no `Class` superclass object, and
+    /// no per-instance metaclass uniqueness (every class here still shares
+    /// one metaclass, the way every application of a mixin shares one
+    /// `MixinApplication`). Whether a class side is inherited at all is a
+    /// different, much narrower question than how far the reified model
+    /// goes, and the answer to it is the same answer §5's ordinary lookup
+    /// already gives for a method.
     ///
-    /// When `class` does declare a class side, its metaclass's superclass is
-    /// the superclass's metaclass, recursively -- so a chain of classes that
-    /// *all* declare a class side does inherit correctly, and the metaclass
-    /// application chain stays linked to the metaclass class-object chain
-    /// exactly as `dispatch::next_level` requires for the ordinary one.
+    /// When `class`'s own mixin declares no class side but an ancestor's
+    /// does, an empty synthetic mixin stands in for `class`'s own level --
+    /// the same placeholder-mixin technique `builtin_mixin` below already
+    /// uses for a builtin with no user-declared behaviour of its own. It
+    /// contributes no methods, only relays the superclass's metaclass
+    /// application onward, so `class`'s metaclass answers exactly what the
+    /// nearest class-side-declaring ancestor's metaclass would.
+    ///
+    /// Either way, the metaclass's superclass is the superclass's
+    /// metaclass, recursively, and the metaclass application chain stays
+    /// linked to the metaclass class-object chain exactly as
+    /// `dispatch::next_level` requires for the ordinary one.
     pub fn metaclass_of(&mut self, class: &ClassRef) -> Option<ClassRef> {
-        let (cached, class_side, class_superclass) = {
+        let (cached, class_side, class_superclass, own_mixin_name) = {
             let borrowed = class.borrow();
             match &borrowed.data {
                 ObjectData::Class(data) => (
                     data.metaclass.clone(),
                     data.application.mixin.class_side.clone(),
                     data.superclass.clone(),
+                    data.application.mixin.name,
                 ),
                 _ => return None,
             }
@@ -549,10 +559,21 @@ impl Interpreter {
         if cached.is_some() {
             return cached;
         }
-        let class_side_mixin = class_side?;
         let super_metaclass = class_superclass
             .as_ref()
             .and_then(|superclass| self.metaclass_of(superclass));
+        let class_side_mixin = match class_side {
+            Some(mixin) => mixin,
+            // No class side of its own to apply -- only worth building a
+            // metaclass at all if an ancestor's class side needs relaying
+            // through it. `super_metaclass.is_none()` here means neither
+            // `class` nor any ancestor declares a class side, which is the
+            // ordinary "costs nothing" case.
+            None => {
+                super_metaclass.as_ref()?;
+                empty_class_side_mixin(own_mixin_name)
+            }
+        };
         let super_application = super_metaclass
             .as_ref()
             .and_then(dispatch::class_application);
@@ -651,9 +672,12 @@ impl Interpreter {
     /// is what `dispatch::next_level` relies on when it steps both chains
     /// together.
     ///
-    /// `class` is the shared `Object` placeholder -- Milestone 1's "no
-    /// metaclasses" simplification, still in force until Task 8 gives a
-    /// class object a real class side.
+    /// `class` is the shared `Object` placeholder: a class object's own
+    /// `.class` field never points at its metaclass. `metaclass_of` reaches
+    /// a class side through a separate cache (`ClassData::metaclass`), not
+    /// through this field -- §3.2's "every class an instance of a unique
+    /// metaclass" stays unbuilt, by design (see `metaclass_of`'s doc
+    /// comment).
     pub(crate) fn new_class_object(
         &mut self,
         application: Rc<crate::mixin::MixinApplication>,
@@ -796,6 +820,26 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
 fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
     Rc::new(crate::mixin::Mixin {
         name: Symbol::intern(&format!("{kind:?}")),
+        methods: HashMap::new(),
+        instance_slots: vec![],
+        init_exprs: vec![],
+        factory: None,
+        nested: vec![],
+        class_side: None,
+        decl: None,
+    })
+}
+
+/// The empty mixin `metaclass_of` applies for a class that declares no
+/// class side of its own but inherits one from an ancestor -- same
+/// placeholder technique as `builtin_mixin` above, a fresh `Rc` per call so
+/// the application cache keys each such level apart from its siblings.
+/// Contributes no methods or slots of its own; its only job is to give
+/// `apply_mixin` something to link the ancestor's metaclass application
+/// through.
+fn empty_class_side_mixin(owner_name: Symbol) -> Rc<crate::mixin::Mixin> {
+    Rc::new(crate::mixin::Mixin {
+        name: Symbol::intern(&format!("{} class", owner_name.as_str())),
         methods: HashMap::new(),
         instance_slots: vec![],
         init_exprs: vec![],

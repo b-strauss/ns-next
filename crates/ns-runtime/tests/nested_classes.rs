@@ -583,3 +583,108 @@ fn a_class_with_no_class_side_still_reports_ordinary_does_not_understand() {
 fn a_class_with_no_class_side_still_reports_ordinary_does_not_understand_under_bytecode() {
     class_side_miss_is_ordinary_dnu(true);
 }
+
+const CLASS_SIDE_INHERITANCE_SRC: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new () (
+    public class Widget new = Object new () (
+    ) : (
+        public describe = ( ^'a widget class' )
+    )
+    public class SpecialWidget new = Widget new () (
+    )
+    public class OverridingWidget new = Widget new () (
+    ) : (
+        public describe = ( ^'a special widget class' )
+    )
+)
+";
+
+/// A class side is inherited down the ordinary subclass chain like any
+/// other mixin member (plain single inheritance -- not a reification of
+/// §3.2's metaclass hierarchy): `SpecialWidget` declares no class side of
+/// its own, but its superclass `Widget` does, so `SpecialWidget describe`
+/// must answer exactly what `Widget describe` does.
+fn class_side_is_inherited(bytecode: bool) {
+    let (mut interp, class, bindings) = load(CLASS_SIDE_INHERITANCE_SRC, bytecode);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
+    );
+    let special_widget = expect_ok(
+        interp.send(
+            outer,
+            Symbol::intern("SpecialWidget"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "SpecialWidget accessor",
+    );
+    let described = expect_ok(
+        interp.send(
+            special_widget,
+            Symbol::intern("describe"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "inherited class-side send",
+    );
+    assert_eq!(string_contents(&described), "a widget class");
+}
+
+#[test]
+fn a_subclass_with_no_class_side_inherits_the_superclasss_class_side_method() {
+    class_side_is_inherited(false);
+}
+
+#[test]
+fn a_subclass_with_no_class_side_inherits_the_superclasss_class_side_method_under_bytecode() {
+    class_side_is_inherited(true);
+}
+
+/// A class that declares its own class-side method of the same name still
+/// overrides the inherited one -- ordinary shadowing, exactly as on the
+/// instance side.
+fn class_side_override_shadows_the_inherited_method(bytecode: bool) {
+    let (mut interp, class, bindings) = load(CLASS_SIDE_INHERITANCE_SRC, bytecode);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
+    );
+    let overriding_widget = expect_ok(
+        interp.send(
+            outer,
+            Symbol::intern("OverridingWidget"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "OverridingWidget accessor",
+    );
+    let described = expect_ok(
+        interp.send(
+            overriding_widget,
+            Symbol::intern("describe"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "overriding class-side send",
+    );
+    assert_eq!(string_contents(&described), "a special widget class");
+}
+
+#[test]
+fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name() {
+    class_side_override_shadows_the_inherited_method(false);
+}
+
+#[test]
+fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name_under_bytecode() {
+    class_side_override_shadows_the_inherited_method(true);
+}
