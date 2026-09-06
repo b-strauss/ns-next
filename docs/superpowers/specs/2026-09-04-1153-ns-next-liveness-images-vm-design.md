@@ -228,6 +228,60 @@ live).
 - Working with no image at all is the normal case: `ns-next run` / a live
   session that loads modules from files and never takes a snapshot.
 
+### Deployment artifacts without source (open, recorded 2026-09-06)
+
+The bullets above say an image *contains* source. Newspeak upstream does not
+work that way, and the difference is worth stating before Milestone 3 fixes it
+by accident.
+
+Bracha's position is **two artifacts, not one**: "Ideally, you have images and a
+binary format", where "serialized top level classes can serve as a binary
+format" ([An Image
+Problem](https://gbracha.blogspot.com/2009/10/image-problem.html)). His
+complaint about Smalltalk is not that an image exists but that it is the *only*
+artifact — "it becomes very difficult to disentangle one's program from the
+state of the ongoing computation".
+
+Deployment upstream is therefore a serialized object graph, not a source tree:
+"A serialized instance of BraveNewWorldExplorerApp acts as our binary. The
+Newspeak runtime loads such a serialized object, deserializes it, and invokes
+its main:args: method" ([Serialization
+Killer](https://gbracha.blogspot.com/2010/02/serialization-killer.html)). It
+works because "top level classes, also known as module declarations, are
+stateless. Hence the serialized form of these class objects is stateless as
+well, fulfilling a key requirement for a binary code representation", and
+because serializing an object carries its behaviour with it — classes reference
+mixins, mixins reference methods, and all of them are objects. In the current
+toolchain the application class is saved as a `.ns` file and built into a
+`.vfuel` binary that is served alongside the Primordial Soup VM
+([newspeak](https://github.com/newspeaklanguage/newspeak)).
+
+Whether a `.vfuel` retains source text is **not established** by any source
+read here. Note that Newspeak's reflection is mirror-based, so source access is
+a *capability* rather than a property of every object — which is the mechanism
+by which such metadata would be optional (Bracha & Ungar, "Mirrors: Design
+Principles for Meta-level Facilities", OOPSLA 2004).
+
+What this means for `ns-next`, if a source-free deployment artifact is wanted:
+
+- The requirement to preserve is "an image can be **exported back** to `.ns`",
+  not "an image stores the text". A decompiler satisfies it by another route —
+  and no spec here currently mentions one, so it would be new work.
+- Distinguish **source text** from the **provenance record** already required
+  above. A deployment artifact can keep provenance (file + span, or "entered in
+  the debugger at time T") for error reporting while dropping the text.
+- The blocker is representational, not conceptual: classes here hold
+  `Rc<MethodDecl>` — AST nodes — and the resolver's binding map is keyed by
+  `Span`, a byte range into the source text. Serializing classes as objects the
+  way upstream does requires methods that carry bytecode instead, which
+  presupposes the object-model rewrite this document already defers past
+  Milestone 2.
+- The retained tree-walking oracle executes the AST, so it cannot be fed by an
+  AST-free artifact. Decide its fate in the same design pass.
+- A side benefit: a source-free artifact removes the front end from the load
+  path, and with it the re-parsing of attacker-controlled text that the
+  Milestone 2 image format has to defend against today.
+
 ## Concurrency: actors, not threads
 
 Newspeak already has an answer to concurrency, and it is not shared-memory
@@ -415,6 +469,11 @@ for the M1→M2 transition.
   or debugging touches them.
 - **Pharo Spur** — portable image format and bootstrap-from-source;
   **Fuel / Ston** — object serialization shape.
+- **Newspeak upstream itself** — deployment as a serialized application object
+  (`.ns` source builds a `.vfuel` binary; the runtime deserializes it and sends
+  `main:args:`), resting on module declarations being stateless. See
+  "Deployment artifacts without source" above; this is the closest prior art
+  for a second, source-free artifact alongside the live image.
 - **TruffleSqueak / GraalSqueak** — full Smalltalk debugging together with
   near-JVM performance via Graal partial evaluation and deopt: existence proof
   that requirements 2 and 6 combine.
@@ -440,6 +499,11 @@ for the M1→M2 transition.
   design work.
 - Identity-hash width and its interaction with a future tagged-pointer
   representation.
+- Whether there should be a second, source-free deployment artifact beside the
+  live image, as Newspeak upstream has — and what then provides "export back to
+  `.ns`". See "Deployment artifacts without source" under "Source and images
+  together"; it depends on the object-model rewrite and on methods carrying
+  bytecode rather than AST.
 - Whether a suspended (debugged) actor's mailbox keeps draining, and how far
   the M:N actor scheduler should be visible to or configurable by user code
   (e.g. actor placement/affinity) versus staying fully opaque.
