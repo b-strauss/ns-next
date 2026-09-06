@@ -154,8 +154,13 @@ mixin chains agree share one behaviour object.
 Two parallel chains result, and both are needed:
 
 - The **class-object chain** carries identity and, at every level, that
-  level's enclosing object. `dispatch::kth_enclosing_object` keeps
-  walking it exactly as Milestone 1 wrote it.
+  level's enclosing object plus the class object of the level that
+  lexically declares it (`ClassData::declaring_class`).
+  `dispatch::kth_enclosing_object` walks the *declaration* chain, seeded
+  from the activation's `Frame.current_class`: a lexical depth counts
+  levels out from the class that defines the running method, which is not
+  the receiver's class once a method or a nested declaration is inherited
+  across a nesting boundary.
 - The **application chain** carries code and layout, and is shared.
 
 `slot_index`, `num_slots` and method lookup move off `ClassData` onto
@@ -167,8 +172,9 @@ class object.** Two `Inner` instances from different `Outer` instances
 have different class objects, as the spec requires, but the same
 application, so the call site stays monomorphic. A cache entry records
 (application → method, defining level *k*); reaching that level's class
-object for `outer` and `super` is *k* steps up the receiver's class-object
-chain, and *k* is 0 for an ordinary send. The Milestone 2 IC slots stay
+object for `outer` and `super` starts at the defining level's own class
+object and steps *k* levels out along the declaration chain, and *k* is 0
+for an ordinary send. The Milestone 2 IC slots stay
 inert this milestone, but their intended key is recorded here so
 Milestone 4 does not re-derive it and pick the obvious wrong one.
 

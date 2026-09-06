@@ -2894,6 +2894,7 @@ fn apply_and_wrap(
         data: ObjectData::Class(ClassData {
             application,
             enclosing: None,
+            declaring_class: None,
             superclass: None,
             builtin: None,
             metaclass: None,

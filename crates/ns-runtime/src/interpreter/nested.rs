@@ -148,6 +148,9 @@ pub(crate) fn nested_class(
     // Step 4: identity is per receiver. The class object's superclass chain
     // and its application's superclass chain are linked together here --
     // `dispatch::next_level` steps both and stops if either is missing.
+    // `declaring_class` records the level this declaration is written in,
+    // which is what `dispatch::kth_enclosing_object` steps out along; unlike
+    // the superclass chain it does not follow inheritance.
     let enclosing = match receiver {
         Value::Obj(obj) => Some(obj.clone()),
         // Unreachable in practice: `cache_slot` above already established
@@ -156,7 +159,12 @@ pub(crate) fn nested_class(
         // precondition into a panic.
         _ => None,
     };
-    let class = interp.new_class_object(application, enclosing, Some(superclass));
+    let class = interp.new_class_object(
+        application,
+        enclosing,
+        Some(declaring_class.clone()),
+        Some(superclass),
+    );
     // Step 5: cache before returning, so step 1 hits from now on.
     crate::interpreter::eval::store_instance_field(receiver, index, Value::Obj(class.clone()));
     Ok(Value::Obj(class))

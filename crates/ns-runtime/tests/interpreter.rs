@@ -134,6 +134,7 @@ fn class_with_methods(
                 own_slot_base: 0,
             }),
             enclosing: None,
+            declaring_class: None,
             superclass: None,
             builtin: None,
             metaclass: None,

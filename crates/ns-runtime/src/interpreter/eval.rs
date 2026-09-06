@@ -334,7 +334,8 @@ fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
     None
 }
 
-/// `newspeak-spec.pdf` §5.7-§5.9: `o` = the kth enclosing object of `self`;
+/// `newspeak-spec.pdf` §5.7-§5.9: `o` = the kth enclosing object of this
+/// activation's defining level (`dispatch::kth_enclosing_object`);
 /// dispatch privately (direct, non-virtual) if the target is `private` at
 /// depth `k`, otherwise virtually via `lookup_protected` on `o`'s actual
 /// class.
@@ -346,8 +347,14 @@ pub(crate) fn dispatch_lexical_send(
     args: Vec<Value>,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let self_value = frame.borrow().receiver.clone();
-    let o = dispatch::kth_enclosing_object(&self_value, depth);
+    // The lexical depth counts levels out from the class that *defines* this
+    // method, so the walk needs this activation's `current_class`, not the
+    // receiver's own class -- see `dispatch::kth_enclosing_object`.
+    let (self_value, defining_class) = {
+        let borrowed = frame.borrow();
+        (borrowed.receiver.clone(), borrowed.current_class.clone())
+    };
+    let o = dispatch::kth_enclosing_object(&self_value, defining_class.as_ref(), depth);
     let class = interp.class_of(&o);
     // Slot access fix (Task 7 "must fix before committing" #2): a
     // `LexicalSend` to a user-defined class's own slot must resolve here,

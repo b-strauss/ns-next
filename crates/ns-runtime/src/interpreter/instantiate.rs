@@ -41,10 +41,11 @@ impl Interpreter {
             .as_ref()
             .and_then(crate::dispatch::class_application);
         let application = self.apply_mixin(&mixin, super_application.as_ref());
-        // `enclosing: None` -- the module's root class has no enclosing
-        // object. Every other class object in the system comes from
-        // `interpreter::nested`, which passes the receiver.
-        self.new_class_object(application, None, superclass)
+        // `enclosing`/`declaring_class` are both `None` -- the module's root
+        // class is the outermost level, so no object encloses it and no
+        // declaration contains it. Every other class object in the system
+        // comes from `interpreter::nested`, which passes both.
+        self.new_class_object(application, None, None, superclass)
     }
 
     /// Note on the brief's original signature: `decl` is taken here as

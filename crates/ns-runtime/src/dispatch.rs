@@ -50,32 +50,72 @@ pub fn nested_access(mixin: &Mixin) -> ast::AccessModifier {
     effective_access(mixin.decl.as_ref().and_then(|decl| decl.access))
 }
 
-/// §3.3, simplified for Milestone 1 -- see the task's design note.
-pub fn kth_enclosing_object(self_value: &Value, depth: u16) -> Value {
-    let mut current = self_value.clone();
-    for _ in 0..depth {
-        let Value::Obj(obj) = &current else {
+/// §3.3: the enclosing object at lexical `depth` for an activation of a
+/// method defined in `defining_class` and running on `self_value`.
+///
+/// `depth` is *lexical*: the resolver fixed it against the chain of class
+/// declarations open at the place the code was written, so it counts levels
+/// out from the class that **defines** the running method -- which
+/// `Frame.current_class` names -- and not from the class of whatever object
+/// receives it. Those two are the same class only when the method is not
+/// inherited across a nesting boundary; seeding the walk from the receiver
+/// instead follows the receiver's own chain and lands on an object of an
+/// unrelated class (or `nil`) for an inherited one.
+///
+/// So depth 0 is `self`, and depth k > 0 is reached by walking k levels of
+/// the *declaration* chain out from `defining_class`, taking each level's
+/// own enclosing object -- §3.3's "the object that received the message
+/// that created the class object". `ClassData::declaring_class` is that
+/// chain; the receiver's class chain is not, for the same reason the seed
+/// is not.
+///
+/// A chain shorter than `depth` yields `nil` rather than the nearest
+/// object it did reach, which would be dispatched against silently. Two
+/// levels end a chain legitimately: a class side, whose metaclass §6.3 gives
+/// no enclosing object, and a `None` `defining_class`, a top-level
+/// activation. Both have a lexical chain of exactly one level, so no
+/// positive depth is resolvable in either.
+pub fn kth_enclosing_object(
+    self_value: &Value,
+    defining_class: Option<&ClassRef>,
+    depth: u16,
+) -> Value {
+    if depth == 0 {
+        return self_value.clone();
+    }
+    let Some(mut level) = defining_class.cloned() else {
+        return Value::Nil;
+    };
+    let mut remaining = depth;
+    loop {
+        let Some(enclosing) = class_enclosing(&level) else {
             return Value::Nil;
         };
-        let enclosing = {
-            let borrowed = obj.borrow();
-            let (ObjectData::Instance(_) | ObjectData::Class(_)) = &borrowed.data else {
-                return Value::Nil;
-            };
-            class_enclosing(&borrowed.class)
-        };
-        match enclosing {
-            Some(next) => current = Value::Obj(next),
-            None => return Value::Nil,
+        remaining -= 1;
+        if remaining == 0 {
+            return Value::Obj(enclosing);
         }
+        let Some(next) = class_declaring(&level) else {
+            return Value::Nil;
+        };
+        level = next;
     }
-    current
 }
 
 fn class_enclosing(class: &ClassRef) -> Option<ObjRef> {
     let borrowed = class.borrow();
     match &borrowed.data {
         ObjectData::Class(data) => data.enclosing.clone(),
+        _ => None,
+    }
+}
+
+/// The class object of the level that lexically declares `class` -- one
+/// step out along the declaration chain `kth_enclosing_object` walks.
+fn class_declaring(class: &ClassRef) -> Option<ClassRef> {
+    let borrowed = class.borrow();
+    match &borrowed.data {
+        ObjectData::Class(data) => data.declaring_class.clone(),
         _ => None,
     }
 }
@@ -322,6 +362,7 @@ mod tests {
             data: ObjectData::Class(ClassData {
                 application,
                 enclosing: None,
+                declaring_class: None,
                 superclass,
                 builtin: None,
                 metaclass: None,

@@ -171,6 +171,7 @@ fn make_class(
         data: ObjectData::Class(ClassData {
             application,
             enclosing: None,
+            declaring_class: None,
             // Deliberately no class-object superclass link: this test only
             // checks where the mixin's *own* slot lands, never a superclass
             // level's own slots, so `run_superclass_initializer` (which

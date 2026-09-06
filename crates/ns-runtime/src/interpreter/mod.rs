@@ -578,7 +578,11 @@ impl Interpreter {
             .as_ref()
             .and_then(dispatch::class_application);
         let application = self.apply_mixin(&class_side_mixin, super_application.as_ref());
-        let metaclass = self.new_class_object(application, None, super_metaclass);
+        // A metaclass is nobody's nested declaration: §6.3 gives the class
+        // side no enclosing object of its own, so both lexical links stay
+        // `None` and a positive `outer` depth in a class-side method
+        // resolves to `nil` -- unchanged from before nesting landed.
+        let metaclass = self.new_class_object(application, None, None, super_metaclass);
         match &mut class.borrow_mut().data {
             ObjectData::Class(data) => data.metaclass = Some(metaclass.clone()),
             _ => unreachable!("checked above"),
@@ -682,6 +686,7 @@ impl Interpreter {
         &mut self,
         application: Rc<crate::mixin::MixinApplication>,
         enclosing: Option<ObjRef>,
+        declaring_class: Option<ClassRef>,
         superclass: Option<ClassRef>,
     ) -> ClassRef {
         let class = self.builtin_class(BuiltinClass::Object);
@@ -692,6 +697,7 @@ impl Interpreter {
             data: ObjectData::Class(ClassData {
                 application,
                 enclosing,
+                declaring_class,
                 superclass,
                 builtin: None,
                 metaclass: None,
@@ -803,6 +809,7 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
             data: ObjectData::Class(ClassData {
                 application,
                 enclosing: None,
+                declaring_class: None,
                 superclass,
                 builtin: Some(kind),
                 metaclass: None,
@@ -888,6 +895,7 @@ fn build_self_referential_object_class(
             data: ObjectData::Class(ClassData {
                 application,
                 enclosing: None,
+                declaring_class: None,
                 superclass: None,
                 builtin: Some(BuiltinClass::Object),
                 metaclass: None,

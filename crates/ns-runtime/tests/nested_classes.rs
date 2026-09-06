@@ -783,3 +783,99 @@ fn a_super_chain_progresses_through_an_inherited_middle_level() {
 fn a_super_chain_progresses_through_an_inherited_middle_level_under_bytecode() {
     super_chain_progresses_past_an_inherited_middle_level(true);
 }
+
+/// §3.3: an activation's enclosing objects belong to the level that
+/// *defines* the running method. `Mid` and `Base` are both nested directly
+/// in the module class, so `Derived` (nested in `Mid`) sits one level
+/// deeper than `Base`, from which it inherits `describe`. `describe`'s
+/// `outer Outer label` is a lexical depth of 1 fixed inside `Base`, so it
+/// must reach the module instance and answer `'top'` on any receiver --
+/// resolving the depth from the receiver's own class instead reaches the
+/// `Mid` instance, whose decoy `label` answers `'mid'`.
+const OUTER_THROUGH_INHERITED_SRC: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new () (
+    label = ( ^'top' )
+    public class Base = Object new () (
+        public describe = ( ^outer Outer label )
+    )
+    public class Mid = Object new () (
+        label = ( ^'mid' )
+        public class Derived = Base new () ()
+    )
+    public run = ( ^Mid new Derived new describe )
+)
+";
+
+fn outer_resolves_from_the_defining_level(bytecode: bool) {
+    let (mut interp, class, bindings) = load(OUTER_THROUGH_INHERITED_SRC, bytecode);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
+    );
+    let described = expect_ok(
+        interp.send(outer, Symbol::intern("run"), vec![], &bindings, None),
+        "run",
+    );
+    assert_eq!(string_contents(&described), "top");
+}
+
+#[test]
+fn outer_in_an_inherited_method_resolves_from_the_defining_level() {
+    outer_resolves_from_the_defining_level(false);
+}
+
+#[test]
+fn outer_in_an_inherited_method_resolves_from_the_defining_level_under_bytecode() {
+    outer_resolves_from_the_defining_level(true);
+}
+
+/// The same defect one hop further out, which only a lexical *declaration*
+/// chain catches. `Deep`'s `outer Outer` is a depth of 2, so the walk
+/// leaves `Deep`'s enclosing object -- a `Derived` instance -- and must
+/// then leave the level that declares `Deep`, which is `Base`, not
+/// `Derived`'s own class. Stepping through the reached object's class
+/// instead lands on `Mid`'s instance and its decoy `label`.
+const DEEP_OUTER_THROUGH_INHERITED_SRC: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new () (
+    label = ( ^'top' )
+    public class Base = Object new () (
+        public class Deep = Object new () (
+            public describe = ( ^outer Outer label )
+        )
+    )
+    public class Mid = Object new () (
+        label = ( ^'mid' )
+        public class Derived = Base new () ()
+    )
+    public run = ( ^Mid new Derived new Deep new describe )
+)
+";
+
+fn a_two_level_outer_resolves_from_the_defining_level(bytecode: bool) {
+    let (mut interp, class, bindings) = load(DEEP_OUTER_THROUGH_INHERITED_SRC, bytecode);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
+    );
+    let described = expect_ok(
+        interp.send(outer, Symbol::intern("run"), vec![], &bindings, None),
+        "run",
+    );
+    assert_eq!(string_contents(&described), "top");
+}
+
+#[test]
+fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
+    a_two_level_outer_resolves_from_the_defining_level(false);
+}
+
+#[test]
+fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically_under_bytecode() {
+    a_two_level_outer_resolves_from_the_defining_level(true);
+}

@@ -62,6 +62,19 @@ pub struct ClassData {
     /// only state, which is why a class object cannot be shared between
     /// instances of its enclosing class.
     pub enclosing: Option<ObjRef>,
+    /// The class object of the level whose declaration *lexically contains*
+    /// this class's declaration -- `Lookup::NestedClass`'s `ClassRef`, the
+    /// level `interpreter::nested` evaluated the declaration at. `None` for
+    /// a class that no declaration encloses: the module's root class, a
+    /// builtin, a metaclass.
+    ///
+    /// This is what makes the enclosing-object chain of §3.3 *lexical* the
+    /// whole way up rather than only at its first step. `enclosing` alone
+    /// gives one hop; hopping again needs the class object of the level
+    /// just reached, and that is this field, not the reached object's own
+    /// class -- those differ exactly when the declaration is inherited
+    /// across a nesting boundary. See `dispatch::kth_enclosing_object`.
+    pub declaring_class: Option<ClassRef>,
     /// The per-instance class-object chain, parallel to the application
     /// chain. `outer` and `super` need it; lookup does not.
     pub superclass: Option<ClassRef>,
@@ -318,6 +331,7 @@ mod tests {
                 data: ObjectData::Class(ClassData {
                     application: empty_application("Object"),
                     enclosing: None,
+                    declaring_class: None,
                     superclass: None,
                     builtin: Some(BuiltinClass::Object),
                     metaclass: None,
