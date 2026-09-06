@@ -1,0 +1,11 @@
+Newspeak3
+'Test'
+class ClassSide usingPlatform: p = Object new (| t ::= p transcript. |) (
+	public main: platform args: args = (
+		t show: self class describe; newLine.
+		t show: (self class greet: 'world'); newLine.
+	)
+) : (
+	public describe = ( ^'a widget class' )
+	public greet: name = ( ^'hello, ', name )
+)

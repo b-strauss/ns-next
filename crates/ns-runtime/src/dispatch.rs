@@ -324,6 +324,7 @@ mod tests {
                 enclosing: None,
                 superclass,
                 builtin: None,
+                metaclass: None,
             }),
         }))
     }

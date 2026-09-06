@@ -2896,6 +2896,7 @@ fn apply_and_wrap(
             enclosing: None,
             superclass: None,
             builtin: None,
+            metaclass: None,
         }),
     }))
 }

@@ -68,6 +68,18 @@ pub struct ClassData {
     /// `None` for a user-defined class. `Some(kind)` marks one of the
     /// Milestone 1 core-library classes -- see Tasks 10-12.
     pub builtin: Option<BuiltinClass>,
+    /// The metaclass built from this class's mixin's `class_side`, created
+    /// on first use and cached here (`Interpreter::metaclass_of`) so a
+    /// repeated class-side send does not rebuild it and so metaclass
+    /// identity stays stable (a later milestone's inline caches key on it).
+    /// Lives on `ClassData`, not as a slot on an *instance*: a class
+    /// object's own payload is `ObjectData::Class`, never `Instance`, so it
+    /// cannot share the nested-class hidden-slot mechanism (`nested_slot`),
+    /// which stores its cache in an instance's field vector. `None` for
+    /// every class object until its first class-side send, permanently for
+    /// one whose mixin declares no class side at all -- §6.3's "no
+    /// metaclass" case costs nothing.
+    pub metaclass: Option<ClassRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -308,6 +320,7 @@ mod tests {
                     enclosing: None,
                     superclass: None,
                     builtin: Some(BuiltinClass::Object),
+                    metaclass: None,
                 }),
             }));
         }

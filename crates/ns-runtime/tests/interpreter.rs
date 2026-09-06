@@ -136,6 +136,7 @@ fn class_with_methods(
             enclosing: None,
             superclass: None,
             builtin: None,
+            metaclass: None,
         }),
     }))
 }

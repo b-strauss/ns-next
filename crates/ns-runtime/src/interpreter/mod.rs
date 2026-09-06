@@ -164,6 +164,48 @@ impl Interpreter {
         if let Some(result) = self.try_factory_send(&receiver, selector, &args, bindings) {
             return result;
         }
+        // §6.3: a class object's class-side methods are reached through its
+        // metaclass, consulted before the class object's own (ordinary,
+        // `Object`-native) behaviour. `metaclass_of` returns `None` for a
+        // class whose mixin declares no class side, and `Lookup::NotFound`
+        // here (the metaclass exists but doesn't answer `selector` either)
+        // both fall through to the code below unchanged -- there is no
+        // second `doesNotUnderstand:` path, only a second class to try
+        // `lookup_public` against first.
+        if let Value::Obj(obj) = &receiver {
+            let is_class = matches!(obj.borrow().data, ObjectData::Class(_));
+            if is_class {
+                if let Some(metaclass) = self.metaclass_of(obj) {
+                    match dispatch::lookup_public(&metaclass, selector) {
+                        Lookup::Method(method, defining_class) => {
+                            return self.invoke_method(
+                                receiver,
+                                method,
+                                defining_class,
+                                args,
+                                bindings.clone(),
+                                sender,
+                            );
+                        }
+                        Lookup::NestedClass(mixin, declaring_class) => {
+                            return nested::nested_class(
+                                self,
+                                &receiver,
+                                &mixin,
+                                &declaring_class,
+                                bindings,
+                            );
+                        }
+                        Lookup::Native(kind) => {
+                            return self.dispatch_native_or_dnu(
+                                kind, receiver, selector, args, bindings, sender,
+                            );
+                        }
+                        Lookup::NotFound => {}
+                    }
+                }
+            }
+        }
         let class = self.class_of(&receiver);
         match dispatch::lookup_public(&class, selector) {
             Lookup::Method(method, defining_class) => self.invoke_method(
@@ -468,6 +510,61 @@ impl Interpreter {
         }
     }
 
+    /// The metaclass carrying `class`'s class side (§6.3), created on first
+    /// use and cached on `class` itself (`ClassData::metaclass`) -- not in a
+    /// side table, and not in an instance slot the way a nested class's
+    /// cache is: a class object's payload is `ObjectData::Class`, never
+    /// `Instance`, so it has no slot vector for `nested_slot` to index into.
+    /// Caching on the class object directly also gives every send against
+    /// the same class object the same metaclass identity, which a later
+    /// milestone's inline caches need.
+    ///
+    /// Returns `None` when `class`'s own mixin declares no class side --
+    /// deliberately just its own, not an ancestor's: the full §3.2 model
+    /// (every class an instance of a unique metaclass, with metaclasses
+    /// inheriting from each other exactly as classes do) is out of scope for
+    /// this milestone, so a subclass that declares no class side of its own
+    /// does not inherit an ancestor's class-side methods, even though a
+    /// class object one level up the metaclass chain, if it existed, would
+    /// answer them. This is the milestone's documented deviation, not an
+    /// oversight; see the design spec's "How far the metaclass model goes".
+    ///
+    /// When `class` does declare a class side, its metaclass's superclass is
+    /// the superclass's metaclass, recursively -- so a chain of classes that
+    /// *all* declare a class side does inherit correctly, and the metaclass
+    /// application chain stays linked to the metaclass class-object chain
+    /// exactly as `dispatch::next_level` requires for the ordinary one.
+    pub fn metaclass_of(&mut self, class: &ClassRef) -> Option<ClassRef> {
+        let (cached, class_side, class_superclass) = {
+            let borrowed = class.borrow();
+            match &borrowed.data {
+                ObjectData::Class(data) => (
+                    data.metaclass.clone(),
+                    data.application.mixin.class_side.clone(),
+                    data.superclass.clone(),
+                ),
+                _ => return None,
+            }
+        };
+        if cached.is_some() {
+            return cached;
+        }
+        let class_side_mixin = class_side?;
+        let super_metaclass = class_superclass
+            .as_ref()
+            .and_then(|superclass| self.metaclass_of(superclass));
+        let super_application = super_metaclass
+            .as_ref()
+            .and_then(dispatch::class_application);
+        let application = self.apply_mixin(&class_side_mixin, super_application.as_ref());
+        let metaclass = self.new_class_object(application, None, super_metaclass);
+        match &mut class.borrow_mut().data {
+            ObjectData::Class(data) => data.metaclass = Some(metaclass.clone()),
+            _ => unreachable!("checked above"),
+        }
+        Some(metaclass)
+    }
+
     fn builtin_class_for_primitive(&self, value: &Value) -> ClassRef {
         let kind = match value {
             Value::Nil => BuiltinClass::Nil,
@@ -573,6 +670,7 @@ impl Interpreter {
                 enclosing,
                 superclass,
                 builtin: None,
+                metaclass: None,
             }),
         }))
     }
@@ -683,6 +781,7 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
                 enclosing: None,
                 superclass,
                 builtin: Some(kind),
+                metaclass: None,
             }),
         }));
         map.insert(kind, obj);
@@ -747,6 +846,7 @@ fn build_self_referential_object_class(
                 enclosing: None,
                 superclass: None,
                 builtin: Some(BuiltinClass::Object),
+                metaclass: None,
             }),
         }));
     }

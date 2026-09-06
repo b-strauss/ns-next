@@ -178,6 +178,7 @@ fn make_class(
             // recurse into is exactly right.
             superclass: None,
             builtin: None,
+            metaclass: None,
         }),
     }))
 }

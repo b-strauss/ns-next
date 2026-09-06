@@ -47,6 +47,21 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     }
 }
 
+/// Reads a `Value` known to be a `Str` object. `Value` has no usable
+/// `Debug` (the bootstrap `Object` class is its own class, so a derived
+/// `Debug` on a class-object-carrying `Value` recurses), so a class-side
+/// send's result is compared through this rather than `assert_eq!` on the
+/// `Value` itself.
+fn string_contents(value: &Value) -> String {
+    match value {
+        Value::Obj(obj) => match &obj.borrow().data {
+            ObjectData::Str(s) => s.clone(),
+            _ => panic!("expected ObjectData::Str"),
+        },
+        _ => panic!("expected Value::Obj"),
+    }
+}
+
 fn expect_error(result: Result<Value, Signal>, what: &str) -> String {
     match result {
         Ok(_) => panic!("{what}: expected a Signal::Error"),
@@ -502,4 +517,69 @@ fn a_self_referential_nested_class_is_a_program_error() {
 #[test]
 fn a_self_referential_nested_class_is_a_program_error_under_bytecode() {
     cyclic_definition(true);
+}
+
+const CLASS_SIDE_SRC: &str = "\
+Newspeak3
+'Test'
+class Widget new = Object new () (
+) : (
+    public describe = ( ^'a widget class' )
+)
+";
+
+/// §6.3: a class object's class-side methods are reachable by sending to
+/// the class object itself, through a lazily created metaclass.
+fn class_side_dispatch(bytecode: bool) {
+    let (mut interp, class, bindings) = load(CLASS_SIDE_SRC, bytecode);
+    let described = expect_ok(
+        interp.send(
+            Value::Obj(class),
+            Symbol::intern("describe"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "class-side send",
+    );
+    assert_eq!(string_contents(&described), "a widget class");
+}
+
+#[test]
+fn a_class_side_method_dispatches_on_the_class_object() {
+    class_side_dispatch(false);
+}
+
+#[test]
+fn a_class_side_method_dispatches_on_the_class_object_under_bytecode() {
+    class_side_dispatch(true);
+}
+
+/// A class with no class side at all must still fall through to the
+/// ordinary `doesNotUnderstand:` -- `metaclass_of` returns `None` and the
+/// send path must not panic or invent a different error shape for a class
+/// object than for any other receiver.
+fn class_side_miss_is_ordinary_dnu(bytecode: bool) {
+    let (mut interp, class, bindings) = load(SRC, bytecode);
+    let message = expect_error(
+        interp.send(
+            Value::Obj(class),
+            Symbol::intern("noSuchClassSideMethod"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "class-side miss",
+    );
+    assert!(message.contains("does not understand #noSuchClassSideMethod"));
+}
+
+#[test]
+fn a_class_with_no_class_side_still_reports_ordinary_does_not_understand() {
+    class_side_miss_is_ordinary_dnu(false);
+}
+
+#[test]
+fn a_class_with_no_class_side_still_reports_ordinary_does_not_understand_under_bytecode() {
+    class_side_miss_is_ordinary_dnu(true);
 }
