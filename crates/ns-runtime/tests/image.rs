@@ -728,19 +728,6 @@ fn a_truncated_code_table_is_a_decode_error_not_a_panic() {
     }
 }
 
-#[test]
-fn the_code_table_encoding_is_deterministic() {
-    let (_interp, class, bindings) = load(RICH);
-    let module = compiler::compile_module(&class, &bindings);
-    let mut first = encode::Writer::new();
-    encode::encode_code_table(&mut first, &module, &class, &mut symbols::Builder::new())
-        .expect("encode code table");
-    let mut second = encode::Writer::new();
-    encode::encode_code_table(&mut second, &module, &class, &mut symbols::Builder::new())
-        .expect("encode code table");
-    assert_eq!(first.into_bytes(), second.into_bytes());
-}
-
 /// A method installed on a live class after `compile_module` ran has no
 /// entry in the `CompiledModule` -- the liveness spec's Req. 1 anticipates
 /// exactly that. It is a refusal to snapshot, not a process abort.
@@ -5180,4 +5167,104 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
         Value::SmallInt(146) => {}
         _ => panic!("expected SmallInt(146) from the loaded world, got a different Value"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Task 15: pinning the wire format. Every tag test above encodes and decodes
+// against the same tables, so a change that shifted both sides together
+// would sail through unnoticed. A golden fixture makes that impossible to
+// miss; the determinism test next to it proves encoding really is
+// independent of a `HashMap`'s iteration order, not merely consistent within
+// one already-built `CompiledModule`.
+// ---------------------------------------------------------------------------
+
+/// The module the golden fixture is snapshotted from. Deliberately built to
+/// touch several sections of the format at once: a nested class (`Inner`,
+/// with its own factory argument and method), a class side (`marker`), more
+/// than one instance-side method (four: `increment`, `current`, `reset`,
+/// `doubled` -- enough that a `HashMap`'s iteration order has real room to
+/// vary, which is what makes the determinism test below able to fail), and a
+/// slot with an initializer -- both the slot's own initial value
+/// (`count ::= 0`) and a statement in the initializer body
+/// (`count := count + 1`), which is what gives the code table a
+/// `CodeKind::Initializer` entry to cover.
+///
+/// Left out on purpose: a superclass clause or message, multiple levels of
+/// user-defined inheritance, a tree-walker frame, and a paused/suspended
+/// closure. Each of those already has its own dedicated round-trip test
+/// above; folding every format feature into one fixture would leave a future
+/// diff of `golden-image.bin` unable to say which section actually moved.
+const GOLDEN_SRC: &str = "\
+Newspeak3
+'Golden'
+class Golden usingPlatform: p = Object new (
+    | count ::= 0. |
+    count := count + 1.
+) (
+    public increment = ( count := count + 1. ^count )
+    public current = ( ^count )
+    public reset = ( count := 0. ^self )
+    public doubled = ( ^count * 2 )
+    public class Inner withSeed: s = Object new (| seed = s. |) (
+        public seed = ( ^seed )
+    )
+) : (
+    public marker = ( ^7 )
+)
+";
+
+/// A source-free `image::snapshot` of `src`, compiled from scratch and
+/// rooted at one freshly instantiated object -- the live object in the
+/// graph `GOLDEN_SRC`'s doc comment promises. Called twice with the same
+/// source, this compiles the module twice: each call gets its own `Mixin`
+/// and its own method `HashMap`, so nothing here can share iteration order
+/// between two encodes the way a single shared `CompiledModule` would.
+fn snapshot_of_without_source(src: &str) -> Vec<u8> {
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(module))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let platform = interp.platform();
+    let instance = expect_ok(
+        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        "instantiate",
+    );
+    image::snapshot(
+        None,
+        &Origin::File(PathBuf::from("golden.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        &[instance],
+    )
+    .expect("snapshot")
+}
+
+#[test]
+fn the_wire_format_matches_the_golden_fixture() {
+    let bytes = snapshot_of_without_source(GOLDEN_SRC);
+    let expected = include_bytes!("fixtures/golden-image.bin");
+    assert_eq!(
+        bytes, expected,
+        "the image wire format changed -- if that is intended, regenerate the \
+         fixture in the same commit and say why"
+    );
+}
+
+#[test]
+fn the_code_table_encoding_is_deterministic() {
+    // Compiling twice is the point: the previous version of this test shared
+    // one HashMap instance between both encodes, so it would have passed
+    // without the sort that actually makes encoding deterministic.
+    let a = snapshot_of_without_source(GOLDEN_SRC);
+    let b = snapshot_of_without_source(GOLDEN_SRC);
+    assert_eq!(a, b);
+}
+
+#[test]
+#[ignore = "regenerates tests/fixtures/golden-image.bin; run deliberately"]
+fn regenerate_the_golden_fixture() {
+    let bytes = snapshot_of_without_source(GOLDEN_SRC);
+    std::fs::write("tests/fixtures/golden-image.bin", bytes).expect("write fixture");
 }
