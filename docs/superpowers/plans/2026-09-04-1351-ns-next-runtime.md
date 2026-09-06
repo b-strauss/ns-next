@@ -33,7 +33,7 @@ single-threaded).
 **Spec:** `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md` — read
 it before starting, in full; this plan implements it section by section and
 cites section headings throughout rather than re-deriving them. That spec in
-turn cites `corpus/reference/newspeak-spec.pdf` (Gilad Bracha's official
+turn cites `docs/references/newspeak-spec.pdf` (Gilad Bracha's official
 Newspeak language specification, vendored in the repo) by section number
 (`§N.N`) for the precise semantics — **read the cited `§` sections of the PDF
 directly** when a task references one; this plan does not reproduce the full
@@ -64,7 +64,7 @@ cross-cutting constraints spec — before Task 3 (it governs the shape of
   `unwrap`/`expect` remain fine in tests.
 - **Terminology:** classic terms — `blacklist`, `whitelist`, `sane`.
 - **Grammar and spec are the sources of truth.** `corpus/reference/NewspeakGrammar.ns`
-  for syntax, `corpus/reference/newspeak-spec.pdf` for semantics. When this
+  for syntax, `docs/references/newspeak-spec.pdf` for semantics. When this
   plan's text and either of those disagree, they win — note the deviation in
   a code comment, the way the frontend milestone did.
 - **Every `Object` gets a stable, monotonic `identity_hash`** — never derived

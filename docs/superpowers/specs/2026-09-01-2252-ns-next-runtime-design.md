@@ -146,7 +146,7 @@ grammar in the official repo). Key productions:
 against it during implementation.
 
 **`newspeak-spec.pdf`** (Gilad Bracha's "Newspeak Programming Language Draft
-Specification", v0.106, `corpus/reference/newspeak-spec.pdf`) is vendored
+Specification", v0.106, `docs/references/newspeak-spec.pdf`) is vendored
 alongside the grammar. Where `NewspeakGrammar.ns` is authoritative for
 *syntax*, this document is authoritative for *semantics* — name resolution
 (§5.7-5.10), dispatch and access control (§5.5, §5.9, §6.3.1), and
