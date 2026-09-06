@@ -12,7 +12,7 @@ milestone.
 | M1 — Frontend | Complete | 2026-09-01 | [runtime-design](superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md) | [frontend](superpowers/plans/2026-09-01-2308-ns-next-frontend.md) |
 | M1 — Runtime | Complete | 2026-09-04 | [runtime-design](superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md), [liveness/VM constraints](superpowers/specs/2026-09-04-1153-ns-next-liveness-images-vm-design.md) | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm-design](superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md) | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
-| M3 — Nested classes + source-free images | Not started | — | [nesting/mixins/source-free-images](superpowers/specs/2026-09-06-1659-ns-next-nesting-mixins-source-free-images-design.md) | — |
+| M3 — Nested classes + source-free images | Not started | — | [nesting/mixins/source-free-images](superpowers/specs/2026-09-06-1659-ns-next-nesting-mixins-source-free-images-design.md) | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
 | M4 — Inline caches + GC | Not started | — | — | — |
 | M5–M6 — JIT | Not started | — | — | — |
 
