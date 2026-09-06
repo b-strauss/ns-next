@@ -1,0 +1,12 @@
+# Link the C runtime statically on Windows, so `target/release/ns-next.exe` is a single
+# file that runs on a bare Windows installation. Without this it imports
+# VCRUNTIME140.dll from the VC++ redistributable, which is present on almost every
+# machine but not guaranteed on a fresh one. Costs roughly 100 KB of binary size.
+#
+# Scoped per target: a Linux or macOS build is unaffected.
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

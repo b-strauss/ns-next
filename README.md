@@ -49,6 +49,10 @@ mislead:
 cargo build --workspace --release
 ```
 
+On Windows the C runtime is linked statically (see `.cargo/config.toml`), so
+`ns-next.exe` is one self-contained file: it needs no Rust installation and no VC++
+redistributable on the machine that runs it.
+
 The differential harness runs every fixture under both engines and compares exit status,
 stdout and stderr byte for byte. The corpus is a vendored set of real Newspeak modules,
 kept as a non-regression gate for the parser.
