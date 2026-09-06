@@ -288,3 +288,89 @@ fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
     );
     let _ = std::fs::remove_dir_all(img.parent().unwrap());
 }
+
+/// The image `snapshot` writes by default carries no program text, and the
+/// world in it still runs. `--debug-source` opts the source back in, and
+/// `load --print-source` is what reads it out again -- which is how this
+/// milestone's "an image can be exported back to `.ns`" requirement is met
+/// while no decompiler exists.
+#[test]
+fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
+    let src = fixture("arithmetic.ns");
+    let text = std::fs::read_to_string(&src).expect("read fixture");
+    let needle = text
+        .lines()
+        .find(|l| l.contains("class "))
+        .expect("the fixture declares a class")
+        .trim()
+        .to_string();
+
+    let plain = temp_image("source-free");
+    let (ok, _out, err) = ns_next(&["snapshot".as_ref(), src.as_os_str(), plain.as_os_str()]);
+    assert!(ok, "{err}");
+    let plain_bytes = std::fs::read(&plain).expect("read image");
+    assert!(
+        !contains(&plain_bytes, needle.as_bytes()),
+        "the default image must not contain the module's source text"
+    );
+    // ...and it is still a world, not just a smaller file.
+    let (ok, out, err) = ns_next(&[
+        "load".as_ref(),
+        plain.as_os_str(),
+        "--send".as_ref(),
+        "main:args:".as_ref(),
+    ]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "42\n");
+    // A source-free image has nothing to print, and says so.
+    let (ok, _out, err) = ns_next(&[
+        "load".as_ref(),
+        plain.as_os_str(),
+        "--print-source".as_ref(),
+    ]);
+    assert!(!ok);
+    assert!(err.contains("carries no source"), "{err}");
+    let _ = std::fs::remove_dir_all(plain.parent().unwrap());
+
+    let debug = temp_image("debug-source");
+    let (ok, _out, err) = ns_next(&[
+        "snapshot".as_ref(),
+        src.as_os_str(),
+        debug.as_os_str(),
+        "--debug-source".as_ref(),
+    ]);
+    assert!(ok, "{err}");
+    let debug_bytes = std::fs::read(&debug).expect("read image");
+    assert!(contains(&debug_bytes, needle.as_bytes()));
+    assert!(
+        debug_bytes.len() > plain_bytes.len(),
+        "the debug variant is the bigger of the two"
+    );
+    let (ok, out, err) = ns_next(&[
+        "load".as_ref(),
+        debug.as_os_str(),
+        "--print-source".as_ref(),
+    ]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        out.replace("\r\n", "\n"),
+        text.replace("\r\n", "\n"),
+        "the debug variant round-trips the module's source verbatim"
+    );
+    // And the debug variant still runs, exactly as the plain one does.
+    let (ok, out, err) = ns_next(&[
+        "load".as_ref(),
+        debug.as_os_str(),
+        "--send".as_ref(),
+        "main:args:".as_ref(),
+    ]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "42\n");
+    let _ = std::fs::remove_dir_all(debug.parent().unwrap());
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack.len() >= needle.len()
+        && haystack.windows(needle.len()).any(|w| w == needle)
+}

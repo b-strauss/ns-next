@@ -7,7 +7,7 @@ use std::rc::Rc;
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal};
 use crate::types::{
     BuiltinClass, ClassData, ClassRef, ClosureBody, ClosureData, FrameKind, FrameRef, ObjRef,
-    ObjectData, SourceOrigin, Value,
+    ObjectData, PcKind, SourceOrigin, Value,
 };
 
 use super::{mixins, symbols};
@@ -23,6 +23,13 @@ pub const MAGIC: &[u8; 4] = b"NSIM";
 /// constant did, but within this milestone: until `snapshot` existed no
 /// build wrote a whole image, so no reader can hold a version-1 image
 /// without them and there is nothing for a bump to distinguish.
+///
+/// The header's flag byte (`FLAG_HAS_SOURCE`) is what carries variation
+/// *within* a version from here on: the source blob is optional, and a
+/// reader distinguishes the two variants by the flag rather than by the
+/// version. A flag bit this build does not know is refused
+/// (`DecodeError::UnknownHeaderFlags`), which is what keeps a future
+/// optional section from being silently skipped by an older reader.
 ///
 /// Literal tag 9 (`UnresolvedIdent`) was added by the same reasoning, and
 /// deliberately: it is a pure addition to the literal tag space made
@@ -97,13 +104,24 @@ impl Writer {
     }
 }
 
-pub fn write_header(w: &mut Writer) {
+/// Header flag bits. Bit 0 says a source blob follows the header; every
+/// other bit is reserved and must be zero, so a reader of this build
+/// refuses an image using a flag it does not implement rather than
+/// skipping a section it cannot see.
+pub const FLAG_HAS_SOURCE: u8 = 1;
+
+/// Every bit this build assigns a meaning to.
+pub const KNOWN_FLAGS: u8 = FLAG_HAS_SOURCE;
+
+pub fn write_header(w: &mut Writer, flags: u8) {
     w.write_raw(MAGIC);
     w.write_u32(FORMAT_VERSION);
+    w.write_u8(flags);
 }
 
-/// The module's provenance, stored so `load` can re-resolve the image's
-/// source exactly as it was resolved when the snapshot was taken.
+/// The module's provenance. Kept in every image, source blob or not: it is
+/// what a loaded world reports as its own origin, and it is a path, not the
+/// program text.
 pub fn encode_source_origin(w: &mut Writer, origin: &SourceOrigin) {
     match origin {
         SourceOrigin::File(path) => {
@@ -189,6 +207,49 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::Block => 12,
         BuiltinClass::Platform => 13,
     }
+}
+
+/// The module's root class object, which `load` rebuilds *before* the
+/// object graph (the graph's class tag 1 names it, so it has to exist by
+/// then). Everything else about it comes from mixin-table row 0: this
+/// section carries the one thing a declaration does not determine, the
+/// class it inherits from.
+///
+/// Written as an optional builtin-class tag rather than as a general class
+/// tag, because the general form names an object-table id and the object
+/// table is not decoded yet. That costs nothing today:
+/// `instantiate::resolve_superclass_receiver` -- the only thing that ever
+/// fixes a root class's superclass -- resolves a builtin class name or
+/// nothing at all, so `Some(builtin)` and `None` are the complete set of
+/// worlds this runtime builds. A root class inheriting from a *user* class
+/// is refused here rather than written wrongly; extending
+/// `resolve_superclass_receiver` is what would make it representable, and
+/// that extension is where this format would grow with it.
+pub fn encode_root_class(w: &mut Writer, root_class: &ClassRef) -> Result<(), String> {
+    let superclass = match &root_class.borrow().data {
+        ObjectData::Class(data) => data.superclass.clone(),
+        _ => return Err("image encoding's root object is not a class".to_string()),
+    };
+    match superclass {
+        None => w.write_bool(false),
+        Some(superclass) => {
+            let builtin = match &superclass.borrow().data {
+                ObjectData::Class(data) => data.builtin,
+                _ => None,
+            };
+            let Some(kind) = builtin else {
+                return Err(
+                    "image encoding cannot serialize a root class whose superclass is a \
+                     user-defined class: the format names the root's superclass by builtin \
+                     tag, decoded before the object table exists"
+                        .to_string(),
+                );
+            };
+            w.write_bool(true);
+            w.write_u8(builtin_class_tag(kind));
+        }
+    }
+    Ok(())
 }
 
 /// The code table: every `CompiledCode` reachable from `module` -- every
@@ -691,7 +752,8 @@ pub struct EncodeContext<'a> {
 /// id) -- the three ways a class object can exist in a loaded world.
 ///
 /// The first two are rebuilt before the graph is: a builtin comes from the
-/// bootstrap, the root class from `load_module` on the image's own source.
+/// bootstrap, the root class from mixin-table row 0 plus the root-class
+/// section (`decode::build_root_class`).
 /// Everything else is a class object the *graph* creates, and tag 2 names
 /// which one by the id of its own record in the object table. That third
 /// case is what nesting needs: a nested class object is the value of its
@@ -897,6 +959,22 @@ fn encode_frame(
     encode_values(w, &f.args, ctx);
     encode_values(w, &f.temps, ctx);
     w.write_u32(u32_field("frame pc", f.pc));
+    // `pc` alone is ambiguous -- a statement index under one engine, an
+    // instruction index under the other -- so the unit travels with it.
+    // Only `Bytecode` is representable: an image's code table holds
+    // compiled bodies and no statements, so a tree-walker activation's
+    // `pc` would decode as an index into a body it never ran. Refused for
+    // the same reason `encode_closure_record` refuses `ClosureBody::Ast`.
+    match f.pc_kind {
+        PcKind::Bytecode => w.write_u8(1),
+        PcKind::TreeWalk => {
+            return Err(
+                "image encoding cannot serialize a tree-walker activation: its `pc` counts \
+                 statements, which an image's code table does not carry"
+                    .to_string(),
+            )
+        }
+    }
     encode_frame_ref(w, f.sender.as_ref(), ctx.table);
     encode_frame_ref(w, f.home.as_ref(), ctx.table);
     encode_optional_class(w, f.current_class.as_ref(), ctx);

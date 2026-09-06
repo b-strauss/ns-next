@@ -31,7 +31,9 @@ fn load(src: &str) -> (Interpreter, ClassRef, Bindings) {
 fn setup(src: &str) -> (Interpreter, ClassRef, Bindings) {
     let (mut interp, class, bindings) = load(src);
     let compiled = compiler::compile_module(&class, &bindings);
-    interp.set_engine(Engine::Bytecode(compiled));
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
     (interp, class, bindings)
 }
 

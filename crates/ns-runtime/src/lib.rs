@@ -17,7 +17,7 @@ pub mod symbol;
 pub mod types;
 pub mod vm;
 
-pub use interpreter::{Engine, Interpreter, Signal};
+pub use interpreter::{Engine, EngineUnavailable, Interpreter, Signal};
 pub use mixin::{Mixin, MixinApplication};
 pub use resolver::resolve;
 pub use symbol::Symbol;

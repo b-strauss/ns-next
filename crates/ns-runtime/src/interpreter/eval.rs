@@ -654,6 +654,13 @@ pub fn invoke_closure(
         args,
         temps: vec![Value::Nil; temp_count],
         pc: 0,
+        // Decided by the closure's own body, not by the interpreter's
+        // current engine: a closure always runs with the engine that
+        // created it (`ClosureBody`'s doc comment).
+        pc_kind: match &closure.body {
+            ClosureBody::Ast(_) => PcKind::TreeWalk,
+            ClosureBody::Compiled(_) => PcKind::Bytecode,
+        },
         sender,
         home: Some(closure.home.clone()),
         current_class,

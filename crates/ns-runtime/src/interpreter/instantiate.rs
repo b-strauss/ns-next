@@ -387,6 +387,14 @@ impl Interpreter {
             args: factory_args,
             temps: vec![],
             pc: 0,
+            // `run_own_initializer` below picks the body off the same
+            // engine, and this frame is built only when that level has
+            // initializer code to run -- so under `Engine::Bytecode` it
+            // always ends up executing a `CompiledCode`.
+            pc_kind: match &self.engine {
+                Engine::TreeWalk => PcKind::TreeWalk,
+                Engine::Bytecode(_) => PcKind::Bytecode,
+            },
             sender: None,
             home: None,
             current_class: Some(class.clone()),
@@ -586,10 +594,15 @@ impl Interpreter {
         let slots = {
             let borrowed = class.borrow();
             match &borrowed.data {
-                // Only the tree-walker reaches this function, and only for a
-                // mixin built from source, so every slot here has its
-                // declaration; a slot without one contributes no
-                // initializer, exactly as an uninitialized slot does.
+                // Only the tree-walker reaches this function, and
+                // `Interpreter::set_engine` refuses the tree-walker on a
+                // world decoded from an image
+                // (`EngineUnavailable::TreeWalkAfterLoad`), so every mixin
+                // that gets here was built from source and every slot has
+                // its declaration. That refusal is what makes the
+                // `filter_map` below safe to read as "no slot is dropped":
+                // without it a decoded slot would be skipped silently and
+                // the instance would come back half-initialised.
                 ObjectData::Class(data) => data
                     .application
                     .mixin
@@ -634,6 +647,14 @@ impl Interpreter {
     /// fixtures do not exercise it) -- treated the same as `Stmt::Expr` here
     /// (evaluate the expression, discard the value) rather than raising a
     /// non-local return with nowhere sensible to land.
+    ///
+    /// A mixin decoded from an image records *that* it has `initExprs`
+    /// (`has_init_exprs`) but not the statements themselves, so this loop
+    /// would run zero of them and report success. It never sees one:
+    /// `Interpreter::set_engine` refuses the tree-walker after a load
+    /// (`EngineUnavailable::TreeWalkAfterLoad`), and under the bytecode
+    /// engine the same step is the class's compiled initializer, which
+    /// `image::decode` refuses an image for omitting.
     fn run_own_init_exprs(
         &mut self,
         class: &ClassRef,
@@ -724,7 +745,7 @@ fn not_the_primary_factory_error(
 ///
 /// A `NewspeakError` rather than a `panic!` on the wrong shape: the compiled
 /// body that produced this value can come off the wire, where
-/// `install_code_table` reconciles its kind and arity but nothing constrains
+/// `image::decode::build_module` reconciles its kind and arity but nothing constrains
 /// what it returns. An image is untrusted input.
 fn argument_list(class: &ClassRef, value: Value) -> Result<Vec<Value>, Signal> {
     if let Value::Obj(obj) = &value {
@@ -815,7 +836,7 @@ pub(crate) fn class_has_initializer_code(class: &ClassRef) -> bool {
 
 /// Whether `mixin` declares any slot or `initExpr` at all.
 ///
-/// `pub(crate)` for `image::decode::install_code_table`, which must refuse
+/// `pub(crate)` for `image::decode::build_module`, which must refuse
 /// an image that has no compiled initializer for a mixin that needs one
 /// rather than let `run_own_initializer` above panic on the invariant --
 /// checked per mixin now that a code table covers the whole tree, not only

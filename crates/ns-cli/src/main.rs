@@ -50,6 +50,12 @@ enum Cmd {
         /// before snapshotting; its result becomes a second root.
         #[arg(long)]
         send: Option<String>,
+        /// Store the module's source text in the image (the debug
+        /// variant). Off by default: a loaded world runs from the image's
+        /// code table and mixin table, so the source is never needed to
+        /// run it -- only to read it back as `.ns`.
+        #[arg(long)]
+        debug_source: bool,
     },
     /// Deserialize an image and optionally send one further message to
     /// its root instance (`[platform, nil]`, as `run` does).
@@ -57,6 +63,11 @@ enum Cmd {
         image: PathBuf,
         #[arg(long)]
         send: Option<String>,
+        /// Print the source text a `--debug-source` image carries, instead
+        /// of loading and reporting it. Fails on a source-free image,
+        /// which by design has none.
+        #[arg(long)]
+        print_source: bool,
     },
     /// Compile one method (or, with --initializer, the target class's
     /// instance initializer) and print its bytecode. Compile only: nothing
@@ -91,8 +102,17 @@ fn main() -> ExitCode {
         Cmd::Parse { file, ast } => cmd_parse(&file, ast),
         Cmd::ParseCorpus { dir, blacklist } => cmd_parse_corpus(&dir, blacklist.as_deref()),
         Cmd::Run { file, send, engine } => cmd_run(&file, &send, engine),
-        Cmd::Snapshot { file, out, send } => cmd_snapshot(&file, &out, send.as_deref()),
-        Cmd::Load { image, send } => cmd_load(&image, send.as_deref()),
+        Cmd::Snapshot {
+            file,
+            out,
+            send,
+            debug_source,
+        } => cmd_snapshot(&file, &out, send.as_deref(), debug_source),
+        Cmd::Load {
+            image,
+            send,
+            print_source,
+        } => cmd_load(&image, send.as_deref(), print_source),
         Cmd::Disasm {
             file,
             selector,
@@ -179,7 +199,11 @@ fn bootstrap_with_engine(
     let class = interp.load_module(&loaded.resolved);
     if engine == EngineArg::Bytecode {
         let compiled = ns_runtime::compiler::compile_module(&class, &loaded.resolved.bindings);
-        interp.set_engine(ns_runtime::Engine::Bytecode(compiled));
+        interp
+            .set_engine(ns_runtime::Engine::Bytecode(compiled))
+            // Only `Engine::TreeWalk` on a loaded world is ever refused,
+            // and this interpreter was built from source a line ago.
+            .expect("the bytecode engine is never refused");
     }
     (interp, class)
 }
@@ -235,7 +259,7 @@ fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
 /// the bytecode engine -- a tree-walker closure carries `ClosureBody::Ast`,
 /// which the format has no representation for, and the image's own code
 /// table is what a later `load` runs.
-fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>) -> ExitCode {
+fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool) -> ExitCode {
     let loaded = match load_source(file) {
         Ok(l) => l,
         Err(code) => return code,
@@ -265,7 +289,7 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>) -> ExitCode {
         .compiled_module()
         .expect("bootstrap_with_engine installed the bytecode engine");
     let bytes = match ns_runtime::image::snapshot(
-        &loaded.source,
+        debug_source.then_some(loaded.source.as_str()),
         &loaded.origin,
         &class,
         module,
@@ -295,7 +319,7 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>) -> ExitCode {
 /// `run` uses -- and report it through the same `report_entry_send`, so a
 /// `load --send main:args:` of a snapshot prints exactly what `run` prints
 /// and nothing else. A malformed image is a message, never a stack trace.
-fn cmd_load(image: &Path, send: Option<&str>) -> ExitCode {
+fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
     let bytes = match std::fs::read(image) {
         Ok(b) => b,
         Err(e) => {
@@ -306,8 +330,10 @@ fn cmd_load(image: &Path, send: Option<&str>) -> ExitCode {
     let ns_runtime::image::LoadedImage {
         mut interp,
         root_class: _,
-        bindings,
         roots,
+        origin: _,
+        source,
+        empty_bindings: bindings,
     } = match ns_runtime::image::load(&bytes) {
         Ok(l) => l,
         Err(e) => {
@@ -315,6 +341,17 @@ fn cmd_load(image: &Path, send: Option<&str>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if print_source {
+        let Some(source) = source else {
+            eprintln!(
+                "error: {} carries no source (it was not written with --debug-source)",
+                image.display()
+            );
+            return ExitCode::FAILURE;
+        };
+        print!("{source}");
+        return ExitCode::SUCCESS;
+    }
     let Some(selector) = send else {
         println!("loaded {}: {} root value(s)", image.display(), roots.len());
         return ExitCode::SUCCESS;

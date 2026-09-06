@@ -216,6 +216,7 @@ fn method_frame() -> ns_runtime::FrameRef {
         args: vec![],
         temps: vec![],
         pc: 0,
+        pc_kind: ns_runtime::PcKind::TreeWalk,
         sender: None,
         home: None,
         current_class: None,

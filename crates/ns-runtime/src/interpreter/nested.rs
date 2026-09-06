@@ -319,6 +319,13 @@ pub(super) fn run_clause_body(
         args,
         temps: vec![Value::Nil; temp_count],
         pc: 0,
+        // The same choice `compiled` makes below: a clause body runs
+        // compiled when the module carries one and is tree-walked from its
+        // own AST otherwise.
+        pc_kind: match &compiled {
+            Some(_) => PcKind::Bytecode,
+            None => PcKind::TreeWalk,
+        },
         sender: None,
         home: None,
         current_class: Some(current_class.clone()),

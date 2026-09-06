@@ -27,7 +27,9 @@ fn load(src: &str, bytecode: bool) -> (Interpreter, ClassRef, Bindings) {
     let class = interp.load_module(&resolved);
     if bytecode {
         let compiled = compiler::compile_module(&class, &bindings);
-        interp.set_engine(Engine::Bytecode(compiled));
+        interp
+            .set_engine(Engine::Bytecode(compiled))
+            .expect("a source-built interpreter accepts the bytecode engine");
     }
     (interp, class, bindings)
 }
@@ -272,11 +274,15 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     let class_b = make_class(&mut interp, object_class, app_b.clone());
 
     for bytecode in [false, true] {
-        interp.set_engine(if bytecode {
-            Engine::Bytecode(compiler::compile_module(&class_a, &bindings))
-        } else {
-            Engine::TreeWalk
-        });
+        interp
+            .set_engine(if bytecode {
+                Engine::Bytecode(compiler::compile_module(&class_a, &bindings))
+            } else {
+                Engine::TreeWalk
+            })
+            // This interpreter was built from source, so even the
+            // tree-walker is available to it.
+            .expect("a source-built interpreter accepts either engine");
         let a = expect_ok(
             interp.instantiate(class_a.clone(), vec![Value::SmallInt(11)], &bindings),
             "instantiate a",

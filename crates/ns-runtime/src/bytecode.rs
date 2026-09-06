@@ -268,6 +268,11 @@ pub struct CompiledModule {
     pub superclass_messages: HashMap<usize, Rc<CompiledCode>>,
     /// The module's resolver output, carried so the hooks can pass it to
     /// the shared orchestration's `bindings` parameters.
+    ///
+    /// Empty for a module decoded from an image, and correctly so: the map
+    /// is read only by `compiler::lower` (compile time) and by the
+    /// tree-walker, and neither runs on a loaded world. See
+    /// `image::LoadedImage::empty_bindings`.
     pub bindings: Rc<HashMap<Span, Binding>>,
 }
 

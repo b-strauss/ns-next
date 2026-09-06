@@ -7,11 +7,14 @@
 //! re-parsing the image's own source text and rebuilding the tree from the
 //! AST, which made the front end part of the load path and made the image's
 //! own bytes an incomplete description of the world they claim to hold.
+//! This table is what retired that re-parse: `image::load` builds its whole
+//! declaration tree, and its root class, from these rows.
 //!
 //! **The tree is flattened, not nested.** Rows are written in
-//! `mixin::preorder` order -- the same order `compiler::compile_module` and
-//! `image::decode::install_code_table` walk the tree in -- and a row names
-//! its nested declarations and its class side by row id. Nothing in the byte
+//! `mixin::preorder` order -- the same order `compiler::compile_module`
+//! walks the tree in, which is what lets `decode::build_module` pair a row
+//! with its own compiled bodies -- and a row names its nested declarations
+//! and its class side by row id. Nothing in the byte
 //! stream is nested inside anything else, so decoding is a loop over rows
 //! and never a recursion on a depth the image controls. The one structural
 //! recursion left in the runtime (`mixin::preorder`) is protected by
@@ -442,10 +445,10 @@ fn read_row(
         let num_args = r.read_u16()? as usize;
         let code = read_code_id(r, codes)?;
         // A row that names one selector twice would build a method
-        // dictionary with fewer entries than its code list has, leaving
-        // `install_code_table`'s two-way reconciliation comparing lists of
-        // different lengths. The encoder writes each selector once, sorted,
-        // so this is only reachable from a crafted image.
+        // dictionary with fewer entries than its code list has, and
+        // `decode::build_module` pairs the two up entry by entry. The
+        // encoder writes each selector once, sorted, so this is only
+        // reachable from a crafted image.
         if methods.iter().any(|(existing, ..)| *existing == selector) {
             return Err(DecodeError::DuplicateSelector(
                 selector.as_str().to_string(),
@@ -528,9 +531,9 @@ fn check_ids(raw: &[RawRow]) -> Result<(), DecodeError> {
 /// The rows must be exactly `mixin::preorder(row 0)`: row `i` is the `i`th
 /// declaration that walk reaches.
 ///
-/// `install_code_table` binds a decoded row to the mixin at the same
-/// position of the same walk, so this is the property that makes a row's
-/// position mean anything at all. It is also, as a by-product, the whole
+/// Row position is how a class object.s record names the declaration it
+/// applies (`decode::decode_class_record` indexes the rows by id), so this
+/// is the property that makes a row.s position mean anything at all. It is also, as a by-product, the whole
 /// structural sanity check: an index is accepted only when it equals the
 /// step counter, so every row is visited exactly once (no shared child, no
 /// cycle -- a cycle would revisit an index already behind the counter) and

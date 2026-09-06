@@ -135,10 +135,16 @@ pub struct ClosureData {
     /// the design note above on why this is a `FrameRef`, not an `ObjRef`.
     pub home: FrameRef,
     /// The resolver's bindings map the block literal's body was originally
-    /// resolved under. Any `LexicalSend`, `SuperSend`, or local-variable
-    /// reference inside the block body needs this exact map to resolve --
-    /// invoking the closure with a different (e.g. empty) map would break
-    /// such references. Cloning an `Rc` here is cheap.
+    /// resolved under. A `ClosureBody::Ast` needs exactly this map: every
+    /// `LexicalSend`, `SuperSend` and local-variable reference in the body
+    /// is resolved by span through it, so invoking such a closure with a
+    /// different map would break those references. Cloning an `Rc` here is
+    /// cheap.
+    ///
+    /// A `ClosureBody::Compiled` reads it never -- lowering already turned
+    /// every binding into an instruction -- which is why a closure decoded
+    /// from an image can carry the load's empty map
+    /// (`image::LoadedImage::empty_bindings`) without losing anything.
     pub bindings: Rc<HashMap<Span, Binding>>,
 }
 
@@ -213,20 +219,35 @@ pub enum FrameKind {
     SuperclassMessage(ClassRef),
 }
 
+/// What a `Frame`'s `pc` counts. The two engines number an activation's
+/// progress in different units -- the tree-walker in statements of a
+/// `CodeBody`, the VM in instructions of a `CompiledCode` -- and a frame is
+/// serialized, so a reader that had to ask the *interpreter* which engine
+/// built it could not interpret a frame record at all. The discriminator
+/// travels with the frame instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PcKind {
+    /// A statement index into the enclosing `ast::CodeBody.stmts`
+    /// (`Interpreter::run_statements`).
+    TreeWalk,
+    /// An instruction index into the enclosing `CompiledCode.instrs`
+    /// (`vm::run_code`).
+    Bytecode,
+}
+
 #[derive(Debug)]
 pub struct Frame {
     pub receiver: Value,
     pub args: Vec<Value>,
     /// Indexable by resolver slot index, growable (liveness spec's
-    /// reified-activation constraint). `pc` means two different things
-    /// depending on which engine built this frame's code: under
-    /// `Engine::TreeWalk` it is a statement index into the enclosing
-    /// `CodeBody.stmts`; under `Engine::Bytecode` (`vm::run_code`) it is an
-    /// instruction index into the enclosing `CompiledCode.instrs`. Which one
-    /// applies is determined by the engine active when the frame ran, not by
-    /// anything stored on the frame itself.
+    /// reified-activation constraint).
     pub temps: Vec<Value>,
+    /// How far this activation has progressed, counted in the unit
+    /// `pc_kind` names. Set where the frame is built and never
+    /// reinterpreted: the engine that will run the body is chosen at the
+    /// same place, so the two fields are decided together.
     pub pc: usize,
+    pub pc_kind: PcKind,
     pub sender: Option<FrameRef>,
     /// Set only for `FrameKind::Closure` -- the enclosing method or
     /// initializer activation.
@@ -543,6 +564,7 @@ mod tests {
             args: vec![],
             temps: vec![],
             pc: 0,
+            pc_kind: PcKind::TreeWalk,
             sender: None,
             home: None,
             current_class: None,

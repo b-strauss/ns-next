@@ -35,6 +35,48 @@ pub enum Engine {
     Bytecode(CompiledModule),
 }
 
+/// Why `Interpreter::set_engine` refused.
+///
+/// One variant so far, and the reason it is an enum rather than a `bool`
+/// is that a caller should be able to tell the cases apart if a second one
+/// ever appears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineUnavailable {
+    /// `Engine::TreeWalk` on a world decoded from an image.
+    ///
+    /// The tree-walker evaluates declarations: a method's `ast::CodeBody`,
+    /// a slot clause's initializer expression, a class's `initExprs`, a
+    /// superclass clause's receiver. An image carries none of those -- it
+    /// carries compiled code and a mixin table, and every `Mixin`,
+    /// `MixinMethod` and `MixinSlot` `image::mixins::decode` rebuilds has
+    /// `decl: None`. Running the tree-walker over such a world does not
+    /// fail uniformly: `invoke_method` and `nested::run_clause_body` panic
+    /// on the missing declaration, while `instantiate::run_own_slots`
+    /// filter-maps the declarationless slots away and
+    /// `run_own_init_exprs` iterates an empty vector -- silently producing
+    /// a half-initialised object, which is the worse of the two outcomes.
+    ///
+    /// Refusing the switch is what makes the behaviour consistent, and it
+    /// does so for every such path at once, including paths added later:
+    /// the alternative -- teaching each individual tree-walk path to fail
+    /// loudly -- has to be re-done for every path anyone writes next, and
+    /// forgetting once puts the silent half-initialisation back.
+    TreeWalkAfterLoad,
+}
+
+impl std::fmt::Display for EngineUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EngineUnavailable::TreeWalkAfterLoad => write!(
+                f,
+                "the tree-walking engine cannot run a world decoded from an image: \
+                 an image carries compiled code, not the declarations the tree-walker \
+                 evaluates"
+            ),
+        }
+    }
+}
+
 pub struct Interpreter {
     next_identity_hash: u32,
     builtin_classes: Option<HashMap<BuiltinClass, ClassRef>>,
@@ -54,6 +96,10 @@ pub struct Interpreter {
     /// a linear scan beats hashing and allocates nothing in the common
     /// case.
     nested_in_progress: Vec<(usize, Symbol)>,
+    /// Set by `image::load`: this world's declarations came off the wire,
+    /// so they are mixins without `decl`s. See
+    /// `EngineUnavailable::TreeWalkAfterLoad`.
+    decoded_from_image: bool,
 }
 
 impl Default for Interpreter {
@@ -71,6 +117,7 @@ impl Interpreter {
             engine: Engine::TreeWalk,
             applications: HashMap::new(),
             nested_in_progress: Vec::new(),
+            decoded_from_image: false,
         }
     }
 
@@ -82,6 +129,7 @@ impl Interpreter {
             engine: Engine::TreeWalk,
             applications: HashMap::new(),
             nested_in_progress: Vec::new(),
+            decoded_from_image: false,
         };
         interp.builtin_classes = Some(build_builtin_classes(&mut interp));
         interp
@@ -90,8 +138,26 @@ impl Interpreter {
     /// Switches engines. Call after `load_module` and `compile_module`; the
     /// default is `TreeWalk`, so every Milestone 1 caller keeps its
     /// behavior.
-    pub fn set_engine(&mut self, engine: Engine) {
+    ///
+    /// Refused in exactly one case -- `Engine::TreeWalk` on a world
+    /// `image::load` built, for the reasons on
+    /// `EngineUnavailable::TreeWalkAfterLoad`. `Engine::Bytecode` is never
+    /// refused, so every caller that installs the VM (which is all of them
+    /// but one test) can treat the result as infallible.
+    pub fn set_engine(&mut self, engine: Engine) -> Result<(), EngineUnavailable> {
+        if self.decoded_from_image && matches!(engine, Engine::TreeWalk) {
+            return Err(EngineUnavailable::TreeWalkAfterLoad);
+        }
         self.engine = engine;
+        Ok(())
+    }
+
+    /// Marks this world as decoded from an image -- `image::load`'s last
+    /// step, and the only writer. Sealing the interpreter rather than each
+    /// tree-walk path is the whole of the policy; see
+    /// `EngineUnavailable::TreeWalkAfterLoad`.
+    pub(crate) fn mark_decoded_from_image(&mut self) {
+        self.decoded_from_image = true;
     }
 
     pub fn compiled_module(&self) -> Option<&CompiledModule> {
@@ -429,6 +495,13 @@ impl Interpreter {
             args,
             temps: vec![Value::Nil; temp_count],
             pc: 0,
+            // Fixed by the same `compiled` that decides which body runs
+            // below, so the frame can never claim a unit its own body does
+            // not count in.
+            pc_kind: match &compiled {
+                Some(_) => PcKind::Bytecode,
+                None => PcKind::TreeWalk,
+            },
             sender,
             home: None,
             current_class: Some(defining_class),
