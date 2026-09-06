@@ -23,8 +23,20 @@ their publishers grant.
 
 ## Why each one is here
 
-- **`newspeak-spec.pdf`** — the language `crates/ns-syntax` implements. The first place to
-  check when the parser and the corpus disagree.
+- **`newspeak-spec.pdf`** — v0.106, the authoritative source for language *semantics*
+  (name resolution, dispatch, access control, instantiation), where the vendored
+  `corpus/reference/NewspeakGrammar.ns` covers only *syntax*. It is explicitly a draft
+  and says so in its own front matter, and it can disagree with the reference
+  implementation: **where the spec and the vendored corpus's actual behaviour
+  disagree, prefer the corpus** and note the discrepancy. This file was previously
+  `corpus/reference/newspeak-spec.pdf`; it never came from the `newspeaklanguage/newspeak`
+  repository and so did not belong under a corpus whose refresh means re-cloning that
+  repository at a new commit.
+
+  Refreshing it: re-download from the URL above, update the version here, and re-check
+  that `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md`'s section
+  citations still point at the same content — section numbers can shift between spec
+  versions.
 - **`dyla-final.pdf`** — the paper behind Milestone 1's three access-control-aware dispatch
   algorithms. It is about exactly the hard part: what a name means in a dynamic language
   with nested classes and inheritance.
