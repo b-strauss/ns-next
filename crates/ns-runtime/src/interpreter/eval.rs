@@ -613,6 +613,7 @@ pub fn invoke_closure(
         current_class,
         kind: FrameKind::Closure(closure.clone()),
         uncontinuable: false,
+        slot_base: 0, // a closure body never contains InitSlot
     }));
     match &closure.body {
         ClosureBody::Compiled(code) => crate::vm::run_code(interp, &frame, code, bindings),

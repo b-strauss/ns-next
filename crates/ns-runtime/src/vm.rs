@@ -135,13 +135,20 @@ pub fn run_code(
                 let v = Value::Obj(interp.new_array(values));
                 write_local(frame, *dst, v);
             }
-            Instr::InitSlot { src, field_index } => {
+            Instr::InitSlot { src, own_index } => {
                 // Shares `store_instance_field` with
                 // `instantiate::run_own_slots`: a direct field write on
                 // `self`, silently skipped for a non-instance receiver.
+                // `own_index` is relative to the executing mixin's own
+                // slots (the same compiled body runs for every application
+                // of that mixin); `frame.slot_base` -- set per level by
+                // `Interpreter::run_own_initializer` from that level's own
+                // `MixinApplication.own_slot_base` -- is what turns it into
+                // this instance's actual absolute field index.
                 let v = read_local(frame, *src);
                 let receiver = frame.borrow().receiver.clone();
-                store_instance_field(&receiver, *field_index as usize, v);
+                let base = frame.borrow().slot_base;
+                store_instance_field(&receiver, base + *own_index as usize, v);
             }
             Instr::Return { reg } | Instr::ImplicitReturn { reg } => {
                 return Ok(read_local(frame, *reg));

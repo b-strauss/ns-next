@@ -131,13 +131,24 @@ pub enum Instr {
         dst: u16,
         elem_regs: Vec<u16>,
     },
-    /// Writes `self`'s instance field `field_index` -- emitted only by
-    /// instance-initializer compilation for a slot's own initializer
-    /// expression. The one layout-dependent instruction (spec: Milestone
-    /// 3's class-shape-change flush must invalidate compiled initializers).
+    /// Writes `self`'s instance field at `frame.slot_base + own_index` --
+    /// emitted only by instance-initializer compilation for a slot's own
+    /// initializer expression. `own_index` is the slot's position among the
+    /// *mixin's own* slots (declaration order), never an absolute field
+    /// index: the compiled initializer is shared by every application of
+    /// its mixin (`compile_module` keys by `mixin_key`, not by class
+    /// object -- §6.2), and different applications legitimately have
+    /// different absolute offsets for the same mixin's own slots depending
+    /// on how many slots their own superclass contributes. `vm::run_code`
+    /// resolves the absolute index at run time via `frame.slot_base`,
+    /// which `Interpreter::run_own_initializer` sets per level from that
+    /// level's own `MixinApplication.own_slot_base`. Still the one
+    /// layout-dependent instruction (spec: Milestone 3's class-shape-change
+    /// flush must invalidate compiled initializers) -- layout-dependent on
+    /// the mixin's own slot order, not on the whole hierarchy's.
     InitSlot {
         src: u16,
-        field_index: u32,
+        own_index: u32,
     },
     /// A method or initializer body's `^`.
     Return {
@@ -330,7 +341,7 @@ fn format_instr(instr: &Instr) -> String {
                 .join(" ")
         ),
         Instr::MakeArray { dst, elem_regs } => format!("MakeArray r{dst}, ({})", regs(elem_regs)),
-        Instr::InitSlot { src, field_index } => format!("InitSlot field {field_index} <- r{src}"),
+        Instr::InitSlot { src, own_index } => format!("InitSlot own {own_index} <- r{src}"),
         Instr::Return { reg } => format!("Return r{reg}"),
         Instr::ImplicitReturn { reg } => format!("ImplicitReturn r{reg}"),
         Instr::NonLocalReturn { reg } => format!("NonLocalReturn r{reg}"),

@@ -365,6 +365,7 @@ impl Interpreter {
             current_class: Some(defining_class),
             kind: FrameKind::Method(method.clone()),
             uncontinuable: false,
+            slot_base: 0, // a method body never contains InitSlot
         }));
         let result = match &compiled {
             Some(code) => crate::vm::run_code(self, &frame, code, &bindings),
@@ -540,6 +541,7 @@ impl Interpreter {
             superclass: superclass.cloned(),
             num_slots: inherited + mixin.instance_slots.len(),
             slot_index,
+            own_slot_base: inherited,
         });
         self.applications.insert(key, application.clone());
         application

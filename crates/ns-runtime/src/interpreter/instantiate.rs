@@ -309,6 +309,11 @@ impl Interpreter {
             current_class: Some(class.clone()),
             kind: FrameKind::Initializer(class.clone()),
             uncontinuable: false,
+            // Set per level by `run_own_initializer` just before it runs
+            // that level's compiled body -- this one Frame is reused for
+            // the whole superclass chain (see `run_superclass_initializer`),
+            // so the starting value here is never read as-is.
+            slot_base: 0,
         }));
 
         // Step 3: run the superclass chain first, deepest (Object) first --
@@ -407,6 +412,24 @@ impl Interpreter {
     /// initializer (`compiler::compile_initializer`) after growing the
     /// frame's register file to fit it. Every M1 instantiation gap is
     /// carried forward identically in both engines.
+    ///
+    /// Review finding (round 1): `InitSlot`'s `own_index` is relative to the
+    /// mixin's own slots, not an absolute field index -- the compiled body
+    /// is shared by every application of the mixin (`compile_module` keys
+    /// by `mixin_key`), so it cannot bake in any one application's offset.
+    /// This function turns `own_index` into an absolute index at run time,
+    /// per level, by setting `frame.slot_base` to *this* level's
+    /// `MixinApplication.own_slot_base` before running its compiled body --
+    /// the same per-application value `run_own_slots`'s tree-walking
+    /// sibling already reads through `slot_index`, just fetched once instead
+    /// of per slot. The frame is restored to its caller's `slot_base`
+    /// afterward because `run_superclass_initializer` reuses this same
+    /// `Frame` across every level of the chain (deepest first), so a
+    /// superclass level's own run must not leave its base behind for a
+    /// level that has not run yet -- though today no level actually reads a
+    /// stale value (each sets its own base before using it), restoring
+    /// keeps the frame's invariant ("slot_base is this level's base") true
+    /// at every point another function could observe it.
     fn run_own_initializer(
         &mut self,
         class: &ClassRef,
@@ -426,20 +449,20 @@ impl Interpreter {
                     // Keyed by mixin, not by class object (§6.2: every
                     // application of a mixin shares its code) -- so the
                     // lookup goes through the class's application, not its
-                    // own `Rc` identity.
-                    let mixin = crate::dispatch::class_application(class)
-                        .expect(
-                            "internal: class_has_initializer_code confirmed this is a class object",
-                        )
-                        .mixin
-                        .clone();
-                    module
+                    // own `Rc` identity. The application itself is kept
+                    // (not just its mixin) because its `own_slot_base` is
+                    // what makes the shared code correct for *this* level.
+                    let application = crate::dispatch::class_application(class).expect(
+                        "internal: class_has_initializer_code confirmed this is a class object",
+                    );
+                    let code = module
                         .initializers
-                        .get(&crate::mixin::mixin_key(&mixin))
+                        .get(&crate::mixin::mixin_key(&application.mixin))
                         .cloned()
                         .unwrap_or_else(|| {
                             panic!("internal: class has no compiled instance initializer (compile_module coverage gap)")
-                        })
+                        });
+                    (code, application.own_slot_base)
                 })
             }
         };
@@ -448,15 +471,18 @@ impl Interpreter {
                 self.run_own_slots(class, instance, frame, bindings)?;
                 self.run_own_init_exprs(class, frame, bindings)
             }
-            Some(code) => {
-                {
+            Some((code, own_slot_base)) => {
+                let previous_base = {
                     let mut f = frame.borrow_mut();
                     let needed = (code.num_registers - code.num_args) as usize;
                     if f.temps.len() < needed {
                         f.temps.resize(needed, Value::Nil);
                     }
-                }
-                crate::vm::run_code(self, frame, &code, bindings).map(|_| ())
+                    std::mem::replace(&mut f.slot_base, own_slot_base)
+                };
+                let result = crate::vm::run_code(self, frame, &code, bindings).map(|_| ());
+                frame.borrow_mut().slot_base = previous_base;
+                result
             }
         }
     }
@@ -592,19 +618,24 @@ pub(crate) fn pattern_param_count(pattern: &ast::MessagePattern) -> usize {
 }
 
 /// Whether `class` declares any slot or `initExpr` at all -- `false` for
-/// every `BuiltinClass` and for a non-class object.
-///
-/// `pub(crate)` for `image::decode::install_code_table`, which must refuse
-/// an image that has no compiled initializer for a class that needs one
-/// rather than let `run_own_initializer` below panic on the invariant.
-/// One definition of "needs initializer code", not one per caller.
+/// every `BuiltinClass` and for a non-class object. Delegates to
+/// `mixin_needs_initializer_code`, the one definition of "needs initializer
+/// code" a class-level and a mixin-level caller both share.
 pub(crate) fn class_has_initializer_code(class: &ClassRef) -> bool {
     let borrowed = class.borrow();
     match &borrowed.data {
-        ObjectData::Class(data) => {
-            let mixin = &data.application.mixin;
-            !(mixin.instance_slots.is_empty() && mixin.init_exprs.is_empty())
-        }
+        ObjectData::Class(data) => mixin_needs_initializer_code(&data.application.mixin),
         _ => false,
     }
+}
+
+/// Whether `mixin` declares any slot or `initExpr` at all.
+///
+/// `pub(crate)` for `image::decode::install_code_table`, which must refuse
+/// an image that has no compiled initializer for a mixin that needs one
+/// rather than let `run_own_initializer` above panic on the invariant --
+/// checked per mixin now that a code table covers the whole tree, not only
+/// the root.
+pub(crate) fn mixin_needs_initializer_code(mixin: &crate::mixin::Mixin) -> bool {
+    !(mixin.instance_slots.is_empty() && mixin.init_exprs.is_empty())
 }

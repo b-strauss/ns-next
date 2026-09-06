@@ -269,6 +269,7 @@ mod tests {
             superclass: super_application,
             slot_index: HashMap::new(),
             num_slots: 0,
+            own_slot_base: 0,
         });
         Rc::new(RefCell::new(Object {
             class: dummy_class(),

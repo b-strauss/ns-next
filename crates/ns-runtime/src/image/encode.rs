@@ -182,13 +182,28 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
     }
 }
 
-/// The code table: every `CompiledCode` reachable from `module` -- each
-/// method, the root class's initializer, and every nested block body --
-/// with nested block code *before* the code that creates it, then the root
-/// list (`(selector, id)` sorted by selector, and the initializer id).
-/// Deterministic: the same module always encodes to the same bytes.
+/// One mixin's own section of the code table: its methods, sorted by
+/// selector, and its initializer (present exactly when `module` carries
+/// one for it).
+struct MixinSection {
+    methods: Vec<(String, Rc<CompiledCode>)>,
+    initializer: Option<Rc<CompiledCode>>,
+}
+
+/// The code table: every `CompiledCode` reachable from `module` -- every
+/// mixin's methods, every mixin's initializer, and every nested block body
+/// -- with nested block code *before* the code that creates it, then one
+/// section per mixin (review finding: a whole-tree `compile_module` that
+/// still serialized only the root silently narrowed the module on every
+/// `snapshot` -> `load` round trip, panicking on the first nested send
+/// afterward). Sections are written in `mixin::preorder` order -- the same
+/// order `compile_module` compiled in, and the same order `decode`'s
+/// `install_code_table` replays over the *reloaded* tree to bind each
+/// section back to the right mixin, since no mixin identity survives a
+/// save/reload. Deterministic: the same module always encodes to the same
+/// bytes.
 ///
-/// A method the class holds but the `CompiledModule` has no code for is an
+/// A method a mixin holds but the `CompiledModule` has no code for is an
 /// `Err`, not a panic: a method added to a live class after `compile_module`
 /// ran is exactly what the liveness spec's Req. 1 anticipates, so it is a
 /// refusal to snapshot this world, on the same footing as
@@ -209,8 +224,17 @@ pub fn encode_code_table(
             _ => None,
         }
     };
-    let mut methods: Vec<(String, Rc<CompiledCode>)> = match &root_mixin {
-        Some(mixin) => mixin
+    let mixin_order: Vec<Rc<crate::mixin::Mixin>> = match &root_mixin {
+        Some(mixin) => {
+            let mut v = Vec::new();
+            crate::mixin::preorder(mixin, &mut v);
+            v
+        }
+        None => Vec::new(),
+    };
+    let mut sections: Vec<MixinSection> = Vec::new();
+    for mixin in &mixin_order {
+        let mut methods: Vec<(String, Rc<CompiledCode>)> = mixin
             .methods
             .iter()
             .map(|(selector, decl)| {
@@ -222,41 +246,45 @@ pub fn encode_code_table(
                 })?;
                 Ok((selector.as_str().to_string(), code.clone()))
             })
-            .collect::<Result<Vec<_>, String>>()?,
-        None => Vec::new(),
-    };
-    // The mixin's method table is a `HashMap`; sorting is what makes the table
-    // canonical rather than iteration-order dependent.
-    methods.sort_by(|a, b| a.0.cmp(&b.0));
-    for (_, code) in &methods {
-        collect_code(code, &mut order, &mut ids);
+            .collect::<Result<Vec<_>, String>>()?;
+        // The mixin's method table is a `HashMap`; sorting is what makes
+        // the table canonical rather than iteration-order dependent.
+        methods.sort_by(|a, b| a.0.cmp(&b.0));
+        let initializer = module.initializers.get(&mixin_key(mixin)).cloned();
+        sections.push(MixinSection {
+            methods,
+            initializer,
+        });
     }
-    // Keyed by the root's mixin identity, not its class-object identity --
-    // `CompiledModule.initializers`' key changed meaning with this task
-    // (§6.2: applications of a mixin share code), so the image encoder
-    // reaches the same entry through the same key the compiler filed it
-    // under.
-    let initializer = root_mixin
-        .as_ref()
-        .and_then(|mixin| module.initializers.get(&mixin_key(mixin)).cloned());
-    if let Some(init) = &initializer {
-        collect_code(init, &mut order, &mut ids);
+    for section in &sections {
+        for (_, code) in &section.methods {
+            collect_code(code, &mut order, &mut ids);
+        }
+        if let Some(init) = &section.initializer {
+            collect_code(init, &mut order, &mut ids);
+        }
     }
     w.write_u32(u32_field("code table entry count", order.len()));
     for code in &order {
         encode_code(w, code, &ids);
     }
-    w.write_u32(u32_field("root list length", methods.len()));
-    for (selector, code) in &methods {
-        w.write_str(selector);
-        w.write_u32(ids.id_of(code));
-    }
-    match &initializer {
-        Some(init) => {
-            w.write_bool(true);
-            w.write_u32(ids.id_of(init));
+    w.write_u32(u32_field("mixin count", sections.len()));
+    for section in &sections {
+        w.write_u32(u32_field(
+            "mixin's method list length",
+            section.methods.len(),
+        ));
+        for (selector, code) in &section.methods {
+            w.write_str(selector);
+            w.write_u32(ids.id_of(code));
         }
-        None => w.write_bool(false),
+        match &section.initializer {
+            Some(init) => {
+                w.write_bool(true);
+                w.write_u32(ids.id_of(init));
+            }
+            None => w.write_bool(false),
+        }
     }
     Ok(ids)
 }
@@ -408,10 +436,10 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds) {
             w.write_u16(*dst);
             encode_regs(w, elem_regs);
         }
-        Instr::InitSlot { src, field_index } => {
+        Instr::InitSlot { src, own_index } => {
             w.write_u8(12);
             w.write_u16(*src);
-            w.write_u32(*field_index);
+            w.write_u32(*own_index);
         }
         Instr::Return { reg } => {
             w.write_u8(13);

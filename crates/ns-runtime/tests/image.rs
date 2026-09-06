@@ -2,6 +2,7 @@
 //! (Task 12), the code table (Task 13), the object + frame tables (Task 14),
 //! whole-image `snapshot`/`load` and the two verification passes (Task 15).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -14,8 +15,8 @@ use ns_runtime::image::{decode, encode};
 use ns_runtime::mixin::mixin_key;
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
-    compiler, Binding, BuiltinClass, ClassRef, ClosureBody, Engine, FrameKind, Interpreter, Mixin,
-    ObjectData, Signal, SourceOrigin, Symbol, Value,
+    compiler, Binding, BuiltinClass, ClassData, ClassRef, ClosureBody, Engine, FrameKind,
+    Interpreter, Mixin, MixinApplication, Object, ObjectData, Signal, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
@@ -312,7 +313,7 @@ fn every_instr_once() -> CompiledCode {
             },
             Instr::InitSlot {
                 src: 9,
-                field_index: 3,
+                own_index: 3,
             },
             Instr::Return { reg: 0 },
             Instr::ImplicitReturn { reg: 1 },
@@ -376,11 +377,12 @@ fn every_instr_variant_round_trips() {
         .initializers
         .insert(class_mixin_key(&class), synthetic.clone());
     let (table, ids) = round_trip_code_table(&module, &class);
-    let decoded = &table.codes[table.initializer.expect("initializer id") as usize];
+    let root = &table.mixins[0];
+    let decoded = &table.codes[root.initializer.expect("initializer id") as usize];
     assert_eq!(**decoded, *synthetic);
     assert_eq!(
         ids.id_of(&synthetic),
-        table.initializer.expect("initializer id")
+        root.initializer.expect("initializer id")
     );
 }
 
@@ -389,17 +391,17 @@ fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents()
     let (_interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(&class, &bindings);
     let (table, _ids) = round_trip_code_table(&module, &class);
-    assert_eq!(table.methods.len(), 3);
+    let root = &table.mixins[0];
+    assert_eq!(root.methods.len(), 3);
     assert_eq!(
-        table
-            .methods
+        root.methods
             .iter()
             .map(|(s, _)| s.as_str())
             .collect::<Vec<_>>(),
         vec!["arr", "find:in:", "loop"],
         "root list is sorted by selector"
     );
-    for (selector, id) in &table.methods {
+    for (selector, id) in &root.methods {
         let decoded = &table.codes[*id as usize];
         let original = method_code(&class, &module, selector);
         assert_eq!(**decoded, *original, "{selector}");
@@ -417,7 +419,7 @@ fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents()
             }
         }
     }
-    let init = &table.codes[table.initializer.expect("initializer id") as usize];
+    let init = &table.codes[root.initializer.expect("initializer id") as usize];
     assert_eq!(**init, *module.initializers[&class_mixin_key(&class)]);
 }
 
@@ -474,7 +476,8 @@ fn an_unknown_selector_in_the_root_list_is_a_decode_error() {
 fn a_root_list_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     let mut w = encode::Writer::new();
     w.write_u32(0); // no code entries
-    w.write_u32(1); // one method in the root list ...
+    w.write_u32(1); // one mixin section ...
+    w.write_u32(1); // ... with one method in its root list ...
     w.write_str("foo");
     w.write_u32(5); // ... pointing past the end of the table
     let bytes = w.into_bytes();
@@ -805,8 +808,7 @@ fn code_table_with_nested_literal_array(depth: usize) -> Vec<u8> {
         w.write_u32(1); // ... of exactly one element
     }
     w.write_u8(0); // Literal::Nil at the bottom
-    w.write_u32(0); // empty root list
-    w.write_bool(false); // no initializer
+    w.write_u32(0); // no mixin sections
     w.into_bytes()
 }
 
@@ -964,7 +966,7 @@ fn the_deepest_literal_array_the_parser_accepts_survives_a_round_trip() {
         "the compiler lowered the whole nest"
     );
     let (table, _ids) = round_trip_code_table(&module, &class);
-    let (_, id) = table
+    let (_, id) = table.mixins[0]
         .methods
         .iter()
         .find(|(selector, _)| selector == "arr")
@@ -1962,8 +1964,9 @@ fn code_with(
 fn table_of(codes: Vec<Rc<CompiledCode>>) -> decode::DecodedCodeTable {
     decode::DecodedCodeTable {
         codes,
-        methods: vec![],
-        initializer: None,
+        // These tables only ever feed `verify_code_table`/`verify_graph`,
+        // which read `.codes` alone -- no mixin section is needed.
+        mixins: vec![],
     }
 }
 
@@ -2373,7 +2376,7 @@ fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_at_install() {
     let (_interp, class, bindings) = load(src);
     let module = compiler::compile_module(&class, &bindings);
     let (mut table, _ids) = round_trip_code_table(&module, &class);
-    let id = table.methods[0].1 as usize;
+    let id = table.mixins[0].methods[0].1 as usize;
     let mut body = (*table.codes[id]).clone();
     body.num_args = 2;
     table.codes[id] = Rc::new(body);
@@ -2394,7 +2397,7 @@ fn a_method_root_naming_a_block_body_is_refused_at_install() {
     let (_interp, class, bindings) = load(src);
     let module = compiler::compile_module(&class, &bindings);
     let (mut table, _ids) = round_trip_code_table(&module, &class);
-    let id = table.methods[0].1 as usize;
+    let id = table.mixins[0].methods[0].1 as usize;
     let mut body = (*table.codes[id]).clone();
     body.kind = CodeKind::Block;
     table.codes[id] = Rc::new(body);
@@ -2452,8 +2455,9 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable, CompiledModule) {
     );
     let table = decode::DecodedCodeTable {
         codes: vec![block, parent.clone()],
-        methods: vec![("foo".to_string(), 1)],
-        initializer: None,
+        // `verify_graph` (the only thing this fixture's table feeds) reads
+        // `.codes` alone -- no mixin section is needed here either.
+        mixins: vec![],
     };
     let mut module = CompiledModule {
         methods: HashMap::new(),
@@ -2718,10 +2722,10 @@ fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_at_install
     let module = compiler::compile_module(&class, &bindings);
     let (mut table, _ids) = round_trip_code_table(&module, &class);
     assert!(
-        table.initializer.is_some(),
+        table.mixins[0].initializer.is_some(),
         "the fixture's class really does compile an initializer"
     );
-    table.initializer = None;
+    table.mixins[0].initializer = None;
     match decode::install_code_table(&table, &class, &bindings) {
         Err(err) => {
             assert_eq!(err, decode::DecodeError::MissingInitializer);
@@ -2838,4 +2842,150 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         u32::MAX,
         "an exhausted counter shares its last hash instead of overflowing"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Review fix round 1, Finding 2: `compile_module` compiles the whole mixin
+// tree, so the code table must serialize every mixin's methods and
+// initializer -- not only the root's -- and `install_code_table` must
+// restore them all under the same keys.
+// ---------------------------------------------------------------------------
+
+const NESTED_MODULE: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new () (
+    public class Inner = Object new (| v = 9. |) (
+        public value = ( ^v )
+    )
+) : ()
+";
+
+/// A class object applying `mixin` to `superclass` directly -- what the
+/// (not yet implemented) nested-class accessor will eventually do for
+/// `Inner`. Built by hand because there is no other way yet to reach a
+/// nested mixin's own class object.
+fn apply_and_wrap(
+    interp: &mut Interpreter,
+    class_of_class: ClassRef,
+    mixin: &Rc<Mixin>,
+    superclass: Option<&Rc<MixinApplication>>,
+) -> ClassRef {
+    let application = interp.apply_mixin(mixin, superclass);
+    let identity_hash = interp.alloc_identity_hash();
+    Rc::new(RefCell::new(Object {
+        class: class_of_class,
+        identity_hash,
+        data: ObjectData::Class(ClassData {
+            application,
+            enclosing: None,
+            superclass: None,
+            builtin: None,
+        }),
+    }))
+}
+
+fn root_mixin_of(class: &ClassRef) -> Rc<Mixin> {
+    let borrowed = class.borrow();
+    let ObjectData::Class(data) = &borrowed.data else {
+        panic!("not a class")
+    };
+    data.application.mixin.clone()
+}
+
+#[test]
+fn a_snapshotted_nested_mixins_method_and_initializer_survive_a_load() {
+    // Finding 2, the coverage-gap half: before this fix, `encode_code_table`
+    // still wrote only the root's own section, so a `snapshot` -> `load`
+    // cycle silently narrowed the module `compile_module` had produced.
+    // Checked here purely at the compiled-module level -- reaching the
+    // nested method with an actual send is the next test, since it needs a
+    // hand-built class object anyway (no accessor exists yet).
+    let (_interp, class, bindings) = load(NESTED_MODULE);
+    let module = compiler::compile_module(&class, &bindings);
+    let (table, _ids) = round_trip_code_table(&module, &class);
+    let installed = decode::install_code_table(&table, &class, &bindings).expect("install");
+
+    let root_mixin = root_mixin_of(&class);
+    let inner_mixin = &root_mixin.nested[0];
+    let value_method = inner_mixin
+        .methods
+        .get(&Symbol::intern("value"))
+        .expect("Inner declares `value`");
+    assert!(
+        installed.methods.contains_key(&method_key(value_method)),
+        "the nested mixin's own method must survive the round trip"
+    );
+    assert!(
+        installed.initializers.contains_key(&mixin_key(inner_mixin)),
+        "the nested mixin's own initializer must survive the round trip"
+    );
+}
+
+#[test]
+fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
+    // The end-to-end version: snapshot a world whose module covers the
+    // whole mixin tree, load it back into a *fresh* interpreter (a second,
+    // independent parse+resolve+load_module of the same source, exactly
+    // like every other round-trip test in this file), then reach the
+    // nested class's own compiled method with a real send -- proving
+    // `install_code_table` bound it back under the right key, not just that
+    // some entry with the right shape exists.
+    let (mut interp, class, bindings) = load(NESTED_MODULE);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        "instantiate Outer",
+    );
+    let bytes = image::snapshot(
+        NESTED_MODULE,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        std::slice::from_ref(&outer),
+    )
+    .expect("snapshot");
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let root_mixin = root_mixin_of(&loaded.root_class);
+    let inner_mixin = root_mixin.nested[0].clone();
+
+    // Nothing materializes a nested class's own class object without the
+    // accessor (a later task), so this reproduces exactly what it will
+    // eventually do: apply the reloaded `Inner` mixin to `Object`, by hand,
+    // in the *loaded* interpreter -- proving the send below runs against
+    // code `install_code_table` actually restored, not code compiled fresh
+    // just now.
+    let object_class = loaded.interp.builtin_class(BuiltinClass::Object);
+    let object_application =
+        ns_runtime::dispatch::class_application(&object_class).expect("Object is a class object");
+    let inner_class = apply_and_wrap(
+        &mut loaded.interp,
+        object_class,
+        &inner_mixin,
+        Some(&object_application),
+    );
+    let inner_instance = expect_ok(
+        loaded
+            .interp
+            .instantiate(inner_class, vec![], &loaded.bindings),
+        "instantiate Inner",
+    );
+    let result = expect_ok(
+        loaded.interp.send(
+            inner_instance,
+            Symbol::intern("value"),
+            vec![],
+            &loaded.bindings,
+            None,
+        ),
+        "send value",
+    );
+    match result {
+        Value::SmallInt(9) => {}
+        _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
+    }
 }

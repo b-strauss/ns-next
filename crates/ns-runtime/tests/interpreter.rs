@@ -130,6 +130,7 @@ fn class_with_methods(
                 superclass: None,
                 slot_index: HashMap::new(),
                 num_slots: 0,
+                own_slot_base: 0,
             }),
             enclosing: None,
             superclass: None,
@@ -233,6 +234,7 @@ fn method_frame() -> ns_runtime::FrameRef {
         current_class: None,
         kind: FrameKind::Method(method),
         uncontinuable: false,
+        slot_base: 0,
     }))
 }
 

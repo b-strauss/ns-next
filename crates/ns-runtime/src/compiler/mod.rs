@@ -17,7 +17,6 @@ use ns_syntax::Span;
 use crate::bytecode::{method_key, CodeKind, CompiledCode, CompiledModule};
 use crate::mixin::{mixin_key, Mixin};
 use crate::types::{Binding, ClassRef, ObjectData};
-use crate::Symbol;
 
 use lower::Lowerer;
 
@@ -50,66 +49,53 @@ pub fn compile_method(
     lowerer.finish(method.span)
 }
 
-/// Compiles a loaded class's own instance-initializer body: each slot with
-/// an initializer (declaration order) as `<expr>; InitSlot`, then each
-/// `initExpr` (a top-level `^` is evaluated and discarded), then
-/// `LoadSelf; ImplicitReturn` -- the spec's "Class instantiation" section.
-/// Delegates to `compile_mixin_initializer` with the class's own, already
-/// applied `slot_index` -- see that function's doc comment for why a mixin
-/// with no application yet (every nested mixin, until the accessor
-/// materializes one) takes a different `slot_index` instead.
+/// Compiles a loaded class's own instance-initializer body. Delegates to
+/// `compile_mixin_initializer`; kept as a `ClassRef`-taking entry point
+/// because `ns-cli`'s `disasm` and this module's own tests address a class
+/// directly, without going through `compile_module`'s tree walk.
 pub fn compile_initializer(
     class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> CompiledCode {
-    let (mixin, slot_index) = {
+    let mixin = {
         let borrowed = class.borrow();
         let ObjectData::Class(data) = &borrowed.data else {
             panic!("internal: compile_initializer called on a non-class object");
         };
-        (
-            data.application.mixin.clone(),
-            data.application.slot_index.clone(),
-        )
+        data.application.mixin.clone()
     };
-    compile_mixin_initializer(&mixin, &slot_index, bindings)
+    compile_mixin_initializer(&mixin, bindings)
 }
 
-/// The shared body behind `compile_initializer`: `mixin`'s own slots
-/// (against `slot_index`'s absolute offsets) then its own `init_exprs`.
-/// `num_args` is `mixin`'s own factory parameter count -- the resolver
-/// scoped this code with exactly those parameters as `Binding::Local`.
+/// The shared body behind `compile_initializer` and `compile_module`'s tree
+/// walk: each of `mixin`'s own slots with an initializer (declaration
+/// order) as `<expr>; InitSlot`, then each `initExpr` (a top-level `^` is
+/// evaluated and discarded), then `LoadSelf; ImplicitReturn` -- the spec's
+/// "Class instantiation" section. `num_args` is `mixin`'s own factory
+/// parameter count -- the resolver scoped this code with exactly those
+/// parameters as `Binding::Local`.
 ///
-/// `slot_index` is the caller's answer for where each of `mixin`'s own
-/// slots (and anything it inherits) lands in the instance layout. For the
-/// root class that is the real, already-applied `MixinApplication`'s
-/// layout (`compile_initializer` above). A nested mixin or a class side has
-/// no application at compile time -- `build_mixin` leaves every nested
-/// declaration unapplied, since applying one means resolving a superclass
-/// and only the accessor (materializing a class object per enclosing
-/// instance) ever does that -- so `compile_module`'s tree walk below passes
-/// a *structural* `slot_index` instead: the mixin's own slots at their
-/// declaration-order offset, with nothing inherited. That is not an
-/// approximation in this milestone: `resolve_superclass_receiver` only ever
-/// resolves a builtin superclass, and no builtin declares a slot, so "zero
-/// inherited slots" is the actual answer for every mixin this compiler can
-/// see today, nested or not. A later milestone that lets a nested class's
-/// superclass carry slots must revisit this alongside teaching the accessor
-/// to resolve one.
+/// Needs no `slot_index` (unlike before the review's round-1 fix): each
+/// `InitSlot` now carries `own_index`, the slot's position among `mixin`'s
+/// *own* slots only (plain declaration-order `enumerate()`, independent of
+/// any superclass) -- never an absolute field index, because this one
+/// compiled body runs for every application of `mixin` (`compile_module`
+/// keys by `mixin_key`, not by class object, per §6.2), and different
+/// applications can legitimately disagree about where the mixin's own
+/// slots start. `vm::run_code` adds the executing frame's `slot_base` --
+/// set per level, at run time, from that level's own real
+/// `MixinApplication.own_slot_base` -- to turn `own_index` into the
+/// absolute index the instance array actually needs.
 fn compile_mixin_initializer(
     mixin: &Rc<Mixin>,
-    slot_index: &HashMap<Symbol, usize>,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> CompiledCode {
     let num_args = mixin.factory.as_deref().map(num_args_of).unwrap_or(0);
     let mut lowerer = Lowerer::new(CodeKind::Initializer, num_args, 0, bindings, vec![]);
     let mut source: Option<Span> = None;
-    for slot in &mixin.instance_slots {
+    for (own_index, slot) in mixin.instance_slots.iter().enumerate() {
         if let Some(init) = &slot.init {
-            let field_index = *slot_index
-                .get(&Symbol::intern(&slot.name.name))
-                .expect("internal: apply_mixin (or its structural stand-in) assigns every own slot an absolute index");
-            lowerer.lower_slot_init(init, field_index as u32);
+            lowerer.lower_slot_init(init, own_index as u32);
             source = Some(merge_span(source, slot.span));
         }
     }
@@ -121,67 +107,14 @@ fn compile_mixin_initializer(
     lowerer.finish(source.unwrap_or(Span::new(0, 0)))
 }
 
-/// A mixin's own slots at their declaration-order offset, with nothing
-/// inherited -- `compile_mixin_tree`'s stand-in `slot_index` for every
-/// mixin that has no real `MixinApplication` (nested classes and class
-/// sides; see `compile_mixin_initializer`'s doc comment for why this is
-/// exact, not approximate, in this milestone).
-fn structural_slot_index(mixin: &Mixin) -> HashMap<Symbol, usize> {
-    mixin
-        .instance_slots
-        .iter()
-        .enumerate()
-        .map(|(i, slot)| (Symbol::intern(&slot.name.name), i))
-        .collect()
-}
-
-/// Compiles every method and the initializer of `mixin`, then recurses into
-/// its nested declarations and its class side -- the whole mixin tree, not
-/// only the root. Both maps are keyed by mixin/method identity
-/// (`mixin_key`/`method_key`), never by class object: `newspeak-spec.pdf`
-/// §6.2 has every application of a mixin share its code, but §6 gives every
-/// enclosing instance of a nested class its own class object, so a
-/// class-object key would compile the same body again for every instance --
-/// exactly what walking the tree once here, ahead of any instantiation, is
-/// meant to avoid.
-fn compile_mixin_tree(
-    mixin: &Rc<Mixin>,
-    slot_index: &HashMap<Symbol, usize>,
-    module: &mut CompiledModule,
-    bindings: &Rc<HashMap<Span, Binding>>,
-) {
-    for method in mixin.methods.values() {
-        let compiled = compile_method(method, bindings);
-        module.methods.insert(method_key(method), Rc::new(compiled));
-    }
-    let compiled_init = compile_mixin_initializer(mixin, slot_index, bindings);
-    module
-        .initializers
-        .insert(mixin_key(mixin), Rc::new(compiled_init));
-    for nested in &mixin.nested {
-        compile_mixin_tree(nested, &structural_slot_index(nested), module, bindings);
-    }
-    if let Some(class_side) = &mixin.class_side {
-        compile_mixin_tree(
-            class_side,
-            &structural_slot_index(class_side),
-            module,
-            bindings,
-        );
-    }
-}
-
 pub fn compile_module(
     root_class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> CompiledModule {
-    let (root_mixin, root_slot_index) = {
+    let root_mixin = {
         let borrowed = root_class.borrow();
         match &borrowed.data {
-            ObjectData::Class(data) => (
-                data.application.mixin.clone(),
-                data.application.slot_index.clone(),
-            ),
+            ObjectData::Class(data) => data.application.mixin.clone(),
             _ => panic!("internal: compile_module called on a non-class object"),
         }
     };
@@ -190,7 +123,21 @@ pub fn compile_module(
         initializers: HashMap::new(),
         bindings: bindings.clone(),
     };
-    compile_mixin_tree(&root_mixin, &root_slot_index, &mut module, bindings);
+    // `crate::mixin::preorder` is also what `image::encode`/`decode` walk
+    // the tree in, for the same code and the same reason: the two must
+    // enumerate the same mixins in the same order (see its doc comment).
+    let mut order = Vec::new();
+    crate::mixin::preorder(&root_mixin, &mut order);
+    for mixin in &order {
+        for method in mixin.methods.values() {
+            let compiled = compile_method(method, bindings);
+            module.methods.insert(method_key(method), Rc::new(compiled));
+        }
+        let compiled_init = compile_mixin_initializer(mixin, bindings);
+        module
+            .initializers
+            .insert(mixin_key(mixin), Rc::new(compiled_init));
+    }
     module
 }
 

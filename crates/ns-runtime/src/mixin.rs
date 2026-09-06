@@ -40,9 +40,22 @@ pub struct MixinApplication {
     pub superclass: Option<Rc<MixinApplication>>,
     /// Absolute index of every slot reachable on an instance, inherited ones
     /// included -- resolved through the *current* layout, per the liveness
-    /// spec's object-model constraint.
+    /// spec's object-model constraint. Used for by-name slot access
+    /// (`dispatch::lookup_slot`, a `SendLexical` read/write of a slot); never
+    /// baked into compiled code, since a mixin's *compiled* initializer runs
+    /// for every application of it (`compile_module` keys by `mixin_key`) and
+    /// this map is a per-application answer.
     pub slot_index: HashMap<Symbol, usize>,
     pub num_slots: usize,
+    /// Where this application's *own* slots start -- `superclass.num_slots`,
+    /// or 0 with none. Read at run time (`Interpreter::run_own_initializer`)
+    /// to turn a compiled `InitSlot`'s mixin-relative `own_index` into this
+    /// application's absolute field index: the compiled initializer is
+    /// shared by every application of the mixin (review finding: keying
+    /// code by mixin without this would bake ONE application's offset into
+    /// code every application runs), while this field is computed fresh per
+    /// application, exactly like `slot_index` already was.
+    pub own_slot_base: usize,
 }
 
 pub fn mixin_key(mixin: &Rc<Mixin>) -> usize {
@@ -51,4 +64,23 @@ pub fn mixin_key(mixin: &Rc<Mixin>) -> usize {
 
 pub fn application_key(application: &Rc<MixinApplication>) -> usize {
     Rc::as_ptr(application) as *const () as usize
+}
+
+/// `mixin`, then every nested declaration (recursively), then its class
+/// side (recursively) -- the traversal order `compiler::compile_module` and
+/// `image::encode`/`decode` both walk the mixin tree in, so a compiled
+/// module and an image's code table always enumerate the same mixins in the
+/// same order. Sharing one definition is what keeps the two from drifting
+/// apart: an image's per-mixin sections carry no name or path of their own
+/// (mixin identity does not survive a save/reload), so decode reconstructs
+/// which section belongs to which reloaded mixin purely by replaying this
+/// same order over the reloaded tree.
+pub fn preorder(mixin: &Rc<Mixin>, out: &mut Vec<Rc<Mixin>>) {
+    out.push(mixin.clone());
+    for nested in &mixin.nested {
+        preorder(nested, out);
+    }
+    if let Some(class_side) = &mixin.class_side {
+        preorder(class_side, out);
+    }
 }

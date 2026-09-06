@@ -111,11 +111,14 @@ impl<'a> Lowerer<'a> {
     /// The initializer's per-slot statement: the slot's initializer
     /// expression, then `InitSlot` (M1's `run_own_slots` writes the field
     /// directly, never through a setter send). One `statement_pc` entry.
-    pub(crate) fn lower_slot_init(&mut self, init: &Expr, field_index: u32) {
+    /// `own_index` is the slot's position among the mixin's own slots
+    /// (declaration order) -- `vm::run_code` turns it into an absolute
+    /// field index at run time via the executing frame's `slot_base`.
+    pub(crate) fn lower_slot_init(&mut self, init: &Expr, own_index: u32) {
         self.next_scratch = self.base;
         let start = self.instrs.len();
         let src = self.lower_expr_consumed_immediately(init);
-        self.emit(Instr::InitSlot { src, field_index });
+        self.emit(Instr::InitSlot { src, own_index });
         let end = self.instrs.len();
         self.statement_pc.push((self.statement_index, start..end));
         self.statement_index += 1;
@@ -1331,7 +1334,7 @@ mod tests {
             code.instrs.last(),
             Some(&Instr::InitSlot {
                 src: 0,
-                field_index: 4
+                own_index: 4
             })
         );
     }
@@ -1672,7 +1675,7 @@ mod tests {
             code.instrs.last(),
             Some(Instr::InitSlot {
                 src: 2,
-                field_index: 4
+                own_index: 4
             })
         ));
         assert_eq!(code.statement_pc, vec![(0, 0..4)]);

@@ -196,6 +196,16 @@ pub struct Frame {
     /// §7.2). A further attempt to return through an uncontinuable
     /// activation is a `cannotReturn` error.
     pub uncontinuable: bool,
+    /// The absolute field index a compiled `InitSlot`'s mixin-relative
+    /// `own_index` is offset by -- `MixinApplication.own_slot_base` for the
+    /// class level currently being initialized. Meaningful only for a
+    /// `FrameKind::Initializer` frame while `Engine::Bytecode` runs its
+    /// compiled body; `Interpreter::run_own_initializer` sets it to each
+    /// level's own base as `run_superclass_initializer`'s single reused
+    /// frame walks the chain, and restores the caller's value afterward.
+    /// Irrelevant (left at 0) for every other frame kind: a method, block,
+    /// or top-level body never contains `InitSlot`.
+    pub slot_base: usize,
 }
 
 // ---------- Errors ----------
@@ -253,6 +263,7 @@ mod tests {
             superclass: None,
             slot_index: HashMap::new(),
             num_slots: 0,
+            own_slot_base: 0,
         })
     }
 
@@ -321,6 +332,7 @@ mod tests {
             current_class: None,
             kind: FrameKind::TopLevel,
             uncontinuable: false,
+            slot_base: 0,
         };
         assert!(frame.current_class.is_none());
     }

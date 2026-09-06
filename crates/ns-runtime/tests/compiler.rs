@@ -77,7 +77,7 @@ fn compiled_method_is_reachable_by_its_dispatch_key() {
 }
 
 #[test]
-fn compile_initializer_lowers_slots_then_init_exprs_with_absolute_field_indices() {
+fn compile_initializer_lowers_slots_then_init_exprs_with_own_slot_indices() {
     let src = "Newspeak3\n'T'\nclass Foo x: a = Object new (\n  | p = a. q ::= 5. |\n  q := p.\n) (\n) : ()";
     let (_interp, class, bindings) = load(src);
     let init = compiler::compile_initializer(&class, &bindings);
@@ -89,10 +89,12 @@ fn compile_initializer_lowers_slots_then_init_exprs_with_absolute_field_indices(
     assert_eq!(
         init.instrs,
         vec![
-            // `p = a.` -- `a` is register 0, written straight into field 0.
+            // `p = a.` -- `a` is register 0, written straight into own
+            // slot 0 (`vm::run_code` adds the frame's `slot_base` at run
+            // time to get the absolute field index).
             Instr::InitSlot {
                 src: 0,
-                field_index: 0
+                own_index: 0
             },
             // `q ::= 5.`
             Instr::LoadLiteral {
@@ -101,7 +103,7 @@ fn compile_initializer_lowers_slots_then_init_exprs_with_absolute_field_indices(
             },
             Instr::InitSlot {
                 src: 1,
-                field_index: 1
+                own_index: 1
             },
             // `q := p.` -- slot reads/writes are lexical sends, as in M1.
             Instr::SendLexical {
@@ -135,7 +137,7 @@ fn an_uninitialized_slot_emits_nothing() {
         .instrs
         .iter()
         .filter_map(|i| match i {
-            Instr::InitSlot { field_index, .. } => Some(*field_index),
+            Instr::InitSlot { own_index, .. } => Some(*own_index),
             _ => None,
         })
         .collect();

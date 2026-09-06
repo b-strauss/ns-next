@@ -81,6 +81,18 @@ pub enum DecodeError {
     /// declares, so only refusing here keeps a crafted image from aborting
     /// the process at the first `X new`.
     MissingInitializer,
+    /// The image's code table has a different number of mixin sections than
+    /// `mixin::preorder` finds in the reloaded source's mixin tree -- a
+    /// nested class added or removed since the snapshot. No mixin identity
+    /// survives a save/reload, so position is the only correspondence
+    /// `install_code_table` has between an image's sections and the
+    /// reloaded tree; a length mismatch means that correspondence cannot be
+    /// trusted at all; refusing outright is safer than pairing sections
+    /// with the wrong mixins.
+    MixinCountMismatch {
+        image: usize,
+        source: usize,
+    },
     /// A compiled body installed where a body of another kind belongs, or
     /// named as a closure's body when it is not a block body. The kinds are
     /// not interchangeable: a block body runs in a `FrameKind::Closure`
@@ -195,6 +207,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::MissingInitializer => write!(
                 f,
                 "the reloaded source's root class needs an instance initializer, which the image has no compiled code for"
+            ),
+            DecodeError::MixinCountMismatch { image, source } => write!(
+                f,
+                "the image carries {image} mixin section(s), but the reloaded source's class tree has {source} -- a nested class was added or removed since the snapshot"
             ),
             DecodeError::WrongCodeKind { expected } => {
                 write!(f, "image code is not a {expected} body")
@@ -417,14 +433,23 @@ pub fn read_builtin_class(r: &mut Reader) -> Result<BuiltinClass, DecodeError> {
     })
 }
 
+/// One decoded mixin's own section: `(selector, code id)` per method,
+/// sorted by selector exactly as encoded, and its initializer's code id if
+/// it has one.
+#[derive(Debug, PartialEq)]
+pub struct DecodedMixinSection {
+    pub methods: Vec<(String, u32)>,
+    pub initializer: Option<u32>,
+}
+
 /// The decoded code table before it is bound to a reloaded class.
+/// `mixins` is in `mixin::preorder` order -- `install_code_table` replays
+/// that same order over the *reloaded* mixin tree to bind each section back
+/// to the mixin it belongs to.
 #[derive(Debug, PartialEq)]
 pub struct DecodedCodeTable {
     pub codes: Vec<Rc<CompiledCode>>,
-    /// `(selector, code id)` per method of the root class, sorted by
-    /// selector exactly as encoded.
-    pub methods: Vec<(String, u32)>,
-    pub initializer: Option<u32>,
+    pub mixins: Vec<DecodedMixinSection>,
 }
 
 pub fn decode_code_table(r: &mut Reader) -> Result<DecodedCodeTable, DecodeError> {
@@ -434,26 +459,30 @@ pub fn decode_code_table(r: &mut Reader) -> Result<DecodedCodeTable, DecodeError
         let code = decode_code(r, &codes)?;
         codes.push(Rc::new(code));
     }
-    let method_count = r.read_u32()? as usize;
-    let mut methods = reserve_for(method_count, r);
-    for _ in 0..method_count {
-        let selector = r.read_str()?;
-        let id = r.read_u32()?;
-        check_code_id(id, &codes)?;
-        methods.push((selector, id));
+    let mixin_count = r.read_u32()? as usize;
+    let mut mixins: Vec<DecodedMixinSection> = reserve_for(mixin_count, r);
+    for _ in 0..mixin_count {
+        let method_count = r.read_u32()? as usize;
+        let mut methods = reserve_for(method_count, r);
+        for _ in 0..method_count {
+            let selector = r.read_str()?;
+            let id = r.read_u32()?;
+            check_code_id(id, &codes)?;
+            methods.push((selector, id));
+        }
+        let initializer = if r.read_bool()? {
+            let id = r.read_u32()?;
+            check_code_id(id, &codes)?;
+            Some(id)
+        } else {
+            None
+        };
+        mixins.push(DecodedMixinSection {
+            methods,
+            initializer,
+        });
     }
-    let initializer = if r.read_bool()? {
-        let id = r.read_u32()?;
-        check_code_id(id, &codes)?;
-        Some(id)
-    } else {
-        None
-    };
-    Ok(DecodedCodeTable {
-        codes,
-        methods,
-        initializer,
-    })
+    Ok(DecodedCodeTable { codes, mixins })
 }
 
 /// `Vec::with_capacity` for a count read from an untrusted stream: every
@@ -474,8 +503,19 @@ fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError>
 }
 
 /// Binds a decoded table to the *reloaded* root class: methods re-keyed by
-/// selector to the reloaded `Rc<MethodDecl>`s, the initializer to the
-/// reloaded class. The image's bytecode is what runs after a load.
+/// selector to the reloaded `Rc<MethodDecl>`s, each initializer to the
+/// reloaded mixin it belongs to. The image's bytecode is what runs after a
+/// load.
+///
+/// Walks `table.mixins` against `mixin::preorder(reloaded root)` in
+/// lockstep: the two must enumerate the same mixins in the same order (no
+/// mixin identity survives a save/reload, so position is the only
+/// correspondence there is), which is why `encode_code_table` and
+/// `compile_module` both walk the same shared `preorder`. A length
+/// mismatch means the reloaded source's mixin tree has a different shape
+/// than the one the image was compiled from (a nested class added or
+/// removed) -- a decode error, not a panic or a silently truncated zip that
+/// would leave some mixin's methods uninstalled.
 pub fn install_code_table(
     table: &DecodedCodeTable,
     root_class: &ClassRef,
@@ -486,84 +526,97 @@ pub fn install_code_table(
         initializers: HashMap::new(),
         bindings: bindings.clone(),
     };
-    let borrowed = root_class.borrow();
-    let ObjectData::Class(data) = &borrowed.data else {
-        return Err(DecodeError::NotAClass);
+    let root_mixin = {
+        let borrowed = root_class.borrow();
+        let ObjectData::Class(data) = &borrowed.data else {
+            return Err(DecodeError::NotAClass);
+        };
+        data.application.mixin.clone()
     };
-    for (selector, id) in &table.methods {
-        let decl = data
-            .application
-            .mixin
-            .methods
-            .get(&Symbol::intern(selector))
-            .ok_or_else(|| DecodeError::UnknownSelector(selector.clone()))?;
-        let code = code_at(table, *id)?;
-        // The frame an installed body runs in is built by the shared
-        // orchestration, not by the body: `invoke_method` fills `args` from
-        // the send (so, from the selector's arity) and sizes `temps` from
-        // the body's `num_args`. A body whose arity disagrees with the
-        // reloaded declaration therefore leaves `read_local` splitting a
-        // frame it does not fit -- reading `temps` past its end for a body
-        // that claims too many arguments. Only this function sees both.
-        check_code_arity(
-            &code,
-            CodeKind::Method,
-            format!("method `{selector}`"),
-            instantiate::pattern_param_count(&decl.pattern),
-        )?;
-        module.methods.insert(method_key(decl), code);
+    let mut mixin_order = Vec::new();
+    crate::mixin::preorder(&root_mixin, &mut mixin_order);
+    if mixin_order.len() != table.mixins.len() {
+        return Err(DecodeError::MixinCountMismatch {
+            image: table.mixins.len(),
+            source: mixin_order.len(),
+        });
     }
-    // The other direction: a method the reloaded source defines but the
-    // image has no code for would leave `module.methods` with a hole, and
-    // dispatching it panics in the engine hook. That is the ordinary
-    // "source changed since the snapshot" path, so it is a decode error
-    // here rather than a crash later. Sorted, so the reported selector does
-    // not depend on the mixin's method `HashMap` order.
-    let mut missing: Vec<&str> = data
-        .application
-        .mixin
-        .methods
-        .iter()
-        .filter(|(_, decl)| !module.methods.contains_key(&method_key(decl)))
-        .map(|(selector, _)| selector.as_str())
-        .collect();
-    missing.sort_unstable();
-    if let Some(selector) = missing.first() {
-        return Err(DecodeError::MissingSelector((*selector).to_string()));
-    }
-    match table.initializer {
-        Some(id) => {
-            let code = code_at(table, id)?;
-            // The same reconciliation for the initializer, whose `num_args`
-            // is the class's factory parameter count
-            // (`compile_initializer`) and whose frame's `args` are the
-            // factory arguments `instantiate` checked against that same
-            // pattern.
+    for (mixin, section) in mixin_order.iter().zip(&table.mixins) {
+        for (selector, id) in &section.methods {
+            let decl = mixin
+                .methods
+                .get(&Symbol::intern(selector))
+                .ok_or_else(|| DecodeError::UnknownSelector(selector.clone()))?;
+            let code = code_at(table, *id)?;
+            // The frame an installed body runs in is built by the shared
+            // orchestration, not by the body: `invoke_method` fills `args`
+            // from the send (so, from the selector's arity) and sizes
+            // `temps` from the body's `num_args`. A body whose arity
+            // disagrees with the reloaded declaration therefore leaves
+            // `read_local` splitting a frame it does not fit -- reading
+            // `temps` past its end for a body that claims too many
+            // arguments. Only this function sees both.
             check_code_arity(
                 &code,
-                CodeKind::Initializer,
-                "instance initializer".to_string(),
-                data.application
-                    .mixin
-                    .factory
-                    .as_deref()
-                    .map(instantiate::pattern_param_count)
-                    .unwrap_or(0),
+                CodeKind::Method,
+                format!("method `{selector}`"),
+                instantiate::pattern_param_count(&decl.pattern),
             )?;
-            module
-                .initializers
-                .insert(mixin_key(&data.application.mixin), code);
+            module.methods.insert(method_key(decl), code);
         }
-        // And the initializer's `MissingSelector`: a class with slots or
-        // `initExpr`s runs compiled initializer code on every `X new`, and
-        // `run_own_initializer` *panics* when the module has none. The
-        // reloaded source decides whether the class needs it, and the image
-        // decides whether it carries it -- two halves only this function
-        // sees, exactly as for the method table above.
-        None if instantiate::class_has_initializer_code(root_class) => {
-            return Err(DecodeError::MissingInitializer)
+        // The other direction: a method the reloaded source defines but the
+        // image has no code for would leave `module.methods` with a hole,
+        // and dispatching it panics in the engine hook. That is the
+        // ordinary "source changed since the snapshot" path, so it is a
+        // decode error here rather than a crash later. Sorted, so the
+        // reported selector does not depend on the mixin's method
+        // `HashMap` order. Scoped to *this* mixin's own methods only --
+        // `module.methods` accumulates every mixin's methods as the loop
+        // proceeds, but `method_key` is `Rc<MethodDecl>` identity, so
+        // checking `mixin.methods` here can never see a different mixin's
+        // entry as if it were this one's.
+        let mut missing: Vec<&str> = mixin
+            .methods
+            .iter()
+            .filter(|(_, decl)| !module.methods.contains_key(&method_key(decl)))
+            .map(|(selector, _)| selector.as_str())
+            .collect();
+        missing.sort_unstable();
+        if let Some(selector) = missing.first() {
+            return Err(DecodeError::MissingSelector((*selector).to_string()));
         }
-        None => {}
+        match section.initializer {
+            Some(id) => {
+                let code = code_at(table, id)?;
+                // The same reconciliation for the initializer, whose
+                // `num_args` is the mixin's factory parameter count
+                // (`compile_initializer`) and whose frame's `args` are the
+                // factory arguments `instantiate` checked against that same
+                // pattern.
+                check_code_arity(
+                    &code,
+                    CodeKind::Initializer,
+                    "instance initializer".to_string(),
+                    mixin
+                        .factory
+                        .as_deref()
+                        .map(instantiate::pattern_param_count)
+                        .unwrap_or(0),
+                )?;
+                module.initializers.insert(mixin_key(mixin), code);
+            }
+            // And the initializer's `MissingSelector`: a class with slots
+            // or `initExpr`s runs compiled initializer code on every
+            // `X new`, and `run_own_initializer` *panics* when the module
+            // has none. The reloaded source decides whether the mixin
+            // needs it, and the image decides whether it carries it -- two
+            // halves only this function sees, exactly as for the method
+            // table above.
+            None if instantiate::mixin_needs_initializer_code(mixin) => {
+                return Err(DecodeError::MissingInitializer)
+            }
+            None => {}
+        }
     }
     Ok(module)
 }
@@ -1044,7 +1097,7 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
             let src = r.read_u16()?;
             Instr::InitSlot {
                 src,
-                field_index: r.read_u32()?,
+                own_index: r.read_u32()?,
             }
         }
         13 => Instr::Return { reg: r.read_u16()? },
@@ -1350,6 +1403,10 @@ fn decode_frame(
         current_class,
         kind,
         uncontinuable,
+        // Nothing re-activates a decoded frame (this module's doc comment,
+        // below), so no compiled `InitSlot` ever reads this on a frame that
+        // came off the wire.
+        slot_base: 0,
     })
 }
 
@@ -1366,6 +1423,7 @@ fn placeholder_frame() -> Frame {
         current_class: None,
         kind: FrameKind::TopLevel,
         uncontinuable: false,
+        slot_base: 0,
     }
 }
 
