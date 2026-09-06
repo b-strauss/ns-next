@@ -256,11 +256,24 @@ toolchain the application class is saved as a `.ns` file and built into a
 `.vfuel` binary that is served alongside the Primordial Soup VM
 ([newspeak](https://github.com/newspeaklanguage/newspeak)).
 
-Whether a `.vfuel` retains source text is **not established** by any source
-read here. Note that Newspeak's reflection is mirror-based, so source access is
-a *capability* rather than a property of every object — which is the mechanism
-by which such metadata would be optional (Bracha & Ungar, "Mirrors: Design
-Principles for Meta-level Facilities", OOPSLA 2004).
+A deployed `.vfuel` **does carry full source text**, checked directly rather
+than assumed: `HopscotchWebIDE.vfuel` (3.00 MB, fetched from
+`newspeaklanguage.org/samples/`) contains complete class definitions with their
+doc comments — `class JSForPrimordialSoup usingPlatform: platform = (` followed
+by its slot declarations, and multi-paragraph `(* … *)` commentary. Long text
+runs account for roughly 1.4 MB of the 3.0 MB. So upstream's second artifact is
+*not* a source-free one; it is a serialized object graph that happens to
+include the source strings hanging off its method and class objects, next to
+the bytecode those same objects carry (the serialized image contains the source
+of the VM's own method representation: "public bytecode <ByteArray> (* Must be
+slot 3, known to the VM. *)").
+
+That makes the source-free variant an open design question for `ns-next` rather
+than something to copy. The mechanism that would make it possible is already in
+Newspeak's architecture: reflection is mirror-based, so source access is a
+*capability* rather than a property of every object (Bracha & Ungar, "Mirrors:
+Design Principles for Meta-level Facilities", OOPSLA 2004). Whether upstream
+offers a build that exercises that separation was not established here.
 
 What this means for `ns-next`, if a source-free deployment artifact is wanted:
 
