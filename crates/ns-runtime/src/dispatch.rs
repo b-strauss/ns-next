@@ -6,8 +6,20 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
+use crate::mixin::MixinApplication;
 use crate::types::*;
 use crate::Symbol;
+
+/// The behaviour half of a class object, or `None` if `class` does not
+/// point at one. One accessor, so a construction site that needs a
+/// superclass's application never has to re-derive the borrow-and-match.
+pub fn class_application(class: &ClassRef) -> Option<Rc<MixinApplication>> {
+    let borrowed = class.borrow();
+    match &borrowed.data {
+        ObjectData::Class(data) => Some(data.application.clone()),
+        _ => None,
+    }
+}
 
 pub enum Lookup {
     Method(Rc<ast::MethodDecl>, ClassRef),
@@ -91,66 +103,79 @@ fn walk(
     accept: impl Fn(ast::AccessModifier) -> bool,
     hard_stop_on_mismatch: bool,
 ) -> Lookup {
-    let mut current = Some(class.clone());
-    while let Some(c) = current {
-        let (method, builtin, superclass) = {
+    let mut level = level_of(class);
+    while let Some((c, application)) = level {
+        let (builtin, superclass) = {
             let borrowed = c.borrow();
             match &borrowed.data {
-                ObjectData::Class(data) => (
-                    data.methods.get(&selector).cloned(),
-                    data.builtin,
-                    data.superclass.clone(),
-                ),
+                ObjectData::Class(data) => (data.builtin, data.superclass.clone()),
                 _ => return Lookup::NotFound,
             }
         };
-        if let Some(method) = method {
+        let next = next_level(superclass, &application);
+        if let Some(method) = application.mixin.methods.get(&selector).cloned() {
             let access = effective_access(access_of(&method));
             return if accept(access) {
                 Lookup::Method(method, c)
             } else if hard_stop_on_mismatch {
                 Lookup::NotFound
             } else {
-                current = superclass;
+                level = next;
                 continue;
             };
         }
         if let Some(kind) = builtin {
             return Lookup::Native(kind);
         }
-        current = superclass;
+        level = next;
     }
     Lookup::NotFound
+}
+
+/// One level of the two chains a lookup walks: the application supplies the
+/// code, the class object supplies the identity `Frame.current_class` needs
+/// for `super` and `outer`. Returns `None` for a non-class object, which is
+/// what ends a walk that was handed one.
+fn level_of(class: &ClassRef) -> Option<(ClassRef, Rc<MixinApplication>)> {
+    let borrowed = class.borrow();
+    match &borrowed.data {
+        ObjectData::Class(data) => Some((class.clone(), data.application.clone())),
+        _ => None,
+    }
+}
+
+/// Steps both chains together. Every construction site (`load_class`,
+/// `build_builtin_classes`) links a class object's superclass exactly when
+/// it links its application's superclass, so the two chains have the same
+/// length; requiring both halves here means a hierarchy that somehow lost
+/// one of them ends the search instead of reporting a `Lookup::Method`
+/// whose class object comes from a different level than its code.
+fn next_level(
+    superclass: Option<ClassRef>,
+    application: &Rc<MixinApplication>,
+) -> Option<(ClassRef, Rc<MixinApplication>)> {
+    let superclass = superclass?;
+    let super_application = application.superclass.clone()?;
+    Some((superclass, super_application))
 }
 
 fn access_of(method: &ast::MethodDecl) -> Option<ast::AccessModifier> {
     method.access
 }
 
-/// Walks `class`'s own-or-inherited `slot_index` maps (same shape as
-/// `walk` above, but there is no access check -- slot access is never
+/// `name`'s absolute instance-field index, if any. No chain walk: the
+/// application's `slot_index` already carries every inherited slot at its
+/// absolute offset, with an own slot's entry overriding an inherited one of
+/// the same name. There is no access check -- slot access is never
 /// access-controlled the way a method send is in Milestone 1; see Task 7's
-/// design note on this known gap) to find `name`'s absolute instance-field
-/// index, if any. Used by `eval.rs::dispatch_lexical_send` before falling
-/// through to `lookup_defined_for`/`lookup_protected`.
+/// design note on this known gap. Used by `eval.rs::dispatch_lexical_send`
+/// before falling through to `lookup_defined_for`/`lookup_protected`.
 pub fn lookup_slot(class: &ClassRef, name: Symbol) -> Option<usize> {
-    let mut current = Some(class.clone());
-    while let Some(c) = current {
-        let (index, superclass) = {
-            let borrowed = c.borrow();
-            match &borrowed.data {
-                ObjectData::Class(data) => {
-                    (data.slot_index.get(&name).copied(), data.superclass.clone())
-                }
-                _ => return None,
-            }
-        };
-        if let Some(i) = index {
-            return Some(i);
-        }
-        current = superclass;
+    let borrowed = class.borrow();
+    match &borrowed.data {
+        ObjectData::Class(data) => data.application.slot_index.get(&name).copied(),
+        _ => None,
     }
-    None
 }
 
 #[cfg(test)]
@@ -225,19 +250,33 @@ mod tests {
             Symbol::intern(selector.trim_end_matches(':')),
             Rc::new(method),
         );
+        // The application chain must be linked wherever the class-object
+        // chain is: `next_level` steps both, so a superclass linked on only
+        // one of them would end the walk one level early and these tests
+        // would pass for the wrong reason.
+        let super_application = superclass.as_ref().and_then(class_application);
+        let application = Rc::new(MixinApplication {
+            mixin: Rc::new(crate::mixin::Mixin {
+                name: Symbol::intern(name),
+                methods,
+                instance_slots: vec![],
+                init_exprs: vec![],
+                factory: None,
+                nested: vec![],
+                class_side: None,
+                decl: None,
+            }),
+            superclass: super_application,
+            slot_index: HashMap::new(),
+            num_slots: 0,
+        });
         Rc::new(RefCell::new(Object {
             class: dummy_class(),
             identity_hash: 0,
             data: ObjectData::Class(ClassData {
-                name: Symbol::intern(name),
-                superclass,
-                methods,
-                instance_slots: vec![],
-                slot_index: HashMap::new(),
-                init_exprs: vec![],
-                class_side: None,
+                application,
                 enclosing: None,
-                factory: None,
+                superclass,
                 builtin: None,
             }),
         }))

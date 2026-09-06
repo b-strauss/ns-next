@@ -70,7 +70,10 @@ fn inherited_slots_are_counted_before_own_slots() {
 
     // Slot count includes inherited and own.
     assert_eq!(sup_app.num_slots, 2, "superclass should have 2 slots");
-    assert_eq!(sub_app.num_slots, 3, "subclass should have 3 slots (2 inherited + 1 own)");
+    assert_eq!(
+        sub_app.num_slots, 3,
+        "subclass should have 3 slots (2 inherited + 1 own)"
+    );
 
     // Inherited slots must be reachable by name and map to their declaring level's index.
     assert_eq!(
@@ -90,4 +93,47 @@ fn inherited_slots_are_counted_before_own_slots() {
         Some(&2),
         "own slot 'c' must resolve to index 2 (past the 2 inherited slots)"
     );
+}
+
+/// Parses+resolves a one-class module and loads it (via a freshly
+/// bootstrapped `Interpreter`) into a real class object, returning both.
+/// Same shape as `tests/instantiate.rs`'s helper.
+fn load(
+    src: &str,
+) -> (
+    Interpreter,
+    ns_runtime::ClassRef,
+    ns_runtime::ResolvedModule,
+) {
+    let module = ns_syntax::parse(src).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        src.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interp = Interpreter::bootstrap();
+    let class = interp.load_module(&resolved);
+    (interp, class, resolved)
+}
+
+#[test]
+fn a_class_object_carries_identity_and_its_application_carries_layout() {
+    let src = "Newspeak3\n'Test'\nclass Point new = Object new (| x. y. |) ()\n";
+    let (interp, class, _resolved) = load(src);
+    let borrowed = class.borrow();
+    let ns_runtime::ObjectData::Class(data) = &borrowed.data else {
+        panic!("load_module must produce a class object");
+    };
+    assert_eq!(data.application.num_slots, 2);
+    assert!(
+        data.enclosing.is_none(),
+        "a module's enclosing object is nil"
+    );
+    assert_eq!(
+        data.application.slot_index[&Symbol::intern("y")],
+        1,
+        "layout lives on the application, not on the class object"
+    );
+    let _ = interp;
 }

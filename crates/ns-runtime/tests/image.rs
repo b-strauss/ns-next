@@ -13,7 +13,7 @@ use ns_runtime::image;
 use ns_runtime::image::{decode, encode};
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
-    compiler, Binding, BuiltinClass, ClassRef, ClosureBody, Engine, FrameKind, Interpreter,
+    compiler, Binding, BuiltinClass, ClassRef, ClosureBody, Engine, FrameKind, Interpreter, Mixin,
     ObjectData, Signal, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
@@ -336,7 +336,7 @@ fn method_code(class: &ClassRef, module: &CompiledModule, selector: &str) -> Rc<
     let ObjectData::Class(data) = &borrowed.data else {
         panic!("not a class")
     };
-    module.methods[&method_key(&data.methods[&Symbol::intern(selector)])].clone()
+    module.methods[&method_key(&data.application.mixin.methods[&Symbol::intern(selector)])].clone()
 }
 
 /// Encodes a module's code table into fresh bytes and decodes it back.
@@ -421,8 +421,11 @@ fn a_decoded_code_table_installs_against_a_reloaded_class() {
     let ObjectData::Class(data) = &borrowed.data else {
         panic!("not a class")
     };
-    assert_eq!(installed.methods.len(), data.methods.len());
-    for (selector, decl) in &data.methods {
+    assert_eq!(
+        installed.methods.len(),
+        data.application.mixin.methods.len()
+    );
+    for (selector, decl) in &data.application.mixin.methods {
         let code = installed
             .methods
             .get(&method_key(decl))
@@ -652,18 +655,43 @@ fn the_code_table_encoding_is_deterministic() {
 /// exactly that. It is a refusal to snapshot, not a process abort.
 #[test]
 fn a_method_added_after_compile_module_is_an_encoding_error_not_a_panic() {
-    let (_interp, class, bindings) = load(RICH);
+    let (mut interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(&class, &bindings);
     {
-        // `method_key` is `Rc` pointer identity, so a fresh `Rc` around the
-        // same declaration is a method the compiled module has never seen.
+        // Code lives on the mixin, which is shared and immutable, so adding
+        // a method means re-applying a new mixin -- the same shape the
+        // milestone's edit-and-continue path will take. `method_key` is `Rc`
+        // pointer identity, so a fresh `Rc` around the same declaration is a
+        // method the compiled module has never seen.
+        let (old, super_application) = {
+            let borrowed = class.borrow();
+            let ObjectData::Class(data) = &borrowed.data else {
+                panic!("the root class is a class object");
+            };
+            (
+                data.application.mixin.clone(),
+                data.application.superclass.clone(),
+            )
+        };
+        let mut methods = old.methods.clone();
+        let decl = old.methods.values().next().expect("RICH has methods");
+        methods.insert(Symbol::intern("addedLater"), Rc::new((**decl).clone()));
+        let grown = Rc::new(Mixin {
+            name: old.name,
+            methods,
+            instance_slots: old.instance_slots.clone(),
+            init_exprs: old.init_exprs.clone(),
+            factory: old.factory.clone(),
+            nested: Vec::new(),
+            class_side: None,
+            decl: old.decl.clone(),
+        });
+        let application = interp.apply_mixin(&grown, super_application.as_ref());
         let mut borrowed = class.borrow_mut();
         let ObjectData::Class(data) = &mut borrowed.data else {
             panic!("the root class is a class object");
         };
-        let decl = data.methods.values().next().expect("RICH has methods");
-        let added = Rc::new((**decl).clone());
-        data.methods.insert(Symbol::intern("addedLater"), added);
+        data.application = application;
     }
     let mut w = encode::Writer::new();
     let Err(err) = encode::encode_code_table(&mut w, &module, &class) else {
@@ -1135,7 +1163,7 @@ fn a_closure_and_its_paused_frame_chain_round_trip() {
         let ObjectData::Class(data) = &borrowed.data else {
             panic!("not a class")
         };
-        data.methods.clone()
+        data.application.mixin.methods.clone()
     };
     let FrameKind::Method(decl) = &home.kind else {
         panic!("home is a method frame")
@@ -1581,7 +1609,10 @@ fn a_closure_capturing_a_block_activation_round_trips() {
     let ObjectData::Class(data) = &borrowed.data else {
         panic!("not a class")
     };
-    assert!(Rc::ptr_eq(decl, &data.methods[&Symbol::intern("mk")]));
+    assert!(Rc::ptr_eq(
+        decl,
+        &data.application.mixin.methods[&Symbol::intern("mk")]
+    ));
 }
 
 #[test]
@@ -2376,7 +2407,7 @@ fn class_method_key(class: &ClassRef, selector: &str) -> usize {
     let ObjectData::Class(data) = &borrowed.data else {
         panic!("not a class")
     };
-    method_key(&data.methods[&Symbol::intern(selector)])
+    method_key(&data.application.mixin.methods[&Symbol::intern(selector)])
 }
 
 /// A world whose code table is `[block, foo]` -- `foo`'s body is the one

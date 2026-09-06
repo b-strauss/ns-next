@@ -48,26 +48,23 @@ pub enum ObjectData {
     Class(ClassData),
 }
 
+/// A class object is *identity*; everything a class object can *do* lives
+/// on its `MixinApplication`. Two class objects built from the same mixin
+/// and the same superclass application share one `application`, which is
+/// what lets an inline cache stay monomorphic across enclosing instances
+/// once nested classes give a mixin one class object per enclosing object.
 #[derive(Debug)]
 pub struct ClassData {
-    pub name: Symbol,
-    pub superclass: Option<ClassRef>,
-    pub methods: HashMap<Symbol, Rc<ast::MethodDecl>>,
-    pub instance_slots: Vec<Rc<ast::SlotDecl>>,
-    /// Each of `instance_slots`' (own, not inherited) absolute index into an
-    /// instance's `ObjectData::Instance` fields vector -- computed once in
-    /// `Interpreter::load_class` (Task 7), offset past every inherited
-    /// slot's own index range. Populated for builtins too (always empty --
-    /// no `BuiltinClass` declares slots in Milestone 1).
-    pub slot_index: HashMap<Symbol, usize>,
-    /// This class's own `initExprs` statement list (`newspeak-spec.pdf`
-    /// §6.1/§6.3, Class Instantiation step 5) -- evaluated, in order, after
-    /// this class's own slots are initialized. Empty for every
-    /// `BuiltinClass` (no Newspeak-source init exprs to run).
-    pub init_exprs: Vec<ast::Stmt>,
-    pub class_side: Option<ClassRef>,
+    /// Behaviour: code, layout and the superclass chain. Shared with every
+    /// other class object built from the same mixin and superclass.
+    pub application: Rc<crate::mixin::MixinApplication>,
+    /// `newspeak-spec.pdf` §6: the enclosing object is the nested class's
+    /// only state, which is why a class object cannot be shared between
+    /// instances of its enclosing class.
     pub enclosing: Option<ObjRef>,
-    pub factory: Option<Rc<ast::MessagePattern>>,
+    /// The per-instance class-object chain, parallel to the application
+    /// chain. `outer` and `super` need it; lookup does not.
+    pub superclass: Option<ClassRef>,
     /// `None` for a user-defined class. `Some(kind)` marks one of the
     /// Milestone 1 core-library classes -- see Tasks 10-12.
     pub builtin: Option<BuiltinClass>,
@@ -238,6 +235,27 @@ mod tests {
     /// (its count balanced via `Rc::increment_strong_count` before calling
     /// `Rc::from_raw`), write the real value using that handle as `class`,
     /// then `assume_init`.
+    /// A root application with no code, no slots and no superclass. Built
+    /// directly rather than through `Interpreter::apply_mixin` so this
+    /// module's tests stay free of the interpreter.
+    fn empty_application(name: &str) -> Rc<crate::mixin::MixinApplication> {
+        Rc::new(crate::mixin::MixinApplication {
+            mixin: Rc::new(crate::mixin::Mixin {
+                name: Symbol::intern(name),
+                methods: HashMap::new(),
+                instance_slots: vec![],
+                init_exprs: vec![],
+                factory: None,
+                nested: vec![],
+                class_side: None,
+                decl: None,
+            }),
+            superclass: None,
+            slot_index: HashMap::new(),
+            num_slots: 0,
+        })
+    }
+
     fn dummy_class() -> ClassRef {
         let uninit: Rc<std::mem::MaybeUninit<RefCell<Object>>> = Rc::new_uninit();
         let raw_mut = Rc::as_ptr(&uninit) as *mut std::mem::MaybeUninit<RefCell<Object>>;
@@ -256,15 +274,9 @@ mod tests {
                 class: self_ref,
                 identity_hash: 0,
                 data: ObjectData::Class(ClassData {
-                    name: Symbol::intern("Object"),
-                    superclass: None,
-                    methods: HashMap::new(),
-                    instance_slots: vec![],
-                    slot_index: HashMap::new(),
-                    init_exprs: vec![],
-                    class_side: None,
+                    application: empty_application("Object"),
                     enclosing: None,
-                    factory: None,
+                    superclass: None,
                     builtin: Some(BuiltinClass::Object),
                 }),
             }));

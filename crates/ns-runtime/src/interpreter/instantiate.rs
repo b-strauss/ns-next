@@ -49,13 +49,13 @@ impl Interpreter {
     /// accessor a nested class declaration implicitly defines -- and no
     /// Milestone 1 fixture or corpus module needs it.
     ///
-    /// **Class-side methods are discarded.** `class_side` below is set to
-    /// `None` unconditionally: `decl.class_side`'s methods are parsed,
-    /// resolved, and then dropped here. Class-side / class methods are out of
-    /// scope for Milestone 1 (there are no metaclasses either -- every class
-    /// object's own `.class` is the one shared `Object`-tagged placeholder),
-    /// so there is nothing anywhere in the crate that would consume a
-    /// class-side entry if one were stored.
+    /// **Class-side methods are discarded.** The mixin's `class_side` below
+    /// is set to `None` unconditionally: `decl.class_side`'s methods are
+    /// parsed, resolved, and then dropped here. Class-side / class methods
+    /// are out of scope for Milestone 1 (there are no metaclasses either --
+    /// every class object's own `.class` is the one shared `Object`-tagged
+    /// placeholder), so there is nothing anywhere in the crate that would
+    /// consume a class-side entry if one were stored.
     fn load_class(&mut self, decl: &ast::ClassDecl, enclosing: Option<ObjRef>) -> ClassRef {
         let superclass = self.resolve_superclass_receiver(decl);
         let mut methods = HashMap::new();
@@ -68,44 +68,48 @@ impl Interpreter {
             .iter()
             .map(|s| Rc::new(s.clone()))
             .collect();
-        // Slot access fix (Task 7 "must fix before committing" #2): each of
-        // this class's own slots gets an absolute index into an instance's
-        // `ObjectData::Instance` fields vector, offset past every inherited
-        // slot -- mirrors `total_slot_count`'s walk below, but per-name.
-        let mut slot_index = HashMap::new();
-        let base = superclass.as_ref().map(total_slot_count).unwrap_or(0);
-        for (i, slot) in instance_slots.iter().enumerate() {
-            slot_index.insert(Symbol::intern(&slot.name.name), base + i);
-        }
+        let mixin = Rc::new(crate::mixin::Mixin {
+            name: Symbol::intern(&decl.name.name),
+            methods,
+            instance_slots,
+            // Class instantiation "must fix" #1: this class's own initExprs,
+            // evaluated for real by `run_own_init_exprs` below (Step 5 of
+            // the spec's six numbered steps).
+            init_exprs: decl.instance_side.init_exprs.clone(),
+            factory: Some(Rc::new(decl.factory.clone().unwrap_or(
+                ast::MessagePattern::Unary {
+                    selector: ast::Ident {
+                        name: "new".to_string(),
+                        span: decl.span,
+                    },
+                },
+            ))),
+            // Nested classes are still not loaded (see this function's doc
+            // comment); a later task fills this in and gives each entry its
+            // accessor and cache slot.
+            nested: Vec::new(),
+            // Milestone 1 known gap (see this function's doc comment):
+            // class-side methods are out of scope, so `decl.class_side` is
+            // discarded here rather than stored.
+            class_side: None,
+            decl: Some(Rc::new(decl.clone())),
+        });
+        // The slot layout is the application's job, not the class object's:
+        // `apply_mixin` offsets this class's own slots past every inherited
+        // one and merges the superclass's map in, so a class object never
+        // computes -- or can disagree about -- an instance's shape.
+        let super_application = superclass
+            .as_ref()
+            .and_then(crate::dispatch::class_application);
+        let application = self.apply_mixin(&mixin, super_application.as_ref());
         let identity_hash = self.alloc_identity_hash();
         Rc::new(RefCell::new(Object {
             class: self.builtin_class(BuiltinClass::Object), // M1 simplification, see Task 7 Step 1
             identity_hash,
             data: ObjectData::Class(ClassData {
-                name: Symbol::intern(&decl.name.name),
-                superclass,
-                methods,
-                instance_slots,
-                slot_index,
-                // Class instantiation "must fix" #1: this class's own
-                // initExprs, evaluated for real by `run_own_init_exprs`
-                // below (Step 5 of the spec's six numbered steps).
-                init_exprs: decl.instance_side.init_exprs.clone(),
-                // Milestone 1 known gap (see this function's doc comment):
-                // class-side methods are out of scope, so `decl.class_side`
-                // is discarded here rather than stored. Nothing in the crate
-                // reads `ClassData.class_side`; it exists for a later
-                // milestone.
-                class_side: None,
+                application,
                 enclosing,
-                factory: Some(Rc::new(decl.factory.clone().unwrap_or(
-                    ast::MessagePattern::Unary {
-                        selector: ast::Ident {
-                            name: "new".to_string(),
-                            span: decl.span,
-                        },
-                    },
-                ))),
+                superclass,
                 builtin: None,
             }),
         }))
@@ -114,7 +118,7 @@ impl Interpreter {
     /// Intercepts an ordinary explicit-receiver send (`Interpreter::send`'s
     /// call site, above -- checked *before* `dispatch::lookup_public`) when
     /// `receiver` is a class object and `selector` is that class's own
-    /// factory selector: `class_data.factory`'s pattern if the class
+    /// factory selector: the class's mixin `factory` pattern if the class
     /// declared one (every user-defined class does -- `load_class` above
     /// always fills this in, defaulting to a bare `new` pattern when the
     /// source class decl left it out), or a bare `new` selector for a
@@ -155,7 +159,7 @@ impl Interpreter {
             let ObjectData::Class(class_data) = &borrowed.data else {
                 return None;
             };
-            let factory_selector = match &class_data.factory {
+            let factory_selector = match &class_data.application.mixin.factory {
                 Some(pattern) => Symbol::intern(&method_name(pattern)),
                 None => Symbol::intern("new"),
             };
@@ -234,7 +238,12 @@ impl Interpreter {
         let declared_arity = {
             let borrowed = class.borrow();
             match &borrowed.data {
-                ObjectData::Class(data) => data.factory.as_deref().map(pattern_param_count),
+                ObjectData::Class(data) => data
+                    .application
+                    .mixin
+                    .factory
+                    .as_deref()
+                    .map(pattern_param_count),
                 _ => None,
             }
         };
@@ -252,8 +261,10 @@ impl Interpreter {
             }
         }
 
-        // Step 1: one instance, every slot nil.
-        let slot_count = total_slot_count(&class);
+        // Step 1: one instance, every slot nil. The application already
+        // knows the whole layout, inherited slots included -- summing the
+        // chain here again would be a second answer to the same question.
+        let slot_count = crate::dispatch::class_application(&class).map_or(0, |a| a.num_slots);
         let instance = self.new_instance_object(
             class.clone(),
             ObjectData::Instance(vec![Value::Nil; slot_count]),
@@ -300,7 +311,7 @@ impl Interpreter {
     /// initializer context, and pass its arguments to the superclass's
     /// instance initializer. This function does none of that: it walks
     /// straight up `ClassData.superclass` and runs each level's slots and
-    /// initExprs. The clause's message is not even carried on `ClassData` --
+    /// initExprs. The clause's message is not even carried on the mixin --
     /// `load_class` stores only `factory`, this class's *own* primary factory
     /// pattern, while the clause's own message list lives on
     /// `ast::SuperclassClause::messages`.
@@ -423,14 +434,14 @@ impl Interpreter {
         let slots = {
             let borrowed = class.borrow();
             match &borrowed.data {
-                ObjectData::Class(data) => data.instance_slots.clone(),
+                ObjectData::Class(data) => data.application.mixin.instance_slots.clone(),
                 _ => return Ok(()),
             }
         };
         let slot_index = {
             let borrowed = class.borrow();
             match &borrowed.data {
-                ObjectData::Class(data) => data.slot_index.clone(),
+                ObjectData::Class(data) => data.application.slot_index.clone(),
                 _ => return Ok(()),
             }
         };
@@ -470,7 +481,7 @@ impl Interpreter {
         let init_exprs = {
             let borrowed = class.borrow();
             match &borrowed.data {
-                ObjectData::Class(data) => data.init_exprs.clone(),
+                ObjectData::Class(data) => data.application.mixin.init_exprs.clone(),
                 _ => return Ok(()),
             }
         };
@@ -553,21 +564,10 @@ pub(crate) fn pattern_param_count(pattern: &ast::MessagePattern) -> usize {
 pub(crate) fn class_has_initializer_code(class: &ClassRef) -> bool {
     let borrowed = class.borrow();
     match &borrowed.data {
-        ObjectData::Class(data) => !(data.instance_slots.is_empty() && data.init_exprs.is_empty()),
+        ObjectData::Class(data) => {
+            let mixin = &data.application.mixin;
+            !(mixin.instance_slots.is_empty() && mixin.init_exprs.is_empty())
+        }
         _ => false,
     }
-}
-
-fn total_slot_count(class: &ClassRef) -> usize {
-    let mut count = 0;
-    let mut current = Some(class.clone());
-    while let Some(c) = current {
-        let borrowed = c.borrow();
-        let ObjectData::Class(data) = &borrowed.data else {
-            break;
-        };
-        count += data.instance_slots.len();
-        current = data.superclass.clone();
-    }
-    count
 }

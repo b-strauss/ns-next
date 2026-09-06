@@ -356,7 +356,7 @@ fn cmd_disasm(file: &Path, selector: Option<&str>, initializer: bool) -> ExitCod
     let (code, name) = match (selector, initializer) {
         (None, true) => {
             let class_name = match &class.borrow().data {
-                ns_runtime::ObjectData::Class(data) => data.name.to_string(),
+                ns_runtime::ObjectData::Class(data) => data.application.mixin.name.to_string(),
                 _ => "?".to_string(),
             };
             (
@@ -367,6 +367,8 @@ fn cmd_disasm(file: &Path, selector: Option<&str>, initializer: bool) -> ExitCod
         (Some(selector), false) => {
             let method = match &class.borrow().data {
                 ns_runtime::ObjectData::Class(data) => data
+                    .application
+                    .mixin
                     .methods
                     .get(&ns_runtime::Symbol::intern(selector))
                     .cloned(),

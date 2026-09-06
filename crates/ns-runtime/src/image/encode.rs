@@ -205,6 +205,8 @@ pub fn encode_code_table(
         let borrowed = root_class.borrow();
         match &borrowed.data {
             ObjectData::Class(data) => data
+                .application
+                .mixin
                 .methods
                 .iter()
                 .map(|(selector, decl)| {
@@ -220,7 +222,7 @@ pub fn encode_code_table(
             _ => Vec::new(),
         }
     };
-    // `ClassData.methods` is a `HashMap`; sorting is what makes the table
+    // The mixin's method table is a `HashMap`; sorting is what makes the table
     // canonical rather than iteration-order dependent.
     methods.sort_by(|a, b| a.0.cmp(&b.0));
     for (_, code) in &methods {

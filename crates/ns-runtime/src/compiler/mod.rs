@@ -65,10 +65,15 @@ pub fn compile_initializer(
             panic!("internal: compile_initializer called on a non-class object");
         };
         (
-            data.instance_slots.clone(),
-            data.slot_index.clone(),
-            data.init_exprs.clone(),
-            data.factory.as_deref().map(num_args_of).unwrap_or(0),
+            data.application.mixin.instance_slots.clone(),
+            data.application.slot_index.clone(),
+            data.application.mixin.init_exprs.clone(),
+            data.application
+                .mixin
+                .factory
+                .as_deref()
+                .map(num_args_of)
+                .unwrap_or(0),
         )
     };
     let mut lowerer = Lowerer::new(CodeKind::Initializer, num_args, 0, bindings, vec![]);
@@ -77,7 +82,7 @@ pub fn compile_initializer(
         if let Some(init) = &slot.init {
             let field_index = *slot_index
                 .get(&Symbol::intern(&slot.name.name))
-                .expect("internal: load_class assigns every own slot an absolute index");
+                .expect("internal: apply_mixin assigns every own slot an absolute index");
             lowerer.lower_slot_init(init, field_index as u32);
             source = Some(merge_span(source, slot.span));
         }
@@ -97,7 +102,7 @@ pub fn compile_module(
     let methods: Vec<Rc<ast::MethodDecl>> = {
         let borrowed = root_class.borrow();
         match &borrowed.data {
-            ObjectData::Class(data) => data.methods.values().cloned().collect(),
+            ObjectData::Class(data) => data.application.mixin.methods.values().cloned().collect(),
             _ => Vec::new(),
         }
     };

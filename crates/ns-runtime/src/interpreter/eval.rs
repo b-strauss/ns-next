@@ -312,7 +312,7 @@ fn selector_of(message: &ast::MessageSend) -> Symbol {
 /// A slot's getter (`x`, no colon) or setter (`x:`, exactly one trailing
 /// colon and no others) shape, per `newspeak-spec.pdf` §6.3.2 -- a slot's
 /// getter/setter are "implicitly defined by the slot declaration", not real
-/// `MethodDecl`s in `ClassData.methods`, so `dispatch_lexical_send` must
+/// `MethodDecl`s in the class's mixin, so `dispatch_lexical_send` must
 /// recognize and serve them directly rather than relying on method lookup
 /// to ever find them. Returns `None` for a genuine multi-keyword selector
 /// (e.g. `at:put:`), which can never denote a slot access.
@@ -345,7 +345,7 @@ pub(crate) fn dispatch_lexical_send(
     // Slot access fix (Task 7 "must fix before committing" #2): a
     // `LexicalSend` to a user-defined class's own slot must resolve here,
     // *before* the method/native lookups below -- `load_class` never puts a
-    // slot's implicit getter/setter into `ClassData.methods`, so
+    // slot's implicit getter/setter into the mixin's method table, so
     // `lookup_defined_for`/`lookup_protected` would never find one.
     // Milestone 1 known gap: unlike a method send, this is never
     // access-controlled by the slot's own declared modifier (see the task's

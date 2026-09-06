@@ -54,7 +54,12 @@ fn compiled_method_is_reachable_by_its_dispatch_key() {
         let ObjectData::Class(data) = &borrowed.data else {
             panic!()
         };
-        data.methods.get(&Symbol::intern("foo")).unwrap().clone()
+        data.application
+            .mixin
+            .methods
+            .get(&Symbol::intern("foo"))
+            .unwrap()
+            .clone()
     };
     assert!(module.methods.contains_key(&method_key(&method)));
 }

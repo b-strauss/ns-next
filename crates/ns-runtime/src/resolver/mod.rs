@@ -150,7 +150,7 @@ impl Resolver {
         // A class declaration with no explicit factory pattern
         // (`class C = Super (...)`) contributes no parameters, matching
         // `interpreter/instantiate.rs`'s `load_class`, which defaults such
-        // a class's `ClassData.factory` to a bare unary `new` pattern.
+        // a class's mixin `factory` to a bare unary `new` pattern.
         // Parameter order here is the same order `LocalScope::new` indexes
         // by, which is the order `Interpreter::instantiate` fills
         // `Frame.args` with its `factory_args` -- so `Binding::Local(i)`

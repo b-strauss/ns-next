@@ -490,6 +490,8 @@ pub fn install_code_table(
     };
     for (selector, id) in &table.methods {
         let decl = data
+            .application
+            .mixin
             .methods
             .get(&Symbol::intern(selector))
             .ok_or_else(|| DecodeError::UnknownSelector(selector.clone()))?;
@@ -514,8 +516,10 @@ pub fn install_code_table(
     // dispatching it panics in the engine hook. That is the ordinary
     // "source changed since the snapshot" path, so it is a decode error
     // here rather than a crash later. Sorted, so the reported selector does
-    // not depend on `ClassData.methods`' `HashMap` order.
+    // not depend on the mixin's method `HashMap` order.
     let mut missing: Vec<&str> = data
+        .application
+        .mixin
         .methods
         .iter()
         .filter(|(_, decl)| !module.methods.contains_key(&method_key(decl)))
@@ -537,7 +541,9 @@ pub fn install_code_table(
                 &code,
                 CodeKind::Initializer,
                 "instance initializer".to_string(),
-                data.factory
+                data.application
+                    .mixin
+                    .factory
                     .as_deref()
                     .map(instantiate::pattern_param_count)
                     .unwrap_or(0),
@@ -1289,7 +1295,12 @@ fn method_decl(ctx: &DecodeContext, selector: String) -> Result<Rc<ast::MethodDe
     let found = {
         let borrowed = ctx.root_class.borrow();
         match &borrowed.data {
-            ObjectData::Class(data) => data.methods.get(&Symbol::intern(&selector)).cloned(),
+            ObjectData::Class(data) => data
+                .application
+                .mixin
+                .methods
+                .get(&Symbol::intern(&selector))
+                .cloned(),
             _ => None,
         }
     };

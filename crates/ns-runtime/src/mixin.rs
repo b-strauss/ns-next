@@ -15,6 +15,11 @@ use ns_syntax::ast;
 
 use crate::Symbol;
 
+/// `Debug` is derived so `ObjectData::Class` keeps its own derived `Debug`
+/// now that a class object's behaviour lives here. Printing one walks the
+/// whole superclass chain and every method's AST -- as `ClassData`'s own
+/// `Debug` already did before the split.
+#[derive(Debug)]
 pub struct Mixin {
     pub name: Symbol,
     pub methods: HashMap<Symbol, Rc<ast::MethodDecl>>,
@@ -29,6 +34,7 @@ pub struct Mixin {
     pub decl: Option<Rc<ast::ClassDecl>>,
 }
 
+#[derive(Debug)]
 pub struct MixinApplication {
     pub mixin: Rc<Mixin>,
     pub superclass: Option<Rc<MixinApplication>>,

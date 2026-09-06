@@ -10,8 +10,8 @@ use std::rc::Rc;
 
 use ns_runtime::interpreter::eval;
 use ns_runtime::{
-    Binding, ClassData, ClosureData, Frame, FrameKind, Interpreter, NewspeakError, Object,
-    ObjectData, Signal, Symbol, Value,
+    Binding, ClassData, ClosureData, Frame, FrameKind, Interpreter, Mixin, MixinApplication,
+    NewspeakError, Object, ObjectData, Signal, Symbol, Value,
 };
 
 /// A placeholder `ClassRef` whose own `.class` field points back to itself.
@@ -112,15 +112,27 @@ fn class_with_methods(
         class: dummy_class(),
         identity_hash: 0,
         data: ObjectData::Class(ClassData {
-            name: Symbol::intern(name),
-            superclass: None,
-            methods: map,
-            instance_slots: vec![],
-            slot_index: HashMap::new(),
-            init_exprs: vec![],
-            class_side: None,
+            // A root application, built directly rather than through
+            // `Interpreter::apply_mixin`: these classes are never linked
+            // into a real hierarchy, so there is no superclass application
+            // to cache against.
+            application: Rc::new(MixinApplication {
+                mixin: Rc::new(Mixin {
+                    name: Symbol::intern(name),
+                    methods: map,
+                    instance_slots: vec![],
+                    init_exprs: vec![],
+                    factory: None,
+                    nested: vec![],
+                    class_side: None,
+                    decl: None,
+                }),
+                superclass: None,
+                slot_index: HashMap::new(),
+                num_slots: 0,
+            }),
             enclosing: None,
-            factory: None,
+            superclass: None,
             builtin: None,
         }),
     }))

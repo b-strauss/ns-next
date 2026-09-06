@@ -82,7 +82,7 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 /// brief calls it out explicitly as "extend here if a fixture needs it",
 /// and this fixture can route around it), `Sub` is parsed with a builtin
 /// `Object` superclass clause (so `load_class` resolves cleanly through the
-/// ordinary pipeline), and its `ClassData.superclass`/`slot_index` are then
+/// ordinary pipeline), and its `ClassData.superclass`/`application` are then
 /// relinked directly to the already-loaded `Sup` class -- both `pub` fields
 /// on `ClassData`, exactly as visible to any other crate-external caller.
 /// The resolver itself is untouched by this: `b`'s slot initializer
@@ -111,14 +111,32 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
     .expect("resolve");
     let sub_class = interp.load_module(&sub_resolved);
 
-    // Relink Sub -> Sup (see the doc comment above) and fix up Sub's own
-    // slot_index offset now that it sits past Sup's one inherited slot.
+    // Relink Sub -> Sup (see the doc comment above), on both chains: the
+    // class-object chain that `super`/`instantiate` walk, and the
+    // application chain that carries the layout. Re-applying Sub's own mixin
+    // to Sup's application is what recomputes `b`'s absolute index past
+    // Sup's one inherited slot -- hand-editing the layout would let the two
+    // chains disagree about the instance's shape.
+    let sup_application = {
+        let borrowed = sup_class.borrow();
+        let ns_runtime::ObjectData::Class(data) = &borrowed.data else {
+            panic!("expected Sup to be a class object");
+        };
+        data.application.clone()
+    };
+    let sub_mixin = {
+        let borrowed = sub_class.borrow();
+        let ns_runtime::ObjectData::Class(data) = &borrowed.data else {
+            panic!("expected Sub to be a class object");
+        };
+        data.application.mixin.clone()
+    };
+    let sub_application = interp.apply_mixin(&sub_mixin, Some(&sup_application));
     {
         let mut borrowed = sub_class.borrow_mut();
         if let ns_runtime::ObjectData::Class(data) = &mut borrowed.data {
             data.superclass = Some(sup_class.clone());
-            data.slot_index.clear();
-            data.slot_index.insert(Symbol::intern("b"), 1);
+            data.application = sub_application;
         } else {
             panic!("expected Sub to be a class object");
         }

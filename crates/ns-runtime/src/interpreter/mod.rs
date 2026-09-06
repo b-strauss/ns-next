@@ -587,27 +587,30 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
         BuiltinClass::Block,
         BuiltinClass::Platform,
     ];
-    let class_of_class = build_self_referential_object_class();
+    // A builtin's behaviour is native (`builtins::dispatch_native`), so its
+    // mixin declares nothing: the application exists to give the builtin the
+    // same shape every other class object has, and -- for the non-`Object`
+    // builtins -- to link an application chain parallel to the class-object
+    // chain, which `dispatch::next_level` steps in lockstep.
+    let object_application = interp.apply_mixin(&builtin_mixin(BuiltinClass::Object), None);
+    let class_of_class = build_self_referential_object_class(object_application.clone());
     let mut map = HashMap::new();
     for kind in kinds {
-        let superclass = if kind == BuiltinClass::Object {
-            None
+        let (superclass, application) = if kind == BuiltinClass::Object {
+            (None, object_application.clone())
         } else {
-            Some(class_of_class.clone())
+            (
+                Some(class_of_class.clone()),
+                interp.apply_mixin(&builtin_mixin(kind), Some(&object_application)),
+            )
         };
         let obj = Rc::new(RefCell::new(Object {
             class: class_of_class.clone(),
             identity_hash: interp.alloc_identity_hash(),
             data: ObjectData::Class(ClassData {
-                name: Symbol::intern(&format!("{kind:?}")),
-                superclass,
-                methods: HashMap::new(),
-                instance_slots: vec![],
-                slot_index: HashMap::new(),
-                init_exprs: vec![],
-                class_side: None,
+                application,
                 enclosing: None,
-                factory: None,
+                superclass,
                 builtin: Some(kind),
             }),
         }));
@@ -615,6 +618,22 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
     }
     map.insert(BuiltinClass::Object, class_of_class);
     map
+}
+
+/// The empty mixin behind one `BuiltinClass`. A fresh `Rc` per call, so the
+/// application cache keys the builtins apart from each other even though
+/// their mixins are structurally identical.
+fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
+    Rc::new(crate::mixin::Mixin {
+        name: Symbol::intern(&format!("{kind:?}")),
+        methods: HashMap::new(),
+        instance_slots: vec![],
+        init_exprs: vec![],
+        factory: None,
+        nested: vec![],
+        class_side: None,
+        decl: None,
+    })
 }
 
 /// Builds the single, genuinely self-referential `Object`-tagged class
@@ -633,7 +652,9 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
 /// `dummy_class` test helper (Task 3) and reused correctly in
 /// `dispatch.rs`'s test helper (Task 5) -- here it builds a real,
 /// production bootstrap object, not a test fixture.
-fn build_self_referential_object_class() -> ClassRef {
+fn build_self_referential_object_class(
+    application: Rc<crate::mixin::MixinApplication>,
+) -> ClassRef {
     let uninit: Rc<std::mem::MaybeUninit<RefCell<Object>>> = Rc::new_uninit();
     let raw_mut = Rc::as_ptr(&uninit) as *mut std::mem::MaybeUninit<RefCell<Object>>;
     let data_ptr = raw_mut as *const RefCell<Object>;
@@ -651,15 +672,9 @@ fn build_self_referential_object_class() -> ClassRef {
             class: self_ref,
             identity_hash: 0,
             data: ObjectData::Class(ClassData {
-                name: Symbol::intern("Object"),
-                superclass: None,
-                methods: HashMap::new(),
-                instance_slots: vec![],
-                slot_index: HashMap::new(),
-                init_exprs: vec![],
-                class_side: None,
+                application,
                 enclosing: None,
-                factory: None,
+                superclass: None,
                 builtin: Some(BuiltinClass::Object),
             }),
         }));
