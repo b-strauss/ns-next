@@ -21,11 +21,13 @@ repository; the reasoning behind them is in the design specs under
 `docs/superpowers/specs/`.
 
 **Two engines must agree byte for byte.** `ns-next run` defaults to `--engine=bytecode`;
-`--engine=tree-walk` is the Milestone 1 interpreter, kept permanently as a differential
-oracle. For every program both engines must produce identical exit status, stdout **and
-stderr**. `crates/ns-cli/tests/differential.rs` enforces this over every
-`tests-fixtures/*.ns` plus inline sources, with no exemptions. If a change makes the
-engines disagree, the tree-walker is the reference — fix the compiler or the VM.
+`--engine=tree-walk` is the Milestone 1 interpreter, kept as a differential oracle for as
+long as an AST engine exists — its eventual retirement is anticipated, so treat it as
+load-bearing today rather than forever. For every program both engines must produce
+identical exit status, stdout **and stderr**. `crates/ns-cli/tests/differential.rs`
+enforces this over every `tests-fixtures/*.ns` plus inline sources, with no exemptions. If
+a change makes the engines disagree, the tree-walker is the reference — fix the compiler
+or the VM.
 
 **`interpreter/` is shared orchestration, not the tree-walker's private code.** Send,
 `doesNotUnderstand:`, lexical/super/native dispatch, frame construction and `instantiate`

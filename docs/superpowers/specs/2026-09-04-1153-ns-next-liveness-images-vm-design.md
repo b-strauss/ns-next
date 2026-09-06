@@ -325,18 +325,44 @@ serialized, and `statement_pc` still maps a `pc` to a statement. The retained
 `Span`s keep **provenance** — file and range — so a debugger can point at the
 original source when it happens to be available, without the image carrying it.
 
-**Three tiers, not two:**
+**Two tiers, and reflection works in both:**
 
 1. **Full** — source and AST, as today. Development.
 2. **Reflective, source-free** — class table, code, spans as provenance. The
    deployment target: reflection and debugging keep working, readability comes
    from the decompiler.
-3. **Minimal** — drop `statement_pc`, spans and slot names. Smallest, and
-   reflection is effectively gone.
 
 **A debug variant may still embed the source** as optional metadata for tier 2,
 for the case where a debugger should show original text without shipping the
 files. That is a packaging switch, not a second format.
+
+**There is deliberately no "minimal" tier that strips reflective metadata.** An
+earlier draft proposed one — drop `statement_pc`, spans and slot names for a
+smaller artifact. It is the wrong axis. Code cannot know whether someone is
+holding a mirror on it, so removing the metadata does not remove the
+capability; it leaves a granted capability answering with nothing. In a
+capability language the sanctioned way to prevent inspection is for the
+platform to **withhold the mirror**, which is a decision at the boundary where
+capabilities are handed out, not a build flag that silently changes what the
+program means.
+
+Two consequences make this concrete rather than principled:
+
+- The image mechanism is itself reflective. A deployed application that
+  snapshots its own running state — which this document asks for — has to walk
+  objects and their classes. An artifact stripped of class shape cannot take a
+  snapshot, so a "minimal" tier would break the very feature the tier system
+  exists to serve.
+- Ecosystems that made metadata removal a build-time switch (Java with
+  ProGuard, .NET trimming) all had to invent keep-annotations so that programs
+  could tell the tool what not to delete. That is accidental complexity bought
+  by putting the switch in the wrong place.
+
+If binary size ever forces the question, decide it then against a measurement:
+the class table and statement map are small next to the bytecode and the object
+graph. And if the goal is ever to make a deployed program hard to read, that is
+consistent *renaming*, not removal — mirrors keep working and report the
+renamed identifiers.
 
 **The tree-walker is not an obstacle to this.** It executes the AST and so
 cannot run from a source-free image — but it is expected to be removed anyway
