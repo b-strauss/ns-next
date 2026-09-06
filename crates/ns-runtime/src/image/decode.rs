@@ -686,7 +686,7 @@ pub fn build_module(
             }
             // A class with slots or `initExpr`s runs compiled initializer
             // code on every `X new`, and `run_own_initializer` *panics*
-            // when the module has none. The row.s declaration half says
+            // when the module has none. The row's declaration half says
             // the mixin needs one and its code half says whether the image
             // carries it -- two fields only this function compares.
             None if instantiate::mixin_needs_initializer_code(mixin) => {
@@ -708,9 +708,9 @@ pub fn build_module(
                 )?;
                 module.superclass_clauses.insert(mixin_key(mixin), code);
             }
-            // The same reconciliation as the initializer.s: a mixin that
+            // The same reconciliation as the initializer's: a mixin that
             // declares a superclass clause has its accessor run that
-            // clause.s code on the first nested-class access, and
+            // clause's code on the first nested-class access, and
             // `interpreter::nested` panics when the module carries none.
             None if mixin.superclass.is_some() => return Err(DecodeError::MissingSuperclassClause),
             None => {}

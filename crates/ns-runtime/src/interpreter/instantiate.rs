@@ -745,8 +745,8 @@ fn not_the_primary_factory_error(
 ///
 /// A `NewspeakError` rather than a `panic!` on the wrong shape: the compiled
 /// body that produced this value can come off the wire, where
-/// `image::decode::build_module` reconciles its kind and arity but nothing constrains
-/// what it returns. An image is untrusted input.
+/// `image::decode::build_module` reconciles its kind and arity but nothing
+/// constrains what it returns. An image is untrusted input.
 fn argument_list(class: &ClassRef, value: Value) -> Result<Vec<Value>, Signal> {
     if let Value::Obj(obj) = &value {
         if let ObjectData::Array(items) = &obj.borrow().data {
@@ -796,8 +796,9 @@ pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
 
 /// A `MessagePattern` rendered as the selector string it declares. Also the
 /// image encoder's `FrameKind::Method` representation: a frame names the
-/// method it activates by selector, re-resolved on load against the reloaded
-/// class's method map (`image::decode`).
+/// method it activates by selector, re-resolved on load against the method
+/// map of the mixin the decoded mixin table rebuilt for the frame's own
+/// `current_class` (`image::decode::method_decl`).
 pub(crate) fn method_name(pattern: &ast::MessagePattern) -> String {
     match pattern {
         ast::MessagePattern::Unary { selector } => selector.name.clone(),

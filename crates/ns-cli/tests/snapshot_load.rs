@@ -298,21 +298,32 @@ fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
 fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
     let src = fixture("arithmetic.ns");
     let text = std::fs::read_to_string(&src).expect("read fixture");
-    let needle = text
+    // Every line carrying program text, not one hand-picked needle: a
+    // partial leak (one method body, one initializer statement) has to fail
+    // this too. Lines under 12 characters are structural punctuation --
+    // `)`, `) : ()`, `Newspeak3` -- which a binary stream reproduces by
+    // chance, so checking them would report leaks that are not leaks.
+    // See `no_line_of_the_source_survives_in_a_source_free_image` in
+    // `ns-runtime`'s image tests for the same property with a module built
+    // to probe it, and for what this does *not* claim (identifiers survive
+    // in the symbol table by necessity -- dispatch is by name).
+    let lines: Vec<&str> = text
         .lines()
-        .find(|l| l.contains("class "))
-        .expect("the fixture declares a class")
-        .trim()
-        .to_string();
+        .map(str::trim)
+        .filter(|l| l.len() >= 12)
+        .collect();
+    assert!(lines.len() >= 4, "the fixture must have text to look for");
 
     let plain = temp_image("source-free");
     let (ok, _out, err) = ns_next(&["snapshot".as_ref(), src.as_os_str(), plain.as_os_str()]);
     assert!(ok, "{err}");
     let plain_bytes = std::fs::read(&plain).expect("read image");
-    assert!(
-        !contains(&plain_bytes, needle.as_bytes()),
-        "the default image must not contain the module's source text"
-    );
+    for line in &lines {
+        assert!(
+            !contains(&plain_bytes, line.as_bytes()),
+            "the default image contains the source line {line:?}"
+        );
+    }
     // ...and it is still a world, not just a smaller file.
     let (ok, out, err) = ns_next(&[
         "load".as_ref(),
@@ -341,7 +352,14 @@ fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
     ]);
     assert!(ok, "{err}");
     let debug_bytes = std::fs::read(&debug).expect("read image");
-    assert!(contains(&debug_bytes, needle.as_bytes()));
+    // The control: the very lines missing above are all present here, so
+    // the sweep cannot be passing because the needles were mangled.
+    for line in &lines {
+        assert!(
+            contains(&debug_bytes, line.as_bytes()),
+            "the debug variant is missing the source line {line:?}"
+        );
+    }
     assert!(
         debug_bytes.len() > plain_bytes.len(),
         "the debug variant is the bigger of the two"

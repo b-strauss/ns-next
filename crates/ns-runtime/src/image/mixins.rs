@@ -531,9 +531,10 @@ fn check_ids(raw: &[RawRow]) -> Result<(), DecodeError> {
 /// The rows must be exactly `mixin::preorder(row 0)`: row `i` is the `i`th
 /// declaration that walk reaches.
 ///
-/// Row position is how a class object.s record names the declaration it
+/// Row position is how a class object's record names the declaration it
 /// applies (`decode::decode_class_record` indexes the rows by id), so this
-/// is the property that makes a row.s position mean anything at all. It is also, as a by-product, the whole
+/// is the property that makes a row's position mean anything at all. It is
+/// also, as a by-product, the whole
 /// structural sanity check: an index is accepted only when it equals the
 /// step counter, so every row is visited exactly once (no shared child, no
 /// cycle -- a cycle would revisit an index already behind the counter) and

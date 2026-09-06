@@ -1394,7 +1394,7 @@ fn a_tree_walker_closure_is_a_snapshot_error_not_a_silent_omission() {
 }
 
 #[test]
-fn a_decoded_closure_carries_the_reloaded_modules_bindings() {
+fn a_decoded_closure_carries_the_loads_own_bindings_map() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
     let (mut interp, class, bindings) = load(src);
     let module = compiler::compile_module(&class, &bindings);
@@ -1432,16 +1432,16 @@ fn a_decoded_closure_carries_the_reloaded_modules_bindings() {
     let symbol_table = symbols.build();
     let mut r = decode::Reader::new(&bytes);
     let table = decode::decode_code_table(&mut r, &symbol_table).expect("code table");
-    // A *different* bindings map, standing in for the one a reload would
-    // build: every decoded closure must receive this one, proving
+    // A *different* bindings map, standing in for the empty one `load`
+    // builds: every decoded closure must receive this one, proving
     // `ClosureData.bindings` is never serialized.
-    let reloaded_bindings: Bindings = Rc::new(HashMap::new());
+    let loads_bindings: Bindings = Rc::new(HashMap::new());
     let mixin_order = mixin_preorder(&class);
     let mut ctx = decode::DecodeContext {
         interp: &mut interp,
         root_class: &class,
         codes: &table.codes,
-        bindings: &reloaded_bindings,
+        bindings: &loads_bindings,
         platform: platform.clone(),
         mixins: &mixin_order,
     };
@@ -1453,7 +1453,7 @@ fn a_decoded_closure_carries_the_reloaded_modules_bindings() {
     let ObjectData::Closure(c) = &obj(&fields[0]).borrow().data else {
         panic!("slot holds a closure")
     };
-    assert!(Rc::ptr_eq(&c.bindings, &reloaded_bindings));
+    assert!(Rc::ptr_eq(&c.bindings, &loads_bindings));
 }
 
 #[test]
@@ -1713,12 +1713,12 @@ fn a_well_formed_class_record_decodes_into_a_live_class_object() {
     let mut fixture = GraphFixture::new();
     let graph = fixture
         .decode(&one_class_object(0, no_class_refs))
-        .expect("a class record naming row 0 of the reloaded tree");
+        .expect("a class record naming row 0 of the mixin table");
     let application =
         ns_runtime::dispatch::class_application(&graph.objects[0]).expect("a class object");
     assert!(
         Rc::ptr_eq(&application.mixin, &fixture.mixins[0]),
-        "the record's mixin id names the reloaded declaration tree, row by row"
+        "the record's mixin id names the decoded declaration tree, row by row"
     );
 }
 
@@ -2847,8 +2847,8 @@ fn class_method_key(class: &ClassRef, selector: &str) -> usize {
 }
 
 /// A world whose code table is `[block, foo]` -- `foo`'s body is the one
-/// `MakeClosure` that creates `block` -- with the reloaded class's `foo`
-/// installed against that body. Everything a decoded closure over `block`
+/// `MakeClosure` that creates `block` -- with the class's `foo` installed
+/// against that body. Everything a decoded closure over `block`
 /// needs to verify: its lexical parent is `foo`, which has two registers.
 fn closure_world() -> (GraphFixture, decode::DecodedCodeTable, CompiledModule) {
     let (mut interp, class, bindings) = load(ONE_METHOD);
@@ -3149,10 +3149,10 @@ const NEEDS_INITIALIZER: &str =
 fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_at_install() {
     // `run_own_initializer` panics -- "internal: class has no compiled
     // instance initializer" -- when the class has initializer code and the
-    // module has none. The reloaded source decides the first half and the
-    // image the second, so an image whose initializer flag is cleared makes
-    // the *first* `X new` after a load abort the process. This is the
-    // initializer's `MissingSelector`.
+    // module has none. A mixin-table row's declaration half decides the
+    // first (it names slots or `initExpr`s) and its code half the second,
+    // so an image whose initializer id is cleared makes the *first* `X new`
+    // after a load abort the process.
     let (_interp, class, bindings) = load(NEEDS_INITIALIZER);
     let module = compiler::compile_module(&class, &bindings);
     let (table, mut decoded_mixins, _ids) = round_trip_code_table(&module, &class);
@@ -3412,7 +3412,7 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
 
     // Nothing materializes a nested class's own class object without the
     // accessor (a later task), so this reproduces exactly what it will
-    // eventually do: apply the reloaded `Inner` mixin to `Object`, by hand,
+    // eventually do: apply the decoded `Inner` mixin to `Object`, by hand,
     // in the *loaded* interpreter -- proving the send below runs against
     // code `build_module` actually restored, not code compiled fresh
     // just now.
@@ -3921,9 +3921,8 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
 }
 
 /// The other direction, the same shape as the initializer's and the
-/// clause's: a reloaded source whose clause passes arguments, installed
-/// against an image carrying no body for them, would panic on the first
-/// instantiation. `build_module` is the only place that sees both
+/// clause's: a mixin-table row whose clause passes arguments, in an image
+/// carrying no body for them, would panic on the first instantiation. `build_module` is the only place that sees both
 /// halves, so it refuses.
 #[test]
 fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_refused() {
@@ -5088,4 +5087,97 @@ fn a_world_holding_a_tree_walker_activation_is_refused_when_written() {
         panic!("a tree-walker activation must not be serializable")
     };
     assert!(err.contains("tree-walker activation"), "{err}");
+}
+
+/// A module written so that every *interesting* kind of source text is
+/// present and distinctive: a comment, an initializer expression, a slot
+/// clause, several method bodies, and a nested class. Each line the leak
+/// test checks is unlike any other byte sequence the image has a reason to
+/// contain, so a partial leak has somewhere to show up.
+const LEAK_PROBE_MODULE: &str = "\
+Newspeak3
+'Test'
+(* commentaryAboutTheFrobulator explains nothing at all *)
+class Probe usingPlatform: aPlatformSlotName = Object new (
+    | mnemosyneSlot ::= 3 + 4 * 5. |
+    mnemosyneSlot := mnemosyneSlot + 111.
+) (
+    public quixoticAccumulator = ( ^mnemosyneSlot + 1 - 1 )
+    public verbatimSentinel: aParameterName = ( ^aParameterName )
+    public class Kaleidoscope = Object new (| innerVestige = 77. |) (
+        public perpetualMotion = ( ^innerVestige * 1 )
+    )
+) : ()
+";
+
+/// The milestone's headline claim, tested as a property rather than by
+/// spot-checking two needles: **no line of the module's source text
+/// survives anywhere in a source-free image.**
+///
+/// Lines shorter than `MIN_DISTINCTIVE_LINE` are skipped. The threshold is
+/// 12 characters because a Newspeak module's short lines are structural
+/// punctuation (`)`, `(`, `) : ()`, `Newspeak3`) that a binary stream can
+/// and does reproduce by chance -- a `)` is one byte, and `Newspeak3` is
+/// shorter than several selectors -- so testing them would report leaks
+/// that are not leaks. Every line that actually carries program text (a
+/// comment, a slot clause, an initializer statement, a method body, a
+/// nested class header) is well past 12 characters in this module, so the
+/// threshold costs the test nothing it wanted to check.
+///
+/// **What this does *not* claim.** Identifiers necessarily survive: the
+/// symbol table stores every selector, slot name, class name and parameter
+/// name, because dispatch, slot layout and the nested-class accessor are
+/// all by name at run time. So `mnemosyneSlot` is in a source-free image
+/// and must be. The claim is about source *text* -- the syntax, the
+/// comments, the expression structure, the layout -- which is what the
+/// re-parse needed and what nothing on the load path reads any more.
+#[test]
+fn no_line_of_the_source_survives_in_a_source_free_image() {
+    /// See the doc comment above for why 12.
+    const MIN_DISTINCTIVE_LINE: usize = 12;
+
+    let bytes = snapshot_module(LEAK_PROBE_MODULE, None, None);
+    let mut checked = 0;
+    for line in LEAK_PROBE_MODULE.lines() {
+        let line = line.trim();
+        if line.len() < MIN_DISTINCTIVE_LINE {
+            continue;
+        }
+        assert!(
+            !contains(&bytes, line.as_bytes()),
+            "a source-free image contains the source line {line:?}"
+        );
+        checked += 1;
+    }
+    // The sweep must actually have swept: a module whose every line fell
+    // under the threshold would pass vacuously.
+    assert!(
+        checked >= 7,
+        "only {checked} lines were long enough to check"
+    );
+
+    // The control, from the other direction: the very same lines are all
+    // present in the debug variant. Without this, a bug that mangled the
+    // needles (a trim that ate the text, say) would make the sweep above
+    // pass for the wrong reason.
+    let debug = snapshot_module(LEAK_PROBE_MODULE, Some(LEAK_PROBE_MODULE), None);
+    for line in LEAK_PROBE_MODULE.lines() {
+        let line = line.trim();
+        if line.len() < MIN_DISTINCTIVE_LINE {
+            continue;
+        }
+        assert!(
+            contains(&debug, line.as_bytes()),
+            "the debug variant is missing the source line {line:?}"
+        );
+    }
+
+    // And the world the source-free image describes still runs -- so what
+    // was left out really was only text.
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    match send_to(&mut loaded, instance, "quixoticAccumulator") {
+        Value::SmallInt(146) => {}
+        _ => panic!("expected SmallInt(146) from the loaded world, got a different Value"),
+    }
 }

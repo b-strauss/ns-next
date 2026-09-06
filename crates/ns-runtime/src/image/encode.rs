@@ -832,7 +832,9 @@ fn encode_frame_ref(w: &mut Writer, frame: Option<&FrameRef>, table: &GraphTable
 }
 
 /// `params`, `code_id`, `captured_frame` id, `home` id. `bindings` is not
-/// serialized (the reloaded module's map is used on load).
+/// serialized: a compiled closure never reads one (lowering already turned
+/// every binding into an instruction), so a decoded closure carries the
+/// load's empty map -- see `image::LoadedImage::empty_bindings`.
 fn encode_closure_record(
     w: &mut Writer,
     closure: &ClosureData,
