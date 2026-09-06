@@ -65,8 +65,10 @@ pub struct ClassData {
     /// The class object of the level whose declaration *lexically contains*
     /// this class's declaration -- `Lookup::NestedClass`'s `ClassRef`, the
     /// level `interpreter::nested` evaluated the declaration at. `None` for
-    /// a class that no declaration encloses: the module's root class, a
-    /// builtin, a metaclass.
+    /// a class that no declaration encloses: the module's root class, and a
+    /// builtin. A metaclass copies the class it belongs to (§6.3.1 puts a
+    /// class side in the same declaration as its instance side), so a
+    /// class-side `outer` walks the same chain.
     ///
     /// This is what makes the enclosing-object chain of §3.3 *lexical* the
     /// whole way up rather than only at its first step. `enclosing` alone

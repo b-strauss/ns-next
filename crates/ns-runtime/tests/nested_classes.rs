@@ -879,3 +879,65 @@ fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
 fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically_under_bytecode() {
     a_two_level_outer_resolves_from_the_defining_level(true);
 }
+
+/// §6.3.1: a class side is written inside the same class declaration its
+/// instance side is, and `resolver::resolve_class` resolves both against
+/// one lexical chain -- so `outer` in a class-side method reaches exactly
+/// what it reaches on the instance side. `Widget`'s class side is at
+/// depth 1 from the module class; `Part`'s, nested one level further, is
+/// at depth 2 and can only be walked through the declaration chain.
+/// `Widget`'s decoy `label` is what a walk that stopped one level short
+/// would answer with.
+const CLASS_SIDE_OUTER_SRC: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new () (
+    label = ( ^'top' )
+    public class Widget = Object new () (
+        label = ( ^'widget' )
+        public class Part = Object new () (
+        ) : (
+            public whichOuter = ( ^outer Outer label )
+        )
+    ) : (
+        public whichOuter = ( ^outer Outer label )
+    )
+    public shallow = ( ^Widget whichOuter )
+    public deep = ( ^Widget new Part whichOuter )
+)
+";
+
+fn class_side_outer_reaches_the_enclosing_object(bytecode: bool) {
+    let (mut interp, class, bindings) = load(CLASS_SIDE_OUTER_SRC, bytecode);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
+    );
+    let shallow = expect_ok(
+        interp.send(
+            outer.clone(),
+            Symbol::intern("shallow"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "shallow",
+    );
+    assert_eq!(string_contents(&shallow), "top");
+    let deep = expect_ok(
+        interp.send(outer, Symbol::intern("deep"), vec![], &bindings, None),
+        "deep",
+    );
+    assert_eq!(string_contents(&deep), "top");
+}
+
+#[test]
+fn outer_in_a_class_side_method_reaches_the_enclosing_object() {
+    class_side_outer_reaches_the_enclosing_object(false);
+}
+
+#[test]
+fn outer_in_a_class_side_method_reaches_the_enclosing_object_under_bytecode() {
+    class_side_outer_reaches_the_enclosing_object(true);
+}

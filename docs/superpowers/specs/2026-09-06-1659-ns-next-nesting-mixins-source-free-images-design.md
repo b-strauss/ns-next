@@ -139,8 +139,10 @@ struct MixinApplication {           // (mixin, super application) -> behaviour
 struct ClassData {                  // one per enclosing instance, per level
     application: Rc<MixinApplication>,
     enclosing: Option<ObjRef>,
+    declaring_class: Option<ClassRef>,  // the declaration chain `outer` walks
     superclass: Option<ClassRef>,   // the class-object chain, parallel to the applications
     builtin: Option<BuiltinClass>,
+    metaclass: Option<ClassRef>,    // built on first class-side send, cached here
 }
 ```
 

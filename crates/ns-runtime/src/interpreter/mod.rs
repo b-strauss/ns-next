@@ -544,7 +544,7 @@ impl Interpreter {
     /// linked to the metaclass class-object chain exactly as
     /// `dispatch::next_level` requires for the ordinary one.
     pub fn metaclass_of(&mut self, class: &ClassRef) -> Option<ClassRef> {
-        let (cached, class_side, class_superclass, own_mixin_name) = {
+        let (cached, class_side, class_superclass, own_mixin_name, enclosing, declaring_class) = {
             let borrowed = class.borrow();
             match &borrowed.data {
                 ObjectData::Class(data) => (
@@ -552,6 +552,8 @@ impl Interpreter {
                     data.application.mixin.class_side.clone(),
                     data.superclass.clone(),
                     data.application.mixin.name,
+                    data.enclosing.clone(),
+                    data.declaring_class.clone(),
                 ),
                 _ => return None,
             }
@@ -578,11 +580,14 @@ impl Interpreter {
             .as_ref()
             .and_then(dispatch::class_application);
         let application = self.apply_mixin(&class_side_mixin, super_application.as_ref());
-        // A metaclass is nobody's nested declaration: §6.3 gives the class
-        // side no enclosing object of its own, so both lexical links stay
-        // `None` and a positive `outer` depth in a class-side method
-        // resolves to `nil` -- unchanged from before nesting landed.
-        let metaclass = self.new_class_object(application, None, None, super_metaclass);
+        // §6.3.1: a class side is written inside the same class declaration
+        // its instance side is, and `resolver::resolve_class` resolves both
+        // against the same lexical chain -- so a class-side method's `outer`
+        // must reach exactly the objects an instance-side method's does. The
+        // metaclass therefore borrows the class's own place in the
+        // declaration chain rather than starting a new, empty one.
+        let metaclass =
+            self.new_class_object(application, enclosing, declaring_class, super_metaclass);
         match &mut class.borrow_mut().data {
             ObjectData::Class(data) => data.metaclass = Some(metaclass.clone()),
             _ => unreachable!("checked above"),

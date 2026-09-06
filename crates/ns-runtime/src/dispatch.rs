@@ -70,9 +70,9 @@ pub fn nested_access(mixin: &Mixin) -> ast::AccessModifier {
 /// is not.
 ///
 /// A chain shorter than `depth` yields `nil` rather than the nearest
-/// object it did reach, which would be dispatched against silently. Two
-/// levels end a chain legitimately: a class side, whose metaclass §6.3 gives
-/// no enclosing object, and a `None` `defining_class`, a top-level
+/// object it did reach, which would be dispatched against silently. Only
+/// the outermost level ends a chain: a module root class, which no
+/// declaration encloses, and a `None` `defining_class`, a top-level
 /// activation. Both have a lexical chain of exactly one level, so no
 /// positive depth is resolvable in either.
 pub fn kth_enclosing_object(
