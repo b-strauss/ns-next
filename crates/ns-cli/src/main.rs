@@ -225,9 +225,69 @@ fn report_entry_send(result: Result<ns_runtime::Value, ns_runtime::Signal>) -> E
     }
 }
 
+/// The argument list `cmd_run`/`cmd_snapshot` pass to `interp.instantiate`,
+/// built from the root class's own declared primary factory pattern
+/// (`Mixin::factory`) rather than assumed.
+///
+/// Deciding *that* a command-line entry point sends the platform, rather
+/// than some other object, is a CLI concern -- nothing in the runtime
+/// needs to know it was invoked from a terminal. Deciding whether a given
+/// factory arity is even *satisfiable* is not a CLI opinion, though: that
+/// check already lives in `instantiate.rs` (the "wrong number of factory
+/// arguments" error), and stays there. This function draws the line at
+/// producing the one argument list the CLI is able to construct at all --
+/// it has no manifest, no IDE, no test-framework object to offer a
+/// multi-parameter factory, so anything that isn't the two shapes below is
+/// refused here, before a guessed argument could reach `instantiate` and
+/// fail for a reason this message never mentions.
+fn factory_args_for(
+    class: &ns_runtime::ClassRef,
+    platform: ns_runtime::Value,
+) -> Result<Vec<ns_runtime::Value>, String> {
+    let factory = match &class.borrow().data {
+        ns_runtime::ObjectData::Class(data) => data.application.mixin.factory,
+        _ => None,
+    };
+    match factory {
+        // No declared factory (a builtin root, in principle) or a unary
+        // one: a unary selector takes no arguments by definition, so there
+        // is nothing to guess regardless of what the selector is spelled.
+        None => Ok(vec![]),
+        Some(factory) if factory.num_args == 0 => Ok(vec![]),
+        // `usingPlatform:`'s one parameter (`newspeak-spec.pdf` §8.4's Core
+        // Library factory convention) is the only keyword shape the CLI
+        // knows what to fill in.
+        Some(factory)
+            if factory.num_args == 1
+                && factory.selector == ns_runtime::Symbol::intern("usingPlatform:") =>
+        {
+            Ok(vec![platform])
+        }
+        Some(factory) => Err(format!(
+            "cannot instantiate `{}`: its primary factory `{}` takes {} argument(s), and \
+             this CLI only knows how to send a zero-argument factory or a one-argument \
+             `usingPlatform:`",
+            class_name(class),
+            factory.selector,
+            factory.num_args
+        )),
+    }
+}
+
+/// The mixin name behind a class object, for `factory_args_for`'s error
+/// message. `class` is always `ObjectData::Class` at every call site (both
+/// come straight out of `bootstrap_with_engine`), so the fallback is
+/// unreachable in practice and exists only to keep this a total function.
+fn class_name(class: &ns_runtime::ClassRef) -> String {
+    match &class.borrow().data {
+        ns_runtime::ObjectData::Class(data) => data.application.mixin.name.to_string(),
+        _ => "<non-class>".to_string(),
+    }
+}
+
 /// `ns-next run`: parse, resolve, bootstrap, load, install the engine,
-/// instantiate the root class with `platform`, send the entry selector
-/// with `[platform, nil]`, report.
+/// instantiate the root class with whatever its declared primary factory
+/// takes, send the entry selector with `[platform, nil]`, report.
 fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
     let loaded = match load_source(file) {
         Ok(l) => l,
@@ -236,9 +296,14 @@ fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
     let bindings = loaded.resolved.bindings.clone();
     let (mut interp, class) = bootstrap_with_engine(&loaded, engine);
     let platform = interp.platform();
-    // `usingPlatform: platform`'s one factory parameter (`newspeak-spec.pdf`
-    // §8.4's Core Library factory convention).
-    let instance = match interp.instantiate(class, vec![platform.clone()], &bindings) {
+    let factory_args = match factory_args_for(&class, platform.clone()) {
+        Ok(args) => args,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let instance = match interp.instantiate(class, factory_args, &bindings) {
         Ok(v) => v,
         Err(signal) => return report_signal(signal),
     };
@@ -267,7 +332,14 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
     let bindings = loaded.resolved.bindings.clone();
     let (mut interp, class) = bootstrap_with_engine(&loaded, EngineArg::Bytecode);
     let platform = interp.platform();
-    let instance = match interp.instantiate(class.clone(), vec![platform.clone()], &bindings) {
+    let factory_args = match factory_args_for(&class, platform.clone()) {
+        Ok(args) => args,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let instance = match interp.instantiate(class.clone(), factory_args, &bindings) {
         Ok(v) => v,
         Err(signal) => return report_signal(signal),
     };
