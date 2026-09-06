@@ -1,0 +1,46 @@
+# Corpus modules that are expected to run end to end, with what running
+# them produces. `ns-next run-corpus corpus/modules` runs every entry under
+# both engines, fails if the two disagree byte for byte, and fails if
+# either differs from what is recorded here.
+#
+# Format:
+#   [[entry]]
+#   file = "SomeModule.ns"
+#   send = "theEntrySelector"    # sent with [platform, nil], as `run` does
+#   expected_status = 0
+#   expected_stdout = ""
+#   reason = "why this module is expected to run"
+#
+# `send` is per entry: none of the corpus modules that run today declares
+# `main:args:`. They are library modules, and their reachable entry point is
+# either a public method or the implicit accessor of a public nested class.
+#
+# `expected_stdout` is empty for every entry below, and that is a fact about
+# the corpus rather than a shortcut: no module that currently runs writes to
+# `platform transcript` at all. The field is exercised by the synthetic
+# fixtures in `crates/ns-cli/tests/cli.rs`, so it cannot rot unnoticed.
+#
+# This list grows one deliberate row at a time. A module belongs here only
+# once someone has run it and recorded the result.
+
+[[entry]]
+file = "TestActor.ns"
+send = "return42"
+expected_status = 0
+expected_stdout = ""
+reason = "Instantiates with a zero-argument factory and answers a public unary method that evaluates a literal return. Needs nothing from the platform."
+
+[[entry]]
+file = "MirrorTestingModel.ns"
+send = "Klass"
+expected_status = 0
+expected_stdout = ""
+reason = "Exercises Milestone 3's nesting directly: `Klass` is the implicit accessor of a public nested class whose superclass clause is a sibling nested class, and whose body carries class sides, lazy slots, and further nested classes at every access level."
+
+[[entry]]
+file = "TextModule.ns"
+send = "TextProperties"
+expected_status = 0
+expected_stdout = ""
+reason = "A `usingPlatform:` module whose nested classes form a real inheritance chain (`TextBlock`/`TextString` on `Text properties:`); `TextProperties` is a public nested class accessor."
+

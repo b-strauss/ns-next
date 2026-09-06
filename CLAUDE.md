@@ -8,8 +8,8 @@ image format. Rust 1.98.0, edition 2021, three crates:
 - `crates/ns-runtime` — resolver, object model, dispatch, both execution engines
   (`interpreter/` and `compiler/` + `vm.rs`), core library (`builtins/`), image format
   (`image/`).
-- `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run`, `disasm`,
-  `snapshot`, `load`.
+- `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run`, `run-corpus`,
+  `disasm`, `snapshot`, `load`.
 
 Read `docs/PROGRESS.md` first — it is the milestone-level status, and it links the
 design spec and implementation plan behind each milestone.
@@ -73,13 +73,23 @@ cargo fmt --all
 cargo clippy --workspace --all-targets
 # non-regression gate: must report "parsed 210, failed 0, expected-fail 1, stale 0"
 cargo run -p ns-cli -- parse-corpus corpus/modules
+# non-regression gate: must report "ran 3, failed 0, skipped 208"
+cargo run -p ns-cli -- run-corpus corpus/modules
 ```
 
 Never judge performance from a debug build — `cargo build --workspace --release` is the
 one to measure.
 
-A file that legitimately cannot parse yet belongs in `corpus/blacklist.toml`. Nothing
-under `crates/ns-syntax` should change for runtime work.
+A file that legitimately cannot parse yet belongs in `corpus/blacklist.toml`. A corpus
+module that runs end to end belongs in `corpus/runnable.toml`, with the entry selector
+to send and the output it produces; `run-corpus` runs every listed module under both
+engines and fails if they disagree. Nothing under `crates/ns-syntax` should change for
+runtime work.
+
+`platform.rs` is widened only on demand: an accessor exists because a module on
+`corpus/runnable.toml` needs it, and the whitelist entry that demanded it is named in the
+accessor's comment. A capability nothing on that list asks for has no test that would
+catch it rotting.
 
 Add no new external dependency without a reason that survives review — the image format
 is hand-rolled on purpose.

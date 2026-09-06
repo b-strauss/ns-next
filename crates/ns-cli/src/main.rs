@@ -28,6 +28,13 @@ enum Cmd {
         #[arg(long)]
         blacklist: Option<PathBuf>,
     },
+    /// Run every whitelisted .ns file under a directory, under both
+    /// engines, and check each against its recorded expected output.
+    RunCorpus {
+        dir: PathBuf,
+        #[arg(long)]
+        whitelist: Option<PathBuf>,
+    },
     /// Parse, resolve, bootstrap, load, instantiate, and run a .ns file
     /// end to end.
     Run {
@@ -101,6 +108,7 @@ fn main() -> ExitCode {
     match Cli::parse().command {
         Cmd::Parse { file, ast } => cmd_parse(&file, ast),
         Cmd::ParseCorpus { dir, blacklist } => cmd_parse_corpus(&dir, blacklist.as_deref()),
+        Cmd::RunCorpus { dir, whitelist } => cmd_run_corpus(&dir, whitelist.as_deref()),
         Cmd::Run { file, send, engine } => cmd_run(&file, &send, engine),
         Cmd::Snapshot {
             file,
@@ -620,6 +628,203 @@ fn cmd_parse_corpus(dir: &Path, blacklist: Option<&Path>) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// One row of `corpus/runnable.toml`: a corpus module that is expected to
+/// run, with everything needed to check that it still does.
+///
+/// `send` is per entry rather than hardcoded to `main:args:` because the
+/// corpus modules that run today have no `main:args:` -- they are library
+/// modules whose reachable entry point is a public method or a public
+/// nested class's implicit accessor. A gate that assumed one selector
+/// could not list any of them.
+#[derive(serde::Deserialize)]
+struct RunnableEntry {
+    file: String,
+    send: String,
+    expected_status: i32,
+    expected_stdout: String,
+    /// Why this module is on the list. Required, like the blacklist's own
+    /// `reason`: the list is meant to grow one deliberate row at a time.
+    #[allow(dead_code)]
+    reason: String,
+}
+
+fn load_whitelist(path: &Path) -> Result<Vec<RunnableEntry>, String> {
+    #[derive(serde::Deserialize)]
+    struct Wl {
+        #[serde(default)]
+        entry: Vec<RunnableEntry>,
+    }
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "note: no whitelist at {} (treating as empty)",
+                path.display()
+            );
+            return Ok(Vec::new());
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    let wl: Wl = toml::from_str(&text).map_err(|e| e.to_string())?;
+    Ok(wl.entry)
+}
+
+/// What one `ns-next run` of a whitelisted module produced.
+struct EngineOutcome {
+    status: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+/// Runs one module through a *child* `ns-next run`, once per engine.
+///
+/// A child process rather than an in-process call on purpose: the thing
+/// being compared is the module's own stdout, which Newspeak code writes
+/// straight to the process's stdout through `platform transcript`. Running
+/// both engines in this process would interleave their output with the
+/// gate's own, leaving nothing to compare byte for byte -- which is the
+/// whole point of running each entry twice.
+fn run_one(exe: &Path, file: &Path, send: &str, engine: &str) -> Result<EngineOutcome, String> {
+    let out = std::process::Command::new(exe)
+        .arg("run")
+        .arg(file)
+        .arg("--send")
+        .arg(send)
+        .arg("--engine")
+        .arg(engine)
+        .output()
+        .map_err(|e| format!("could not run {}: {e}", exe.display()))?;
+    Ok(EngineOutcome {
+        status: out.status.code(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
+}
+
+/// `ns-next run-corpus`: the mirror image of `parse-corpus`. `parse-corpus`
+/// works off a blacklist because parsing the corpus is expected to succeed
+/// everywhere; running it is not, so this works off a whitelist -- a module
+/// counts as running only once someone has recorded what running it
+/// produces. Growth is therefore deliberate and a regression is loud.
+///
+/// Every entry is run under both engines and the two are compared before
+/// either is compared to the expectation, which makes this a differential
+/// harness over real vendored Newspeak modules rather than only a
+/// non-regression counter.
+fn cmd_run_corpus(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
+    let wl_path = whitelist
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dir.parent().unwrap_or(dir).join("runnable.toml"));
+    let entries = match load_whitelist(&wl_path) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: whitelist {}: {e}", wl_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: cannot locate this executable to re-run modules with: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut present: Vec<PathBuf> = Vec::new();
+    collect_ns_files(dir, &mut present);
+    let listed: std::collections::HashSet<&str> = entries.iter().map(|e| e.file.as_str()).collect();
+    let skipped = present
+        .iter()
+        .filter(|p| {
+            !p.file_name()
+                .is_some_and(|n| listed.contains(n.to_string_lossy().as_ref()))
+        })
+        .count();
+
+    let (mut ran, mut failed) = (0, 0);
+    for entry in &entries {
+        ran += 1;
+        let file = dir.join(&entry.file);
+        if !file.is_file() {
+            failed += 1;
+            eprintln!("FAIL {}: no such file under {}", entry.file, dir.display());
+            continue;
+        }
+        let bytecode = match run_one(&exe, &file, &entry.send, "bytecode") {
+            Ok(o) => o,
+            Err(e) => {
+                failed += 1;
+                eprintln!("FAIL {}: {e}", entry.file);
+                continue;
+            }
+        };
+        let tree_walk = match run_one(&exe, &file, &entry.send, "tree-walk") {
+            Ok(o) => o,
+            Err(e) => {
+                failed += 1;
+                eprintln!("FAIL {}: {e}", entry.file);
+                continue;
+            }
+        };
+        if let Some(diff) = engines_disagree(&bytecode, &tree_walk) {
+            failed += 1;
+            eprintln!("FAIL {}: engines disagree on {diff}", entry.file);
+            continue;
+        }
+        if bytecode.status != Some(entry.expected_status) {
+            failed += 1;
+            eprintln!(
+                "FAIL {}: expected exit {}, got {} (stderr: {})",
+                entry.file,
+                entry.expected_status,
+                match bytecode.status {
+                    Some(c) => c.to_string(),
+                    None => "signal".to_string(),
+                },
+                bytecode.stderr.trim_end()
+            );
+            continue;
+        }
+        if bytecode.stdout != entry.expected_stdout {
+            failed += 1;
+            eprintln!(
+                "FAIL {}: expected stdout {:?}, got {:?}",
+                entry.file, entry.expected_stdout, bytecode.stdout
+            );
+        }
+    }
+    println!("ran {ran}, failed {failed}, skipped {skipped}");
+    if failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// Names the first stream the two engines differ on, or `None` if they
+/// agree byte for byte on all three.
+fn engines_disagree(bytecode: &EngineOutcome, tree_walk: &EngineOutcome) -> Option<String> {
+    if bytecode.status != tree_walk.status {
+        return Some(format!(
+            "exit status: bytecode {:?}, tree-walk {:?}",
+            bytecode.status, tree_walk.status
+        ));
+    }
+    if bytecode.stdout != tree_walk.stdout {
+        return Some(format!(
+            "stdout: bytecode {:?}, tree-walk {:?}",
+            bytecode.stdout, tree_walk.stdout
+        ));
+    }
+    if bytecode.stderr != tree_walk.stderr {
+        return Some(format!(
+            "stderr: bytecode {:?}, tree-walk {:?}",
+            bytecode.stderr, tree_walk.stderr
+        ));
+    }
+    None
 }
 
 fn collect_ns_files(dir: &Path, out: &mut Vec<PathBuf>) {
