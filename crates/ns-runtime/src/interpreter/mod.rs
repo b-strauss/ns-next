@@ -536,11 +536,22 @@ impl Interpreter {
         for (i, slot) in mixin.instance_slots.iter().enumerate() {
             slot_index.insert(Symbol::intern(&slot.name.name), inherited + i);
         }
+        // The nested-class cache slots. They are part of the instance layout
+        // because the spec caches a nested class in the enclosing *object*;
+        // a side table keyed by object would cost a hash lookup on a path
+        // that is otherwise a slot read.
+        let mut nested_slot = superclass.map_or_else(HashMap::new, |s| s.nested_slot.clone());
+        let mut next = inherited + mixin.instance_slots.len();
+        for nested in &mixin.nested {
+            nested_slot.insert(nested.name, next);
+            next += 1;
+        }
         let application = Rc::new(crate::mixin::MixinApplication {
             mixin: mixin.clone(),
             superclass: superclass.cloned(),
-            num_slots: inherited + mixin.instance_slots.len(),
+            num_slots: next,
             slot_index,
+            nested_slot,
             own_slot_base: inherited,
         });
         self.applications.insert(key, application.clone());

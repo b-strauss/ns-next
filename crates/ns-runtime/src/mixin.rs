@@ -46,6 +46,12 @@ pub struct MixinApplication {
     /// for every application of it (`compile_module` keys by `mixin_key`) and
     /// this map is a per-application answer.
     pub slot_index: HashMap<Symbol, usize>,
+    /// Absolute index of the hidden cache slot for each nested class
+    /// declaration, including inherited ones. The slot stores the cached
+    /// nested class object; accessing it is a slot read rather than a
+    /// hash lookup. Inherited declarations keep the index their declaring
+    /// level gave them (exactly like inherited slots in slot_index).
+    pub nested_slot: HashMap<Symbol, usize>,
     pub num_slots: usize,
     /// Where this application's *own* slots start -- `superclass.num_slots`,
     /// or 0 with none. Read at run time (`Interpreter::run_own_initializer`)

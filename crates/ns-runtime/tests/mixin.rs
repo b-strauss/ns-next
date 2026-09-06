@@ -166,3 +166,45 @@ fn the_mixin_tree_contains_nested_and_class_side_declarations() {
         "a class side is a mixin now, not something to discard"
     );
 }
+
+#[test]
+fn a_nested_declaration_reserves_a_hidden_cache_slot() {
+    let (_interp, class, _resolved) = load(NESTED_SRC);
+    let borrowed = class.borrow();
+    let ns_runtime::ObjectData::Class(data) = &borrowed.data else {
+        panic!("expected a class object");
+    };
+    let app = &data.application;
+    assert_eq!(app.num_slots, 1, "Outer declares no slots but nests Inner");
+    assert_eq!(app.nested_slot[&Symbol::intern("Inner")], 0);
+}
+
+#[test]
+fn inherited_nested_declarations_keep_their_declaring_levels_slot() {
+    // A superclass that declares one slot and nests one class; a subclass
+    // that declares one slot of its own. The inherited hidden slot must keep
+    // the index its declaring level gave it, and the subclass's own slot must
+    // land after it.
+    let mut interp = Interpreter::bootstrap();
+    let mut sup = bare_mixin("Sup");
+    {
+        let sup = Rc::get_mut(&mut sup).unwrap();
+        sup.instance_slots = vec![slot_decl("a")];
+        sup.nested = vec![bare_mixin("Inner")];
+    }
+    let sup_app = interp.apply_mixin(&sup, None);
+    assert_eq!(sup_app.slot_index[&Symbol::intern("a")], 0);
+    assert_eq!(sup_app.nested_slot[&Symbol::intern("Inner")], 1);
+    assert_eq!(sup_app.num_slots, 2);
+
+    let mut sub = bare_mixin("Sub");
+    Rc::get_mut(&mut sub).unwrap().instance_slots = vec![slot_decl("own")];
+    let sub_app = interp.apply_mixin(&sub, Some(&sup_app));
+    assert_eq!(
+        sub_app.nested_slot[&Symbol::intern("Inner")],
+        1,
+        "an inherited nested declaration keeps its declaring level's slot"
+    );
+    assert_eq!(sub_app.slot_index[&Symbol::intern("own")], 2);
+    assert_eq!(sub_app.num_slots, 3);
+}

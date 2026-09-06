@@ -262,6 +262,7 @@ mod tests {
             }),
             superclass: None,
             slot_index: HashMap::new(),
+            nested_slot: HashMap::new(),
             num_slots: 0,
             own_slot_base: 0,
         })
