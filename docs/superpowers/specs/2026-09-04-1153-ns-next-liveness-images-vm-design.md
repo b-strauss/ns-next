@@ -132,7 +132,7 @@ Frame {
 
 ### The tree-walker and a moving collector (decided 2026-09-06)
 
-Milestone 3 replaces `Rc<RefCell<_>>` with an arena and a real collector, and
+Milestone 4 replaces `Rc<RefCell<_>>` with an arena and a real collector, and
 that collector moves objects — `become:`, forwarding and instance migration are
 requirements above, which is what rules the conservative non-moving option out.
 A moving collector must not only *find* every root but *update* it, and the two
@@ -167,7 +167,7 @@ layer.** The extra engineering was weighed and accepted deliberately. Two
 independent engines that must agree byte for byte are a verification property
 worth a permanent cost, and V8 is the existence proof that an interpreter can
 hold its roots in handles next to a moving collector without the design coming
-apart. Milestone 3 therefore does not choose between the collector and the
+apart. Milestone 4 therefore does not choose between the collector and the
 tree-walker; it implements root discipline for both. The reified frame chain is
 the root set for the VM, a handle layer is the root set for the tree-walker's
 Rust-stack intermediates, and the collector scans and updates both.
@@ -278,8 +278,8 @@ live).
 ### Deployment artifacts without source (open, recorded 2026-09-06)
 
 The bullets above say an image *contains* source. Newspeak upstream does not
-work that way, and the difference is worth stating before Milestone 3 fixes it
-by accident.
+work that way, and the difference is worth stating before Milestone 3
+settles it deliberately.
 
 Bracha's position is **two artifacts, not one**: "Ideally, you have images and a
 binary format", where "serialized top level classes can serve as a binary
@@ -381,8 +381,8 @@ Four changes carry that delta, and they belong in a single format break:
   comment already records the consequence — a second user-defined class would
   encode as `UserRoot` and decode as the root, a wrong class rather than a
   decode error — and that the milestone which loads nested classes must
-  replace tag 1 with an index into a class table and bump `FORMAT_VERSION`.
-  That is this milestone.
+  replace tag 1 with an index into a table of declarations. That is
+  Milestone 3.
 - **`load` stops re-parsing.** It currently reads the stored source and re-runs
   parse → resolve → bootstrap → `load_module` to rebuild the `ClassRef` graph
   and the bindings map (`image/mod.rs`); it decodes the class table instead,
@@ -392,13 +392,22 @@ Four changes carry that delta, and they belong in a single format break:
   `verify_graph` resolves each object and frame against the table rather than
   against a re-parsed module.
 
-**A symbol table belongs in the same break.** Selectors are the most repeated
-strings in the format — name-based virtual dispatch puts the same selector at
-very many call sites — and each occurrence is written inline today. A table at
-the head of the image, referenced by index, deduplicates them and turns
-interning at load time into one pass over that table instead of one
-`Symbol::intern` per send instruction. `FORMAT_VERSION` breaks for the class
-table anyway, so this costs one format break rather than two.
+**A symbol table belongs with it.** Selectors are the most repeated strings in
+the format — name-based virtual dispatch puts the same selector at very many
+call sites — and each occurrence is written inline today. A table at the head
+of the image, referenced by index, deduplicates them and turns interning at
+load time into one pass over that table instead of one `Symbol::intern` per
+send instruction.
+
+**Milestone 3 refines this delta and carries it out**
+(`2026-09-06-1659-ns-next-nesting-mixins-source-free-images-design.md`). Two
+things there differ from the sketch above. The table is a *mixin* table, one
+row per class declaration, because the language spec requires a distinct class
+object per enclosing instance and only the mixin is shared between them; and
+`FORMAT_VERSION` is not bumped, because the project has no external users and
+images that predate a change are disposable. The untrusted-input guarantee is
+unaffected: it comes from validating every id, tag, count and length before
+use, never from the version field.
 
 **Reflection survives this.** Object mirrors (class of, slots by name), class
 mirrors (name, slots, selectors, arity, instantiation) and activation mirrors
@@ -579,8 +588,9 @@ anyway.
 |---|---|
 | **M1** — tree-walking interpreter | Reified Frame chain, walkable independently of the Rust stack; growable indexed `temps`. Dispatch through mutable method dictionaries; no durable method-body pointers. Class-owned slot layout; slot access via current layout. Stable identity + identity hash. Retain source + provenance per class/method. |
 | **M2** — bytecode + interpreter VM | The safepoint abstract-state map (debugger + deopt + image). Statement→PC table per method. Architecture-neutral, versioned bytecode. Define and version the image serialization format; bootstrap from source. Stable call-site identity. |
-| **M3** — inline caches + GC | Dependency-keyed, globally-flushable caches. `become:` / forwarding support in the GC and object model; instance migration. Precise root tracking for both engines: the reified frame chain is the VM's root set, and the tree-walker gets a `HandleScope`-style handle layer for the intermediates it holds on the Rust stack (see "The tree-walker and a moving collector"). |
-| **M4–M5** — JIT | Deopt metadata from every safepoint. Tiered promotion driven by IC feedback. Snapshot tears down JIT state cleanly. |
+| **M3** — nested classes + source-free images | Mixins shared per declaration; a mixin application cached per (mixin, superclass application) and carrying layout and lookup; a distinct class object per enclosing instance, holding its enclosing object. Superclass clause evaluated, one initializer activation per level. Mixin table and symbol table in the image; the source leaves the load path. |
+| **M4** — inline caches + GC | Dependency-keyed, globally-flushable caches, keyed on the mixin application rather than the class object. `become:` / forwarding support in the GC and object model; instance migration. Precise root tracking for both engines: the reified frame chain is the VM's root set, and the tree-walker gets a `HandleScope`-style handle layer for the intermediates it holds on the Rust stack (see "The tree-walker and a moving collector"). |
+| **M5–M6** — JIT | Deopt metadata from every safepoint. Tiered promotion driven by IC feedback. Snapshot tears down JIT state cleanly. |
 
 ## Developer tooling for the VM itself
 
@@ -615,12 +625,14 @@ default.
 |---|---|
 | M1 | `ns-next repl` — evaluate Newspeak expressions against a running interpreter. (`ns-next parse --ast` already exists from the frontend.) |
 | M2 | `ns-next disasm <file> <selector>` — bytecode disassembly. Close to free: the format is already architecture-neutral and versioned for the image. |
-| M3 | Inline-cache transition tracing (uninitialized → monomorphic → polymorphic → megamorphic) per call site; heap/GC statistics (pause times, promotion rates per generation). |
-| M4–M5 | Deoptimization tracing (reason + site, read directly off the abstract-state map); generated-code / IR dumps per tier. |
+| M3 | A `run-corpus` gate over a curated whitelist of real corpus modules, run under both engines; a `--bench` mode with warm-up-aware counters, giving M4 a before-number. |
+| M4 | Inline-cache transition tracing (uninitialized → monomorphic → polymorphic → megamorphic) per call site; heap/GC statistics (pause times, promotion rates per generation). |
+| M5–M6 | Deoptimization tracing (reason + site, read directly off the abstract-state map); generated-code / IR dumps per tier. |
 
-A `--bench` mode with warm-up-aware counters belongs here too, and doubles as
-the harness for the tree-walker-vs-bytecode microbenchmark already recommended
-for the M1→M2 transition.
+The `--bench` mode in the M3 row doubles as the harness for the
+tree-walker-vs-bytecode microbenchmark already recommended for the M1→M2
+transition. It sits in M3 rather than later on purpose: M4 is the inline-cache
+milestone, and an optimization without a before-number is not a measurable one.
 
 ## Tensions and non-goals
 

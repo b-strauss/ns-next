@@ -12,8 +12,9 @@ milestone.
 | M1 — Frontend | Complete | 2026-09-01 | [runtime-design](superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md) | [frontend](superpowers/plans/2026-09-01-2308-ns-next-frontend.md) |
 | M1 — Runtime | Complete | 2026-09-04 | [runtime-design](superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md), [liveness/VM constraints](superpowers/specs/2026-09-04-1153-ns-next-liveness-images-vm-design.md) | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm-design](superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md) | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
-| M3 — Inline caches + GC | Not started | — | — | — |
-| M4–M5 — JIT | Not started | — | — | — |
+| M3 — Nested classes + source-free images | Not started | — | [nesting/mixins/source-free-images](superpowers/specs/2026-09-06-1659-ns-next-nesting-mixins-source-free-images-design.md) | — |
+| M4 — Inline caches + GC | Not started | — | — | — |
+| M5–M6 — JIT | Not started | — | — | — |
 
 ## M1 — Frontend (complete, 2026-09-01)
 
@@ -53,9 +54,9 @@ snapshot`/`load`. Required by
 `2026-09-04-1153-ns-next-liveness-images-vm-design.md`: a statement→PC
 table per method (the safepoint abstract-state map) and stable call-site
 identity with a reserved, inert inline-cache slot per send — both
-carried by every `CompiledCode` now so Milestone 3 (inline caches) needs
+carried by every `CompiledCode` now so Milestone 4 (inline caches) needs
 no bytecode format break. Object model stays `Rc<RefCell<Object>>` for
-M2 — the arena/handle rewrite is deferred to M3, alongside the real GC
+M2 — the arena/handle rewrite is deferred to M4, alongside the real GC
 (the image format is defined against the logical value model so that
 later swap won't break image compatibility). Design spec committed at
 `92f511b`, revised 2026-09-05; implemented on `feature/m2-bytecode-vm`
@@ -68,3 +69,12 @@ on the branch. Two follow-ups landed on `master` afterwards: the design
 spec's "Error Handling" section now treats an image as untrusted input
 (`68598b6`, matching what shipped), and an assignment's value is copied
 only where it outlives its setter send (`58e5688`).
+
+## Milestone renumbering (2026-09-06)
+
+The milestones after M2 were renumbered when language completeness was
+pulled ahead of the performance work. M3 is now nested classes, mixins
+and source-free images; inline caches and the GC became M4; the JIT
+tiers became M5–M6. References in the design specs and in code comments
+were moved with it. The completed plans under `superpowers/plans/` are
+execution records of finished work and were left as written.

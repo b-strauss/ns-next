@@ -36,7 +36,7 @@ gains one small engine hook at each of its three "run this body" points
 image format is defined against the *logical* value model
 (`Nil | Bool | SmallInt | Float | Obj`, slot layouts, classes), not
 against this physical representation, specifically so that a later
-arena/handle rewrite (paired with a real GC, Milestone 3) does not break
+arena/handle rewrite (paired with a real GC, Milestone 4) does not break
 image compatibility.
 
 ## Goals
@@ -60,7 +60,7 @@ image compatibility.
 - Record a statement→PC table and an abstract-state map at every
   statement-boundary safepoint, sufficient to reconstruct a full `Frame`.
 - Give every send instruction a stable call-site identity with a
-  reserved (currently unused) inline-cache slot, so Milestone 3 can
+  reserved (currently unused) inline-cache slot, so Milestone 4 can
   attach cache state without a bytecode format change.
 - Define and version a canonical, architecture-neutral image
   serialization format; implement save (`ns-next snapshot`) and load
@@ -81,10 +81,10 @@ image compatibility.
 
 - Inline caches actually caching anything (the slot is reserved and
   wired through the VM's dispatch call, but Milestone 2 always misses it
-  and does a full `dispatch.rs` lookup — Milestone 3 fills it in).
+  and does a full `dispatch.rs` lookup — Milestone 4 fills it in).
 - Any JIT tier, deoptimization, or unboxed/tagged-pointer values.
 - A real garbage collector, `become:`, or the arena/handle object-model
-  rewrite (Milestone 3, paired together — see Summary).
+  rewrite (Milestone 4, paired together — see Summary).
 - Actors / concurrency.
 - A debugger, mirrors, or `ns-next repl`. Consequently: **image snapshot
   in Milestone 2 captures a quiesced world** — the state after a
@@ -105,7 +105,7 @@ image compatibility.
   liveness spec's tooling section mentions without assigning it a
   milestone. Deliberately deferred: the differential harness already
   proves both engines agree, and a benchmark harness is better built once
-  Milestone 3's inline caches give it something to measure against.
+  Milestone 4's inline caches give it something to measure against.
 - The Milestone 1 corpus-parse deferral (`expr -1` lexed as a negative
   literal, one blacklisted file) that the M1 spec said to "revisit in
   Milestone 2". Deferred again, explicitly: this milestone does not touch
@@ -234,7 +234,7 @@ operand is a `u16`; every jump target is an instruction index:
   a slot's own initializer expression (see "Class instantiation" below).
   This is the one layout-dependent instruction in the set: `field_index`
   is the absolute index `load_class` assigned to the slot
-  (`ClassData.slot_index`). Milestone 3's class-shape-change flush must
+  (`ClassData.slot_index`). Milestone 4's class-shape-change flush must
   therefore invalidate compiled initializers along with every other
   cache keyed to the class — recorded here so that milestone does not
   have to rediscover it. Slot reads/writes from *method* bodies are not
@@ -382,7 +382,7 @@ into `CompiledCode.instrs`, so it is stable and reconstructible with no
 separate counter to drift). Each `Send*` instruction carries its
 `CallSite` by value and `CompiledCode.call_sites` lists them in
 instruction order, but Milestone 2 never reads or writes anything into
-it beyond existence — it is inert. This exists purely so Milestone 3 can
+it beyond existence — it is inert. This exists purely so Milestone 4 can
 start writing IC state into an already-present slot instead of changing
 `Instr`'s shape (which would be an image format break).
 
@@ -613,7 +613,7 @@ the chain via `sender`/`home` — nothing more is needed yet, because
 Milestone 2 has no register reuse across statements and no unboxing to
 reconstruct around. This is intentionally the same shape M1 already
 reified; Milestone 2 formalizes it (via the PC table) rather than
-inventing a new one. Later milestones' deopt metadata (Milestone 4-5)
+inventing a new one. Later milestones' deopt metadata (Milestone 5-6)
 and debugger frame-editing (a later milestone) build on this same table
 without changing it.
 
@@ -885,12 +885,12 @@ will start refusing legitimate images.
   receiver-class check with a correctness-preserving fallback to a real
   virtual send — see Goals for the performance-priority rationale.
 - Call-site identity and an inert IC slot are established now so
-  Milestone 3 needs no bytecode format break.
+  Milestone 4 needs no bytecode format break.
 - Tree-walking interpreter (M1) is retained permanently as
   `--engine=tree-walk`, used as the differential-testing oracle.
 - Image format defined against the logical value model; object
   representation (`Rc<RefCell<Object>>`) can still change later
-  (Milestone 3) without an image-compatibility break.
+  (Milestone 4) without an image-compatibility break.
 - No crate split; `compiler/`, `bytecode.rs`, `vm.rs`, `image/` live in
   `ns-runtime`, mirroring its Milestone 1 module structure.
 
@@ -923,8 +923,9 @@ milestone will actually run into:
   or add an explicit safepoint poll when that arrives. Note also that
   `pc` means a statement index under the tree-walker and an instruction
   index under the VM, with nothing on the frame to say which
-  (`types.rs`, `Frame.pc`); Milestone 3 should resolve that rather than
-  inherit it.
+  (`types.rs`, `Frame.pc`); Milestone 3 (nested classes and source-free
+  images) resolves that rather than inheriting it, because frames are
+  serialized and the ambiguity is therefore format-visible.
 - **No golden-bytes test pins the image wire format.** Every tag test is
   encode-then-decode against the same tables, so shifting both sides
   together would go unnoticed while `FORMAT_VERSION` stays at 1. That is
@@ -1105,7 +1106,7 @@ retracted here.
   (nothing bakes a method-body pointer into a durable object — a
   closure holding its own `CompiledCode` is the block's *identity*,
   exactly as its AST was in M1; `InitSlot`'s field index is the one
-  layout dependency, flagged for M3's flush); Req. 4-5 (image format
+  layout dependency, flagged for M4's flush); Req. 4-5 (image format
   above; `run` never snapshots); Req. 6 (register VM, baseline
   inlining); Req. 7 (no new global state — `Engine` lives on the
   `Interpreter`; the `thread_local!` symbol interner is an M1 property

@@ -476,7 +476,7 @@ impl<'a> Lowerer<'a> {
     /// One `Send*` instruction's `CallSite`: the instruction's own
     /// about-to-be-pushed index, always in sync with `instrs`.
     fn next_call_site(&self) -> CallSite {
-        // `call_site_id` is `u16` -- spec-mandated, Milestone 3's
+        // `call_site_id` is `u16` -- spec-mandated, Milestone 4's
         // inline-cache slot -- so a body of more than 65535 instructions
         // would silently alias two call sites onto the same id. Inlining
         // raises instructions-per-body, so this is no longer purely

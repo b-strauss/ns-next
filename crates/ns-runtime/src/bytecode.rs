@@ -48,7 +48,7 @@ pub enum Literal {
 }
 
 /// One send instruction's stable identity -- the instruction's own index
-/// into `CompiledCode.instrs`. Reserved for Milestone 3's inline caches;
+/// into `CompiledCode.instrs`. Reserved for Milestone 4's inline caches;
 /// inert in Milestone 2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CallSite {
