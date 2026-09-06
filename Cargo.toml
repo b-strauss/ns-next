@@ -11,3 +11,16 @@ license = "MIT"
 clap = { version = "4", features = ["derive"] }
 insta = "1"
 toml = "0.8"
+
+# Link-time optimization across crate boundaries, and a single codegen unit so the
+# optimizer sees the whole picture. Both usually help runtime speed as well as size --
+# the engines and the shared orchestration they call into live in different modules, so
+# cross-crate inlining is exactly the case LTO exists for. Release builds get slower;
+# debug builds are unaffected.
+#
+# `opt-level = "z"` and `panic = "abort"` shrink the binary further and are deliberately
+# not set: the first trades away this project's first-order concern, and the second
+# changes behaviour on panic (no unwinding, no `Drop`) and breaks `cargo test --release`.
+[profile.release]
+lto = "fat"
+codegen-units = 1
