@@ -53,7 +53,20 @@ their publishers grant.
 - **`modularity-meets-inheritance.pdf`** — the mixin-composition theory Newspeak's class
   model is built on. Background today; load-bearing once nested classes and mixins land.
 
-Not vendored, but cited by the specs: Bracha's blog *Room 101*, in particular
-[An Image Problem](https://gbracha.blogspot.com/2009/10/image-problem.html) and
-[Serialization Killer](https://gbracha.blogspot.com/2010/02/serialization-killer.html),
-and the Newspeak implementation at <https://github.com/newspeaklanguage/newspeak>.
+## Not vendored, but cited by the specs
+
+- **Robert Nystrom, *Crafting Interpreters*** — <https://craftinginterpreters.com/>. The
+  implementation-technique reference, and the only one here that is not about Newspeak.
+  Part III, *A Bytecode Virtual Machine*, is the closest published walkthrough of the
+  ground `compiler/` and `vm.rs` cover: compiling straight to a flat instruction stream,
+  constant tables, call frames, closures, and the dispatch-loop and inline-caching
+  techniques that decide whether a VM is fast. Read it for *how* and the Newspeak papers
+  above for *what*: clox is a stack machine with globals and single inheritance, ns-next
+  is a register VM with no globals and access-control-aware lookup, so the data
+  structures carry over but the semantics do not. Linked rather than vendored: the book
+  is commercially published, and the freely readable web edition above is its canonical
+  form.
+- Bracha's blog *Room 101*, in particular
+  [An Image Problem](https://gbracha.blogspot.com/2009/10/image-problem.html) and
+  [Serialization Killer](https://gbracha.blogspot.com/2010/02/serialization-killer.html).
+- The Newspeak implementation at <https://github.com/newspeaklanguage/newspeak>.
