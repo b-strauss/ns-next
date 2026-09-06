@@ -1,0 +1,14 @@
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new (| t ::= p transcript. |) (
+    label = ( ^'outer' )
+    public class Base = Object new () (
+        public describe = ( ^outer Outer label )
+    )
+    public class Derived = Base new () (
+        public describe = ( ^(super describe), '/derived' )
+    )
+    public main: platform args: args = (
+        t show: Derived new describe; newLine
+    )
+)

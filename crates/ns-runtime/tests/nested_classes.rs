@@ -688,3 +688,98 @@ fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name() {
 fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name_under_bytecode() {
     class_side_override_shadows_the_inherited_method(true);
 }
+
+/// Task 10: `Frame.current_class` must be the class object of the level
+/// that *defines* the running method, not the receiver's own (dynamic)
+/// class -- otherwise `super`/`outer` inside an inherited method read the
+/// wrong level. `Derived` inherits nothing here (it overrides `describe`
+/// itself), but its `super describe` lands in `Base`'s activation, and
+/// `Base`'s own `outer Outer label` must resolve from *that* activation.
+/// Mirrors `tests-fixtures/nested_super.ns` at the API level.
+const NESTED_SUPER_SRC: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new () (
+    label = ( ^'outer' )
+    public class Base = Object new () (
+        public describe = ( ^outer Outer label )
+    )
+    public class Derived = Base new () (
+        public describe = ( ^(super describe), '/derived' )
+    )
+    public run = ( ^Derived new describe )
+)
+";
+
+fn nested_super_and_outer(bytecode: bool) {
+    let (mut interp, class, bindings) = load(NESTED_SUPER_SRC, bytecode);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
+    );
+    let described = expect_ok(
+        interp.send(outer, Symbol::intern("run"), vec![], &bindings, None),
+        "run",
+    );
+    assert_eq!(string_contents(&described), "outer/derived");
+}
+
+#[test]
+fn super_and_outer_both_resolve_through_the_defining_level() {
+    nested_super_and_outer(false);
+}
+
+#[test]
+fn super_and_outer_both_resolve_through_the_defining_level_under_bytecode() {
+    nested_super_and_outer(true);
+}
+
+/// A *three*-level hierarchy where the middle level (`Mid`) is reached only
+/// through inheritance -- `Leaf` declares no `describe` of its own. This is
+/// the shape Task 10's two-level fixture cannot exercise: if
+/// `invoke_method` set `current_class` to the receiver's own (dynamic)
+/// class rather than the level `dispatch` found the method at, `Mid`'s
+/// activation would compute its `super` target from *`Leaf`'s* superclass
+/// (`Mid` itself) forever -- unbounded recursion, not a wrong value, so a
+/// two-level chain (where the bug and the fix agree on the first hop) would
+/// pass either way. This guards the actual defect class the level-tracking
+/// machinery exists for.
+const SUPER_CHAIN_SRC: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new () (
+    public class Grand = Object new () (
+        public describe = ( ^'grand' )
+    )
+    public class Mid = Grand new () (
+        public describe = ( ^(super describe), '/mid' )
+    )
+    public class Leaf = Mid new () ()
+    public run = ( ^Leaf new describe )
+)
+";
+
+fn super_chain_progresses_past_an_inherited_middle_level(bytecode: bool) {
+    let (mut interp, class, bindings) = load(SUPER_CHAIN_SRC, bytecode);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
+    );
+    let described = expect_ok(
+        interp.send(outer, Symbol::intern("run"), vec![], &bindings, None),
+        "run",
+    );
+    assert_eq!(string_contents(&described), "grand/mid");
+}
+
+#[test]
+fn a_super_chain_progresses_through_an_inherited_middle_level() {
+    super_chain_progresses_past_an_inherited_middle_level(false);
+}
+
+#[test]
+fn a_super_chain_progresses_through_an_inherited_middle_level_under_bytecode() {
+    super_chain_progresses_past_an_inherited_middle_level(true);
+}
