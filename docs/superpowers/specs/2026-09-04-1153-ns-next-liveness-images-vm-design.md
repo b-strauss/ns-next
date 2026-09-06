@@ -130,6 +130,53 @@ Frame {
   image format (below) is defined against the *logical* value model, not this
   representation, so that swap does not break images.
 
+### The tree-walker and a moving collector (decided 2026-09-06)
+
+Milestone 3 replaces `Rc<RefCell<_>>` with an arena and a real collector, and
+that collector moves objects — `become:`, forwarding and instance migration are
+requirements above, which is what rules the conservative non-moving option out.
+A moving collector must not only *find* every root but *update* it, and the two
+engines are in very different positions for that.
+
+The VM keeps every intermediate in the frame: `run_code` writes each result
+through `write_local` into `frame.temps`, and frames are heap objects chained by
+`sender`/`home`. A precise collector reaches every root of a running activation
+by walking that chain — which is what the reified frame chain exists for.
+
+The tree-walker keeps intermediates in Rust locals. `eval_expr` returns a
+`Value` up the Rust stack, a dynamic array literal collects into a `Vec<Value>`
+there, and `eval_send` holds the evaluated receiver in a Rust variable across
+`eval_args` — which allocates — and then holds receiver and arguments across
+the send itself. Under `Rc` those references keep their objects alive and never
+need updating. Under a moving collector they are roots it cannot see and
+addresses it cannot rewrite.
+
+Keeping the tree-walker past that point is possible, but not free: it needs a
+handle layer — a shadow stack in the shape of V8's `HandleScope` or JNI local
+references — registering every intermediate in a heap-side list the collector
+scans and fixes up. The mechanism is well understood; the cost is that the
+discipline has to hold across all of `interpreter/eval.rs` and
+`interpreter/instantiate.rs` and be re-established on every later change, and
+that a missed handle is heap corruption that shows up only under collection
+pressure. The rest of the object-model swap is not the problem: arena and
+handles hit both engines the same way, and the shared orchestration in
+`interpreter/` is ported once.
+
+**Decision (2026-09-06): the tree-walker is kept, and it gets that handle
+layer.** The extra engineering was weighed and accepted deliberately. Two
+independent engines that must agree byte for byte are a verification property
+worth a permanent cost, and V8 is the existence proof that an interpreter can
+hold its roots in handles next to a moving collector without the design coming
+apart. Milestone 3 therefore does not choose between the collector and the
+tree-walker; it implements root discipline for both. The reified frame chain is
+the root set for the VM, a handle layer is the root set for the tree-walker's
+Rust-stack intermediates, and the collector scans and updates both.
+
+What this does *not* extend to is the image. The tree-walker executes the AST,
+so it runs only when execution starts from `.ns` source, where the AST is
+present by construction; a loaded image runs bytecode. That asymmetry is the
+boundary of what an AST engine can do, not a step towards retiring it.
+
 ## Dispatch and caches
 
 - Method dictionaries are mutable at runtime. Dispatch resolves selector →
@@ -298,26 +345,60 @@ image can be **exported back** to `.ns`", and a decompiler satisfies it from
 bytecode. No spec here describes one yet, so it is new work, and it is what
 makes this direction honest rather than a quiet loss of capability.
 
-Two things make this cheaper here than it would be upstream, both checked
+Three things make this cheaper here than it would be upstream, all checked
 against the Milestone 2 code:
 
-- **Nothing in the bytecode engine looks a binding up by span.** All three
-  `bindings.get(&span)` call sites live in `interpreter/eval.rs`, i.e. in the
-  tree-walker; compiled code has its registers, hop counts and selectors baked
+- **Nothing in the bytecode engine looks a binding up by span.** Of the eight
+  `bindings.get(&span)` call sites, five are in `compiler/lower.rs` and run at
+  compile time; the other three are in `interpreter/eval.rs`, i.e. in the
+  tree-walker. Compiled code has its registers, hop counts and selectors baked
   in. So `HashMap<Span, Binding>` — the structure that makes the source text
   load-bearing today — is simply not needed by a bytecode-only image.
+- **Every selector is already in the image.** Dispatch is virtual and by name,
+  so a selector cannot exist only in the AST — the run-time lookup would not
+  find it. `image/encode.rs` already writes the selector of every send
+  instruction, the key of every method-dictionary entry, and every
+  lexical-send path segment as a string.
 - **Very little of a class is read at run time.** `instantiate.rs` needs the
   factory pattern (selector and arity), the slot count, and whether the class
   has initializer code at all; `instance_slots`/`slot_index`/`init_exprs` are
   otherwise read on the tree-walk path.
 
-**The delta is one new section: a class table.** Class name, slot names with
-their indices, factory selector and arity — the replacement for "reconstruct
-the `ClassRef` graph by re-running the front end". Everything else a
-source-free image needs is already in the Milestone 2 format: the object graph
-with identity hashes, the frames, the code table (`num_args`, `num_registers`,
-`statement_pc`, call sites, a `source: Span` per body) and the root list, which
-already carries every method's selector.
+**The delta is a class table.** Class name, slot names with their indices,
+factory selector and arity — the replacement for "reconstruct the `ClassRef`
+graph by re-running the front end". Everything else a source-free image needs
+is already in the Milestone 2 format: the object graph with identity hashes,
+the frames, the code table (`num_args`, `num_registers`, `statement_pc`, call
+sites, a `source: Span` per body) and the root list, which already carries
+every method's selector.
+
+Four changes carry that delta, and they belong in a single format break:
+
+- **The class table itself**, as above.
+- **The class tag has to index it.** Today a tag is either a builtin kind or
+  `UserRoot` (`image/encode.rs`, `encode_class_tag`), because `load_module`
+  loads no nested classes and there is exactly one user class to name. Its own
+  comment already records the consequence — a second user-defined class would
+  encode as `UserRoot` and decode as the root, a wrong class rather than a
+  decode error — and that the milestone which loads nested classes must
+  replace tag 1 with an index into a class table and bump `FORMAT_VERSION`.
+  That is this milestone.
+- **`load` stops re-parsing.** It currently reads the stored source and re-runs
+  parse → resolve → bootstrap → `load_module` to rebuild the `ClassRef` graph
+  and the bindings map (`image/mod.rs`); it decodes the class table instead,
+  and `LoadedImage.bindings` goes away with the tree-walk path.
+- **The class table is untrusted input like everything else.** Every class
+  index, slot count and arity is validated before it indexes or allocates, and
+  `verify_graph` resolves each object and frame against the table rather than
+  against a re-parsed module.
+
+**A symbol table belongs in the same break.** Selectors are the most repeated
+strings in the format — name-based virtual dispatch puts the same selector at
+very many call sites — and each occurrence is written inline today. A table at
+the head of the image, referenced by index, deduplicates them and turns
+interning at load time into one pass over that table instead of one
+`Symbol::intern` per send instruction. `FORMAT_VERSION` breaks for the class
+table anyway, so this costs one format break rather than two.
 
 **Reflection survives this.** Object mirrors (class of, slots by name), class
 mirrors (name, slots, selectors, arity, instantiation) and activation mirrors
@@ -366,10 +447,11 @@ consistent *renaming*, not removal — mirrors keep working and report the
 renamed identifiers.
 
 **The tree-walker is not an obstacle to this.** It executes the AST and so
-cannot run from a source-free image — but it is expected to be removed anyway
-once the bytecode engine no longer needs an oracle to be checked against. Note
-that this contradicts the wording elsewhere that calls it "permanently
-maintained"; read that as "for as long as an AST engine exists", not forever.
+cannot run from a source-free image — but it never has to. It is the engine for
+running `.ns` source directly, where the AST exists by construction, and images
+run bytecode. The tree-walker is retained permanently (see "The tree-walker and
+a moving collector"), so the wording elsewhere in these specs that calls it
+"permanently maintained" is accurate as written.
 
 A side benefit: a source-free artifact removes the front end from the load
 path, and with it the re-parsing of attacker-controlled text that the
@@ -497,7 +579,7 @@ anyway.
 |---|---|
 | **M1** — tree-walking interpreter | Reified Frame chain, walkable independently of the Rust stack; growable indexed `temps`. Dispatch through mutable method dictionaries; no durable method-body pointers. Class-owned slot layout; slot access via current layout. Stable identity + identity hash. Retain source + provenance per class/method. |
 | **M2** — bytecode + interpreter VM | The safepoint abstract-state map (debugger + deopt + image). Statement→PC table per method. Architecture-neutral, versioned bytecode. Define and version the image serialization format; bootstrap from source. Stable call-site identity. |
-| **M3** — inline caches + GC | Dependency-keyed, globally-flushable caches. `become:` / forwarding support in the GC and object model; instance migration. |
+| **M3** — inline caches + GC | Dependency-keyed, globally-flushable caches. `become:` / forwarding support in the GC and object model; instance migration. Precise root tracking for both engines: the reified frame chain is the VM's root set, and the tree-walker gets a `HandleScope`-style handle layer for the intermediates it holds on the Rust stack (see "The tree-walker and a moving collector"). |
 | **M4–M5** — JIT | Deopt metadata from every safepoint. Tiered promotion driven by IC feedback. Snapshot tears down JIT state cleanly. |
 
 ## Developer tooling for the VM itself
@@ -604,9 +686,6 @@ Milestone 1 dispatch algorithms) and `mirrors.pdf` (reflection as a capability
   "export back to `.ns`" in its place — when it is built, how faithful its
   output must be, and whether tier 2 keeps enough metadata (statement ranges,
   slot and argument names) for it to produce something a person wants to read.
-- When the tree-walking engine is retired. It is the differential oracle for
-  the bytecode engine today and blocks nothing until then, but it is the reason
-  the AST — and therefore the source — is still load-bearing at run time.
 - Whether a suspended (debugged) actor's mailbox keeps draining, and how far
   the M:N actor scheduler should be visible to or configurable by user code
   (e.g. actor placement/affinity) versus staying fully opaque.
