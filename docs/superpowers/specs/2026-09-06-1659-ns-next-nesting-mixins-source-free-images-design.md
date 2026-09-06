@@ -301,11 +301,16 @@ verification pass, and the possibility of loading an image whose stored
 layout disagrees with its mixins.
 
 **Class objects are ordinary objects in the graph**, encoded as
-`{mixin id, superclass class-object id | builtin tag, enclosing object
-id}`. This retires the binary `builtin`/`UserRoot` class tag, whose own
-comment in `image/encode.rs` records that a second user-defined class
-would encode as `UserRoot` and decode as the root — a wrong class rather
-than a decode error. Nesting is exactly what would have triggered it.
+`{mixin id, superclass, enclosing object, declaring class}` — the
+declaring class because `outer` walks the declaration chain, not the
+receiver's dynamic one, so an image that dropped it would come back
+resolving `outer` from the wrong chain. This retires the binary
+`builtin`/`UserRoot` class tag, whose own comment in `image/encode.rs`
+records that a second user-defined class would encode as `UserRoot` and
+decode as the root — a wrong class rather than a decode error. Nesting is
+exactly what would have triggered it. The tag keeps its first two cases,
+which name classes the graph does not create (a builtin, and the module's
+root class), and gains a third that names an object-table record.
 
 **The source leaves the load path.** `load` decodes the mixin table
 instead of re-running parse → resolve → bootstrap → `load_module`, and

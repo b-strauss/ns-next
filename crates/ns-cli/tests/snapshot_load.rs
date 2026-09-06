@@ -85,6 +85,42 @@ fn a_loaded_world_does_not_rerun_its_instance_initializer() {
     let _ = std::fs::remove_dir_all(img.parent().unwrap());
 }
 
+/// A world whose hidden nested-class cache slots hold class objects, and
+/// whose `outer` sends resolve two levels out through a declaration chain
+/// that is itself inherited across a nesting boundary. Snapshotting one
+/// used to be refused outright; loading one now has to rebuild every class
+/// object's application and its `declaring_class` link, and `top` four
+/// times over is what says both came back right -- `mid` is the decoy a
+/// walk down the receiver's dynamic chain would answer with.
+#[test]
+fn a_world_holding_nested_class_objects_snapshots_and_reruns_identically() {
+    let img = temp_image("nested-outer-inherited");
+    let src = fixture("nested_outer_inherited.ns");
+    let expected = std::fs::read_to_string(fixture("nested_outer_inherited.expected"))
+        .expect("read expected")
+        .replace("\r\n", "\n");
+    let (ok, out, err) = ns_next(&[
+        "snapshot".as_ref(),
+        src.as_os_str(),
+        img.as_os_str(),
+        "--send".as_ref(),
+        "main:args:".as_ref(),
+    ]);
+    assert!(ok, "{err}");
+    // `snapshot` adds its own "wrote <path>" line after the entry send's
+    // output, which `load` does not.
+    assert!(out.starts_with(&expected), "{out}");
+    let (ok, out, err) = ns_next(&[
+        "load".as_ref(),
+        img.as_os_str(),
+        "--send".as_ref(),
+        "main:args:".as_ref(),
+    ]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let _ = std::fs::remove_dir_all(img.parent().unwrap());
+}
+
 #[test]
 fn load_without_send_prints_a_summary_and_a_corrupt_image_is_reported() {
     let img = temp_image("summary");

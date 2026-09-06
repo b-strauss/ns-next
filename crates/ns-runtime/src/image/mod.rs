@@ -45,9 +45,9 @@ pub fn snapshot(
     let mut code_w = encode::Writer::new();
     let ids = encode::encode_code_table(&mut code_w, module, root_class, &mut symbols)?;
     // After the code table, whose ids its rows name; before the graph, whose
-    // class objects will name its rows (Task 13).
+    // class objects name its rows.
     let mut mixin_w = encode::Writer::new();
-    let _mixin_ids = mixins::encode(&mut mixin_w, root_class, module, &mut symbols, &ids)?;
+    let mixin_ids = mixins::encode(&mut mixin_w, root_class, module, &mut symbols, &ids)?;
     let mut graph_w = encode::Writer::new();
     encode::encode_graph_section(
         &mut graph_w,
@@ -55,6 +55,7 @@ pub fn snapshot(
         platform,
         &ids,
         root_class,
+        &mixin_ids,
         &mut symbols,
     )?;
 
@@ -116,15 +117,20 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let module = decode::install_code_table(&table, &mixins, &root_class, &bindings)
         .map_err(|e| e.to_string())?;
     let platform = interp.platform();
+    // The reloaded declaration tree a decoded class object's mixin id names
+    // -- read after `install_code_table` has reconciled it, position by
+    // position, with the mixin table the image carries.
+    let mixin_order = decode::source_mixin_order(&root_class).map_err(|e| e.to_string())?;
     let graph = {
-        let ctx = decode::DecodeContext {
-            interp: &interp,
+        let mut ctx = decode::DecodeContext {
+            interp: &mut interp,
             root_class: &root_class,
             codes: &table.codes,
             bindings: &bindings,
             platform,
+            mixins: &mixin_order,
         };
-        decode::decode_graph_section(&mut r, &ctx, &symbols).map_err(|e| e.to_string())?
+        decode::decode_graph_section(&mut r, &mut ctx, &symbols).map_err(|e| e.to_string())?
     };
     decode::verify_graph(&graph, &table, &module).map_err(|e| e.to_string())?;
     interp.advance_identity_hash_past(graph.max_identity_hash);

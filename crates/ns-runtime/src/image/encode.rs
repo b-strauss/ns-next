@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal};
 use crate::types::{
-    BuiltinClass, ClassRef, ClosureBody, ClosureData, FrameKind, FrameRef, ObjRef, ObjectData,
-    SourceOrigin, Value,
+    BuiltinClass, ClassData, ClassRef, ClosureBody, ClosureData, FrameKind, FrameRef, ObjRef,
+    ObjectData, SourceOrigin, Value,
 };
 
 use super::{mixins, symbols};
@@ -30,9 +30,10 @@ pub const MAGIC: &[u8; 4] = b"NSIM";
 /// in anyone's hands can be misread because of it. The next such change
 /// after a release bumps the version.
 ///
-/// Milestone 3's layout changes -- the symbol table, and the mixin table
-/// that took the per-mixin sections out of the code table -- do not bump it
-/// either, by an explicit decision (2026-09-06): the project has no external
+/// Milestone 3's layout changes -- the symbol table, the mixin table that
+/// took the per-mixin sections out of the code table, and the class-object
+/// record that retired the `UserRoot` class tag -- do not bump it either,
+/// by an explicit decision (2026-09-06): the project has no external
 /// users, so images written before them are disposable and no migration path
 /// is owed to them. What still has to hold is that an old or corrupt image
 /// fails as a `DecodeError`, which comes from validating every id, tag,
@@ -488,10 +489,35 @@ enum Pending {
     Frame(FrameRef),
 }
 
-/// Every heap object (instances, strings, symbols, arrays, closures) and
-/// every `Frame` reachable from the roots, in discovery order. Class
-/// objects are never entered (they are class tags), nor is the `platform`
-/// singleton (special-object tag).
+/// A class object's three graph references, in the order its record
+/// writes them: the superclass, the enclosing object, the declaring class.
+/// Traversal and encoding share one definition so the two cannot drift into
+/// a reference that is written but never given an id.
+fn class_refs(data: &ClassData) -> impl Iterator<Item = ObjRef> + '_ {
+    data.superclass
+        .iter()
+        .chain(data.enclosing.iter())
+        .chain(data.declaring_class.iter())
+        .cloned()
+}
+
+/// Whether `obj` is a class object the format names with a *tag* rather
+/// than with an object-table id: a builtin, which the loaded bootstrap
+/// supplies, or the module's root class, which `load` rebuilds from the
+/// image's own source before the graph is decoded. Neither exists because
+/// the graph says so, so neither is a record. Every other class object is.
+fn is_class_tag(obj: &ObjRef, root_class: &ClassRef) -> bool {
+    match &obj.borrow().data {
+        ObjectData::Class(data) => data.builtin.is_some() || Rc::ptr_eq(obj, root_class),
+        _ => false,
+    }
+}
+
+/// Every heap object (instances, strings, symbols, arrays, closures, and
+/// the class objects that are neither builtin nor the module's root) and
+/// every `Frame` reachable from the roots, in discovery order. A builtin
+/// class, the root class and the `platform` singleton are never entered:
+/// each is named by a tag of its own.
 pub struct GraphTable {
     objects: Vec<ObjRef>,
     object_ids: HashMap<usize, u32>,
@@ -508,7 +534,7 @@ impl GraphTable {
     /// failing. The order is exactly what the recursive formulation would
     /// produce (children pushed in reverse so they pop in order), which is
     /// what makes the encoding canonical.
-    pub fn build(roots: &[Value], platform: &Value) -> GraphTable {
+    pub fn build(roots: &[Value], platform: &Value, root_class: &ClassRef) -> GraphTable {
         let mut table = GraphTable {
             objects: Vec::new(),
             object_ids: HashMap::new(),
@@ -522,16 +548,22 @@ impl GraphTable {
             .collect();
         while let Some(pending) = stack.pop() {
             match pending {
-                Pending::Value(v) => table.visit_value(&v, platform, &mut stack),
+                Pending::Value(v) => table.visit_value(&v, platform, root_class, &mut stack),
                 Pending::Frame(f) => table.visit_frame(&f, &mut stack),
             }
         }
         table
     }
 
-    fn visit_value(&mut self, v: &Value, platform: &Value, stack: &mut Vec<Pending>) {
+    fn visit_value(
+        &mut self,
+        v: &Value,
+        platform: &Value,
+        root_class: &ClassRef,
+        stack: &mut Vec<Pending>,
+    ) {
         let Value::Obj(obj) = v else { return };
-        if is_same_object(v, platform) || matches!(obj.borrow().data, ObjectData::Class(_)) {
+        if is_same_object(v, platform) || is_class_tag(obj, root_class) {
             return;
         }
         let key = Rc::as_ptr(obj) as usize;
@@ -542,15 +574,30 @@ impl GraphTable {
             .insert(key, u32_field("object table id", self.objects.len()));
         self.objects.push(obj.clone());
         let before = stack.len();
-        match &obj.borrow().data {
-            ObjectData::Instance(fields) | ObjectData::Array(fields) => {
-                stack.extend(fields.iter().cloned().map(Pending::Value));
+        {
+            let borrowed = obj.borrow();
+            // An object's own class is a reference like every other: now
+            // that a class object can be a record, reaching one only
+            // through whatever values happen to point at it would leave
+            // `encode_class_tag` with an id that was never assigned.
+            stack.push(Pending::Value(Value::Obj(borrowed.class.clone())));
+            match &borrowed.data {
+                ObjectData::Instance(fields) | ObjectData::Array(fields) => {
+                    stack.extend(fields.iter().cloned().map(Pending::Value));
+                }
+                ObjectData::Closure(c) => {
+                    stack.push(Pending::Frame(c.captured_frame.clone()));
+                    stack.push(Pending::Frame(c.home.clone()));
+                }
+                // A class object's three references. `metaclass` is not one
+                // of them: it is a lazy cache `Interpreter::metaclass_of`
+                // rebuilds on demand, and nothing hands a metaclass to
+                // Newspeak code, so no value in the graph can point at one.
+                ObjectData::Class(data) => {
+                    stack.extend(class_refs(data).map(|c| Pending::Value(Value::Obj(c))));
+                }
+                ObjectData::Str(_) | ObjectData::Sym(_) => {}
             }
-            ObjectData::Closure(c) => {
-                stack.push(Pending::Frame(c.captured_frame.clone()));
-                stack.push(Pending::Frame(c.home.clone()));
-            }
-            ObjectData::Str(_) | ObjectData::Sym(_) | ObjectData::Class(_) => {}
         }
         stack[before..].reverse();
     }
@@ -576,11 +623,27 @@ impl GraphTable {
                     .cloned()
                     .map(Pending::Frame),
             );
-            // A `FrameKind::Closure` frame's own closure record is encoded
-            // inline, so its two frame references need ids too.
-            if let FrameKind::Closure(c) = &f.kind {
-                stack.push(Pending::Frame(c.captured_frame.clone()));
-                stack.push(Pending::Frame(c.home.clone()));
+            stack.extend(
+                f.current_class
+                    .iter()
+                    .cloned()
+                    .map(|c| Pending::Value(Value::Obj(c))),
+            );
+            match &f.kind {
+                // A `FrameKind::Closure` frame's own closure record is
+                // encoded inline, so its two frame references need ids too.
+                FrameKind::Closure(c) => {
+                    stack.push(Pending::Frame(c.captured_frame.clone()));
+                    stack.push(Pending::Frame(c.home.clone()));
+                }
+                // The three class-carrying kinds name a class the same way
+                // `current_class` does, so the class needs an id the same way.
+                FrameKind::Initializer(c)
+                | FrameKind::SuperclassClause(c)
+                | FrameKind::SuperclassMessage(c) => {
+                    stack.push(Pending::Value(Value::Obj(c.clone())));
+                }
+                FrameKind::Method(_) | FrameKind::TopLevel => {}
             }
         }
         stack[before..].reverse();
@@ -609,22 +672,33 @@ impl GraphTable {
     }
 }
 
-/// `Builtin(kind)` (0 + kind tag) or `UserRoot` (1) -- a class is never
-/// structurally serialized (spec: "Root/special-objects table"). Tag 1
-/// names no particular class, so it is only unambiguous while the module's
-/// root class is the *only* user-defined class object a value can point at.
+/// Everything the graph encoder resolves a reference against: the object
+/// and frame tables, the `platform` singleton and the module's root class
+/// (each named by a tag of its own rather than by an id), the code table's
+/// ids, and the mixin table's row ids -- which is how a class object's
+/// record names the declaration it applies.
+pub struct EncodeContext<'a> {
+    pub table: &'a GraphTable,
+    pub code_ids: &'a CodeIds,
+    pub platform: &'a Value,
+    pub root_class: &'a ClassRef,
+    /// `mixin::mixin_key` -> mixin-table row id, as `mixins::encode`
+    /// assigned them.
+    pub mixin_ids: &'a HashMap<usize, u32>,
+}
+
+/// `Builtin(kind)` (0 + kind tag), `UserRoot` (1), or `Record` (2 + object
+/// id) -- the three ways a class object can exist in a loaded world.
 ///
-/// The nested-class accessor breaks that: a nested class object is a value
-/// in its enclosing instance's hidden cache slot and the `.class` of every
-/// instance of it, so a world snapshotted after any nested-class access
-/// reaches one here. Encoding it as tag 1 would decode it back as the root
-/// class -- a wrong class silently installed, not a decode error, since
-/// decoding checks no field count against the application's `num_slots`.
-/// So this refuses instead, naming the limitation. The milestone that
-/// serializes class objects properly replaces tag 1 with something that
-/// names *which* user class (an index into a class table); until then, a
-/// clean refusal is the only outcome that cannot corrupt a reloaded world.
-fn encode_class_tag(w: &mut Writer, class: &ClassRef, root_class: &ClassRef) -> Result<(), String> {
+/// The first two are rebuilt before the graph is: a builtin comes from the
+/// bootstrap, the root class from `load_module` on the image's own source.
+/// Everything else is a class object the *graph* creates, and tag 2 names
+/// which one by the id of its own record in the object table. That third
+/// case is what nesting needs: a nested class object is the value of its
+/// enclosing instance's hidden cache slot and the `.class` of every
+/// instance of it, and there is one per enclosing instance, so no tag that
+/// names a class only by its position in the source could tell them apart.
+fn encode_class_tag(w: &mut Writer, class: &ClassRef, ctx: &EncodeContext) {
     let builtin = match &class.borrow().data {
         ObjectData::Class(data) => data.builtin,
         _ => panic!("internal: a class reference does not point at a class object"),
@@ -634,60 +708,55 @@ fn encode_class_tag(w: &mut Writer, class: &ClassRef, root_class: &ClassRef) -> 
             w.write_u8(0);
             w.write_u8(builtin_class_tag(kind));
         }
-        None if Rc::ptr_eq(class, root_class) => w.write_u8(1),
+        None if Rc::ptr_eq(class, ctx.root_class) => w.write_u8(1),
         None => {
-            return Err(
-                "image encoding cannot serialize a user-defined class object other \
-                        than the module's root class (the image's class tag names no \
-                        particular class); snapshot a world before its first nested-class \
-                        access, or wait for the milestone that adds a class table"
-                    .to_string(),
-            )
+            w.write_u8(2);
+            w.write_u32(ctx.table.object_id(class));
         }
     }
-    Ok(())
+}
+
+fn encode_optional_class(w: &mut Writer, class: Option<&ClassRef>, ctx: &EncodeContext) {
+    match class {
+        Some(c) => {
+            w.write_bool(true);
+            encode_class_tag(w, c, ctx);
+        }
+        None => w.write_bool(false),
+    }
 }
 
 /// The general `Value` encoder: scalar tags 0-4 (`encode_scalar_value`),
 /// 5 = object-table id, 6 = class tag, 7 = the `platform` singleton.
-fn encode_value(
-    w: &mut Writer,
-    v: &Value,
-    table: &GraphTable,
-    platform: &Value,
-    root_class: &ClassRef,
-) -> Result<(), String> {
+///
+/// A class object always goes through tag 6, even the ones tag 6 then
+/// resolves to an object-table id: one rule per kind of referent is what
+/// keeps the encoding canonical.
+fn encode_value(w: &mut Writer, v: &Value, ctx: &EncodeContext) {
     if encode_scalar_value(w, v) {
-        return Ok(());
+        return;
     }
     let Value::Obj(obj) = v else {
         unreachable!("encode_scalar_value handles every non-Obj case")
     };
-    if is_same_object(v, platform) {
+    if is_same_object(v, ctx.platform) {
         w.write_u8(7);
-        return Ok(());
+        return;
     }
     if matches!(obj.borrow().data, ObjectData::Class(_)) {
         w.write_u8(6);
-        return encode_class_tag(w, obj, root_class);
+        encode_class_tag(w, obj, ctx);
+        return;
     }
     w.write_u8(5);
-    w.write_u32(table.object_id(obj));
-    Ok(())
+    w.write_u32(ctx.table.object_id(obj));
 }
 
-fn encode_values(
-    w: &mut Writer,
-    values: &[Value],
-    table: &GraphTable,
-    platform: &Value,
-    root_class: &ClassRef,
-) -> Result<(), String> {
+fn encode_values(w: &mut Writer, values: &[Value], ctx: &EncodeContext) {
     w.write_u32(u32_field("value list length", values.len()));
     for v in values {
-        encode_value(w, v, table, platform, root_class)?;
+        encode_value(w, v, ctx);
     }
-    Ok(())
 }
 
 fn encode_frame_ref(w: &mut Writer, frame: Option<&FrameRef>, table: &GraphTable) {
@@ -705,8 +774,7 @@ fn encode_frame_ref(w: &mut Writer, frame: Option<&FrameRef>, table: &GraphTable
 fn encode_closure_record(
     w: &mut Writer,
     closure: &ClosureData,
-    table: &GraphTable,
-    code_ids: &CodeIds,
+    ctx: &EncodeContext,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let ClosureBody::Compiled(code) = &closure.body else {
@@ -720,28 +788,74 @@ fn encode_closure_record(
     for p in &closure.params {
         w.write_u32(symbols.intern(p.as_str()));
     }
-    w.write_u32(code_ids.id_of(code));
-    w.write_u32(table.frame_id(&closure.captured_frame));
-    w.write_u32(table.frame_id(&closure.home));
+    w.write_u32(ctx.code_ids.id_of(code));
+    w.write_u32(ctx.table.frame_id(&closure.captured_frame));
+    w.write_u32(ctx.table.frame_id(&closure.home));
+    Ok(())
+}
+
+/// A class object's record: which declaration it applies, and the three
+/// references that make it *this* application of it rather than another.
+///
+/// The `MixinApplication` itself is deliberately absent. Layout and lookup
+/// follow deterministically from the mixin and the superclass's own
+/// application, so `image::decode` rebuilds each one through
+/// `Interpreter::apply_mixin` -- whose cache is keyed by exactly that pair,
+/// which is what gives two enclosing instances back the *one* application
+/// they shared before the snapshot (§6.2). Writing applications out would
+/// have to reproduce that sharing by hand, and getting it wrong is silent:
+/// the world still runs, and every inline cache built on it goes
+/// megamorphic.
+///
+/// `builtin` is not written either -- a record only ever describes a user
+/// class, since a builtin is a class *tag* -- and neither is `metaclass`,
+/// a lazy cache `Interpreter::metaclass_of` rebuilds on the first
+/// class-side send.
+fn encode_class_record(
+    w: &mut Writer,
+    data: &ClassData,
+    ctx: &EncodeContext,
+) -> Result<(), String> {
+    let mixin = &data.application.mixin;
+    let id = ctx
+        .mixin_ids
+        .get(&crate::mixin::mixin_key(mixin))
+        .copied()
+        .ok_or_else(|| {
+            format!(
+                "image encoding cannot serialize a class object applying mixin `{}`, \
+                 which is not part of the module's declaration tree",
+                mixin.name
+            )
+        })?;
+    w.write_u32(id);
+    encode_optional_class(w, data.superclass.as_ref(), ctx);
+    // The enclosing object is an ordinary object, not a class, so it is
+    // written the way every other object reference is -- one `Value`.
+    match &data.enclosing {
+        Some(enclosing) => {
+            w.write_bool(true);
+            encode_value(w, &Value::Obj(enclosing.clone()), ctx);
+        }
+        None => w.write_bool(false),
+    }
+    encode_optional_class(w, data.declaring_class.as_ref(), ctx);
     Ok(())
 }
 
 fn encode_object(
     w: &mut Writer,
     obj: &ObjRef,
-    table: &GraphTable,
-    code_ids: &CodeIds,
-    platform: &Value,
-    root_class: &ClassRef,
+    ctx: &EncodeContext,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let borrowed = obj.borrow();
-    encode_class_tag(w, &borrowed.class, root_class)?;
+    encode_class_tag(w, &borrowed.class, ctx);
     w.write_u32(borrowed.identity_hash);
     match &borrowed.data {
         ObjectData::Instance(fields) => {
             w.write_u8(0);
-            encode_values(w, fields, table, platform, root_class)?;
+            encode_values(w, fields, ctx);
         }
         ObjectData::Str(s) => {
             w.write_u8(1);
@@ -753,14 +867,15 @@ fn encode_object(
         }
         ObjectData::Array(elements) => {
             w.write_u8(3);
-            encode_values(w, elements, table, platform, root_class)?;
+            encode_values(w, elements, ctx);
         }
         ObjectData::Closure(c) => {
             w.write_u8(4);
-            encode_closure_record(w, c, table, code_ids, symbols)?;
+            encode_closure_record(w, c, ctx, symbols)?;
         }
-        ObjectData::Class(_) => {
-            unreachable!("class objects are never entered in the object table")
+        ObjectData::Class(data) => {
+            w.write_u8(5);
+            encode_class_record(w, data, ctx)?;
         }
     }
     Ok(())
@@ -769,26 +884,17 @@ fn encode_object(
 fn encode_frame(
     w: &mut Writer,
     frame: &FrameRef,
-    table: &GraphTable,
-    code_ids: &CodeIds,
-    platform: &Value,
-    root_class: &ClassRef,
+    ctx: &EncodeContext,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let f = frame.borrow();
-    encode_value(w, &f.receiver, table, platform, root_class)?;
-    encode_values(w, &f.args, table, platform, root_class)?;
-    encode_values(w, &f.temps, table, platform, root_class)?;
+    encode_value(w, &f.receiver, ctx);
+    encode_values(w, &f.args, ctx);
+    encode_values(w, &f.temps, ctx);
     w.write_u32(u32_field("frame pc", f.pc));
-    encode_frame_ref(w, f.sender.as_ref(), table);
-    encode_frame_ref(w, f.home.as_ref(), table);
-    match &f.current_class {
-        Some(c) => {
-            w.write_bool(true);
-            encode_class_tag(w, c, root_class)?;
-        }
-        None => w.write_bool(false),
-    }
+    encode_frame_ref(w, f.sender.as_ref(), ctx.table);
+    encode_frame_ref(w, f.home.as_ref(), ctx.table);
+    encode_optional_class(w, f.current_class.as_ref(), ctx);
     match &f.kind {
         FrameKind::Method(method) => {
             w.write_u8(0);
@@ -796,20 +902,20 @@ fn encode_frame(
         }
         FrameKind::Closure(c) => {
             w.write_u8(1);
-            encode_closure_record(w, c, table, code_ids, symbols)?;
+            encode_closure_record(w, c, ctx, symbols)?;
         }
         FrameKind::TopLevel => w.write_u8(2),
         FrameKind::Initializer(class) => {
             w.write_u8(3);
-            encode_class_tag(w, class, root_class)?;
+            encode_class_tag(w, class, ctx);
         }
         FrameKind::SuperclassClause(class) => {
             w.write_u8(4);
-            encode_class_tag(w, class, root_class)?;
+            encode_class_tag(w, class, ctx);
         }
         FrameKind::SuperclassMessage(class) => {
             w.write_u8(5);
-            encode_class_tag(w, class, root_class)?;
+            encode_class_tag(w, class, ctx);
         }
     }
     w.write_bool(f.uncontinuable);
@@ -825,17 +931,25 @@ pub fn encode_graph_section(
     platform: &Value,
     code_ids: &CodeIds,
     root_class: &ClassRef,
+    mixin_ids: &HashMap<usize, u32>,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
-    let table = GraphTable::build(roots, platform);
+    let table = GraphTable::build(roots, platform, root_class);
+    let ctx = EncodeContext {
+        table: &table,
+        code_ids,
+        platform,
+        root_class,
+        mixin_ids,
+    };
     w.write_u32(u32_field("object table entry count", table.objects().len()));
     w.write_u32(u32_field("frame table entry count", table.frames().len()));
     for obj in table.objects() {
-        encode_object(w, obj, &table, code_ids, platform, root_class, symbols)?;
+        encode_object(w, obj, &ctx, symbols)?;
     }
     for frame in table.frames() {
-        encode_frame(w, frame, &table, code_ids, platform, root_class, symbols)?;
+        encode_frame(w, frame, &ctx, symbols)?;
     }
-    encode_values(w, roots, &table, platform, root_class)?;
+    encode_values(w, roots, &ctx);
     Ok(())
 }

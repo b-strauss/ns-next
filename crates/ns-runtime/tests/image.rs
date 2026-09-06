@@ -1089,6 +1089,28 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 }
 
 /// Loads `src` under the bytecode engine, lets `make_roots` build the
+/// The mixin table's row ids, without keeping the table's own bytes: a
+/// graph section names a class object's declaration by row id, so encoding
+/// one needs exactly the map `image::snapshot` builds.
+fn mixin_ids_for(
+    class: &ClassRef,
+    interp: &Interpreter,
+    symbols: &mut symbols::Builder,
+    ids: &encode::CodeIds,
+) -> HashMap<usize, u32> {
+    let mut scratch = encode::Writer::new();
+    mixins::encode(
+        &mut scratch,
+        class,
+        interp
+            .compiled_module()
+            .expect("the bytecode engine is active"),
+        symbols,
+        ids,
+    )
+    .expect("mixin table")
+}
+
 /// roots, encodes code table + graph section, decodes both with the same
 /// `Reader`, and returns (interp, class, original roots, decoded roots,
 /// max identity hash).
@@ -1112,21 +1134,32 @@ fn round_trip_graph(
         &mut symbols,
     )
     .expect("encode code table");
-    encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class, &mut symbols)
-        .expect("encode graph");
+    let mixin_ids = mixin_ids_for(&class, &interp, &mut symbols, &ids);
+    encode::encode_graph_section(
+        &mut w,
+        &roots,
+        &platform,
+        &ids,
+        &class,
+        &mixin_ids,
+        &mut symbols,
+    )
+    .expect("encode graph");
     let bytes = w.into_bytes();
     let symbol_table = symbols.build();
     let mut r = decode::Reader::new(&bytes);
     let code_table = decode::decode_code_table(&mut r, &symbol_table).expect("code table");
+    let mixin_order = decode::source_mixin_order(&class).expect("mixin order");
     let decoded = {
-        let ctx = decode::DecodeContext {
-            interp: &interp,
+        let mut ctx = decode::DecodeContext {
+            interp: &mut interp,
             root_class: &class,
             codes: &code_table.codes,
             bindings: &bindings,
             platform: platform.clone(),
+            mixins: &mixin_order,
         };
-        decode::decode_graph_section(&mut r, &ctx, &symbol_table).expect("graph")
+        decode::decode_graph_section(&mut r, &mut ctx, &symbol_table).expect("graph")
     };
     (
         interp,
@@ -1350,9 +1383,16 @@ fn a_tree_walker_closure_is_a_snapshot_error_not_a_silent_omission() {
     let mut w = encode::Writer::new();
     let ids = encode::encode_code_table(&mut w, &module, &class, &mut symbols)
         .expect("encode code table");
-    let err =
-        encode::encode_graph_section(&mut w, &[closure], &platform, &ids, &class, &mut symbols)
-            .expect_err("Ast closure");
+    let err = encode::encode_graph_section(
+        &mut w,
+        &[closure],
+        &platform,
+        &ids,
+        &class,
+        &HashMap::new(),
+        &mut symbols,
+    )
+    .expect_err("Ast closure");
     assert!(err.contains("tree-walker"), "{err}");
 }
 
@@ -1378,8 +1418,17 @@ fn a_decoded_closure_carries_the_reloaded_modules_bindings() {
         &mut symbols,
     )
     .expect("encode code table");
-    encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class, &mut symbols)
-        .expect("encode graph");
+    let mixin_ids = mixin_ids_for(&class, &interp, &mut symbols, &ids);
+    encode::encode_graph_section(
+        &mut w,
+        &roots,
+        &platform,
+        &ids,
+        &class,
+        &mixin_ids,
+        &mut symbols,
+    )
+    .expect("encode graph");
     let bytes = w.into_bytes();
     let symbol_table = symbols.build();
     let mut r = decode::Reader::new(&bytes);
@@ -1388,14 +1437,16 @@ fn a_decoded_closure_carries_the_reloaded_modules_bindings() {
     // build: every decoded closure must receive this one, proving
     // `ClosureData.bindings` is never serialized.
     let reloaded_bindings: Bindings = Rc::new(HashMap::new());
-    let ctx = decode::DecodeContext {
-        interp: &interp,
+    let mixin_order = decode::source_mixin_order(&class).expect("mixin order");
+    let mut ctx = decode::DecodeContext {
+        interp: &mut interp,
         root_class: &class,
         codes: &table.codes,
         bindings: &reloaded_bindings,
         platform: platform.clone(),
+        mixins: &mixin_order,
     };
-    let decoded = decode::decode_graph_section(&mut r, &ctx, &symbol_table).expect("graph");
+    let decoded = decode::decode_graph_section(&mut r, &mut ctx, &symbol_table).expect("graph");
     let instance = obj(&decoded.roots[0]).borrow();
     let ObjectData::Instance(fields) = &instance.data else {
         panic!("expected an instance")
@@ -1430,8 +1481,17 @@ fn the_graph_section_encoding_is_deterministic() {
             &mut symbols,
         )
         .expect("encode code table");
-        encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class, &mut symbols)
-            .expect("encode graph");
+        let mixin_ids = mixin_ids_for(&class, &interp, &mut symbols, &ids);
+        encode::encode_graph_section(
+            &mut w,
+            &roots,
+            &platform,
+            &ids,
+            &class,
+            &mixin_ids,
+            &mut symbols,
+        )
+        .expect("encode graph");
         encodings.push(w.into_bytes());
     }
     assert_eq!(encodings[0], encodings[1]);
@@ -1449,12 +1509,16 @@ struct GraphFixture {
     /// selector. Tests that do (a frame kind's method name, a closure's
     /// parameters) set this to a table built by `table_with` first.
     symbols: symbols::Table,
+    /// `EMPTY`'s one declaration, so mixin id 0 is in range and every
+    /// larger id is not.
+    mixins: Vec<Rc<Mixin>>,
 }
 
 impl GraphFixture {
     fn new() -> GraphFixture {
         let (mut interp, class, bindings) = load(EMPTY);
         let platform = interp.platform();
+        let mixins = decode::source_mixin_order(&class).expect("mixin order");
         GraphFixture {
             interp,
             class,
@@ -1462,25 +1526,29 @@ impl GraphFixture {
             platform,
             codes: Vec::new(),
             symbols: symbols::Table::empty(),
+            mixins,
         }
     }
 
-    fn decode(&self, bytes: &[u8]) -> Result<decode::DecodedGraph, decode::DecodeError> {
-        let ctx = decode::DecodeContext {
-            interp: &self.interp,
+    /// `&mut self` because decoding a class record rebuilds its application
+    /// through `Interpreter::apply_mixin`, which writes to the shared cache.
+    fn decode(&mut self, bytes: &[u8]) -> Result<decode::DecodedGraph, decode::DecodeError> {
+        let mut ctx = decode::DecodeContext {
+            interp: &mut self.interp,
             root_class: &self.class,
             codes: &self.codes,
             bindings: &self.bindings,
             platform: self.platform.clone(),
+            mixins: &self.mixins,
         };
-        decode::decode_graph_section(&mut decode::Reader::new(bytes), &ctx, &self.symbols)
+        decode::decode_graph_section(&mut decode::Reader::new(bytes), &mut ctx, &self.symbols)
     }
 
     /// The `DecodeError` a hand-crafted graph section must produce. Never
     /// `{:?}`s the success value: a decoded `Value` can be a class object,
     /// and the bootstrap `Object` class is its own `.class`, so `Debug`
     /// would recurse forever.
-    fn decode_err(&self, bytes: &[u8]) -> decode::DecodeError {
+    fn decode_err(&mut self, bytes: &[u8]) -> decode::DecodeError {
         match self.decode(bytes) {
             Ok(_) => panic!("expected a decode error, got a decoded graph"),
             Err(e) => e,
@@ -1538,7 +1606,7 @@ fn a_frame_id_out_of_range_is_a_decode_error_not_a_panic() {
 
 #[test]
 fn a_huge_object_or_frame_count_does_not_allocate_gigabytes() {
-    let fixture = GraphFixture::new();
+    let mut fixture = GraphFixture::new();
     for (objects, frames) in [(u32::MAX, 0), (0, u32::MAX)] {
         let mut w = encode::Writer::new();
         graph_counts(&mut w, objects, frames);
@@ -1584,7 +1652,7 @@ fn an_invalid_object_body_tag_is_a_decode_error_not_a_panic() {
 fn an_invalid_class_tag_is_a_decode_error_not_a_panic() {
     let mut w = encode::Writer::new();
     graph_counts(&mut w, 1, 0);
-    w.write_u8(200); // neither `Builtin` (0) nor `UserRoot` (1)
+    w.write_u8(200); // none of `Builtin` (0), `UserRoot` (1), `Record` (2)
                      // Padded out to the shortest object record the wire admits, so
                      // `bounded_count` admits the announced record and the class tag itself
                      // is what the decoder rejects.
@@ -1597,6 +1665,197 @@ fn an_invalid_class_tag_is_a_decode_error_not_a_panic() {
             what: "class",
             tag: 200
         }
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Class records. A class object is an ordinary object-table entry, so every
+// id it names -- its mixin, its superclass, its enclosing object, its
+// declaring class -- is attacker-controlled and has to be range-checked
+// before it indexes anything.
+// ---------------------------------------------------------------------------
+
+/// One class record: its own `.class` (the builtin `Object`, as
+/// `Interpreter::new_class_object` gives every class object), an identity
+/// hash, the body tag, the mixin-table row id, then the three references
+/// `refs` writes.
+fn class_record(w: &mut encode::Writer, mixin_id: u32, refs: impl FnOnce(&mut encode::Writer)) {
+    w.write_u8(0); // class tag: builtin
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+    w.write_u32(7); // identity hash
+    w.write_u8(5); // object body: Class
+    w.write_u32(mixin_id);
+    refs(w);
+}
+
+/// A graph section holding one class record and no roots.
+fn one_class_object(mixin_id: u32, refs: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 1, 0);
+    class_record(&mut w, mixin_id, refs);
+    w.write_u32(0); // no roots
+    w.into_bytes()
+}
+
+/// `superclass`, `enclosing` and `declaring_class` all absent.
+fn no_class_refs(w: &mut encode::Writer) {
+    w.write_bool(false);
+    w.write_bool(false);
+    w.write_bool(false);
+}
+
+#[test]
+fn a_well_formed_class_record_decodes_into_a_live_class_object() {
+    // The positive side of the four refusals below: without it a decoder
+    // that rejected every class record would pass all of them.
+    let mut fixture = GraphFixture::new();
+    let graph = fixture
+        .decode(&one_class_object(0, no_class_refs))
+        .expect("a class record naming row 0 of the reloaded tree");
+    let application =
+        ns_runtime::dispatch::class_application(&graph.objects[0]).expect("a class object");
+    assert!(
+        Rc::ptr_eq(&application.mixin, &fixture.mixins[0]),
+        "the record's mixin id names the reloaded declaration tree, row by row"
+    );
+}
+
+#[test]
+fn two_class_records_with_the_same_mixin_and_superclass_share_one_application() {
+    // The decoder's own half of the round-trip sharing property: nothing in
+    // the two records ties them together, so if `apply_mixin`'s cache did
+    // not answer both, sharing could only come back by accident.
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 2, 0);
+    class_record(&mut w, 0, no_class_refs);
+    class_record(&mut w, 0, no_class_refs);
+    w.write_u32(0); // no roots
+    let bytes = w.into_bytes();
+    let graph = GraphFixture::new()
+        .decode(&bytes)
+        .expect("two class records");
+    let a = ns_runtime::dispatch::class_application(&graph.objects[0]).expect("a class object");
+    let b = ns_runtime::dispatch::class_application(&graph.objects[1]).expect("a class object");
+    assert!(!Rc::ptr_eq(&graph.objects[0], &graph.objects[1]));
+    assert!(Rc::ptr_eq(&a, &b), "one rebuilt application, shared");
+}
+
+#[test]
+fn a_class_records_mixin_id_out_of_range_is_a_decode_error_not_a_panic() {
+    assert_eq!(
+        GraphFixture::new().decode_err(&one_class_object(7, no_class_refs)),
+        decode::DecodeError::BadMixinId(7)
+    );
+}
+
+#[test]
+fn a_class_records_superclass_id_out_of_range_is_a_decode_error_not_a_panic() {
+    let bytes = one_class_object(0, |w| {
+        w.write_bool(true);
+        w.write_u8(2); // class tag: object-table record
+        w.write_u32(9); // ... past the end of a one-object table
+        w.write_bool(false);
+        w.write_bool(false);
+    });
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::BadObjectId(9)
+    );
+}
+
+#[test]
+fn a_class_records_enclosing_id_out_of_range_is_a_decode_error_not_a_panic() {
+    let bytes = one_class_object(0, |w| {
+        w.write_bool(false);
+        w.write_bool(true);
+        w.write_u8(5); // value tag: object-table id
+        w.write_u32(9);
+        w.write_bool(false);
+    });
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::BadObjectId(9)
+    );
+}
+
+#[test]
+fn a_class_records_enclosing_scalar_is_a_decode_error_not_a_silent_nil() {
+    let bytes = one_class_object(0, |w| {
+        w.write_bool(false);
+        w.write_bool(true);
+        w.write_u8(3); // value tag: SmallInt -- not an object at all
+        w.write_i64(1);
+        w.write_bool(false);
+    });
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::EnclosingNotAnObject
+    );
+}
+
+#[test]
+fn a_class_records_declaring_class_id_out_of_range_is_a_decode_error_not_a_panic() {
+    let bytes = one_class_object(0, |w| {
+        w.write_bool(false);
+        w.write_bool(false);
+        w.write_bool(true);
+        w.write_u8(2); // class tag: object-table record
+        w.write_u32(9);
+    });
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::BadObjectId(9)
+    );
+}
+
+#[test]
+fn a_class_reference_naming_a_record_that_is_not_a_class_is_a_decode_error() {
+    // An in-range id is not enough: nothing in the stream forces a tag-2
+    // class tag to name a *class* record, and a class object whose
+    // superclass is an array has no application chain to rebuild.
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 2, 0);
+    class_record(&mut w, 0, |w| {
+        w.write_bool(true);
+        w.write_u8(2);
+        w.write_u32(1); // object 1, which is an array
+        w.write_bool(false);
+        w.write_bool(false);
+    });
+    w.write_u8(0); // object 1's class tag: builtin
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Array));
+    w.write_u32(1); // identity hash
+    w.write_u8(3); // object body: Array
+    w.write_u32(0); // no elements
+    w.write_u32(0); // no roots
+    let bytes = w.into_bytes();
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::NotAClassReference
+    );
+}
+
+#[test]
+fn class_objects_inheriting_from_each_other_in_a_cycle_are_refused() {
+    // An application is derived from the superclass's, so a cycle has no
+    // order in which the two could be rebuilt. Refusing is what keeps the
+    // rebuild a finite walk rather than one that never ends.
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 2, 0);
+    for other in [1u32, 0] {
+        class_record(&mut w, 0, move |w| {
+            w.write_bool(true);
+            w.write_u8(2);
+            w.write_u32(other);
+            w.write_bool(false);
+            w.write_bool(false);
+        });
+    }
+    w.write_u32(0); // no roots
+    let bytes = w.into_bytes();
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::SuperclassCycle
     );
 }
 
@@ -1683,24 +1942,35 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
     .expect("encode code table");
     let before = w.into_bytes().len();
     let mut w = encode::Writer::new();
-    encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class, &mut symbols)
-        .expect("encode graph");
+    let mixin_ids = mixin_ids_for(&class, &interp, &mut symbols, &ids);
+    encode::encode_graph_section(
+        &mut w,
+        &roots,
+        &platform,
+        &ids,
+        &class,
+        &mixin_ids,
+        &mut symbols,
+    )
+    .expect("encode graph");
     let graph = w.into_bytes();
     let symbol_table = symbols.build();
     assert!(before > 0 && graph.len() > 8);
-    let ctx = decode::DecodeContext {
-        interp: &interp,
+    let mixin_order = decode::source_mixin_order(&class).expect("mixin order");
+    let mut ctx = decode::DecodeContext {
+        interp: &mut interp,
         root_class: &class,
         codes: &[],
         bindings: &bindings,
         platform: platform.clone(),
+        mixins: &mixin_order,
     };
     for cut in 1..graph.len() {
         let mut r = decode::Reader::new(&graph[..cut]);
         // Every prefix is either a clean `DecodeError` or -- for a prefix
         // that happens to be self-consistent -- a successful decode. What
         // it must never be is a panic.
-        let _ = decode::decode_graph_section(&mut r, &ctx, &symbol_table);
+        let _ = decode::decode_graph_section(&mut r, &mut ctx, &symbol_table);
     }
 }
 
@@ -2596,6 +2866,7 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable, CompiledModule) {
     module
         .methods
         .insert(class_method_key(&class, "foo"), parent);
+    let mixins = decode::source_mixin_order(&class).expect("mixin order");
     let fixture = GraphFixture {
         codes: table.codes.clone(),
         interp,
@@ -2606,6 +2877,7 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable, CompiledModule) {
         // 0, which must resolve to "foo" -- the method `class_method_key`
         // just keyed the module's compiled body under.
         symbols: table_with(&["foo"]),
+        mixins,
     };
     (fixture, table, module)
 }
@@ -2654,7 +2926,7 @@ fn a_closure_captured_by_its_lexical_parents_activation_verifies() {
     // The control for the two rejections below: a decoded closure whose
     // captured frame really is an activation of the body its own body is
     // nested in, sized exactly as that body prescribes.
-    let (fixture, table, module) = closure_world();
+    let (mut fixture, table, module) = closure_world();
     let graph = fixture
         .decode(&closure_over_frame(foo_frame(2)))
         .expect("decode");
@@ -2667,7 +2939,7 @@ fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
     // `LoadOuterLocal` of r1 from the closure would index `temps[1]` of a
     // one-element `temps` -- an unchecked out-of-bounds index in
     // `eval::read_local`, reached from a version-matching image.
-    let (fixture, table, module) = closure_world();
+    let (mut fixture, table, module) = closure_world();
     let graph = fixture
         .decode(&closure_over_frame(foo_frame(1)))
         .expect("decode");
@@ -2692,7 +2964,7 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
     // The frame is well-formed on its own; what is crafted is the *link*.
     // Nothing else in the format ties a closure's captured frame to its
     // body's lexical parent, and the whole outer-local bound rests on it.
-    let (fixture, table, module) = closure_world();
+    let (mut fixture, table, module) = closure_world();
     let graph = fixture
         .decode(&closure_over_frame(|w: &mut encode::Writer| {
             w.write_u8(0); // receiver: nil
@@ -3205,25 +3477,81 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
     }
 }
 
-#[test]
-fn a_snapshot_after_a_nested_class_access_is_refused_rather_than_corrupting() {
-    // The accessor puts a *second* user-defined class object into the world:
-    // it is the value of the enclosing instance's hidden cache slot, and the
-    // `.class` of every instance of it. The image's class tag names no
-    // particular class (tag 1 means "the root"), so encoding one would decode
-    // it back as the root class -- a differently-shaped class silently
-    // installed, with no field count to contradict it. `encode_class_tag`
-    // refuses instead. The sibling test above snapshots *before* any access
-    // and still round-trips, which is what keeps this refusal scoped to the
-    // case that would actually corrupt.
-    let (mut interp, class, bindings) = load(NESTED_MODULE);
+/// A world loaded under the bytecode engine with one instance of its root
+/// class -- the starting point every whole-image nesting test shares.
+/// Returns the interpreter, the root class, the bindings, the `platform`
+/// singleton and the instance.
+fn instantiated_world(src: &str) -> (Interpreter, ClassRef, Bindings, Value, Value) {
+    let (mut interp, class, bindings) = load(src);
     let module = compiler::compile_module(&class, &bindings);
     interp.set_engine(Engine::Bytecode(module));
     let platform = interp.platform();
-    let outer = expect_ok(
+    let root = expect_ok(
         interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
-        "instantiate Outer",
+        "instantiate the root class",
     );
+    (interp, class, bindings, platform, root)
+}
+
+fn snapshot_world(
+    interp: &Interpreter,
+    src: &str,
+    class: &ClassRef,
+    platform: &Value,
+    roots: &[Value],
+) -> Vec<u8> {
+    image::snapshot(
+        src,
+        &Origin::File(PathBuf::from("t.ns")),
+        class,
+        interp.compiled_module().expect("bytecode engine"),
+        platform,
+        roots,
+    )
+    .expect("snapshot")
+}
+
+/// The `MixinApplication` behind a class object -- the behaviour half two
+/// class objects built from one mixin and one superclass must *share*.
+fn application_of(class: &ClassRef) -> Rc<MixinApplication> {
+    ns_runtime::dispatch::class_application(class).expect("a class object")
+}
+
+fn class_name(class: &ClassRef) -> String {
+    application_of(class).mixin.name.as_str().to_string()
+}
+
+fn class_of(value: &Value) -> ClassRef {
+    obj(value).borrow().class.clone()
+}
+
+fn send_to(loaded: &mut image::LoadedImage, receiver: Value, selector: &str) -> Value {
+    let bindings = loaded.bindings.clone();
+    expect_ok(
+        loaded
+            .interp
+            .send(receiver, Symbol::intern(selector), vec![], &bindings, None),
+        selector,
+    )
+}
+
+/// The class object the accessor for `selector` yields on `receiver`.
+fn nested_class_of(loaded: &mut image::LoadedImage, receiver: Value, selector: &str) -> ClassRef {
+    match send_to(loaded, receiver, selector) {
+        Value::Obj(class) => class,
+        _ => panic!("the accessor for {selector} must yield a class object"),
+    }
+}
+
+#[test]
+fn a_snapshot_after_a_nested_class_access_round_trips() {
+    // The accessor puts a *second* user-defined class object into the world:
+    // it is the value of the enclosing instance's hidden cache slot, and the
+    // `.class` of every instance of it. Both used to be refused outright --
+    // the format's class tag named no particular user class, so encoding one
+    // would have decoded it back as the root. Both now round-trip, because a
+    // class object is an ordinary record in the object table.
+    let (mut interp, class, bindings, platform, outer) = instantiated_world(NESTED_MODULE);
     let inner_class = expect_ok(
         interp.send(
             outer.clone(),
@@ -3234,47 +3562,221 @@ fn a_snapshot_after_a_nested_class_access_is_refused_rather_than_corrupting() {
         ),
         "Inner",
     );
+    let Value::Obj(inner_class) = inner_class else {
+        panic!("the accessor must yield a class object")
+    };
     let inner_instance = expect_ok(
-        interp.instantiate(
-            match &inner_class {
-                Value::Obj(c) => c.clone(),
-                _ => panic!("the accessor must yield a class object"),
-            },
-            vec![],
-            &bindings,
-        ),
+        interp.instantiate(inner_class, vec![], &bindings),
         "instantiate Inner",
     );
 
     // Reached as the cached value in Outer's hidden slot...
-    let err = image::snapshot(
+    let bytes = snapshot_world(
+        &interp,
         NESTED_MODULE,
-        &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
         &platform,
         std::slice::from_ref(&outer),
-    )
-    .expect_err("a world holding a nested class object cannot be snapshotted");
-    assert!(
-        err.contains("user-defined class object other than the module's root class"),
-        "{err}"
     );
+    let mut loaded = image::load(&bytes).expect("load");
+    let reloaded_outer = loaded
+        .roots
+        .first()
+        .cloned()
+        .expect("the snapshotted Outer");
+    let reloaded_inner = nested_class_of(&mut loaded, reloaded_outer, "Inner");
+    assert_eq!(class_name(&reloaded_inner), "Inner");
+    let instance = expect_ok(
+        loaded
+            .interp
+            .instantiate(reloaded_inner, vec![], &loaded.bindings),
+        "instantiate Inner",
+    );
+    match send_to(&mut loaded, instance, "value") {
+        Value::SmallInt(9) => {}
+        _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
+    }
 
     // ... and as the `.class` of one of its instances.
-    let err = image::snapshot(
+    let bytes = snapshot_world(
+        &interp,
         NESTED_MODULE,
-        &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
         &platform,
         std::slice::from_ref(&inner_instance),
-    )
-    .expect_err("an instance of a nested class cannot be snapshotted either");
-    assert!(
-        err.contains("user-defined class object other than the module's root class"),
-        "{err}"
     );
+    let mut loaded = image::load(&bytes).expect("load");
+    let reloaded_instance = loaded
+        .roots
+        .first()
+        .cloned()
+        .expect("the snapshotted Inner instance");
+    assert_eq!(class_name(&class_of(&reloaded_instance)), "Inner");
+    match send_to(&mut loaded, reloaded_instance, "value") {
+        Value::SmallInt(9) => {}
+        _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
+    }
+}
+
+#[test]
+fn a_second_user_class_no_longer_decodes_as_the_root() {
+    // The retired tag named no particular class, so a second user-defined
+    // class object came back as the root: a wrong class silently installed,
+    // with no field count to contradict it, rather than a decode error.
+    let (mut interp, class, bindings, platform, outer) = instantiated_world(NESTED_MODULE);
+    let _ = expect_ok(
+        interp.send(
+            outer.clone(),
+            Symbol::intern("Inner"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "Inner",
+    );
+    let bytes = snapshot_world(
+        &interp,
+        NESTED_MODULE,
+        &class,
+        &platform,
+        std::slice::from_ref(&outer),
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let reloaded_outer = loaded
+        .roots
+        .first()
+        .cloned()
+        .expect("the snapshotted Outer");
+    let root_class = loaded.root_class.clone();
+    let inner = nested_class_of(&mut loaded, reloaded_outer, "Inner");
+    assert_ne!(class_name(&inner), class_name(&root_class));
+    assert!(
+        !Rc::ptr_eq(&inner, &root_class),
+        "the nested class must not decode as the module's root class"
+    );
+}
+
+#[test]
+fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
+    // Two enclosing instances, one shared application before the snapshot.
+    // Identity is per enclosing instance (§6) but behaviour is per mixin
+    // application (§6.2), and only the second half survives a save -- the
+    // applications are rebuilt through `Interpreter::apply_mixin`, whose
+    // cache key is content-derived. If the rebuild lost the sharing,
+    // Milestone 4's call sites would go megamorphic after every load, which
+    // is why this is a property test rather than a shape test.
+    let (mut interp, class, bindings, platform, first) = instantiated_world(NESTED_MODULE);
+    let second = expect_ok(
+        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        "a second Outer",
+    );
+    let inner_of = |interp: &mut Interpreter, outer: &Value| match expect_ok(
+        interp.send(
+            outer.clone(),
+            Symbol::intern("Inner"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "Inner",
+    ) {
+        Value::Obj(class) => class,
+        _ => panic!("the accessor must yield a class object"),
+    };
+    let before_a = inner_of(&mut interp, &first);
+    let before_b = inner_of(&mut interp, &second);
+    assert!(
+        !Rc::ptr_eq(&before_a, &before_b),
+        "one class object per enclosing instance, before the snapshot"
+    );
+    assert!(
+        Rc::ptr_eq(&application_of(&before_a), &application_of(&before_b)),
+        "one shared application, before the snapshot"
+    );
+
+    let bytes = snapshot_world(
+        &interp,
+        NESTED_MODULE,
+        &class,
+        &platform,
+        &[first.clone(), second.clone()],
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let outers: Vec<Value> = loaded.roots.clone();
+    let a = nested_class_of(&mut loaded, outers[0].clone(), "Inner");
+    let b = nested_class_of(&mut loaded, outers[1].clone(), "Inner");
+    assert!(!Rc::ptr_eq(&a, &b), "distinct class objects");
+    assert!(
+        Rc::ptr_eq(&application_of(&a), &application_of(&b)),
+        "one shared application"
+    );
+}
+
+/// `dispatch::kth_enclosing_object` steps `ClassData::declaring_class`, not
+/// the reached object's own class, from its second hop on -- so an image
+/// that dropped that field would come back resolving `outer` along the
+/// receiver's *dynamic* chain. `Mid`'s decoy `label` is what such a walk
+/// answers with, and a walk that finds no declaring class at all answers
+/// `nil label`, an error. Both are wrong output rather than a refused
+/// image, which is why the field has to travel.
+const DEEP_OUTER_MODULE: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new () (
+    label = ( ^'top' )
+    public class Base = Object new () (
+        public class Deep = Object new () (
+            public describe = ( ^outer Outer label )
+        )
+    )
+    public class Mid = Object new () (
+        label = ( ^'mid' )
+        public class Derived = Base new () ()
+    )
+    public makeDeep = ( ^Mid new Derived new Deep new )
+) : ()
+";
+
+#[test]
+fn outer_still_resolves_through_a_declaration_chain_that_came_from_an_image() {
+    let (mut interp, class, bindings, platform, outer) = instantiated_world(DEEP_OUTER_MODULE);
+    let deep = expect_ok(
+        interp.send(
+            outer.clone(),
+            Symbol::intern("makeDeep"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "makeDeep",
+    );
+    let bytes = snapshot_world(
+        &interp,
+        DEEP_OUTER_MODULE,
+        &class,
+        &platform,
+        &[outer.clone(), deep.clone()],
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let reloaded_deep = loaded.roots[1].clone();
+    // `Deep`'s declaring class is `Base`, not `Derived` -- the two differ
+    // exactly because `Derived` inherits the declaration across a nesting
+    // boundary, which is the case a dynamic-chain walk gets wrong.
+    assert_eq!(
+        class_name(&class_of(&reloaded_deep)),
+        "Deep",
+        "the reloaded instance keeps its own nested class"
+    );
+    let described = send_to(&mut loaded, reloaded_deep, "describe");
+    assert_eq!(string_contents(&described), "top");
+}
+
+/// The text of a decoded `Str` object. Never `{:?}`s the `Value`.
+fn string_contents(value: &Value) -> String {
+    match &obj(value).borrow().data {
+        ObjectData::Str(s) => s.clone(),
+        _ => panic!("expected a string object"),
+    }
 }
 
 const NESTED_SUPERCLASS_ARGS: &str = "\
