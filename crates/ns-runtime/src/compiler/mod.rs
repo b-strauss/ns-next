@@ -138,6 +138,38 @@ fn compile_superclass_clause(
     Some(lowerer.finish(clause.span))
 }
 
+/// A mixin's superclass-clause *message arguments* as executable code: the
+/// arguments of `newspeak-spec.pdf` §6.1's deferred `msg`, lowered as a
+/// single synthetic `^{arg. arg}` so the body ends in the `Return` that
+/// hands the whole argument list back at once.
+///
+/// `num_args` is this mixin's own factory parameter count, not zero as in
+/// `compile_superclass_clause`: §6.2 evaluates the message in the
+/// instantiation's own initializer context, where the resolver scoped these
+/// expressions with exactly those parameters as `Binding::Local` (the
+/// `class M usingPlatform: p = Super usingPlatform: p (...)` idiom).
+///
+/// The expression comes from `interpreter::nested`'s
+/// `superclass_clause_message_args_expr`, the one definition of what the
+/// clause's arguments are -- the tree-walker evaluates that same
+/// `ast::Expr`. `None` when the clause has no message, or a message with no
+/// arguments: then there is nothing to evaluate under either engine.
+fn compile_superclass_message(
+    mixin: &Rc<Mixin>,
+    bindings: &Rc<HashMap<Span, Binding>>,
+) -> Option<CompiledCode> {
+    let clause = mixin.decl.as_ref()?.superclass.as_ref()?;
+    let args = crate::interpreter::nested::superclass_clause_message_args_expr(clause)?;
+    let num_args = mixin.factory.as_deref().map(num_args_of).unwrap_or(0);
+    let stmts = vec![Stmt::Return(args)];
+    let mut lowerer = Lowerer::new(CodeKind::SuperclassMessage, num_args, 0, bindings, vec![]);
+    for stmt in &stmts {
+        lowerer.lower_statement(stmt);
+    }
+    lowerer.finish_body(&stmts);
+    Some(lowerer.finish(clause.span))
+}
+
 pub fn compile_module(
     root_class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
@@ -153,6 +185,7 @@ pub fn compile_module(
         methods: HashMap::new(),
         initializers: HashMap::new(),
         superclass_clauses: HashMap::new(),
+        superclass_messages: HashMap::new(),
         bindings: bindings.clone(),
     };
     // `crate::mixin::preorder` is also what `image::encode`/`decode` walk
@@ -173,6 +206,11 @@ pub fn compile_module(
             module
                 .superclass_clauses
                 .insert(mixin_key(mixin), Rc::new(clause));
+        }
+        if let Some(message) = compile_superclass_message(mixin, bindings) {
+            module
+                .superclass_messages
+                .insert(mixin_key(mixin), Rc::new(message));
         }
     }
     module

@@ -36,9 +36,9 @@ use super::{Engine, EvalResult, Interpreter, Signal};
 /// as an ordinary expression.
 ///
 /// The clause's trailing factory message (`new` in `Object new`) is *not*
-/// part of this -- see `instantiate::run_superclass_initializer`'s known-gaps
-/// note; Task 7 is what evaluates it, and it will do so here so that both
-/// engines keep getting it from one place.
+/// part of this: `ec` fixes the superclass when the declaration is
+/// evaluated, while the message is deferred to every instantiation
+/// (`superclass_clause_message` below).
 ///
 /// The resolver already recorded a `Binding` at `clause.receiver.span` for
 /// every prefix form (`self`/`super`/`outer X`/bare), computed against the
@@ -52,6 +52,46 @@ use super::{Engine, EvalResult, Interpreter, Signal};
 /// than a builtin class name.
 pub(crate) fn superclass_clause_expr(clause: &ast::SuperclassClause) -> ast::Expr {
     ast::Expr::Ident(clause.receiver.clone())
+}
+
+/// The clause's deferred factory message -- `newspeak-spec.pdf` §6.1's
+/// "message determined by the inheritance clause". `None` means the clause
+/// wrote none, which §6.1 reads as `new`; the callers name that default
+/// themselves rather than synthesizing a `MessageSend` with no source span.
+///
+/// `last()` rather than a whole chain because the grammar admits exactly one
+/// message here (`NewspeakGrammar.ns`: `superclassClause = superclassPrefix
+/// opt , unaryMsg , message opt`, and `message` is a single keyword, binary
+/// or unary send). `parser::decl::parse_trailing_sends` is more permissive
+/// than that -- it loops `unary* binary* keyword?` -- but a clause it accepts
+/// with more than one message already fails earlier, when `ec` (the receiver
+/// alone, above) turns out not to be a class object.
+pub(crate) fn superclass_clause_message(
+    clause: &ast::SuperclassClause,
+) -> Option<&ast::MessageSend> {
+    clause.messages.last()
+}
+
+/// The clause message's argument list as one expression: `{a. b. c}`, whose
+/// value is an array of the evaluated arguments.
+///
+/// One expression rather than one per argument so that a mixin has exactly
+/// one compiled message body -- `image::decode::frame_body` must be able to
+/// name the single body a frame's kind runs, and a per-argument body would
+/// leave it choosing between several. `None` for a message with no arguments
+/// (`Object new`, and every clause in the corpus but a handful): nothing is
+/// compiled, no activation is built, and nothing is allocated.
+pub(crate) fn superclass_clause_message_args_expr(
+    clause: &ast::SuperclassClause,
+) -> Option<ast::Expr> {
+    let message = superclass_clause_message(clause)?;
+    if message.args.is_empty() {
+        return None;
+    }
+    Some(ast::Expr::DynamicArray {
+        elements: message.args.clone(),
+        span: message.span,
+    })
 }
 
 /// The implicit accessor for `nested` on `receiver`. `receiver` is the
@@ -177,10 +217,13 @@ fn read_cache_slot(receiver: &Value, index: usize) -> Option<Value> {
 
 /// Engine hook: the superclass clause is Newspeak code, so the tree-walker
 /// evaluates its AST and the bytecode engine runs the body
-/// `compiler::compile_superclass_clause` emitted for this mixin. Everything
-/// around the body -- the activation, the receiver, the `Signal::Return`
-/// catch -- is shared, exactly as in `Interpreter::invoke_method` and
-/// `run_own_initializer`.
+/// `compiler::compile_superclass_clause` emitted for this mixin.
+///
+/// The clause belongs to the class that *declares* it: it is resolved
+/// against that declaration's enclosing chain, and `super`-prefixed forms
+/// look up from that class's superclass -- which is why the activation's
+/// class is the declaring class rather than the receiver's own (dynamic)
+/// class, the two differing exactly when the declaration is inherited.
 fn eval_superclass_clause(
     interp: &mut Interpreter,
     receiver: &Value,
@@ -210,37 +253,64 @@ fn eval_superclass_clause(
                 }),
         ),
     };
-    // The clause belongs to the class that *declares* it: it is resolved
-    // against that declaration's enclosing chain, and `super`-prefixed
-    // forms look up from that class's superclass -- which is why
-    // `current_class` is the declaring class rather than the receiver's own
-    // (dynamic) class, the two differing exactly when the declaration is
-    // inherited. `FrameKind::Initializer` is the frame shape for "code of a
-    // class declaration running on an instance of it", which is what this
-    // is -- and it is the kind `home_of`/`raise_return` already treat as a
-    // return target, so a `^` inside a block argument of the clause unwinds
-    // here rather than escaping the accessor.
+    run_clause_body(
+        interp,
+        receiver,
+        vec![],
+        declaring_class,
+        FrameKind::SuperclassClause(declaring_class.clone()),
+        compiled,
+        &superclass_clause_expr(clause),
+        bindings,
+    )
+}
+
+/// One per-mixin clause body in a fresh activation, run through the engine
+/// hook: the tree-walker evaluates `expr`, the bytecode engine runs
+/// `compiled`. Everything around the body -- the activation, the receiver,
+/// the `Signal::Return` catch -- is shared, exactly as in
+/// `Interpreter::invoke_method` and `run_own_initializer`.
+///
+/// Shared with `instantiate`, which runs the same clause's *deferred
+/// message arguments* through it one level down. The two differ only in
+/// what they hand in: the receiver (the enclosing object vs. the instance
+/// being initialized), the activation's arguments (none vs. the level's
+/// factory arguments) and the frame kind naming which table the body came
+/// from -- `image::decode::frame_body` resolves a frame's body by that
+/// kind, so a clause activation must never claim to be an initializer one.
+///
+/// Both kinds are return targets for `home_of`/`raise_return`, so a `^`
+/// inside a block written in the clause unwinds to this activation rather
+/// than escaping into the caller.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_clause_body(
+    interp: &mut Interpreter,
+    receiver: &Value,
+    args: Vec<Value>,
+    current_class: &ClassRef,
+    kind: FrameKind,
+    compiled: Option<Rc<crate::bytecode::CompiledCode>>,
+    expr: &ast::Expr,
+    bindings: &Rc<HashMap<Span, Binding>>,
+) -> EvalResult {
     let temp_count = compiled
         .as_ref()
         .map_or(0, |code| (code.num_registers - code.num_args) as usize);
     let frame = Rc::new(std::cell::RefCell::new(Frame {
         receiver: receiver.clone(),
-        args: vec![],
+        args,
         temps: vec![Value::Nil; temp_count],
         pc: 0,
         sender: None,
         home: None,
-        current_class: Some(declaring_class.clone()),
-        kind: FrameKind::Initializer(declaring_class.clone()),
+        current_class: Some(current_class.clone()),
+        kind,
         uncontinuable: false,
-        slot_base: 0, // a superclass clause never contains InitSlot
+        slot_base: 0, // no clause body ever contains InitSlot
     }));
     let result = match &compiled {
         Some(code) => crate::vm::run_code(interp, &frame, code, bindings),
-        None => {
-            let expr = superclass_clause_expr(clause);
-            crate::interpreter::eval::eval_expr(interp, &expr, &frame, bindings)
-        }
+        None => crate::interpreter::eval::eval_expr(interp, expr, &frame, bindings),
     };
     frame.borrow_mut().uncontinuable = true;
     match result {

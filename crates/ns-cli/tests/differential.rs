@@ -272,3 +272,25 @@ fn a_bare_super_raises_only_when_it_is_reached_under_both_engines() {
     assert!(!outcome.ok);
     assert_eq!(outcome.stdout, "before\n");
 }
+
+/// `newspeak-spec.pdf` §6.1: "It is a run time error if the message
+/// determined by the inheritance clause is not the primary factory message
+/// of C." `Derived`'s clause sends `new`, but `Base`'s primary factory is
+/// `withBase:` -- a program error raised from the shared orchestration, so
+/// both engines print the identical stderr and neither panics.
+#[test]
+fn a_superclass_clause_naming_the_wrong_factory_fails_identically_under_both_engines() {
+    let outcome = assert_engines_agree_on_source(
+        "wrong-superclass-factory",
+        "Newspeak3\n'T'\nclass WrongFactory usingPlatform: platform = Object new (\n) (\n\tpublic class Base withBase: b = Object new (| v ::= b. |) (\n\t)\n\tpublic class Derived = Base new (\n\t) (\n\t)\n\tpublic main: p args: a = (\n\t\t^Derived new\n\t)\n) : ()\n",
+    );
+    assert!(!outcome.ok);
+    assert!(
+        outcome.stderr.contains(
+            "the superclass clause of class Derived sends #new, \
+             but the primary factory of class Base is #withBase:"
+        ),
+        "{}",
+        outcome.stderr
+    );
+}

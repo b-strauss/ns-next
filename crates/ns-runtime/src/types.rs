@@ -167,6 +167,23 @@ pub enum FrameKind {
     /// it executes so a bytecode `pc` is interpretable through the
     /// initializer cache.
     Initializer(ClassRef),
+    /// A superclass clause's receiver expression (`newspeak-spec.pdf`
+    /// §6.1's `ec`) running on the enclosing object, on behalf of the class
+    /// that *declares* the clause.
+    ///
+    /// Distinct from `Initializer` even though the two look alike, because
+    /// a frame kind is how `image::decode::frame_body` names the table an
+    /// activation's compiled body lives in: this one's body comes from
+    /// `CompiledModule::superclass_clauses`, and verifying it against the
+    /// class's instance initializer would reconcile a frame against a body
+    /// that never ran in it.
+    SuperclassClause(ClassRef),
+    /// The arguments of a superclass clause's deferred factory message,
+    /// evaluated on the instance being initialized and with `class`'s own
+    /// factory arguments (§6.2). Its body comes from
+    /// `CompiledModule::superclass_messages`; see `SuperclassClause` above
+    /// for why that makes it a kind of its own.
+    SuperclassMessage(ClassRef),
 }
 
 #[derive(Debug)]
@@ -198,13 +215,14 @@ pub struct Frame {
     pub uncontinuable: bool,
     /// The absolute field index a compiled `InitSlot`'s mixin-relative
     /// `own_index` is offset by -- `MixinApplication.own_slot_base` for the
-    /// class level currently being initialized. Meaningful only for a
+    /// class level this activation initializes. Meaningful only for a
     /// `FrameKind::Initializer` frame while `Engine::Bytecode` runs its
-    /// compiled body; `Interpreter::run_own_initializer` sets it to each
-    /// level's own base as `run_superclass_initializer`'s single reused
-    /// frame walks the chain, and restores the caller's value afterward.
-    /// Irrelevant (left at 0) for every other frame kind: a method, block,
-    /// or top-level body never contains `InitSlot`.
+    /// compiled body. There is one such frame per level of the superclass
+    /// chain (`Interpreter::run_initializer_level`), and every field of it
+    /// -- receiver aside -- describes that one level, this one included: it
+    /// is set once, where the frame is built, and never changes. Irrelevant
+    /// (left at 0) for every other frame kind: a method, block, clause, or
+    /// top-level body never contains `InitSlot`.
     pub slot_base: usize,
 }
 

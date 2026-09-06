@@ -203,6 +203,18 @@ pub enum CodeKind {
     /// installed body against what it is installed for by kind, so the two
     /// must not be confusable there.
     SuperclassClause,
+    /// The arguments of a class declaration's superclass clause's deferred
+    /// factory message (`7` in `= Base withValue: 7`), compiled as a body
+    /// whose `num_args` is the *declaring* class's own factory parameter
+    /// count and whose value is the argument list as a dynamic array.
+    /// `newspeak-spec.pdf` §6.2 evaluates that message fresh on every
+    /// instantiation, in that instantiation's own initializer context, so
+    /// -- unlike `SuperclassClause`, which runs once per enclosing object
+    /// and on the enclosing object -- this body sees the subclass's own
+    /// factory arguments. A kind of its own for the same reason
+    /// `SuperclassClause` is one: `image::decode` tells an installed body's
+    /// purpose by its kind, so the two must not be confusable there.
+    SuperclassMessage,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -249,6 +261,11 @@ pub struct CompiledModule {
     /// uses `Object`, exactly as `instantiate::resolve_superclass_receiver`
     /// does for a root class without one.
     pub superclass_clauses: HashMap<usize, Rc<CompiledCode>>,
+    /// Each mixin's superclass-clause *message arguments*, keyed by
+    /// `mixin_key` like the two maps above. Absent for a mixin whose clause
+    /// message takes no arguments -- the overwhelmingly common `= Object
+    /// new` shape runs no code at all here, and allocates nothing.
+    pub superclass_messages: HashMap<usize, Rc<CompiledCode>>,
     /// The module's resolver output, carried so the hooks can pass it to
     /// the shared orchestration's `bindings` parameters.
     pub bindings: Rc<HashMap<Span, Binding>>,
@@ -274,6 +291,7 @@ fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize) 
         CodeKind::Block => "block",
         CodeKind::Initializer => "initializer",
         CodeKind::SuperclassClause => "superclass clause",
+        CodeKind::SuperclassMessage => "superclass clause message",
     };
     writeln!(
         out,

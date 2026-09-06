@@ -165,14 +165,18 @@ impl<'a> Lowerer<'a> {
             (CodeKind::Block, _) => Some(Instr::NonLocalReturn { reg }),
             (CodeKind::Initializer, false) => None,
             (CodeKind::Initializer, true) => Some(Instr::NonLocalReturn { reg }),
-            // The clause body is a single synthetic `^ec`
-            // (`compiler::compile_superclass_clause`), so its top-level `^`
-            // is what hands the class object back; a `^` written inside a
-            // block argument of the clause's own message unwinds to the
-            // activation the accessor built, exactly as it would in any
-            // other body.
-            (CodeKind::SuperclassClause, false) => Some(Instr::Return { reg }),
-            (CodeKind::SuperclassClause, true) => Some(Instr::NonLocalReturn { reg }),
+            // Either clause body is a single synthetic `^expr` (the
+            // receiver, or the message's argument list), so its top-level
+            // `^` is what hands that value back; a `^` written inside a
+            // block of the clause's own message unwinds to the activation
+            // `interpreter::nested::run_clause_body` built, exactly as it
+            // would in any other body.
+            (CodeKind::SuperclassClause | CodeKind::SuperclassMessage, false) => {
+                Some(Instr::Return { reg })
+            }
+            (CodeKind::SuperclassClause | CodeKind::SuperclassMessage, true) => {
+                Some(Instr::NonLocalReturn { reg })
+            }
         }
     }
 
@@ -194,8 +198,8 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn finish_body(&mut self, stmts: &[Stmt]) {
         let ends_in_return = matches!(stmts.last(), Some(Stmt::Return(_)));
         match self.kind {
-            CodeKind::SuperclassClause if ends_in_return => {}
-            CodeKind::SuperclassClause => {
+            CodeKind::SuperclassClause | CodeKind::SuperclassMessage if ends_in_return => {}
+            CodeKind::SuperclassClause | CodeKind::SuperclassMessage => {
                 let reg = match self.last_expr_reg {
                     Some(r) => r,
                     None => self.emit_nil(),

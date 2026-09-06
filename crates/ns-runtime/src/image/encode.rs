@@ -196,6 +196,11 @@ struct MixinSection {
     methods: Vec<(String, Rc<CompiledCode>)>,
     initializer: Option<Rc<CompiledCode>>,
     superclass_clause: Option<Rc<CompiledCode>>,
+    /// The clause's deferred factory message's arguments, for the same
+    /// reason its receiver travels: `instantiate` runs this on every
+    /// instantiation of a class whose clause carries arguments, and under
+    /// the bytecode engine there is nothing else for it to run.
+    superclass_message: Option<Rc<CompiledCode>>,
 }
 
 /// The code table: every `CompiledCode` reachable from `module` -- every
@@ -260,10 +265,12 @@ pub fn encode_code_table(
         methods.sort_by(|a, b| a.0.cmp(&b.0));
         let initializer = module.initializers.get(&mixin_key(mixin)).cloned();
         let superclass_clause = module.superclass_clauses.get(&mixin_key(mixin)).cloned();
+        let superclass_message = module.superclass_messages.get(&mixin_key(mixin)).cloned();
         sections.push(MixinSection {
             methods,
             initializer,
             superclass_clause,
+            superclass_message,
         });
     }
     for section in &sections {
@@ -275,6 +282,9 @@ pub fn encode_code_table(
         }
         if let Some(clause) = &section.superclass_clause {
             collect_code(clause, &mut order, &mut ids);
+        }
+        if let Some(message) = &section.superclass_message {
+            collect_code(message, &mut order, &mut ids);
         }
     }
     w.write_u32(u32_field("code table entry count", order.len()));
@@ -302,6 +312,13 @@ pub fn encode_code_table(
             Some(clause) => {
                 w.write_bool(true);
                 w.write_u32(ids.id_of(clause));
+            }
+            None => w.write_bool(false),
+        }
+        match &section.superclass_message {
+            Some(message) => {
+                w.write_bool(true);
+                w.write_u32(ids.id_of(message));
             }
             None => w.write_bool(false),
         }
@@ -333,6 +350,7 @@ fn encode_code(w: &mut Writer, code: &CompiledCode, ids: &CodeIds) {
         CodeKind::Block => 1,
         CodeKind::Initializer => 2,
         CodeKind::SuperclassClause => 3,
+        CodeKind::SuperclassMessage => 4,
     });
     w.write_u16(code.num_args);
     w.write_u16(code.num_registers);
@@ -867,6 +885,14 @@ fn encode_frame(
         FrameKind::TopLevel => w.write_u8(2),
         FrameKind::Initializer(class) => {
             w.write_u8(3);
+            encode_class_tag(w, class, root_class)?;
+        }
+        FrameKind::SuperclassClause(class) => {
+            w.write_u8(4);
+            encode_class_tag(w, class, root_class)?;
+        }
+        FrameKind::SuperclassMessage(class) => {
+            w.write_u8(5);
             encode_class_tag(w, class, root_class)?;
         }
     }

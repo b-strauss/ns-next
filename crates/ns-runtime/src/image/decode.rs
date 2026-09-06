@@ -87,6 +87,12 @@ pub enum DecodeError {
     /// invariant when the module has none -- the same reason
     /// `MissingInitializer` is a refusal rather than a deferred crash.
     MissingSuperclassClause,
+    /// The reloaded source's superclass clause carries a factory message
+    /// with arguments the image has no compiled body for. `instantiate`
+    /// evaluates that body on every instantiation of the class, and panics
+    /// on the invariant when the module has none -- the same refusal, for
+    /// the same reason, as `MissingSuperclassClause`.
+    MissingSuperclassMessage,
     /// The image's code table has a different number of mixin sections than
     /// `mixin::preorder` finds in the reloaded source's mixin tree -- a
     /// nested class added or removed since the snapshot. No mixin identity
@@ -217,6 +223,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::MissingSuperclassClause => write!(
                 f,
                 "the reloaded source declares a superclass clause the image has no compiled code for"
+            ),
+            DecodeError::MissingSuperclassMessage => write!(
+                f,
+                "the reloaded source's superclass clause passes factory arguments the image has no compiled code for"
             ),
             DecodeError::MixinCountMismatch { image, source } => write!(
                 f,
@@ -451,6 +461,7 @@ pub struct DecodedMixinSection {
     pub methods: Vec<(String, u32)>,
     pub initializer: Option<u32>,
     pub superclass_clause: Option<u32>,
+    pub superclass_message: Option<u32>,
 }
 
 /// The decoded code table before it is bound to a reloaded class.
@@ -495,10 +506,18 @@ pub fn decode_code_table(r: &mut Reader) -> Result<DecodedCodeTable, DecodeError
         } else {
             None
         };
+        let superclass_message = if r.read_bool()? {
+            let id = r.read_u32()?;
+            check_code_id(id, &codes)?;
+            Some(id)
+        } else {
+            None
+        };
         mixins.push(DecodedMixinSection {
             methods,
             initializer,
             superclass_clause,
+            superclass_message,
         });
     }
     Ok(DecodedCodeTable { codes, mixins })
@@ -544,6 +563,7 @@ pub fn install_code_table(
         methods: HashMap::new(),
         initializers: HashMap::new(),
         superclass_clauses: HashMap::new(),
+        superclass_messages: HashMap::new(),
         bindings: bindings.clone(),
     };
     let root_mixin = {
@@ -666,8 +686,54 @@ pub fn install_code_table(
             }
             None => {}
         }
+        match section.superclass_message {
+            Some(id) => {
+                let code = code_at(table, id)?;
+                // Unlike the clause's receiver, the clause's *message*
+                // arguments run in an activation carrying this mixin's own
+                // factory arguments (`newspeak-spec.pdf` §6.2), so their
+                // body's arity is the factory pattern's -- the same
+                // reconciliation the instance initializer above gets, for
+                // the same reason.
+                check_code_arity(
+                    &code,
+                    CodeKind::SuperclassMessage,
+                    "superclass clause message".to_string(),
+                    mixin
+                        .factory
+                        .as_deref()
+                        .map(instantiate::pattern_param_count)
+                        .unwrap_or(0),
+                )?;
+                module.superclass_messages.insert(mixin_key(mixin), code);
+            }
+            // A reloaded mixin whose clause message carries arguments
+            // evaluates them on every instantiation, and
+            // `instantiate::eval_superclass_message` panics when the module
+            // carries no body for them. Whether the reloaded source needs
+            // one and whether the image has one are two halves only this
+            // function sees.
+            None if mixin_needs_superclass_message_code(mixin) => {
+                return Err(DecodeError::MissingSuperclassMessage)
+            }
+            None => {}
+        }
     }
     Ok(module)
+}
+
+/// Whether `mixin`'s superclass clause carries a message with arguments, and
+/// therefore needs a compiled body for them. Mirrors
+/// `instantiate::mixin_needs_initializer_code`: the one question
+/// `install_code_table` asks of the reloaded source, answered off the same
+/// definition `compiler::compile_superclass_message` compiles from.
+fn mixin_needs_superclass_message_code(mixin: &Rc<crate::mixin::Mixin>) -> bool {
+    mixin
+        .decl
+        .as_ref()
+        .and_then(|decl| decl.superclass.as_ref())
+        .and_then(crate::interpreter::nested::superclass_clause_message_args_expr)
+        .is_some()
 }
 
 /// One installed body against the reloaded declaration it is installed for:
@@ -685,6 +751,7 @@ fn check_code_arity(
                 CodeKind::Block => "block",
                 CodeKind::Initializer => "initializer",
                 CodeKind::SuperclassClause => "superclass clause",
+                CodeKind::SuperclassMessage => "superclass clause message",
             },
         });
     }
@@ -970,6 +1037,7 @@ fn decode_code(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<CompiledCod
         1 => CodeKind::Block,
         2 => CodeKind::Initializer,
         3 => CodeKind::SuperclassClause,
+        4 => CodeKind::SuperclassMessage,
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "code kind",
@@ -1437,6 +1505,8 @@ fn decode_frame(
         1 => FrameKind::Closure(Rc::new(decode_closure_record(r, ctx, tables)?)),
         2 => FrameKind::TopLevel,
         3 => FrameKind::Initializer(decode_class_tag(r, ctx)?),
+        4 => FrameKind::SuperclassClause(decode_class_tag(r, ctx)?),
+        5 => FrameKind::SuperclassMessage(decode_class_tag(r, ctx)?),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "frame kind",
@@ -1597,19 +1667,35 @@ pub fn decode_graph_section(
 // ---------------------------------------------------------------------------
 
 /// The compiled body that runs (or ran) in `frame`, or `None` when the
-/// image gives it none: a `TopLevel` frame, or an initializer frame for a
-/// class the module has no initializer for. Neither can be entered --
-/// nothing re-activates a decoded frame, and no closure may be captured by
-/// one (`verify_closure` refuses that) -- so there is nothing to reconcile.
+/// image gives it none: a `TopLevel` frame, or a class-carrying frame whose
+/// kind names a table the module holds no body for that class's mixin in.
+/// Neither can be entered -- nothing re-activates a decoded frame, and no
+/// closure may be captured by one (`verify_closure` refuses that) -- so
+/// there is nothing to reconcile.
 fn frame_body(frame: &Frame, module: &CompiledModule) -> Option<Rc<CompiledCode>> {
+    /// The mixin whose code table a class-carrying frame kind names. `None`
+    /// only if the decoded value is not a class object -- `decode_class_tag`
+    /// never produces one, but returning `None` keeps a future change to it
+    /// from turning an untrusted image into a panic here.
+    fn frame_mixin(class: &crate::types::ClassRef) -> Option<Rc<crate::mixin::Mixin>> {
+        class_application(class).map(|a| a.mixin.clone())
+    }
     match &frame.kind {
         FrameKind::Method(decl) => module.methods.get(&method_key(decl)).cloned(),
         FrameKind::Initializer(class) => {
-            let mixin = class_application(class)
-                .expect("internal: FrameKind::Initializer always wraps a real class object")
-                .mixin
-                .clone();
-            module.initializers.get(&mixin_key(&mixin)).cloned()
+            frame_mixin(class).and_then(|m| module.initializers.get(&mixin_key(&m)).cloned())
+        }
+        // Each clause activation resolves against the table its own body
+        // lives in. They share `Initializer`'s frame shape -- a class's code
+        // running on an instance -- but not its body, so resolving them here
+        // as initializers would reconcile a frame against a body that never
+        // ran in it: a legitimate image refused, and a crafted one checked
+        // against the wrong register file.
+        FrameKind::SuperclassClause(class) => {
+            frame_mixin(class).and_then(|m| module.superclass_clauses.get(&mixin_key(&m)).cloned())
+        }
+        FrameKind::SuperclassMessage(class) => {
+            frame_mixin(class).and_then(|m| module.superclass_messages.get(&mixin_key(&m)).cloned())
         }
         FrameKind::Closure(closure) => match &closure.body {
             ClosureBody::Compiled(code) => Some(code.clone()),
@@ -1628,9 +1714,10 @@ fn frame_body(frame: &Frame, module: &CompiledModule) -> Option<Rc<CompiledCode>
 ///
 /// 1. A frame's register file must match the body that runs in it -- the
 ///    same `args` count, and at least as many registers. (At least, not
-///    exactly: `run_own_initializer` *grows* the initializer frame's temps
-///    to fit each class in the chain, so a legitimate initializer frame can
-///    be wider than the body being verified against it.)
+///    exactly: a frame's register file is grown, never shrunk -- the
+///    liveness spec's reified activations may be wider than the body
+///    currently running in them -- so a wider frame is legitimate and only
+///    a narrower one is a crafted image.)
 /// 2. A closure's `captured_frame` must be an activation of the body its
 ///    own body is lexically nested in. Nothing else in the format ties the
 ///    two together, and `verify_code_table`'s outer-local bound -- which

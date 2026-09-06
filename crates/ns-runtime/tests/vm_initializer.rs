@@ -295,3 +295,53 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
         );
     }
 }
+
+/// A real three-level chain -- `Leaf` -> `Middle` -> `Base`, each level
+/// declaring two slots of its own and passing an argument up through its
+/// superclass clause -- under both engines.
+///
+/// Until the clause's message was evaluated per level, no test ran two
+/// compiled `InitSlot` bodies in one chain, so the per-level `slot_base` a
+/// mixin-relative `own_index` is offset by was only ever proven by
+/// inspection. Here `Base`'s slots must land at 0-1, `Middle`'s at 2-3 and
+/// `Leaf`'s at 4-5 of the *same* instance: a level running with another
+/// level's base overwrites its superclass's slots instead of its own.
+#[test]
+fn a_three_level_chain_initializes_every_level_at_its_own_absolute_offsets() {
+    let src = "\
+Newspeak3
+'T'
+class Levels = Object new () (
+    public class Base withBase: b = Object new (| b1 ::= b. b2 ::= 10. |) (
+    )
+    public class Middle withMiddle: m = Base withBase: m + 1 (| m1 ::= m. m2 ::= 20. |) (
+    )
+    public class Leaf = Middle withMiddle: 2 (| l1 ::= 3. l2 ::= 30. |) (
+    )
+) : ()
+";
+    for bytecode in [false, true] {
+        let (mut interp, class, bindings) = load(src, bytecode);
+        let module = expect_ok(
+            interp.instantiate(class, vec![], &bindings),
+            "instantiate Levels",
+        );
+        let leaf_class = expect_ok(
+            interp.send(module, Symbol::intern("Leaf"), vec![], &bindings, None),
+            "Leaf",
+        );
+        let leaf = expect_ok(
+            interp.send(leaf_class, Symbol::intern("new"), vec![], &bindings, None),
+            "Leaf new",
+        );
+        // `Middle withMiddle: 2` -> `Base withBase: 2 + 1`, so the deepest
+        // level's own argument is the one its own clause computed.
+        for (index, expected) in [(0, 3), (1, 10), (2, 2), (3, 20), (4, 3), (5, 30)] {
+            assert_eq!(
+                field_at(&leaf, index),
+                expected,
+                "bytecode={bytecode}: field {index} holds the wrong level's value"
+            );
+        }
+    }
+}

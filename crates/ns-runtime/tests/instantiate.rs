@@ -333,3 +333,69 @@ fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
 }
+
+/// `newspeak-spec.pdf` §6.2: the instance initializer evaluates the
+/// superclass clause's message and invokes the superclass's initializer
+/// with *those* arguments. Milestone 1 never evaluated the clause's message
+/// and ran every level in the subclass's own activation, so `Base`'s slot
+/// initializer read the *subclass's* (empty) argument list instead of the
+/// `7` its own clause supplies.
+///
+/// The two classes are nested inside a module class because that is the
+/// only way a user-defined superclass is linked through the ordinary
+/// pipeline: a nested declaration's clause is evaluated by the accessor
+/// (`interpreter::nested`), while a *root* class's clause receiver still
+/// only resolves to a builtin (`resolve_superclass_receiver`).
+#[test]
+fn a_superclass_factory_message_receives_its_own_arguments() {
+    let src = "\
+Newspeak3
+'Test'
+class SuperclassArgs = Object new () (
+    public class Base withValue: v = Object new (| baseValue ::= v. |) (
+        public base = ( ^baseValue )
+    )
+    public class Derived = Base withValue: 7 () (
+    )
+) : ()
+";
+    let (mut interp, class, resolved) = load(src);
+    let module = expect_ok(
+        interp.instantiate(class, vec![], &resolved.bindings),
+        "instantiate SuperclassArgs",
+    );
+    let derived = expect_ok(
+        interp.send(
+            module,
+            Symbol::intern("Derived"),
+            vec![],
+            &resolved.bindings,
+            None,
+        ),
+        "Derived",
+    );
+    let instance = expect_ok(
+        interp.send(
+            derived,
+            Symbol::intern("new"),
+            vec![],
+            &resolved.bindings,
+            None,
+        ),
+        "Derived new",
+    );
+    let stored = expect_ok(
+        interp.send(
+            instance,
+            Symbol::intern("base"),
+            vec![],
+            &resolved.bindings,
+            None,
+        ),
+        "base",
+    );
+    assert!(
+        matches!(stored, Value::SmallInt(7)),
+        "the superclass's slot initializer did not see the clause's own argument"
+    );
+}

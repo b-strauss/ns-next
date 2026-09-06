@@ -435,7 +435,11 @@ impl Interpreter {
 
     fn raise_return(&self, frame: &FrameRef, value: Value) -> Signal {
         let target = match &frame.borrow().kind {
-            FrameKind::Method(_) | FrameKind::TopLevel | FrameKind::Initializer(_) => frame.clone(),
+            FrameKind::Method(_)
+            | FrameKind::TopLevel
+            | FrameKind::Initializer(_)
+            | FrameKind::SuperclassClause(_)
+            | FrameKind::SuperclassMessage(_) => frame.clone(),
             FrameKind::Closure(closure) => closure.home.clone(),
         };
         if target.borrow().uncontinuable {

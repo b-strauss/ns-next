@@ -2464,6 +2464,7 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable, CompiledModule) {
         methods: HashMap::new(),
         initializers: HashMap::new(),
         superclass_clauses: HashMap::new(),
+        superclass_messages: HashMap::new(),
         bindings: bindings.clone(),
     };
     module
@@ -2767,6 +2768,11 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
             .compiled_module()
             .expect("bytecode engine")
             .superclass_clauses
+            .clone(),
+        superclass_messages: interp
+            .compiled_module()
+            .expect("bytecode engine")
+            .superclass_messages
             .clone(),
         bindings: bindings.clone(),
     };
@@ -3136,4 +3142,192 @@ fn a_snapshot_after_a_nested_class_access_is_refused_rather_than_corrupting() {
         err.contains("user-defined class object other than the module's root class"),
         "{err}"
     );
+}
+
+const NESTED_SUPERCLASS_ARGS: &str = "\
+Newspeak3
+'Test'
+class Args usingPlatform: p = Object new () (
+    public class Base withBase: b = Object new (| v ::= b. |) (
+        public value = ( ^v )
+    )
+    public class Derived = Base withBase: 7 () (
+    )
+) : ()
+";
+
+/// `newspeak-spec.pdf` §6.2 evaluates the superclass clause's message on
+/// every instantiation, so under `Engine::Bytecode` a reloaded image is the
+/// only place its compiled body can come from -- exactly the reason the
+/// clause's *receiver* already travels in `MixinSection`. A round trip that
+/// still hands `Base` its `7` proves the message body made it across.
+#[test]
+fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
+    let (mut interp, class, bindings) = load(NESTED_SUPERCLASS_ARGS);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        "instantiate Args",
+    );
+    let bytes = image::snapshot(
+        NESTED_SUPERCLASS_ARGS,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        std::slice::from_ref(&outer),
+    )
+    .expect("snapshot");
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let reloaded = loaded.roots.first().cloned().expect("the snapshotted Args");
+    let derived = expect_ok(
+        loaded.interp.send(
+            reloaded,
+            Symbol::intern("Derived"),
+            vec![],
+            &loaded.bindings,
+            None,
+        ),
+        "Derived",
+    );
+    let Value::Obj(derived) = derived else {
+        panic!("the accessor must yield a class object")
+    };
+    let instance = expect_ok(
+        loaded.interp.instantiate(derived, vec![], &loaded.bindings),
+        "instantiate Derived",
+    );
+    let result = expect_ok(
+        loaded.interp.send(
+            instance,
+            Symbol::intern("value"),
+            vec![],
+            &loaded.bindings,
+            None,
+        ),
+        "send value",
+    );
+    match result {
+        Value::SmallInt(7) => {}
+        _ => panic!("expected SmallInt(7) -- the clause's own argument -- from Base's slot"),
+    }
+}
+
+/// The other direction, the same shape as the initializer's and the
+/// clause's: a reloaded source whose clause passes arguments, installed
+/// against an image carrying no body for them, would panic on the first
+/// instantiation. `install_code_table` is the only place that sees both
+/// halves, so it refuses.
+#[test]
+fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_refused() {
+    let (_interp, class, bindings) = load(NESTED_SUPERCLASS_ARGS);
+    let module = compiler::compile_module(&class, &bindings);
+    let (mut table, _ids) = round_trip_code_table(&module, &class);
+    let with_message = table
+        .mixins
+        .iter()
+        .position(|m| m.superclass_message.is_some())
+        .expect("Derived's clause really does compile a message body");
+    table.mixins[with_message].superclass_message = None;
+    match decode::install_code_table(&table, &class, &bindings) {
+        Err(err) => {
+            assert_eq!(err, decode::DecodeError::MissingSuperclassMessage);
+            assert_eq!(
+                err.to_string(),
+                "the reloaded source's superclass clause passes factory arguments the image has no compiled code for"
+            );
+        }
+        Ok(_) => panic!("expected a decode error, got an installed module"),
+    }
+}
+
+/// An image is untrusted input, and `install_code_table` reconciles a
+/// message body's kind and arity but nothing constrains what it *returns*.
+/// `instantiate` unpacks the argument list out of that value, so a body
+/// returning something that is not an argument list must raise a
+/// `NewspeakError` rather than panic on the way past.
+#[test]
+fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_panic() {
+    let (mut interp, class, bindings) = load(NESTED_SUPERCLASS_ARGS);
+    let mut module = compiler::compile_module(&class, &bindings);
+    let key = *module
+        .superclass_messages
+        .keys()
+        .next()
+        .expect("Derived's clause compiles a message body");
+    // The one thing an image can present that the installed checks let
+    // through: right kind, right arity, wrong value.
+    module.superclass_messages.insert(
+        key,
+        Rc::new(CompiledCode {
+            kind: CodeKind::SuperclassMessage,
+            instrs: vec![
+                Instr::LoadLiteral {
+                    dst: 0,
+                    literal: Literal::SmallInt(1),
+                },
+                Instr::Return { reg: 0 },
+            ],
+            num_args: 0,
+            num_registers: 1,
+            statement_pc: vec![(0, 0..2)],
+            call_sites: vec![],
+            source: Span::new(0, 0),
+        }),
+    );
+    interp.set_engine(Engine::Bytecode(module));
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Args",
+    );
+    let derived = expect_ok(
+        interp.send(outer, Symbol::intern("Derived"), vec![], &bindings, None),
+        "Derived",
+    );
+    let Value::Obj(derived) = derived else {
+        panic!("the accessor must yield a class object")
+    };
+    match interp.instantiate(derived, vec![], &bindings) {
+        Err(Signal::Error(e)) => assert!(
+            e.message.contains("did not evaluate its message arguments"),
+            "unexpected error message: {}",
+            e.message
+        ),
+        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `instantiate`"),
+        Ok(_) => panic!("expected a NewspeakError, got an instance"),
+    }
+}
+
+/// The two clause frame kinds share `Initializer`'s shape on the wire (a
+/// class tag) but not its tag, which is what lets
+/// `image::decode`'s `frame_body` resolve each against the code table its
+/// own body actually lives in. Nothing in this milestone leaves such a frame
+/// reachable from an image's roots -- a clause body contains no
+/// `MakeClosure`, so nothing can capture one -- so only a hand-written
+/// section reaches the decoder's tag-4 and tag-5 branches.
+#[test]
+fn the_superclass_clause_frame_kinds_decode() {
+    for (tag, expect_clause) in [(4u8, true), (5u8, false)] {
+        let mut w = one_frame_prefix();
+        w.write_u8(tag);
+        w.write_u8(0); // class tag: builtin
+        w.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+        w.write_bool(false); // continuable
+        w.write_u32(0); // no roots
+        let bytes = w.into_bytes();
+        let decoded = GraphFixture::new()
+            .decode(&bytes)
+            .expect("a superclass clause frame");
+        let frame = decoded.frames.first().expect("the one frame").borrow();
+        let matched = match &frame.kind {
+            FrameKind::SuperclassClause(_) => expect_clause,
+            FrameKind::SuperclassMessage(_) => !expect_clause,
+            _ => false,
+        };
+        assert!(matched, "frame kind tag {tag} decoded to the wrong kind");
+    }
 }

@@ -142,7 +142,14 @@ pub(crate) fn frame_at_depth(frame: &FrameRef, depth: u16) -> FrameRef {
 /// the VM's `MakeClosure`.
 pub(crate) fn home_of(frame: &FrameRef) -> FrameRef {
     match &frame.borrow().kind {
-        FrameKind::Method(_) | FrameKind::TopLevel | FrameKind::Initializer(_) => frame.clone(),
+        FrameKind::Method(_)
+        | FrameKind::TopLevel
+        | FrameKind::Initializer(_)
+        // A clause activation is its own return target for the same reason
+        // an initializer one is: it is a class declaration's code running
+        // on an object, with no enclosing method to return through.
+        | FrameKind::SuperclassClause(_)
+        | FrameKind::SuperclassMessage(_) => frame.clone(),
         FrameKind::Closure(closure) => closure.home.clone(),
     }
 }
