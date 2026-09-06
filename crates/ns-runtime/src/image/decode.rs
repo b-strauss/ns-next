@@ -22,6 +22,8 @@ use crate::types::{
 use crate::Interpreter;
 use crate::Symbol;
 
+use super::symbols;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
     UnexpectedEof,
@@ -49,6 +51,12 @@ pub enum DecodeError {
     BadCodeId(u32),
     BadObjectId(u32),
     BadFrameId(u32),
+    /// A selector or name reference (a send's selector, a method-dictionary
+    /// key, a closure's parameter name, a `Sym` object's text, ...) that
+    /// indexes past the end of the image's symbol table. Every such
+    /// reference is a `u32` id checked against the table at the point of
+    /// use, never trusted to have been validated elsewhere.
+    BadSymbolId(u32),
     /// A closure record's parameter list and the code it names disagree
     /// about how many arguments the closure takes. The two are separate
     /// fields on the wire, so only a decode-time reconciliation can catch
@@ -201,6 +209,7 @@ impl std::fmt::Display for DecodeError {
             DecodeError::BadCodeId(id) => write!(f, "code id {id} out of range"),
             DecodeError::BadObjectId(id) => write!(f, "object id {id} out of range"),
             DecodeError::BadFrameId(id) => write!(f, "frame id {id} out of range"),
+            DecodeError::BadSymbolId(id) => write!(f, "symbol id {id} out of range"),
             DecodeError::ClosureArityMismatch { params, num_args } => write!(
                 f,
                 "closure record declares {params} parameters but the code it names takes {num_args}"
@@ -317,6 +326,15 @@ impl<'a> Reader<'a> {
     /// `reserve_for`.
     pub fn remaining(&self) -> usize {
         self.buf.len() - self.pos
+    }
+
+    /// Bytes already consumed -- the offset of whatever comes next. Lets a
+    /// caller that decoded a known-shape prefix (the header, the source, a
+    /// fixed section) locate exactly where the next section starts, e.g. to
+    /// corrupt one field of it in a hostile-input test without hardcoding
+    /// byte offsets that would drift as the format's earlier fields change.
+    pub fn pos(&self) -> usize {
+        self.pos
     }
 
     pub fn read_raw(&mut self, len: usize) -> Result<&'a [u8], DecodeError> {
@@ -455,10 +473,12 @@ pub fn read_builtin_class(r: &mut Reader) -> Result<BuiltinClass, DecodeError> {
 
 /// One decoded mixin's own section: `(selector, code id)` per method,
 /// sorted by selector exactly as encoded, its initializer's code id if it
-/// has one, and its superclass clause's if it has one.
+/// has one, and its superclass clause's if it has one. The selector is
+/// already a resolved `Symbol` -- looked up in the image's symbol table
+/// once, here, rather than re-interned at every later use.
 #[derive(Debug, PartialEq)]
 pub struct DecodedMixinSection {
-    pub methods: Vec<(String, u32)>,
+    pub methods: Vec<(Symbol, u32)>,
     pub initializer: Option<u32>,
     pub superclass_clause: Option<u32>,
     pub superclass_message: Option<u32>,
@@ -474,11 +494,14 @@ pub struct DecodedCodeTable {
     pub mixins: Vec<DecodedMixinSection>,
 }
 
-pub fn decode_code_table(r: &mut Reader) -> Result<DecodedCodeTable, DecodeError> {
+pub fn decode_code_table(
+    r: &mut Reader,
+    symbols: &symbols::Table,
+) -> Result<DecodedCodeTable, DecodeError> {
     let count = r.read_u32()? as usize;
     let mut codes: Vec<Rc<CompiledCode>> = reserve_for(count, r);
     for _ in 0..count {
-        let code = decode_code(r, &codes)?;
+        let code = decode_code(r, &codes, symbols)?;
         codes.push(Rc::new(code));
     }
     let mixin_count = r.read_u32()? as usize;
@@ -487,7 +510,7 @@ pub fn decode_code_table(r: &mut Reader) -> Result<DecodedCodeTable, DecodeError
         let method_count = r.read_u32()? as usize;
         let mut methods = reserve_for(method_count, r);
         for _ in 0..method_count {
-            let selector = r.read_str()?;
+            let selector = decode_symbol(r, symbols)?;
             let id = r.read_u32()?;
             check_code_id(id, &codes)?;
             methods.push((selector, id));
@@ -528,7 +551,7 @@ pub fn decode_code_table(r: &mut Reader) -> Result<DecodedCodeTable, DecodeError
 /// bound on how many can really follow. Without the clamp a corrupt count
 /// prefix would reserve gigabytes and abort the process before the read
 /// could fail with `UnexpectedEof`.
-fn reserve_for<T>(count: usize, r: &Reader) -> Vec<T> {
+pub(crate) fn reserve_for<T>(count: usize, r: &Reader) -> Vec<T> {
     Vec::with_capacity(count.min(r.remaining()))
 }
 
@@ -585,8 +608,8 @@ pub fn install_code_table(
         for (selector, id) in &section.methods {
             let decl = mixin
                 .methods
-                .get(&Symbol::intern(selector))
-                .ok_or_else(|| DecodeError::UnknownSelector(selector.clone()))?;
+                .get(selector)
+                .ok_or_else(|| DecodeError::UnknownSelector(selector.as_str().to_string()))?;
             let code = code_at(table, *id)?;
             // The frame an installed body runs in is built by the shared
             // orchestration, not by the body: `invoke_method` fills `args`
@@ -1031,7 +1054,11 @@ fn code_at(table: &DecodedCodeTable, id: u32) -> Result<Rc<CompiledCode>, Decode
         .ok_or(DecodeError::BadCodeId(id))
 }
 
-fn decode_code(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<CompiledCode, DecodeError> {
+fn decode_code(
+    r: &mut Reader,
+    codes: &[Rc<CompiledCode>],
+    symbols: &symbols::Table,
+) -> Result<CompiledCode, DecodeError> {
     let kind = match r.read_u8()? {
         0 => CodeKind::Method,
         1 => CodeKind::Block,
@@ -1069,7 +1096,7 @@ fn decode_code(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<CompiledCod
     let instr_count = r.read_u32()? as usize;
     let mut instrs = reserve_for(instr_count, r);
     for _ in 0..instr_count {
-        instrs.push(decode_instr(r, codes)?);
+        instrs.push(decode_instr(r, codes, symbols)?);
     }
     Ok(CompiledCode {
         kind,
@@ -1097,17 +1124,24 @@ fn decode_regs(r: &mut Reader) -> Result<Vec<u16>, DecodeError> {
     Ok(regs)
 }
 
-fn decode_symbol(r: &mut Reader) -> Result<Symbol, DecodeError> {
-    Ok(Symbol::intern(&r.read_str()?))
+/// The table lookup that replaces a per-occurrence `Symbol::intern`: every
+/// selector or name in the code table is a `u32` id into the symbol table
+/// decoded once, up front, in `image::load`.
+fn decode_symbol(r: &mut Reader, symbols: &symbols::Table) -> Result<Symbol, DecodeError> {
+    symbols.get(r.read_u32()?)
 }
 
-fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, DecodeError> {
+fn decode_instr(
+    r: &mut Reader,
+    codes: &[Rc<CompiledCode>],
+    symbols: &symbols::Table,
+) -> Result<Instr, DecodeError> {
     Ok(match r.read_u8()? {
         0 => {
             let dst = r.read_u16()?;
             Instr::LoadLiteral {
                 dst,
-                literal: decode_literal(r, 0)?,
+                literal: decode_literal(r, 0, symbols)?,
             }
         }
         1 => Instr::LoadSelf { dst: r.read_u16()? },
@@ -1152,7 +1186,7 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
         }
         7 => {
             let depth = r.read_u16()?;
-            let selector = decode_symbol(r)?;
+            let selector = decode_symbol(r, symbols)?;
             let arg_regs = decode_regs(r)?;
             let dst = r.read_u16()?;
             Instr::SendLexical {
@@ -1164,7 +1198,7 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
             }
         }
         8 => {
-            let selector = decode_symbol(r)?;
+            let selector = decode_symbol(r, symbols)?;
             let receiver_reg = r.read_u16()?;
             let arg_regs = decode_regs(r)?;
             let dst = r.read_u16()?;
@@ -1177,7 +1211,7 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
             }
         }
         9 => {
-            let selector = decode_symbol(r)?;
+            let selector = decode_symbol(r, symbols)?;
             let arg_regs = decode_regs(r)?;
             let dst = r.read_u16()?;
             Instr::SendSuper {
@@ -1192,7 +1226,7 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
             let n = r.read_u16()? as usize;
             let mut params = reserve_for(n, r);
             for _ in 0..n {
-                params.push(decode_symbol(r)?);
+                params.push(decode_symbol(r, symbols)?);
             }
             let id = r.read_u32()?;
             // Post-order guarantees a block's code precedes its parent's,
@@ -1280,7 +1314,11 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
 /// of assuming it, so the two cannot drift apart silently.
 const MAX_LITERAL_DEPTH: usize = 128;
 
-fn decode_literal(r: &mut Reader, depth: usize) -> Result<Literal, DecodeError> {
+fn decode_literal(
+    r: &mut Reader,
+    depth: usize,
+    symbols: &symbols::Table,
+) -> Result<Literal, DecodeError> {
     if depth > MAX_LITERAL_DEPTH {
         return Err(DecodeError::NestingTooDeep {
             what: "literal array",
@@ -1293,7 +1331,7 @@ fn decode_literal(r: &mut Reader, depth: usize) -> Result<Literal, DecodeError> 
         2 => Literal::SmallInt(r.read_i64()?),
         3 => Literal::Float(r.read_f64()?),
         4 => Literal::Str(r.read_str()?),
-        5 => Literal::Sym(decode_symbol(r)?),
+        5 => Literal::Sym(decode_symbol(r, symbols)?),
         6 => {
             let code = r.read_u32()?;
             Literal::Char(char::from_u32(code).ok_or(DecodeError::InvalidTag {
@@ -1305,7 +1343,7 @@ fn decode_literal(r: &mut Reader, depth: usize) -> Result<Literal, DecodeError> 
             let n = r.read_u32()? as usize;
             let mut elements = reserve_for(n, r);
             for _ in 0..n {
-                elements.push(decode_literal(r, depth + 1)?);
+                elements.push(decode_literal(r, depth + 1, symbols)?);
             }
             Literal::Array(elements)
         }
@@ -1421,11 +1459,12 @@ fn decode_closure_record(
     r: &mut Reader,
     ctx: &DecodeContext,
     tables: &Tables,
+    symbols: &symbols::Table,
 ) -> Result<ClosureData, DecodeError> {
     let n = r.read_u16()? as usize;
     let mut params = reserve_for(n, r);
     for _ in 0..n {
-        params.push(decode_symbol(r)?);
+        params.push(decode_symbol(r, symbols)?);
     }
     let code_id = r.read_u32()?;
     let code = ctx
@@ -1468,26 +1507,22 @@ fn decode_closure_record(
 /// encodable, this must resolve against the frame's own `current_class`
 /// instead -- and until then, doing so would be a distinction without a
 /// difference that reads like a guarantee.
-fn method_decl(ctx: &DecodeContext, selector: String) -> Result<Rc<ast::MethodDecl>, DecodeError> {
+fn method_decl(ctx: &DecodeContext, selector: Symbol) -> Result<Rc<ast::MethodDecl>, DecodeError> {
     let found = {
         let borrowed = ctx.root_class.borrow();
         match &borrowed.data {
-            ObjectData::Class(data) => data
-                .application
-                .mixin
-                .methods
-                .get(&Symbol::intern(&selector))
-                .cloned(),
+            ObjectData::Class(data) => data.application.mixin.methods.get(&selector).cloned(),
             _ => None,
         }
     };
-    found.ok_or(DecodeError::UnknownSelector(selector))
+    found.ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
 }
 
 fn decode_frame(
     r: &mut Reader,
     ctx: &DecodeContext,
     tables: &Tables,
+    symbols: &symbols::Table,
 ) -> Result<Frame, DecodeError> {
     let receiver = decode_value(r, ctx, tables)?;
     let args = decode_values(r, ctx, tables)?;
@@ -1501,8 +1536,8 @@ fn decode_frame(
         None
     };
     let kind = match r.read_u8()? {
-        0 => FrameKind::Method(method_decl(ctx, r.read_str()?)?),
-        1 => FrameKind::Closure(Rc::new(decode_closure_record(r, ctx, tables)?)),
+        0 => FrameKind::Method(method_decl(ctx, decode_symbol(r, symbols)?)?),
+        1 => FrameKind::Closure(Rc::new(decode_closure_record(r, ctx, tables, symbols)?)),
         2 => FrameKind::TopLevel,
         3 => FrameKind::Initializer(decode_class_tag(r, ctx)?),
         4 => FrameKind::SuperclassClause(decode_class_tag(r, ctx)?),
@@ -1590,6 +1625,7 @@ fn bounded_count(count: usize, bytes_per_record: usize, r: &Reader) -> Result<us
 pub fn decode_graph_section(
     r: &mut Reader,
     ctx: &DecodeContext,
+    symbols: &symbols::Table,
 ) -> Result<DecodedGraph, DecodeError> {
     let object_count = bounded_count(r.read_u32()? as usize, MIN_OBJECT_RECORD_BYTES, r)?;
     let frame_count = bounded_count(r.read_u32()? as usize, MIN_FRAME_RECORD_BYTES, r)?;
@@ -1624,9 +1660,9 @@ pub fn decode_graph_section(
         let data = match r.read_u8()? {
             0 => ObjectData::Instance(decode_values(r, ctx, &tables)?),
             1 => ObjectData::Str(r.read_str()?),
-            2 => ObjectData::Sym(decode_symbol(r)?),
+            2 => ObjectData::Sym(decode_symbol(r, symbols)?),
             3 => ObjectData::Array(decode_values(r, ctx, &tables)?),
-            4 => ObjectData::Closure(decode_closure_record(r, ctx, &tables)?),
+            4 => ObjectData::Closure(decode_closure_record(r, ctx, &tables, symbols)?),
             tag => {
                 return Err(DecodeError::InvalidTag {
                     what: "object body",
@@ -1641,7 +1677,7 @@ pub fn decode_graph_section(
         };
     }
     for frame in &frames {
-        let decoded = decode_frame(r, ctx, &tables)?;
+        let decoded = decode_frame(r, ctx, &tables, symbols)?;
         *frame.borrow_mut() = decoded;
     }
     let roots = decode_values(r, ctx, &tables)?;

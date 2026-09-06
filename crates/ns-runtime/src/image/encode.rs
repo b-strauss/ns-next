@@ -13,6 +13,8 @@ use crate::types::{
     SourceOrigin, Value,
 };
 
+use super::symbols;
+
 pub const MAGIC: &[u8; 4] = b"NSIM";
 /// Versions the whole layout *and* the compiler's codegen: from the first
 /// image any released build can write, any change to `Instr`, to what the
@@ -129,7 +131,7 @@ pub fn encode_scalar_value(w: &mut Writer, v: &Value) -> bool {
 /// follows would make the image self-inconsistent, which no reader could
 /// detect. Unreachable for any image a real program can produce -- an
 /// invariant an image write must not violate, so it aborts loudly.
-fn u32_field(what: &str, n: usize) -> u32 {
+pub(crate) fn u32_field(what: &str, n: usize) -> u32 {
     assert!(
         u32::try_from(n).is_ok(),
         "image {what} of {n} does not fit the format's u32 field"
@@ -225,6 +227,7 @@ pub fn encode_code_table(
     w: &mut Writer,
     module: &CompiledModule,
     root_class: &ClassRef,
+    symbols: &mut symbols::Builder,
 ) -> Result<CodeIds, String> {
     let mut order: Vec<Rc<CompiledCode>> = Vec::new();
     let mut ids = CodeIds {
@@ -289,7 +292,7 @@ pub fn encode_code_table(
     }
     w.write_u32(u32_field("code table entry count", order.len()));
     for code in &order {
-        encode_code(w, code, &ids);
+        encode_code(w, code, &ids, symbols);
     }
     w.write_u32(u32_field("mixin count", sections.len()));
     for section in &sections {
@@ -298,7 +301,7 @@ pub fn encode_code_table(
             section.methods.len(),
         ));
         for (selector, code) in &section.methods {
-            w.write_str(selector);
+            w.write_u32(symbols.intern(selector));
             w.write_u32(ids.id_of(code));
         }
         match &section.initializer {
@@ -344,7 +347,7 @@ fn collect_code(code: &Rc<CompiledCode>, order: &mut Vec<Rc<CompiledCode>>, ids:
     order.push(code.clone());
 }
 
-fn encode_code(w: &mut Writer, code: &CompiledCode, ids: &CodeIds) {
+fn encode_code(w: &mut Writer, code: &CompiledCode, ids: &CodeIds, symbols: &mut symbols::Builder) {
     w.write_u8(match code.kind {
         CodeKind::Method => 0,
         CodeKind::Block => 1,
@@ -368,7 +371,7 @@ fn encode_code(w: &mut Writer, code: &CompiledCode, ids: &CodeIds) {
     }
     w.write_u32(u32_field("instruction count", code.instrs.len()));
     for instr in &code.instrs {
-        encode_instr(w, instr, ids);
+        encode_instr(w, instr, ids, symbols);
     }
 }
 
@@ -383,12 +386,12 @@ fn encode_regs(w: &mut Writer, regs: &[u16]) {
     }
 }
 
-fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds) {
+fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symbols::Builder) {
     match instr {
         Instr::LoadLiteral { dst, literal } => {
             w.write_u8(0);
             w.write_u16(*dst);
-            encode_literal(w, literal);
+            encode_literal(w, literal, symbols);
         }
         Instr::LoadSelf { dst } => {
             w.write_u8(1);
@@ -430,7 +433,7 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds) {
         } => {
             w.write_u8(7);
             w.write_u16(*depth);
-            w.write_str(selector.as_str());
+            w.write_u32(symbols.intern(selector.as_str()));
             encode_regs(w, arg_regs);
             w.write_u16(*dst);
             encode_call_site(w, call_site);
@@ -443,7 +446,7 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds) {
             call_site,
         } => {
             w.write_u8(8);
-            w.write_str(selector.as_str());
+            w.write_u32(symbols.intern(selector.as_str()));
             w.write_u16(*receiver_reg);
             encode_regs(w, arg_regs);
             w.write_u16(*dst);
@@ -456,7 +459,7 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds) {
             call_site,
         } => {
             w.write_u8(9);
-            w.write_str(selector.as_str());
+            w.write_u32(symbols.intern(selector.as_str()));
             encode_regs(w, arg_regs);
             w.write_u16(*dst);
             encode_call_site(w, call_site);
@@ -466,7 +469,7 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds) {
             w.write_u16(*dst);
             w.write_u16(u16_field("closure parameter count", params.len()));
             for p in params.iter() {
-                w.write_str(p.as_str());
+                w.write_u32(symbols.intern(p.as_str()));
             }
             w.write_u32(ids.id_of(code));
         }
@@ -514,7 +517,7 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds) {
     }
 }
 
-fn encode_literal(w: &mut Writer, literal: &Literal) {
+fn encode_literal(w: &mut Writer, literal: &Literal, symbols: &mut symbols::Builder) {
     match literal {
         Literal::Nil => w.write_u8(0),
         Literal::Bool(b) => {
@@ -535,7 +538,7 @@ fn encode_literal(w: &mut Writer, literal: &Literal) {
         }
         Literal::Sym(s) => {
             w.write_u8(5);
-            w.write_str(s.as_str());
+            w.write_u32(symbols.intern(s.as_str()));
         }
         Literal::Char(c) => {
             w.write_u8(6);
@@ -545,7 +548,7 @@ fn encode_literal(w: &mut Writer, literal: &Literal) {
             w.write_u8(7);
             w.write_u32(u32_field("literal array length", elements.len()));
             for e in elements {
-                encode_literal(w, e);
+                encode_literal(w, e, symbols);
             }
         }
         Literal::MalformedInt(text) => {
@@ -794,6 +797,7 @@ fn encode_closure_record(
     closure: &ClosureData,
     table: &GraphTable,
     code_ids: &CodeIds,
+    symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let ClosureBody::Compiled(code) = &closure.body else {
         return Err(
@@ -804,7 +808,7 @@ fn encode_closure_record(
     };
     w.write_u16(u16_field("closure parameter count", closure.params.len()));
     for p in &closure.params {
-        w.write_str(p.as_str());
+        w.write_u32(symbols.intern(p.as_str()));
     }
     w.write_u32(code_ids.id_of(code));
     w.write_u32(table.frame_id(&closure.captured_frame));
@@ -819,6 +823,7 @@ fn encode_object(
     code_ids: &CodeIds,
     platform: &Value,
     root_class: &ClassRef,
+    symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let borrowed = obj.borrow();
     encode_class_tag(w, &borrowed.class, root_class)?;
@@ -834,7 +839,7 @@ fn encode_object(
         }
         ObjectData::Sym(s) => {
             w.write_u8(2);
-            w.write_str(s.as_str());
+            w.write_u32(symbols.intern(s.as_str()));
         }
         ObjectData::Array(elements) => {
             w.write_u8(3);
@@ -842,7 +847,7 @@ fn encode_object(
         }
         ObjectData::Closure(c) => {
             w.write_u8(4);
-            encode_closure_record(w, c, table, code_ids)?;
+            encode_closure_record(w, c, table, code_ids, symbols)?;
         }
         ObjectData::Class(_) => {
             unreachable!("class objects are never entered in the object table")
@@ -858,6 +863,7 @@ fn encode_frame(
     code_ids: &CodeIds,
     platform: &Value,
     root_class: &ClassRef,
+    symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let f = frame.borrow();
     encode_value(w, &f.receiver, table, platform, root_class)?;
@@ -876,11 +882,13 @@ fn encode_frame(
     match &f.kind {
         FrameKind::Method(decl) => {
             w.write_u8(0);
-            w.write_str(&crate::interpreter::instantiate::method_name(&decl.pattern));
+            w.write_u32(
+                symbols.intern(&crate::interpreter::instantiate::method_name(&decl.pattern)),
+            );
         }
         FrameKind::Closure(c) => {
             w.write_u8(1);
-            encode_closure_record(w, c, table, code_ids)?;
+            encode_closure_record(w, c, table, code_ids, symbols)?;
         }
         FrameKind::TopLevel => w.write_u8(2),
         FrameKind::Initializer(class) => {
@@ -909,15 +917,16 @@ pub fn encode_graph_section(
     platform: &Value,
     code_ids: &CodeIds,
     root_class: &ClassRef,
+    symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let table = GraphTable::build(roots, platform);
     w.write_u32(u32_field("object table entry count", table.objects().len()));
     w.write_u32(u32_field("frame table entry count", table.frames().len()));
     for obj in table.objects() {
-        encode_object(w, obj, &table, code_ids, platform, root_class)?;
+        encode_object(w, obj, &table, code_ids, platform, root_class, symbols)?;
     }
     for frame in table.frames() {
-        encode_frame(w, frame, &table, code_ids, platform, root_class)?;
+        encode_frame(w, frame, &table, code_ids, platform, root_class, symbols)?;
     }
     encode_values(w, roots, &table, platform, root_class)?;
     Ok(())

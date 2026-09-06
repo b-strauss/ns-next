@@ -11,7 +11,7 @@ use ns_runtime::bytecode::{
     method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
 };
 use ns_runtime::image;
-use ns_runtime::image::{decode, encode};
+use ns_runtime::image::{decode, encode, symbols};
 use ns_runtime::mixin::mixin_key;
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
@@ -235,6 +235,18 @@ fn load(src: &str) -> (Interpreter, ClassRef, Bindings) {
     (interp, class, bindings)
 }
 
+/// A `symbols::Table` holding exactly `strings`, in order -- so `strings[i]`
+/// decodes from id `i`, matching the ids a hand-crafted test writes inline.
+/// Hostile-input tests that never reference a selector pass
+/// `&symbols::Table::empty()` directly instead of calling this.
+fn table_with(strings: &[&str]) -> symbols::Table {
+    let mut builder = symbols::Builder::new();
+    for s in strings {
+        builder.intern(s);
+    }
+    builder.build()
+}
+
 const RICH: &str = "Newspeak3\n'T'\nclass Rich x: a = Object new (\n  | p = a. q ::= 0. |\n  q := p.\n) (\n  find: t in: c = ( c do: [:e | e = t ifTrue: [^e]]. ^nil )\n  loop = ( | n | n := 0. [n < 3] whileTrue: [n := n + 1]. ^n )\n  arr = ( ^{ 1. #(2 3). 'four' } )\n) : ()";
 
 fn every_instr_once() -> CompiledCode {
@@ -358,11 +370,14 @@ fn round_trip_code_table(
     class: &ClassRef,
 ) -> (decode::DecodedCodeTable, encode::CodeIds) {
     let mut w = encode::Writer::new();
-    let ids = encode::encode_code_table(&mut w, module, class).expect("encode code table");
+    let mut symbols = symbols::Builder::new();
+    let ids =
+        encode::encode_code_table(&mut w, module, class, &mut symbols).expect("encode code table");
     let bytes = w.into_bytes();
+    let table = symbols.build();
     let mut r = decode::Reader::new(&bytes);
     (
-        decode::decode_code_table(&mut r).expect("decode code table"),
+        decode::decode_code_table(&mut r, &table).expect("decode code table"),
         ids,
     )
 }
@@ -403,7 +418,7 @@ fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents()
     );
     for (selector, id) in &root.methods {
         let decoded = &table.codes[*id as usize];
-        let original = method_code(&class, &module, selector);
+        let original = method_code(&class, &module, selector.as_str());
         assert_eq!(**decoded, *original, "{selector}");
         for instr in &decoded.instrs {
             if let Instr::MakeClosure { code, .. } = instr {
@@ -478,11 +493,11 @@ fn a_root_list_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     w.write_u32(0); // no code entries
     w.write_u32(1); // one mixin section ...
     w.write_u32(1); // ... with one method in its root list ...
-    w.write_str("foo");
+    w.write_u32(0); // selector id 0 ("foo")
     w.write_u32(5); // ... pointing past the end of the table
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
-    match decode::decode_code_table(&mut r) {
+    match decode::decode_code_table(&mut r, &table_with(&["foo"])) {
         Err(decode::DecodeError::BadCodeId(id)) => {
             assert_eq!(id, 5);
             assert_eq!(
@@ -514,7 +529,7 @@ fn a_make_closure_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
     assert_eq!(
-        decode::decode_code_table(&mut r),
+        decode::decode_code_table(&mut r, &symbols::Table::empty()),
         Err(decode::DecodeError::BadCodeId(9))
     );
 }
@@ -540,7 +555,7 @@ fn a_forward_make_closure_code_id_is_a_decode_error_not_a_panic() {
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
     assert_eq!(
-        decode::decode_code_table(&mut r),
+        decode::decode_code_table(&mut r, &symbols::Table::empty()),
         Err(decode::DecodeError::BadCodeId(1))
     );
 }
@@ -553,7 +568,7 @@ fn an_invalid_code_kind_tag_is_a_decode_error_not_a_panic() {
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
     assert_eq!(
-        decode::decode_code_table(&mut r),
+        decode::decode_code_table(&mut r, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "code kind",
             tag: 200
@@ -577,7 +592,7 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
     assert_eq!(
-        decode::decode_code_table(&mut r),
+        decode::decode_code_table(&mut r, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
             tag: 20
@@ -606,7 +621,7 @@ fn an_invalid_literal_tag_and_a_bad_char_are_decode_errors_not_panics() {
         w.write_raw(&payload);
         let bytes = w.into_bytes();
         let mut r = decode::Reader::new(&bytes);
-        match decode::decode_code_table(&mut r) {
+        match decode::decode_code_table(&mut r, &symbols::Table::empty()) {
             Err(decode::DecodeError::InvalidTag { what: got, .. }) => assert_eq!(got, what),
             Err(e) => panic!("expected an invalid {what} tag, got a different error: {e}"),
             Ok(_) => panic!("expected an invalid {what} tag, got Ok"),
@@ -632,7 +647,7 @@ fn an_invalid_builtin_class_tag_is_a_decode_error_not_a_panic() {
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
     assert_eq!(
-        decode::decode_code_table(&mut r),
+        decode::decode_code_table(&mut r, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "builtin class",
             tag: 200
@@ -645,12 +660,14 @@ fn a_truncated_code_table_is_a_decode_error_not_a_panic() {
     let (_interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(&class, &bindings);
     let mut w = encode::Writer::new();
-    encode::encode_code_table(&mut w, &module, &class).expect("encode code table");
+    let mut symbols = symbols::Builder::new();
+    encode::encode_code_table(&mut w, &module, &class, &mut symbols).expect("encode code table");
+    let table = symbols.build();
     let bytes = w.into_bytes();
     for cut in [1usize, bytes.len() / 3, bytes.len() / 2, bytes.len() - 1] {
         let mut r = decode::Reader::new(&bytes[..cut]);
         assert!(
-            decode::decode_code_table(&mut r).is_err(),
+            decode::decode_code_table(&mut r, &table).is_err(),
             "a code table cut to {cut} bytes must not decode"
         );
     }
@@ -661,9 +678,11 @@ fn the_code_table_encoding_is_deterministic() {
     let (_interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(&class, &bindings);
     let mut first = encode::Writer::new();
-    encode::encode_code_table(&mut first, &module, &class).expect("encode code table");
+    encode::encode_code_table(&mut first, &module, &class, &mut symbols::Builder::new())
+        .expect("encode code table");
     let mut second = encode::Writer::new();
-    encode::encode_code_table(&mut second, &module, &class).expect("encode code table");
+    encode::encode_code_table(&mut second, &module, &class, &mut symbols::Builder::new())
+        .expect("encode code table");
     assert_eq!(first.into_bytes(), second.into_bytes());
 }
 
@@ -711,7 +730,8 @@ fn a_method_added_after_compile_module_is_an_encoding_error_not_a_panic() {
         data.application = application;
     }
     let mut w = encode::Writer::new();
-    let Err(err) = encode::encode_code_table(&mut w, &module, &class) else {
+    let Err(err) = encode::encode_code_table(&mut w, &module, &class, &mut symbols::Builder::new())
+    else {
         panic!("a method with no compiled code must not encode");
     };
     assert!(
@@ -763,7 +783,7 @@ fn a_backwards_source_span_is_a_decode_error_not_a_panic() {
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
     assert_eq!(
-        decode::decode_code_table(&mut r),
+        decode::decode_code_table(&mut r, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidSpan { start: 9, end: 4 })
     );
 }
@@ -777,7 +797,7 @@ fn a_huge_code_table_count_does_not_reserve_gigabytes() {
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
     assert_eq!(
-        decode::decode_code_table(&mut r),
+        decode::decode_code_table(&mut r, &symbols::Table::empty()),
         Err(decode::DecodeError::UnexpectedEof)
     );
 }
@@ -823,7 +843,7 @@ fn a_deeply_nested_literal_array_is_a_decode_error_not_a_stack_overflow() {
     );
     let mut r = decode::Reader::new(&bytes);
     assert_eq!(
-        decode::decode_code_table(&mut r),
+        decode::decode_code_table(&mut r, &symbols::Table::empty()),
         Err(decode::DecodeError::NestingTooDeep {
             what: "literal array",
             limit: 128
@@ -846,7 +866,8 @@ fn a_literal_array_within_the_nesting_limit_still_decodes() {
     // for the end-to-end version of that claim.
     let bytes = code_table_with_nested_literal_array(128);
     let mut r = decode::Reader::new(&bytes);
-    let table = decode::decode_code_table(&mut r).expect("128 levels is within the limit");
+    let table = decode::decode_code_table(&mut r, &symbols::Table::empty())
+        .expect("128 levels is within the limit");
     assert_eq!(table.codes.len(), 1);
     assert!(matches!(
         table.codes[0].instrs[0],
@@ -969,7 +990,7 @@ fn the_deepest_literal_array_the_parser_accepts_survives_a_round_trip() {
     let (_, id) = table.mixins[0]
         .methods
         .iter()
-        .find(|(selector, _)| selector == "arr")
+        .find(|(selector, _)| selector.as_str() == "arr")
         .expect("arr is in the root list");
     let decoded = &table.codes[*id as usize];
     assert_eq!(**decoded, *original);
@@ -1001,6 +1022,7 @@ fn round_trip_graph(
     interp.set_engine(Engine::Bytecode(module));
     let roots = make_roots(&mut interp, &class, &bindings);
     let platform = interp.platform();
+    let mut symbols = symbols::Builder::new();
     let mut w = encode::Writer::new();
     let ids = encode::encode_code_table(
         &mut w,
@@ -1008,21 +1030,24 @@ fn round_trip_graph(
             .compiled_module()
             .expect("the bytecode engine is active"),
         &class,
+        &mut symbols,
     )
     .expect("encode code table");
-    encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class).expect("encode graph");
+    encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class, &mut symbols)
+        .expect("encode graph");
     let bytes = w.into_bytes();
+    let symbol_table = symbols.build();
     let mut r = decode::Reader::new(&bytes);
-    let table = decode::decode_code_table(&mut r).expect("code table");
+    let code_table = decode::decode_code_table(&mut r, &symbol_table).expect("code table");
     let decoded = {
         let ctx = decode::DecodeContext {
             interp: &interp,
             root_class: &class,
-            codes: &table.codes,
+            codes: &code_table.codes,
             bindings: &bindings,
             platform: platform.clone(),
         };
-        decode::decode_graph_section(&mut r, &ctx).expect("graph")
+        decode::decode_graph_section(&mut r, &ctx, &symbol_table).expect("graph")
     };
     (
         interp,
@@ -1242,10 +1267,13 @@ fn a_tree_walker_closure_is_a_snapshot_error_not_a_silent_omission() {
     );
     let platform = interp.platform();
     let module = compiler::compile_module(&class, &bindings);
+    let mut symbols = symbols::Builder::new();
     let mut w = encode::Writer::new();
-    let ids = encode::encode_code_table(&mut w, &module, &class).expect("encode code table");
-    let err = encode::encode_graph_section(&mut w, &[closure], &platform, &ids, &class)
-        .expect_err("Ast closure");
+    let ids = encode::encode_code_table(&mut w, &module, &class, &mut symbols)
+        .expect("encode code table");
+    let err =
+        encode::encode_graph_section(&mut w, &[closure], &platform, &ids, &class, &mut symbols)
+            .expect_err("Ast closure");
     assert!(err.contains("tree-walker"), "{err}");
 }
 
@@ -1260,6 +1288,7 @@ fn a_decoded_closure_carries_the_reloaded_modules_bindings() {
         "instantiate",
     )];
     let platform = interp.platform();
+    let mut symbols = symbols::Builder::new();
     let mut w = encode::Writer::new();
     let ids = encode::encode_code_table(
         &mut w,
@@ -1267,12 +1296,15 @@ fn a_decoded_closure_carries_the_reloaded_modules_bindings() {
             .compiled_module()
             .expect("the bytecode engine is active"),
         &class,
+        &mut symbols,
     )
     .expect("encode code table");
-    encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class).expect("encode graph");
+    encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class, &mut symbols)
+        .expect("encode graph");
     let bytes = w.into_bytes();
+    let symbol_table = symbols.build();
     let mut r = decode::Reader::new(&bytes);
-    let table = decode::decode_code_table(&mut r).expect("code table");
+    let table = decode::decode_code_table(&mut r, &symbol_table).expect("code table");
     // A *different* bindings map, standing in for the one a reload would
     // build: every decoded closure must receive this one, proving
     // `ClosureData.bindings` is never serialized.
@@ -1284,7 +1316,7 @@ fn a_decoded_closure_carries_the_reloaded_modules_bindings() {
         bindings: &reloaded_bindings,
         platform: platform.clone(),
     };
-    let decoded = decode::decode_graph_section(&mut r, &ctx).expect("graph");
+    let decoded = decode::decode_graph_section(&mut r, &ctx, &symbol_table).expect("graph");
     let instance = obj(&decoded.roots[0]).borrow();
     let ObjectData::Instance(fields) = &instance.data else {
         panic!("expected an instance")
@@ -1308,6 +1340,7 @@ fn the_graph_section_encoding_is_deterministic() {
             "instantiate",
         )];
         let platform = interp.platform();
+        let mut symbols = symbols::Builder::new();
         let mut w = encode::Writer::new();
         let ids = encode::encode_code_table(
             &mut w,
@@ -1315,9 +1348,10 @@ fn the_graph_section_encoding_is_deterministic() {
                 .compiled_module()
                 .expect("the bytecode engine is active"),
             &class,
+            &mut symbols,
         )
         .expect("encode code table");
-        encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class)
+        encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class, &mut symbols)
             .expect("encode graph");
         encodings.push(w.into_bytes());
     }
@@ -1332,6 +1366,10 @@ struct GraphFixture {
     bindings: Bindings,
     platform: Value,
     codes: Vec<Rc<CompiledCode>>,
+    /// Empty by default: most fixtures' hand-crafted bytes never reference a
+    /// selector. Tests that do (a frame kind's method name, a closure's
+    /// parameters) set this to a table built by `table_with` first.
+    symbols: symbols::Table,
 }
 
 impl GraphFixture {
@@ -1344,6 +1382,7 @@ impl GraphFixture {
             bindings,
             platform,
             codes: Vec::new(),
+            symbols: symbols::Table::empty(),
         }
     }
 
@@ -1355,7 +1394,7 @@ impl GraphFixture {
             bindings: &self.bindings,
             platform: self.platform.clone(),
         };
-        decode::decode_graph_section(&mut decode::Reader::new(bytes), &ctx)
+        decode::decode_graph_section(&mut decode::Reader::new(bytes), &ctx, &self.symbols)
     }
 
     /// The `DecodeError` a hand-crafted graph section must produce. Never
@@ -1517,9 +1556,11 @@ fn an_invalid_frame_kind_tag_is_a_decode_error_not_a_panic() {
 fn a_method_frame_naming_a_selector_the_class_lost_is_a_decode_error() {
     let mut w = one_frame_prefix();
     w.write_u8(0); // frame kind: Method
-    w.write_str("gone");
+    w.write_u32(0); // selector id 0 ("gone")
     let bytes = w.into_bytes();
-    let err = GraphFixture::new().decode_err(&bytes);
+    let mut fixture = GraphFixture::new();
+    fixture.symbols = table_with(&["gone"]);
+    let err = fixture.decode_err(&bytes);
     assert_eq!(
         err,
         decode::DecodeError::UnknownSelector("gone".to_string())
@@ -1550,6 +1591,7 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         "instantiate",
     )];
     let platform = interp.platform();
+    let mut symbols = symbols::Builder::new();
     let mut w = encode::Writer::new();
     let ids = encode::encode_code_table(
         &mut w,
@@ -1557,12 +1599,15 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
             .compiled_module()
             .expect("the bytecode engine is active"),
         &class,
+        &mut symbols,
     )
     .expect("encode code table");
     let before = w.into_bytes().len();
     let mut w = encode::Writer::new();
-    encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class).expect("encode graph");
+    encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class, &mut symbols)
+        .expect("encode graph");
     let graph = w.into_bytes();
+    let symbol_table = symbols.build();
     assert!(before > 0 && graph.len() > 8);
     let ctx = decode::DecodeContext {
         interp: &interp,
@@ -1576,7 +1621,7 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         // Every prefix is either a clean `DecodeError` or -- for a prefix
         // that happens to be self-consistent -- a successful decode. What
         // it must never be is a panic.
-        let _ = decode::decode_graph_section(&mut r, &ctx);
+        let _ = decode::decode_graph_section(&mut r, &ctx, &symbol_table);
     }
 }
 
@@ -1675,8 +1720,10 @@ fn closure_object_with_param_count(params: &[&str]) -> Vec<u8> {
     w.write_u32(1); // identity hash
     w.write_u8(4); // object body: Closure
     w.write_u16(params.len() as u16);
-    for p in params {
-        w.write_str(p);
+    for (id, _) in params.iter().enumerate() {
+        // `table_with(params)` interns them in this same order, so a
+        // parameter's position is its id.
+        w.write_u32(id as u32);
     }
     w.write_u32(0); // code id
     w.write_u32(0); // captured frame id -- frame 0 exists
@@ -1703,6 +1750,7 @@ fn a_well_formed_closure_record_whose_arity_agrees_still_decodes() {
     // it, a reconciliation that rejected *everything* would look correct.
     let mut fixture = GraphFixture::new();
     fixture.codes.push(block_code(1));
+    fixture.symbols = table_with(&["x"]);
     let decoded = fixture
         .decode(&closure_object_with_param_count(&["x"]))
         .expect("arity agrees");
@@ -1744,6 +1792,7 @@ fn a_closure_record_declaring_too_many_parameters_is_a_decode_error() {
     // arguments -- so nothing downstream would ever report it.
     let mut fixture = GraphFixture::new();
     fixture.codes.push(block_code(0));
+    fixture.symbols = table_with(&["x"]);
     let err = fixture.decode_err(&closure_object_with_param_count(&["x"]));
     assert_eq!(
         err,
@@ -2476,6 +2525,10 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable, CompiledModule) {
         class,
         bindings,
         platform,
+        // `foo_frame` below writes the `Method` frame kind's selector as id
+        // 0, which must resolve to "foo" -- the method `class_method_key`
+        // just keyed the module's compiled body under.
+        symbols: table_with(&["foo"]),
     };
     (fixture, table, module)
 }
@@ -2514,7 +2567,7 @@ fn foo_frame(temps: u32) -> impl FnOnce(&mut encode::Writer) {
         w.write_bool(false); // no home
         w.write_bool(false); // no current class
         w.write_u8(0); // frame kind: Method
-        w.write_str("foo");
+        w.write_u32(0); // selector id 0 -- "foo", per `closure_world`'s fixture
         w.write_bool(false); // continuable
     }
 }
@@ -3332,4 +3385,159 @@ fn the_superclass_clause_frame_kinds_decode() {
         };
         assert!(matched, "frame kind tag {tag} decoded to the wrong kind");
     }
+}
+
+// ---------------------------------------------------------------------------
+// The image symbol table: every selector and name written once, referenced
+// everywhere else by index.
+// ---------------------------------------------------------------------------
+
+const TRIVIAL_MODULE: &str = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n) : ()";
+
+/// A full `image::snapshot` of `src` under the bytecode engine, with no
+/// roots -- these tests care about the code table's own bytes, not the
+/// object graph.
+fn snapshot_of(src: &str) -> Vec<u8> {
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let platform = interp.platform();
+    image::snapshot(
+        src,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        &[],
+    )
+    .expect("snapshot")
+}
+
+/// The number of times `needle` occurs in `haystack`, overlapping matches
+/// included -- more than a dedup regression could ever produce, so any
+/// count above the number of *distinct* symbols the source names is
+/// evidence of an inline copy the symbol table failed to catch.
+fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return 0;
+    }
+    haystack
+        .windows(needle.len())
+        .filter(|w| *w == needle)
+        .count()
+}
+
+/// The image's bytes from the symbol table onward, skipping the header and
+/// -- until a later milestone makes the image source-free -- the verbatim
+/// source text and its origin, which necessarily still contain every
+/// selector as plain source. The dedup property this task adds only
+/// applies from the symbol table on: everything that used to be an inline
+/// `write_str` of a selector or name lives at or after it.
+fn bytes_from_symbol_table(bytes: &[u8]) -> &[u8] {
+    let mut r = decode::Reader::new(bytes);
+    decode::read_header(&mut r).expect("valid header");
+    r.read_str().expect("source");
+    decode::decode_source_origin(&mut r).expect("origin");
+    &bytes[r.pos()..]
+}
+
+#[test]
+fn a_repeated_selector_is_stored_once() {
+    // `distinctiveSelector` is deliberately long and specific: a single
+    // byte (the brief's original example, `b"b"`) recurs throughout any
+    // binary stream by chance, which would make `occurrences` meaningless.
+    // This selector is the method-dictionary key for one method and the
+    // send target at three call sites -- four inline occurrences before
+    // this task, one symbol-table entry after it. (The verbatim source
+    // text, stored earlier in the image, still contains the selector as
+    // plain text -- `bytes_from_symbol_table` excludes that section, since
+    // this task does not touch it.)
+    let bytes = snapshot_of(
+        "Newspeak3\n'T'\nclass C = Object new (\n) (\n  a = ( ^self distinctiveSelector )\n  b = ( ^self distinctiveSelector )\n  distinctiveSelector = ( ^self distinctiveSelector )\n) : ()",
+    );
+    assert_eq!(
+        occurrences(bytes_from_symbol_table(&bytes), b"distinctiveSelector"),
+        1
+    );
+}
+
+/// Overwrites the symbol table's own entry count to claim zero symbols.
+/// `TRIVIAL_MODULE` compiles exactly one method, so its mixin section holds
+/// one real reference to symbol id 0 -- which no longer exists once the
+/// table it indexes into claims to be empty. Located via the real decode
+/// functions (header, source, origin) rather than a hardcoded byte offset,
+/// so this does not drift if an earlier section's encoding changes shape.
+fn corrupt_first_symbol_id(bytes: &mut [u8]) {
+    let count_at = {
+        let mut r = decode::Reader::new(bytes);
+        decode::read_header(&mut r).expect("valid header");
+        r.read_str().expect("source");
+        decode::decode_source_origin(&mut r).expect("origin");
+        r.pos()
+    };
+    bytes[count_at..count_at + 4].copy_from_slice(&0u32.to_le_bytes());
+}
+
+#[test]
+fn an_out_of_range_symbol_id_is_an_error_not_a_panic() {
+    let mut bytes = snapshot_of(TRIVIAL_MODULE);
+    corrupt_first_symbol_id(&mut bytes);
+    assert!(ns_runtime::image::load(&bytes).is_err());
+}
+
+/// The same hostile input, but at the level that actually raises
+/// `DecodeError::BadSymbolId`: a hand-crafted code table whose mixin
+/// section names a selector id past the end of an empty symbol table. The
+/// end-to-end test above proves `load` as a whole refuses the image; this
+/// one proves it is specifically `decode_code_table`'s range check that
+/// catches it, not some unrelated failure earlier in the pipeline.
+#[test]
+fn a_root_lists_selector_id_out_of_range_is_a_decode_error_not_a_panic() {
+    let mut w = encode::Writer::new();
+    w.write_u32(0); // no code entries
+    w.write_u32(1); // one mixin section ...
+    w.write_u32(1); // ... with one method in its root list ...
+    w.write_u32(5); // ... whose selector id is out of range for an empty table
+    w.write_u32(0); // code id (never reached -- the selector id is checked first)
+    let bytes = w.into_bytes();
+    let mut r = decode::Reader::new(&bytes);
+    assert_eq!(
+        decode::decode_code_table(&mut r, &symbols::Table::empty()),
+        Err(decode::DecodeError::BadSymbolId(5))
+    );
+}
+
+/// `symbols::Table::get`'s own bounds check, isolated from everything else
+/// decoding touches: an empty table has no id 0, and `get` must say so
+/// rather than index-panic.
+#[test]
+fn an_empty_symbol_tables_get_is_an_error_not_a_panic() {
+    let table = symbols::Table::empty();
+    assert_eq!(table.get(0), Err(decode::DecodeError::BadSymbolId(0)));
+}
+
+#[test]
+fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywhere() {
+    // The dedup property from the caller's side: every occurrence of
+    // `distinctiveSelector` -- the method itself and every send of it --
+    // must still resolve to the same interned `Symbol` after a load, not
+    // merely compress on the wire.
+    let bytes = snapshot_of(
+        "Newspeak3\n'T'\nclass C = Object new (\n) (\n  public a = ( ^self distinctiveSelector )\n  distinctiveSelector = ( ^42 )\n) : ()",
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = expect_ok(
+        loaded
+            .interp
+            .instantiate(loaded.root_class.clone(), vec![], &loaded.bindings),
+        "instantiate",
+    );
+    let bindings = loaded.bindings.clone();
+    let result = expect_ok(
+        loaded
+            .interp
+            .send(instance, Symbol::intern("a"), vec![], &bindings, None),
+        "a",
+    );
+    assert!(matches!(result, Value::SmallInt(42)));
 }
