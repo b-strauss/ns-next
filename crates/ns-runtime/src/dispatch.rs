@@ -144,7 +144,7 @@ fn level_of(class: &ClassRef) -> Option<(ClassRef, Rc<MixinApplication>)> {
     }
 }
 
-/// Steps both chains together. Every construction site (`load_class`,
+/// Steps both chains together. Every construction site (`load_module`,
 /// `build_builtin_classes`) links a class object's superclass exactly when
 /// it links its application's superclass, so the two chains have the same
 /// length; requiring both halves here means a hierarchy that somehow lost

@@ -137,3 +137,32 @@ fn a_class_object_carries_identity_and_its_application_carries_layout() {
     );
     let _ = interp;
 }
+
+const NESTED_SRC: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new () (
+    public class Inner = Object new (| v. |) (
+        public value = ( ^v )
+    )
+    public classSideMarker = ( ^1 )
+) : (
+    public marker = ( ^2 )
+)
+";
+
+#[test]
+fn the_mixin_tree_contains_nested_and_class_side_declarations() {
+    let (_interp, class, _resolved) = load(NESTED_SRC);
+    let borrowed = class.borrow();
+    let ns_runtime::ObjectData::Class(data) = &borrowed.data else {
+        panic!("expected a class object");
+    };
+    let mixin = &data.application.mixin;
+    assert_eq!(mixin.nested.len(), 1, "Inner must be in the mixin tree");
+    assert_eq!(mixin.nested[0].name, Symbol::intern("Inner"));
+    assert!(
+        mixin.class_side.is_some(),
+        "a class side is a mixin now, not something to discard"
+    );
+}

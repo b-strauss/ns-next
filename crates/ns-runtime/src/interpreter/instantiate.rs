@@ -9,6 +9,7 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
+use crate::mixin::Mixin;
 use crate::types::*;
 use crate::Symbol;
 
@@ -20,8 +21,36 @@ impl Interpreter {
     /// trailing *message* is a known Milestone 1 gap -- it is neither stored
     /// on `ClassData` nor ever evaluated (see `run_superclass_initializer`'s
     /// doc comment below for what that costs).
+    ///
+    /// Building the mixin tree (`build_mixin`, below) is a separate step from
+    /// applying it: a nested mixin is reachable the moment its enclosing
+    /// mixin exists, but *applying* a mixin -- resolving a superclass and
+    /// computing a slot layout -- only happens for the root here. A nested
+    /// mixin gets its own application when something actually materializes
+    /// it (the accessor, Task 5); until then it is pure, unapplied structure.
     pub fn load_module(&mut self, resolved: &ResolvedModule) -> ClassRef {
-        self.load_class(&resolved.module.root_class, None)
+        let decl = &resolved.module.root_class;
+        let mixin = self.build_mixin(decl);
+        let superclass = self.resolve_superclass_receiver(decl);
+        // The slot layout is the application's job, not the class object's:
+        // `apply_mixin` offsets this class's own slots past every inherited
+        // one and merges the superclass's map in, so a class object never
+        // computes -- or can disagree about -- an instance's shape.
+        let super_application = superclass
+            .as_ref()
+            .and_then(crate::dispatch::class_application);
+        let application = self.apply_mixin(&mixin, super_application.as_ref());
+        let identity_hash = self.alloc_identity_hash();
+        Rc::new(RefCell::new(Object {
+            class: self.builtin_class(BuiltinClass::Object), // M1 simplification, see Task 7 Step 1
+            identity_hash,
+            data: ObjectData::Class(ClassData {
+                application,
+                enclosing: None, // the module's root class has no enclosing object
+                superclass,
+                builtin: None,
+            }),
+        }))
     }
 
     /// Note on the brief's original signature: `decl` is taken here as
@@ -32,32 +61,19 @@ impl Interpreter {
     /// type-check against that call site. This is the kind of small,
     /// mechanical fix every task in this plan has needed at least once.
     ///
-    /// # Milestone 1 known gaps
+    /// Builds the mixin for `decl`, recursively including its nested
+    /// declarations and its class side. Pure structure -- no Newspeak code is
+    /// evaluated here, which is what keeps module loading total.
     ///
-    /// **Nested classes are not loaded.** This function never recurses into
-    /// `decl.instance_side.nested_classes` (nor the class side's), and
-    /// `enclosing` is therefore always `None` for every class it builds. The
-    /// *resolver* fully supports nesting -- it resolves `outer C foo` and
-    /// depth-k implicit sends statically, and `dispatch::kth_enclosing_object`
-    /// implements the runtime half -- but with no nested class ever loaded and
-    /// no `ClassData.enclosing` ever set, any send that actually needs a
-    /// depth > 0 enclosing object resolves statically and then fails at
-    /// runtime (`kth_enclosing_object` returns `Value::Nil` as soon as it
-    /// asks for an enclosing object that is not there). Loading nested
-    /// classes is a substantial feature -- it needs a load order, a mutual
-    /// reference story between an instance and its enclosing object, and the
-    /// accessor a nested class declaration implicitly defines -- and no
-    /// Milestone 1 fixture or corpus module needs it.
-    ///
-    /// **Class-side methods are discarded.** The mixin's `class_side` below
-    /// is set to `None` unconditionally: `decl.class_side`'s methods are
-    /// parsed, resolved, and then dropped here. Class-side / class methods
-    /// are out of scope for Milestone 1 (there are no metaclasses either --
-    /// every class object's own `.class` is the one shared `Object`-tagged
-    /// placeholder), so there is nothing anywhere in the crate that would
-    /// consume a class-side entry if one were stored.
-    fn load_class(&mut self, decl: &ast::ClassDecl, enclosing: Option<ObjRef>) -> ClassRef {
-        let superclass = self.resolve_superclass_receiver(decl);
+    /// Every `decl.instance_side.nested_classes` entry becomes a `Mixin` in
+    /// `nested`, in declaration order, and `decl.class_side` becomes a
+    /// `Mixin` too, instead of being discarded. Neither is *applied* here (no
+    /// superclass is resolved, no slot layout computed, no class object
+    /// built) -- a nested mixin has no class object of its own until
+    /// something materializes it (the accessor, Task 5), and a class side
+    /// has no accessor to dispatch to yet (Task 9). Reachable in the tree is
+    /// as far as this task goes.
+    fn build_mixin(&mut self, decl: &ast::ClassDecl) -> Rc<Mixin> {
         let mut methods = HashMap::new();
         for m in &decl.instance_side.methods {
             methods.insert(Symbol::intern(&method_name(&m.pattern)), Rc::new(m.clone()));
@@ -68,7 +84,17 @@ impl Interpreter {
             .iter()
             .map(|s| Rc::new(s.clone()))
             .collect();
-        let mixin = Rc::new(crate::mixin::Mixin {
+        let nested = decl
+            .instance_side
+            .nested_classes
+            .iter()
+            .map(|n| self.build_mixin(n))
+            .collect();
+        let class_side = decl
+            .class_side
+            .as_ref()
+            .map(|side| self.build_class_side(side));
+        Rc::new(Mixin {
             name: Symbol::intern(&decl.name.name),
             methods,
             instance_slots,
@@ -84,42 +110,43 @@ impl Interpreter {
                     },
                 },
             ))),
-            // Nested classes are still not loaded (see this function's doc
-            // comment); a later task fills this in and gives each entry its
-            // accessor and cache slot.
-            nested: Vec::new(),
-            // Milestone 1 known gap (see this function's doc comment):
-            // class-side methods are out of scope, so `decl.class_side` is
-            // discarded here rather than stored.
-            class_side: None,
+            nested,
+            class_side,
             decl: Some(Rc::new(decl.clone())),
-        });
-        // The slot layout is the application's job, not the class object's:
-        // `apply_mixin` offsets this class's own slots past every inherited
-        // one and merges the superclass's map in, so a class object never
-        // computes -- or can disagree about -- an instance's shape.
-        let super_application = superclass
-            .as_ref()
-            .and_then(crate::dispatch::class_application);
-        let application = self.apply_mixin(&mixin, super_application.as_ref());
-        let identity_hash = self.alloc_identity_hash();
-        Rc::new(RefCell::new(Object {
-            class: self.builtin_class(BuiltinClass::Object), // M1 simplification, see Task 7 Step 1
-            identity_hash,
-            data: ObjectData::Class(ClassData {
-                application,
-                enclosing,
-                superclass,
-                builtin: None,
-            }),
-        }))
+        })
+    }
+
+    /// A class side's own methods, as a `Mixin`. Kept separate from
+    /// `build_mixin` and deliberately small: a class side has no factory
+    /// pattern of its own (there is no metaclass to instantiate it through in
+    /// this milestone) and no nested classes of its own to load -- only its
+    /// instance side's `nested_classes` recurse. `decl` is `None` because a
+    /// `ClassBody` is not itself an `ast::ClassDecl`; there is no single
+    /// declaration node to keep as provenance for it.
+    fn build_class_side(&mut self, side: &ast::ClassBody) -> Rc<Mixin> {
+        let mut methods = HashMap::new();
+        for m in &side.methods {
+            methods.insert(Symbol::intern(&method_name(&m.pattern)), Rc::new(m.clone()));
+        }
+        let instance_slots: Vec<Rc<ast::SlotDecl>> =
+            side.slots.iter().map(|s| Rc::new(s.clone())).collect();
+        Rc::new(Mixin {
+            name: Symbol::intern("class side"),
+            methods,
+            instance_slots,
+            init_exprs: side.init_exprs.clone(),
+            factory: None,
+            nested: Vec::new(),
+            class_side: None,
+            decl: None,
+        })
     }
 
     /// Intercepts an ordinary explicit-receiver send (`Interpreter::send`'s
     /// call site, above -- checked *before* `dispatch::lookup_public`) when
     /// `receiver` is a class object and `selector` is that class's own
     /// factory selector: the class's mixin `factory` pattern if the class
-    /// declared one (every user-defined class does -- `load_class` above
+    /// declared one (every user-defined class does -- `build_mixin` above
     /// always fills this in, defaulting to a bare `new` pattern when the
     /// source class decl left it out), or a bare `new` selector for a
     /// builtin (`factory` is always `None` there, per
@@ -312,7 +339,7 @@ impl Interpreter {
     /// instance initializer. This function does none of that: it walks
     /// straight up `ClassData.superclass` and runs each level's slots and
     /// initExprs. The clause's message is not even carried on the mixin --
-    /// `load_class` stores only `factory`, this class's *own* primary factory
+    /// `build_mixin` stores only `factory`, this class's *own* primary factory
     /// pattern, while the clause's own message list lives on
     /// `ast::SuperclassClause::messages`.
     ///

@@ -682,8 +682,8 @@ fn a_method_added_after_compile_module_is_an_encoding_error_not_a_panic() {
             instance_slots: old.instance_slots.clone(),
             init_exprs: old.init_exprs.clone(),
             factory: old.factory.clone(),
-            nested: Vec::new(),
-            class_side: None,
+            nested: old.nested.clone(),
+            class_side: old.class_side.clone(),
             decl: old.decl.clone(),
         });
         let application = interp.apply_mixin(&grown, super_application.as_ref());

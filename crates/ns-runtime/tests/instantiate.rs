@@ -81,7 +81,7 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 /// names is. Rather than expanding that (out of this task's scope -- the
 /// brief calls it out explicitly as "extend here if a fixture needs it",
 /// and this fixture can route around it), `Sub` is parsed with a builtin
-/// `Object` superclass clause (so `load_class` resolves cleanly through the
+/// `Object` superclass clause (so `load_module` resolves cleanly through the
 /// ordinary pipeline), and its `ClassData.superclass`/`application` are then
 /// relinked directly to the already-loaded `Sup` class -- both `pub` fields
 /// on `ClassData`, exactly as visible to any other crate-external caller.

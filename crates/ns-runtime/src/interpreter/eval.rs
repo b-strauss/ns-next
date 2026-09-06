@@ -344,7 +344,7 @@ pub(crate) fn dispatch_lexical_send(
     let class = interp.class_of(&o);
     // Slot access fix (Task 7 "must fix before committing" #2): a
     // `LexicalSend` to a user-defined class's own slot must resolve here,
-    // *before* the method/native lookups below -- `load_class` never puts a
+    // *before* the method/native lookups below -- `build_mixin` never puts a
     // slot's implicit getter/setter into the mixin's method table, so
     // `lookup_defined_for`/`lookup_protected` would never find one.
     // Milestone 1 known gap: unlike a method send, this is never
