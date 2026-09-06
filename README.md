@@ -100,6 +100,7 @@ crates/ns-cli        the `ns-next` binary
 corpus/              vendored Newspeak modules used as a parser corpus
 tests-fixtures/      end-to-end programs with their expected output
 docs/                progress tracker, design specs, implementation plans
+docs/references/     the Newspeak papers the design argues from (third-party, see PROVENANCE.md)
 ```
 
 ## License

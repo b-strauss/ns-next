@@ -285,7 +285,8 @@ That makes the source-free variant an open design question for `ns-next` rather
 than something to copy. The mechanism that would make it possible is already in
 Newspeak's architecture: reflection is mirror-based, so source access is a
 *capability* rather than a property of every object (Bracha & Ungar, "Mirrors:
-Design Principles for Meta-level Facilities", OOPSLA 2004). Whether upstream
+Design Principles for Meta-level Facilities", OOPSLA 2004 —
+`docs/references/mirrors.pdf`). Whether upstream
 offers a build that exercises that separation was not established here.
 
 ### Direction: a source-free image is the target (decided 2026-09-06)
@@ -555,6 +556,13 @@ for the M1→M2 transition.
   break images or reflection.
 
 ## Prior art
+
+The Newspeak papers this design argues from are vendored under
+`docs/references/`, with their venues, source URLs and copyright status in
+`docs/references/PROVENANCE.md`. The two that carry the most weight here are
+`dyla-final.pdf` (method lookup and scope with inheritance and nesting — the
+Milestone 1 dispatch algorithms) and `mirrors.pdf` (reflection as a capability
+— the reason a deployed image stays reflective).
 
 - **Cog** (Pharo/Squeak JIT) — "married/divorced contexts": frames run on a
   native stack but are lazily reified into heap context objects when reflection
