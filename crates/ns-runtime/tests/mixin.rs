@@ -56,13 +56,38 @@ fn different_superclasses_produce_different_applications() {
 
 #[test]
 fn inherited_slots_are_counted_before_own_slots() {
-    // A superclass application with two slots, a subclass mixin with none:
-    // the subclass's layout must start past the inherited ones.
+    // A superclass application with two slots (a, b), a subclass mixin with one slot (c).
+    // The subclass's own slots must start past the inherited ones, and slot_index must
+    // map both inherited and own slots to their absolute offsets.
     let mut interp = Interpreter::bootstrap();
     let mut sup = bare_mixin("Sup");
     Rc::get_mut(&mut sup).unwrap().instance_slots = vec![slot_decl("a"), slot_decl("b")];
     let sup_app = interp.apply_mixin(&sup, None);
-    let sub_app = interp.apply_mixin(&bare_mixin("Sub"), Some(&sup_app));
-    assert_eq!(sup_app.num_slots, 2);
-    assert_eq!(sub_app.num_slots, 2);
+
+    let mut sub = bare_mixin("Sub");
+    Rc::get_mut(&mut sub).unwrap().instance_slots = vec![slot_decl("c")];
+    let sub_app = interp.apply_mixin(&sub, Some(&sup_app));
+
+    // Slot count includes inherited and own.
+    assert_eq!(sup_app.num_slots, 2, "superclass should have 2 slots");
+    assert_eq!(sub_app.num_slots, 3, "subclass should have 3 slots (2 inherited + 1 own)");
+
+    // Inherited slots must be reachable by name and map to their declaring level's index.
+    assert_eq!(
+        sub_app.slot_index.get(&Symbol::intern("a")),
+        Some(&0),
+        "inherited slot 'a' must resolve to index 0"
+    );
+    assert_eq!(
+        sub_app.slot_index.get(&Symbol::intern("b")),
+        Some(&1),
+        "inherited slot 'b' must resolve to index 1"
+    );
+
+    // Own slots must land past inherited ones.
+    assert_eq!(
+        sub_app.slot_index.get(&Symbol::intern("c")),
+        Some(&2),
+        "own slot 'c' must resolve to index 2 (past the 2 inherited slots)"
+    );
 }
