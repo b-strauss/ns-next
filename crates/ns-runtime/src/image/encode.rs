@@ -810,7 +810,12 @@ fn encode_closure_record(
 /// `builtin` is not written either -- a record only ever describes a user
 /// class, since a builtin is a class *tag* -- and neither is `metaclass`,
 /// a lazy cache `Interpreter::metaclass_of` rebuilds on the first
-/// class-side send.
+/// class-side send. A metaclass could not be written even if it were
+/// wanted: when a class declares no class side of its own but an ancestor
+/// does, `metaclass_of` applies a *synthetic* mixin that has no
+/// mixin-table row, so this function's own id lookup below refuses such a
+/// world -- the residual case where a snapshot is still an error rather
+/// than an image.
 fn encode_class_record(
     w: &mut Writer,
     data: &ClassData,

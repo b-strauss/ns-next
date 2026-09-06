@@ -63,6 +63,13 @@ pub enum DecodeError {
     /// dispatch an object with no application, and `outer` would walk a
     /// chain that is not a declaration chain.
     NotAClassReference,
+    /// A class object's own `class` is another record in the image's object
+    /// table. `Interpreter::new_class_object` always gives a class object
+    /// the shared bootstrap `Object` placeholder, so no real world contains
+    /// one -- and `Object`'s iterative `Drop` cannot hand the `class` field
+    /// to its worklist, so a chain of them is the one link left that would
+    /// still release recursively. Refusing keeps it one link long.
+    ClassOfAClassIsARecord,
     /// A class object's enclosing object decoded to a scalar. §6 makes the
     /// enclosing object the nested class's only state, and it is always the
     /// receiver the accessor ran on -- an object; a scalar would leave
@@ -260,6 +267,11 @@ impl std::fmt::Display for DecodeError {
             DecodeError::NotAClassReference => write!(
                 f,
                 "an image field that must name a class object names an ordinary object instead"
+            ),
+            DecodeError::ClassOfAClassIsARecord => write!(
+                f,
+                "a class object in the image is itself an instance of another class object in the \
+                 image; every class object's own class is the bootstrap `Object` placeholder"
             ),
             DecodeError::EnclosingNotAnObject => write!(
                 f,
@@ -1787,8 +1799,19 @@ fn is_class_object(obj: &ObjRef) -> bool {
     matches!(obj.borrow().data, ObjectData::Class(_))
 }
 
+/// Whether `class` is one of the two class objects a graph never creates:
+/// a builtin, or the module's root class. The mirror of
+/// `encode::is_class_tag`.
+fn is_prebuilt_class(class: &ClassRef, root_class: &ClassRef) -> bool {
+    match &class.borrow().data {
+        ObjectData::Class(data) => data.builtin.is_some() || Rc::ptr_eq(class, root_class),
+        _ => false,
+    }
+}
+
 /// Every field the format types as a class reference really names a class
-/// object.
+/// object, and a class object's own `class` is one the graph did not
+/// create.
 ///
 /// A tag-2 class tag names an object-table id, and nothing in the byte
 /// stream forces that record to have been a class record -- which is only
@@ -1797,13 +1820,30 @@ fn is_class_object(obj: &ObjRef) -> bool {
 /// set: a class tag appears nowhere else in the graph section, and a plain
 /// `Value::Obj` pointing at a class object is legitimate (that is what a
 /// cached nested class in a slot *is*).
-fn check_class_references(objects: &[ObjRef], frames: &[FrameRef]) -> Result<(), DecodeError> {
+///
+/// The extra rule for a class object's *own* `class` is the runtime's
+/// invariant, not a limit invented here: `Interpreter::new_class_object` is
+/// the only thing that mints a class object and always gives it the shared
+/// bootstrap `Object` placeholder -- §3.2's reified metaclass model stays
+/// deliberately unbuilt -- so this refuses nothing a real world contains.
+/// It is load-bearing because `class` is the one reference `Object`'s
+/// iterative `Drop` cannot hand to its worklist (it is not an `Option`, and
+/// the field's glue runs after `drop` returns): bounding the chain at one
+/// link is what keeps a crafted image from cascading through it.
+fn check_class_references(
+    objects: &[ObjRef],
+    frames: &[FrameRef],
+    root_class: &ClassRef,
+) -> Result<(), DecodeError> {
     for object in objects {
         let borrowed = object.borrow();
         if !is_class_object(&borrowed.class) {
             return Err(DecodeError::NotAClassReference);
         }
         if let ObjectData::Class(data) = &borrowed.data {
+            if !is_prebuilt_class(&borrowed.class, root_class) {
+                return Err(DecodeError::ClassOfAClassIsARecord);
+            }
             for class in data.superclass.iter().chain(data.declaring_class.iter()) {
                 if !is_class_object(class) {
                     return Err(DecodeError::NotAClassReference);
@@ -1920,7 +1960,7 @@ pub fn decode_graph_section(
         let decoded = decode_frame(r, ctx, &tables, symbols)?;
         *frame.borrow_mut() = decoded;
     }
-    check_class_references(&objects, &frames)?;
+    check_class_references(&objects, &frames, ctx.root_class)?;
     let roots = decode_values(r, ctx, &tables)?;
     Ok(DecodedGraph {
         roots,
@@ -1975,6 +2015,17 @@ fn decode_class_record(
             // Rebuilt by `Interpreter::metaclass_of` on the first
             // class-side send, exactly as it is for a class object the
             // accessor just created.
+            //
+            // Not the *same* metaclass, though, in one case: a metaclass
+            // that was itself in the graph -- as a class-side activation's
+            // `current_class` -- decodes as a class record of its own and
+            // is never linked back into the class it belongs to, so
+            // `metaclass_of` mints a second one beside it. Nothing observes
+            // the difference today: `metaclass_of` is reached only from
+            // `Interpreter::send`'s dispatch, so no Newspeak value names a
+            // metaclass and no two of them can be compared. Recording it
+            // rather than claiming stability, because the claim would stop
+            // being true the moment §3.2's reified model is built.
             metaclass: None,
         },
         mixin,

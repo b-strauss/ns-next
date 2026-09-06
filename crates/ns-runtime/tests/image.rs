@@ -3525,6 +3525,18 @@ fn class_of(value: &Value) -> ClassRef {
     obj(value).borrow().class.clone()
 }
 
+/// The value sitting in `enclosing`'s hidden cache slot for nested
+/// declaration `name` -- §6's "one class object per enclosing instance",
+/// read straight out of the instance rather than through the accessor.
+fn cached_nested_class(enclosing: &Value, name: &str) -> Value {
+    let application = application_of(&class_of(enclosing));
+    let index = application.nested_slot[&Symbol::intern(name)];
+    match &obj(enclosing).borrow().data {
+        ObjectData::Instance(fields) => fields[index].clone(),
+        _ => panic!("an enclosing object is an instance"),
+    }
+}
+
 fn send_to(loaded: &mut image::LoadedImage, receiver: Value, selector: &str) -> Value {
     let bindings = loaded.bindings.clone();
     expect_ok(
@@ -3705,6 +3717,18 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
     let outers: Vec<Value> = loaded.roots.clone();
     let a = nested_class_of(&mut loaded, outers[0].clone(), "Inner");
     let b = nested_class_of(&mut loaded, outers[1].clone(), "Inner");
+    // The accessor answers out of the hidden cache slot, so `a` and `b` are
+    // the *decoded* class objects and not two freshly materialized ones.
+    // Pinned rather than assumed: a load that dropped the cached slots
+    // would still satisfy every assertion below.
+    assert!(
+        Rc::ptr_eq(&a, obj(&cached_nested_class(&outers[0], "Inner"))),
+        "the accessor answered out of the decoded cache slot"
+    );
+    assert!(
+        Rc::ptr_eq(&b, obj(&cached_nested_class(&outers[1], "Inner"))),
+        "the accessor answered out of the decoded cache slot"
+    );
     assert!(!Rc::ptr_eq(&a, &b), "distinct class objects");
     assert!(
         Rc::ptr_eq(&application_of(&a), &application_of(&b)),
@@ -4501,5 +4525,191 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
     assert!(
         err.contains("nested") && err.contains("130"),
         "the refusal must name the ceiling it enforces, got: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Depths the image controls. A class record costs 19 bytes, so a few
+// megabytes buy a few hundred thousand links -- more than any Rust call
+// stack survives. Every walk over such a chain, and every release of one,
+// has to be a loop.
+// ---------------------------------------------------------------------------
+
+/// Deep enough that any recursive walk or recursive release overflows the
+/// stack (which aborts the process) rather than merely being slow, and
+/// small enough that a debug build still decodes it quickly.
+const DEEP: u32 = 200_000;
+
+/// How many superclass links hang off `head`, counted iteratively. Every
+/// test below asserts this before it does anything else: a fixture that
+/// silently decoded to a chain of one would pass every "did not blow the
+/// stack" assertion without ever having tested anything.
+fn superclass_depth(head: &Value) -> u32 {
+    let mut depth = 0;
+    let mut level = match head {
+        Value::Obj(class) => Some(class.clone()),
+        _ => None,
+    };
+    while let Some(class) = level {
+        depth += 1;
+        level = match &class.borrow().data {
+            ObjectData::Class(data) => data.superclass.clone(),
+            _ => None,
+        };
+    }
+    depth
+}
+
+/// The same count down an instance chain's first field.
+fn instance_chain_depth(head: &Value) -> u32 {
+    let mut depth = 0;
+    let mut level = match head {
+        Value::Obj(o) => Some(o.clone()),
+        _ => None,
+    };
+    while let Some(object) = level {
+        depth += 1;
+        level = match &object.borrow().data {
+            ObjectData::Instance(fields) => match fields.first() {
+                Some(Value::Obj(next)) => Some(next.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+    }
+    depth
+}
+
+/// A complete image whose graph section is `graph` verbatim. Everything
+/// before it comes from a real `snapshot` of `EMPTY`, whose own graph
+/// section is exactly the three zero counts at the end of the file -- so
+/// the splice point is found by structure, not by a hardcoded offset.
+fn image_with_graph_section(graph: &[u8]) -> Vec<u8> {
+    let mut bytes = snapshot_of(EMPTY);
+    let tail = bytes.len() - 12;
+    assert_eq!(
+        &bytes[tail..],
+        &[0u8; 12],
+        "a rootless snapshot ends in three zero counts: objects, frames, roots"
+    );
+    bytes.truncate(tail);
+    bytes.extend_from_slice(graph);
+    bytes
+}
+
+/// `levels` class records, each inheriting from the next, with the
+/// outermost as the image's single root.
+fn superclass_chain_graph(levels: u32) -> Vec<u8> {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, levels, 0);
+    for i in 0..levels {
+        class_record(&mut w, 0, |w| {
+            if i + 1 < levels {
+                w.write_bool(true);
+                w.write_u8(2); // class tag: object-table record
+                w.write_u32(i + 1);
+            } else {
+                w.write_bool(false);
+            }
+            w.write_bool(false); // no enclosing object
+            w.write_bool(false); // no declaring class
+        });
+    }
+    w.write_u32(1); // one root
+    w.write_u8(6); // value tag: class tag
+    w.write_u8(2); // class tag: object-table record
+    w.write_u32(0);
+    w.into_bytes()
+}
+
+/// `levels` instance records, each holding the next in its one field, with
+/// the outermost as the image's single root -- the shape that has been
+/// expressible since the object table existed.
+fn instance_chain_graph(levels: u32) -> Vec<u8> {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, levels, 0);
+    for i in 0..levels {
+        w.write_u8(0); // class tag: builtin
+        w.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+        w.write_u32(i);
+        w.write_u8(0); // object body: Instance
+        if i + 1 < levels {
+            w.write_u32(1);
+            w.write_u8(5); // value tag: object-table id
+            w.write_u32(i + 1);
+        } else {
+            w.write_u32(0);
+        }
+    }
+    w.write_u32(1); // one root
+    w.write_u8(5);
+    w.write_u32(0);
+    w.into_bytes()
+}
+
+#[test]
+fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
+    // `Interpreter::send` consults `metaclass_of` for every class-object
+    // receiver, and `metaclass_of` walks the whole superclass chain looking
+    // for a class side to relay. Recursing on it would abort here, on a
+    // chain a four-megabyte image describes.
+    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
+    let mut loaded = image::load(&bytes).expect("load");
+    let head = loaded.roots[0].clone();
+    assert_eq!(superclass_depth(&head), DEEP);
+    let bindings = loaded.bindings.clone();
+    // Nothing on the chain declares the selector, so the send ends in an
+    // ordinary Newspeak error. That it ends at all is the point.
+    let answered = loaded
+        .interp
+        .send(head, Symbol::intern("noSuchThing"), vec![], &bindings, None)
+        .is_ok();
+    assert!(!answered, "no class on the chain declares `noSuchThing`");
+}
+
+#[test]
+fn dropping_a_loaded_world_whose_root_heads_a_long_class_chain_does_not_blow_the_stack() {
+    // `load` has already released the decoded object table, which pins
+    // every record and so drops shallowly. What survives into `LoadedImage`
+    // is the root and the chain it alone owns -- and the application chain
+    // `rebuild_applications` built alongside it -- so the cascade fires
+    // here, at the end of the test, with no send of any kind.
+    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
+    let loaded = image::load(&bytes).expect("load");
+    assert_eq!(superclass_depth(&loaded.roots[0]), DEEP);
+    drop(loaded);
+}
+
+#[test]
+fn dropping_a_loaded_world_whose_root_heads_a_long_instance_chain_does_not_blow_the_stack() {
+    let bytes = image_with_graph_section(&instance_chain_graph(DEEP));
+    let loaded = image::load(&bytes).expect("load");
+    assert_eq!(instance_chain_depth(&loaded.roots[0]), DEEP);
+    drop(loaded);
+}
+
+#[test]
+fn a_class_object_whose_own_class_is_another_record_is_refused() {
+    // `Interpreter::new_class_object` gives every class object the shared
+    // bootstrap `Object` placeholder, so no real world contains one -- and
+    // `class` is the single reference `Object`'s iterative `Drop` cannot
+    // hand to its worklist, so a chain of them is the one link that would
+    // still release recursively.
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 2, 0);
+    // Object 0: a class record whose own class is object 1.
+    w.write_u8(2); // class tag: object-table record
+    w.write_u32(1);
+    w.write_u32(7); // identity hash
+    w.write_u8(5); // object body: Class
+    w.write_u32(0); // mixin id
+    no_class_refs(&mut w);
+    // Object 1: an ordinary class record.
+    class_record(&mut w, 0, no_class_refs);
+    w.write_u32(0); // no roots
+    let bytes = w.into_bytes();
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::ClassOfAClassIsARecord
     );
 }

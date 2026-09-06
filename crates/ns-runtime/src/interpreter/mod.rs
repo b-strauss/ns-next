@@ -553,56 +553,96 @@ impl Interpreter {
     /// metaclass, recursively, and the metaclass application chain stays
     /// linked to the metaclass class-object chain exactly as
     /// `dispatch::next_level` requires for the ordinary one.
+    /// Iterative, over an explicit stack, for the same reason
+    /// `dispatch::walk` is: the superclass chain's length is the *image's*
+    /// to choose (`image::decode` builds one link per class record, at
+    /// under twenty bytes apiece), and every send to a class object enters
+    /// here. Recursing on it would overflow the stack on a chain a ten-
+    /// megabyte image can describe -- an abort, not a diagnosable failure.
+    ///
+    /// The chain is finite: `image::decode::rebuild_applications` refuses a
+    /// decoded graph whose superclass links form a cycle, and no other
+    /// construction site can build one (a superclass is fixed before the
+    /// class object that inherits it exists).
     pub fn metaclass_of(&mut self, class: &ClassRef) -> Option<ClassRef> {
-        let (cached, class_side, class_superclass, own_mixin_name, enclosing, declaring_class) = {
-            let borrowed = class.borrow();
-            match &borrowed.data {
-                ObjectData::Class(data) => (
-                    data.metaclass.clone(),
-                    data.application.mixin.class_side.clone(),
-                    data.superclass.clone(),
-                    data.application.mixin.name,
-                    data.enclosing.clone(),
-                    data.declaring_class.clone(),
-                ),
-                _ => return None,
+        // Walk out to the first level that already answers -- a cached
+        // metaclass, a non-class object, or the end of the chain -- pushing
+        // each level that still has to be built. `chain` is nearest-first,
+        // so the build below runs it in reverse.
+        let mut chain: Vec<ClassRef> = Vec::new();
+        let mut super_metaclass: Option<ClassRef> = None;
+        let mut level = class.clone();
+        loop {
+            let (cached, superclass) = {
+                let borrowed = level.borrow();
+                match &borrowed.data {
+                    ObjectData::Class(data) => (data.metaclass.clone(), data.superclass.clone()),
+                    // Not a class object: it has no metaclass, and nothing
+                    // below it can inherit one through this level.
+                    _ => break,
+                }
+            };
+            if cached.is_some() {
+                super_metaclass = cached;
+                break;
             }
-        };
-        if cached.is_some() {
-            return cached;
+            chain.push(level);
+            let Some(superclass) = superclass else { break };
+            level = superclass;
         }
-        let super_metaclass = class_superclass
-            .as_ref()
-            .and_then(|superclass| self.metaclass_of(superclass));
-        let class_side_mixin = match class_side {
-            Some(mixin) => mixin,
-            // No class side of its own to apply -- only worth building a
-            // metaclass at all if an ancestor's class side needs relaying
-            // through it. `super_metaclass.is_none()` here means neither
-            // `class` nor any ancestor declares a class side, which is the
-            // ordinary "costs nothing" case.
-            None => {
-                super_metaclass.as_ref()?;
-                empty_class_side_mixin(own_mixin_name)
+        for level in chain.iter().rev() {
+            let (class_side, own_mixin_name, enclosing, declaring_class) = {
+                let borrowed = level.borrow();
+                match &borrowed.data {
+                    ObjectData::Class(data) => (
+                        data.application.mixin.class_side.clone(),
+                        data.application.mixin.name,
+                        data.enclosing.clone(),
+                        data.declaring_class.clone(),
+                    ),
+                    _ => unreachable!("only class objects are pushed onto the chain"),
+                }
+            };
+            let class_side_mixin = match class_side {
+                Some(mixin) => mixin,
+                // No class side of its own to apply -- only worth building a
+                // metaclass at all if an ancestor's class side needs relaying
+                // through it. `super_metaclass.is_none()` here means neither
+                // this level nor any ancestor declares a class side, which is
+                // the ordinary "costs nothing" case: this level gets no
+                // metaclass, nothing is cached for it, and the next level in
+                // still gets its own chance to declare one.
+                None => {
+                    if super_metaclass.is_none() {
+                        continue;
+                    }
+                    empty_class_side_mixin(own_mixin_name)
+                }
+            };
+            let super_application = super_metaclass
+                .as_ref()
+                .and_then(dispatch::class_application);
+            let application = self.apply_mixin(&class_side_mixin, super_application.as_ref());
+            // §6.3.1: a class side is written inside the same class
+            // declaration its instance side is, and `resolver::resolve_class`
+            // resolves both against the same lexical chain -- so a class-side
+            // method's `outer` must reach exactly the objects an
+            // instance-side method's does. The metaclass therefore borrows
+            // the class's own place in the declaration chain rather than
+            // starting a new, empty one.
+            let metaclass =
+                self.new_class_object(application, enclosing, declaring_class, super_metaclass);
+            match &mut level.borrow_mut().data {
+                ObjectData::Class(data) => data.metaclass = Some(metaclass.clone()),
+                _ => unreachable!("checked above"),
             }
-        };
-        let super_application = super_metaclass
-            .as_ref()
-            .and_then(dispatch::class_application);
-        let application = self.apply_mixin(&class_side_mixin, super_application.as_ref());
-        // §6.3.1: a class side is written inside the same class declaration
-        // its instance side is, and `resolver::resolve_class` resolves both
-        // against the same lexical chain -- so a class-side method's `outer`
-        // must reach exactly the objects an instance-side method's does. The
-        // metaclass therefore borrows the class's own place in the
-        // declaration chain rather than starting a new, empty one.
-        let metaclass =
-            self.new_class_object(application, enclosing, declaring_class, super_metaclass);
-        match &mut class.borrow_mut().data {
-            ObjectData::Class(data) => data.metaclass = Some(metaclass.clone()),
-            _ => unreachable!("checked above"),
+            super_metaclass = Some(metaclass);
         }
-        Some(metaclass)
+        // The last level built is `chain[0]`, which is `class` itself; an
+        // empty chain means the walk stopped on the first step, and
+        // `super_metaclass` is then either `class`'s own cached metaclass or
+        // `None` because it is not a class object at all.
+        super_metaclass
     }
 
     fn builtin_class_for_primitive(&self, value: &Value) -> ClassRef {

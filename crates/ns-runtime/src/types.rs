@@ -253,6 +253,183 @@ pub struct Frame {
     pub slot_base: usize,
 }
 
+// ---------- Iterative teardown ----------
+
+// `Rc`'s own drop glue is recursive: releasing the last handle to an object
+// drops its fields, which releases the last handle to the next object, and
+// so on. How deep that chain runs is the *program's* choice -- a Newspeak
+// program can chain a million instances or a million activations -- and,
+// once a world is decoded from an image, an attacker's: `image::decode`
+// builds the graph from untrusted bytes, at well under twenty bytes per
+// link. A few hundred thousand links overflow the stack, which aborts the
+// process rather than failing, and an abort is exactly what an image must
+// never be able to cause.
+//
+// So `Object`, `Frame` (here) and `MixinApplication` (`mixin.rs`) release
+// what they own through an explicit worklist instead of through the Rust
+// stack. No ceiling comes with it and none is wanted: every chain is still
+// released in full, however deep, because refusing a deep one would refuse
+// worlds this runtime builds happily from source.
+//
+// The one reference that cannot join the worklist is `Object::class`: it is
+// not an `Option`, and `Drop::drop` receives `&mut self`, so there is no
+// value to swap in and the field's own glue runs after `drop` returns.
+// `image::decode::check_class_references` closes that gap from the other
+// end, by refusing an image in which a class object's own `class` is
+// another decoded record -- which is not a depth ceiling but the runtime's
+// own invariant, since `Interpreter::new_class_object` gives every class
+// object the shared bootstrap `Object` placeholder. A `class` chain is
+// therefore at most one link long and costs a bounded number of frames.
+
+/// One entry of a teardown worklist. Objects and frames reference each
+/// other freely (a closure holds frames, a frame holds objects), so both
+/// live on the same list.
+enum Dying {
+    Obj(ObjRef),
+    Frame(FrameRef),
+}
+
+/// Hands `obj` to `work` if this is its last handle, and simply releases it
+/// otherwise.
+///
+/// The count test is what keeps the worklist -- and its allocation -- out
+/// of the common case entirely: an object whose fields all point at things
+/// someone else still holds pushes nothing, and `Vec::new()` does not
+/// allocate until the first push. It is also what makes two fields of one
+/// dying object pointing at the same third object work out: the first
+/// handle sees a count of two and is released on the spot, the second sees
+/// one and is queued.
+fn push_obj(obj: ObjRef, work: &mut Vec<Dying>) {
+    if Rc::strong_count(&obj) == 1 {
+        work.push(Dying::Obj(obj));
+    }
+}
+
+fn push_frame(frame: FrameRef, work: &mut Vec<Dying>) {
+    if Rc::strong_count(&frame) == 1 {
+        work.push(Dying::Frame(frame));
+    }
+}
+
+fn push_value(value: Value, work: &mut Vec<Dying>) {
+    if let Value::Obj(obj) = value {
+        push_obj(obj, work);
+    }
+}
+
+fn push_closure(closure: ClosureData, work: &mut Vec<Dying>) {
+    push_frame(closure.captured_frame, work);
+    push_frame(closure.home, work);
+}
+
+/// Moves every reference an object's payload owns onto `work`. Takes the
+/// payload by value: `ObjectData` has an empty variant to leave behind
+/// (`Instance(vec![])`), so nothing here needs a stand-in.
+fn drain_object_data(data: ObjectData, work: &mut Vec<Dying>) {
+    match data {
+        ObjectData::Instance(fields) | ObjectData::Array(fields) => {
+            for value in fields {
+                push_value(value, work);
+            }
+        }
+        ObjectData::Closure(closure) => push_closure(closure, work),
+        ObjectData::Class(class) => {
+            // `application` is released through `MixinApplication`'s own
+            // `Drop`, which unlinks its superclass list the same way.
+            for reference in [
+                class.superclass,
+                class.enclosing,
+                class.declaring_class,
+                class.metaclass,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                push_obj(reference, work);
+            }
+        }
+        ObjectData::Str(_) | ObjectData::Sym(_) => {}
+    }
+}
+
+fn take_object_data(obj: &mut Object) -> ObjectData {
+    std::mem::replace(&mut obj.data, ObjectData::Instance(Vec::new()))
+}
+
+/// Moves every reference a frame owns onto `work`. Every field has a cheap
+/// empty form to leave behind, so a frame -- unlike an object -- gives up
+/// all of its references.
+fn drain_frame(frame: &mut Frame, work: &mut Vec<Dying>) {
+    push_value(std::mem::replace(&mut frame.receiver, Value::Nil), work);
+    for value in std::mem::take(&mut frame.args) {
+        push_value(value, work);
+    }
+    for value in std::mem::take(&mut frame.temps) {
+        push_value(value, work);
+    }
+    if let Some(sender) = frame.sender.take() {
+        push_frame(sender, work);
+    }
+    if let Some(home) = frame.home.take() {
+        push_frame(home, work);
+    }
+    if let Some(class) = frame.current_class.take() {
+        push_obj(class, work);
+    }
+    match std::mem::replace(&mut frame.kind, FrameKind::TopLevel) {
+        FrameKind::Closure(closure) => {
+            if let Ok(closure) = Rc::try_unwrap(closure) {
+                push_closure(closure, work);
+            }
+        }
+        FrameKind::Initializer(class)
+        | FrameKind::SuperclassClause(class)
+        | FrameKind::SuperclassMessage(class) => push_obj(class, work),
+        FrameKind::Method(_) | FrameKind::TopLevel => {}
+    }
+}
+
+/// Releases everything on `work`, and everything reachable from it, in a
+/// loop. Each entry was queued because its handle was the last one, so
+/// `Rc::try_unwrap` yields the value itself; emptying it there means its
+/// own `Drop` finds nothing left to descend into.
+fn run_teardown(work: &mut Vec<Dying>) {
+    while let Some(dying) = work.pop() {
+        match dying {
+            Dying::Obj(obj) => {
+                if let Ok(cell) = Rc::try_unwrap(obj) {
+                    let mut object = cell.into_inner();
+                    let data = take_object_data(&mut object);
+                    drain_object_data(data, work);
+                }
+            }
+            Dying::Frame(frame) => {
+                if let Ok(cell) = Rc::try_unwrap(frame) {
+                    let mut inner = cell.into_inner();
+                    drain_frame(&mut inner, work);
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Object {
+    fn drop(&mut self) {
+        let mut work = Vec::new();
+        let data = take_object_data(self);
+        drain_object_data(data, &mut work);
+        run_teardown(&mut work);
+    }
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        let mut work = Vec::new();
+        drain_frame(self, &mut work);
+        run_teardown(&mut work);
+    }
+}
+
 // ---------- Errors ----------
 
 /// A name-resolution failure, reported before execution begins.

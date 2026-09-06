@@ -208,6 +208,32 @@ pub struct MixinApplication {
     pub own_slot_base: usize,
 }
 
+/// Unlinks the superclass list in a loop rather than through the stack.
+///
+/// An application chain is as long as the class chain it mirrors, and once
+/// a world is decoded from an image that length is untrusted input --
+/// `image::decode::rebuild_applications` builds one link per class record.
+/// The default glue would release the chain recursively and overflow the
+/// stack on a long one, which aborts the process; this releases it in a
+/// loop instead. See `types.rs`'s "Iterative teardown" note, which does the
+/// same for the object and frame graphs.
+///
+/// No ceiling: every chain is still released in full. `Rc::try_unwrap`
+/// stops the loop at the first link something else still holds -- the
+/// interpreter's own `applications` cache, usually -- because releasing
+/// that link is not this drop's business.
+impl Drop for MixinApplication {
+    fn drop(&mut self) {
+        let mut next = self.superclass.take();
+        while let Some(application) = next {
+            match Rc::try_unwrap(application) {
+                Ok(mut owned) => next = owned.superclass.take(),
+                Err(_) => break,
+            }
+        }
+    }
+}
+
 pub fn mixin_key(mixin: &Rc<Mixin>) -> usize {
     Rc::as_ptr(mixin) as *const () as usize
 }
