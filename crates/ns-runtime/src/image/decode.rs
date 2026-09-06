@@ -1394,11 +1394,12 @@ fn decode_closure_record(
 ///
 /// Always `ctx.root_class`, even though the frame record carries a
 /// `current_class` of its own that was decoded a few bytes earlier: the
-/// same single-user-class invariant `encode_class_tag` documents means the
-/// only class that can define a method here *is* the root class. When
-/// nested classes load, this must resolve against the frame's own
-/// `current_class` instead -- and until then, doing so would be a
-/// distinction without a difference that reads like a guarantee.
+/// root class is the only user-defined class an image can contain, because
+/// `encode_class_tag` now *refuses* to serialize any other one rather than
+/// flattening it onto tag 1. When a class table makes other user classes
+/// encodable, this must resolve against the frame's own `current_class`
+/// instead -- and until then, doing so would be a distinction without a
+/// difference that reads like a guarantee.
 fn method_decl(ctx: &DecodeContext, selector: String) -> Result<Rc<ast::MethodDecl>, DecodeError> {
     let found = {
         let borrowed = ctx.root_class.borrow();

@@ -56,11 +56,21 @@ pub(crate) fn superclass_clause_expr(clause: &ast::SuperclassClause) -> ast::Exp
 
 /// The implicit accessor for `nested` on `receiver`. `receiver` is the
 /// enclosing object `r`; `nested` is the declaration `dispatch` found on
-/// `r`'s class chain.
+/// `r`'s class chain; `declaring_class` is the class object of the level
+/// that declares it -- the `ClassRef` `Lookup::NestedClass` carries.
+///
+/// `declaring_class` is *not* `r`'s own class whenever the declaration is
+/// inherited, and the difference is observable: the clause is lexically
+/// part of the declaring class, so a `super`-prefixed clause receiver
+/// (`resolver::resolve_superclass_clause` binds it as `Binding::SuperSend`)
+/// must start its lookup at the declaring class's superclass, not at the
+/// receiver's dynamic class's superclass -- which for an inherited
+/// declaration is one or more levels too deep.
 pub(crate) fn nested_class(
     interp: &mut Interpreter,
     receiver: &Value,
     nested: &Rc<Mixin>,
+    declaring_class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     let Some(index) = cache_slot(interp, receiver, nested.name) else {
@@ -74,8 +84,16 @@ pub(crate) fn nested_class(
         return Ok(cached);
     }
     // Step 2: the superclass clause, evaluated in the receiver's context
-    // through the engine hook.
-    let superclass = eval_superclass_clause(interp, receiver, nested, bindings)?;
+    // through the engine hook -- guarded against a class whose own creation
+    // is already underway on this receiver.
+    let key = in_progress_key(receiver, nested.name);
+    if interp.nested_in_progress.contains(&key) {
+        return Err(cyclic_definition_error(receiver, nested.name));
+    }
+    interp.nested_in_progress.push(key);
+    let evaluated = eval_superclass_clause(interp, receiver, nested, declaring_class, bindings);
+    interp.nested_in_progress.pop();
+    let superclass = evaluated?;
     let Value::Obj(superclass) = superclass else {
         return Err(not_a_class_error(nested.name, superclass));
     };
@@ -126,6 +144,23 @@ fn cache_slot(interp: &Interpreter, receiver: &Value, name: Symbol) -> Option<us
     }
 }
 
+/// The key `Interpreter::nested_in_progress` records while a declaration's
+/// class object is being created for a receiver: the receiver's address
+/// plus the declaration's name. The address is a safe key for the duration
+/// -- `receiver` is a live borrow held across the whole evaluation, so the
+/// object cannot be freed and its address cannot be reused while the entry
+/// is on the stack.
+fn in_progress_key(receiver: &Value, name: Symbol) -> (usize, Symbol) {
+    let address = match receiver {
+        Value::Obj(obj) => Rc::as_ptr(obj) as *const () as usize,
+        // `cache_slot` has already established that `receiver` is an object;
+        // 0 is an address no live `Rc` has, so a non-object receiver simply
+        // never collides with a real entry.
+        _ => 0,
+    };
+    (address, name)
+}
+
 fn read_cache_slot(receiver: &Value, index: usize) -> Option<Value> {
     let Value::Obj(obj) = receiver else {
         return None;
@@ -150,6 +185,7 @@ fn eval_superclass_clause(
     interp: &mut Interpreter,
     receiver: &Value,
     nested: &Rc<Mixin>,
+    declaring_class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     let clause = nested
@@ -174,14 +210,16 @@ fn eval_superclass_clause(
                 }),
         ),
     };
-    // The clause belongs to the *enclosing* class: it is resolved against
-    // the enclosing chain, and `super`-prefixed forms look up from the
-    // enclosing class's superclass. `FrameKind::Initializer` is the frame
-    // shape for "code of a class declaration running on an instance of it",
-    // which is what this is -- and it is the kind `home_of`/`raise_return`
-    // already treat as a return target, so a `^` inside a block argument of
-    // the clause unwinds here rather than escaping the accessor.
-    let enclosing_class = interp.class_of(receiver);
+    // The clause belongs to the class that *declares* it: it is resolved
+    // against that declaration's enclosing chain, and `super`-prefixed
+    // forms look up from that class's superclass -- which is why
+    // `current_class` is the declaring class rather than the receiver's own
+    // (dynamic) class, the two differing exactly when the declaration is
+    // inherited. `FrameKind::Initializer` is the frame shape for "code of a
+    // class declaration running on an instance of it", which is what this
+    // is -- and it is the kind `home_of`/`raise_return` already treat as a
+    // return target, so a `^` inside a block argument of the clause unwinds
+    // here rather than escaping the accessor.
     let temp_count = compiled
         .as_ref()
         .map_or(0, |code| (code.num_registers - code.num_args) as usize);
@@ -192,8 +230,8 @@ fn eval_superclass_clause(
         pc: 0,
         sender: None,
         home: None,
-        current_class: Some(enclosing_class.clone()),
-        kind: FrameKind::Initializer(enclosing_class),
+        current_class: Some(declaring_class.clone()),
+        kind: FrameKind::Initializer(declaring_class.clone()),
         uncontinuable: false,
         slot_base: 0, // a superclass clause never contains InitSlot
     }));
@@ -222,6 +260,30 @@ fn not_a_class_error(name: Symbol, value: Value) -> Signal {
         receiver: value,
         message: format!(
             "the superclass clause of class {name} did not evaluate to a class object"
+        ),
+    })
+}
+
+/// A class whose own creation depends on itself: `class N = N new (...)`,
+/// or any longer cycle through other nested declarations of the same
+/// receiver. §6 makes the accessor evaluate the declaration, so a clause
+/// naming the class being created re-enters the accessor before the cache
+/// slot is filled and would otherwise recurse until the stack is gone --
+/// an abort, not a diagnosable error.
+///
+/// This is a cycle in class *creation*, not general user recursion: the
+/// creation of one class object for one receiver happens exactly once, so a
+/// second entry for the same (receiver, declaration) is unconditionally a
+/// cycle. `Interpreter::nested_in_progress` is the stack that detects it in
+/// O(depth) with no allocation on the ordinary path -- it is empty except
+/// while a clause is actually being evaluated.
+fn cyclic_definition_error(receiver: &Value, name: Symbol) -> Signal {
+    Signal::Error(NewspeakError {
+        selector: name,
+        receiver: receiver.clone(),
+        message: format!(
+            "cyclic class definition: evaluating the superclass clause of class {name} \
+             requires class {name} itself"
         ),
     })
 }

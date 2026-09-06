@@ -391,10 +391,16 @@ pub(crate) fn dispatch_lexical_send(
                 Some(frame.clone()),
             );
         }
-        Lookup::NestedClass(mixin, _)
+        Lookup::NestedClass(mixin, declaring_class)
             if dispatch::nested_access(&mixin) == ast::AccessModifier::Private =>
         {
-            return crate::interpreter::nested::nested_class(interp, &o, &mixin, bindings);
+            return crate::interpreter::nested::nested_class(
+                interp,
+                &o,
+                &mixin,
+                &declaring_class,
+                bindings,
+            );
         }
         _ => {}
     }
@@ -407,8 +413,8 @@ pub(crate) fn dispatch_lexical_send(
             bindings.clone(),
             Some(frame.clone()),
         ),
-        Lookup::NestedClass(mixin, _) => {
-            crate::interpreter::nested::nested_class(interp, &o, &mixin, bindings)
+        Lookup::NestedClass(mixin, declaring_class) => {
+            crate::interpreter::nested::nested_class(interp, &o, &mixin, &declaring_class, bindings)
         }
         Lookup::Native(kind) => {
             match crate::builtins::dispatch_native(
@@ -476,9 +482,13 @@ pub(crate) fn dispatch_super_send(
         // receiver stays `self` (§5.10), which is also the enclosing object
         // the accessor caches against -- so `super N` and `N` name the same
         // class object whenever they resolve to the same declaration.
-        Lookup::NestedClass(mixin, _) => {
-            crate::interpreter::nested::nested_class(interp, &self_value, &mixin, bindings)
-        }
+        Lookup::NestedClass(mixin, declaring_class) => crate::interpreter::nested::nested_class(
+            interp,
+            &self_value,
+            &mixin,
+            &declaring_class,
+            bindings,
+        ),
         Lookup::Native(kind) => {
             match crate::builtins::dispatch_native(
                 interp,

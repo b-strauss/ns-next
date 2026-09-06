@@ -1010,7 +1010,7 @@ fn round_trip_graph(
         &class,
     )
     .expect("encode code table");
-    encode::encode_graph_section(&mut w, &roots, &platform, &ids).expect("encode graph");
+    encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class).expect("encode graph");
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
     let table = decode::decode_code_table(&mut r).expect("code table");
@@ -1244,8 +1244,8 @@ fn a_tree_walker_closure_is_a_snapshot_error_not_a_silent_omission() {
     let module = compiler::compile_module(&class, &bindings);
     let mut w = encode::Writer::new();
     let ids = encode::encode_code_table(&mut w, &module, &class).expect("encode code table");
-    let err =
-        encode::encode_graph_section(&mut w, &[closure], &platform, &ids).expect_err("Ast closure");
+    let err = encode::encode_graph_section(&mut w, &[closure], &platform, &ids, &class)
+        .expect_err("Ast closure");
     assert!(err.contains("tree-walker"), "{err}");
 }
 
@@ -1269,7 +1269,7 @@ fn a_decoded_closure_carries_the_reloaded_modules_bindings() {
         &class,
     )
     .expect("encode code table");
-    encode::encode_graph_section(&mut w, &roots, &platform, &ids).expect("encode graph");
+    encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class).expect("encode graph");
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
     let table = decode::decode_code_table(&mut r).expect("code table");
@@ -1317,7 +1317,8 @@ fn the_graph_section_encoding_is_deterministic() {
             &class,
         )
         .expect("encode code table");
-        encode::encode_graph_section(&mut w, &roots, &platform, &ids).expect("encode graph");
+        encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class)
+            .expect("encode graph");
         encodings.push(w.into_bytes());
     }
     assert_eq!(encodings[0], encodings[1]);
@@ -1560,7 +1561,7 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
     .expect("encode code table");
     let before = w.into_bytes().len();
     let mut w = encode::Writer::new();
-    encode::encode_graph_section(&mut w, &roots, &platform, &ids).expect("encode graph");
+    encode::encode_graph_section(&mut w, &roots, &platform, &ids, &class).expect("encode graph");
     let graph = w.into_bytes();
     assert!(before > 0 && graph.len() > 8);
     let ctx = decode::DecodeContext {
@@ -3063,4 +3064,76 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
         Value::SmallInt(9) => {}
         _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
     }
+}
+
+#[test]
+fn a_snapshot_after_a_nested_class_access_is_refused_rather_than_corrupting() {
+    // The accessor puts a *second* user-defined class object into the world:
+    // it is the value of the enclosing instance's hidden cache slot, and the
+    // `.class` of every instance of it. The image's class tag names no
+    // particular class (tag 1 means "the root"), so encoding one would decode
+    // it back as the root class -- a differently-shaped class silently
+    // installed, with no field count to contradict it. `encode_class_tag`
+    // refuses instead. The sibling test above snapshots *before* any access
+    // and still round-trips, which is what keeps this refusal scoped to the
+    // case that would actually corrupt.
+    let (mut interp, class, bindings) = load(NESTED_MODULE);
+    let module = compiler::compile_module(&class, &bindings);
+    interp.set_engine(Engine::Bytecode(module));
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        "instantiate Outer",
+    );
+    let inner_class = expect_ok(
+        interp.send(
+            outer.clone(),
+            Symbol::intern("Inner"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "Inner",
+    );
+    let inner_instance = expect_ok(
+        interp.instantiate(
+            match &inner_class {
+                Value::Obj(c) => c.clone(),
+                _ => panic!("the accessor must yield a class object"),
+            },
+            vec![],
+            &bindings,
+        ),
+        "instantiate Inner",
+    );
+
+    // Reached as the cached value in Outer's hidden slot...
+    let err = image::snapshot(
+        NESTED_MODULE,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        std::slice::from_ref(&outer),
+    )
+    .expect_err("a world holding a nested class object cannot be snapshotted");
+    assert!(
+        err.contains("user-defined class object other than the module's root class"),
+        "{err}"
+    );
+
+    // ... and as the `.class` of one of its instances.
+    let err = image::snapshot(
+        NESTED_MODULE,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        std::slice::from_ref(&inner_instance),
+    )
+    .expect_err("an instance of a nested class cannot be snapshotted either");
+    assert!(
+        err.contains("user-defined class object other than the module's root class"),
+        "{err}"
+    );
 }

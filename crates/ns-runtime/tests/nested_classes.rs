@@ -316,3 +316,190 @@ fn a_nested_class_defaults_to_protected_accessibility() {
 fn a_nested_class_defaults_to_protected_accessibility_under_bytecode() {
     protected_nested_access(true);
 }
+
+/// An *inherited* nested declaration: `Derived`'s superclass clause names
+/// `Base`, so the accessor for `N` is reached one level up the chain. The
+/// class object `dispatch` reports as the declaring level is then `Base`'s,
+/// not the receiver's own (dynamic) class -- which is what the clause frame's
+/// `current_class` must be, since the clause is lexically part of `Base`'s
+/// declaration.
+const INHERITED_NESTED_SRC: &str = "\
+Newspeak3
+'Test'
+class M usingPlatform: p = Object new () (
+    class Base = Object new () (
+        public class N = Object new () (
+            public tag = ( ^11 )
+        )
+    )
+    public class Derived = Base new () ()
+    public makeDerived = ( ^Derived new )
+)
+";
+
+fn inherited_nested_declaration(bytecode: bool) {
+    let (mut interp, class, bindings) = load(INHERITED_NESTED_SRC, bytecode);
+    let platform = interp.platform();
+    let m = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate M",
+    );
+    let derived = expect_ok(
+        interp.send(m, Symbol::intern("makeDerived"), vec![], &bindings, None),
+        "makeDerived",
+    );
+    // `N` is declared on Base, reached here through Derived's chain -- and
+    // its hidden cache slot is the inherited entry in Derived's layout.
+    let n_class = expect_ok(
+        interp.send(
+            derived.clone(),
+            Symbol::intern("N"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "N",
+    );
+    let (Value::Obj(n_class), Value::Obj(derived_obj)) = (&n_class, &derived) else {
+        panic!("class object and instance")
+    };
+    {
+        let borrowed = n_class.borrow();
+        let ObjectData::Class(data) = &borrowed.data else {
+            panic!("class data")
+        };
+        let enclosing = data.enclosing.as_ref().expect("an enclosing object");
+        assert!(
+            Rc::ptr_eq(enclosing, derived_obj),
+            "the enclosing object is the receiver, not the declaring level"
+        );
+    }
+    // Still cached per receiver across the inherited path.
+    let again = expect_ok(
+        interp.send(derived, Symbol::intern("N"), vec![], &bindings, None),
+        "N again",
+    );
+    let Value::Obj(again) = &again else {
+        panic!("class object")
+    };
+    assert!(Rc::ptr_eq(n_class, again), "spec 6: cached within r");
+    let instance = expect_ok(
+        interp.instantiate(n_class.clone(), vec![], &bindings),
+        "instantiate N",
+    );
+    let tag = expect_ok(
+        interp.send(instance, Symbol::intern("tag"), vec![], &bindings, None),
+        "tag",
+    );
+    let Value::SmallInt(tag) = tag else {
+        panic!("expected a SmallInt from `N new tag`")
+    };
+    assert_eq!(tag, 11);
+}
+
+#[test]
+fn an_inherited_nested_declaration_is_reached_through_the_chain() {
+    inherited_nested_declaration(false);
+}
+
+#[test]
+fn an_inherited_nested_declaration_is_reached_through_the_chain_under_bytecode() {
+    inherited_nested_declaration(true);
+}
+
+/// A `super`-prefixed clause receiver is the one form whose evaluation reads
+/// the clause frame's `current_class` (`resolver::resolve_superclass_clause`
+/// binds it as `Binding::SuperSend`). Milestone 1's `eval_ident` and the
+/// lowerer both treat a `SuperSend`-bound *identifier* as the bare-builtin
+/// fallback rather than a real super send, so today it raises the shared
+/// unresolved-identifier error instead of dispatching -- which is why this
+/// pins the two engines to the same outcome rather than to a class object.
+/// It is the regression guard for the day that form starts dispatching: by
+/// then the frame already carries the declaring class.
+const SUPER_PREFIXED_CLAUSE_SRC: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new () (
+    public class Inner = super Object ()
+    public innerClass = ( ^Inner )
+)
+";
+
+#[test]
+fn a_super_prefixed_clause_behaves_identically_under_both_engines() {
+    let mut outcomes = vec![];
+    for bytecode in [false, true] {
+        let (mut interp, class, bindings) = load(SUPER_PREFIXED_CLAUSE_SRC, bytecode);
+        let platform = interp.platform();
+        let outer = expect_ok(
+            interp.instantiate(class, vec![platform], &bindings),
+            "instantiate Outer",
+        );
+        outcomes.push(
+            match interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None) {
+                Ok(Value::Obj(_)) => "a class object".to_string(),
+                Ok(_) => "a non-object value".to_string(),
+                Err(Signal::Return(..)) => "Signal::Return".to_string(),
+                Err(Signal::Error(e)) => e.message,
+            },
+        );
+    }
+    assert_eq!(
+        outcomes[0], outcomes[1],
+        "the two engines must agree on a super-prefixed superclass clause"
+    );
+}
+
+/// A class whose creation requires itself. §6 evaluates the declaration on
+/// first access, so `Inner`'s clause re-enters `Inner`'s own accessor before
+/// the cache slot is filled -- unbounded recursion, and an abort rather than
+/// a diagnosable error, without the in-progress guard.
+const CYCLIC_SRC: &str = "\
+Newspeak3
+'Test'
+class Outer usingPlatform: p = Object new () (
+    public class Inner = Inner new ()
+    public innerClass = ( ^Inner )
+)
+";
+
+fn cyclic_definition(bytecode: bool) {
+    let (mut interp, class, bindings) = load(CYCLIC_SRC, bytecode);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
+    );
+    let message = expect_error(
+        interp.send(
+            outer.clone(),
+            Symbol::intern("innerClass"),
+            vec![],
+            &bindings,
+            None,
+        ),
+        "innerClass",
+    );
+    assert_eq!(
+        message,
+        "cyclic class definition: evaluating the superclass clause of class Inner \
+         requires class Inner itself"
+    );
+    // The guard is scoped to the evaluation, not latched: a second access
+    // must raise the same error rather than a different one (or succeed).
+    let again = expect_error(
+        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None),
+        "innerClass again",
+    );
+    assert_eq!(message, again);
+}
+
+#[test]
+fn a_self_referential_nested_class_is_a_program_error() {
+    cyclic_definition(false);
+}
+
+#[test]
+fn a_self_referential_nested_class_is_a_program_error_under_bytecode() {
+    cyclic_definition(true);
+}

@@ -46,6 +46,14 @@ pub struct Interpreter {
     /// instance, so a class-object key would never hit and every instance
     /// would get its own behaviour.
     applications: HashMap<(usize, usize), Rc<crate::mixin::MixinApplication>>,
+    /// The (receiver address, declaration name) pairs whose nested class
+    /// object is being created right now -- see
+    /// `nested::cyclic_definition_error`. A stack, not a set: it is empty
+    /// on every path that is not inside a superclass clause, and a clause
+    /// nests only as deep as a program actually chains class creations, so
+    /// a linear scan beats hashing and allocates nothing in the common
+    /// case.
+    nested_in_progress: Vec<(usize, Symbol)>,
 }
 
 impl Default for Interpreter {
@@ -62,6 +70,7 @@ impl Interpreter {
             platform_singleton: None,
             engine: Engine::TreeWalk,
             applications: HashMap::new(),
+            nested_in_progress: Vec::new(),
         }
     }
 
@@ -72,6 +81,7 @@ impl Interpreter {
             platform_singleton: None,
             engine: Engine::TreeWalk,
             applications: HashMap::new(),
+            nested_in_progress: Vec::new(),
         };
         interp.builtin_classes = Some(build_builtin_classes(&mut interp));
         interp
@@ -168,8 +178,8 @@ impl Interpreter {
             // reached exactly like any other member, and it ignores `args`
             // -- the accessor is unary, so a send that supplied arguments
             // did not name it (`walk` matched on the bare selector).
-            Lookup::NestedClass(mixin, _) => {
-                nested::nested_class(self, &receiver, &mixin, bindings)
+            Lookup::NestedClass(mixin, declaring_class) => {
+                nested::nested_class(self, &receiver, &mixin, &declaring_class, bindings)
             }
             Lookup::Native(kind) => {
                 self.dispatch_native_or_dnu(kind, receiver, selector, args, bindings, sender)

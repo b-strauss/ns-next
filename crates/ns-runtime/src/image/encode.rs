@@ -30,14 +30,7 @@ pub const MAGIC: &[u8; 4] = b"NSIM";
 /// before any released build could write an image, so no version-1 image
 /// in anyone's hands can be misread because of it. The next such change
 /// after a release bumps the version.
-///
-/// Version 2 adds each mixin section's superclass-clause code id and the
-/// `SuperclassClause` code-kind tag it uses. Unlike the two additions
-/// above, this one changes the *shape* of an existing section rather than
-/// extending a tag space, so a version-1 image would be misparsed from the
-/// first mixin section onward -- hence a bump rather than the same
-/// pure-addition reasoning.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 1;
 
 #[derive(Default)]
 pub struct Writer {
@@ -686,21 +679,21 @@ impl GraphTable {
 }
 
 /// `Builtin(kind)` (0 + kind tag) or `UserRoot` (1) -- a class is never
-/// structurally serialized (spec: "Root/special-objects table"). `UserRoot`
-/// is unambiguous because a loaded world has exactly one user-defined
-/// class: `Interpreter::load_module` does not load nested classes (see its
-/// "Milestone 1 known gaps" note), so the only non-builtin class object any
-/// value can point at is the module's root class.
+/// structurally serialized (spec: "Root/special-objects table"). Tag 1
+/// names no particular class, so it is only unambiguous while the module's
+/// root class is the *only* user-defined class object a value can point at.
 ///
-/// That invariant is load-bearing and this function cannot check it: it is
-/// handed a `ClassRef` with no root class to compare against, so a second
-/// user-defined class would silently encode as `UserRoot` and decode as the
-/// root -- a wrong class, not a decode error. The milestone that loads
-/// nested classes must replace tag 1 with something that names *which*
-/// user class (a path, or an index into a class table) and bump
-/// `FORMAT_VERSION`; threading a root class through for enforcement now
-/// would only turn a currently-impossible case into a check.
-pub fn encode_class_tag(w: &mut Writer, class: &ClassRef) {
+/// The nested-class accessor breaks that: a nested class object is a value
+/// in its enclosing instance's hidden cache slot and the `.class` of every
+/// instance of it, so a world snapshotted after any nested-class access
+/// reaches one here. Encoding it as tag 1 would decode it back as the root
+/// class -- a wrong class silently installed, not a decode error, since
+/// decoding checks no field count against the application's `num_slots`.
+/// So this refuses instead, naming the limitation. The milestone that
+/// serializes class objects properly replaces tag 1 with something that
+/// names *which* user class (an index into a class table); until then, a
+/// clean refusal is the only outcome that cannot corrupt a reloaded world.
+fn encode_class_tag(w: &mut Writer, class: &ClassRef, root_class: &ClassRef) -> Result<(), String> {
     let builtin = match &class.borrow().data {
         ObjectData::Class(data) => data.builtin,
         _ => panic!("internal: a class reference does not point at a class object"),
@@ -710,37 +703,60 @@ pub fn encode_class_tag(w: &mut Writer, class: &ClassRef) {
             w.write_u8(0);
             w.write_u8(builtin_class_tag(kind));
         }
-        None => w.write_u8(1),
+        None if Rc::ptr_eq(class, root_class) => w.write_u8(1),
+        None => {
+            return Err(
+                "image encoding cannot serialize a user-defined class object other \
+                        than the module's root class (the image's class tag names no \
+                        particular class); snapshot a world before its first nested-class \
+                        access, or wait for the milestone that adds a class table"
+                    .to_string(),
+            )
+        }
     }
+    Ok(())
 }
 
 /// The general `Value` encoder: scalar tags 0-4 (`encode_scalar_value`),
 /// 5 = object-table id, 6 = class tag, 7 = the `platform` singleton.
-pub fn encode_value(w: &mut Writer, v: &Value, table: &GraphTable, platform: &Value) {
+fn encode_value(
+    w: &mut Writer,
+    v: &Value,
+    table: &GraphTable,
+    platform: &Value,
+    root_class: &ClassRef,
+) -> Result<(), String> {
     if encode_scalar_value(w, v) {
-        return;
+        return Ok(());
     }
     let Value::Obj(obj) = v else {
         unreachable!("encode_scalar_value handles every non-Obj case")
     };
     if is_same_object(v, platform) {
         w.write_u8(7);
-        return;
+        return Ok(());
     }
     if matches!(obj.borrow().data, ObjectData::Class(_)) {
         w.write_u8(6);
-        encode_class_tag(w, obj);
-        return;
+        return encode_class_tag(w, obj, root_class);
     }
     w.write_u8(5);
     w.write_u32(table.object_id(obj));
+    Ok(())
 }
 
-fn encode_values(w: &mut Writer, values: &[Value], table: &GraphTable, platform: &Value) {
+fn encode_values(
+    w: &mut Writer,
+    values: &[Value],
+    table: &GraphTable,
+    platform: &Value,
+    root_class: &ClassRef,
+) -> Result<(), String> {
     w.write_u32(u32_field("value list length", values.len()));
     for v in values {
-        encode_value(w, v, table, platform);
+        encode_value(w, v, table, platform, root_class)?;
     }
+    Ok(())
 }
 
 fn encode_frame_ref(w: &mut Writer, frame: Option<&FrameRef>, table: &GraphTable) {
@@ -784,14 +800,15 @@ fn encode_object(
     table: &GraphTable,
     code_ids: &CodeIds,
     platform: &Value,
+    root_class: &ClassRef,
 ) -> Result<(), String> {
     let borrowed = obj.borrow();
-    encode_class_tag(w, &borrowed.class);
+    encode_class_tag(w, &borrowed.class, root_class)?;
     w.write_u32(borrowed.identity_hash);
     match &borrowed.data {
         ObjectData::Instance(fields) => {
             w.write_u8(0);
-            encode_values(w, fields, table, platform);
+            encode_values(w, fields, table, platform, root_class)?;
         }
         ObjectData::Str(s) => {
             w.write_u8(1);
@@ -803,7 +820,7 @@ fn encode_object(
         }
         ObjectData::Array(elements) => {
             w.write_u8(3);
-            encode_values(w, elements, table, platform);
+            encode_values(w, elements, table, platform, root_class)?;
         }
         ObjectData::Closure(c) => {
             w.write_u8(4);
@@ -822,18 +839,19 @@ fn encode_frame(
     table: &GraphTable,
     code_ids: &CodeIds,
     platform: &Value,
+    root_class: &ClassRef,
 ) -> Result<(), String> {
     let f = frame.borrow();
-    encode_value(w, &f.receiver, table, platform);
-    encode_values(w, &f.args, table, platform);
-    encode_values(w, &f.temps, table, platform);
+    encode_value(w, &f.receiver, table, platform, root_class)?;
+    encode_values(w, &f.args, table, platform, root_class)?;
+    encode_values(w, &f.temps, table, platform, root_class)?;
     w.write_u32(u32_field("frame pc", f.pc));
     encode_frame_ref(w, f.sender.as_ref(), table);
     encode_frame_ref(w, f.home.as_ref(), table);
     match &f.current_class {
         Some(c) => {
             w.write_bool(true);
-            encode_class_tag(w, c);
+            encode_class_tag(w, c, root_class)?;
         }
         None => w.write_bool(false),
     }
@@ -849,7 +867,7 @@ fn encode_frame(
         FrameKind::TopLevel => w.write_u8(2),
         FrameKind::Initializer(class) => {
             w.write_u8(3);
-            encode_class_tag(w, class);
+            encode_class_tag(w, class, root_class)?;
         }
     }
     w.write_bool(f.uncontinuable);
@@ -864,16 +882,17 @@ pub fn encode_graph_section(
     roots: &[Value],
     platform: &Value,
     code_ids: &CodeIds,
+    root_class: &ClassRef,
 ) -> Result<(), String> {
     let table = GraphTable::build(roots, platform);
     w.write_u32(u32_field("object table entry count", table.objects().len()));
     w.write_u32(u32_field("frame table entry count", table.frames().len()));
     for obj in table.objects() {
-        encode_object(w, obj, &table, code_ids, platform)?;
+        encode_object(w, obj, &table, code_ids, platform, root_class)?;
     }
     for frame in table.frames() {
-        encode_frame(w, frame, &table, code_ids, platform)?;
+        encode_frame(w, frame, &table, code_ids, platform, root_class)?;
     }
-    encode_values(w, roots, &table, platform);
+    encode_values(w, roots, &table, platform, root_class)?;
     Ok(())
 }
