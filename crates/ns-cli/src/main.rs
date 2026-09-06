@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::rc::Rc;
 
 use clap::{Parser, Subcommand};
 use ns_syntax::{Diagnostic, Severity};
@@ -57,16 +58,21 @@ enum Cmd {
         #[arg(long)]
         send: Option<String>,
     },
-    /// Compile one method (or, with --initializer, the root class's
+    /// Compile one method (or, with --initializer, the target class's
     /// instance initializer) and print its bytecode. Compile only: nothing
     /// is instantiated or run.
     Disasm {
         file: PathBuf,
         /// The method selector, e.g. `main:args:`.
         selector: Option<String>,
-        /// Disassemble the root class's compiled instance initializer instead.
+        /// Disassemble the target's compiled instance initializer instead.
         #[arg(long)]
         initializer: bool,
+        /// A dot-separated mixin path rooted at the module's own class
+        /// name, e.g. `Outer.Inner` for a nested class or `Outer.class`
+        /// for a class side. Defaults to the root class itself.
+        #[arg(long)]
+        class: Option<String>,
     },
 }
 
@@ -91,7 +97,8 @@ fn main() -> ExitCode {
             file,
             selector,
             initializer,
-        } => cmd_disasm(&file, selector.as_deref(), initializer),
+            class,
+        } => cmd_disasm(&file, selector.as_deref(), initializer, class.as_deref()),
     }
 }
 
@@ -342,53 +349,122 @@ fn report_signal(signal: ns_runtime::Signal) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// `ns-next disasm`: bootstrap and load (so `compile_initializer` sees the
-/// loaded class's `slot_index`), then compile exactly one method or the
-/// initializer and print its bytecode listing. Never instantiates and
-/// never installs the bytecode engine -- compile only.
-fn cmd_disasm(file: &Path, selector: Option<&str>, initializer: bool) -> ExitCode {
+/// Resolves a dot-separated mixin path like `Outer.Inner` or `Outer.class`
+/// against `root`'s own mixin tree. `None` (no `--class` given) means the
+/// root itself, preserving `disasm`'s pre-nesting behaviour exactly. When a
+/// path is given, its first segment must name the root -- every path
+/// `disasm` accepts or reports is then rooted at the same place the
+/// source's own class declaration is -- and each further segment either
+/// names a nested class declaration in the previous level's `nested` list
+/// or is the literal `class`, meaning that level's own class side.
+fn resolve_mixin_path(
+    root: &Rc<ns_runtime::Mixin>,
+    path: Option<&str>,
+) -> Result<Rc<ns_runtime::Mixin>, String> {
+    let Some(path) = path else {
+        return Ok(root.clone());
+    };
+    let mut segments = path.split('.');
+    let first = segments.next().unwrap_or_default();
+    if first != root.name.as_str() {
+        return Err(format!(
+            "unknown class path `{path}` (expected it to start with the root class `{}`)",
+            root.name
+        ));
+    }
+    let mut current = root.clone();
+    for segment in segments {
+        current = if segment == "class" {
+            current
+                .class_side
+                .clone()
+                .ok_or_else(|| format!("`{}` has no class side", current.name))?
+        } else {
+            current
+                .nested
+                .iter()
+                .find(|m| m.name.as_str() == segment)
+                .cloned()
+                .ok_or_else(|| format!("`{}` has no nested class `{segment}`", current.name))?
+        };
+    }
+    Ok(current)
+}
+
+/// `ns-next disasm`: bootstrap and load, compile the *whole* mixin tree
+/// (`compiler::compile_module`, exactly as the bytecode engine would) so a
+/// `--class` path can address any mixin's code, then look up exactly one
+/// method or the target mixin's initializer and print its bytecode
+/// listing. Never instantiates and never installs the bytecode engine --
+/// compile only.
+fn cmd_disasm(
+    file: &Path,
+    selector: Option<&str>,
+    initializer: bool,
+    class_path: Option<&str>,
+) -> ExitCode {
     let loaded = match load_source(file) {
         Ok(l) => l,
         Err(code) => return code,
     };
     let bindings = loaded.resolved.bindings.clone();
     let (_interp, class) = bootstrap_with_engine(&loaded, EngineArg::TreeWalk);
+    let root_mixin = match &class.borrow().data {
+        ns_runtime::ObjectData::Class(data) => data.application.mixin.clone(),
+        _ => {
+            eprintln!("error: internal: loaded module did not produce a class object");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mixin = match resolve_mixin_path(&root_mixin, class_path) {
+        Ok(m) => m,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let module = ns_runtime::compiler::compile_module(&class, &bindings);
     let (code, name) = match (selector, initializer) {
         (None, true) => {
-            let class_name = match &class.borrow().data {
-                ns_runtime::ObjectData::Class(data) => data.application.mixin.name.to_string(),
-                _ => "?".to_string(),
-            };
-            (
-                ns_runtime::compiler::compile_initializer(&class, &bindings),
-                class_name,
-            )
+            let code = module
+                .initializers
+                .get(&ns_runtime::mixin::mixin_key(&mixin))
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "internal: compile_module has no initializer for `{}` (coverage gap)",
+                        mixin.name
+                    )
+                });
+            (code, mixin.name.to_string())
         }
         (Some(selector), false) => {
-            let method = match &class.borrow().data {
-                ns_runtime::ObjectData::Class(data) => data
-                    .application
-                    .mixin
-                    .methods
-                    .get(&ns_runtime::Symbol::intern(selector))
-                    .cloned(),
-                _ => None,
-            };
+            let method = mixin
+                .methods
+                .get(&ns_runtime::Symbol::intern(selector))
+                .cloned();
             let Some(method) = method else {
-                eprintln!("error: no method `{selector}` found on the root class");
+                eprintln!("error: no method `{selector}` found on `{}`", mixin.name);
                 return ExitCode::FAILURE;
             };
-            (
-                ns_runtime::compiler::compile_method(&method, &bindings),
-                selector.to_string(),
-            )
+            let code = module
+                .methods
+                .get(&ns_runtime::bytecode::method_key(&method))
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!("internal: compile_module has no code for `{selector}` (coverage gap)")
+                });
+            (code, selector.to_string())
         }
         _ => {
             eprintln!("error: disasm takes exactly one of <selector> or --initializer");
             return ExitCode::FAILURE;
         }
     };
-    print!("{}", ns_runtime::bytecode::disassemble(&code, &name));
+    print!(
+        "{}",
+        ns_runtime::bytecode::disassemble(code.as_ref(), &name)
+    );
     ExitCode::SUCCESS
 }
 

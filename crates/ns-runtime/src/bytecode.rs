@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use ns_syntax::{ast, Span};
 
-use crate::types::{Binding, BuiltinClass, ClassRef};
+use crate::types::{Binding, BuiltinClass};
 use crate::Symbol;
 
 /// A compiled instruction-set literal -- a lowered form of `ast::Literal`
@@ -205,10 +205,18 @@ pub struct CompiledCode {
 }
 
 /// The bytecode engine's per-module cache, installed on the `Interpreter`
-/// as `Engine::Bytecode(module)`. Keyed by `Rc` pointer identity of the
-/// *loaded* `MethodDecl`/`ClassRef` -- the exact `Rc`s `dispatch.rs` hands
-/// back -- so no name-based index can drift and no two same-named methods
-/// on different classes can collide.
+/// as `Engine::Bytecode(module)`. `methods` is keyed by `Rc` pointer
+/// identity of the *loaded* `MethodDecl` -- the exact `Rc` `dispatch.rs`
+/// hands back -- so no name-based index can drift and no two same-named
+/// methods on different mixins can collide.
+///
+/// `initializers` is keyed by `crate::mixin::mixin_key`, not by class
+/// object: `newspeak-spec.pdf` §6.2 has every application of a mixin share
+/// its code, while §6 gives every enclosing instance its own class object
+/// for a nested class. A class-object key would compile (and store) the
+/// same initializer body once per enclosing instance instead of once per
+/// mixin -- exactly what `compiler::compile_module` walking the mixin tree
+/// once, up front, is meant to avoid.
 #[derive(Debug)]
 pub struct CompiledModule {
     pub methods: HashMap<usize, Rc<CompiledCode>>,
@@ -220,10 +228,6 @@ pub struct CompiledModule {
 
 pub fn method_key(method: &Rc<ast::MethodDecl>) -> usize {
     Rc::as_ptr(method) as *const () as usize
-}
-
-pub fn class_key(class: &ClassRef) -> usize {
-    Rc::as_ptr(class) as *const () as usize
 }
 
 /// A human-readable listing of `code` for `ns-next disasm`. Nested block

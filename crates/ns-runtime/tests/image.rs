@@ -7,10 +7,11 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::bytecode::{
-    class_key, method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
+    method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
 };
 use ns_runtime::image;
 use ns_runtime::image::{decode, encode};
+use ns_runtime::mixin::mixin_key;
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
     compiler, Binding, BuiltinClass, ClassRef, ClosureBody, Engine, FrameKind, Interpreter, Mixin,
@@ -339,6 +340,17 @@ fn method_code(class: &ClassRef, module: &CompiledModule, selector: &str) -> Rc<
     module.methods[&method_key(&data.application.mixin.methods[&Symbol::intern(selector)])].clone()
 }
 
+/// `class`'s own mixin identity -- the key `CompiledModule.initializers`
+/// files an entry under, now that compiled code is keyed by mixin rather
+/// than by class object (applications of a mixin share code).
+fn class_mixin_key(class: &ClassRef) -> usize {
+    let borrowed = class.borrow();
+    let ObjectData::Class(data) = &borrowed.data else {
+        panic!("not a class")
+    };
+    mixin_key(&data.application.mixin)
+}
+
 /// Encodes a module's code table into fresh bytes and decodes it back.
 fn round_trip_code_table(
     module: &CompiledModule,
@@ -362,7 +374,7 @@ fn every_instr_variant_round_trips() {
     let synthetic = Rc::new(every_instr_once());
     module
         .initializers
-        .insert(class_key(&class), synthetic.clone());
+        .insert(class_mixin_key(&class), synthetic.clone());
     let (table, ids) = round_trip_code_table(&module, &class);
     let decoded = &table.codes[table.initializer.expect("initializer id") as usize];
     assert_eq!(**decoded, *synthetic);
@@ -406,7 +418,7 @@ fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents()
         }
     }
     let init = &table.codes[table.initializer.expect("initializer id") as usize];
-    assert_eq!(**init, *module.initializers[&class_key(&class)]);
+    assert_eq!(**init, *module.initializers[&class_mixin_key(&class)]);
 }
 
 #[test]
@@ -432,7 +444,9 @@ fn a_decoded_code_table_installs_against_a_reloaded_class() {
             .unwrap_or_else(|| panic!("{selector} not installed"));
         assert_eq!(**code, *method_code(&class, &module, selector.as_str()));
     }
-    assert!(installed.initializers.contains_key(&class_key(&class2)));
+    assert!(installed
+        .initializers
+        .contains_key(&class_mixin_key(&class2)));
     assert!(Rc::ptr_eq(&installed.bindings, &bindings2));
 }
 

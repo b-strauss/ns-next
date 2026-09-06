@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::bytecode::{
-    class_key, method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
+    method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
 };
+use crate::mixin::mixin_key;
 use crate::types::{
     BuiltinClass, ClassRef, ClosureBody, ClosureData, FrameKind, FrameRef, ObjRef, ObjectData,
     SourceOrigin, Value,
@@ -201,26 +202,28 @@ pub fn encode_code_table(
     let mut ids = CodeIds {
         ids: HashMap::new(),
     };
-    let mut methods: Vec<(String, Rc<CompiledCode>)> = {
+    let root_mixin: Option<Rc<crate::mixin::Mixin>> = {
         let borrowed = root_class.borrow();
         match &borrowed.data {
-            ObjectData::Class(data) => data
-                .application
-                .mixin
-                .methods
-                .iter()
-                .map(|(selector, decl)| {
-                    let code = module.methods.get(&method_key(decl)).ok_or_else(|| {
-                        format!(
-                            "image encoding has no compiled code for method #{selector} \
-                             (it was added to the class after the module was compiled)"
-                        )
-                    })?;
-                    Ok((selector.as_str().to_string(), code.clone()))
-                })
-                .collect::<Result<Vec<_>, String>>()?,
-            _ => Vec::new(),
+            ObjectData::Class(data) => Some(data.application.mixin.clone()),
+            _ => None,
         }
+    };
+    let mut methods: Vec<(String, Rc<CompiledCode>)> = match &root_mixin {
+        Some(mixin) => mixin
+            .methods
+            .iter()
+            .map(|(selector, decl)| {
+                let code = module.methods.get(&method_key(decl)).ok_or_else(|| {
+                    format!(
+                        "image encoding has no compiled code for method #{selector} \
+                         (it was added to the class after the module was compiled)"
+                    )
+                })?;
+                Ok((selector.as_str().to_string(), code.clone()))
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+        None => Vec::new(),
     };
     // The mixin's method table is a `HashMap`; sorting is what makes the table
     // canonical rather than iteration-order dependent.
@@ -228,7 +231,14 @@ pub fn encode_code_table(
     for (_, code) in &methods {
         collect_code(code, &mut order, &mut ids);
     }
-    let initializer = module.initializers.get(&class_key(root_class)).cloned();
+    // Keyed by the root's mixin identity, not its class-object identity --
+    // `CompiledModule.initializers`' key changed meaning with this task
+    // (§6.2: applications of a mixin share code), so the image encoder
+    // reaches the same entry through the same key the compiler filed it
+    // under.
+    let initializer = root_mixin
+        .as_ref()
+        .and_then(|mixin| module.initializers.get(&mixin_key(mixin)).cloned());
     if let Some(init) = &initializer {
         collect_code(init, &mut order, &mut ids);
     }

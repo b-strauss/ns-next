@@ -422,15 +422,25 @@ impl Interpreter {
                     // a no-op under both engines.
                     return Ok(());
                 }
-                Some(
+                Some({
+                    // Keyed by mixin, not by class object (§6.2: every
+                    // application of a mixin shares its code) -- so the
+                    // lookup goes through the class's application, not its
+                    // own `Rc` identity.
+                    let mixin = crate::dispatch::class_application(class)
+                        .expect(
+                            "internal: class_has_initializer_code confirmed this is a class object",
+                        )
+                        .mixin
+                        .clone();
                     module
                         .initializers
-                        .get(&crate::bytecode::class_key(class))
+                        .get(&crate::mixin::mixin_key(&mixin))
                         .cloned()
                         .unwrap_or_else(|| {
                             panic!("internal: class has no compiled instance initializer (compile_module coverage gap)")
-                        }),
-                )
+                        })
+                })
             }
         };
         match compiled {

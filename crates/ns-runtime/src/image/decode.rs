@@ -10,9 +10,11 @@ use ns_syntax::ast;
 use ns_syntax::Span;
 
 use crate::bytecode::{
-    class_key, method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
+    method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
 };
+use crate::dispatch::class_application;
 use crate::interpreter::instantiate;
+use crate::mixin::mixin_key;
 use crate::types::{
     Binding, BuiltinClass, ClassRef, ClosureBody, ClosureData, Frame, FrameKind, FrameRef, ObjRef,
     Object, ObjectData, SourceOrigin, Value,
@@ -548,7 +550,9 @@ pub fn install_code_table(
                     .map(instantiate::pattern_param_count)
                     .unwrap_or(0),
             )?;
-            module.initializers.insert(class_key(root_class), code);
+            module
+                .initializers
+                .insert(mixin_key(&data.application.mixin), code);
         }
         // And the initializer's `MissingSelector`: a class with slots or
         // `initExpr`s runs compiled initializer code on every `X new`, and
@@ -1490,7 +1494,13 @@ pub fn decode_graph_section(
 fn frame_body(frame: &Frame, module: &CompiledModule) -> Option<Rc<CompiledCode>> {
     match &frame.kind {
         FrameKind::Method(decl) => module.methods.get(&method_key(decl)).cloned(),
-        FrameKind::Initializer(class) => module.initializers.get(&class_key(class)).cloned(),
+        FrameKind::Initializer(class) => {
+            let mixin = class_application(class)
+                .expect("internal: FrameKind::Initializer always wraps a real class object")
+                .mixin
+                .clone();
+            module.initializers.get(&mixin_key(&mixin)).cloned()
+        }
         FrameKind::Closure(closure) => match &closure.body {
             ClosureBody::Compiled(code) => Some(code.clone()),
             // Unreachable from the wire: the format has no representation
