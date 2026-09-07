@@ -285,6 +285,10 @@ moment. Two literals carry that deferral:
 only — nothing is instantiated or run — and addresses code through mixins, since
 that is what code is keyed by.
 
+**Planned: it will accept an artifact too.** Today it requires source, which is
+exactly what a deployed binary does not ship; see
+[image-format.md](image-format.md)'s "Reading an artifact".
+
 This is the first piece of the VM's own introspection tooling, the equivalent of
 `d8`; the rest, inline-cache transition traces and deoptimization reasons, arrives
 with the mechanisms it would observe.

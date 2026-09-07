@@ -218,6 +218,49 @@ last section has been read. `Reader::remaining()` exists but serves only as an
 allocation bound, so trailing bytes are silently ignored. With two artifact
 shapes that becomes a confusion vector, and the stateless-binary work fixes it.
 
+## Planned: reading an artifact
+
+**You cannot presently look inside an image at all.** `disasm` takes a `.ns`
+file, compiles it, and prints the result; it cannot disassemble the bytecode that
+is actually in an artifact. `load --print-source` returns the debug variant's
+`.ns` text, not the file's structure. For anything else you have bytes.
+
+That asymmetry gets worse with the stateless binary, whose entire purpose is to be
+shipped **without** source: the one tool that prints bytecode would require the
+thing the artifact was built to do without.
+
+Two additions, both wiring rather than new mechanism, and **this is the first
+piece of work**, ahead of the binary itself:
+
+- `disasm` accepts an artifact as well as a `.ns` file. The decoder already
+  produces a `CompiledModule` and `disasm` already formats `Instr`.
+- A structural listing: header flags, sections with their offsets, the symbol
+  table, the mixin table, class objects, and object and frame counts.
+
+It comes first because the binary's own tests need it. When the prefix-equality
+check fails, a differing byte offset says nothing and a structural diff says
+exactly what moved. And the claim that the platform is cut out of an artifact is
+today verifiable only by reading the encoder; with a listing it is verifiable
+against the artifact.
+
+**One-way only. There will be no text format that can be loaded back.** That
+would be a second encoder and decoder pair to keep in step with the binary one —
+the drift shape this project has already paid for twice, in two engines that must
+agree and in two copies of the tag table. The argument that would justify it is
+hand-authoring test images, and that need is already met differently: the
+untrusted-input tests take real images and corrupt them at located offsets, which
+exercises real structures rather than the ones someone thought to write out.
+
+**This is not the decompiler**, and the two are easy to confuse:
+
+| | Produces | Lets a reader understand |
+|---|---|---|
+| Dump | structure as text | the *file* |
+| Decompiler | `.ns` source | the *program* |
+
+Part of why "export back to `.ns`" looks large is that the easy half gets counted
+into it. It is not in it.
+
 ## Planned: the stateless binary
 
 `ns-next build <file.ns> <out> [--entry SEL] [--debug-source]` runs the pipeline
@@ -321,6 +364,9 @@ builtins.
   disagree with its mixins.
 - **`FORMAT_VERSION` is not bumped**, because there are no external users and the
   safety property does not depend on it.
+- **Artifacts are readable but not writable as text.** A dump serves inspection;
+  a loadable text format would be a second codec to keep in step, and the need
+  that would justify it is already met by corrupting real images.
 
 ## Open questions
 
