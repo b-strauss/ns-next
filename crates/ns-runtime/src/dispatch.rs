@@ -6,11 +6,31 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
+use crate::mixin::{Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
 use crate::Symbol;
 
+/// The behaviour half of a class object, or `None` if `class` does not
+/// point at one. One accessor, so a construction site that needs a
+/// superclass's application never has to re-derive the borrow-and-match.
+pub fn class_application(class: &ClassRef) -> Option<Rc<MixinApplication>> {
+    let borrowed = class.borrow();
+    match &borrowed.data {
+        ObjectData::Class(data) => Some(data.application.clone()),
+        _ => None,
+    }
+}
+
 pub enum Lookup {
-    Method(Rc<ast::MethodDecl>, ClassRef),
+    Method(Rc<MixinMethod>, ClassRef),
+    /// A nested class declaration, reached through the implicit accessor
+    /// `newspeak-spec.pdf` §6 says every such declaration defines in its
+    /// enclosing class. The `ClassRef` is the class object of the level that
+    /// declares it -- the same "defining class" a `Lookup::Method` reports,
+    /// so a caller can treat both arms uniformly; the nested class object
+    /// itself does not exist until `interpreter::nested::nested_class`
+    /// materializes it for a particular receiver.
+    NestedClass(Rc<Mixin>, ClassRef),
     Native(BuiltinClass),
     NotFound,
 }
@@ -19,32 +39,82 @@ pub fn effective_access(access: Option<ast::AccessModifier>) -> ast::AccessModif
     access.unwrap_or(ast::AccessModifier::Protected)
 }
 
-/// §3.3, simplified for Milestone 1 -- see the task's design note.
-pub fn kth_enclosing_object(self_value: &Value, depth: u16) -> Value {
-    let mut current = self_value.clone();
-    for _ in 0..depth {
-        let Value::Obj(obj) = &current else {
+/// The accessibility of the implicit accessor a nested declaration defines:
+/// §6, "implicitly defines a method with the same name *and accessibility*
+/// in OC". Stored on the mixin, already defaulted, because the image's
+/// mixin table has to carry it: a decoded mixin has no `ast::ClassDecl` to
+/// read it back off, and a lookup that guessed would answer `Protected` for
+/// a declaration written `public class Inner = ...`.
+pub fn nested_access(mixin: &Mixin) -> ast::AccessModifier {
+    mixin.access
+}
+
+/// §3.3: the enclosing object at lexical `depth` for an activation of a
+/// method defined in `defining_class` and running on `self_value`.
+///
+/// `depth` is *lexical*: the resolver fixed it against the chain of class
+/// declarations open at the place the code was written, so it counts levels
+/// out from the class that **defines** the running method -- which
+/// `Frame.current_class` names -- and not from the class of whatever object
+/// receives it. Those two are the same class only when the method is not
+/// inherited across a nesting boundary; seeding the walk from the receiver
+/// instead follows the receiver's own chain and lands on an object of an
+/// unrelated class (or `nil`) for an inherited one.
+///
+/// So depth 0 is `self`, and depth k > 0 is reached by walking k levels of
+/// the *declaration* chain out from `defining_class`, taking each level's
+/// own enclosing object -- §3.3's "the object that received the message
+/// that created the class object". `ClassData::declaring_class` is that
+/// chain; the receiver's class chain is not, for the same reason the seed
+/// is not.
+///
+/// A chain shorter than `depth` yields `nil` rather than the nearest
+/// object it did reach, which would be dispatched against silently. Only
+/// the outermost level ends a chain: a module root class, which no
+/// declaration encloses, and a `None` `defining_class`, a top-level
+/// activation. Both have a lexical chain of exactly one level, so no
+/// positive depth is resolvable in either.
+pub fn kth_enclosing_object(
+    self_value: &Value,
+    defining_class: Option<&ClassRef>,
+    depth: u16,
+) -> Value {
+    if depth == 0 {
+        return self_value.clone();
+    }
+    let Some(mut level) = defining_class.cloned() else {
+        return Value::Nil;
+    };
+    let mut remaining = depth;
+    loop {
+        let Some(enclosing) = class_enclosing(&level) else {
             return Value::Nil;
         };
-        let enclosing = {
-            let borrowed = obj.borrow();
-            let (ObjectData::Instance(_) | ObjectData::Class(_)) = &borrowed.data else {
-                return Value::Nil;
-            };
-            class_enclosing(&borrowed.class)
-        };
-        match enclosing {
-            Some(next) => current = Value::Obj(next),
-            None => return Value::Nil,
+        remaining -= 1;
+        if remaining == 0 {
+            return Value::Obj(enclosing);
         }
+        let Some(next) = class_declaring(&level) else {
+            return Value::Nil;
+        };
+        level = next;
     }
-    current
 }
 
 fn class_enclosing(class: &ClassRef) -> Option<ObjRef> {
     let borrowed = class.borrow();
     match &borrowed.data {
         ObjectData::Class(data) => data.enclosing.clone(),
+        _ => None,
+    }
+}
+
+/// The class object of the level that lexically declares `class` -- one
+/// step out along the declaration chain `kth_enclosing_object` walks.
+fn class_declaring(class: &ClassRef) -> Option<ClassRef> {
+    let borrowed = class.borrow();
+    match &borrowed.data {
+        ObjectData::Class(data) => data.declaring_class.clone(),
         _ => None,
     }
 }
@@ -91,66 +161,100 @@ fn walk(
     accept: impl Fn(ast::AccessModifier) -> bool,
     hard_stop_on_mismatch: bool,
 ) -> Lookup {
-    let mut current = Some(class.clone());
-    while let Some(c) = current {
-        let (method, builtin, superclass) = {
+    let mut level = level_of(class);
+    while let Some((c, application)) = level {
+        let (builtin, superclass) = {
             let borrowed = c.borrow();
             match &borrowed.data {
-                ObjectData::Class(data) => (
-                    data.methods.get(&selector).cloned(),
-                    data.builtin,
-                    data.superclass.clone(),
-                ),
+                ObjectData::Class(data) => (data.builtin, data.superclass.clone()),
                 _ => return Lookup::NotFound,
             }
         };
-        if let Some(method) = method {
-            let access = effective_access(access_of(&method));
+        let next = next_level(superclass, &application);
+        if let Some(method) = application.mixin.methods.get(&selector).cloned() {
+            let access = method.access;
             return if accept(access) {
                 Lookup::Method(method, c)
             } else if hard_stop_on_mismatch {
                 Lookup::NotFound
             } else {
-                current = superclass;
+                level = next;
+                continue;
+            };
+        }
+        // §6: a nested declaration is a member of its enclosing class on
+        // exactly the same footing as a method, so it is searched at the
+        // same level and under the same access rules -- after the method
+        // dictionary, because a method is the only thing that can shadow
+        // an accessor the compiler generated implicitly. A linear scan of
+        // `nested` costs nothing on the hot path: it runs only once the
+        // method dictionary has already missed, and `nested` is empty for
+        // every builtin and for most user classes.
+        if let Some(nested) = application
+            .mixin
+            .nested
+            .iter()
+            .find(|nested| nested.name == selector)
+            .cloned()
+        {
+            let access = nested_access(&nested);
+            return if accept(access) {
+                Lookup::NestedClass(nested, c)
+            } else if hard_stop_on_mismatch {
+                Lookup::NotFound
+            } else {
+                level = next;
                 continue;
             };
         }
         if let Some(kind) = builtin {
             return Lookup::Native(kind);
         }
-        current = superclass;
+        level = next;
     }
     Lookup::NotFound
 }
 
-fn access_of(method: &ast::MethodDecl) -> Option<ast::AccessModifier> {
-    method.access
+/// One level of the two chains a lookup walks: the application supplies the
+/// code, the class object supplies the identity `Frame.current_class` needs
+/// for `super` and `outer`. Returns `None` for a non-class object, which is
+/// what ends a walk that was handed one.
+fn level_of(class: &ClassRef) -> Option<(ClassRef, Rc<MixinApplication>)> {
+    let borrowed = class.borrow();
+    match &borrowed.data {
+        ObjectData::Class(data) => Some((class.clone(), data.application.clone())),
+        _ => None,
+    }
 }
 
-/// Walks `class`'s own-or-inherited `slot_index` maps (same shape as
-/// `walk` above, but there is no access check -- slot access is never
+/// Steps both chains together. Every construction site (`load_module`,
+/// `build_builtin_classes`) links a class object's superclass exactly when
+/// it links its application's superclass, so the two chains have the same
+/// length; requiring both halves here means a hierarchy that somehow lost
+/// one of them ends the search instead of reporting a `Lookup::Method`
+/// whose class object comes from a different level than its code.
+fn next_level(
+    superclass: Option<ClassRef>,
+    application: &Rc<MixinApplication>,
+) -> Option<(ClassRef, Rc<MixinApplication>)> {
+    let superclass = superclass?;
+    let super_application = application.superclass.clone()?;
+    Some((superclass, super_application))
+}
+
+/// `name`'s absolute instance-field index, if any. No chain walk: the
+/// application's `slot_index` already carries every inherited slot at its
+/// absolute offset, with an own slot's entry overriding an inherited one of
+/// the same name. There is no access check -- slot access is never
 /// access-controlled the way a method send is in Milestone 1; see Task 7's
-/// design note on this known gap) to find `name`'s absolute instance-field
-/// index, if any. Used by `eval.rs::dispatch_lexical_send` before falling
-/// through to `lookup_defined_for`/`lookup_protected`.
+/// design note on this known gap. Used by `eval.rs::dispatch_lexical_send`
+/// before falling through to `lookup_defined_for`/`lookup_protected`.
 pub fn lookup_slot(class: &ClassRef, name: Symbol) -> Option<usize> {
-    let mut current = Some(class.clone());
-    while let Some(c) = current {
-        let (index, superclass) = {
-            let borrowed = c.borrow();
-            match &borrowed.data {
-                ObjectData::Class(data) => {
-                    (data.slot_index.get(&name).copied(), data.superclass.clone())
-                }
-                _ => return None,
-            }
-        };
-        if let Some(i) = index {
-            return Some(i);
-        }
-        current = superclass;
+    let borrowed = class.borrow();
+    match &borrowed.data {
+        ObjectData::Class(data) => data.application.slot_index.get(&name).copied(),
+        _ => None,
     }
-    None
 }
 
 #[cfg(test)]
@@ -223,22 +327,34 @@ mod tests {
         let mut methods = HashMap::new();
         methods.insert(
             Symbol::intern(selector.trim_end_matches(':')),
-            Rc::new(method),
+            Rc::new(MixinMethod::from_decl(Rc::new(method))),
         );
+        // The application chain must be linked wherever the class-object
+        // chain is: `next_level` steps both, so a superclass linked on only
+        // one of them would end the walk one level early and these tests
+        // would pass for the wrong reason.
+        let super_application = superclass.as_ref().and_then(class_application);
+        let application = Rc::new(MixinApplication {
+            mixin: Rc::new(crate::mixin::Mixin {
+                methods,
+                ..crate::mixin::Mixin::empty(Symbol::intern(name))
+            }),
+            superclass: super_application,
+            slot_index: HashMap::new(),
+            nested_slot: HashMap::new(),
+            num_slots: 0,
+            own_slot_base: 0,
+        });
         Rc::new(RefCell::new(Object {
             class: dummy_class(),
             identity_hash: 0,
             data: ObjectData::Class(ClassData {
-                name: Symbol::intern(name),
-                superclass,
-                methods,
-                instance_slots: vec![],
-                slot_index: HashMap::new(),
-                init_exprs: vec![],
-                class_side: None,
+                application,
                 enclosing: None,
-                factory: None,
+                declaring_class: None,
+                superclass,
                 builtin: None,
+                metaclass: None,
             }),
         }))
     }

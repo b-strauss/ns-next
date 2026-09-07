@@ -139,8 +139,10 @@ struct MixinApplication {           // (mixin, super application) -> behaviour
 struct ClassData {                  // one per enclosing instance, per level
     application: Rc<MixinApplication>,
     enclosing: Option<ObjRef>,
+    declaring_class: Option<ClassRef>,  // the declaration chain `outer` walks
     superclass: Option<ClassRef>,   // the class-object chain, parallel to the applications
     builtin: Option<BuiltinClass>,
+    metaclass: Option<ClassRef>,    // built on first class-side send, cached here
 }
 ```
 
@@ -154,8 +156,13 @@ mixin chains agree share one behaviour object.
 Two parallel chains result, and both are needed:
 
 - The **class-object chain** carries identity and, at every level, that
-  level's enclosing object. `dispatch::kth_enclosing_object` keeps
-  walking it exactly as Milestone 1 wrote it.
+  level's enclosing object plus the class object of the level that
+  lexically declares it (`ClassData::declaring_class`).
+  `dispatch::kth_enclosing_object` walks the *declaration* chain, seeded
+  from the activation's `Frame.current_class`: a lexical depth counts
+  levels out from the class that defines the running method, which is not
+  the receiver's class once a method or a nested declaration is inherited
+  across a nesting boundary.
 - The **application chain** carries code and layout, and is shared.
 
 `slot_index`, `num_slots` and method lookup move off `ClassData` onto
@@ -167,8 +174,9 @@ class object.** Two `Inner` instances from different `Outer` instances
 have different class objects, as the spec requires, but the same
 application, so the call site stays monomorphic. A cache entry records
 (application → method, defining level *k*); reaching that level's class
-object for `outer` and `super` is *k* steps up the receiver's class-object
-chain, and *k* is 0 for an ordinary send. The Milestone 2 IC slots stay
+object for `outer` and `super` starts at the defining level's own class
+object and steps *k* levels out along the declaration chain, and *k* is 0
+for an ordinary send. The Milestone 2 IC slots stay
 inert this milestone, but their intended key is recorded here so
 Milestone 4 does not re-derive it and pick the obvious wrong one.
 
@@ -293,11 +301,16 @@ verification pass, and the possibility of loading an image whose stored
 layout disagrees with its mixins.
 
 **Class objects are ordinary objects in the graph**, encoded as
-`{mixin id, superclass class-object id | builtin tag, enclosing object
-id}`. This retires the binary `builtin`/`UserRoot` class tag, whose own
-comment in `image/encode.rs` records that a second user-defined class
-would encode as `UserRoot` and decode as the root — a wrong class rather
-than a decode error. Nesting is exactly what would have triggered it.
+`{mixin id, superclass, enclosing object, declaring class}` — the
+declaring class because `outer` walks the declaration chain, not the
+receiver's dynamic one, so an image that dropped it would come back
+resolving `outer` from the wrong chain. This retires the binary
+`builtin`/`UserRoot` class tag, whose own comment in `image/encode.rs`
+records that a second user-defined class would encode as `UserRoot` and
+decode as the root — a wrong class rather than a decode error. Nesting is
+exactly what would have triggered it. The tag keeps its first two cases,
+which name classes the graph does not create (a builtin, and the module's
+root class), and gains a third that names an object-table record.
 
 **The source leaves the load path.** `load` decodes the mixin table
 instead of re-running parse → resolve → bootstrap → `load_module`, and
@@ -337,8 +350,9 @@ engines automatically because `differential.rs` covers every
 `tests-fixtures/*.ns`:
 
 - `x Inner == x Inner` — the accessor caches in the receiver.
-- `a Inner ~~ b Inner` for two instances of the enclosing class — the
-  spec requires distinct class objects.
+- `(a Inner == b Inner) not` for two instances of the enclosing class —
+  the spec requires distinct class objects. Spelled with `==` and `not`
+  rather than `~~`, which `Object` has no native for.
 - The §2.3 override case, including that `Nested` keeps its already-cached
   superclass after `Inner` is reassigned.
 - A superclass clause with arguments and side effects; one initializer
@@ -435,3 +449,48 @@ own merits, and the golden-bytes fixture lands with this milestone.
   whether the VM must store `pc` at every instruction rather than only
   where control can leave the loop is a debugger and profiler question,
   and belongs to the milestone that builds them.
+- **`Mixin` has no interior mutability.** Editing a live class's method
+  table re-applies a fresh mixin; existing instances keep the old
+  application, and their instances go on running the old code. §6.2
+  requires an edit to a mixin to affect all of its applications, so the
+  milestone that builds `MirrorBuilder` and edit-and-continue must choose
+  between interior mutability on `Mixin` and a mixin-versioning scheme —
+  and, either way, decide what happens to the `applications` cache, which
+  today grows without bound because every re-application mints a fresh
+  entry that nothing ever evicts.
+- **`Interpreter::send` never consults `dispatch::lookup_slot`.** A public
+  slot's implicit accessors are reachable only through an ordinary,
+  unqualified send, not through `send` with an explicit receiver — so the
+  language spec's own example spelling, `(g Inner: Array) Nested`, does
+  not work today. Fixing it means adding slot entries to `lookup_public`'s
+  walk, deciding setter-selector naming and its precedence against a
+  same-named method, and enforcing a slot's access modifier, none of
+  which exists yet.
+- **An entry send's return value is never printed.** `report_entry_send`
+  in `crates/ns-cli/src/main.rs` reports only failure (an uncaught
+  Newspeak error, or a non-local return escaping the entry send); on
+  success it discards the returned `Value`. A module whose result *is*
+  its output — rather than something it prints via `transcript show:` —
+  is silently unobservable through `ns-next run`.
+- **`Object::class` is not an `Option<ClassRef>`.** The iterative `Drop`
+  impl (`crates/ns-runtime/src/types.rs`) relies on that to unwind an
+  object graph without recursing, and the image decoder refuses an image
+  in which a class object's own class is another record rather than the
+  bootstrap `Object` placeholder. That matches the runtime's own
+  invariant today (every class object's `.class` is the bootstrap
+  `Object`), but it is a decision that must be revisited if §3.2's
+  reified `Class`/`Metaclass` hierarchy is ever built, since that model
+  makes a class object's class a real, distinct object.
+- **`nil printString` answers `an Object`.** `nil`'s class has no
+  `printString` override of its own, so the send falls through to the
+  generic `Object` builtin (`crates/ns-runtime/src/builtins/object_class.rs`)
+  instead of answering something that identifies `nil`.
+- **Class-side `new` is shadowed by factory dispatch.** A class can declare
+  `new` on its class side using the syntax after the `) : (` separator;
+  `Interpreter::send` in `crates/ns-runtime/src/interpreter/mod.rs` calls
+  `try_factory_send` before the metaclass is consulted, so an explicit
+  receiver `Foo new` always takes the factory path and never reaches a
+  declared class-side `new`. The implicit-receiver path was corrected to
+  consult the metaclass first. `corpus/modules/Ducts.ns` declares exactly
+  this form and is on the `run-corpus` whitelist, making it reachable in
+  practice.

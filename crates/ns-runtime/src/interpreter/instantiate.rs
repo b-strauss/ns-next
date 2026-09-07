@@ -9,19 +9,78 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
+use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
 use crate::types::*;
 use crate::Symbol;
 
 use super::{Engine, EvalResult, Interpreter, Signal};
 
+/// A class body's methods as a mixin's method dictionary: everything a
+/// lookup or an engine hook reads is lifted out of the declaration here, so
+/// that a mixin decoded from an image -- which has no declaration at all --
+/// answers the same questions from the same fields.
+fn build_methods(body: &ast::ClassBody) -> HashMap<Symbol, Rc<MixinMethod>> {
+    body.methods
+        .iter()
+        .map(|m| {
+            let method = MixinMethod::from_decl(Rc::new(m.clone()));
+            (method.selector, Rc::new(method))
+        })
+        .collect()
+}
+
+fn build_slots(body: &ast::ClassBody) -> Vec<MixinSlot> {
+    body.slots
+        .iter()
+        .map(|s| MixinSlot::from_decl(Rc::new(s.clone())))
+        .collect()
+}
+
+/// The run-time-visible half of a superclass clause. The selector defaults
+/// to `new` for an omitted message, per `newspeak-spec.pdf` §6.1 -- resolved
+/// once, here, rather than at each of the two places that used to re-derive
+/// it from the declaration.
+fn superclass_clause_of(clause: &ast::SuperclassClause) -> SuperclassClause {
+    SuperclassClause {
+        selector: super::nested::superclass_clause_message(clause).map_or_else(
+            || Symbol::intern("new"),
+            crate::compiler::lower::selector_of,
+        ),
+        has_args: super::nested::superclass_clause_message_args_expr(clause).is_some(),
+    }
+}
+
 impl Interpreter {
     /// Materializes the module's root `ClassDecl` into a real class object.
-    /// The superclass clause's *receiver* is resolved here (once); its
-    /// trailing *message* is a known Milestone 1 gap -- it is neither stored
-    /// on `ClassData` nor ever evaluated (see `run_superclass_initializer`'s
-    /// doc comment below for what that costs).
+    /// The superclass clause's *receiver* is resolved here, once -- it is
+    /// what fixes the superclass (`newspeak-spec.pdf` §6.1). Its trailing
+    /// *message* is deliberately not touched here: §6.2 defers it to every
+    /// instantiation, where `run_initializer_level` evaluates it off the
+    /// mixin's own declaration.
+    ///
+    /// Building the mixin tree (`build_mixin`, below) is a separate step from
+    /// applying it: a nested mixin is reachable the moment its enclosing
+    /// mixin exists, but *applying* a mixin -- resolving a superclass and
+    /// computing a slot layout -- only happens for the root here. A nested
+    /// mixin gets its own application when something actually materializes
+    /// it (the accessor, Task 5); until then it is pure, unapplied structure.
     pub fn load_module(&mut self, resolved: &ResolvedModule) -> ClassRef {
-        self.load_class(&resolved.module.root_class, None)
+        let decl = &resolved.module.root_class;
+        let mixin = self.build_mixin(decl);
+        let superclass = self.resolve_superclass_receiver(decl);
+        // The slot layout is the application's job, not the class object's:
+        // `apply_mixin` offsets this class's own slots past every inherited
+        // one and merges the superclass's map in, so a class object never
+        // computes -- or can disagree about -- an instance's shape.
+        let super_application = superclass
+            .as_ref()
+            .and_then(crate::dispatch::class_application);
+        let application = self.apply_mixin(&mixin, super_application.as_ref());
+        // `enclosing`/`declaring_class` are both `None` -- the module's root
+        // class is the outermost level, so no object encloses it and no
+        // declaration contains it. Every other class object in the system
+        // comes from `interpreter::nested`, which passes both.
+        self.new_class_object(application, None, None, superclass)
     }
 
     /// Note on the brief's original signature: `decl` is taken here as
@@ -32,90 +91,87 @@ impl Interpreter {
     /// type-check against that call site. This is the kind of small,
     /// mechanical fix every task in this plan has needed at least once.
     ///
-    /// # Milestone 1 known gaps
+    /// Builds the mixin for `decl`, recursively including its nested
+    /// declarations and its class side. Pure structure -- no Newspeak code is
+    /// evaluated here, which is what keeps module loading total.
     ///
-    /// **Nested classes are not loaded.** This function never recurses into
-    /// `decl.instance_side.nested_classes` (nor the class side's), and
-    /// `enclosing` is therefore always `None` for every class it builds. The
-    /// *resolver* fully supports nesting -- it resolves `outer C foo` and
-    /// depth-k implicit sends statically, and `dispatch::kth_enclosing_object`
-    /// implements the runtime half -- but with no nested class ever loaded and
-    /// no `ClassData.enclosing` ever set, any send that actually needs a
-    /// depth > 0 enclosing object resolves statically and then fails at
-    /// runtime (`kth_enclosing_object` returns `Value::Nil` as soon as it
-    /// asks for an enclosing object that is not there). Loading nested
-    /// classes is a substantial feature -- it needs a load order, a mutual
-    /// reference story between an instance and its enclosing object, and the
-    /// accessor a nested class declaration implicitly defines -- and no
-    /// Milestone 1 fixture or corpus module needs it.
-    ///
-    /// **Class-side methods are discarded.** `class_side` below is set to
-    /// `None` unconditionally: `decl.class_side`'s methods are parsed,
-    /// resolved, and then dropped here. Class-side / class methods are out of
-    /// scope for Milestone 1 (there are no metaclasses either -- every class
-    /// object's own `.class` is the one shared `Object`-tagged placeholder),
-    /// so there is nothing anywhere in the crate that would consume a
-    /// class-side entry if one were stored.
-    fn load_class(&mut self, decl: &ast::ClassDecl, enclosing: Option<ObjRef>) -> ClassRef {
-        let superclass = self.resolve_superclass_receiver(decl);
-        let mut methods = HashMap::new();
-        for m in &decl.instance_side.methods {
-            methods.insert(Symbol::intern(&method_name(&m.pattern)), Rc::new(m.clone()));
-        }
-        let instance_slots: Vec<Rc<ast::SlotDecl>> = decl
+    /// Every `decl.instance_side.nested_classes` entry becomes a `Mixin` in
+    /// `nested`, in declaration order, and `decl.class_side` becomes a
+    /// `Mixin` too, instead of being discarded. Neither is *applied* here (no
+    /// superclass is resolved, no slot layout computed, no class object
+    /// built) -- a nested mixin has no class object of its own until
+    /// something materializes it (the accessor, Task 5), and a class side
+    /// has no accessor to dispatch to yet (Task 9). Reachable in the tree is
+    /// as far as this task goes.
+    fn build_mixin(&mut self, decl: &ast::ClassDecl) -> Rc<Mixin> {
+        let methods = build_methods(&decl.instance_side);
+        let slots = build_slots(&decl.instance_side);
+        let nested = decl
             .instance_side
-            .slots
+            .nested_classes
             .iter()
-            .map(|s| Rc::new(s.clone()))
+            .map(|n| self.build_mixin(n))
             .collect();
-        // Slot access fix (Task 7 "must fix before committing" #2): each of
-        // this class's own slots gets an absolute index into an instance's
-        // `ObjectData::Instance` fields vector, offset past every inherited
-        // slot -- mirrors `total_slot_count`'s walk below, but per-name.
-        let mut slot_index = HashMap::new();
-        let base = superclass.as_ref().map(total_slot_count).unwrap_or(0);
-        for (i, slot) in instance_slots.iter().enumerate() {
-            slot_index.insert(Symbol::intern(&slot.name.name), base + i);
-        }
-        let identity_hash = self.alloc_identity_hash();
-        Rc::new(RefCell::new(Object {
-            class: self.builtin_class(BuiltinClass::Object), // M1 simplification, see Task 7 Step 1
-            identity_hash,
-            data: ObjectData::Class(ClassData {
-                name: Symbol::intern(&decl.name.name),
-                superclass,
-                methods,
-                instance_slots,
-                slot_index,
-                // Class instantiation "must fix" #1: this class's own
-                // initExprs, evaluated for real by `run_own_init_exprs`
-                // below (Step 5 of the spec's six numbered steps).
-                init_exprs: decl.instance_side.init_exprs.clone(),
-                // Milestone 1 known gap (see this function's doc comment):
-                // class-side methods are out of scope, so `decl.class_side`
-                // is discarded here rather than stored. Nothing in the crate
-                // reads `ClassData.class_side`; it exists for a later
-                // milestone.
-                class_side: None,
-                enclosing,
-                factory: Some(Rc::new(decl.factory.clone().unwrap_or(
-                    ast::MessagePattern::Unary {
-                        selector: ast::Ident {
-                            name: "new".to_string(),
-                            span: decl.span,
-                        },
-                    },
-                ))),
-                builtin: None,
+        let class_side = decl
+            .class_side
+            .as_ref()
+            .map(|side| self.build_class_side(side));
+        Rc::new(Mixin {
+            name: Symbol::intern(&decl.name.name),
+            access: crate::dispatch::effective_access(decl.access),
+            methods,
+            slots,
+            // §6.1: a class written without a factory pattern is
+            // instantiated by `new`, which is also what an omitted
+            // superclass-clause *message* defaults to -- the two halves of
+            // the same rule, so `class C = (...)` inherits from `Object`
+            // through `new` under both engines.
+            factory: Some(match &decl.factory {
+                Some(pattern) => Factory {
+                    selector: Symbol::intern(&method_name(pattern)),
+                    num_args: pattern_param_count(pattern),
+                },
+                None => Factory {
+                    selector: Symbol::intern("new"),
+                    num_args: 0,
+                },
             }),
-        }))
+            superclass: decl.superclass.as_ref().map(superclass_clause_of),
+            has_init_exprs: !decl.instance_side.init_exprs.is_empty(),
+            // Class instantiation "must fix" #1: this class's own initExprs,
+            // evaluated for real by `run_own_init_exprs` below (Step 5 of
+            // the spec's six numbered steps).
+            init_exprs: decl.instance_side.init_exprs.clone(),
+            nested,
+            class_side,
+            span: decl.span,
+            decl: Some(Rc::new(decl.clone())),
+        })
+    }
+
+    /// A class side's own methods, as a `Mixin`. Kept separate from
+    /// `build_mixin` and deliberately small: a class side has no factory
+    /// pattern of its own (there is no metaclass to instantiate it through in
+    /// this milestone) and no nested classes of its own to load -- only its
+    /// instance side's `nested_classes` recurse. `decl` is `None` because a
+    /// `ClassBody` is not itself an `ast::ClassDecl`; there is no single
+    /// declaration node to keep as provenance for it.
+    fn build_class_side(&mut self, side: &ast::ClassBody) -> Rc<Mixin> {
+        Rc::new(Mixin {
+            methods: build_methods(side),
+            slots: build_slots(side),
+            has_init_exprs: !side.init_exprs.is_empty(),
+            init_exprs: side.init_exprs.clone(),
+            span: side.span,
+            ..Mixin::empty(Symbol::intern("class side"))
+        })
     }
 
     /// Intercepts an ordinary explicit-receiver send (`Interpreter::send`'s
     /// call site, above -- checked *before* `dispatch::lookup_public`) when
     /// `receiver` is a class object and `selector` is that class's own
-    /// factory selector: `class_data.factory`'s pattern if the class
-    /// declared one (every user-defined class does -- `load_class` above
+    /// factory selector: the class's mixin `factory` pattern if the class
+    /// declared one (every user-defined class does -- `build_mixin` above
     /// always fills this in, defaulting to a bare `new` pattern when the
     /// source class decl left it out), or a bare `new` selector for a
     /// builtin (`factory` is always `None` there, per
@@ -132,14 +188,13 @@ impl Interpreter {
     /// `doesNotUnderstand:`, for every class, every time.
     ///
     /// No double-dispatch risk against the superclass clause's own factory
-    /// message (e.g. `Object new` in `class Foo = Object new (...) ...`):
-    /// that message is never evaluated at all in Milestone 1 (a known gap --
-    /// see `run_superclass_initializer` below), so there is nothing here to
-    /// double-dispatch against. `run_superclass_initializer` recurses
-    /// directly into `run_superclass_initializer`/`run_own_slots`/
-    /// `run_own_init_exprs` and never calls `Interpreter::send` (nor,
-    /// therefore, this method) at all -- confirmed by inspection of every
-    /// call site in this file.
+    /// message (e.g. `Object new` in `class Foo = Object new (...)`). That
+    /// message is *evaluated* now (`run_initializer_level` below), but it is
+    /// never *sent*: §6.2 has the subclass's initializer invoke the
+    /// superclass's instance initializer directly on the same object, so
+    /// `run_initializer_level` recurses into itself and never calls
+    /// `Interpreter::send` -- and therefore never reaches this method, which
+    /// would otherwise allocate a second, discarded instance per level.
     pub(super) fn try_factory_send(
         &mut self,
         receiver: &Value,
@@ -155,11 +210,7 @@ impl Interpreter {
             let ObjectData::Class(class_data) = &borrowed.data else {
                 return None;
             };
-            let factory_selector = match &class_data.factory {
-                Some(pattern) => Symbol::intern(&method_name(pattern)),
-                None => Symbol::intern("new"),
-            };
-            (factory_selector, class_data.builtin)
+            (primary_factory_selector_of(class_data), class_data.builtin)
         };
         if selector != factory_selector {
             return None;
@@ -205,36 +256,78 @@ impl Interpreter {
     }
 
     /// The six numbered steps in the runtime spec's Class Instantiation
-    /// section.
+    /// section. Steps 2-5 are `run_initializer_level`, once per level of the
+    /// superclass chain.
     pub fn instantiate(
         &mut self,
         class: ClassRef,
         factory_args: Vec<Value>,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> EvalResult {
+        // Step 1: one instance, every slot nil. The application already
+        // knows the whole layout, inherited slots included -- summing the
+        // chain here again would be a second answer to the same question.
+        let slot_count = crate::dispatch::class_application(&class).map_or(0, |a| a.num_slots);
+        let instance = self.new_instance_object(
+            class.clone(),
+            ObjectData::Instance(vec![Value::Nil; slot_count]),
+        );
+        let receiver = Value::Obj(instance);
+
+        // Steps 2-5, for this class and then, recursively, for every level
+        // above it.
+        self.run_initializer_level(&class, &receiver, factory_args, bindings)?;
+
+        // Step 6.
+        Ok(receiver)
+    }
+
+    /// One inheritance level's instance initializer (`newspeak-spec.pdf`
+    /// §6.2): its own activation with its own arguments (step 2), then --
+    /// before anything of its own runs -- the superclass clause's deferred
+    /// message evaluated to a concrete message and the superclass's
+    /// initializer invoked on the *same* object with those arguments (step
+    /// 3), and only then this level's own slot clauses and `initExprs`
+    /// (steps 4-5).
+    ///
+    /// One activation per level is the whole point: a superclass's slot
+    /// initializers and `initExprs` see the arguments *its* clause supplied,
+    /// not the subclass's. Milestone 1 threaded a single frame up the whole
+    /// chain and never evaluated a clause message at all, so a superclass
+    /// factory parameter read whatever happened to sit at the same index in
+    /// the subclass's argument list -- or panicked when there was none.
+    fn run_initializer_level(
+        &mut self,
+        class: &ClassRef,
+        instance: &Value,
+        factory_args: Vec<Value>,
+        bindings: &Rc<HashMap<Span, Binding>>,
+    ) -> Result<(), Signal> {
         // Regression fix (re-review finding A): reject a factory-arity
-        // mismatch as a NewspeakError up front, before building the
-        // instance-initializer `Frame` or running any slot initializer /
-        // initExpr. Since 1e07dee, a slot initializer or initExpr may
-        // reference a factory parameter as `Binding::Local(i)`, resolved
-        // against this class's *declared* factory pattern -- but the
-        // `Frame` built below has `temps: vec![]` always, so if fewer
-        // `factory_args` were actually supplied than the pattern declares,
-        // `eval.rs`'s `read_local`/`write_local` index straight past the end
-        // of both `args` and the (empty) `temps` and Rust panics with "index
-        // out of bounds". `try_factory_send`'s call sites always pass
-        // exactly `class`'s own declared arity, so this can only fire when a
-        // caller outside the ordinary factory-send path (today, only
-        // `ns-cli`'s `cmd_run`, which hardcodes a single `usingPlatform:`
-        // argument regardless of the root class's actual declared arity)
-        // hands `instantiate` a mismatched `factory_args`. Mirrors
-        // `eval.rs`'s `invoke_closure`, which has the exact same shape of
-        // guard for the analogous block-arity case: never panic on this
-        // Newspeak-program-input path.
+        // mismatch as a NewspeakError before building this level's `Frame`
+        // or running any slot initializer / initExpr. A slot initializer or
+        // initExpr may reference a factory parameter as `Binding::Local(i)`,
+        // resolved against this class's *declared* factory pattern -- but
+        // the `Frame` built below starts with `temps: vec![]`, so if fewer
+        // arguments were supplied than the pattern declares, `eval.rs`'s
+        // `read_local`/`write_local` index straight past the end of both
+        // `args` and `temps` and Rust panics with "index out of bounds".
+        //
+        // Checked at *every* level, not just the outermost. A level's
+        // arguments now come from its subclass's clause message, whose
+        // selector `eval_superclass_message` has already matched against
+        // this class's primary factory selector -- which pins the arity too,
+        // since a selector's keyword count is its parameter count. This
+        // guard is what keeps that reasoning from being the only thing
+        // between a decoded image's message body and an out-of-bounds index.
         let declared_arity = {
             let borrowed = class.borrow();
             match &borrowed.data {
-                ObjectData::Class(data) => data.factory.as_deref().map(pattern_param_count),
+                ObjectData::Class(data) => data
+                    .application
+                    .mixin
+                    .factory
+                    .map(|factory| factory.num_args),
                 _ => None,
             }
         };
@@ -242,7 +335,7 @@ impl Interpreter {
             if factory_args.len() != declared_arity {
                 return Err(Signal::Error(NewspeakError {
                     selector: Symbol::intern("new"),
-                    receiver: Value::Obj(class),
+                    receiver: Value::Obj(class.clone()),
                     message: format!(
                         "wrong number of factory arguments: factory takes {}, got {}",
                         declared_arity,
@@ -252,82 +345,9 @@ impl Interpreter {
             }
         }
 
-        // Step 1: one instance, every slot nil.
-        let slot_count = total_slot_count(&class);
-        let instance = self.new_instance_object(
-            class.clone(),
-            ObjectData::Instance(vec![Value::Nil; slot_count]),
-        );
-        let receiver = Value::Obj(instance);
-
-        // Step 2: the instance-initializer activation.
-        let frame = Rc::new(RefCell::new(Frame {
-            receiver: receiver.clone(),
-            args: factory_args,
-            temps: vec![],
-            pc: 0,
-            sender: None,
-            home: None,
-            current_class: Some(class.clone()),
-            kind: FrameKind::Initializer(class.clone()),
-            uncontinuable: false,
-        }));
-
-        // Step 3: run the superclass chain first, deepest (Object) first --
-        // implemented as recursion that runs *before* this class's own
-        // slots/initExprs, per the spec ("execution of the instance
-        // initializer begins with evaluation of the superclass clause...
-        // the superclass' instance initializer is then invoked on o").
-        self.run_superclass_initializer(&class, &receiver, &frame, bindings)?;
-
-        // Steps 4-5: this class's own slot clauses (declaration order),
-        // then its own initExprs -- engine hook 3.
-        self.run_own_initializer(&class, &receiver, &frame, bindings)?;
-
-        // Step 6.
-        Ok(receiver)
-    }
-
-    /// Runs the superclass chain's instance initializers, deepest first
-    /// (spec step 3).
-    ///
-    /// # Milestone 1 known gaps
-    ///
-    /// **The superclass clause's message is never evaluated.** The spec has
-    /// the subclass's initializer evaluate the superclass clause's trailing
-    /// factory message (`Object new` in `class Foo = Object new (...)`, or
-    /// `Super usingPlatform: p` with real arguments) in the *subclass's* own
-    /// initializer context, and pass its arguments to the superclass's
-    /// instance initializer. This function does none of that: it walks
-    /// straight up `ClassData.superclass` and runs each level's slots and
-    /// initExprs. The clause's message is not even carried on `ClassData` --
-    /// `load_class` stores only `factory`, this class's *own* primary factory
-    /// pattern, while the clause's own message list lives on
-    /// `ast::SuperclassClause::messages`.
-    ///
-    /// This is fine exactly when the superclass factory message has no
-    /// behavior beyond structural instantiation -- true for every Milestone 1
-    /// fixture and for `Object new`, which is what every fixture and corpus
-    /// module in this milestone actually writes -- and is a real gap for a
-    /// superclass factory message that carries arguments or side effects.
-    ///
-    /// **Every level runs in the subclass's frame.** `subclass_frame` is
-    /// reused for every superclass level, so a superclass's own slot
-    /// initializers and initExprs see the *subclass's* factory arguments
-    /// rather than their own. Correcting this means building one activation
-    /// per level from the (unevaluated, see above) superclass clause's
-    /// arguments -- the same missing piece. Milestone 1 never links a
-    /// user-defined superclass through the ordinary pipeline anyway (see
-    /// `resolve_superclass_receiver`: only builtin superclass names resolve,
-    /// and builtins have no slots or initExprs), so no shipped path can
-    /// currently observe the difference.
-    fn run_superclass_initializer(
-        &mut self,
-        class: &ClassRef,
-        instance: &Value,
-        subclass_frame: &FrameRef,
-        bindings: &Rc<HashMap<Span, Binding>>,
-    ) -> Result<(), Signal> {
+        // Step 3: the superclass clause's message, then the superclass's own
+        // instance initializer on the same object -- deepest (Object) first,
+        // because this recursion runs before this level's own steps 4-5.
         let superclass = {
             let borrowed = class.borrow();
             match &borrowed.data {
@@ -335,40 +355,173 @@ impl Interpreter {
                 _ => None,
             }
         };
-        let Some(superclass) = superclass else {
-            return Ok(()); // reached Object (or a builtin) -- native classes have no init_exprs to run
-        };
-        // NOTE: the superclass clause's deferred factory message is NOT
-        // evaluated here -- see this function's "Milestone 1 known gaps"
-        // doc comment above for what that costs and why it is deferred.
-        // `instance` is threaded through only for the recursive calls below
-        // (it is the object every level's slots are written into); no
-        // superclass-clause argument is computed from it today.
+        if let Some(superclass) = superclass {
+            let super_args = self.eval_superclass_message(
+                class,
+                &superclass,
+                instance,
+                &factory_args,
+                bindings,
+            )?;
+            self.run_initializer_level(&superclass, instance, super_args, bindings)?;
+        }
+
+        // Step 2, built here rather than above it: a level with no slots and
+        // no `initExprs` runs no code at all under either engine (see
+        // `run_own_initializer`), so its activation could never be observed
+        // -- and every chain ends at a builtin, which is exactly such a
+        // level. Building it only where something runs in it keeps one
+        // activation per *initializing* level rather than one per level.
         //
-        // Recurse first -- the *superclass's own* superclass initializer
-        // must run before the superclass's own slots/initExprs, exactly the
-        // same "deepest first" ordering this function's caller applies one
-        // level up (see the comment at the `instantiate` call site above).
-        // The brief's original draft of this function ran only one level
-        // (this class's immediate superclass) with no further recursion,
-        // which contradicts its own "deepest (Object) first" framing for
-        // any hierarchy more than two levels deep (Sub -> Mid -> Object):
-        // Mid's own superclass initializer (i.e. Object's, a no-op today,
-        // but not a no-op in general once user classes can chain three or
-        // more deep) would silently never run. Fixed by recursing here.
-        self.run_superclass_initializer(&superclass, instance, subclass_frame, bindings)?;
-        self.run_own_initializer(&superclass, instance, subclass_frame, bindings)?;
-        Ok(())
+        // Every field of it describes this one level: its arguments, its
+        // class, and its `slot_base` -- the absolute index a compiled
+        // `InitSlot`'s mixin-relative `own_index` is offset by. `slot_base`
+        // is set here, with the rest of the level's identity, and never
+        // changes: with a frame per level there is nothing to save and
+        // restore, and no window in which a frame describes another level.
+        if !class_has_initializer_code(class) {
+            return Ok(());
+        }
+        let frame = Rc::new(RefCell::new(Frame {
+            receiver: instance.clone(),
+            args: factory_args,
+            temps: vec![],
+            pc: 0,
+            // `run_own_initializer` below picks the body off the same
+            // engine, and this frame is built only when that level has
+            // initializer code to run -- so under `Engine::Bytecode` it
+            // always ends up executing a `CompiledCode`.
+            pc_kind: match &self.engine {
+                Engine::TreeWalk => PcKind::TreeWalk,
+                Engine::Bytecode(_) => PcKind::Bytecode,
+            },
+            sender: None,
+            home: None,
+            current_class: Some(class.clone()),
+            kind: FrameKind::Initializer(class.clone()),
+            uncontinuable: false,
+            slot_base: crate::dispatch::class_application(class).map_or(0, |a| a.own_slot_base),
+        }));
+
+        // Steps 4-5: this class's own slot clauses (declaration order), then
+        // its own initExprs -- engine hook 3.
+        self.run_own_initializer(class, instance, &frame, bindings)
+    }
+
+    /// Step 3's first half: `newspeak-spec.pdf` §6.2's "the superclass
+    /// clause's message is evaluated to a concrete message". Returns the
+    /// argument list the superclass's instance initializer is invoked with.
+    ///
+    /// §6.1 makes two things run time errors here. That the clause's
+    /// expression is not a class object is caught where the clause's
+    /// *receiver* is evaluated -- once, when the declaration is evaluated
+    /// (`interpreter::nested`), not per instantiation. That the message's
+    /// selector is not the superclass's primary factory selector is caught
+    /// here, because only here are both halves known.
+    ///
+    /// The selector is checked *before* the arguments are evaluated: a
+    /// clause that cannot be satisfied should not first run its arguments'
+    /// side effects.
+    fn eval_superclass_message(
+        &mut self,
+        class: &ClassRef,
+        superclass: &ClassRef,
+        instance: &Value,
+        factory_args: &[Value],
+        bindings: &Rc<HashMap<Span, Binding>>,
+    ) -> Result<Vec<Value>, Signal> {
+        // One lookup of the application for both questions below: the clause
+        // this class was declared with, and (under the bytecode engine) the
+        // mixin its compiled message body is keyed by.
+        let application = crate::dispatch::class_application(class);
+        let clause = application
+            .as_ref()
+            .and_then(|application| application.mixin.superclass);
+        // §6.1: "if the message is omitted, it defaults to `new`" -- already
+        // resolved into `SuperclassClause::selector` when the mixin was
+        // built, and read from there rather than from the declaration: a
+        // mixin decoded from an image has no declaration, and re-deriving
+        // the default here would answer `new` for every one of them, so a
+        // class whose superclass has a keyword factory would raise a
+        // spurious "not the primary factory message" error on the first
+        // instantiation after a load.
+        let selector = clause.map_or_else(|| Symbol::intern("new"), |clause| clause.selector);
+        let expected = primary_factory_selector(superclass);
+        if Some(selector) != expected {
+            return Err(not_the_primary_factory_error(
+                class, superclass, selector, expected,
+            ));
+        }
+        if !clause.is_some_and(|clause| clause.has_args) {
+            // `Object new` and every other argument-free clause: nothing to
+            // evaluate, no activation built, nothing allocated.
+            return Ok(vec![]);
+        }
+        let compiled = match (&self.engine, &application) {
+            (Engine::TreeWalk, _) | (_, None) => None,
+            (Engine::Bytecode(module), Some(application)) => Some(
+                module
+                    .superclass_messages
+                    .get(&crate::mixin::mixin_key(&application.mixin))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        panic!("internal: mixin whose superclass clause message takes arguments has no compiled form for it (compile_module coverage gap)")
+                    }),
+            ),
+        };
+        // The argument expressions are for the tree-walker alone, and
+        // building them clones the whole argument list -- on a path that
+        // runs at every instantiation, so it is built only when there is no
+        // compiled body to run instead.
+        let args_expr = match compiled {
+            Some(_) => None,
+            None => application
+                .as_ref()
+                .and_then(|application| application.mixin.decl.as_ref())
+                .and_then(|decl| decl.superclass.as_ref())
+                .and_then(super::nested::superclass_clause_message_args_expr),
+        };
+        // The message is evaluated on the instance being initialized and
+        // with *this* level's factory arguments -- §6.2's "in the context of
+        // the instance initializer". `run_clause_body` is the same shared
+        // activation the nested-class accessor runs the clause's receiver
+        // through, so neither engine gets a path of its own here.
+        let value = super::nested::run_clause_body(
+            self,
+            instance,
+            factory_args.to_vec(),
+            class,
+            FrameKind::SuperclassMessage(class.clone()),
+            compiled,
+            args_expr.as_ref(),
+            bindings,
+        )?;
+        argument_list(class, value)
     }
 
     /// Engine hook 3 (M2 spec, "`vm.rs` and the engine hook"): Class
     /// Instantiation steps 4-5 for one level of the chain -- this class's
-    /// own slot initializers, then its own `initExprs`, on the shared
+    /// own slot initializers, then its own `initExprs`, on that level's own
     /// initializer frame. The tree-walker runs `run_own_slots` +
     /// `run_own_init_exprs`; the bytecode engine runs the class's compiled
     /// initializer (`compiler::compile_initializer`) after growing the
-    /// frame's register file to fit it. Every M1 instantiation gap is
-    /// carried forward identically in both engines.
+    /// frame's register file to fit it. Both engines run the same steps in
+    /// the same order on the same frame.
+    ///
+    /// Review finding (round 1): `InitSlot`'s `own_index` is relative to the
+    /// mixin's own slots, not an absolute field index -- the compiled body
+    /// is shared by every application of the mixin (`compile_module` keys
+    /// by `mixin_key`), so it cannot bake in any one application's offset.
+    /// `frame.slot_base` is what turns `own_index` into an absolute index at
+    /// run time: the same per-application value `run_own_slots`'s
+    /// tree-walking sibling reads through `slot_index`, fetched once instead
+    /// of per slot. Its one writer is `run_initializer_level`, which builds
+    /// one frame per level and sets that frame's base from that level's own
+    /// `MixinApplication.own_slot_base` -- so a frame's base is fixed for
+    /// its whole life and cannot be observed describing another level. The
+    /// assertion below states that invariant where this function depends on
+    /// it, in place of the save/restore a single frame shared by the whole
+    /// chain used to need.
     fn run_own_initializer(
         &mut self,
         class: &ClassRef,
@@ -379,20 +532,34 @@ impl Interpreter {
         let compiled = match &self.engine {
             Engine::TreeWalk => None,
             Engine::Bytecode(module) => {
+                // Every BuiltinClass, and any class with nothing to run:
+                // a no-op under both engines. `run_initializer_level` does
+                // not even build a frame for such a level; this repeats the
+                // test because `compile_module` emits no initializer for
+                // such a mixin, so the lookup below would have nothing to
+                // find if some other caller ever arrived here.
                 if !class_has_initializer_code(class) {
-                    // Every BuiltinClass, and any class with nothing to run:
-                    // a no-op under both engines.
                     return Ok(());
                 }
-                Some(
-                    module
+                Some({
+                    // Keyed by mixin, not by class object (§6.2: every
+                    // application of a mixin shares its code) -- so the
+                    // lookup goes through the class's application, not its
+                    // own `Rc` identity. The application itself is kept
+                    // (not just its mixin) because its `own_slot_base` is
+                    // what makes the shared code correct for *this* level.
+                    let application = crate::dispatch::class_application(class).expect(
+                        "internal: class_has_initializer_code confirmed this is a class object",
+                    );
+                    let code = module
                         .initializers
-                        .get(&crate::bytecode::class_key(class))
+                        .get(&crate::mixin::mixin_key(&application.mixin))
                         .cloned()
                         .unwrap_or_else(|| {
                             panic!("internal: class has no compiled instance initializer (compile_module coverage gap)")
-                        }),
-                )
+                        });
+                    (code, application.own_slot_base)
+                })
             }
         };
         match compiled {
@@ -400,9 +567,13 @@ impl Interpreter {
                 self.run_own_slots(class, instance, frame, bindings)?;
                 self.run_own_init_exprs(class, frame, bindings)
             }
-            Some(code) => {
+            Some((code, own_slot_base)) => {
                 {
                     let mut f = frame.borrow_mut();
+                    debug_assert_eq!(
+                        f.slot_base, own_slot_base,
+                        "an initializer frame must be built for the level it runs"
+                    );
                     let needed = (code.num_registers - code.num_args) as usize;
                     if f.temps.len() < needed {
                         f.temps.resize(needed, Value::Nil);
@@ -420,21 +591,29 @@ impl Interpreter {
         frame: &FrameRef,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Result<(), Signal> {
-        let slots = {
-            let borrowed = class.borrow();
-            match &borrowed.data {
-                ObjectData::Class(data) => data.instance_slots.clone(),
-                _ => return Ok(()),
-            }
+        // The application itself, not copies of the slot list and the merged
+        // `slot_index` map it holds: both are read-only here, and cloning
+        // them once per level per instantiation is allocation on the
+        // tree-walker's hottest path (and in the baseline `bench` hands the
+        // next milestone). Holding the `Rc` also releases the borrow on
+        // `class`, so the loop below can call back into `self`.
+        let Some(application) = crate::dispatch::class_application(class) else {
+            return Ok(());
         };
-        let slot_index = {
-            let borrowed = class.borrow();
-            match &borrowed.data {
-                ObjectData::Class(data) => data.slot_index.clone(),
-                _ => return Ok(()),
-            }
-        };
-        for slot in &slots {
+        // Only the tree-walker reaches this function, and
+        // `Interpreter::set_engine` refuses the tree-walker on a world
+        // decoded from an image (`EngineUnavailable::TreeWalkAfterLoad`), so
+        // every mixin that gets here was built from source and every slot
+        // has its declaration. That refusal is what makes skipping a
+        // declarationless slot below safe to read as "no slot is dropped":
+        // without it a decoded slot would be skipped silently and the
+        // instance would come back half-initialised.
+        for slot in application
+            .mixin
+            .slots
+            .iter()
+            .filter_map(|s| s.decl.as_ref())
+        {
             if let Some(init) = &slot.init {
                 let value = crate::interpreter::eval::eval_expr(self, init, frame, bindings)?;
                 let name = Symbol::intern(&slot.name.name);
@@ -444,7 +623,7 @@ impl Interpreter {
                 // index here would silently overwrite an already-initialized
                 // superclass slot at the same low index instead of this
                 // class's own slot.
-                if let Some(&index) = slot_index.get(&name) {
+                if let Some(&index) = application.slot_index.get(&name) {
                     crate::interpreter::eval::store_instance_field(instance, index, value);
                 }
             }
@@ -461,20 +640,28 @@ impl Interpreter {
     /// fixtures do not exercise it) -- treated the same as `Stmt::Expr` here
     /// (evaluate the expression, discard the value) rather than raising a
     /// non-local return with nowhere sensible to land.
+    ///
+    /// A mixin decoded from an image records *that* it has `initExprs`
+    /// (`has_init_exprs`) but not the statements themselves, so this loop
+    /// would run zero of them and report success. It never sees one:
+    /// `Interpreter::set_engine` refuses the tree-walker after a load
+    /// (`EngineUnavailable::TreeWalkAfterLoad`), and under the bytecode
+    /// engine the same step is the class's compiled initializer, which
+    /// `image::decode` refuses an image for omitting.
     fn run_own_init_exprs(
         &mut self,
         class: &ClassRef,
         frame: &FrameRef,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Result<(), Signal> {
-        let init_exprs = {
-            let borrowed = class.borrow();
-            match &borrowed.data {
-                ObjectData::Class(data) => data.init_exprs.clone(),
-                _ => return Ok(()),
-            }
+        // The mixin, not a deep copy of the statements it holds: the AST is
+        // read-only here, so this is an `Rc` bump rather than a clone of
+        // every `initExpr` node on every instantiation. Holding it also
+        // releases the borrow on `class` for the loop below.
+        let Some(application) = crate::dispatch::class_application(class) else {
+            return Ok(());
         };
-        for stmt in &init_exprs {
+        for stmt in &application.mixin.init_exprs {
             match stmt {
                 ast::Stmt::Expr(e) | ast::Stmt::Return(e) => {
                     crate::interpreter::eval::eval_expr(self, e, frame, bindings)?;
@@ -483,6 +670,91 @@ impl Interpreter {
         }
         Ok(())
     }
+}
+
+/// The selector of `class`'s primary factory message: the selector its mixin
+/// declares a factory pattern for, or `new` for a builtin, which declares
+/// none. `None` for a non-class object.
+///
+/// One definition, shared by `try_factory_send` (which decides whether an
+/// incoming send *is* the factory message) and `eval_superclass_message`
+/// (which decides whether a superclass clause names it) -- `newspeak-spec.pdf`
+/// §6.1 makes those the same question asked from two sides.
+pub(crate) fn primary_factory_selector(class: &ClassRef) -> Option<Symbol> {
+    let borrowed = class.borrow();
+    match &borrowed.data {
+        ObjectData::Class(data) => Some(primary_factory_selector_of(data)),
+        _ => None,
+    }
+}
+
+/// `primary_factory_selector` for a caller that already holds the borrow.
+fn primary_factory_selector_of(data: &ClassData) -> Symbol {
+    match &data.application.mixin.factory {
+        Some(factory) => factory.selector,
+        None => Symbol::intern("new"),
+    }
+}
+
+fn class_name(class: &ClassRef) -> Symbol {
+    let borrowed = class.borrow();
+    match &borrowed.data {
+        ObjectData::Class(data) => data.application.mixin.name,
+        _ => Symbol::intern("an object"),
+    }
+}
+
+/// `newspeak-spec.pdf` §6.1: "It is a run time error if the message
+/// determined by the inheritance clause is not the primary factory message
+/// of C." Raised from shared orchestration, so both engines print the same
+/// stderr byte for byte.
+fn not_the_primary_factory_error(
+    class: &ClassRef,
+    superclass: &ClassRef,
+    selector: Symbol,
+    expected: Option<Symbol>,
+) -> Signal {
+    let subclass_name = class_name(class);
+    let superclass_name = class_name(superclass);
+    let expected = match expected {
+        Some(expected) => format!("#{expected}"),
+        // `superclass` is not a class object at all -- an internally
+        // inconsistent chain rather than a program error, reported here
+        // rather than swallowed.
+        None => "no factory (it is not a class)".to_string(),
+    };
+    Signal::Error(NewspeakError {
+        selector,
+        receiver: Value::Obj(superclass.clone()),
+        message: format!(
+            "the superclass clause of class {subclass_name} sends #{selector}, \
+             but the primary factory of class {superclass_name} is {expected}"
+        ),
+    })
+}
+
+/// The evaluated clause message's arguments, unpacked from the array
+/// `superclass_clause_message_args_expr` builds.
+///
+/// A `NewspeakError` rather than a `panic!` on the wrong shape: the compiled
+/// body that produced this value can come off the wire, where
+/// `image::decode::build_module` reconciles its kind and arity but nothing
+/// constrains what it returns. An image is untrusted input.
+fn argument_list(class: &ClassRef, value: Value) -> Result<Vec<Value>, Signal> {
+    if let Value::Obj(obj) = &value {
+        if let ObjectData::Array(items) = &obj.borrow().data {
+            return Ok(items.clone());
+        }
+    }
+    Err(Signal::Error(NewspeakError {
+        selector: Symbol::intern("new"),
+        receiver: value,
+        message: format!(
+            "the superclass clause of class {} did not evaluate its message \
+             arguments to an argument list",
+            class_name(class)
+        ),
+    }))
 }
 
 /// `pub(crate)` (rather than private) so `eval.rs`'s `eval_ident` can reuse
@@ -517,8 +789,9 @@ pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
 
 /// A `MessagePattern` rendered as the selector string it declares. Also the
 /// image encoder's `FrameKind::Method` representation: a frame names the
-/// method it activates by selector, re-resolved on load against the reloaded
-/// class's method map (`image::decode`).
+/// method it activates by selector, re-resolved on load against the method
+/// map of the mixin the decoded mixin table rebuilt for the frame's own
+/// `current_class` (`image::decode::method_decl`).
 pub(crate) fn method_name(pattern: &ast::MessagePattern) -> String {
     match pattern {
         ast::MessagePattern::Unary { selector } => selector.name.clone(),
@@ -544,30 +817,24 @@ pub(crate) fn pattern_param_count(pattern: &ast::MessagePattern) -> usize {
 }
 
 /// Whether `class` declares any slot or `initExpr` at all -- `false` for
-/// every `BuiltinClass` and for a non-class object.
-///
-/// `pub(crate)` for `image::decode::install_code_table`, which must refuse
-/// an image that has no compiled initializer for a class that needs one
-/// rather than let `run_own_initializer` below panic on the invariant.
-/// One definition of "needs initializer code", not one per caller.
+/// every `BuiltinClass` and for a non-class object. Delegates to
+/// `mixin_needs_initializer_code`, the one definition of "needs initializer
+/// code" a class-level and a mixin-level caller both share.
 pub(crate) fn class_has_initializer_code(class: &ClassRef) -> bool {
     let borrowed = class.borrow();
     match &borrowed.data {
-        ObjectData::Class(data) => !(data.instance_slots.is_empty() && data.init_exprs.is_empty()),
+        ObjectData::Class(data) => mixin_needs_initializer_code(&data.application.mixin),
         _ => false,
     }
 }
 
-fn total_slot_count(class: &ClassRef) -> usize {
-    let mut count = 0;
-    let mut current = Some(class.clone());
-    while let Some(c) = current {
-        let borrowed = c.borrow();
-        let ObjectData::Class(data) = &borrowed.data else {
-            break;
-        };
-        count += data.instance_slots.len();
-        current = data.superclass.clone();
-    }
-    count
+/// Whether `mixin` declares any slot or `initExpr` at all.
+///
+/// `pub(crate)` for `image::decode::build_module`, which must refuse
+/// an image that has no compiled initializer for a mixin that needs one
+/// rather than let `run_own_initializer` above panic on the invariant --
+/// checked per mixin now that a code table covers the whole tree, not only
+/// the root.
+pub(crate) fn mixin_needs_initializer_code(mixin: &crate::mixin::Mixin) -> bool {
+    !mixin.slots.is_empty() || mixin.has_init_exprs
 }

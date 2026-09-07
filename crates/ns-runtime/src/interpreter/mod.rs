@@ -5,6 +5,7 @@
 
 pub mod eval;
 pub mod instantiate;
+pub(crate) mod nested;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -34,11 +35,81 @@ pub enum Engine {
     Bytecode(CompiledModule),
 }
 
+/// Why `Interpreter::set_engine` refused.
+///
+/// One variant so far, and the reason it is an enum rather than a `bool`
+/// is that a caller should be able to tell the cases apart if a second one
+/// ever appears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineUnavailable {
+    /// `Engine::TreeWalk` on a world decoded from an image.
+    ///
+    /// The tree-walker evaluates declarations: a method's `ast::CodeBody`,
+    /// a slot clause's initializer expression, a class's `initExprs`, a
+    /// superclass clause's receiver. An image carries none of those -- it
+    /// carries compiled code and a mixin table, and every `Mixin`,
+    /// `MixinMethod` and `MixinSlot` `image::mixins::decode` rebuilds has
+    /// `decl: None`. Running the tree-walker over such a world does not
+    /// fail uniformly: `invoke_method` and `nested::run_clause_body` panic
+    /// on the missing declaration, while `instantiate::run_own_slots`
+    /// filter-maps the declarationless slots away and
+    /// `run_own_init_exprs` iterates an empty vector -- silently producing
+    /// a half-initialised object, which is the worse of the two outcomes.
+    ///
+    /// Refusing the switch is what makes the behaviour consistent, and it
+    /// does so for every such path at once, including paths added later:
+    /// the alternative -- teaching each individual tree-walk path to fail
+    /// loudly -- has to be re-done for every path anyone writes next, and
+    /// forgetting once puts the silent half-initialisation back.
+    TreeWalkAfterLoad,
+}
+
+impl std::fmt::Display for EngineUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EngineUnavailable::TreeWalkAfterLoad => write!(
+                f,
+                "the tree-walking engine cannot run a world decoded from an image: \
+                 an image carries compiled code, not the declarations the tree-walker \
+                 evaluates"
+            ),
+        }
+    }
+}
+
 pub struct Interpreter {
     next_identity_hash: u32,
     builtin_classes: Option<HashMap<BuiltinClass, ClassRef>>,
     platform_singleton: Option<Value>,
     engine: Engine,
+    /// (mixin identity, superclass application identity) -> behaviour.
+    /// Keyed on the superclass's *application*, never on a superclass class
+    /// object: a nested superclass has one class object per enclosing
+    /// instance, so a class-object key would never hit and every instance
+    /// would get its own behaviour.
+    applications: HashMap<(usize, usize), Rc<crate::mixin::MixinApplication>>,
+    /// mixin identity -> the synthetic empty class side `metaclass_of`
+    /// stands in for that mixin's own level when it declares none.
+    ///
+    /// Cached, not minted per call, because the mixin's `Rc` identity is
+    /// what `applications` keys on: a fresh one per call would give two
+    /// class objects that share an instance-side application two *different*
+    /// metaclass applications, and the shared-application property is
+    /// exactly what a later milestone's inline caches guard on. It would
+    /// also grow `applications` without bound.
+    empty_class_sides: HashMap<usize, Rc<crate::mixin::Mixin>>,
+    /// The (receiver address, declaration identity) pairs whose nested class
+    /// object is being created right now -- see
+    /// `nested::cyclic_definition_error`. A stack, not a set: it is empty
+    /// on every path that is not inside a superclass clause, and a clause
+    /// nests only as deep as a program actually chains class creations, so
+    /// a linear scan beats hashing and allocates nothing in the common
+    /// case.
+    nested_in_progress: Vec<(usize, usize)>,
+    /// Set by `image::load`: this world's declarations came off the wire,
+    /// so they are mixins without `decl`s. See
+    /// `EngineUnavailable::TreeWalkAfterLoad`.
+    decoded_from_image: bool,
 }
 
 impl Default for Interpreter {
@@ -54,6 +125,10 @@ impl Interpreter {
             builtin_classes: None,
             platform_singleton: None,
             engine: Engine::TreeWalk,
+            applications: HashMap::new(),
+            empty_class_sides: HashMap::new(),
+            nested_in_progress: Vec::new(),
+            decoded_from_image: false,
         }
     }
 
@@ -63,6 +138,10 @@ impl Interpreter {
             builtin_classes: None,
             platform_singleton: None,
             engine: Engine::TreeWalk,
+            applications: HashMap::new(),
+            empty_class_sides: HashMap::new(),
+            nested_in_progress: Vec::new(),
+            decoded_from_image: false,
         };
         interp.builtin_classes = Some(build_builtin_classes(&mut interp));
         interp
@@ -71,8 +150,26 @@ impl Interpreter {
     /// Switches engines. Call after `load_module` and `compile_module`; the
     /// default is `TreeWalk`, so every Milestone 1 caller keeps its
     /// behavior.
-    pub fn set_engine(&mut self, engine: Engine) {
+    ///
+    /// Refused in exactly one case -- `Engine::TreeWalk` on a world
+    /// `image::load` built, for the reasons on
+    /// `EngineUnavailable::TreeWalkAfterLoad`. `Engine::Bytecode` is never
+    /// refused, so every caller that installs the VM (which is all of them
+    /// but one test) can treat the result as infallible.
+    pub fn set_engine(&mut self, engine: Engine) -> Result<(), EngineUnavailable> {
+        if self.decoded_from_image && matches!(engine, Engine::TreeWalk) {
+            return Err(EngineUnavailable::TreeWalkAfterLoad);
+        }
         self.engine = engine;
+        Ok(())
+    }
+
+    /// Marks this world as decoded from an image -- `image::load`'s last
+    /// step, and the only writer. Sealing the interpreter rather than each
+    /// tree-walk path is the whole of the policy; see
+    /// `EngineUnavailable::TreeWalkAfterLoad`.
+    pub(crate) fn mark_decoded_from_image(&mut self) {
+        self.decoded_from_image = true;
     }
 
     pub fn compiled_module(&self) -> Option<&CompiledModule> {
@@ -133,7 +230,7 @@ impl Interpreter {
     /// (`instantiate.rs`) recognizes the shape and routes to
     /// `instantiate` directly; see its own doc comment for why this can
     /// never double-fire against the superclass clause's own deferred
-    /// factory message (`run_superclass_initializer` never calls `send`).
+    /// factory message (`run_initializer_level` never calls `send`).
     pub fn send(
         &mut self,
         receiver: Value,
@@ -145,6 +242,48 @@ impl Interpreter {
         if let Some(result) = self.try_factory_send(&receiver, selector, &args, bindings) {
             return result;
         }
+        // §6.3: a class object's class-side methods are reached through its
+        // metaclass, consulted before the class object's own (ordinary,
+        // `Object`-native) behaviour. `metaclass_of` returns `None` for a
+        // class whose mixin declares no class side, and `Lookup::NotFound`
+        // here (the metaclass exists but doesn't answer `selector` either)
+        // both fall through to the code below unchanged -- there is no
+        // second `doesNotUnderstand:` path, only a second class to try
+        // `lookup_public` against first.
+        if let Value::Obj(obj) = &receiver {
+            let is_class = matches!(obj.borrow().data, ObjectData::Class(_));
+            if is_class {
+                if let Some(metaclass) = self.metaclass_of(obj) {
+                    match dispatch::lookup_public(&metaclass, selector) {
+                        Lookup::Method(method, defining_class) => {
+                            return self.invoke_method(
+                                receiver,
+                                method,
+                                defining_class,
+                                args,
+                                bindings.clone(),
+                                sender,
+                            );
+                        }
+                        Lookup::NestedClass(mixin, declaring_class) => {
+                            return nested::nested_class(
+                                self,
+                                &receiver,
+                                &mixin,
+                                &declaring_class,
+                                bindings,
+                            );
+                        }
+                        Lookup::Native(kind) => {
+                            return self.dispatch_native_or_dnu(
+                                kind, receiver, selector, args, bindings, sender,
+                            );
+                        }
+                        Lookup::NotFound => {}
+                    }
+                }
+            }
+        }
         let class = self.class_of(&receiver);
         match dispatch::lookup_public(&class, selector) {
             Lookup::Method(method, defining_class) => self.invoke_method(
@@ -155,6 +294,13 @@ impl Interpreter {
                 bindings.clone(),
                 sender,
             ),
+            // §6: the implicit accessor a nested declaration defines is
+            // reached exactly like any other member, and it ignores `args`
+            // -- the accessor is unary, so a send that supplied arguments
+            // did not name it (`walk` matched on the bare selector).
+            Lookup::NestedClass(mixin, declaring_class) => {
+                nested::nested_class(self, &receiver, &mixin, &declaring_class, bindings)
+            }
             Lookup::Native(kind) => {
                 self.dispatch_native_or_dnu(kind, receiver, selector, args, bindings, sender)
             }
@@ -297,7 +443,13 @@ impl Interpreter {
                     })),
                 }
             }
-            Lookup::NotFound => Err(Signal::Error(NewspeakError {
+            // A nested declaration can never be the `doesNotUnderstand:`
+            // handler: `walk` matches a declaration by name, and a class
+            // name is never a keyword selector. Folded into `NotFound`
+            // rather than given an arm of its own so the unreachable case
+            // still reports the ordinary "nothing handles this" error
+            // instead of a second, differently-worded one.
+            Lookup::NotFound | Lookup::NestedClass(..) => Err(Signal::Error(NewspeakError {
                 selector,
                 receiver,
                 message: format!("doesNotUnderstand: {selector} (and no doesNotUnderstand: found anywhere in the class chain)"),
@@ -322,12 +474,42 @@ impl Interpreter {
     pub fn invoke_method(
         &mut self,
         receiver: Value,
-        method: Rc<ast::MethodDecl>,
+        method: Rc<crate::mixin::MixinMethod>,
         defining_class: ClassRef,
         args: Vec<Value>,
         bindings: Rc<HashMap<Span, Binding>>,
         sender: Option<FrameRef>,
     ) -> EvalResult {
+        // A frame's locals are addressed as one run of registers -- the
+        // arguments first, the declared temporaries after them -- and
+        // `eval::read_local`/`write_local` find the boundary by asking the
+        // frame how many arguments it was *given*, not how many the method
+        // declares. A wrong-arity activation therefore does not fail; it
+        // silently shifts every temporary by the difference and reads
+        // arguments back where a temporary should be, under both engines
+        // identically, which is why the differential harness cannot see it.
+        // Silent wrong output with exit status 0 is the failure mode this
+        // repository's invariants single out, so the mismatch is refused
+        // here, in the orchestration both engines share, as an ordinary
+        // Newspeak error -- never a panic, since the caller may be a host.
+        //
+        // No Newspeak-level send can reach this: the parser builds a
+        // message whose argument count matches its selector by
+        // construction. The reachable callers are host-initiated sends --
+        // `ns-next run --send`, `snapshot --send`, `load --send`, and any
+        // future embedder driving `Interpreter::send` directly.
+        if args.len() != method.num_args {
+            return Err(Signal::Error(NewspeakError {
+                selector: method.selector,
+                receiver,
+                message: format!(
+                    "wrong number of arguments: `{}` takes {}, got {}",
+                    method.selector,
+                    method.num_args,
+                    args.len()
+                ),
+            }));
+        }
         // Hook 1 (spec: "`vm.rs` and the engine hook"): the frame, the
         // `uncontinuable` marking, and the `Signal::Return` catch are
         // shared; only the body's evaluation differs.
@@ -343,24 +525,42 @@ impl Interpreter {
                     }),
             ),
         };
+        // The tree-walker sizes the frame from the declaration's own named
+        // temporaries, and only ever runs a mixin built from source, so
+        // `decl` is always there when it is the one asking.
         let temp_count = match &compiled {
             Some(code) => (code.num_registers - code.num_args) as usize,
-            None => method.body.temps.len(),
+            None => method.decl.as_ref().map_or(0, |d| d.body.temps.len()),
         };
         let frame = Rc::new(RefCell::new(Frame {
             receiver,
             args,
             temps: vec![Value::Nil; temp_count],
             pc: 0,
+            // Fixed by the same `compiled` that decides which body runs
+            // below, so the frame can never claim a unit its own body does
+            // not count in.
+            pc_kind: match &compiled {
+                Some(_) => PcKind::Bytecode,
+                None => PcKind::TreeWalk,
+            },
             sender,
             home: None,
             current_class: Some(defining_class),
             kind: FrameKind::Method(method.clone()),
             uncontinuable: false,
+            slot_base: 0, // a method body never contains InitSlot
         }));
-        let result = match &compiled {
-            Some(code) => crate::vm::run_code(self, &frame, code, &bindings),
-            None => self.run_statements(&method.body.stmts, &frame, &bindings),
+        let result = match (&compiled, &method.decl) {
+            (Some(code), _) => crate::vm::run_code(self, &frame, code, &bindings),
+            (None, Some(decl)) => self.run_statements(&decl.body.stmts, &frame, &bindings),
+            // Unreachable rather than merely unlikely: a mixin without
+            // declarations comes from an image, and `image::load` installs
+            // `Engine::Bytecode`, so such a method always arrives compiled.
+            (None, None) => panic!(
+                "internal: the tree-walking engine cannot run a method of a mixin \
+                 decoded from an image"
+            ),
         };
         frame.borrow_mut().uncontinuable = true;
         match result {
@@ -402,7 +602,11 @@ impl Interpreter {
 
     fn raise_return(&self, frame: &FrameRef, value: Value) -> Signal {
         let target = match &frame.borrow().kind {
-            FrameKind::Method(_) | FrameKind::TopLevel | FrameKind::Initializer(_) => frame.clone(),
+            FrameKind::Method(_)
+            | FrameKind::TopLevel
+            | FrameKind::Initializer(_)
+            | FrameKind::SuperclassClause(_)
+            | FrameKind::SuperclassMessage(_) => frame.clone(),
             FrameKind::Closure(closure) => closure.home.clone(),
         };
         if target.borrow().uncontinuable {
@@ -429,6 +633,131 @@ impl Interpreter {
             // via `Interpreter::builtin_class(kind)` (added in Task 7).
             _ => self.builtin_class_for_primitive(value),
         }
+    }
+
+    /// The metaclass carrying `class`'s class side (§6.3), created on first
+    /// use and cached on `class` itself (`ClassData::metaclass`) -- not in a
+    /// side table, and not in an instance slot the way a nested class's
+    /// cache is: a class object's payload is `ObjectData::Class`, never
+    /// `Instance`, so it has no slot vector for `nested_slot` to index into.
+    /// Caching on the class object directly also gives every send against
+    /// the same class object the same metaclass identity, which a later
+    /// milestone's inline caches need.
+    ///
+    /// Returns `None` only when neither `class`'s own mixin nor any
+    /// ancestor's declares a class side -- a class side is inherited down
+    /// the ordinary subclass chain exactly like any other mixin member,
+    /// single inheritance and nothing more. What stays out of scope is
+    /// §3.2's *reification* of that fact: no `Class` superclass object, and
+    /// no per-instance metaclass uniqueness (every class here still shares
+    /// one metaclass, the way every application of a mixin shares one
+    /// `MixinApplication`). Whether a class side is inherited at all is a
+    /// different, much narrower question than how far the reified model
+    /// goes, and the answer to it is the same answer §5's ordinary lookup
+    /// already gives for a method.
+    ///
+    /// When `class`'s own mixin declares no class side but an ancestor's
+    /// does, an empty synthetic mixin stands in for `class`'s own level --
+    /// the same placeholder-mixin technique `builtin_mixin` below already
+    /// uses for a builtin with no user-declared behaviour of its own. It
+    /// contributes no methods, only relays the superclass's metaclass
+    /// application onward, so `class`'s metaclass answers exactly what the
+    /// nearest class-side-declaring ancestor's metaclass would.
+    ///
+    /// Either way, the metaclass's superclass is the superclass's
+    /// metaclass, recursively, and the metaclass application chain stays
+    /// linked to the metaclass class-object chain exactly as
+    /// `dispatch::next_level` requires for the ordinary one.
+    /// Iterative, over an explicit stack, for the same reason
+    /// `dispatch::walk` is: the superclass chain's length is the *image's*
+    /// to choose (`image::decode` builds one link per class record, at
+    /// under twenty bytes apiece), and every send to a class object enters
+    /// here. Recursing on it would overflow the stack on a chain a ten-
+    /// megabyte image can describe -- an abort, not a diagnosable failure.
+    ///
+    /// The chain is finite: `image::decode::rebuild_applications` refuses a
+    /// decoded graph whose superclass links form a cycle, and no other
+    /// construction site can build one (a superclass is fixed before the
+    /// class object that inherits it exists).
+    pub fn metaclass_of(&mut self, class: &ClassRef) -> Option<ClassRef> {
+        // Walk out to the first level that already answers -- a cached
+        // metaclass, a non-class object, or the end of the chain -- pushing
+        // each level that still has to be built. `chain` is nearest-first,
+        // so the build below runs it in reverse.
+        let mut chain: Vec<ClassRef> = Vec::new();
+        let mut super_metaclass: Option<ClassRef> = None;
+        let mut level = class.clone();
+        loop {
+            let (cached, superclass) = {
+                let borrowed = level.borrow();
+                match &borrowed.data {
+                    ObjectData::Class(data) => (data.metaclass.clone(), data.superclass.clone()),
+                    // Not a class object: it has no metaclass, and nothing
+                    // below it can inherit one through this level.
+                    _ => break,
+                }
+            };
+            if cached.is_some() {
+                super_metaclass = cached;
+                break;
+            }
+            chain.push(level);
+            let Some(superclass) = superclass else { break };
+            level = superclass;
+        }
+        for level in chain.iter().rev() {
+            let (own_mixin, enclosing, declaring_class) = {
+                let borrowed = level.borrow();
+                match &borrowed.data {
+                    ObjectData::Class(data) => (
+                        data.application.mixin.clone(),
+                        data.enclosing.clone(),
+                        data.declaring_class.clone(),
+                    ),
+                    _ => unreachable!("only class objects are pushed onto the chain"),
+                }
+            };
+            let class_side = own_mixin.class_side.clone();
+            let class_side_mixin = match class_side {
+                Some(mixin) => mixin,
+                // No class side of its own to apply -- only worth building a
+                // metaclass at all if an ancestor's class side needs relaying
+                // through it. `super_metaclass.is_none()` here means neither
+                // this level nor any ancestor declares a class side, which is
+                // the ordinary "costs nothing" case: this level gets no
+                // metaclass, nothing is cached for it, and the next level in
+                // still gets its own chance to declare one.
+                None => {
+                    if super_metaclass.is_none() {
+                        continue;
+                    }
+                    self.empty_class_side_mixin(&own_mixin)
+                }
+            };
+            let super_application = super_metaclass
+                .as_ref()
+                .and_then(dispatch::class_application);
+            let application = self.apply_mixin(&class_side_mixin, super_application.as_ref());
+            // §6.3.1: a class side is written inside the same class
+            // declaration its instance side is, and `resolver::resolve_class`
+            // resolves both against the same lexical chain -- so a class-side
+            // method's `outer` must reach exactly the objects an
+            // instance-side method's does. The metaclass therefore borrows
+            // the class's own place in the declaration chain rather than
+            // starting a new, empty one.
+            let metaclass =
+                self.new_class_object(application, enclosing, declaring_class, super_metaclass);
+            match &mut level.borrow_mut().data {
+                ObjectData::Class(data) => data.metaclass = Some(metaclass.clone()),
+                _ => unreachable!("checked above"),
+            }
+            super_metaclass = Some(metaclass);
+        }
+        // The last level built is `chain[0]`, which is `class` itself; an
+        // empty chain means the walk stopped on the first step, and
+        // `super_metaclass` is then either `class`'s own cached metaclass or
+        // `None` because it is not a class object at all.
+        super_metaclass
     }
 
     fn builtin_class_for_primitive(&self, value: &Value) -> ClassRef {
@@ -509,6 +838,132 @@ impl Interpreter {
         let class = self.builtin_class(BuiltinClass::Platform);
         self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil]))
     }
+
+    /// The `platform collections` namespace object -- see `crate::platform`'s
+    /// module doc for how its payload shape (a two-field, always-`Nil`
+    /// `Instance`) tells it apart from the `platform` singleton and the
+    /// transcript stream. Like `new_stream_object`, it is allocated fresh
+    /// per send: the namespace is stateless, so identity across sends
+    /// carries no meaning that any caller could observe.
+    pub(crate) fn new_collections_namespace(&mut self) -> ObjRef {
+        let class = self.builtin_class(BuiltinClass::Platform);
+        self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil, Value::Nil]))
+    }
+
+    /// A class object around an already-computed application. The one place
+    /// the three-way invariant is established: a class object's `superclass`
+    /// is linked exactly when its application's `superclass` is (callers
+    /// derive `application` from `superclass` through `apply_mixin`), which
+    /// is what `dispatch::next_level` relies on when it steps both chains
+    /// together.
+    ///
+    /// `class` is the shared `Object` placeholder: a class object's own
+    /// `.class` field never points at its metaclass. `metaclass_of` reaches
+    /// a class side through a separate cache (`ClassData::metaclass`), not
+    /// through this field -- §3.2's "every class an instance of a unique
+    /// metaclass" stays unbuilt, by design (see `metaclass_of`'s doc
+    /// comment).
+    pub(crate) fn new_class_object(
+        &mut self,
+        application: Rc<crate::mixin::MixinApplication>,
+        enclosing: Option<ObjRef>,
+        declaring_class: Option<ClassRef>,
+        superclass: Option<ClassRef>,
+    ) -> ClassRef {
+        let class = self.builtin_class(BuiltinClass::Object);
+        let identity_hash = self.alloc_identity_hash();
+        Rc::new(RefCell::new(Object {
+            class,
+            identity_hash,
+            data: ObjectData::Class(ClassData {
+                application,
+                enclosing,
+                declaring_class,
+                superclass,
+                builtin: None,
+                metaclass: None,
+            }),
+        }))
+    }
+
+    pub fn apply_mixin(
+        &mut self,
+        mixin: &Rc<crate::mixin::Mixin>,
+        superclass: Option<&Rc<crate::mixin::MixinApplication>>,
+    ) -> Rc<crate::mixin::MixinApplication> {
+        let key = (
+            crate::mixin::mixin_key(mixin),
+            superclass.map_or(0, crate::mixin::application_key),
+        );
+        if let Some(existing) = self.applications.get(&key) {
+            return existing.clone();
+        }
+        let inherited = superclass.map_or(0, |s| s.num_slots);
+        let mut slot_index = superclass.map_or_else(HashMap::new, |s| s.slot_index.clone());
+        for (i, slot) in mixin.slots.iter().enumerate() {
+            slot_index.insert(slot.name, inherited + i);
+        }
+        // The nested-class cache slots. They are part of the instance layout
+        // because the spec caches a nested class in the enclosing *object*;
+        // a side table keyed by object would cost a hash lookup on a path
+        // that is otherwise a slot read.
+        //
+        // Keyed by declaration identity: a subclass that redeclares an
+        // inherited nested class shadows it for a plain `N` but not for
+        // `super N`, so the two need separate slots -- see `nested_slot`.
+        let mut nested_slot = superclass.map_or_else(HashMap::new, |s| s.nested_slot.clone());
+        let mut next = inherited + mixin.slots.len();
+        for nested in &mixin.nested {
+            nested_slot.insert(crate::mixin::mixin_key(nested), next);
+            next += 1;
+        }
+        let application = Rc::new(crate::mixin::MixinApplication {
+            mixin: mixin.clone(),
+            superclass: superclass.cloned(),
+            num_slots: next,
+            slot_index,
+            nested_slot,
+            own_slot_base: inherited,
+        });
+        self.applications.insert(key, application.clone());
+        application
+    }
+
+    /// The empty mixin `metaclass_of` applies for a class that declares no
+    /// class side of its own but inherits one from an ancestor -- same
+    /// placeholder technique as `builtin_mixin` below, one `Rc` per owning
+    /// mixin so the application cache keys each such level apart from its
+    /// siblings. Contributes no methods or slots of its own; its only job
+    /// is to give `apply_mixin` something to link the ancestor's metaclass
+    /// application through.
+    ///
+    /// One per *mixin*, not one per call and not one per class object: a
+    /// nested class has one class object per enclosing instance but a
+    /// single mixin, and §6.2's "all applications of a mixin share code and
+    /// structure" has to hold for the metaclass side too -- otherwise two
+    /// class objects that share an instance-side application answer a
+    /// class-side send out of two distinct metaclass applications, which is
+    /// the property a later milestone's inline caches guard on.
+    ///
+    /// Keying the cache by `owner`'s address is safe for the same reason
+    /// `applications` is: every mixin that reaches here is held for the
+    /// interpreter's life by an entry in `applications`, so its address is
+    /// never reused.
+    fn empty_class_side_mixin(
+        &mut self,
+        owner: &Rc<crate::mixin::Mixin>,
+    ) -> Rc<crate::mixin::Mixin> {
+        let name = owner.name;
+        self.empty_class_sides
+            .entry(crate::mixin::mixin_key(owner))
+            .or_insert_with(|| {
+                Rc::new(crate::mixin::Mixin::empty(Symbol::intern(&format!(
+                    "{} class",
+                    name.as_str()
+                ))))
+            })
+            .clone()
+    }
 }
 
 /// Milestone 1 (no metaclasses -- see the runtime spec's "Documented
@@ -552,34 +1007,48 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
         BuiltinClass::Block,
         BuiltinClass::Platform,
     ];
-    let class_of_class = build_self_referential_object_class();
+    // A builtin's behaviour is native (`builtins::dispatch_native`), so its
+    // mixin declares nothing: the application exists to give the builtin the
+    // same shape every other class object has, and -- for the non-`Object`
+    // builtins -- to link an application chain parallel to the class-object
+    // chain, which `dispatch::next_level` steps in lockstep.
+    let object_application = interp.apply_mixin(&builtin_mixin(BuiltinClass::Object), None);
+    let class_of_class = build_self_referential_object_class(object_application.clone());
     let mut map = HashMap::new();
     for kind in kinds {
-        let superclass = if kind == BuiltinClass::Object {
-            None
+        let (superclass, application) = if kind == BuiltinClass::Object {
+            (None, object_application.clone())
         } else {
-            Some(class_of_class.clone())
+            (
+                Some(class_of_class.clone()),
+                interp.apply_mixin(&builtin_mixin(kind), Some(&object_application)),
+            )
         };
         let obj = Rc::new(RefCell::new(Object {
             class: class_of_class.clone(),
             identity_hash: interp.alloc_identity_hash(),
             data: ObjectData::Class(ClassData {
-                name: Symbol::intern(&format!("{kind:?}")),
-                superclass,
-                methods: HashMap::new(),
-                instance_slots: vec![],
-                slot_index: HashMap::new(),
-                init_exprs: vec![],
-                class_side: None,
+                application,
                 enclosing: None,
-                factory: None,
+                declaring_class: None,
+                superclass,
                 builtin: Some(kind),
+                metaclass: None,
             }),
         }));
         map.insert(kind, obj);
     }
     map.insert(BuiltinClass::Object, class_of_class);
     map
+}
+
+/// The empty mixin behind one `BuiltinClass`. A fresh `Rc` per call, so the
+/// application cache keys the builtins apart from each other even though
+/// their mixins are structurally identical.
+fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
+    Rc::new(crate::mixin::Mixin::empty(Symbol::intern(&format!(
+        "{kind:?}"
+    ))))
 }
 
 /// Builds the single, genuinely self-referential `Object`-tagged class
@@ -598,7 +1067,9 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
 /// `dummy_class` test helper (Task 3) and reused correctly in
 /// `dispatch.rs`'s test helper (Task 5) -- here it builds a real,
 /// production bootstrap object, not a test fixture.
-fn build_self_referential_object_class() -> ClassRef {
+fn build_self_referential_object_class(
+    application: Rc<crate::mixin::MixinApplication>,
+) -> ClassRef {
     let uninit: Rc<std::mem::MaybeUninit<RefCell<Object>>> = Rc::new_uninit();
     let raw_mut = Rc::as_ptr(&uninit) as *mut std::mem::MaybeUninit<RefCell<Object>>;
     let data_ptr = raw_mut as *const RefCell<Object>;
@@ -616,16 +1087,12 @@ fn build_self_referential_object_class() -> ClassRef {
             class: self_ref,
             identity_hash: 0,
             data: ObjectData::Class(ClassData {
-                name: Symbol::intern("Object"),
-                superclass: None,
-                methods: HashMap::new(),
-                instance_slots: vec![],
-                slot_index: HashMap::new(),
-                init_exprs: vec![],
-                class_side: None,
+                application,
                 enclosing: None,
-                factory: None,
+                declaring_class: None,
+                superclass: None,
                 builtin: Some(BuiltinClass::Object),
+                metaclass: None,
             }),
         }));
     }

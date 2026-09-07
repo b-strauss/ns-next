@@ -44,8 +44,13 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
         );
         checked += 1;
     }
+    // Same reasoning as `differential.rs`'s floor: a fixture that stops
+    // being discovered loses its expected-stdout check silently, so the
+    // floor tracks the actual count.
     assert!(
-        checked >= 3,
-        "expected at least the 3 fixtures this task adds"
+        checked >= 18,
+        "expected every one of the 18 tests-fixtures/*.ns fixtures to be \
+         compared against its .expected file, checked {checked} -- raise \
+         this floor when adding a fixture, never lower it"
     );
 }

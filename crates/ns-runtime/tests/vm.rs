@@ -31,7 +31,9 @@ fn load(src: &str) -> (Interpreter, ClassRef, Bindings) {
 fn setup(src: &str) -> (Interpreter, ClassRef, Bindings) {
     let (mut interp, class, bindings) = load(src);
     let compiled = compiler::compile_module(&class, &bindings);
-    interp.set_engine(Engine::Bytecode(compiled));
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
     (interp, class, bindings)
 }
 
@@ -344,4 +346,58 @@ fn the_tree_walk_engine_is_still_the_default() {
         panic!()
     };
     assert!(matches!(closure.body, ClosureBody::Ast(_)));
+}
+
+/// The probe that exposed the frame-shift defect: a method with a declared
+/// temporary, reached through a host-initiated send.
+///
+/// A method activation addresses its arguments and temporaries as one run
+/// of registers, and `eval::read_local` finds the boundary from the count
+/// of arguments the frame was *given*. Before `invoke_method` checked
+/// arity, sending `probe` two surplus arguments therefore made register 0
+/// -- `t` -- read back the first surplus argument instead of `Nil`, under
+/// both engines identically, so the differential harness could not see it.
+const ARITY_PROBE: &str = "Newspeak3\n'T'\nclass Probe = Object new (\n) (\n\
+     \tpublic probe = (\n\t\t| t |\n\t\t^nil = t ifTrue: [ 'nil-ok' ] ifFalse: [ 'NOTNIL-BUG' ]\n\t)\n) : ()";
+
+#[test]
+fn a_correctly_sent_method_reads_its_temporary_as_nil_under_both_engines() {
+    for build in [load, setup] {
+        let (mut interp, class, bindings) = build(ARITY_PROBE);
+        let instance = new_instance(&mut interp, &class, &bindings);
+        let result = expect_ok(
+            send(&mut interp, instance, "probe", vec![], &bindings),
+            "probe",
+        );
+        assert_eq!(string_of(&result), "nil-ok");
+    }
+}
+
+#[test]
+fn a_wrong_arity_send_is_refused_identically_by_both_engines() {
+    let mut messages = Vec::new();
+    for build in [load, setup] {
+        let (mut interp, class, bindings) = build(ARITY_PROBE);
+        let instance = new_instance(&mut interp, &class, &bindings);
+        let platform = interp.platform();
+        let error = expect_error(
+            send(
+                &mut interp,
+                instance,
+                "probe",
+                vec![platform, Value::Nil],
+                &bindings,
+            ),
+            "probe with two surplus arguments",
+        );
+        messages.push(error.message);
+    }
+    assert_eq!(
+        messages[0], "wrong number of arguments: `probe` takes 0, got 2",
+        "the tree-walking engine's message"
+    );
+    assert_eq!(
+        messages[0], messages[1],
+        "both engines must report a wrong-arity send with the same text"
+    );
 }

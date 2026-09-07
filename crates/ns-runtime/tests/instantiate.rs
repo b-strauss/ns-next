@@ -72,7 +72,7 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 /// instance initializer) really runs *before* step 4 (this class's own
 /// slots), not merely that both slots end up set eventually.
 ///
-/// `Interpreter::instantiate`'s `run_superclass_initializer`/`run_own_slots`
+/// `Interpreter::instantiate`'s `run_initializer_level`/`run_own_slots`
 /// step ordering is what this test actually exercises. Linking the two
 /// classes together, though, runs into a real Milestone 1 gap flagged in
 /// `interpreter/instantiate.rs`'s `resolve_superclass_receiver`: a
@@ -81,8 +81,8 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 /// names is. Rather than expanding that (out of this task's scope -- the
 /// brief calls it out explicitly as "extend here if a fixture needs it",
 /// and this fixture can route around it), `Sub` is parsed with a builtin
-/// `Object` superclass clause (so `load_class` resolves cleanly through the
-/// ordinary pipeline), and its `ClassData.superclass`/`slot_index` are then
+/// `Object` superclass clause (so `load_module` resolves cleanly through the
+/// ordinary pipeline), and its `ClassData.superclass`/`application` are then
 /// relinked directly to the already-loaded `Sup` class -- both `pub` fields
 /// on `ClassData`, exactly as visible to any other crate-external caller.
 /// The resolver itself is untouched by this: `b`'s slot initializer
@@ -111,14 +111,32 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
     .expect("resolve");
     let sub_class = interp.load_module(&sub_resolved);
 
-    // Relink Sub -> Sup (see the doc comment above) and fix up Sub's own
-    // slot_index offset now that it sits past Sup's one inherited slot.
+    // Relink Sub -> Sup (see the doc comment above), on both chains: the
+    // class-object chain that `super`/`instantiate` walk, and the
+    // application chain that carries the layout. Re-applying Sub's own mixin
+    // to Sup's application is what recomputes `b`'s absolute index past
+    // Sup's one inherited slot -- hand-editing the layout would let the two
+    // chains disagree about the instance's shape.
+    let sup_application = {
+        let borrowed = sup_class.borrow();
+        let ns_runtime::ObjectData::Class(data) = &borrowed.data else {
+            panic!("expected Sup to be a class object");
+        };
+        data.application.clone()
+    };
+    let sub_mixin = {
+        let borrowed = sub_class.borrow();
+        let ns_runtime::ObjectData::Class(data) = &borrowed.data else {
+            panic!("expected Sub to be a class object");
+        };
+        data.application.mixin.clone()
+    };
+    let sub_application = interp.apply_mixin(&sub_mixin, Some(&sup_application));
     {
         let mut borrowed = sub_class.borrow_mut();
         if let ns_runtime::ObjectData::Class(data) = &mut borrowed.data {
             data.superclass = Some(sup_class.clone());
-            data.slot_index.clear();
-            data.slot_index.insert(Symbol::intern("b"), 1);
+            data.application = sub_application;
         } else {
             panic!("expected Sub to be a class object");
         }
@@ -314,4 +332,70 @@ fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
         Ok(v) => panic!("expected a doesNotUnderstand: error, got Ok({v:?})"),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
+}
+
+/// `newspeak-spec.pdf` §6.2: the instance initializer evaluates the
+/// superclass clause's message and invokes the superclass's initializer
+/// with *those* arguments. Milestone 1 never evaluated the clause's message
+/// and ran every level in the subclass's own activation, so `Base`'s slot
+/// initializer read the *subclass's* (empty) argument list instead of the
+/// `7` its own clause supplies.
+///
+/// The two classes are nested inside a module class because that is the
+/// only way a user-defined superclass is linked through the ordinary
+/// pipeline: a nested declaration's clause is evaluated by the accessor
+/// (`interpreter::nested`), while a *root* class's clause receiver still
+/// only resolves to a builtin (`resolve_superclass_receiver`).
+#[test]
+fn a_superclass_factory_message_receives_its_own_arguments() {
+    let src = "\
+Newspeak3
+'Test'
+class SuperclassArgs = Object new () (
+    public class Base withValue: v = Object new (| baseValue ::= v. |) (
+        public base = ( ^baseValue )
+    )
+    public class Derived = Base withValue: 7 () (
+    )
+) : ()
+";
+    let (mut interp, class, resolved) = load(src);
+    let module = expect_ok(
+        interp.instantiate(class, vec![], &resolved.bindings),
+        "instantiate SuperclassArgs",
+    );
+    let derived = expect_ok(
+        interp.send(
+            module,
+            Symbol::intern("Derived"),
+            vec![],
+            &resolved.bindings,
+            None,
+        ),
+        "Derived",
+    );
+    let instance = expect_ok(
+        interp.send(
+            derived,
+            Symbol::intern("new"),
+            vec![],
+            &resolved.bindings,
+            None,
+        ),
+        "Derived new",
+    );
+    let stored = expect_ok(
+        interp.send(
+            instance,
+            Symbol::intern("base"),
+            vec![],
+            &resolved.bindings,
+            None,
+        ),
+        "base",
+    );
+    assert!(
+        matches!(stored, Value::SmallInt(7)),
+        "the superclass's slot initializer did not see the clause's own argument"
+    );
 }

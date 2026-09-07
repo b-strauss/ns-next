@@ -149,8 +149,8 @@ impl Resolver {
         //
         // A class declaration with no explicit factory pattern
         // (`class C = Super (...)`) contributes no parameters, matching
-        // `interpreter/instantiate.rs`'s `load_class`, which defaults such
-        // a class's `ClassData.factory` to a bare unary `new` pattern.
+        // `interpreter/instantiate.rs`'s `build_mixin`, which defaults such
+        // a class's mixin `factory` to a bare unary `new` pattern.
         // Parameter order here is the same order `LocalScope::new` indexes
         // by, which is the order `Interpreter::instantiate` fills
         // `Frame.args` with its `factory_args` -- so `Binding::Local(i)`
@@ -169,6 +169,22 @@ impl Resolver {
         }
         for stmt in &decl.instance_side.init_exprs {
             self.resolve_stmt(stmt, &mut scope, &class_chain);
+        }
+        // The superclass clause's *deferred message* arguments (`m + 1` in
+        // `= Base withBase: m + 1`) run in that same activation:
+        // `newspeak-spec.pdf` §6.2 evaluates the clause's message on every
+        // instantiation, in the instance initializer's own context, so this
+        // class's factory parameters are in scope for them exactly as they
+        // are for a slot initializer. The clause's *receiver* is resolved
+        // separately, above, against the enclosing chain instead -- it is
+        // evaluated once, when the declaration is evaluated, and never sees
+        // a factory argument.
+        if let Some(clause) = &decl.superclass {
+            if let Some(message) = crate::interpreter::nested::superclass_clause_message(clause) {
+                for arg in &message.args {
+                    self.resolve_expr(arg, &mut scope, &class_chain);
+                }
+            }
         }
 
         for nested in &decl.instance_side.nested_classes {

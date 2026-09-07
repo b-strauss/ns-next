@@ -111,11 +111,14 @@ impl<'a> Lowerer<'a> {
     /// The initializer's per-slot statement: the slot's initializer
     /// expression, then `InitSlot` (M1's `run_own_slots` writes the field
     /// directly, never through a setter send). One `statement_pc` entry.
-    pub(crate) fn lower_slot_init(&mut self, init: &Expr, field_index: u32) {
+    /// `own_index` is the slot's position among the mixin's own slots
+    /// (declaration order) -- `vm::run_code` turns it into an absolute
+    /// field index at run time via the executing frame's `slot_base`.
+    pub(crate) fn lower_slot_init(&mut self, init: &Expr, own_index: u32) {
         self.next_scratch = self.base;
         let start = self.instrs.len();
         let src = self.lower_expr_consumed_immediately(init);
-        self.emit(Instr::InitSlot { src, field_index });
+        self.emit(Instr::InitSlot { src, own_index });
         let end = self.instrs.len();
         self.statement_pc.push((self.statement_index, start..end));
         self.statement_index += 1;
@@ -162,6 +165,18 @@ impl<'a> Lowerer<'a> {
             (CodeKind::Block, _) => Some(Instr::NonLocalReturn { reg }),
             (CodeKind::Initializer, false) => None,
             (CodeKind::Initializer, true) => Some(Instr::NonLocalReturn { reg }),
+            // Either clause body is a single synthetic `^expr` (the
+            // receiver, or the message's argument list), so its top-level
+            // `^` is what hands that value back; a `^` written inside a
+            // block of the clause's own message unwinds to the activation
+            // `interpreter::nested::run_clause_body` built, exactly as it
+            // would in any other body.
+            (CodeKind::SuperclassClause | CodeKind::SuperclassMessage, false) => {
+                Some(Instr::Return { reg })
+            }
+            (CodeKind::SuperclassClause | CodeKind::SuperclassMessage, true) => {
+                Some(Instr::NonLocalReturn { reg })
+            }
         }
     }
 
@@ -178,10 +193,19 @@ impl<'a> Lowerer<'a> {
     /// lowered) did not already end in one, so `vm::run_code` never has to
     /// handle "fell off the end". A method returns `self`; an initializer
     /// always returns `self` (its top-level `^` never emits a return); a
-    /// block returns its last statement's value, `nil` if it has none.
+    /// block returns its last statement's value, `nil` if it has none; a
+    /// superclass clause returns the value of the one expression it is.
     pub(crate) fn finish_body(&mut self, stmts: &[Stmt]) {
         let ends_in_return = matches!(stmts.last(), Some(Stmt::Return(_)));
         match self.kind {
+            CodeKind::SuperclassClause | CodeKind::SuperclassMessage if ends_in_return => {}
+            CodeKind::SuperclassClause | CodeKind::SuperclassMessage => {
+                let reg = match self.last_expr_reg {
+                    Some(r) => r,
+                    None => self.emit_nil(),
+                };
+                self.emit(Instr::ImplicitReturn { reg });
+            }
             CodeKind::Method if ends_in_return => {}
             CodeKind::Method | CodeKind::Initializer => {
                 let dst = self.alloc_scratch();
@@ -1331,7 +1355,7 @@ mod tests {
             code.instrs.last(),
             Some(&Instr::InitSlot {
                 src: 0,
-                field_index: 4
+                own_index: 4
             })
         );
     }
@@ -1672,7 +1696,7 @@ mod tests {
             code.instrs.last(),
             Some(Instr::InitSlot {
                 src: 2,
-                field_index: 4
+                own_index: 4
             })
         ));
         assert_eq!(code.statement_pc, vec![(0, 0..4)]);

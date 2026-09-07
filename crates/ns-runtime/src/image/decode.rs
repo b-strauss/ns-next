@@ -6,19 +6,22 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_syntax::ast;
 use ns_syntax::Span;
 
 use crate::bytecode::{
-    class_key, method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
+    method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
 };
+use crate::dispatch::class_application;
 use crate::interpreter::instantiate;
+use crate::mixin::mixin_key;
 use crate::types::{
     Binding, BuiltinClass, ClassRef, ClosureBody, ClosureData, Frame, FrameKind, FrameRef, ObjRef,
-    Object, ObjectData, SourceOrigin, Value,
+    Object, ObjectData, PcKind, SourceOrigin, Value,
 };
 use crate::Interpreter;
 use crate::Symbol;
+
+use super::{mixins, symbols};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
@@ -31,6 +34,28 @@ pub enum DecodeError {
     InvalidTag {
         what: &'static str,
         tag: u8,
+    },
+    /// The header set a flag bit this build assigns no meaning to. Each
+    /// flag governs whether a section is present, so an unknown one means
+    /// the reader cannot know where the next section starts -- it would
+    /// decode whatever follows as the wrong thing rather than fail.
+    UnknownHeaderFlags {
+        flags: u8,
+    },
+    /// A frame record claimed its `pc` counts statements. Only the
+    /// bytecode engine's activations are representable: an image's code
+    /// table carries compiled bodies and no statements, so such a `pc`
+    /// indexes nothing the image contains. The encoder refuses to write
+    /// one for the same reason.
+    TreeWalkFrame,
+    /// A frame's `pc` is not an instruction index of the body that runs in
+    /// it. `vm::run_code` stores the index of the instruction it is
+    /// executing, so every real activation's `pc` is in range; a crafted
+    /// one out of range would be an unchecked index the moment anything
+    /// resumed, resumed-through, or reported the frame.
+    PcOutOfRange {
+        pc: usize,
+        instrs: usize,
     },
     InvalidUtf8,
     InvalidSpan {
@@ -47,6 +72,56 @@ pub enum DecodeError {
     BadCodeId(u32),
     BadObjectId(u32),
     BadFrameId(u32),
+    /// A mixin-table row, or a class object's record, referenced a row id
+    /// past the end of the table.
+    BadMixinId(u32),
+    /// A field the format types as a class reference -- an object's own
+    /// `class`, a class object's `superclass` or `declaring_class`, a
+    /// frame's `current_class` or the class its kind names -- resolved to an
+    /// object-table record that is not a class object. Nothing in the byte
+    /// stream forces a tag-2 class tag to name a *class* record, so only a
+    /// check after the whole table is read can tell. Left unchecked it is
+    /// silent wrong behaviour rather than a crash: `class_of` would hand
+    /// dispatch an object with no application, and `outer` would walk a
+    /// chain that is not a declaration chain.
+    NotAClassReference,
+    /// A class object's own `class` is another record in the image's object
+    /// table. `Interpreter::new_class_object` always gives a class object
+    /// the shared bootstrap `Object` placeholder, so no real world contains
+    /// one -- and `Object`'s iterative `Drop` cannot hand the `class` field
+    /// to its worklist, so a chain of them is the one link left that would
+    /// still release recursively. Refusing keeps it one link long.
+    ClassOfAClassIsARecord,
+    /// A class object's enclosing object decoded to a scalar. §6 makes the
+    /// enclosing object the nested class's only state, and it is always the
+    /// receiver the accessor ran on -- an object; a scalar would leave
+    /// `dispatch::kth_enclosing_object` with nothing to hand an `outer`
+    /// send.
+    EnclosingNotAnObject,
+    /// The image's class objects' superclass links form a cycle, so no
+    /// order exists in which their applications could be rebuilt (each
+    /// needs its superclass's). Unreachable from a real world -- a
+    /// superclass is fixed before the class object that inherits it exists
+    /// -- and refusing is what keeps the rebuild a finite walk.
+    SuperclassCycle,
+    /// The mixin table's rows are not `mixin::preorder` of row 0: a row is
+    /// named as a child by two rows or by none, a row is its own ancestor,
+    /// or the children are named out of the order the walk visits them in.
+    /// Row position is the whole correspondence between a row and the
+    /// declaration it describes, so a table that does not reproduce that
+    /// walk is refused outright rather than paired up wrongly.
+    MixinTableNotATree {
+        row: u32,
+    },
+    /// One mixin-table row named the same selector twice, which would leave
+    /// its rebuilt method dictionary smaller than its own code list.
+    DuplicateSelector(String),
+    /// A selector or name reference (a send's selector, a method-dictionary
+    /// key, a closure's parameter name, a `Sym` object's text, ...) that
+    /// indexes past the end of the image's symbol table. Every such
+    /// reference is a `u32` id checked against the table at the point of
+    /// use, never trusted to have been validated elsewhere.
+    BadSymbolId(u32),
     /// A closure record's parameter list and the code it names disagree
     /// about how many arguments the closure takes. The two are separate
     /// fields on the wire, so only a decode-time reconciliation can catch
@@ -62,23 +137,33 @@ pub enum DecodeError {
         params: usize,
         num_args: u16,
     },
-    /// The image's root object is not a class, so it has no methods to
-    /// install a code table against.
+    /// The image's mixin table is empty, so it describes no root class --
+    /// and a world without one has nothing for the graph's class tag 1 to
+    /// name and no declaration to instantiate.
     NotAClass,
-    /// The image's root list names a method the reloaded source dropped.
+    /// A selector the image names has no declaration to bind to: a
+    /// mixin-table row's code list naming a selector its own method
+    /// dictionary lacks, or a `FrameKind::Method` naming a selector its
+    /// `current_class` does not declare.
     UnknownSelector(String),
-    /// The mirror image of `UnknownSelector`: the reloaded source defines a
-    /// method the image was never compiled with, so the installed module
-    /// would have a hole the engine hook cannot dispatch through.
-    MissingSelector(String),
-    /// `MissingSelector` for the instance initializer: the reloaded root
-    /// class declares slots or `initExpr`s, so instantiating it runs
-    /// compiled initializer code -- which this image does not carry.
-    /// `run_own_initializer` panics on that invariant rather than failing,
-    /// and the class it panics for is the one the image's own source
-    /// declares, so only refusing here keeps a crafted image from aborting
-    /// the process at the first `X new`.
+    /// A mixin-table row declares slots or `initExpr`s but carries no
+    /// compiled initializer. Instantiating such a class runs initializer
+    /// code on every `X new`, and `run_own_initializer` panics on that
+    /// invariant rather than failing -- so only refusing here keeps a
+    /// crafted image from aborting the process at the first `X new`.
     MissingInitializer,
+    /// A mixin-table row declares a superclass clause the image carries no
+    /// compiled clause for. The nested-class accessor runs that code on the
+    /// first access to the declaration, and panics on the invariant when
+    /// the module has none -- the same reason `MissingInitializer` is a
+    /// refusal rather than a deferred crash.
+    MissingSuperclassClause,
+    /// A mixin-table row's superclass clause carries a factory message with
+    /// arguments the image has no compiled body for. `instantiate`
+    /// evaluates that body on every instantiation of the class, and panics
+    /// on the invariant when the module has none -- the same refusal, for
+    /// the same reason, as `MissingSuperclassClause`.
+    MissingSuperclassMessage,
     /// A compiled body installed where a body of another kind belongs, or
     /// named as a closure's body when it is not a block body. The kinds are
     /// not interchangeable: a block body runs in a `FrameKind::Closure`
@@ -89,7 +174,7 @@ pub enum DecodeError {
         expected: &'static str,
     },
     /// A method's -- or the instance initializer's -- compiled body takes a
-    /// different number of arguments than the reloaded source declares. The
+    /// different number of arguments than its own declaration does. The
     /// frame's `args` come from the send (or the factory), its `temps` from
     /// the body's `num_args`; a disagreement leaves `read_local` indexing
     /// `temps` past its end.
@@ -165,6 +250,20 @@ impl std::fmt::Display for DecodeError {
                 write!(f, "image format version {found} is not supported (this build reads version {expected})")
             }
             DecodeError::InvalidTag { what, tag } => write!(f, "invalid {what} tag {tag}"),
+            DecodeError::UnknownHeaderFlags { flags } => write!(
+                f,
+                "image header sets flag bits {:#04x} this build does not know",
+                flags & !super::encode::KNOWN_FLAGS
+            ),
+            DecodeError::TreeWalkFrame => write!(
+                f,
+                "an image frame claims a tree-walker `pc`, which counts statements the image \
+                 does not carry"
+            ),
+            DecodeError::PcOutOfRange { pc, instrs } => write!(
+                f,
+                "frame pc {pc} is not an instruction index in a body of {instrs} instruction(s)"
+            ),
             DecodeError::InvalidUtf8 => write!(f, "invalid UTF-8 in image string"),
             DecodeError::InvalidSpan { start, end } => {
                 write!(f, "source span {start}..{end} ends before it starts")
@@ -175,24 +274,57 @@ impl std::fmt::Display for DecodeError {
             DecodeError::BadCodeId(id) => write!(f, "code id {id} out of range"),
             DecodeError::BadObjectId(id) => write!(f, "object id {id} out of range"),
             DecodeError::BadFrameId(id) => write!(f, "frame id {id} out of range"),
+            DecodeError::BadSymbolId(id) => write!(f, "symbol id {id} out of range"),
+            DecodeError::BadMixinId(id) => write!(f, "mixin id {id} out of range"),
+            DecodeError::NotAClassReference => write!(
+                f,
+                "an image field that must name a class object names an ordinary object instead"
+            ),
+            DecodeError::ClassOfAClassIsARecord => write!(
+                f,
+                "a class object in the image is itself an instance of another class object in the \
+                 image; every class object's own class is the bootstrap `Object` placeholder"
+            ),
+            DecodeError::EnclosingNotAnObject => write!(
+                f,
+                "a class object's enclosing object is a scalar, not an object"
+            ),
+            DecodeError::SuperclassCycle => write!(
+                f,
+                "the image's class objects inherit from each other in a cycle, so no application \
+                 chain could be rebuilt for them"
+            ),
+            DecodeError::MixinTableNotATree { row } => write!(
+                f,
+                "the image's mixin table is not a declaration tree: row {row} is reached out of \
+                 declaration order, twice, or not at all"
+            ),
+            DecodeError::DuplicateSelector(s) => write!(
+                f,
+                "a mixin-table row names method `{s}` more than once"
+            ),
             DecodeError::ClosureArityMismatch { params, num_args } => write!(
                 f,
                 "closure record declares {params} parameters but the code it names takes {num_args}"
             ),
             DecodeError::NotAClass => {
-                write!(f, "the image's root object is not a class")
+                write!(f, "the image's mixin table describes no root class")
             }
             DecodeError::UnknownSelector(s) => write!(
                 f,
-                "image refers to method `{s}`, which the reloaded source does not define"
-            ),
-            DecodeError::MissingSelector(s) => write!(
-                f,
-                "the reloaded source defines method `{s}`, which the image has no compiled code for"
+                "the image names method `{s}`, which the declaration it belongs to does not define"
             ),
             DecodeError::MissingInitializer => write!(
                 f,
-                "the reloaded source's root class needs an instance initializer, which the image has no compiled code for"
+                "a class in the image needs an instance initializer, which the image has no compiled code for"
+            ),
+            DecodeError::MissingSuperclassClause => write!(
+                f,
+                "the image declares a superclass clause it has no compiled code for"
+            ),
+            DecodeError::MissingSuperclassMessage => write!(
+                f,
+                "the image's superclass clause passes factory arguments it has no compiled code for"
             ),
             DecodeError::WrongCodeKind { expected } => {
                 write!(f, "image code is not a {expected} body")
@@ -203,7 +335,7 @@ impl std::fmt::Display for DecodeError {
                 num_args,
             } => write!(
                 f,
-                "the image's compiled {what} takes {num_args} argument(s), but the reloaded source declares {params}"
+                "the image's compiled {what} takes {num_args} argument(s), but its declaration says {params}"
             ),
             DecodeError::UnterminatedBody => write!(
                 f,
@@ -281,6 +413,15 @@ impl<'a> Reader<'a> {
         self.buf.len() - self.pos
     }
 
+    /// Bytes already consumed -- the offset of whatever comes next. Lets a
+    /// caller that decoded a known-shape prefix (the header, the source, a
+    /// fixed section) locate exactly where the next section starts, e.g. to
+    /// corrupt one field of it in a hostile-input test without hardcoding
+    /// byte offsets that would drift as the format's earlier fields change.
+    pub fn pos(&self) -> usize {
+        self.pos
+    }
+
     pub fn read_raw(&mut self, len: usize) -> Result<&'a [u8], DecodeError> {
         let end = self
             .pos
@@ -348,7 +489,16 @@ impl<'a> Reader<'a> {
     }
 }
 
-pub fn read_header(r: &mut Reader) -> Result<(), DecodeError> {
+/// What the header says about the rest of the image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Header {
+    /// Whether a source blob follows the header -- the debug variant. The
+    /// source is never executed and never re-parsed; it is carried so a
+    /// loaded world can be shown, and eventually exported, as `.ns`.
+    pub has_source: bool,
+}
+
+pub fn read_header(r: &mut Reader) -> Result<Header, DecodeError> {
     let magic = r.read_raw(4)?;
     if magic != super::encode::MAGIC {
         return Err(DecodeError::BadMagic);
@@ -360,12 +510,20 @@ pub fn read_header(r: &mut Reader) -> Result<(), DecodeError> {
             expected: super::encode::FORMAT_VERSION,
         });
     }
-    Ok(())
+    let flags = r.read_u8()?;
+    // A flag this build does not implement means a section it cannot see:
+    // continuing would read the next field out of whatever that section
+    // occupies. Refused rather than masked off.
+    if flags & !super::encode::KNOWN_FLAGS != 0 {
+        return Err(DecodeError::UnknownHeaderFlags { flags });
+    }
+    Ok(Header {
+        has_source: flags & super::encode::FLAG_HAS_SOURCE != 0,
+    })
 }
 
-/// The inverse of `encode::encode_source_origin`. `load` re-resolves the
-/// image's stored source against the origin it decodes here, so a loaded
-/// world reports the same provenance the snapshotted one did.
+/// The inverse of `encode::encode_source_origin`: the provenance a loaded
+/// world reports as its own.
 pub fn decode_source_origin(r: &mut Reader) -> Result<SourceOrigin, DecodeError> {
     match r.read_u8()? {
         0 => Ok(SourceOrigin::File(PathBuf::from(r.read_str()?))),
@@ -415,43 +573,25 @@ pub fn read_builtin_class(r: &mut Reader) -> Result<BuiltinClass, DecodeError> {
     })
 }
 
-/// The decoded code table before it is bound to a reloaded class.
+/// The decoded code table: every compiled body the image carries, flat and
+/// in the order it was written. Which body belongs to which declaration is
+/// the mixin table's business (`image::mixins`), which names these by index.
 #[derive(Debug, PartialEq)]
 pub struct DecodedCodeTable {
     pub codes: Vec<Rc<CompiledCode>>,
-    /// `(selector, code id)` per method of the root class, sorted by
-    /// selector exactly as encoded.
-    pub methods: Vec<(String, u32)>,
-    pub initializer: Option<u32>,
 }
 
-pub fn decode_code_table(r: &mut Reader) -> Result<DecodedCodeTable, DecodeError> {
+pub fn decode_code_table(
+    r: &mut Reader,
+    symbols: &symbols::Table,
+) -> Result<DecodedCodeTable, DecodeError> {
     let count = r.read_u32()? as usize;
     let mut codes: Vec<Rc<CompiledCode>> = reserve_for(count, r);
     for _ in 0..count {
-        let code = decode_code(r, &codes)?;
+        let code = decode_code(r, &codes, symbols)?;
         codes.push(Rc::new(code));
     }
-    let method_count = r.read_u32()? as usize;
-    let mut methods = reserve_for(method_count, r);
-    for _ in 0..method_count {
-        let selector = r.read_str()?;
-        let id = r.read_u32()?;
-        check_code_id(id, &codes)?;
-        methods.push((selector, id));
-    }
-    let initializer = if r.read_bool()? {
-        let id = r.read_u32()?;
-        check_code_id(id, &codes)?;
-        Some(id)
-    } else {
-        None
-    };
-    Ok(DecodedCodeTable {
-        codes,
-        methods,
-        initializer,
-    })
+    Ok(DecodedCodeTable { codes })
 }
 
 /// `Vec::with_capacity` for a count read from an untrusted stream: every
@@ -459,7 +599,7 @@ pub fn decode_code_table(r: &mut Reader) -> Result<DecodedCodeTable, DecodeError
 /// bound on how many can really follow. Without the clamp a corrupt count
 /// prefix would reserve gigabytes and abort the process before the read
 /// could fail with `UnexpectedEof`.
-fn reserve_for<T>(count: usize, r: &Reader) -> Vec<T> {
+pub(crate) fn reserve_for<T>(count: usize, r: &Reader) -> Vec<T> {
     Vec::with_capacity(count.min(r.remaining()))
 }
 
@@ -471,94 +611,150 @@ fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError>
     }
 }
 
-/// Binds a decoded table to the *reloaded* root class: methods re-keyed by
-/// selector to the reloaded `Rc<MethodDecl>`s, the initializer to the
-/// reloaded class. The image's bytecode is what runs after a load.
-pub fn install_code_table(
+/// The `CompiledModule` an image describes: every compiled body in the code
+/// table, bound to the declaration the mixin table says it belongs to.
+///
+/// Both sides come off the wire. `mixins::decode` rebuilds row `i`'s
+/// `Rc<Mixin>` and records row `i`'s code ids at the same index, so a
+/// declaration and its bodies are paired by construction and there is no
+/// correspondence left to establish -- which is exactly what re-parsing the
+/// image's source used to be for. What remains is validating the two halves
+/// of each row against each other, since each is a separate field on the
+/// wire and a crafted image can make them disagree:
+///
+/// - a body's `kind` and `num_args` against the declaration's own arity
+///   (`check_code_arity`), because the frame an installed body runs in is
+///   built by the shared orchestration from the *declaration* -- `args`
+///   from the send or the factory -- while its `temps` are sized from the
+///   *body*, so a disagreement leaves `read_local` indexing `temps` past
+///   its end;
+/// - the presence of a body wherever a declaration makes one mandatory (the
+///   three `Missing*` errors), because the run-time paths that reach for
+///   those bodies panic on the invariant rather than failing.
+pub fn build_module(
     table: &DecodedCodeTable,
-    root_class: &ClassRef,
+    mixins: &mixins::Decoded,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> Result<CompiledModule, DecodeError> {
     let mut module = CompiledModule {
         methods: HashMap::new(),
         initializers: HashMap::new(),
+        superclass_clauses: HashMap::new(),
+        superclass_messages: HashMap::new(),
         bindings: bindings.clone(),
     };
-    let borrowed = root_class.borrow();
-    let ObjectData::Class(data) = &borrowed.data else {
-        return Err(DecodeError::NotAClass);
-    };
-    for (selector, id) in &table.methods {
-        let decl = data
-            .methods
-            .get(&Symbol::intern(selector))
-            .ok_or_else(|| DecodeError::UnknownSelector(selector.clone()))?;
-        let code = code_at(table, *id)?;
-        // The frame an installed body runs in is built by the shared
-        // orchestration, not by the body: `invoke_method` fills `args` from
-        // the send (so, from the selector's arity) and sizes `temps` from
-        // the body's `num_args`. A body whose arity disagrees with the
-        // reloaded declaration therefore leaves `read_local` splitting a
-        // frame it does not fit -- reading `temps` past its end for a body
-        // that claims too many arguments. Only this function sees both.
-        check_code_arity(
-            &code,
-            CodeKind::Method,
-            format!("method `{selector}`"),
-            instantiate::pattern_param_count(&decl.pattern),
-        )?;
-        module.methods.insert(method_key(decl), code);
-    }
-    // The other direction: a method the reloaded source defines but the
-    // image has no code for would leave `module.methods` with a hole, and
-    // dispatching it panics in the engine hook. That is the ordinary
-    // "source changed since the snapshot" path, so it is a decode error
-    // here rather than a crash later. Sorted, so the reported selector does
-    // not depend on `ClassData.methods`' `HashMap` order.
-    let mut missing: Vec<&str> = data
-        .methods
-        .iter()
-        .filter(|(_, decl)| !module.methods.contains_key(&method_key(decl)))
-        .map(|(selector, _)| selector.as_str())
-        .collect();
-    missing.sort_unstable();
-    if let Some(selector) = missing.first() {
-        return Err(DecodeError::MissingSelector((*selector).to_string()));
-    }
-    match table.initializer {
-        Some(id) => {
-            let code = code_at(table, id)?;
-            // The same reconciliation for the initializer, whose `num_args`
-            // is the class's factory parameter count
-            // (`compile_initializer`) and whose frame's `args` are the
-            // factory arguments `instantiate` checked against that same
-            // pattern.
+    for (mixin, section) in mixins.mixins.iter().zip(&mixins.code) {
+        for (selector, id) in &section.methods {
+            // `mixins::build` fills the mixin's method dictionary from the
+            // same row this code list comes from, so the lookup cannot
+            // miss -- kept as a checked lookup rather than an `expect`
+            // because the two are separate structures and an image is
+            // untrusted input.
+            let decl = mixin
+                .methods
+                .get(selector)
+                .ok_or_else(|| DecodeError::UnknownSelector(selector.as_str().to_string()))?;
+            let code = code_at(table, *id)?;
             check_code_arity(
                 &code,
-                CodeKind::Initializer,
-                "instance initializer".to_string(),
-                data.factory
-                    .as_deref()
-                    .map(instantiate::pattern_param_count)
-                    .unwrap_or(0),
+                CodeKind::Method,
+                format!("method `{selector}`"),
+                decl.num_args,
             )?;
-            module.initializers.insert(class_key(root_class), code);
+            module.methods.insert(method_key(decl), code);
         }
-        // And the initializer's `MissingSelector`: a class with slots or
-        // `initExpr`s runs compiled initializer code on every `X new`, and
-        // `run_own_initializer` *panics* when the module has none. The
-        // reloaded source decides whether the class needs it, and the image
-        // decides whether it carries it -- two halves only this function
-        // sees, exactly as for the method table above.
-        None if instantiate::class_has_initializer_code(root_class) => {
-            return Err(DecodeError::MissingInitializer)
+        // The other direction -- a declared method with no compiled body --
+        // is not reachable any more: both the dictionary and this code list
+        // are `mixins::build`'s image of one row's method list, and a row
+        // naming a selector twice is refused (`DuplicateSelector`), so the
+        // two always have the same entries.
+        match section.initializer {
+            Some(id) => {
+                let code = code_at(table, id)?;
+                // The same reconciliation for the initializer, whose
+                // `num_args` is the mixin's factory parameter count
+                // (`compile_initializer`) and whose frame's `args` are the
+                // factory arguments `instantiate` checked against that same
+                // pattern.
+                check_code_arity(
+                    &code,
+                    CodeKind::Initializer,
+                    "instance initializer".to_string(),
+                    mixin.factory.map_or(0, |factory| factory.num_args),
+                )?;
+                module.initializers.insert(mixin_key(mixin), code);
+            }
+            // A class with slots or `initExpr`s runs compiled initializer
+            // code on every `X new`, and `run_own_initializer` *panics*
+            // when the module has none. The row's declaration half says
+            // the mixin needs one and its code half says whether the image
+            // carries it -- two fields only this function compares.
+            None if instantiate::mixin_needs_initializer_code(mixin) => {
+                return Err(DecodeError::MissingInitializer)
+            }
+            None => {}
         }
-        None => {}
+        match section.superclass_clause {
+            Some(id) => {
+                let code = code_at(table, id)?;
+                // A clause body takes no arguments: it is evaluated in an
+                // activation the *accessor* builds on the enclosing object,
+                // not in one carrying the nested class's factory arguments.
+                check_code_arity(
+                    &code,
+                    CodeKind::SuperclassClause,
+                    "superclass clause".to_string(),
+                    0,
+                )?;
+                module.superclass_clauses.insert(mixin_key(mixin), code);
+            }
+            // The same reconciliation as the initializer's: a mixin that
+            // declares a superclass clause has its accessor run that
+            // clause's code on the first nested-class access, and
+            // `interpreter::nested` panics when the module carries none.
+            None if mixin.superclass.is_some() => return Err(DecodeError::MissingSuperclassClause),
+            None => {}
+        }
+        match section.superclass_message {
+            Some(id) => {
+                let code = code_at(table, id)?;
+                // Unlike the clause's receiver, the clause's *message*
+                // arguments run in an activation carrying this mixin's own
+                // factory arguments (`newspeak-spec.pdf` §6.2), so their
+                // body's arity is the factory pattern's -- the same
+                // reconciliation the instance initializer above gets, for
+                // the same reason.
+                check_code_arity(
+                    &code,
+                    CodeKind::SuperclassMessage,
+                    "superclass clause message".to_string(),
+                    mixin.factory.map_or(0, |factory| factory.num_args),
+                )?;
+                module.superclass_messages.insert(mixin_key(mixin), code);
+            }
+            // A mixin whose clause message carries arguments evaluates them
+            // on every instantiation, and
+            // `instantiate::eval_superclass_message` panics when the module
+            // carries no body for them.
+            None if mixin_needs_superclass_message_code(mixin) => {
+                return Err(DecodeError::MissingSuperclassMessage)
+            }
+            None => {}
+        }
     }
     Ok(module)
 }
 
-/// One installed body against the reloaded declaration it is installed for:
+/// Whether `mixin`'s superclass clause carries a message with arguments, and
+/// therefore needs a compiled body for them. Mirrors
+/// `instantiate::mixin_needs_initializer_code`: the one question
+/// `build_module` asks of a decoded declaration, answered off the same
+/// field `instantiate::eval_superclass_message` decides by at run time.
+fn mixin_needs_superclass_message_code(mixin: &Rc<crate::mixin::Mixin>) -> bool {
+    mixin.superclass.is_some_and(|clause| clause.has_args)
+}
+
+/// One installed body against the declaration it is installed for:
 /// the same kind, and the same number of arguments.
 fn check_code_arity(
     code: &CompiledCode,
@@ -572,6 +768,8 @@ fn check_code_arity(
                 CodeKind::Method => "method",
                 CodeKind::Block => "block",
                 CodeKind::Initializer => "initializer",
+                CodeKind::SuperclassClause => "superclass clause",
+                CodeKind::SuperclassMessage => "superclass clause message",
             },
         });
     }
@@ -851,11 +1049,17 @@ fn code_at(table: &DecodedCodeTable, id: u32) -> Result<Rc<CompiledCode>, Decode
         .ok_or(DecodeError::BadCodeId(id))
 }
 
-fn decode_code(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<CompiledCode, DecodeError> {
+fn decode_code(
+    r: &mut Reader,
+    codes: &[Rc<CompiledCode>],
+    symbols: &symbols::Table,
+) -> Result<CompiledCode, DecodeError> {
     let kind = match r.read_u8()? {
         0 => CodeKind::Method,
         1 => CodeKind::Block,
         2 => CodeKind::Initializer,
+        3 => CodeKind::SuperclassClause,
+        4 => CodeKind::SuperclassMessage,
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "code kind",
@@ -887,7 +1091,7 @@ fn decode_code(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<CompiledCod
     let instr_count = r.read_u32()? as usize;
     let mut instrs = reserve_for(instr_count, r);
     for _ in 0..instr_count {
-        instrs.push(decode_instr(r, codes)?);
+        instrs.push(decode_instr(r, codes, symbols)?);
     }
     Ok(CompiledCode {
         kind,
@@ -915,17 +1119,24 @@ fn decode_regs(r: &mut Reader) -> Result<Vec<u16>, DecodeError> {
     Ok(regs)
 }
 
-fn decode_symbol(r: &mut Reader) -> Result<Symbol, DecodeError> {
-    Ok(Symbol::intern(&r.read_str()?))
+/// The table lookup that replaces a per-occurrence `Symbol::intern`: every
+/// selector or name in the code table is a `u32` id into the symbol table
+/// decoded once, up front, in `image::load`.
+fn decode_symbol(r: &mut Reader, symbols: &symbols::Table) -> Result<Symbol, DecodeError> {
+    symbols.get(r.read_u32()?)
 }
 
-fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, DecodeError> {
+fn decode_instr(
+    r: &mut Reader,
+    codes: &[Rc<CompiledCode>],
+    symbols: &symbols::Table,
+) -> Result<Instr, DecodeError> {
     Ok(match r.read_u8()? {
         0 => {
             let dst = r.read_u16()?;
             Instr::LoadLiteral {
                 dst,
-                literal: decode_literal(r, 0)?,
+                literal: decode_literal(r, 0, symbols)?,
             }
         }
         1 => Instr::LoadSelf { dst: r.read_u16()? },
@@ -970,7 +1181,7 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
         }
         7 => {
             let depth = r.read_u16()?;
-            let selector = decode_symbol(r)?;
+            let selector = decode_symbol(r, symbols)?;
             let arg_regs = decode_regs(r)?;
             let dst = r.read_u16()?;
             Instr::SendLexical {
@@ -982,7 +1193,7 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
             }
         }
         8 => {
-            let selector = decode_symbol(r)?;
+            let selector = decode_symbol(r, symbols)?;
             let receiver_reg = r.read_u16()?;
             let arg_regs = decode_regs(r)?;
             let dst = r.read_u16()?;
@@ -995,7 +1206,7 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
             }
         }
         9 => {
-            let selector = decode_symbol(r)?;
+            let selector = decode_symbol(r, symbols)?;
             let arg_regs = decode_regs(r)?;
             let dst = r.read_u16()?;
             Instr::SendSuper {
@@ -1010,7 +1221,7 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
             let n = r.read_u16()? as usize;
             let mut params = reserve_for(n, r);
             for _ in 0..n {
-                params.push(decode_symbol(r)?);
+                params.push(decode_symbol(r, symbols)?);
             }
             let id = r.read_u32()?;
             // Post-order guarantees a block's code precedes its parent's,
@@ -1034,7 +1245,7 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
             let src = r.read_u16()?;
             Instr::InitSlot {
                 src,
-                field_index: r.read_u32()?,
+                own_index: r.read_u32()?,
             }
         }
         13 => Instr::Return { reg: r.read_u16()? },
@@ -1098,7 +1309,11 @@ fn decode_instr(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<Instr, Dec
 /// of assuming it, so the two cannot drift apart silently.
 const MAX_LITERAL_DEPTH: usize = 128;
 
-fn decode_literal(r: &mut Reader, depth: usize) -> Result<Literal, DecodeError> {
+fn decode_literal(
+    r: &mut Reader,
+    depth: usize,
+    symbols: &symbols::Table,
+) -> Result<Literal, DecodeError> {
     if depth > MAX_LITERAL_DEPTH {
         return Err(DecodeError::NestingTooDeep {
             what: "literal array",
@@ -1111,7 +1326,7 @@ fn decode_literal(r: &mut Reader, depth: usize) -> Result<Literal, DecodeError> 
         2 => Literal::SmallInt(r.read_i64()?),
         3 => Literal::Float(r.read_f64()?),
         4 => Literal::Str(r.read_str()?),
-        5 => Literal::Sym(decode_symbol(r)?),
+        5 => Literal::Sym(decode_symbol(r, symbols)?),
         6 => {
             let code = r.read_u32()?;
             Literal::Char(char::from_u32(code).ok_or(DecodeError::InvalidTag {
@@ -1123,7 +1338,7 @@ fn decode_literal(r: &mut Reader, depth: usize) -> Result<Literal, DecodeError> 
             let n = r.read_u32()? as usize;
             let mut elements = reserve_for(n, r);
             for _ in 0..n {
-                elements.push(decode_literal(r, depth + 1)?);
+                elements.push(decode_literal(r, depth + 1, symbols)?);
             }
             Literal::Array(elements)
         }
@@ -1143,14 +1358,28 @@ fn decode_literal(r: &mut Reader, depth: usize) -> Result<Literal, DecodeError> 
 // ---------------------------------------------------------------------------
 
 /// Everything the graph decoder resolves tags against: the live bootstrap
-/// (`interp`), the reloaded root class, the decoded code table, the
-/// reloaded module's bindings, and the interpreter's `platform` singleton.
+/// (`interp`), the root class built from the mixin table, the decoded code
+/// table, the bindings map a decoded closure carries, the interpreter's
+/// `platform` singleton, and the decoded declaration tree a class object's
+/// mixin id names.
+///
+/// `interp` is `&mut` because decoding a class object *allocates into* the
+/// interpreter: rebuilding its `MixinApplication` goes through
+/// `Interpreter::apply_mixin`, and that shared cache is the whole mechanism
+/// by which two enclosing instances get back the one application they had
+/// before the snapshot.
 pub struct DecodeContext<'a> {
-    pub interp: &'a Interpreter,
+    pub interp: &'a mut Interpreter,
     pub root_class: &'a ClassRef,
     pub codes: &'a [Rc<CompiledCode>],
     pub bindings: &'a Rc<HashMap<Span, Binding>>,
     pub platform: Value,
+    /// The decoded mixin table's rows, indexed by row id -- the same
+    /// `Rc<Mixin>`s `build_module` keyed the compiled bodies by, so a class
+    /// object built around one of them dispatches into the module the image
+    /// carries. Any other copy of the same declaration would hash to a
+    /// different `mixin_key` and find nothing.
+    pub mixins: &'a [Rc<crate::mixin::Mixin>],
 }
 
 pub struct DecodedGraph {
@@ -1166,16 +1395,45 @@ pub struct DecodedGraph {
 }
 
 /// The two placeholder-allocated tables, indexed by the ids in the stream.
-struct Tables<'a> {
-    objects: &'a [ObjRef],
-    frames: &'a [FrameRef],
+pub struct Tables<'a> {
+    pub objects: &'a [ObjRef],
+    pub frames: &'a [FrameRef],
 }
 
-pub fn decode_class_tag(r: &mut Reader, ctx: &DecodeContext) -> Result<ClassRef, DecodeError> {
+/// The inverse of `encode::encode_class_tag`. Tag 2's object may still be a
+/// placeholder when this runs -- a class object can be named before its own
+/// record is read -- so this resolves identity only; that the record really
+/// was a class record is `check_class_references`'s job, once every record
+/// has been read.
+pub fn decode_class_tag(
+    r: &mut Reader,
+    ctx: &DecodeContext,
+    tables: &Tables,
+) -> Result<ClassRef, DecodeError> {
     match r.read_u8()? {
         0 => Ok(ctx.interp.builtin_class(read_builtin_class(r)?)),
         1 => Ok(ctx.root_class.clone()),
+        2 => {
+            let id = r.read_u32()?;
+            tables
+                .objects
+                .get(id as usize)
+                .cloned()
+                .ok_or(DecodeError::BadObjectId(id))
+        }
         tag => Err(DecodeError::InvalidTag { what: "class", tag }),
+    }
+}
+
+fn decode_optional_class(
+    r: &mut Reader,
+    ctx: &DecodeContext,
+    tables: &Tables,
+) -> Result<Option<ClassRef>, DecodeError> {
+    if r.read_bool()? {
+        Ok(Some(decode_class_tag(r, ctx, tables)?))
+    } else {
+        Ok(None)
     }
 }
 
@@ -1199,7 +1457,7 @@ fn decode_value(
                 .map(Value::Obj)
                 .ok_or(DecodeError::BadObjectId(id))
         }
-        6 => Ok(Value::Obj(decode_class_tag(r, ctx)?)),
+        6 => Ok(Value::Obj(decode_class_tag(r, ctx, tables)?)),
         7 => Ok(ctx.platform.clone()),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
     }
@@ -1239,11 +1497,12 @@ fn decode_closure_record(
     r: &mut Reader,
     ctx: &DecodeContext,
     tables: &Tables,
+    symbols: &symbols::Table,
 ) -> Result<ClosureData, DecodeError> {
     let n = r.read_u16()? as usize;
     let mut params = reserve_for(n, r);
     for _ in 0..n {
-        params.push(decode_symbol(r)?);
+        params.push(decode_symbol(r, symbols)?);
     }
     let code_id = r.read_u32()?;
     let code = ctx
@@ -1270,53 +1529,76 @@ fn decode_closure_record(
         body: ClosureBody::Compiled(code),
         captured_frame,
         home,
-        // Never serialized -- the reloaded module's map is authoritative.
+        // Never serialized: no `bindings.get(&span)` runs under the
+        // bytecode engine, so a decoded closure carries the load's empty
+        // map (`image::LoadedImage::empty_bindings`).
         bindings: ctx.bindings.clone(),
     })
 }
 
-/// Re-resolves a `FrameKind::Method` against the *reloaded* class's method
+/// Re-resolves a `FrameKind::Method` against the decoded class's method
 /// map: the image names the method by selector, never by identity.
 ///
-/// Always `ctx.root_class`, even though the frame record carries a
-/// `current_class` of its own that was decoded a few bytes earlier: the
-/// same single-user-class invariant `encode_class_tag` documents means the
-/// only class that can define a method here *is* the root class. When
-/// nested classes load, this must resolve against the frame's own
-/// `current_class` instead -- and until then, doing so would be a
-/// distinction without a difference that reads like a guarantee.
-fn method_decl(ctx: &DecodeContext, selector: String) -> Result<Rc<ast::MethodDecl>, DecodeError> {
-    let found = {
-        let borrowed = ctx.root_class.borrow();
-        match &borrowed.data {
-            ObjectData::Class(data) => data.methods.get(&Symbol::intern(&selector)).cloned(),
-            _ => None,
-        }
-    };
-    found.ok_or(DecodeError::UnknownSelector(selector))
+/// Against the frame's own `current_class`, which `dispatch::walk` sets to
+/// the level whose mixin declares the running method -- so that level's
+/// method dictionary is exactly where the selector is found, and the
+/// `Rc<MixinMethod>` it yields is the key `build_module` bound this
+/// image's compiled body under. Now that a nested class object is an
+/// ordinary record, `current_class` is regularly a class other than the
+/// root, and resolving everything against the root would either miss the
+/// selector or bind the frame to a same-named method of a different class.
+/// `None` -- a `TopLevel` activation -- has no class to ask, so the root
+/// class stands in, as it did for every frame before nesting.
+fn method_decl(
+    ctx: &DecodeContext,
+    current_class: Option<&ClassRef>,
+    selector: Symbol,
+) -> Result<Rc<crate::mixin::MixinMethod>, DecodeError> {
+    let class = current_class.unwrap_or(ctx.root_class);
+    let found = class_application(class).and_then(|a| a.mixin.methods.get(&selector).cloned());
+    found.ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
 }
 
 fn decode_frame(
     r: &mut Reader,
     ctx: &DecodeContext,
     tables: &Tables,
+    symbols: &symbols::Table,
 ) -> Result<Frame, DecodeError> {
     let receiver = decode_value(r, ctx, tables)?;
     let args = decode_values(r, ctx, tables)?;
     let temps = decode_values(r, ctx, tables)?;
     let pc = r.read_u32()? as usize;
+    // Tag 0 (`TreeWalk`) is a value the format defines and refuses: the
+    // discriminator exists so that a frame record says what its `pc`
+    // counts, and saying "statements" is saying it indexes a body no image
+    // carries. Rejected here rather than silently normalized to
+    // `Bytecode`, which would reinterpret the number instead of refusing
+    // it. `verify_graph` then bounds the `pc` itself against the body.
+    let pc_kind = match r.read_u8()? {
+        0 => return Err(DecodeError::TreeWalkFrame),
+        1 => PcKind::Bytecode,
+        tag => {
+            return Err(DecodeError::InvalidTag {
+                what: "frame pc kind",
+                tag,
+            })
+        }
+    };
     let sender = decode_frame_ref(r, tables)?;
     let home = decode_frame_ref(r, tables)?;
-    let current_class = if r.read_bool()? {
-        Some(decode_class_tag(r, ctx)?)
-    } else {
-        None
-    };
+    let current_class = decode_optional_class(r, ctx, tables)?;
     let kind = match r.read_u8()? {
-        0 => FrameKind::Method(method_decl(ctx, r.read_str()?)?),
-        1 => FrameKind::Closure(Rc::new(decode_closure_record(r, ctx, tables)?)),
+        0 => FrameKind::Method(method_decl(
+            ctx,
+            current_class.as_ref(),
+            decode_symbol(r, symbols)?,
+        )?),
+        1 => FrameKind::Closure(Rc::new(decode_closure_record(r, ctx, tables, symbols)?)),
         2 => FrameKind::TopLevel,
-        3 => FrameKind::Initializer(decode_class_tag(r, ctx)?),
+        3 => FrameKind::Initializer(decode_class_tag(r, ctx, tables)?),
+        4 => FrameKind::SuperclassClause(decode_class_tag(r, ctx, tables)?),
+        5 => FrameKind::SuperclassMessage(decode_class_tag(r, ctx, tables)?),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "frame kind",
@@ -1330,11 +1612,16 @@ fn decode_frame(
         args,
         temps,
         pc,
+        pc_kind,
         sender,
         home,
         current_class,
         kind,
         uncontinuable,
+        // Nothing re-activates a decoded frame (this module's doc comment,
+        // below), so no compiled `InitSlot` ever reads this on a frame that
+        // came off the wire.
+        slot_base: 0,
     })
 }
 
@@ -1346,11 +1633,13 @@ fn placeholder_frame() -> Frame {
         args: Vec::new(),
         temps: Vec::new(),
         pc: 0,
+        pc_kind: PcKind::Bytecode,
         sender: None,
         home: None,
         current_class: None,
         kind: FrameKind::TopLevel,
         uncontinuable: false,
+        slot_base: 0,
     }
 }
 
@@ -1360,10 +1649,10 @@ fn placeholder_frame() -> Frame {
 const MIN_OBJECT_RECORD_BYTES: usize = 6;
 
 /// The smallest frame record the wire admits: a `nil` receiver (1), empty
-/// `args` and `temps` counts (4 + 4), a `pc` (4), absent `sender`, `home`
-/// and `current_class` (1 + 1 + 1), a `TopLevel` kind tag (1), and
-/// `uncontinuable` (1). Every other frame kind is larger.
-const MIN_FRAME_RECORD_BYTES: usize = 18;
+/// `args` and `temps` counts (4 + 4), a `pc` (4) and its kind tag (1),
+/// absent `sender`, `home` and `current_class` (1 + 1 + 1), a `TopLevel`
+/// kind tag (1), and `uncontinuable` (1). Every other frame kind is larger.
+const MIN_FRAME_RECORD_BYTES: usize = 19;
 
 /// A record count read from an untrusted stream, refused before it is used
 /// to *allocate*. The bytes still unread bound how many records can really
@@ -1383,22 +1672,249 @@ fn bounded_count(count: usize, bytes_per_record: usize, r: &Reader) -> Result<us
     Ok(count)
 }
 
+/// The module's root class object, rebuilt from mixin-table row 0 and the
+/// root-class section -- `instantiate::load_module` without the source.
+///
+/// The two do the same three things in the same order, so a loaded world's
+/// root class is indistinguishable from a freshly loaded module's, down to
+/// its identity hash (both allocate exactly one class object, immediately
+/// after the bootstrap's builtins): apply the root mixin over the
+/// superclass's own application, then mint the class object with no
+/// enclosing object and no declaring class -- the module's root class is
+/// the outermost level, so neither exists.
+///
+/// The superclass arrives as an already-resolved `ClassRef` from
+/// `decode_root_superclass`, because `load_module` resolves it by *name*
+/// from the declaration and a decoded mixin has no declaration to read a
+/// name from.
+pub fn build_root_class(
+    interp: &mut Interpreter,
+    mixins: &mixins::Decoded,
+    superclass: Option<ClassRef>,
+) -> Result<ClassRef, DecodeError> {
+    let root_mixin = mixins.root().cloned().ok_or(DecodeError::NotAClass)?;
+    let super_application = superclass.as_ref().and_then(class_application);
+    let application = interp.apply_mixin(&root_mixin, super_application.as_ref());
+    Ok(interp.new_class_object(application, None, None, superclass))
+}
+
+/// The root-class section: the class the module's root class inherits from,
+/// as an optional builtin tag. The inverse of `encode::encode_root_class`,
+/// which explains why the format admits only a builtin here.
+pub fn decode_root_superclass(
+    r: &mut Reader,
+    interp: &Interpreter,
+) -> Result<Option<ClassRef>, DecodeError> {
+    if r.read_bool()? {
+        Ok(Some(interp.builtin_class(read_builtin_class(r)?)))
+    } else {
+        Ok(None)
+    }
+}
+
+/// A class record as read, before its application exists: the object-table
+/// slot it fills and the mixin-table row it applies. Its three references
+/// are installed in the same pass that reads it (they are ids into tables
+/// that are already allocated); only the application has to wait for the
+/// superclass's.
+struct PendingClass {
+    object: usize,
+    mixin: Rc<crate::mixin::Mixin>,
+}
+
+/// Rebuilds every decoded class object's `MixinApplication`, superclass
+/// first.
+///
+/// An application is derived, never stored: `Interpreter::apply_mixin`
+/// computes the slot layout and the lookup chain from a mixin and its
+/// superclass's application, and caches the result under exactly that pair.
+/// So rebuilding restores identity as well as content -- two class objects
+/// that shared one application before the snapshot ask for the same pair
+/// here and get the same `Rc` back, which is what keeps a call site
+/// monomorphic across a save/load.
+///
+/// The order is the catch: a class object's record may name a superclass
+/// whose own record appears later in the table. Each class has at most one
+/// superclass, so the dependency structure is a forest; this walks each
+/// chain to its already-applied end (a builtin, the root class, or a class
+/// resolved by an earlier walk) over an explicit stack, then applies back
+/// down it. A chain that closes on itself is `SuperclassCycle` rather than
+/// a loop that never ends.
+fn rebuild_applications(
+    ctx: &mut DecodeContext,
+    objects: &[ObjRef],
+    pending: Vec<PendingClass>,
+) -> Result<(), DecodeError> {
+    // Class-object address -> position in `pending`, for the "is my
+    // superclass still waiting for its own application?" question each step
+    // asks. Keyed by address because a superclass arrives as an `Rc`, not
+    // as the id it was written with.
+    let mut position: HashMap<usize, usize> = HashMap::with_capacity(pending.len());
+    for (i, p) in pending.iter().enumerate() {
+        position.insert(Rc::as_ptr(&objects[p.object]) as usize, i);
+    }
+    let mut done = vec![false; pending.len()];
+    let mut on_chain = vec![false; pending.len()];
+    let mut chain: Vec<usize> = Vec::new();
+    for start in 0..pending.len() {
+        if done[start] {
+            continue;
+        }
+        let mut current = start;
+        loop {
+            if on_chain[current] {
+                return Err(DecodeError::SuperclassCycle);
+            }
+            on_chain[current] = true;
+            chain.push(current);
+            let superclass = class_superclass(&objects[pending[current].object]);
+            let Some(superclass) = superclass else { break };
+            let Some(&next) = position.get(&(Rc::as_ptr(&superclass) as usize)) else {
+                break;
+            };
+            if done[next] {
+                break;
+            }
+            current = next;
+        }
+        // Deepest-first: every class in `chain` inherits from the next one,
+        // so applying from the far end forward always has the superclass's
+        // application in hand.
+        for &i in chain.iter().rev() {
+            let object = &objects[pending[i].object];
+            let super_application = match class_superclass(object) {
+                Some(superclass) => {
+                    Some(class_application(&superclass).ok_or(DecodeError::NotAClassReference)?)
+                }
+                None => None,
+            };
+            let application = ctx
+                .interp
+                .apply_mixin(&pending[i].mixin, super_application.as_ref());
+            match &mut object.borrow_mut().data {
+                ObjectData::Class(data) => data.application = application,
+                _ => unreachable!("this object was filled in as a class record"),
+            }
+            done[i] = true;
+            on_chain[i] = false;
+        }
+        chain.clear();
+    }
+    Ok(())
+}
+
+fn class_superclass(class: &ObjRef) -> Option<ClassRef> {
+    match &class.borrow().data {
+        ObjectData::Class(data) => data.superclass.clone(),
+        _ => None,
+    }
+}
+
+fn is_class_object(obj: &ObjRef) -> bool {
+    matches!(obj.borrow().data, ObjectData::Class(_))
+}
+
+/// Whether `class` is one of the two class objects a graph never creates:
+/// a builtin, or the module's root class. The mirror of
+/// `encode::is_class_tag`.
+fn is_prebuilt_class(class: &ClassRef, root_class: &ClassRef) -> bool {
+    match &class.borrow().data {
+        ObjectData::Class(data) => data.builtin.is_some() || Rc::ptr_eq(class, root_class),
+        _ => false,
+    }
+}
+
+/// Every field the format types as a class reference really names a class
+/// object, and a class object's own `class` is one the graph did not
+/// create.
+///
+/// A tag-2 class tag names an object-table id, and nothing in the byte
+/// stream forces that record to have been a class record -- which is only
+/// knowable once every record has been read, so it is checked here rather
+/// than where each tag is decoded. These five positions are the complete
+/// set: a class tag appears nowhere else in the graph section, and a plain
+/// `Value::Obj` pointing at a class object is legitimate (that is what a
+/// cached nested class in a slot *is*).
+///
+/// The extra rule for a class object's *own* `class` is the runtime's
+/// invariant, not a limit invented here: `Interpreter::new_class_object` is
+/// the only thing that mints a class object and always gives it the shared
+/// bootstrap `Object` placeholder -- §3.2's reified metaclass model stays
+/// deliberately unbuilt -- so this refuses nothing a real world contains.
+/// It is load-bearing because `class` is the one reference `Object`'s
+/// iterative `Drop` cannot hand to its worklist (it is not an `Option`, and
+/// the field's glue runs after `drop` returns): bounding the chain at one
+/// link is what keeps a crafted image from cascading through it.
+fn check_class_references(
+    objects: &[ObjRef],
+    frames: &[FrameRef],
+    root_class: &ClassRef,
+) -> Result<(), DecodeError> {
+    for object in objects {
+        let borrowed = object.borrow();
+        if !is_class_object(&borrowed.class) {
+            return Err(DecodeError::NotAClassReference);
+        }
+        if let ObjectData::Class(data) = &borrowed.data {
+            if !is_prebuilt_class(&borrowed.class, root_class) {
+                return Err(DecodeError::ClassOfAClassIsARecord);
+            }
+            for class in data.superclass.iter().chain(data.declaring_class.iter()) {
+                if !is_class_object(class) {
+                    return Err(DecodeError::NotAClassReference);
+                }
+            }
+        }
+    }
+    for frame in frames {
+        let borrowed = frame.borrow();
+        let kind_class = match &borrowed.kind {
+            FrameKind::Initializer(c)
+            | FrameKind::SuperclassClause(c)
+            | FrameKind::SuperclassMessage(c) => Some(c),
+            FrameKind::Method(_) | FrameKind::Closure(_) | FrameKind::TopLevel => None,
+        };
+        for class in borrowed.current_class.iter().chain(kind_class) {
+            if !is_class_object(class) {
+                return Err(DecodeError::NotAClassReference);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Two-pass decoding: placeholder-allocate every object and every frame,
 /// then fill each in place (so cycles and shared references round-trip
 /// with identity preserved), then decode the roots.
 ///
-/// Both passes are flat loops over the two tables, and every reference
+/// Class objects need one more step between the two: their records are
+/// filled in like any other, but the `MixinApplication` a class object
+/// carries is derived rather than stored, and deriving it needs the
+/// superclass's -- which may itself be a record that appears later.
+/// `rebuild_applications` closes that gap once every record has been read.
+/// It runs before the frames, whose `FrameKind::Method` resolves a selector
+/// against `current_class`'s method dictionary.
+///
+/// Every pass is a flat loop over the two tables, and every reference
 /// between records is an id into them, never an inline nested record -- so
 /// no part of this decoder recurses on a depth the image controls. The one
 /// depth-bounded structure in the format, `Literal::Array`, lives in the
 /// code table (`decode_literal`'s `MAX_LITERAL_DEPTH`).
 pub fn decode_graph_section(
     r: &mut Reader,
-    ctx: &DecodeContext,
+    ctx: &mut DecodeContext,
+    symbols: &symbols::Table,
 ) -> Result<DecodedGraph, DecodeError> {
     let object_count = bounded_count(r.read_u32()? as usize, MIN_OBJECT_RECORD_BYTES, r)?;
     let frame_count = bounded_count(r.read_u32()? as usize, MIN_FRAME_RECORD_BYTES, r)?;
     let placeholder_class = ctx.interp.builtin_class(BuiltinClass::Object);
+    // A real application, standing in until `rebuild_applications` derives
+    // each class object's own -- the same technique as the placeholder
+    // object and `placeholder_frame`, and for the same reason: nothing may
+    // observe a half-built record, and a `None` here would need an
+    // `Option` on `ClassData` that no live class object could ever be.
+    let placeholder_application =
+        class_application(&placeholder_class).ok_or(DecodeError::NotAClass)?;
     let objects: Vec<ObjRef> = (0..object_count)
         .map(|_| {
             Rc::new(RefCell::new(Object {
@@ -1416,8 +1932,9 @@ pub fn decode_graph_section(
         frames: &frames,
     };
     let mut max_identity_hash = 0;
-    for obj in &objects {
-        let class = decode_class_tag(r, ctx)?;
+    let mut pending_classes: Vec<PendingClass> = Vec::new();
+    for (index, obj) in objects.iter().enumerate() {
+        let class = decode_class_tag(r, ctx, &tables)?;
         let identity_hash = r.read_u32()?;
         // Checked here, the one place identity hashes are read: `load`
         // hands the maximum straight to `advance_identity_hash_past`, which
@@ -1429,9 +1946,17 @@ pub fn decode_graph_section(
         let data = match r.read_u8()? {
             0 => ObjectData::Instance(decode_values(r, ctx, &tables)?),
             1 => ObjectData::Str(r.read_str()?),
-            2 => ObjectData::Sym(decode_symbol(r)?),
+            2 => ObjectData::Sym(decode_symbol(r, symbols)?),
             3 => ObjectData::Array(decode_values(r, ctx, &tables)?),
-            4 => ObjectData::Closure(decode_closure_record(r, ctx, &tables)?),
+            4 => ObjectData::Closure(decode_closure_record(r, ctx, &tables, symbols)?),
+            5 => {
+                let (data, mixin) = decode_class_record(r, ctx, &tables, &placeholder_application)?;
+                pending_classes.push(PendingClass {
+                    object: index,
+                    mixin,
+                });
+                ObjectData::Class(data)
+            }
             tag => {
                 return Err(DecodeError::InvalidTag {
                     what: "object body",
@@ -1445,10 +1970,12 @@ pub fn decode_graph_section(
             data,
         };
     }
+    rebuild_applications(ctx, &objects, pending_classes)?;
     for frame in &frames {
-        let decoded = decode_frame(r, ctx, &tables)?;
+        let decoded = decode_frame(r, ctx, &tables, symbols)?;
         *frame.borrow_mut() = decoded;
     }
+    check_class_references(&objects, &frames, ctx.root_class)?;
     let roots = decode_values(r, ctx, &tables)?;
     Ok(DecodedGraph {
         roots,
@@ -1456,6 +1983,68 @@ pub fn decode_graph_section(
         objects,
         frames,
     })
+}
+
+/// The inverse of `encode::encode_class_record`: the mixin-table row this
+/// class applies, then its superclass, its enclosing object and its
+/// declaring class.
+///
+/// The mixin id is range-checked here, against the decoded mixin table,
+/// before it is used to index anything. The three references resolve
+/// to identities that already exist (every record was placeholder-allocated
+/// before this pass started), so a forward reference and a cycle are both
+/// ordinary; what cannot be settled yet is whether each really is a class
+/// record, which `check_class_references` establishes afterwards.
+fn decode_class_record(
+    r: &mut Reader,
+    ctx: &DecodeContext,
+    tables: &Tables,
+    placeholder_application: &Rc<crate::mixin::MixinApplication>,
+) -> Result<(crate::types::ClassData, Rc<crate::mixin::Mixin>), DecodeError> {
+    let id = r.read_u32()?;
+    let mixin = ctx
+        .mixins
+        .get(id as usize)
+        .cloned()
+        .ok_or(DecodeError::BadMixinId(id))?;
+    let superclass = decode_optional_class(r, ctx, tables)?;
+    let enclosing = if r.read_bool()? {
+        match decode_value(r, ctx, tables)? {
+            Value::Obj(obj) => Some(obj),
+            _ => return Err(DecodeError::EnclosingNotAnObject),
+        }
+    } else {
+        None
+    };
+    let declaring_class = decode_optional_class(r, ctx, tables)?;
+    Ok((
+        crate::types::ClassData {
+            application: placeholder_application.clone(),
+            enclosing,
+            declaring_class,
+            superclass,
+            // A record only ever describes a user class: a builtin is a
+            // class *tag*, resolved through the bootstrap, and never an
+            // object-table entry.
+            builtin: None,
+            // Rebuilt by `Interpreter::metaclass_of` on the first
+            // class-side send, exactly as it is for a class object the
+            // accessor just created.
+            //
+            // Not the *same* metaclass, though, in one case: a metaclass
+            // that was itself in the graph -- as a class-side activation's
+            // `current_class` -- decodes as a class record of its own and
+            // is never linked back into the class it belongs to, so
+            // `metaclass_of` mints a second one beside it. Nothing observes
+            // the difference today: `metaclass_of` is reached only from
+            // `Interpreter::send`'s dispatch, so no Newspeak value names a
+            // metaclass and no two of them can be compared. Recording it
+            // rather than claiming stability, because the claim would stop
+            // being true the moment §3.2's reified model is built.
+            metaclass: None,
+        },
+        mixin,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1472,14 +2061,36 @@ pub fn decode_graph_section(
 // ---------------------------------------------------------------------------
 
 /// The compiled body that runs (or ran) in `frame`, or `None` when the
-/// image gives it none: a `TopLevel` frame, or an initializer frame for a
-/// class the module has no initializer for. Neither can be entered --
-/// nothing re-activates a decoded frame, and no closure may be captured by
-/// one (`verify_closure` refuses that) -- so there is nothing to reconcile.
+/// image gives it none: a `TopLevel` frame, or a class-carrying frame whose
+/// kind names a table the module holds no body for that class's mixin in.
+/// Neither can be entered -- nothing re-activates a decoded frame, and no
+/// closure may be captured by one (`verify_closure` refuses that) -- so
+/// there is nothing to reconcile.
 fn frame_body(frame: &Frame, module: &CompiledModule) -> Option<Rc<CompiledCode>> {
+    /// The mixin whose code table a class-carrying frame kind names. `None`
+    /// only if the decoded value is not a class object -- `decode_class_tag`
+    /// never produces one, but returning `None` keeps a future change to it
+    /// from turning an untrusted image into a panic here.
+    fn frame_mixin(class: &crate::types::ClassRef) -> Option<Rc<crate::mixin::Mixin>> {
+        class_application(class).map(|a| a.mixin.clone())
+    }
     match &frame.kind {
         FrameKind::Method(decl) => module.methods.get(&method_key(decl)).cloned(),
-        FrameKind::Initializer(class) => module.initializers.get(&class_key(class)).cloned(),
+        FrameKind::Initializer(class) => {
+            frame_mixin(class).and_then(|m| module.initializers.get(&mixin_key(&m)).cloned())
+        }
+        // Each clause activation resolves against the table its own body
+        // lives in. They share `Initializer`'s frame shape -- a class's code
+        // running on an instance -- but not its body, so resolving them here
+        // as initializers would reconcile a frame against a body that never
+        // ran in it: a legitimate image refused, and a crafted one checked
+        // against the wrong register file.
+        FrameKind::SuperclassClause(class) => {
+            frame_mixin(class).and_then(|m| module.superclass_clauses.get(&mixin_key(&m)).cloned())
+        }
+        FrameKind::SuperclassMessage(class) => {
+            frame_mixin(class).and_then(|m| module.superclass_messages.get(&mixin_key(&m)).cloned())
+        }
         FrameKind::Closure(closure) => match &closure.body {
             ClosureBody::Compiled(code) => Some(code.clone()),
             // Unreachable from the wire: the format has no representation
@@ -1492,14 +2103,19 @@ fn frame_body(frame: &Frame, module: &CompiledModule) -> Option<Rc<CompiledCode>
 }
 
 /// Every decoded frame and every decoded closure against the code table
-/// `install_code_table` was handed, closing the two gaps a per-record
-/// decoder cannot see:
+/// `build_module` was handed, closing the three gaps a per-record decoder
+/// cannot see:
 ///
+/// 0. A frame's `pc` must be an instruction index of the body that runs in
+///    it. The frame record says its `pc` counts instructions
+///    (`PcKind::Bytecode` is the only value the format admits), but which
+///    body it counts them in is only known once the module exists.
 /// 1. A frame's register file must match the body that runs in it -- the
 ///    same `args` count, and at least as many registers. (At least, not
-///    exactly: `run_own_initializer` *grows* the initializer frame's temps
-///    to fit each class in the chain, so a legitimate initializer frame can
-///    be wider than the body being verified against it.)
+///    exactly: a frame's register file is grown, never shrunk -- the
+///    liveness spec's reified activations may be wider than the body
+///    currently running in them -- so a wider frame is legitimate and only
+///    a narrower one is a crafted image.)
 /// 2. A closure's `captured_frame` must be an activation of the body its
 ///    own body is lexically nested in. Nothing else in the format ties the
 ///    two together, and `verify_code_table`'s outer-local bound -- which
@@ -1520,6 +2136,16 @@ pub fn verify_graph(
         let Some(code) = frame_body(&borrowed, module) else {
             continue;
         };
+        // `vm::run_code` stores the index of the instruction it is
+        // executing, and a body with no instructions is already refused
+        // (`UnterminatedBody`), so every genuine activation -- including one
+        // that has not run a single instruction yet -- satisfies this.
+        if borrowed.pc >= code.instrs.len() {
+            return Err(DecodeError::PcOutOfRange {
+                pc: borrowed.pc,
+                instrs: code.instrs.len(),
+            });
+        }
         if borrowed.args.len() != code.num_args as usize
             || borrowed.args.len() + borrowed.temps.len() < code.num_registers as usize
         {

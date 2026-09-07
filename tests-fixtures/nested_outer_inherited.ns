@@ -1,0 +1,21 @@
+Newspeak3
+'Test'
+class NestedOuterInherited usingPlatform: p = Object new (| t ::= p transcript. |) (
+    label = ( ^'top' )
+    public class Base = Object new () (
+        public describe = ( ^outer NestedOuterInherited label )
+        public class Deeper = Object new () (
+            public describe = ( ^outer NestedOuterInherited label )
+        )
+    )
+    public class Mid = Object new () (
+        label = ( ^'mid' )
+        public class Derived = Base new () ()
+    )
+    public main: platform args: args = (
+        t show: 'own method: ', Base new describe; newLine.
+        t show: 'inherited method: ', Mid new Derived new describe; newLine.
+        t show: 'own nesting: ', Base new Deeper new describe; newLine.
+        t show: 'inherited nesting: ', Mid new Derived new Deeper new describe; newLine.
+    )
+)

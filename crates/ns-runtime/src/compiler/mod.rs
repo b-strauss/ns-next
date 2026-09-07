@@ -14,9 +14,9 @@ use std::rc::Rc;
 use ns_syntax::ast::{self, Expr, Stmt};
 use ns_syntax::Span;
 
-use crate::bytecode::{class_key, method_key, CodeKind, CompiledCode, CompiledModule};
+use crate::bytecode::{method_key, CodeKind, CompiledCode, CompiledModule};
+use crate::mixin::{mixin_key, Mixin};
 use crate::types::{Binding, ClassRef, ObjectData};
-use crate::Symbol;
 
 use lower::Lowerer;
 
@@ -27,6 +27,16 @@ use lower::Lowerer;
 /// shared with the interpreter's factory-arity guard.
 fn num_args_of(pattern: &ast::MessagePattern) -> u16 {
     crate::interpreter::instantiate::pattern_param_count(pattern) as u16
+}
+
+/// A mixin's primary factory parameter count, narrowed to the `u16` a
+/// `CompiledCode` stores its arity in. `0` for a mixin with no factory of
+/// its own -- a builtin's, a class side's.
+fn factory_num_args(mixin: &Rc<Mixin>) -> u16 {
+    // Same reasoning as `num_args_of` above: a factory's parameter count is
+    // the number of keyword parts one message pattern has, which no parser
+    // and no image (which stores it in a `u16` field) can push past `u16`.
+    mixin.factory.map_or(0, |factory| factory.num_args as u16)
 }
 
 pub fn compile_method(
@@ -49,73 +59,175 @@ pub fn compile_method(
     lowerer.finish(method.span)
 }
 
-/// Compiles a loaded class's own instance-initializer body: each slot with
-/// an initializer (declaration order) as `<expr>; InitSlot`, then each
-/// `initExpr` (a top-level `^` is evaluated and discarded), then
-/// `LoadSelf; ImplicitReturn` -- the spec's "Class instantiation" section.
-/// `num_args` is the class's own factory parameter count: the resolver
-/// scoped this code with exactly those parameters as `Binding::Local`.
+/// Compiles a loaded class's own instance-initializer body. Delegates to
+/// `compile_mixin_initializer`; kept as a `ClassRef`-taking entry point
+/// because `ns-cli`'s `disasm` and this module's own tests address a class
+/// directly, without going through `compile_module`'s tree walk.
 pub fn compile_initializer(
     class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> CompiledCode {
-    let (slots, slot_index, init_exprs, num_args) = {
+    let mixin = {
         let borrowed = class.borrow();
         let ObjectData::Class(data) = &borrowed.data else {
             panic!("internal: compile_initializer called on a non-class object");
         };
-        (
-            data.instance_slots.clone(),
-            data.slot_index.clone(),
-            data.init_exprs.clone(),
-            data.factory.as_deref().map(num_args_of).unwrap_or(0),
-        )
+        data.application.mixin.clone()
     };
+    compile_mixin_initializer(&mixin, bindings)
+}
+
+/// The shared body behind `compile_initializer` and `compile_module`'s tree
+/// walk: each of `mixin`'s own slots with an initializer (declaration
+/// order) as `<expr>; InitSlot`, then each `initExpr` (a top-level `^` is
+/// evaluated and discarded), then `LoadSelf; ImplicitReturn` -- the spec's
+/// "Class instantiation" section. `num_args` is `mixin`'s own factory
+/// parameter count -- the resolver scoped this code with exactly those
+/// parameters as `Binding::Local`.
+///
+/// Needs no `slot_index` (unlike before the review's round-1 fix): each
+/// `InitSlot` now carries `own_index`, the slot's position among `mixin`'s
+/// *own* slots only (plain declaration-order `enumerate()`, independent of
+/// any superclass) -- never an absolute field index, because this one
+/// compiled body runs for every application of `mixin` (`compile_module`
+/// keys by `mixin_key`, not by class object, per §6.2), and different
+/// applications can legitimately disagree about where the mixin's own
+/// slots start. `vm::run_code` adds the executing frame's `slot_base` --
+/// set per level, at run time, from that level's own real
+/// `MixinApplication.own_slot_base` -- to turn `own_index` into the
+/// absolute index the instance array actually needs.
+fn compile_mixin_initializer(
+    mixin: &Rc<Mixin>,
+    bindings: &Rc<HashMap<Span, Binding>>,
+) -> CompiledCode {
+    let num_args = factory_num_args(mixin);
     let mut lowerer = Lowerer::new(CodeKind::Initializer, num_args, 0, bindings, vec![]);
     let mut source: Option<Span> = None;
-    for slot in &slots {
-        if let Some(init) = &slot.init {
-            let field_index = *slot_index
-                .get(&Symbol::intern(&slot.name.name))
-                .expect("internal: load_class assigns every own slot an absolute index");
-            lowerer.lower_slot_init(init, field_index as u32);
-            source = Some(merge_span(source, slot.span));
+    for (own_index, slot) in mixin.slots.iter().enumerate() {
+        let Some(decl) = &slot.decl else { continue };
+        if let Some(init) = &decl.init {
+            lowerer.lower_slot_init(init, own_index as u32);
+            source = Some(merge_span(source, decl.span));
         }
     }
-    for stmt in &init_exprs {
+    for stmt in &mixin.init_exprs {
         lowerer.lower_statement(stmt);
         source = Some(merge_span(source, stmt_span(stmt)));
     }
-    lowerer.finish_body(&init_exprs);
+    lowerer.finish_body(&mixin.init_exprs);
     lowerer.finish(source.unwrap_or(Span::new(0, 0)))
+}
+
+/// A mixin's superclass clause as executable code: the expression
+/// `newspeak-spec.pdf` §6.1 calls `ec`, lowered as a single synthetic `^ec`
+/// so the body ends in the `Return` that hands the class object back.
+///
+/// The expression itself comes from `interpreter::nested`'s
+/// `superclass_clause_expr`, the *one* definition of what a superclass
+/// clause evaluates -- the tree-walker evaluates that same `ast::Expr`
+/// directly. Building a second, compiler-local notion of "the clause's
+/// expression" here is exactly how the two engines would come to disagree
+/// about a clause that is anything more interesting than a builtin class
+/// name.
+///
+/// Returns `None` for a mixin with no clause (a class side, a builtin, or
+/// `class C = (...)`), which the accessor answers with `Object` under both
+/// engines without running any code at all.
+fn compile_superclass_clause(
+    mixin: &Rc<Mixin>,
+    bindings: &Rc<HashMap<Span, Binding>>,
+) -> Option<CompiledCode> {
+    let clause = mixin.decl.as_ref()?.superclass.as_ref()?;
+    let stmts = vec![Stmt::Return(
+        crate::interpreter::nested::superclass_clause_expr(clause),
+    )];
+    let mut lowerer = Lowerer::new(CodeKind::SuperclassClause, 0, 0, bindings, vec![]);
+    for stmt in &stmts {
+        lowerer.lower_statement(stmt);
+    }
+    lowerer.finish_body(&stmts);
+    Some(lowerer.finish(clause.span))
+}
+
+/// A mixin's superclass-clause *message arguments* as executable code: the
+/// arguments of `newspeak-spec.pdf` §6.1's deferred `msg`, lowered as a
+/// single synthetic `^{arg. arg}` so the body ends in the `Return` that
+/// hands the whole argument list back at once.
+///
+/// `num_args` is this mixin's own factory parameter count, not zero as in
+/// `compile_superclass_clause`: §6.2 evaluates the message in the
+/// instantiation's own initializer context, where the resolver scoped these
+/// expressions with exactly those parameters as `Binding::Local` (the
+/// `class M usingPlatform: p = Super usingPlatform: p (...)` idiom).
+///
+/// The expression comes from `interpreter::nested`'s
+/// `superclass_clause_message_args_expr`, the one definition of what the
+/// clause's arguments are -- the tree-walker evaluates that same
+/// `ast::Expr`. `None` when the clause has no message, or a message with no
+/// arguments: then there is nothing to evaluate under either engine.
+fn compile_superclass_message(
+    mixin: &Rc<Mixin>,
+    bindings: &Rc<HashMap<Span, Binding>>,
+) -> Option<CompiledCode> {
+    let clause = mixin.decl.as_ref()?.superclass.as_ref()?;
+    let args = crate::interpreter::nested::superclass_clause_message_args_expr(clause)?;
+    let num_args = factory_num_args(mixin);
+    let stmts = vec![Stmt::Return(args)];
+    let mut lowerer = Lowerer::new(CodeKind::SuperclassMessage, num_args, 0, bindings, vec![]);
+    for stmt in &stmts {
+        lowerer.lower_statement(stmt);
+    }
+    lowerer.finish_body(&stmts);
+    Some(lowerer.finish(clause.span))
 }
 
 pub fn compile_module(
     root_class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> CompiledModule {
-    let methods: Vec<Rc<ast::MethodDecl>> = {
+    let root_mixin = {
         let borrowed = root_class.borrow();
         match &borrowed.data {
-            ObjectData::Class(data) => data.methods.values().cloned().collect(),
-            _ => Vec::new(),
+            ObjectData::Class(data) => data.application.mixin.clone(),
+            _ => panic!("internal: compile_module called on a non-class object"),
         }
     };
     let mut module = CompiledModule {
         methods: HashMap::new(),
         initializers: HashMap::new(),
+        superclass_clauses: HashMap::new(),
+        superclass_messages: HashMap::new(),
         bindings: bindings.clone(),
     };
-    for method in methods {
-        let compiled = compile_method(&method, bindings);
+    // `crate::mixin::preorder` is also what `image::encode`/`decode` walk
+    // the tree in, for the same code and the same reason: the two must
+    // enumerate the same mixins in the same order (see its doc comment).
+    let mut order = Vec::new();
+    crate::mixin::preorder(&root_mixin, &mut order);
+    for mixin in &order {
+        for method in mixin.methods.values() {
+            // Compiling happens from source, so every entry here has its
+            // declaration; a mixin whose methods have none came from an
+            // image and already carries their compiled bodies.
+            let Some(decl) = &method.decl else { continue };
+            let compiled = compile_method(decl, bindings);
+            module.methods.insert(method_key(method), Rc::new(compiled));
+        }
+        let compiled_init = compile_mixin_initializer(mixin, bindings);
         module
-            .methods
-            .insert(method_key(&method), Rc::new(compiled));
+            .initializers
+            .insert(mixin_key(mixin), Rc::new(compiled_init));
+        if let Some(clause) = compile_superclass_clause(mixin, bindings) {
+            module
+                .superclass_clauses
+                .insert(mixin_key(mixin), Rc::new(clause));
+        }
+        if let Some(message) = compile_superclass_message(mixin, bindings) {
+            module
+                .superclass_messages
+                .insert(mixin_key(mixin), Rc::new(message));
+        }
     }
-    module.initializers.insert(
-        class_key(root_class),
-        Rc::new(compile_initializer(root_class, bindings)),
-    );
     module
 }
 

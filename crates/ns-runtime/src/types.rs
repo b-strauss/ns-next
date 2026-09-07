@@ -48,29 +48,53 @@ pub enum ObjectData {
     Class(ClassData),
 }
 
+/// A class object is *identity*; everything a class object can *do* lives
+/// on its `MixinApplication`. Two class objects built from the same mixin
+/// and the same superclass application share one `application`, which is
+/// what lets an inline cache stay monomorphic across enclosing instances
+/// once nested classes give a mixin one class object per enclosing object.
 #[derive(Debug)]
 pub struct ClassData {
-    pub name: Symbol,
-    pub superclass: Option<ClassRef>,
-    pub methods: HashMap<Symbol, Rc<ast::MethodDecl>>,
-    pub instance_slots: Vec<Rc<ast::SlotDecl>>,
-    /// Each of `instance_slots`' (own, not inherited) absolute index into an
-    /// instance's `ObjectData::Instance` fields vector -- computed once in
-    /// `Interpreter::load_class` (Task 7), offset past every inherited
-    /// slot's own index range. Populated for builtins too (always empty --
-    /// no `BuiltinClass` declares slots in Milestone 1).
-    pub slot_index: HashMap<Symbol, usize>,
-    /// This class's own `initExprs` statement list (`newspeak-spec.pdf`
-    /// §6.1/§6.3, Class Instantiation step 5) -- evaluated, in order, after
-    /// this class's own slots are initialized. Empty for every
-    /// `BuiltinClass` (no Newspeak-source init exprs to run).
-    pub init_exprs: Vec<ast::Stmt>,
-    pub class_side: Option<ClassRef>,
+    /// Behaviour: code, layout and the superclass chain. Shared with every
+    /// other class object built from the same mixin and superclass.
+    pub application: Rc<crate::mixin::MixinApplication>,
+    /// `newspeak-spec.pdf` §6: the enclosing object is the nested class's
+    /// only state, which is why a class object cannot be shared between
+    /// instances of its enclosing class.
     pub enclosing: Option<ObjRef>,
-    pub factory: Option<Rc<ast::MessagePattern>>,
+    /// The class object of the level whose declaration *lexically contains*
+    /// this class's declaration -- `Lookup::NestedClass`'s `ClassRef`, the
+    /// level `interpreter::nested` evaluated the declaration at. `None` for
+    /// a class that no declaration encloses: the module's root class, and a
+    /// builtin. A metaclass copies the class it belongs to (§6.3.1 puts a
+    /// class side in the same declaration as its instance side), so a
+    /// class-side `outer` walks the same chain.
+    ///
+    /// This is what makes the enclosing-object chain of §3.3 *lexical* the
+    /// whole way up rather than only at its first step. `enclosing` alone
+    /// gives one hop; hopping again needs the class object of the level
+    /// just reached, and that is this field, not the reached object's own
+    /// class -- those differ exactly when the declaration is inherited
+    /// across a nesting boundary. See `dispatch::kth_enclosing_object`.
+    pub declaring_class: Option<ClassRef>,
+    /// The per-instance class-object chain, parallel to the application
+    /// chain. `outer` and `super` need it; lookup does not.
+    pub superclass: Option<ClassRef>,
     /// `None` for a user-defined class. `Some(kind)` marks one of the
     /// Milestone 1 core-library classes -- see Tasks 10-12.
     pub builtin: Option<BuiltinClass>,
+    /// The metaclass built from this class's mixin's `class_side`, created
+    /// on first use and cached here (`Interpreter::metaclass_of`) so a
+    /// repeated class-side send does not rebuild it and so metaclass
+    /// identity stays stable (a later milestone's inline caches key on it).
+    /// Lives on `ClassData`, not as a slot on an *instance*: a class
+    /// object's own payload is `ObjectData::Class`, never `Instance`, so it
+    /// cannot share the nested-class hidden-slot mechanism (`nested_slot`),
+    /// which stores its cache in an instance's field vector. `None` for
+    /// every class object until its first class-side send, permanently for
+    /// one whose mixin declares no class side at all -- §6.3's "no
+    /// metaclass" case costs nothing.
+    pub metaclass: Option<ClassRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -111,10 +135,16 @@ pub struct ClosureData {
     /// the design note above on why this is a `FrameRef`, not an `ObjRef`.
     pub home: FrameRef,
     /// The resolver's bindings map the block literal's body was originally
-    /// resolved under. Any `LexicalSend`, `SuperSend`, or local-variable
-    /// reference inside the block body needs this exact map to resolve --
-    /// invoking the closure with a different (e.g. empty) map would break
-    /// such references. Cloning an `Rc` here is cheap.
+    /// resolved under. A `ClosureBody::Ast` needs exactly this map: every
+    /// `LexicalSend`, `SuperSend` and local-variable reference in the body
+    /// is resolved by span through it, so invoking such a closure with a
+    /// different map would break those references. Cloning an `Rc` here is
+    /// cheap.
+    ///
+    /// A `ClosureBody::Compiled` reads it never -- lowering already turned
+    /// every binding into an instruction -- which is why a closure decoded
+    /// from an image can carry the load's empty map
+    /// (`image::LoadedImage::empty_bindings`) without losing anything.
     pub bindings: Rc<HashMap<Span, Binding>>,
 }
 
@@ -158,7 +188,7 @@ pub type FrameRef = Rc<RefCell<Frame>>;
 
 #[derive(Debug)]
 pub enum FrameKind {
-    Method(Rc<ast::MethodDecl>),
+    Method(Rc<crate::mixin::MixinMethod>),
     Closure(Rc<ClosureData>),
     /// A top-of-chain activation with no method or class of its own. Not
     /// built by anything in Milestone 2 (an instance initializer is
@@ -170,6 +200,39 @@ pub enum FrameKind {
     /// it executes so a bytecode `pc` is interpretable through the
     /// initializer cache.
     Initializer(ClassRef),
+    /// A superclass clause's receiver expression (`newspeak-spec.pdf`
+    /// §6.1's `ec`) running on the enclosing object, on behalf of the class
+    /// that *declares* the clause.
+    ///
+    /// Distinct from `Initializer` even though the two look alike, because
+    /// a frame kind is how `image::decode::frame_body` names the table an
+    /// activation's compiled body lives in: this one's body comes from
+    /// `CompiledModule::superclass_clauses`, and verifying it against the
+    /// class's instance initializer would reconcile a frame against a body
+    /// that never ran in it.
+    SuperclassClause(ClassRef),
+    /// The arguments of a superclass clause's deferred factory message,
+    /// evaluated on the instance being initialized and with `class`'s own
+    /// factory arguments (§6.2). Its body comes from
+    /// `CompiledModule::superclass_messages`; see `SuperclassClause` above
+    /// for why that makes it a kind of its own.
+    SuperclassMessage(ClassRef),
+}
+
+/// What a `Frame`'s `pc` counts. The two engines number an activation's
+/// progress in different units -- the tree-walker in statements of a
+/// `CodeBody`, the VM in instructions of a `CompiledCode` -- and a frame is
+/// serialized, so a reader that had to ask the *interpreter* which engine
+/// built it could not interpret a frame record at all. The discriminator
+/// travels with the frame instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PcKind {
+    /// A statement index into the enclosing `ast::CodeBody.stmts`
+    /// (`Interpreter::run_statements`).
+    TreeWalk,
+    /// An instruction index into the enclosing `CompiledCode.instrs`
+    /// (`vm::run_code`).
+    Bytecode,
 }
 
 #[derive(Debug)]
@@ -177,15 +240,14 @@ pub struct Frame {
     pub receiver: Value,
     pub args: Vec<Value>,
     /// Indexable by resolver slot index, growable (liveness spec's
-    /// reified-activation constraint). `pc` means two different things
-    /// depending on which engine built this frame's code: under
-    /// `Engine::TreeWalk` it is a statement index into the enclosing
-    /// `CodeBody.stmts`; under `Engine::Bytecode` (`vm::run_code`) it is an
-    /// instruction index into the enclosing `CompiledCode.instrs`. Which one
-    /// applies is determined by the engine active when the frame ran, not by
-    /// anything stored on the frame itself.
+    /// reified-activation constraint).
     pub temps: Vec<Value>,
+    /// How far this activation has progressed, counted in the unit
+    /// `pc_kind` names. Set where the frame is built and never
+    /// reinterpreted: the engine that will run the body is chosen at the
+    /// same place, so the two fields are decided together.
     pub pc: usize,
+    pub pc_kind: PcKind,
     pub sender: Option<FrameRef>,
     /// Set only for `FrameKind::Closure` -- the enclosing method or
     /// initializer activation.
@@ -199,6 +261,194 @@ pub struct Frame {
     /// §7.2). A further attempt to return through an uncontinuable
     /// activation is a `cannotReturn` error.
     pub uncontinuable: bool,
+    /// The absolute field index a compiled `InitSlot`'s mixin-relative
+    /// `own_index` is offset by -- `MixinApplication.own_slot_base` for the
+    /// class level this activation initializes. Meaningful only for a
+    /// `FrameKind::Initializer` frame while `Engine::Bytecode` runs its
+    /// compiled body. There is one such frame per level of the superclass
+    /// chain (`Interpreter::run_initializer_level`), and every field of it
+    /// -- receiver aside -- describes that one level, this one included: it
+    /// is set once, where the frame is built, and never changes. Irrelevant
+    /// (left at 0) for every other frame kind: a method, block, clause, or
+    /// top-level body never contains `InitSlot`.
+    pub slot_base: usize,
+}
+
+// ---------- Iterative teardown ----------
+
+// `Rc`'s own drop glue is recursive: releasing the last handle to an object
+// drops its fields, which releases the last handle to the next object, and
+// so on. How deep that chain runs is the *program's* choice -- a Newspeak
+// program can chain a million instances or a million activations -- and,
+// once a world is decoded from an image, an attacker's: `image::decode`
+// builds the graph from untrusted bytes, at well under twenty bytes per
+// link. A few hundred thousand links overflow the stack, which aborts the
+// process rather than failing, and an abort is exactly what an image must
+// never be able to cause.
+//
+// So `Object`, `Frame` (here) and `MixinApplication` (`mixin.rs`) release
+// what they own through an explicit worklist instead of through the Rust
+// stack. No ceiling comes with it and none is wanted: every chain is still
+// released in full, however deep, because refusing a deep one would refuse
+// worlds this runtime builds happily from source.
+//
+// The one reference that cannot join the worklist is `Object::class`: it is
+// not an `Option`, and `Drop::drop` receives `&mut self`, so there is no
+// value to swap in and the field's own glue runs after `drop` returns.
+// `image::decode::check_class_references` closes that gap from the other
+// end, by refusing an image in which a class object's own `class` is
+// another decoded record -- which is not a depth ceiling but the runtime's
+// own invariant, since `Interpreter::new_class_object` gives every class
+// object the shared bootstrap `Object` placeholder. A `class` chain is
+// therefore at most one link long and costs a bounded number of frames.
+
+/// One entry of a teardown worklist. Objects and frames reference each
+/// other freely (a closure holds frames, a frame holds objects), so both
+/// live on the same list.
+enum Dying {
+    Obj(ObjRef),
+    Frame(FrameRef),
+}
+
+/// Hands `obj` to `work` if this is its last handle, and simply releases it
+/// otherwise.
+///
+/// The count test is what keeps the worklist -- and its allocation -- out
+/// of the common case entirely: an object whose fields all point at things
+/// someone else still holds pushes nothing, and `Vec::new()` does not
+/// allocate until the first push. It is also what makes two fields of one
+/// dying object pointing at the same third object work out: the first
+/// handle sees a count of two and is released on the spot, the second sees
+/// one and is queued.
+fn push_obj(obj: ObjRef, work: &mut Vec<Dying>) {
+    if Rc::strong_count(&obj) == 1 {
+        work.push(Dying::Obj(obj));
+    }
+}
+
+fn push_frame(frame: FrameRef, work: &mut Vec<Dying>) {
+    if Rc::strong_count(&frame) == 1 {
+        work.push(Dying::Frame(frame));
+    }
+}
+
+fn push_value(value: Value, work: &mut Vec<Dying>) {
+    if let Value::Obj(obj) = value {
+        push_obj(obj, work);
+    }
+}
+
+fn push_closure(closure: ClosureData, work: &mut Vec<Dying>) {
+    push_frame(closure.captured_frame, work);
+    push_frame(closure.home, work);
+}
+
+/// Moves every reference an object's payload owns onto `work`. Takes the
+/// payload by value: `ObjectData` has an empty variant to leave behind
+/// (`Instance(vec![])`), so nothing here needs a stand-in.
+fn drain_object_data(data: ObjectData, work: &mut Vec<Dying>) {
+    match data {
+        ObjectData::Instance(fields) | ObjectData::Array(fields) => {
+            for value in fields {
+                push_value(value, work);
+            }
+        }
+        ObjectData::Closure(closure) => push_closure(closure, work),
+        ObjectData::Class(class) => {
+            // `application` is released through `MixinApplication`'s own
+            // `Drop`, which unlinks its superclass list the same way.
+            for reference in [
+                class.superclass,
+                class.enclosing,
+                class.declaring_class,
+                class.metaclass,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                push_obj(reference, work);
+            }
+        }
+        ObjectData::Str(_) | ObjectData::Sym(_) => {}
+    }
+}
+
+fn take_object_data(obj: &mut Object) -> ObjectData {
+    std::mem::replace(&mut obj.data, ObjectData::Instance(Vec::new()))
+}
+
+/// Moves every reference a frame owns onto `work`. Every field has a cheap
+/// empty form to leave behind, so a frame -- unlike an object -- gives up
+/// all of its references.
+fn drain_frame(frame: &mut Frame, work: &mut Vec<Dying>) {
+    push_value(std::mem::replace(&mut frame.receiver, Value::Nil), work);
+    for value in std::mem::take(&mut frame.args) {
+        push_value(value, work);
+    }
+    for value in std::mem::take(&mut frame.temps) {
+        push_value(value, work);
+    }
+    if let Some(sender) = frame.sender.take() {
+        push_frame(sender, work);
+    }
+    if let Some(home) = frame.home.take() {
+        push_frame(home, work);
+    }
+    if let Some(class) = frame.current_class.take() {
+        push_obj(class, work);
+    }
+    match std::mem::replace(&mut frame.kind, FrameKind::TopLevel) {
+        FrameKind::Closure(closure) => {
+            if let Ok(closure) = Rc::try_unwrap(closure) {
+                push_closure(closure, work);
+            }
+        }
+        FrameKind::Initializer(class)
+        | FrameKind::SuperclassClause(class)
+        | FrameKind::SuperclassMessage(class) => push_obj(class, work),
+        FrameKind::Method(_) | FrameKind::TopLevel => {}
+    }
+}
+
+/// Releases everything on `work`, and everything reachable from it, in a
+/// loop. Each entry was queued because its handle was the last one, so
+/// `Rc::try_unwrap` yields the value itself; emptying it there means its
+/// own `Drop` finds nothing left to descend into.
+fn run_teardown(work: &mut Vec<Dying>) {
+    while let Some(dying) = work.pop() {
+        match dying {
+            Dying::Obj(obj) => {
+                if let Ok(cell) = Rc::try_unwrap(obj) {
+                    let mut object = cell.into_inner();
+                    let data = take_object_data(&mut object);
+                    drain_object_data(data, work);
+                }
+            }
+            Dying::Frame(frame) => {
+                if let Ok(cell) = Rc::try_unwrap(frame) {
+                    let mut inner = cell.into_inner();
+                    drain_frame(&mut inner, work);
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Object {
+    fn drop(&mut self) {
+        let mut work = Vec::new();
+        let data = take_object_data(self);
+        drain_object_data(data, &mut work);
+        run_teardown(&mut work);
+    }
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        let mut work = Vec::new();
+        drain_frame(self, &mut work);
+        run_teardown(&mut work);
+    }
 }
 
 // ---------- Errors ----------
@@ -238,6 +488,20 @@ mod tests {
     /// (its count balanced via `Rc::increment_strong_count` before calling
     /// `Rc::from_raw`), write the real value using that handle as `class`,
     /// then `assume_init`.
+    /// A root application with no code, no slots and no superclass. Built
+    /// directly rather than through `Interpreter::apply_mixin` so this
+    /// module's tests stay free of the interpreter.
+    fn empty_application(name: &str) -> Rc<crate::mixin::MixinApplication> {
+        Rc::new(crate::mixin::MixinApplication {
+            mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
+            superclass: None,
+            slot_index: HashMap::new(),
+            nested_slot: HashMap::new(),
+            num_slots: 0,
+            own_slot_base: 0,
+        })
+    }
+
     fn dummy_class() -> ClassRef {
         let uninit: Rc<std::mem::MaybeUninit<RefCell<Object>>> = Rc::new_uninit();
         let raw_mut = Rc::as_ptr(&uninit) as *mut std::mem::MaybeUninit<RefCell<Object>>;
@@ -256,16 +520,12 @@ mod tests {
                 class: self_ref,
                 identity_hash: 0,
                 data: ObjectData::Class(ClassData {
-                    name: Symbol::intern("Object"),
-                    superclass: None,
-                    methods: HashMap::new(),
-                    instance_slots: vec![],
-                    slot_index: HashMap::new(),
-                    init_exprs: vec![],
-                    class_side: None,
+                    application: empty_application("Object"),
                     enclosing: None,
-                    factory: None,
+                    declaring_class: None,
+                    superclass: None,
                     builtin: Some(BuiltinClass::Object),
+                    metaclass: None,
                 }),
             }));
         }
@@ -304,11 +564,13 @@ mod tests {
             args: vec![],
             temps: vec![],
             pc: 0,
+            pc_kind: PcKind::TreeWalk,
             sender: None,
             home: None,
             current_class: None,
             kind: FrameKind::TopLevel,
             uncontinuable: false,
+            slot_base: 0,
         };
         assert!(frame.current_class.is_none());
     }

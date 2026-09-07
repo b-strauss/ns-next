@@ -1,0 +1,18 @@
+Newspeak3
+'Test'
+class NestedIdentity usingPlatform: p = Object new (| t ::= p transcript. |) (
+    public class Holder = Object new () (
+        public class Inner = Object new () (
+            public value = ( ^7 )
+        )
+    )
+    public main: platform args: args = (
+        | a b |
+        a := Holder new.
+        b := Holder new.
+        t show: ((a Inner == b Inner) not) printString; newLine.
+        t show: (a Inner == a Inner) printString; newLine.
+        t show: a Inner new value printString; newLine.
+        t show: b Inner new value printString; newLine.
+    )
+)

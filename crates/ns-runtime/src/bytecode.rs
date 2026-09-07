@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-use ns_syntax::{ast, Span};
+use ns_syntax::Span;
 
-use crate::types::{Binding, BuiltinClass, ClassRef};
+use crate::types::{Binding, BuiltinClass};
 use crate::Symbol;
 
 /// A compiled instruction-set literal -- a lowered form of `ast::Literal`
@@ -131,13 +131,26 @@ pub enum Instr {
         dst: u16,
         elem_regs: Vec<u16>,
     },
-    /// Writes `self`'s instance field `field_index` -- emitted only by
-    /// instance-initializer compilation for a slot's own initializer
-    /// expression. The one layout-dependent instruction (spec: Milestone
-    /// 3's class-shape-change flush must invalidate compiled initializers).
+    /// Writes `self`'s instance field at `frame.slot_base + own_index` --
+    /// emitted only by instance-initializer compilation for a slot's own
+    /// initializer expression. `own_index` is the slot's position among the
+    /// *mixin's own* slots (declaration order), never an absolute field
+    /// index: the compiled initializer is shared by every application of
+    /// its mixin (`compile_module` keys by `mixin_key`, not by class
+    /// object -- §6.2), and different applications legitimately have
+    /// different absolute offsets for the same mixin's own slots depending
+    /// on how many slots their own superclass contributes. `vm::run_code`
+    /// resolves the absolute index at run time via `frame.slot_base`, which
+    /// `Interpreter::run_initializer_level` fixes when it builds that
+    /// level's frame, from that level's own
+    /// `MixinApplication.own_slot_base` -- one frame per level, so a frame's
+    /// base never describes a level other than its own. Still the one
+    /// layout-dependent instruction (spec: Milestone 3's class-shape-change
+    /// flush must invalidate compiled initializers) -- layout-dependent on
+    /// the mixin's own slot order, not on the whole hierarchy's.
     InitSlot {
         src: u16,
-        field_index: u32,
+        own_index: u32,
     },
     /// A method or initializer body's `^`.
     Return {
@@ -183,6 +196,27 @@ pub enum CodeKind {
     Method,
     Block,
     Initializer,
+    /// A class declaration's superclass clause: the expression
+    /// `newspeak-spec.pdf` §6.1 calls `ec`, compiled as a zero-argument body
+    /// that evaluates it and returns the class object it produced. It is a
+    /// code kind of its own rather than a `Method` with no declaration
+    /// because the frame it runs in belongs to the *enclosing* class and
+    /// carries no factory arguments -- `image::decode` reconciles an
+    /// installed body against what it is installed for by kind, so the two
+    /// must not be confusable there.
+    SuperclassClause,
+    /// The arguments of a class declaration's superclass clause's deferred
+    /// factory message (`7` in `= Base withValue: 7`), compiled as a body
+    /// whose `num_args` is the *declaring* class's own factory parameter
+    /// count and whose value is the argument list as a dynamic array.
+    /// `newspeak-spec.pdf` §6.2 evaluates that message fresh on every
+    /// instantiation, in that instantiation's own initializer context, so
+    /// -- unlike `SuperclassClause`, which runs once per enclosing object
+    /// and on the enclosing object -- this body sees the subclass's own
+    /// factory arguments. A kind of its own for the same reason
+    /// `SuperclassClause` is one: `image::decode` tells an installed body's
+    /// purpose by its kind, so the two must not be confusable there.
+    SuperclassMessage,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -205,25 +239,54 @@ pub struct CompiledCode {
 }
 
 /// The bytecode engine's per-module cache, installed on the `Interpreter`
-/// as `Engine::Bytecode(module)`. Keyed by `Rc` pointer identity of the
-/// *loaded* `MethodDecl`/`ClassRef` -- the exact `Rc`s `dispatch.rs` hands
-/// back -- so no name-based index can drift and no two same-named methods
-/// on different classes can collide.
+/// as `Engine::Bytecode(module)`. `methods` is keyed by `Rc` pointer
+/// identity of the *loaded* `MethodDecl` -- the exact `Rc` `dispatch.rs`
+/// hands back -- so no name-based index can drift and no two same-named
+/// methods on different mixins can collide.
+///
+/// `initializers` is keyed by `crate::mixin::mixin_key`, not by class
+/// object: `newspeak-spec.pdf` §6.2 has every application of a mixin share
+/// its code, while §6 gives every enclosing instance its own class object
+/// for a nested class. A class-object key would compile (and store) the
+/// same initializer body once per enclosing instance instead of once per
+/// mixin -- exactly what `compiler::compile_module` walking the mixin tree
+/// once, up front, is meant to avoid.
 #[derive(Debug)]
 pub struct CompiledModule {
     pub methods: HashMap<usize, Rc<CompiledCode>>,
     pub initializers: HashMap<usize, Rc<CompiledCode>>,
+    /// Each mixin's superclass clause, keyed by `mixin_key` for the same
+    /// reason `initializers` is: the clause is evaluated once per enclosing
+    /// instance (the nested-class accessor runs it), but it is one piece of
+    /// code shared by every application of the mixin. Absent for a mixin
+    /// that declares no superclass clause -- `interpreter::nested` then
+    /// uses `Object`, exactly as `instantiate::resolve_superclass_receiver`
+    /// does for a root class without one.
+    pub superclass_clauses: HashMap<usize, Rc<CompiledCode>>,
+    /// Each mixin's superclass-clause *message arguments*, keyed by
+    /// `mixin_key` like the two maps above. Absent for a mixin whose clause
+    /// message takes no arguments -- the overwhelmingly common `= Object
+    /// new` shape runs no code at all here, and allocates nothing.
+    pub superclass_messages: HashMap<usize, Rc<CompiledCode>>,
     /// The module's resolver output, carried so the hooks can pass it to
     /// the shared orchestration's `bindings` parameters.
+    ///
+    /// Empty for a module decoded from an image, and correctly so: the map
+    /// is read only by `compiler::lower` (compile time) and by the
+    /// tree-walker, and neither runs on a loaded world. See
+    /// `image::LoadedImage::empty_bindings`.
     pub bindings: Rc<HashMap<Span, Binding>>,
 }
 
-pub fn method_key(method: &Rc<ast::MethodDecl>) -> usize {
+/// A method's identity: the `Rc<MixinMethod>` its own mixin's dictionary
+/// holds. Pointer identity rather than `(mixin, selector)` because dispatch
+/// already hands the entry itself to every consumer, so the key costs no
+/// hashing of a name that is about to be discarded -- and because a mixin
+/// decoded from an image gets its own `Rc` per method exactly as a mixin
+/// built from source does, which is what lets an image's compiled bodies be
+/// installed with no `ast::MethodDecl` in reach.
+pub fn method_key(method: &Rc<crate::mixin::MixinMethod>) -> usize {
     Rc::as_ptr(method) as *const () as usize
-}
-
-pub fn class_key(class: &ClassRef) -> usize {
-    Rc::as_ptr(class) as *const () as usize
 }
 
 /// A human-readable listing of `code` for `ns-next disasm`. Nested block
@@ -241,6 +304,8 @@ fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize) 
         CodeKind::Method => "method",
         CodeKind::Block => "block",
         CodeKind::Initializer => "initializer",
+        CodeKind::SuperclassClause => "superclass clause",
+        CodeKind::SuperclassMessage => "superclass clause message",
     };
     writeln!(
         out,
@@ -326,7 +391,7 @@ fn format_instr(instr: &Instr) -> String {
                 .join(" ")
         ),
         Instr::MakeArray { dst, elem_regs } => format!("MakeArray r{dst}, ({})", regs(elem_regs)),
-        Instr::InitSlot { src, field_index } => format!("InitSlot field {field_index} <- r{src}"),
+        Instr::InitSlot { src, own_index } => format!("InitSlot own {own_index} <- r{src}"),
         Instr::Return { reg } => format!("Return r{reg}"),
         Instr::ImplicitReturn { reg } => format!("ImplicitReturn r{reg}"),
         Instr::NonLocalReturn { reg } => format!("NonLocalReturn r{reg}"),
@@ -436,9 +501,14 @@ mod tests {
     fn method_key_is_rc_pointer_identity() {
         let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n) : ()";
         let module = ns_syntax::parse(src).expect("parse");
-        let method = Rc::new(module.root_class.instance_side.methods[0].clone());
+        let entry = |i: usize| {
+            Rc::new(crate::mixin::MixinMethod::from_decl(Rc::new(
+                module.root_class.instance_side.methods[i].clone(),
+            )))
+        };
+        let method = entry(0);
         let same = method.clone();
-        let other = Rc::new(module.root_class.instance_side.methods[0].clone());
+        let other = entry(0);
         assert_eq!(method_key(&method), method_key(&same));
         assert_ne!(method_key(&method), method_key(&other));
     }

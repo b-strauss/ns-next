@@ -104,11 +104,15 @@ fn every_tests_fixtures_ns_file_behaves_identically_under_both_engines() {
         );
         checked += 1;
     }
+    // The floor is the fixture count as it stands, not a comfortable lower
+    // bound: this test's whole job is to notice that a fixture stopped
+    // being run under both engines, and a slack floor lets one disappear in
+    // silence. Raise it in the same commit that adds a fixture.
     assert!(
-        checked >= 6,
-        "expected all 6 tests-fixtures/*.ns fixtures (arithmetic, \
-         blocks_and_return, control_flow_fallback, hello, instance_init, \
-         while_loop)"
+        checked >= 18,
+        "expected every one of the 18 tests-fixtures/*.ns fixtures to run \
+         under both engines, checked {checked} -- raise this floor when \
+         adding a fixture, never lower it to match what was found"
     );
 }
 
@@ -271,4 +275,26 @@ fn a_bare_super_raises_only_when_it_is_reached_under_both_engines() {
     );
     assert!(!outcome.ok);
     assert_eq!(outcome.stdout, "before\n");
+}
+
+/// `newspeak-spec.pdf` §6.1: "It is a run time error if the message
+/// determined by the inheritance clause is not the primary factory message
+/// of C." `Derived`'s clause sends `new`, but `Base`'s primary factory is
+/// `withBase:` -- a program error raised from the shared orchestration, so
+/// both engines print the identical stderr and neither panics.
+#[test]
+fn a_superclass_clause_naming_the_wrong_factory_fails_identically_under_both_engines() {
+    let outcome = assert_engines_agree_on_source(
+        "wrong-superclass-factory",
+        "Newspeak3\n'T'\nclass WrongFactory usingPlatform: platform = Object new (\n) (\n\tpublic class Base withBase: b = Object new (| v ::= b. |) (\n\t)\n\tpublic class Derived = Base new (\n\t) (\n\t)\n\tpublic main: p args: a = (\n\t\t^Derived new\n\t)\n) : ()\n",
+    );
+    assert!(!outcome.ok);
+    assert!(
+        outcome.stderr.contains(
+            "the superclass clause of class Derived sends #new, \
+             but the primary factory of class Base is #withBase:"
+        ),
+        "{}",
+        outcome.stderr
+    );
 }

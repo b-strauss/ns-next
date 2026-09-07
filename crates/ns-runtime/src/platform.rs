@@ -10,13 +10,17 @@ use std::io::Write;
 use crate::types::*;
 use crate::{Interpreter, Symbol};
 
-/// Both the `platform` singleton and its `transcript` stream share
-/// `BuiltinClass::Platform` as their `.class` tag (Milestone 1 has no
-/// second builtin-class slot to spare for a stream-only class) -- told
-/// apart here by payload shape: the platform singleton is built with a
+/// The `platform` singleton, its `transcript` stream, and its
+/// `collections` namespace all share `BuiltinClass::Platform` as their
+/// `.class` tag (Milestone 1 had no second builtin-class slot to spare for
+/// a stream-only class, and adding one now would renumber the image wire
+/// format's builtin-class table for no behavioural gain) -- told apart
+/// here by payload shape: the platform singleton is built with a
 /// zero-field `ObjectData::Instance` (see `Interpreter::platform`), the
-/// stream with a one-field one (see `Interpreter::new_stream_object`).
-/// Neither ever holds real slot data; the field count is purely a tag.
+/// stream with a one-field one (see `Interpreter::new_stream_object`), the
+/// namespace with a two-field one (see
+/// `Interpreter::new_collections_namespace`). None ever holds real slot
+/// data; the field count is purely a tag.
 pub fn dispatch(
     interp: &mut Interpreter,
     receiver: Value,
@@ -26,9 +30,16 @@ pub fn dispatch(
     let Value::Obj(obj) = &receiver else {
         return None;
     };
-    let is_platform =
-        matches!(&obj.borrow().data, ObjectData::Instance(fields) if fields.is_empty());
-    if !is_platform {
+    let tag = match &obj.borrow().data {
+        ObjectData::Instance(fields) => fields.len(),
+        // Unreachable: every `BuiltinClass::Platform`-classed object is
+        // built by one of the three constructors named above.
+        _ => return None,
+    };
+    if tag == 2 {
+        return dispatch_collections(interp, selector);
+    }
+    if tag != 0 {
         return dispatch_stream(interp, receiver, selector, args);
     }
     match selector.as_str() {
@@ -43,6 +54,36 @@ pub fn dispatch(
         ))),
         "String" => Some(Ok(Value::Obj(interp.builtin_class(BuiltinClass::Str)))),
         "Symbol" => Some(Ok(Value::Obj(interp.builtin_class(BuiltinClass::Sym)))),
+        // The Core Library's `collections` namespace. Demand-driven: the
+        // `run-corpus` whitelist's `Ducts.ns`, `NewspeakASTs.ns`, and
+        // `V5BytecodeSimulation.ns` all open with
+        // `private List = platform collections List.`, and none of them
+        // reaches the platform any other way.
+        "collections" => Some(Ok(Value::Obj(interp.new_collections_namespace()))),
+        _ => None,
+    }
+}
+
+/// The `collections` namespace's own protocol.
+///
+/// Exactly one member, because exactly one is asked for. `List` is the
+/// Core Library's growable ordered sequence, which is the class this
+/// runtime already has under its Smalltalk name `OrderedCollection` -- so
+/// this is a name for an existing class, not a new collection
+/// implementation. The corpus also asks this namespace for `Map`,
+/// `IdentityMap`, `IdentitySet`, `WeakArray`, and `Collection`; those name
+/// classes the runtime does not have, and inventing them (or aliasing them
+/// onto `OrderedCollection`, which is not a dictionary and not a set)
+/// would be a collections library this milestone deliberately does not
+/// build. Modules needing them stay off the whitelist.
+fn dispatch_collections(
+    interp: &mut Interpreter,
+    selector: Symbol,
+) -> Option<Result<Value, NewspeakError>> {
+    match selector.as_str() {
+        "List" => Some(Ok(Value::Obj(
+            interp.builtin_class(BuiltinClass::OrderedCollection),
+        ))),
         _ => None,
     }
 }

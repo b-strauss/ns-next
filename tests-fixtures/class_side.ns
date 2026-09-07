@@ -1,0 +1,24 @@
+Newspeak3
+'Test'
+class ClassSide usingPlatform: p = Object new (| t ::= p transcript. |) (
+	public class Widget new = Object new () (
+	) : (
+		public describe = ( ^'a widget class' )
+	)
+	public class SpecialWidget new = Widget new () (
+	)
+	public class OverridingWidget new = Widget new () (
+	) : (
+		public describe = ( ^'a special widget class' )
+	)
+	public main: platform args: args = (
+		t show: self class describe; newLine.
+		t show: (self class greet: 'world'); newLine.
+		t show: Widget describe; newLine.
+		t show: SpecialWidget describe; newLine.
+		t show: OverridingWidget describe; newLine.
+	)
+) : (
+	public describe = ( ^'the class side of ClassSide' )
+	public greet: name = ( ^'hello, ', name )
+)

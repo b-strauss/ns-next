@@ -142,7 +142,14 @@ pub(crate) fn frame_at_depth(frame: &FrameRef, depth: u16) -> FrameRef {
 /// the VM's `MakeClosure`.
 pub(crate) fn home_of(frame: &FrameRef) -> FrameRef {
     match &frame.borrow().kind {
-        FrameKind::Method(_) | FrameKind::TopLevel | FrameKind::Initializer(_) => frame.clone(),
+        FrameKind::Method(_)
+        | FrameKind::TopLevel
+        | FrameKind::Initializer(_)
+        // A clause activation is its own return target for the same reason
+        // an initializer one is: it is a class declaration's code running
+        // on an object, with no enclosing method to return through.
+        | FrameKind::SuperclassClause(_)
+        | FrameKind::SuperclassMessage(_) => frame.clone(),
         FrameKind::Closure(closure) => closure.home.clone(),
     }
 }
@@ -312,7 +319,7 @@ fn selector_of(message: &ast::MessageSend) -> Symbol {
 /// A slot's getter (`x`, no colon) or setter (`x:`, exactly one trailing
 /// colon and no others) shape, per `newspeak-spec.pdf` §6.3.2 -- a slot's
 /// getter/setter are "implicitly defined by the slot declaration", not real
-/// `MethodDecl`s in `ClassData.methods`, so `dispatch_lexical_send` must
+/// `MethodDecl`s in the class's mixin, so `dispatch_lexical_send` must
 /// recognize and serve them directly rather than relying on method lookup
 /// to ever find them. Returns `None` for a genuine multi-keyword selector
 /// (e.g. `at:put:`), which can never denote a slot access.
@@ -327,10 +334,40 @@ fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
     None
 }
 
-/// `newspeak-spec.pdf` §5.7-§5.9: `o` = the kth enclosing object of `self`;
+/// What an implicit-receiver send resolves to on one class, per
+/// `newspeak-spec.pdf` §5.9: a `private` declaration *at exactly this
+/// class* wins first, because a private member is never overridden and so
+/// there is no search; anything else goes through the ordinary
+/// `lookup_protected` walk.
+///
+/// A `private class N` is a private declaration on exactly the same footing
+/// (§6: the implicit accessor has the declaration's own accessibility), and
+/// has to be caught by the same first step: `lookup_protected` skips a
+/// private declaration transparently and keeps walking, so leaving the
+/// nested case out would make `private class N` unreachable from the class
+/// that declares it while `private n = (...)` is reachable.
+///
+/// One definition because `dispatch_lexical_send` asks it of two classes --
+/// a class object's metaclass and then the receiver's own class.
+fn lexical_lookup(class: &ClassRef, selector: Symbol) -> Lookup {
+    match dispatch::lookup_defined_for(class, selector) {
+        Lookup::Method(method, defining_class) if method.access == ast::AccessModifier::Private => {
+            Lookup::Method(method, defining_class)
+        }
+        Lookup::NestedClass(mixin, declaring_class)
+            if dispatch::nested_access(&mixin) == ast::AccessModifier::Private =>
+        {
+            Lookup::NestedClass(mixin, declaring_class)
+        }
+        _ => dispatch::lookup_protected(class, selector),
+    }
+}
+
+/// `newspeak-spec.pdf` §5.7-§5.9: `o` = the kth enclosing object of this
+/// activation's defining level (`dispatch::kth_enclosing_object`);
 /// dispatch privately (direct, non-virtual) if the target is `private` at
 /// depth `k`, otherwise virtually via `lookup_protected` on `o`'s actual
-/// class.
+/// class -- or, when `o` is a class object, on its metaclass first (§6.3).
 pub(crate) fn dispatch_lexical_send(
     interp: &mut Interpreter,
     frame: &FrameRef,
@@ -339,13 +376,19 @@ pub(crate) fn dispatch_lexical_send(
     args: Vec<Value>,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let self_value = frame.borrow().receiver.clone();
-    let o = dispatch::kth_enclosing_object(&self_value, depth);
+    // The lexical depth counts levels out from the class that *defines* this
+    // method, so the walk needs this activation's `current_class`, not the
+    // receiver's own class -- see `dispatch::kth_enclosing_object`.
+    let (self_value, defining_class) = {
+        let borrowed = frame.borrow();
+        (borrowed.receiver.clone(), borrowed.current_class.clone())
+    };
+    let o = dispatch::kth_enclosing_object(&self_value, defining_class.as_ref(), depth);
     let class = interp.class_of(&o);
     // Slot access fix (Task 7 "must fix before committing" #2): a
     // `LexicalSend` to a user-defined class's own slot must resolve here,
-    // *before* the method/native lookups below -- `load_class` never puts a
-    // slot's implicit getter/setter into `ClassData.methods`, so
+    // *before* the method/native lookups below -- `build_mixin` never puts a
+    // slot's implicit getter/setter into the mixin's method table, so
     // `lookup_defined_for`/`lookup_protected` would never find one.
     // Milestone 1 known gap: unlike a method send, this is never
     // access-controlled by the slot's own declared modifier (see the task's
@@ -369,22 +412,32 @@ pub(crate) fn dispatch_lexical_send(
             }
         }
     }
-    // Check for a private declaration *at exactly this class* first (the
-    // non-virtual case -- private members are never overridden, so there
-    // is no search: newspeak-spec.pdf §5.9).
-    if let Lookup::Method(method, defining_class) = dispatch::lookup_defined_for(&class, selector) {
-        if dispatch::effective_access(method.access) == ast::AccessModifier::Private {
-            return interp.invoke_method(
-                o,
-                method,
-                defining_class,
-                args,
-                bindings.clone(),
-                Some(frame.clone()),
-            );
+    // §6.3: a class object's class side is the behaviour of that class
+    // object, so a send written inside a class-side method with no explicit
+    // receiver has to search the metaclass before the class object's own
+    // (native `Object`) behaviour -- the same order `Interpreter::send`
+    // gives an explicit-receiver send. Without it a class side reaches only
+    // what `lookup_public` on the metaclass happens to answer once the send
+    // has fallen all the way through to `send`: its `protected` and
+    // `private` members are unreachable, and any selector `Object` answers
+    // natively silently wins over the class side's own declaration.
+    let metaclass = match &o {
+        Value::Obj(obj) if matches!(obj.borrow().data, ObjectData::Class(_)) => {
+            interp.metaclass_of(obj)
         }
-    }
-    match dispatch::lookup_protected(&class, selector) {
+        _ => None,
+    };
+    // A metaclass that does not declare the selector falls through to the
+    // class object's own behaviour, exactly as in `send`. Only a real
+    // declaration stops the search: a metaclass chain carries no builtin
+    // tag, so `Lookup::Native` can only come from the class-object chain
+    // below and means the same thing either way.
+    let lookup = metaclass
+        .as_ref()
+        .map(|metaclass| lexical_lookup(metaclass, selector))
+        .filter(|found| matches!(found, Lookup::Method(..) | Lookup::NestedClass(..)))
+        .unwrap_or_else(|| lexical_lookup(&class, selector));
+    match lookup {
         Lookup::Method(method, defining_class) => interp.invoke_method(
             o,
             method,
@@ -393,6 +446,9 @@ pub(crate) fn dispatch_lexical_send(
             bindings.clone(),
             Some(frame.clone()),
         ),
+        Lookup::NestedClass(mixin, declaring_class) => {
+            crate::interpreter::nested::nested_class(interp, &o, &mixin, &declaring_class, bindings)
+        }
         Lookup::Native(kind) => {
             match crate::builtins::dispatch_native(
                 interp,
@@ -454,6 +510,20 @@ pub(crate) fn dispatch_super_send(
             args,
             bindings.clone(),
             Some(frame.clone()),
+        ),
+        // `super N` for a nested class the superclass declares. The
+        // receiver stays `self` (§5.10), which is also the enclosing object
+        // the accessor caches against -- so `super N` and `N` name the same
+        // class object exactly when they resolve to the same declaration,
+        // and different ones when a subclass redeclares `N`: the accessor
+        // caches against the declaration's own hidden slot
+        // (`MixinApplication::nested_slot`), not against its name.
+        Lookup::NestedClass(mixin, declaring_class) => crate::interpreter::nested::nested_class(
+            interp,
+            &self_value,
+            &mixin,
+            &declaring_class,
+            bindings,
         ),
         Lookup::Native(kind) => {
             match crate::builtins::dispatch_native(
@@ -608,11 +678,19 @@ pub fn invoke_closure(
         args,
         temps: vec![Value::Nil; temp_count],
         pc: 0,
+        // Decided by the closure's own body, not by the interpreter's
+        // current engine: a closure always runs with the engine that
+        // created it (`ClosureBody`'s doc comment).
+        pc_kind: match &closure.body {
+            ClosureBody::Ast(_) => PcKind::TreeWalk,
+            ClosureBody::Compiled(_) => PcKind::Bytecode,
+        },
         sender,
         home: Some(closure.home.clone()),
         current_class,
         kind: FrameKind::Closure(closure.clone()),
         uncontinuable: false,
+        slot_base: 0, // a closure body never contains InitSlot
     }));
     match &closure.body {
         ClosureBody::Compiled(code) => crate::vm::run_code(interp, &frame, code, bindings),
