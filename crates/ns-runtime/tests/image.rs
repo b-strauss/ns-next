@@ -5430,3 +5430,37 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
     assert!(!i.stateless);
     assert_eq!(b.entry.as_deref(), Some("main:args:"));
 }
+
+/// `image::build` itself does not require the entry selector to already be
+/// declared in the module -- validating that a selector exists (and has the
+/// right arity) is `ns-next build`'s job, not this encoder's. An entry the
+/// module never declares is exactly the case that breaks byte-identity
+/// against a `snapshot` of the same source (see `Describing`'s doc comment:
+/// interning it grows `build`'s symbol table past what the describing
+/// sections alone produced). This test is what keeps that distinction from
+/// blurring: the coupling affects only whether the two artifacts *agree*,
+/// never whether `build` on its own is *correct* -- so nobody should "fix"
+/// `build` later to chase an identity this format never promised here.
+#[test]
+fn build_accepts_an_entry_selector_the_module_never_declares() {
+    let (mut interp, class, bindings) = load(TRIVIAL_MODULE);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let module = interp.compiled_module().expect("bytecode engine");
+    let origin = Origin::File(PathBuf::from("t.ns"));
+
+    let binary = image::build(
+        None,
+        &origin,
+        &class,
+        module,
+        Symbol::intern("neverDeclared"),
+    )
+    .expect("build does not itself validate the entry selector against the module");
+
+    let report = image::inspect::inspect(&binary).expect("inspect");
+    assert!(report.stateless);
+    assert_eq!(report.entry.as_deref(), Some("neverDeclared"));
+}

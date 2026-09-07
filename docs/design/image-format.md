@@ -275,12 +275,34 @@ the symbol table and because down there it does not disturb the equality of the
 describing sections. It is optional in an image and mandatory in a binary — which
 is what separates a startable artifact from a snapshot.
 
-**The consistency guarantee, stated precisely:** for the same source file and the
-same `--debug-source` setting, the bytes from `origin` through `root class` are
-identical in a `build` artifact and a `snapshot` artifact. Not "the binary is a
-prefix of the image", which would be false the moment one records an entry and
-the other does not. `build` and `snapshot` share their section writers so this
-follows from construction rather than from discipline.
+**The consistency guarantee, stated precisely:** `build` and `snapshot` share
+their section writers, which makes the section *order* and the *encoding logic*
+for code, mixins and the root class agree by construction rather than by
+discipline. Not "the binary is a prefix of the image", which would be false the
+moment one records an entry and the other does not.
+
+What that sharing does *not* cover is the symbol table's contents: the table
+stays open past the shared sections so each caller can still extend it —
+`build` interns the entry selector, `snapshot`'s object graph interns whatever
+its live objects name, including a `Symbol` minted at run time by `asSymbol`
+with no source occurrence at all. So for the same source file and the same
+`--debug-source` setting, the bytes from `origin` through `root class` are
+identical in a `build` artifact and a `snapshot` artifact only when both hold:
+
+(a) the entry selector is one the code or mixin tables already interned
+(equivalently, one the root application's lookup already finds — see
+"Choosing the entry" below); and
+(b) the snapshotted graph interns no string absent from those same tables.
+
+(a) is enforced, by the build-time entry validation described below under
+"Choosing the entry" — a later task adds it to `ns-next build`, and once it
+does, a selector that survives it was necessarily interned while encoding the
+declaration that defines it. (b) is not enforced anywhere, is expected to fail
+for an arbitrary program, and is not something this format tries to guarantee
+— a `snapshot` of a world holding a run-time-minted symbol simply disagrees
+with a `build` of the same source from wherever the symbol table diverges
+onward. Neither condition affects `build`'s or `snapshot`'s own correctness;
+only whether the two agree byte-for-byte on top of it.
 
 **Choosing the entry.** If the root class declares `main:args:` that is the
 default, which makes upstream's convention a default rather than a rule.

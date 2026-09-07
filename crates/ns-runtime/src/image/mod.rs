@@ -1,8 +1,8 @@
 //! Image serialization: a versioned, architecture-neutral encoding of a
 //! live `ns-next` world, decoded on load (never a memory dump). See
 //! `docs/design/image-format.md`. Layout: header, optional source text,
-//! `SourceOrigin`, symbol table, code table, mixin table, root class,
-//! object table, frame table, roots.
+//! `SourceOrigin`, symbol table, code table, mixin table, root class, entry
+//! field, object table, frame table, roots.
 //!
 //! **Loading never runs the front end.** `load` decodes the world; it does
 //! not parse, resolve, or compile anything. The symbol table, the mixin
@@ -35,10 +35,24 @@ use crate::{Interpreter, Symbol};
 /// The sections that describe code and structure, encoded into their own
 /// buffers with the symbol table still open so the caller can intern into it.
 ///
-/// Both artifacts go through this, which is what makes their describing bytes
-/// equal by construction rather than by discipline. A second copy would drift
-/// at the first format change, and the test that compares them would only find
-/// out afterwards.
+/// Both artifacts go through this, which is what makes the section *order*
+/// and the *encoding logic* for code, mixins and the root class identical
+/// between them by construction rather than by discipline -- a second copy
+/// would drift at the first format change, and the test that compares them
+/// would only find out afterwards.
+///
+/// **The symbol table is not covered by that guarantee.** `symbols` stays
+/// open past `encode_describing` on purpose, so `build` can intern the entry
+/// selector and `snapshot` can intern whatever its object graph names --
+/// `'foo' asSymbol` mints a symbol at run time whose text need not appear in
+/// either table otherwise. Two calls that are supposed to describe "the same
+/// module" therefore end up with identical describing bytes only when both
+/// (a) the entry selector `build` is given is already interned by the code or
+/// mixin tables, and (b) the roots `snapshot` is given intern no string the
+/// describing sections did not already contain. Neither is enforced here:
+/// (a) is a build-time validation a later task adds; (b) is not enforced at
+/// all, is expected to fail for an arbitrary program, and is not something
+/// this format tries to guarantee.
 struct Describing {
     symbols: symbols::Builder,
     code: encode::Writer,
