@@ -9,7 +9,7 @@ image format. Rust 1.98.0, edition 2021, three crates:
   (`interpreter/` and `compiler/` + `vm.rs`), core library (`builtins/`), image format
   (`image/`).
 - `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run`, `run-corpus`,
-  `disasm`, `snapshot`, `load`.
+  `disasm`, `snapshot`, `load`, `bench`.
 
 Read `docs/PROGRESS.md` first — it is the milestone-level status, and it links the
 design spec and implementation plan behind each milestone.

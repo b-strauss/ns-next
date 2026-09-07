@@ -40,6 +40,8 @@ cargo fmt --all
 cargo clippy --workspace --all-targets
 # parser corpus gate: must report "parsed 210, failed 0, expected-fail 1, stale 0"
 cargo run -p ns-cli -- parse-corpus corpus/modules
+# runnable corpus gate: must report "ran 6, failed 0, skipped 205"
+cargo run -p ns-cli -- run-corpus corpus/modules
 ```
 
 An optimized build, which is the one to measure — the debug build is slow enough to
@@ -88,6 +90,11 @@ cargo run -p ns-cli -- load world.img --send main:args:
 ```bash
 # check that a file parses; --ast prints the syntax tree
 cargo run -p ns-cli -- parse tests-fixtures/hello.ns
+```
+
+```bash
+# time one entry send under both engines; measure with --release, never a debug build
+cargo run --release -p ns-cli -- bench tests-fixtures/bench_loop.ns --iterations 30
 ```
 
 `ns-next <command> --help` documents the remaining flags.
