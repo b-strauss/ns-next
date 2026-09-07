@@ -5307,3 +5307,53 @@ fn regenerate_the_golden_fixture() {
     let bytes = snapshot_of_without_source(GOLDEN_SRC);
     std::fs::write("tests/fixtures/golden-image.bin", bytes).expect("write fixture");
 }
+
+#[test]
+fn the_entry_field_round_trips_present_and_absent() {
+    use ns_runtime::image::{decode, encode, symbols};
+
+    let mut symbol_builder = symbols::Builder::new();
+    let id = symbol_builder.intern("main:args:");
+    let mut w = encode::Writer::new();
+    symbol_builder.write(&mut w);
+    encode::encode_entry(&mut w, Some(id));
+    encode::encode_entry(&mut w, None);
+    let bytes = w.into_bytes();
+
+    let mut r = decode::Reader::new(&bytes);
+    let table = symbols::decode(&mut r).expect("symbol table");
+    let present = decode::decode_entry(&mut r, &table).expect("present entry");
+    let absent = decode::decode_entry(&mut r, &table).expect("absent entry");
+
+    assert_eq!(
+        present.map(|s| s.to_string()).as_deref(),
+        Some("main:args:")
+    );
+    assert_eq!(absent, None);
+}
+
+#[test]
+fn an_out_of_range_entry_symbol_id_is_a_decode_error_not_a_panic() {
+    use ns_runtime::image::{decode, encode, symbols};
+
+    let mut w = encode::Writer::new();
+    symbols::Builder::new().write(&mut w);
+    encode::encode_entry(&mut w, Some(9999));
+    let bytes = w.into_bytes();
+
+    let mut r = decode::Reader::new(&bytes);
+    let table = symbols::decode(&mut r).expect("symbol table");
+    assert!(decode::decode_entry(&mut r, &table).is_err());
+}
+
+#[test]
+fn an_unknown_header_flag_is_still_rejected_now_that_two_are_known() {
+    // Bit 2 is not assigned. A flag this build does not implement means a
+    // section it cannot see, so continuing would read the next field out of
+    // whatever that section occupies.
+    let mut w = ns_runtime::image::encode::Writer::new();
+    ns_runtime::image::encode::write_header(&mut w, 0b100);
+    let bytes = w.into_bytes();
+    let mut r = ns_runtime::image::decode::Reader::new(&bytes);
+    assert!(ns_runtime::image::decode::read_header(&mut r).is_err());
+}

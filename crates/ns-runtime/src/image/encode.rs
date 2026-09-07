@@ -111,8 +111,13 @@ impl Writer {
 /// skipping a section it cannot see.
 pub const FLAG_HAS_SOURCE: u8 = 1;
 
+/// The artifact carries no object graph: it is a deployment binary, not a
+/// snapshot of a running world. Its entry field is mandatory rather than
+/// optional, which is what makes it startable from the file alone.
+pub const FLAG_STATELESS: u8 = 2;
+
 /// Every bit this build assigns a meaning to.
-pub const KNOWN_FLAGS: u8 = FLAG_HAS_SOURCE;
+pub const KNOWN_FLAGS: u8 = FLAG_HAS_SOURCE | FLAG_STATELESS;
 
 pub fn write_header(w: &mut Writer, flags: u8) {
     w.write_raw(MAGIC);
@@ -251,6 +256,24 @@ pub fn encode_root_class(w: &mut Writer, root_class: &ClassRef) -> Result<(), St
         }
     }
     Ok(())
+}
+
+/// The entry selector, as a presence byte and -- when present -- a symbol id.
+///
+/// One shape for both artifacts on purpose: the decoder reads it the same way
+/// either way and only the *requirement* differs, so there is no second
+/// code path to keep in step. It sits after the root class rather than in the
+/// header because it names a symbol and must therefore follow the symbol
+/// table, and because down here it leaves the describing sections byte-equal
+/// between a `build` and a `snapshot` of the same source.
+pub fn encode_entry(w: &mut Writer, entry: Option<u32>) {
+    match entry {
+        None => w.write_u8(0),
+        Some(id) => {
+            w.write_u8(1);
+            w.write_u32(id);
+        }
+    }
 }
 
 /// The code table: every `CompiledCode` reachable from `module` -- every

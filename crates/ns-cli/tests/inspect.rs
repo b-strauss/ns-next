@@ -48,9 +48,6 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
     assert!(out.contains("format version 1"), "{out}");
     assert!(out.contains("stateless: no"), "{out}");
     assert!(out.contains("source blob: absent"), "{out}");
-    // No "entry" section: `decode::decode_entry` does not exist yet (Task 4
-    // adds it), so `inspect` reports no entry section at all rather than a
-    // stub value.
     for section in [
         "header",
         "origin",
@@ -58,6 +55,7 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
         "code",
         "mixins",
         "root class",
+        "entry",
         "graph",
     ] {
         assert!(out.contains(section), "missing section `{section}`:\n{out}");

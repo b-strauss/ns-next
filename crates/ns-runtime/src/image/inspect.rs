@@ -136,34 +136,46 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     });
     at = r.pos();
 
-    // A later task adds the entry field to the format; nothing to read yet.
-    let entry: Option<String> = None;
-
-    // A later task adds the flag; no artifact can be stateless yet -- every
-    // artifact carries a graph section.
-    let stateless = false;
-    let counts = decode::count_graph_section(&mut r, &symbol_table).map_err(|e| e.to_string())?;
+    let entry = decode::decode_entry(&mut r, &symbol_table).map_err(|e| e.to_string())?;
     sections.push(Section {
-        name: "graph",
+        name: "entry",
         start: at,
-        // `count_graph_section` reads only the section's two leading counts,
-        // not the records after them (see its own doc comment for why), so
-        // `r.pos()` here would land just past those two counts, not at the
-        // section's real end. The graph section is always last, so the
-        // file's own length stands in for the end this can't otherwise see.
-        end: bytes.len(),
-        detail: format!("{} objects, {} frames", counts.objects, counts.frames),
+        end: r.pos(),
+        detail: match &entry {
+            Some(sym) => sym.to_string(),
+            None => "none".to_string(),
+        },
     });
+    at = r.pos();
+
+    // A stateless artifact ends here: it carries code and structure but no
+    // object graph, so reading one past the entry field would run off the
+    // end of the file.
+    if !header.stateless {
+        let counts =
+            decode::count_graph_section(&mut r, &symbol_table).map_err(|e| e.to_string())?;
+        sections.push(Section {
+            name: "graph",
+            start: at,
+            // `count_graph_section` reads only the section's two leading counts,
+            // not the records after them (see its own doc comment for why), so
+            // `r.pos()` here would land just past those two counts, not at the
+            // section's real end. The graph section is always last, so the
+            // file's own length stands in for the end this can't otherwise see.
+            end: bytes.len(),
+            detail: format!("{} objects, {} frames", counts.objects, counts.frames),
+        });
+    }
 
     Ok(Report {
         format_version: crate::image::encode::FORMAT_VERSION,
         has_source: header.has_source,
-        stateless,
+        stateless: header.stateless,
         origin: format!("{origin:?}"),
         sections,
         symbols: symbol_list,
         mixins: mixin_lines,
-        entry,
+        entry: entry.map(|s| s.to_string()),
         total_len: bytes.len(),
     })
 }

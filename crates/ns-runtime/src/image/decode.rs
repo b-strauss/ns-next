@@ -507,6 +507,8 @@ pub struct Header {
     /// source is never executed and never re-parsed; it is carried so a
     /// loaded world can be shown, and eventually exported, as `.ns`.
     pub has_source: bool,
+    /// No graph section follows; the file ends after the entry field.
+    pub stateless: bool,
 }
 
 pub fn read_header(r: &mut Reader) -> Result<Header, DecodeError> {
@@ -530,7 +532,22 @@ pub fn read_header(r: &mut Reader) -> Result<Header, DecodeError> {
     }
     Ok(Header {
         has_source: flags & super::encode::FLAG_HAS_SOURCE != 0,
+        stateless: flags & super::encode::FLAG_STATELESS != 0,
     })
+}
+
+/// The inverse of `encode::encode_entry`: a presence byte and, when set, the
+/// symbol id it names, resolved against the image's own symbol table so an
+/// out-of-range id is a `DecodeError` rather than an index panic.
+pub fn decode_entry(
+    r: &mut Reader,
+    symbols: &symbols::Table,
+) -> Result<Option<Symbol>, DecodeError> {
+    match r.read_u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(symbols.get(r.read_u32()?)?)),
+        tag => Err(DecodeError::InvalidTag { what: "entry", tag }),
+    }
 }
 
 /// The inverse of `encode::encode_source_origin`: the provenance a loaded

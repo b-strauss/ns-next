@@ -92,6 +92,11 @@ pub fn snapshot(
     // Between the mixin table it completes and the graph that needs the
     // root class to already exist.
     encode::encode_root_class(&mut w, root_class)?;
+    // `snapshot` never names an entry selector of its own -- a snapshotted
+    // world is resumed by loading it and sending to `roots`, not by starting
+    // it fresh -- but the field is written unconditionally so every artifact
+    // this format can produce shares one layout from here on.
+    encode::encode_entry(&mut w, None);
     w.write_raw(&graph_w.into_bytes());
     Ok(w.into_bytes())
 }
@@ -170,6 +175,11 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         decode::decode_root_superclass(&mut r, &interp).map_err(|e| e.to_string())?;
     let root_class = decode::build_root_class(&mut interp, &mixins, root_superclass)
         .map_err(|e| e.to_string())?;
+    // `snapshot` always writes this field (as absent), and a future
+    // stateless binary is what would need it read back to start itself --
+    // neither reads its value yet, but decoding it unconditionally is what
+    // keeps every artifact's layout in step with `inspect`'s.
+    decode::decode_entry(&mut r, &symbols).map_err(|e| e.to_string())?;
     let platform = interp.platform();
     let graph = {
         let mut ctx = decode::DecodeContext {
