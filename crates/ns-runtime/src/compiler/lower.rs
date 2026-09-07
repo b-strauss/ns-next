@@ -1,7 +1,7 @@
 //! `Expr`/`Stmt` -> `Instr` lowering, register allocation, and the scope
 //! stack that maps resolver depths onto runtime frame hops. See
-//! `docs/design/execution.md`'s "The register file" and "Control-flow
-//! inlining" sections.
+//! `docs/design/compiler.md`'s "Registers" and "Control-flow inlining"
+//! sections.
 //!
 use std::collections::HashMap;
 use std::ops::Range;

@@ -19,8 +19,8 @@ object it runs on still depends on run-time enclosing-object navigation.
 
 The consequence for performance is structural: with no static dispatch anywhere
 outside the private case, inline caches are not an optional speedup but the
-mechanism that makes dispatch affordable at all. See
-[execution.md](execution.md).
+mechanism that makes dispatch affordable at all. The slots they will use are
+already emitted; see [compiler.md](compiler.md).
 
 ## Resolution
 
@@ -180,9 +180,9 @@ enforcing a slot's access modifier. None of that exists yet.
 
 ## Planned: inline caches
 
-Milestone 2 reserved a stable call-site identity and an inert inline-cache slot
-per send, carried by every `CompiledCode`, so wiring caches up needs no bytecode
-format break. Nothing reads or writes those slots today.
+A stable call-site identity and an inert inline-cache slot per send are already
+carried by every `CompiledCode`, so wiring caches up needs no bytecode format
+break. Nothing reads or writes those slots today; see [compiler.md](compiler.md).
 
 **A cache must guard on the application, not on the class object.** Two `Inner`
 instances from different `Outer` instances have different class objects, as §6
