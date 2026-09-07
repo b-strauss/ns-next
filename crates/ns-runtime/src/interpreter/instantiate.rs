@@ -591,36 +591,29 @@ impl Interpreter {
         frame: &FrameRef,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Result<(), Signal> {
-        let slots = {
-            let borrowed = class.borrow();
-            match &borrowed.data {
-                // Only the tree-walker reaches this function, and
-                // `Interpreter::set_engine` refuses the tree-walker on a
-                // world decoded from an image
-                // (`EngineUnavailable::TreeWalkAfterLoad`), so every mixin
-                // that gets here was built from source and every slot has
-                // its declaration. That refusal is what makes the
-                // `filter_map` below safe to read as "no slot is dropped":
-                // without it a decoded slot would be skipped silently and
-                // the instance would come back half-initialised.
-                ObjectData::Class(data) => data
-                    .application
-                    .mixin
-                    .slots
-                    .iter()
-                    .filter_map(|slot| slot.decl.clone())
-                    .collect::<Vec<_>>(),
-                _ => return Ok(()),
-            }
+        // The application itself, not copies of the slot list and the merged
+        // `slot_index` map it holds: both are read-only here, and cloning
+        // them once per level per instantiation is allocation on the
+        // tree-walker's hottest path (and in the baseline `bench` hands the
+        // next milestone). Holding the `Rc` also releases the borrow on
+        // `class`, so the loop below can call back into `self`.
+        let Some(application) = crate::dispatch::class_application(class) else {
+            return Ok(());
         };
-        let slot_index = {
-            let borrowed = class.borrow();
-            match &borrowed.data {
-                ObjectData::Class(data) => data.application.slot_index.clone(),
-                _ => return Ok(()),
-            }
-        };
-        for slot in &slots {
+        // Only the tree-walker reaches this function, and
+        // `Interpreter::set_engine` refuses the tree-walker on a world
+        // decoded from an image (`EngineUnavailable::TreeWalkAfterLoad`), so
+        // every mixin that gets here was built from source and every slot
+        // has its declaration. That refusal is what makes skipping a
+        // declarationless slot below safe to read as "no slot is dropped":
+        // without it a decoded slot would be skipped silently and the
+        // instance would come back half-initialised.
+        for slot in application
+            .mixin
+            .slots
+            .iter()
+            .filter_map(|s| s.decl.as_ref())
+        {
             if let Some(init) = &slot.init {
                 let value = crate::interpreter::eval::eval_expr(self, init, frame, bindings)?;
                 let name = Symbol::intern(&slot.name.name);
@@ -630,7 +623,7 @@ impl Interpreter {
                 // index here would silently overwrite an already-initialized
                 // superclass slot at the same low index instead of this
                 // class's own slot.
-                if let Some(&index) = slot_index.get(&name) {
+                if let Some(&index) = application.slot_index.get(&name) {
                     crate::interpreter::eval::store_instance_field(instance, index, value);
                 }
             }
@@ -661,14 +654,14 @@ impl Interpreter {
         frame: &FrameRef,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Result<(), Signal> {
-        let init_exprs = {
-            let borrowed = class.borrow();
-            match &borrowed.data {
-                ObjectData::Class(data) => data.application.mixin.init_exprs.clone(),
-                _ => return Ok(()),
-            }
+        // The mixin, not a deep copy of the statements it holds: the AST is
+        // read-only here, so this is an `Rc` bump rather than a clone of
+        // every `initExpr` node on every instantiation. Holding it also
+        // releases the borrow on `class` for the loop below.
+        let Some(application) = crate::dispatch::class_application(class) else {
+            return Ok(());
         };
-        for stmt in &init_exprs {
+        for stmt in &application.mixin.init_exprs {
             match stmt {
                 ast::Stmt::Expr(e) | ast::Stmt::Return(e) => {
                     crate::interpreter::eval::eval_expr(self, e, frame, bindings)?;
