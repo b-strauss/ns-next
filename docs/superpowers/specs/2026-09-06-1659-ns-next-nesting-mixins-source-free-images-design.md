@@ -485,3 +485,12 @@ own merits, and the golden-bytes fixture lands with this milestone.
   `printString` override of its own, so the send falls through to the
   generic `Object` builtin (`crates/ns-runtime/src/builtins/object_class.rs`)
   instead of answering something that identifies `nil`.
+- **Class-side `new` is shadowed by factory dispatch.** A class can declare
+  `new` on its class side using the syntax after the `) : (` separator;
+  `Interpreter::send` in `crates/ns-runtime/src/interpreter/mod.rs` calls
+  `try_factory_send` before the metaclass is consulted, so an explicit
+  receiver `Foo new` always takes the factory path and never reaches a
+  declared class-side `new`. The implicit-receiver path was corrected to
+  consult the metaclass first. `corpus/modules/Ducts.ns` declares exactly
+  this form and is on the `run-corpus` whitelist, making it reachable in
+  practice.
