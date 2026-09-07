@@ -88,6 +88,16 @@ pub struct Interpreter {
     /// instance, so a class-object key would never hit and every instance
     /// would get its own behaviour.
     applications: HashMap<(usize, usize), Rc<crate::mixin::MixinApplication>>,
+    /// mixin identity -> the synthetic empty class side `metaclass_of`
+    /// stands in for that mixin's own level when it declares none.
+    ///
+    /// Cached, not minted per call, because the mixin's `Rc` identity is
+    /// what `applications` keys on: a fresh one per call would give two
+    /// class objects that share an instance-side application two *different*
+    /// metaclass applications, and the shared-application property is
+    /// exactly what a later milestone's inline caches guard on. It would
+    /// also grow `applications` without bound.
+    empty_class_sides: HashMap<usize, Rc<crate::mixin::Mixin>>,
     /// The (receiver address, declaration identity) pairs whose nested class
     /// object is being created right now -- see
     /// `nested::cyclic_definition_error`. A stack, not a set: it is empty
@@ -116,6 +126,7 @@ impl Interpreter {
             platform_singleton: None,
             engine: Engine::TreeWalk,
             applications: HashMap::new(),
+            empty_class_sides: HashMap::new(),
             nested_in_progress: Vec::new(),
             decoded_from_image: false,
         }
@@ -128,6 +139,7 @@ impl Interpreter {
             platform_singleton: None,
             engine: Engine::TreeWalk,
             applications: HashMap::new(),
+            empty_class_sides: HashMap::new(),
             nested_in_progress: Vec::new(),
             decoded_from_image: false,
         };
@@ -694,18 +706,18 @@ impl Interpreter {
             level = superclass;
         }
         for level in chain.iter().rev() {
-            let (class_side, own_mixin_name, enclosing, declaring_class) = {
+            let (own_mixin, enclosing, declaring_class) = {
                 let borrowed = level.borrow();
                 match &borrowed.data {
                     ObjectData::Class(data) => (
-                        data.application.mixin.class_side.clone(),
-                        data.application.mixin.name,
+                        data.application.mixin.clone(),
                         data.enclosing.clone(),
                         data.declaring_class.clone(),
                     ),
                     _ => unreachable!("only class objects are pushed onto the chain"),
                 }
             };
+            let class_side = own_mixin.class_side.clone();
             let class_side_mixin = match class_side {
                 Some(mixin) => mixin,
                 // No class side of its own to apply -- only worth building a
@@ -719,7 +731,7 @@ impl Interpreter {
                     if super_metaclass.is_none() {
                         continue;
                     }
-                    empty_class_side_mixin(own_mixin_name)
+                    self.empty_class_side_mixin(&own_mixin)
                 }
             };
             let super_application = super_metaclass
@@ -916,6 +928,42 @@ impl Interpreter {
         self.applications.insert(key, application.clone());
         application
     }
+
+    /// The empty mixin `metaclass_of` applies for a class that declares no
+    /// class side of its own but inherits one from an ancestor -- same
+    /// placeholder technique as `builtin_mixin` below, one `Rc` per owning
+    /// mixin so the application cache keys each such level apart from its
+    /// siblings. Contributes no methods or slots of its own; its only job
+    /// is to give `apply_mixin` something to link the ancestor's metaclass
+    /// application through.
+    ///
+    /// One per *mixin*, not one per call and not one per class object: a
+    /// nested class has one class object per enclosing instance but a
+    /// single mixin, and §6.2's "all applications of a mixin share code and
+    /// structure" has to hold for the metaclass side too -- otherwise two
+    /// class objects that share an instance-side application answer a
+    /// class-side send out of two distinct metaclass applications, which is
+    /// the property a later milestone's inline caches guard on.
+    ///
+    /// Keying the cache by `owner`'s address is safe for the same reason
+    /// `applications` is: every mixin that reaches here is held for the
+    /// interpreter's life by an entry in `applications`, so its address is
+    /// never reused.
+    fn empty_class_side_mixin(
+        &mut self,
+        owner: &Rc<crate::mixin::Mixin>,
+    ) -> Rc<crate::mixin::Mixin> {
+        let name = owner.name;
+        self.empty_class_sides
+            .entry(crate::mixin::mixin_key(owner))
+            .or_insert_with(|| {
+                Rc::new(crate::mixin::Mixin::empty(Symbol::intern(&format!(
+                    "{} class",
+                    name.as_str()
+                ))))
+            })
+            .clone()
+    }
 }
 
 /// Milestone 1 (no metaclasses -- see the runtime spec's "Documented
@@ -1000,20 +1048,6 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
 fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
     Rc::new(crate::mixin::Mixin::empty(Symbol::intern(&format!(
         "{kind:?}"
-    ))))
-}
-
-/// The empty mixin `metaclass_of` applies for a class that declares no
-/// class side of its own but inherits one from an ancestor -- same
-/// placeholder technique as `builtin_mixin` above, a fresh `Rc` per call so
-/// the application cache keys each such level apart from its siblings.
-/// Contributes no methods or slots of its own; its only job is to give
-/// `apply_mixin` something to link the ancestor's metaclass application
-/// through.
-fn empty_class_side_mixin(owner_name: Symbol) -> Rc<crate::mixin::Mixin> {
-    Rc::new(crate::mixin::Mixin::empty(Symbol::intern(&format!(
-        "{} class",
-        owner_name.as_str()
     ))))
 }
 

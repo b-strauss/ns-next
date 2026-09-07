@@ -648,6 +648,81 @@ fn a_subclass_with_no_class_side_inherits_the_superclasss_class_side_method_unde
     class_side_is_inherited(true);
 }
 
+/// The class object a nested declaration's accessor answers for `enclosing`.
+fn nested_class_object(
+    interp: &mut Interpreter,
+    enclosing: Value,
+    name: &str,
+    bindings: &Bindings,
+) -> ns_runtime::ClassRef {
+    let value = expect_ok(
+        interp.send(enclosing, Symbol::intern(name), vec![], bindings, None),
+        name,
+    );
+    match value {
+        Value::Obj(obj) => obj,
+        _ => panic!("{name} answers a class object"),
+    }
+}
+
+fn application_of(class: &ns_runtime::ClassRef) -> Rc<ns_runtime::MixinApplication> {
+    ns_runtime::dispatch::class_application(class).expect("a class object")
+}
+
+/// §6.2 on the metaclass side: two class objects that share one
+/// instance-side application must share one *metaclass* application too, or
+/// a call site that went monomorphic on the application would split as soon
+/// as a second enclosing instance appeared.
+///
+/// `SpecialWidget` in `tests-fixtures/class_side.ns` is the case that makes
+/// this bite: it inherits its class side instead of declaring one, so its
+/// metaclass is built from a synthetic empty mixin -- which has to have one
+/// identity per mixin, not one per class object.
+fn an_inherited_class_side_shares_one_application(bytecode: bool) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/class_side.ns");
+    let src = std::fs::read_to_string(&path).expect("read tests-fixtures/class_side.ns");
+    let (mut interp, class, bindings) = load(&src, bytecode);
+    let platform = interp.platform();
+    let one = expect_ok(
+        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        "instantiate first ClassSide",
+    );
+    let two = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate second ClassSide",
+    );
+    let a = nested_class_object(&mut interp, one, "SpecialWidget", &bindings);
+    let b = nested_class_object(&mut interp, two, "SpecialWidget", &bindings);
+    assert!(
+        !Rc::ptr_eq(&a, &b),
+        "spec 6: one class object per enclosing instance"
+    );
+    assert!(
+        Rc::ptr_eq(&application_of(&a), &application_of(&b)),
+        "spec 6.2: both share one instance-side application"
+    );
+    let ma = interp
+        .metaclass_of(&a)
+        .expect("SpecialWidget inherits Widget's class side");
+    let mb = interp
+        .metaclass_of(&b)
+        .expect("SpecialWidget inherits Widget's class side");
+    assert!(
+        Rc::ptr_eq(&application_of(&ma), &application_of(&mb)),
+        "spec 6.2: an inherited class side must share one metaclass application too"
+    );
+}
+
+#[test]
+fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
+    an_inherited_class_side_shares_one_application(false);
+}
+
+#[test]
+fn two_class_objects_sharing_an_application_share_their_inherited_class_side_under_bytecode() {
+    an_inherited_class_side_shares_one_application(true);
+}
+
 /// A class that declares its own class-side method of the same name still
 /// overrides the inherited one -- ordinary shadowing, exactly as on the
 /// instance side.
