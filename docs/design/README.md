@@ -33,8 +33,8 @@ that cannot name its code is describing an intention, and should say so.
 | Aspect | Document | Status | Planned next |
 |---|---|---|---|
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
-| Values, objects, mixins, classes, scoping | [object-model.md](object-model.md) | Built | arena and handles |
-| Lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
+| Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | arena and handles |
+| Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
 | Both engines, bytecode, compiler, VM | [execution.md](execution.md) | Built | trampolined sends, JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Partial | a real collector |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Partial | the stateless binary |

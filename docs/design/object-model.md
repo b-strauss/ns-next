@@ -1,0 +1,265 @@
+# Object model — values, objects, mixins, classes
+
+> **Status:** built.
+> **Code:** `crates/ns-runtime/src/types.rs`, `mixin.rs`,
+> `interpreter/instantiate.rs`, `interpreter/nested.rs`.
+
+## Values and objects
+
+```rust
+Value = Nil | Bool(bool) | SmallInt(i64) | Float(f64) | Obj(ObjRef)
+ObjRef = Rc<RefCell<Object>>
+
+Object { class: ClassRef, identity_hash: u32, data: ObjectData }
+
+ObjectData = Instance(Vec<Value>) | Str(String) | Sym(Symbol)
+           | Array(Vec<Value>) | Closure(ClosureData) | Class(ClassData)
+```
+
+`nil`, `true`, `false` and small integers are `Value` variants rather than heap
+objects, which is why nothing resembling an object store is needed to name them
+in a serialized image.
+
+**The identity hash is a monotonic counter assigned at allocation**, never
+derived from the `Rc` pointer address. An address-derived hash would break the
+moment a moving collector relocates the object or a `become:` swaps identities,
+and identity has to be stable across a snapshot. See [memory.md](memory.md).
+
+`ClosureData { params, captured_frame: FrameRef, body, home: ObjRef }` captures
+its defining frame for closure semantics and its home activation for non-local
+return.
+
+**Never `{:?}` a `Value`.** The bootstrap `Object` class is its own `.class`, so
+`Debug` on a `Value::Obj` recurses forever.
+
+## Three layers, not one
+
+Milestone 1 had a single `ClassData` carrying identity, behaviour and layout
+together. That is wrong, and the language specification says why directly.
+`newspeak-spec.pdf` §6:
+
+> Every instance of a class C has a distinct nested class for each nested class
+> declaration given in the declaration of C and its superclasses. [...] each
+> nested class has one piece of state — its enclosing object, and so there must
+> be a distinct class per instance of the enclosing class.
+
+An enclosing object is per-instance state, so a class that has one cannot be
+shared between instances of its enclosing class. §2.3 adds the other half: a
+nested class declaration can be overridden by a slot in a subclass of its
+enclosing class, and that slot can be assigned at run time —
+
+```newspeak
+class ChildOfOuter = Outer () (
+    public class Nested = Inner () ()
+)
+class GrandChildOfOuter = ChildOfOuter( | public Inner ::= String. |) ()
+
+g Nested.                (* a subclass of String, not of Inner *)
+(g Inner: Array) Nested. (* still the same subclass of String *)
+```
+
+— so "all nested classes must be compiled as mixins, as the superclass cannot be
+reliably known at compilation time". And §6.2 names the sharing axis: "Any change
+made to the structure or code of a mixin affects all of its applications. [...]
+they all share their code and structural definition with the mixin." That
+sentence is simultaneously the performance strategy and the edit-and-continue
+requirement.
+
+Hence three layers:
+
+```rust
+struct Mixin {                    // one per declaration, shared for its lifetime
+    name: Symbol,
+    methods: HashMap<Symbol, Rc<ast::MethodDecl>>,
+    instance_slots: Vec<Rc<ast::SlotDecl>>,
+    init_exprs: Vec<ast::Stmt>,
+    factory: Option<Rc<ast::MessagePattern>>,
+    nested: Vec<Rc<Mixin>>,       // the nested declarations, for their accessors
+    class_side: Option<Rc<Mixin>>,
+}
+
+struct MixinApplication {         // (mixin, super application) -> behaviour
+    mixin: Rc<Mixin>,
+    superclass: Option<Rc<MixinApplication>>,
+    slot_index: HashMap<Symbol, usize>,   // absolute layout, inherited slots included
+    num_slots: usize,
+}
+
+struct ClassData {                // one per enclosing instance, per level
+    application: Rc<MixinApplication>,
+    enclosing: Option<ObjRef>,
+    declaring_class: Option<ClassRef>,    // the declaration chain `outer` walks
+    superclass: Option<ClassRef>,         // parallel to the application chain
+    builtin: Option<BuiltinClass>,
+    metaclass: Option<ClassRef>,          // built on first class-side send
+}
+```
+
+**The application cache is keyed by (mixin identity, superclass *application*
+identity), never by the superclass class object.** If the superclass is itself a
+nested class, its class object is per-instance, so a class-object key would never
+hit: every instance would mint its own application, which is wrong per §6.2 and
+would leave every call site megamorphic because no two instances would ever share
+behaviour.
+
+### Two parallel chains, both needed
+
+- The **class-object chain** carries identity and, at every level, that level's
+  enclosing object plus the class object of the level that lexically declares it
+  (`declaring_class`).
+- The **application chain** carries code and layout, and is shared.
+
+`slot_index`, `num_slots` and method lookup live on `MixinApplication` rather
+than on `ClassData`, because a superclass contributes slots and can differ
+between instances of the same enclosing class.
+
+## The nested-class accessor
+
+A nested declaration implicitly defines a method with the same name and
+accessibility in its enclosing class. §6:
+
+> The first time this method is invoked on a given receiver r, it evaluates the
+> class declaration, using r as the enclosing object, and returns the resulting
+> class as its result. Subsequent calls on r always return the same class object.
+
+The accessor body, in five steps:
+
+1. Read the hidden slot reserved for this declaration in the receiver's layout.
+   If it is not nil, return it.
+2. Otherwise evaluate the superclass clause **in the receiver's context**,
+   yielding a class object; take its application.
+3. Look up (mixin, that application) in the application cache, creating the
+   application if absent.
+4. Allocate the class object `{application, enclosing: r, superclass}`.
+5. Store it in the hidden slot and return it.
+
+Caching in a hidden slot rather than a side table is what §6 describes — "the
+class is effectively cached within r" — and it makes the fast path a slot read
+instead of a hash lookup.
+
+**Inherited nested declarations get their own slots.** §6 says a distinct nested
+class exists for each declaration given in the declaration of C *and its
+superclasses*, so the hidden slots are part of the absolute layout an application
+computes, contributed at the level that declares them, exactly like ordinary
+inherited slots. They are derived from a mixin's `nested` list rather than
+declared, so nothing stores them separately. The hidden slot is keyed by the
+declaration's mixin, not by its name: keying by name would make an override and
+the declaration it overrides share one slot.
+
+**§2.3's override behaviour needs no special case.** Because the accessor is an
+ordinary method, a slot declaration in a subclass overrides it under the normal
+lookup rules, and reassigning that slot later cannot disturb an already-cached
+nested class. That this falls out of ordinary dispatch is evidence the layering
+is right.
+
+**The accessor lives in `interpreter/`**, as shared orchestration. It evaluates
+Newspeak code — the superclass clause — so it runs that code through the same
+body-execution hook `instantiate` uses. It is deliberately not synthesized
+bytecode: a compiler-side accessor would have to be mirrored in the tree-walker,
+and the two would drift in exactly the way the shared-orchestration rule exists
+to prevent.
+
+## Module loading
+
+Loading is two-stage. `load_module` builds the **mixin tree** — root declaration,
+every nested declaration, every class side — and nothing else. That is pure
+structure with no evaluation, so it stays total. Only the root class is then
+created, as the application of the root mixin to its superclass, with
+`enclosing = nil` (§3.3: a module definition's enclosing object is nil, which is
+why a module has no state of its own).
+
+## Instantiation
+
+A superclass clause `[prefix] receiver [message]` — `Object new`, or `balance: b`
+in `= Object new (...)` — has its two parts evaluated at **different times**
+(§6.1, §6.3):
+
+- The **receiver** part alone (`Object`) is the class determined by the
+  inheritance clause, evaluated once when the class declaration is evaluated, by
+  the same name resolution as any other identifier. Class names are not a
+  separate namespace. Its value fixes the actual superclass directly — there is
+  no "evaluate `Object new`, allocate an instance, take its class" step.
+- The trailing **message** part (`new`) is deferred and evaluated fresh on every
+  instantiation, in the context of that instantiation's own instance-initializer
+  activation, so the subclass's own factory parameters are in scope when it runs.
+
+Sending the factory message to a class object then does this:
+
+1. **One** instance `o` is allocated — distinct identity, every slot declared by
+   the class and its superclasses initially nil. There is no separate instance
+   per inheritance level; `o` is threaded through every step below.
+2. An instance-initializer activation `i` is created, with the factory message's
+   arguments.
+3. In the context of `i`, the superclass clause's deferred message is evaluated,
+   and the result is sent to the superclass's own instance initializer, invoked
+   on the same `o`. This recurses up the chain.
+4. Once the chain above has run, this class's own slot clauses execute on `o`, in
+   declaration order.
+5. This class's own initializer expressions execute on `o`.
+6. `i` returns `o` to the factory method, which returns it to the caller.
+
+Step 3 is why a class body has no access to the factory's actual parameters
+except through slots explicitly extracted in the initializer: only `i` sees them.
+
+**Each level runs in its own activation, with its own arguments.** Milestone 1
+walked the superclass chain upward and ran every level's slots and initializer
+expressions in the *subclass's* activation with the subclass's factory arguments,
+which §6.2 does not permit.
+
+## Class sides and metaclasses
+
+A class side is the mixin for the class's metaclass (§6.3). The metaclass is
+created lazily, on the first class-side send or reflective access, so a class
+with no class side costs nothing. Class-side declarations are kept and dispatched
+as metaclass behaviour rather than parsed and dropped.
+
+**Deviation from §3.2.** The specification makes every class formally an instance
+of its own flat metaclass, itself a subclass of `Class` and an instance of
+`Metaclass`. That reified hierarchy is not built. What exists is the lazily
+created metaclass above, which carries class-side behaviour and nothing more.
+What reflection will need beyond it is not yet known; see
+[liveness-and-reflection.md](liveness-and-reflection.md).
+
+One consequence is load-bearing elsewhere: `Object::class` is not an
+`Option<ClassRef>`, because every class object's own class is the bootstrap
+`Object` placeholder. The iterative `Drop` implementation and the image decoder
+both rely on that. Building §3.2's hierarchy would make a class object's class a
+real, distinct object and would invalidate both.
+
+## Source retention and provenance
+
+Every class and method keeps enough information to recover its exact source text
+and where it came from — needed by the debugger and by any export back to `.ns`,
+and cheap to carry.
+
+- Each loaded module keeps its full original source as one `Rc<str>`, attached to
+  the module rather than duplicated per node.
+- Every declaration already carries a `Span`, so source text for any node is
+  recovered on demand as `span.text(&module_source)`, with no per-node copy.
+- `SourceOrigin` is attached once per module. Today it is always
+  `SourceOrigin::File(PathBuf)`. It is an enum specifically so a later milestone
+  can add a variant for code entered live in the debugger without changing the
+  type its call sites depend on.
+
+## Planned: arena allocation and handles
+
+`Rc<RefCell<Object>>` is the Milestone 1 model and still in place. Replacing it
+with an arena and handles is what a moving collector requires, and it is designed
+in [memory.md](memory.md), which also covers what the change costs the
+tree-walking engine.
+
+## Decisions
+
+- **Three layers rather than one**, because §6 requires a distinct class object
+  per enclosing instance while §6.2 requires behaviour to be shared per mixin.
+  A single `ClassData` cannot do both.
+- **The application cache is keyed by the superclass's application.** Keying by
+  the superclass class object was the obvious choice and is wrong; it is recorded
+  here because the failure is silent — correct output, no sharing, every call
+  site megamorphic.
+- **The hidden nested-class slot is keyed by mixin, not by name.** Keying by name
+  makes an override and the declaration it overrides collide in one slot.
+- **The accessor is interpreted shared orchestration, not synthesized bytecode**,
+  so the two engines cannot drift on it.
+- **Identity hashes come from a counter, not from addresses**, so identity
+  survives a moving collector and a snapshot.
