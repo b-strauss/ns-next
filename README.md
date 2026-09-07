@@ -10,14 +10,19 @@ versioned image and loaded back.
 
 ## Status
 
-| Milestone | Status |
-|---|---|
-| M1 — Frontend (lexer, parser, AST) | Complete |
-| M1 — Runtime (resolver, object model, dispatch, interpreter) | Complete |
-| M2 — Bytecode compiler, register VM, image format | Complete |
-| M3 — Nested classes, mixins, source-free images | Complete |
-| M4 — Inline caches and GC | Not started |
-| M5–M6 — JIT | Not started |
+Working today: the full frontend, Newspeak's real name resolution, nested classes and
+mixins with a class object per enclosing instance, both execution engines, and a
+source-free image format. Every `.ns` file in the vendored corpus parses but one.
+
+Not built yet, and the limits worth knowing before trying it on real code:
+
+- **No garbage collector.** Objects are reference-counted and cycles leak.
+- **Integers are `i64`.** Overflow raises a Newspeak error; there are no bignums.
+- **The platform is minimal**, and widens only when a whitelisted corpus module needs
+  something. Six of the 211 corpus modules run end to end; the rest ask for
+  collections, streams and mirrors that do not exist yet.
+- **No actors, no reflection API, no debugger, no JIT.** Eventual sends and
+  Typed-Newspeak annotations parse and are discarded.
 
 `docs/design/` describes how the system works and how much of each aspect exists;
 `docs/PROGRESS.md` is the milestone chronology beside it.
@@ -107,8 +112,9 @@ crates/ns-runtime    resolver, object model, dispatch, both engines, core librar
 crates/ns-cli        the `ns-next` binary
 corpus/              vendored Newspeak modules used as a parser corpus
 tests-fixtures/      end-to-end programs with their expected output
-docs/design/         living design documents -- start at README.md
-docs/                milestone chronology, implementation plans
+docs/design/         living design documents — start at its README.md
+docs/PROGRESS.md     milestone chronology
+docs/superpowers/    implementation plans, kept as execution records
 docs/references/     the Newspeak papers the design argues from (third-party, see PROVENANCE.md)
 ```
 
