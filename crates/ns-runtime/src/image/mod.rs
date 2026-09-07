@@ -184,6 +184,16 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     };
     decode::verify_graph(&graph, &table, &module).map_err(|e| e.to_string())?;
     interp.advance_identity_hash_past(graph.max_identity_hash);
+    // A byte sequence past the last section is refused, not ignored: with
+    // two artifact shapes sharing one format, an unchecked tail would let a
+    // binary with a graph appended -- or a truncated, then padded, image --
+    // load as something its author did not write.
+    if r.remaining() != 0 {
+        return Err(decode::DecodeError::TrailingBytes {
+            count: r.remaining(),
+        }
+        .to_string());
+    }
     interp
         .set_engine(Engine::Bytecode(module))
         .map_err(|e| e.to_string())?;

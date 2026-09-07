@@ -2222,6 +2222,34 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
 }
 
 #[test]
+fn bytes_after_the_last_section_are_refused_not_ignored() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(module))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let platform = interp.platform();
+    let mut bytes = image::snapshot(
+        Some(src),
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        &[],
+    )
+    .expect("snapshot");
+    assert!(image::load(&bytes).is_ok(), "the fixture itself must load");
+
+    bytes.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+    let err = load_err(&bytes);
+    assert!(
+        err.contains("trailing"),
+        "expected a trailing-bytes error, got: {err}"
+    );
+}
+
+#[test]
 fn load_refuses_a_version_mismatch() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
     let (mut interp, class, bindings) = load(src);

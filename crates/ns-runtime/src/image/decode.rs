@@ -240,6 +240,13 @@ pub enum DecodeError {
     /// overflow to `alloc_identity_hash`'s own `+= 1`. Refusing the image
     /// is the only answer that neither panics nor collides.
     IdentityHashExhausted,
+    /// Bytes remain after the last section. Refused rather than ignored: with
+    /// two artifact shapes in one format, silently accepting a tail means a
+    /// binary with a graph appended -- or an image truncated to a binary and
+    /// then padded -- loads as something its author did not write.
+    TrailingBytes {
+        count: usize,
+    },
 }
 
 impl std::fmt::Display for DecodeError {
@@ -393,6 +400,9 @@ impl std::fmt::Display for DecodeError {
                 "an image object's identity hash is {}, leaving no hash for a loaded world to allocate next",
                 u32::MAX
             ),
+            DecodeError::TrailingBytes { count } => {
+                write!(f, "{count} trailing byte(s) after the last section")
+            }
         }
     }
 }
