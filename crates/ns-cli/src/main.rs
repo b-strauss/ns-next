@@ -118,6 +118,20 @@ enum Cmd {
     /// Print an artifact's structure: header flags, section offsets, the
     /// symbol and mixin tables, and how much graph it carries.
     Inspect { artifact: PathBuf },
+    /// Compile a file into a stateless deployment binary: code and
+    /// structure, no instance state. Nothing is instantiated -- the primary
+    /// factory and every initializer run when the binary is loaded.
+    Build {
+        file: PathBuf,
+        out: PathBuf,
+        /// The selector to record as the entry point. Defaults to
+        /// `main:args:` when the root class declares it.
+        #[arg(long)]
+        entry: Option<String>,
+        /// Store the module's source text in the binary (the debug variant).
+        #[arg(long)]
+        debug_source: bool,
+    },
 }
 
 /// `--engine`: which evaluator runs Newspeak-level code. `bytecode` is the
@@ -159,6 +173,12 @@ fn main() -> ExitCode {
             class,
         } => cmd_disasm(&file, selector.as_deref(), initializer, class.as_deref()),
         Cmd::Inspect { artifact } => cmd_inspect(&artifact),
+        Cmd::Build {
+            file,
+            out,
+            entry,
+            debug_source,
+        } => cmd_build(&file, &out, entry.as_deref(), debug_source),
     }
 }
 
@@ -930,6 +950,102 @@ fn cmd_inspect(artifact: &Path) -> ExitCode {
         }
         Err(e) => {
             eprintln!("error: {}: {e}", artifact.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Whether the root class can answer `selector`: a method anywhere up its
+/// application chain, or the accessor of one of its nested declarations.
+///
+/// Checked at build time so a binary that could never start is refused where
+/// the mistake was made. It is a convenience, not a guarantee -- a selector
+/// that slips through still fails at start-up as an ordinary
+/// `doesNotUnderstand:`, through the same path `run` uses.
+///
+/// Deliberately narrow: only method selectors and nested-class accessor
+/// names, because those are exactly what `mixins::encode` interns into the
+/// symbol table while walking this same superclass chain over `mixin.methods`
+/// and `mixin.nested`. Accepting anything wider -- a slot's implicit setter,
+/// a builtin's native method -- would accept a selector the code and mixin
+/// tables never interned, and `build` would have to grow the symbol table to
+/// record it, breaking the byte-identity guarantee with `snapshot` that this
+/// check exists to preserve (`docs/design/image-format.md`, "The consistency
+/// guarantee, stated precisely").
+fn root_class_answers(class: &ns_runtime::ClassRef, selector: &str) -> bool {
+    let sym = ns_runtime::Symbol::intern(selector);
+    let mut app = match &class.borrow().data {
+        ns_runtime::ObjectData::Class(data) => Some(data.application.clone()),
+        _ => None,
+    };
+    while let Some(a) = app {
+        if a.mixin.methods.contains_key(&sym) {
+            return true;
+        }
+        if a.mixin.nested.iter().any(|n| n.name == sym) {
+            return true;
+        }
+        app = a.superclass.clone();
+    }
+    false
+}
+
+/// `ns-next build`: `run`'s pipeline up to engine installation, and then
+/// deliberately no instantiation.
+fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -> ExitCode {
+    let loaded = match load_source(file) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+    let (mut interp, class) = bootstrap_with_engine(&loaded, EngineArg::Bytecode);
+
+    let entry = match entry {
+        Some(e) => e.to_string(),
+        None if root_class_answers(&class, "main:args:") => "main:args:".to_string(),
+        None => {
+            eprintln!(
+                "error: {} declares no `main:args:`; pass --entry with the selector to send",
+                file.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(msg) = entry_args(&entry, interp.platform()) {
+        eprintln!("error: cannot use `{entry}` as an entry point: {msg}");
+        return ExitCode::FAILURE;
+    }
+    if !root_class_answers(&class, &entry) {
+        eprintln!(
+            "error: the root class of {} does not answer `{entry}`",
+            file.display()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let module = interp
+        .compiled_module()
+        .expect("bootstrap_with_engine installed the bytecode engine");
+    let bytes = match ns_runtime::image::build(
+        debug_source.then_some(loaded.source.as_str()),
+        &loaded.origin,
+        &class,
+        module,
+        ns_runtime::Symbol::intern(&entry),
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: build failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match std::fs::write(out, bytes) {
+        Ok(()) => {
+            println!("wrote {}", out.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: writing {}: {e}", out.display());
             ExitCode::FAILURE
         }
     }
