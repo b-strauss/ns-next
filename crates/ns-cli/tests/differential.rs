@@ -104,11 +104,15 @@ fn every_tests_fixtures_ns_file_behaves_identically_under_both_engines() {
         );
         checked += 1;
     }
+    // The floor is the fixture count as it stands, not a comfortable lower
+    // bound: this test's whole job is to notice that a fixture stopped
+    // being run under both engines, and a slack floor lets one disappear in
+    // silence. Raise it in the same commit that adds a fixture.
     assert!(
-        checked >= 7,
-        "expected all 7 tests-fixtures/*.ns fixtures (arithmetic, \
-         bench_loop, blocks_and_return, control_flow_fallback, hello, \
-         instance_init, while_loop)"
+        checked >= 18,
+        "expected every one of the 18 tests-fixtures/*.ns fixtures to run \
+         under both engines, checked {checked} -- raise this floor when \
+         adding a fixture, never lower it to match what was found"
     );
 }
 

@@ -350,8 +350,9 @@ engines automatically because `differential.rs` covers every
 `tests-fixtures/*.ns`:
 
 - `x Inner == x Inner` — the accessor caches in the receiver.
-- `a Inner ~~ b Inner` for two instances of the enclosing class — the
-  spec requires distinct class objects.
+- `(a Inner == b Inner) not` for two instances of the enclosing class —
+  the spec requires distinct class objects. Spelled with `==` and `not`
+  rather than `~~`, which `Object` has no native for.
 - The §2.3 override case, including that `Nested` keeps its already-cached
   superclass after `Inner` is reassigned.
 - A superclass clause with arguments and side effects; one initializer
