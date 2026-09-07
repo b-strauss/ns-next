@@ -106,9 +106,9 @@ impl Writer {
 }
 
 /// Header flag bits. Bit 0 says a source blob follows the header; every
-/// other bit is reserved and must be zero, so a reader of this build
-/// refuses an image using a flag it does not implement rather than
-/// skipping a section it cannot see.
+/// bit this build has not assigned a meaning to is reserved and must be
+/// zero, so a reader of this build refuses an image using a flag it does
+/// not implement rather than skipping a section it cannot see.
 pub const FLAG_HAS_SOURCE: u8 = 1;
 
 /// The artifact carries no object graph: it is a deployment binary, not a

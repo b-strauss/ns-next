@@ -5357,3 +5357,76 @@ fn an_unknown_header_flag_is_still_rejected_now_that_two_are_known() {
     let mut r = ns_runtime::image::decode::Reader::new(&bytes);
     assert!(ns_runtime::image::decode::read_header(&mut r).is_err());
 }
+
+/// `image::build` (the stateless binary) and `image::snapshot` (the world
+/// snapshot) share one encoder for the sections that describe code and
+/// structure. This is the property that sharing is supposed to guarantee:
+/// built from the same compiled module, the two artifacts must agree byte
+/// for byte from `origin` through `root class`, and differ only from the
+/// entry field on -- present-and-mandatory for one, absent for the other.
+///
+/// The module declares `main:args:` itself, so the entry selector `build`
+/// interns is already in the symbol table by the time it does -- the mixin
+/// table names every method's selector, and `Builder::intern` dedupes by
+/// content. An entry selector absent from the module would still round-trip,
+/// but it would grow `build`'s symbol table past `snapshot`'s and the
+/// byte-equality assertion below would fail for a reason that has nothing to
+/// do with the refactor under test.
+const ENTRY_SRC: &str =
+    "Newspeak3\n'T'\nclass X = Object new (\n) (\n  main: p args: q = ( ^1 )\n) : ()";
+
+#[test]
+fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class() {
+    // Build both from one compiled module so the only difference is the
+    // artifact shape, then compare through the inspector rather than by raw
+    // offset: a raw offset says two files differ, a section says which one.
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let platform = interp.platform();
+    let origin = Origin::File(PathBuf::from("t.ns"));
+    let module = interp.compiled_module().expect("bytecode engine");
+
+    let binary =
+        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
+    let img = image::snapshot(None, &origin, &class, module, &platform, &[]).expect("snapshot");
+
+    let b = image::inspect::inspect(&binary).expect("inspect binary");
+    let i = image::inspect::inspect(&img).expect("inspect image");
+
+    let upto = |r: &image::inspect::Report| {
+        r.sections
+            .iter()
+            .take_while(|s| s.name != "entry")
+            .map(|s| (s.name, s.start, s.end))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(upto(&b), upto(&i), "the describing sections must line up");
+
+    // From `origin`, not from byte 0: the header's flags byte necessarily
+    // differs (`FLAG_STATELESS` is only ever set on `binary`), and that
+    // difference is correct, not a defect the refactor should paper over.
+    let start = b
+        .sections
+        .iter()
+        .find(|s| s.name == "origin")
+        .expect("origin section")
+        .start;
+    let end = b
+        .sections
+        .iter()
+        .find(|s| s.name == "root class")
+        .expect("root class section")
+        .end;
+    assert_eq!(
+        &binary[start..end],
+        &img[start..end],
+        "describing bytes must be equal"
+    );
+
+    assert!(b.stateless);
+    assert!(!i.stateless);
+    assert_eq!(b.entry.as_deref(), Some("main:args:"));
+}

@@ -30,7 +30,79 @@ use ns_syntax::Span;
 use crate::bytecode::CompiledModule;
 use crate::interpreter::Engine;
 use crate::types::{Binding, ClassRef, SourceOrigin, Value};
-use crate::Interpreter;
+use crate::{Interpreter, Symbol};
+
+/// The sections that describe code and structure, encoded into their own
+/// buffers with the symbol table still open so the caller can intern into it.
+///
+/// Both artifacts go through this, which is what makes their describing bytes
+/// equal by construction rather than by discipline. A second copy would drift
+/// at the first format change, and the test that compares them would only find
+/// out afterwards.
+struct Describing {
+    symbols: symbols::Builder,
+    code: encode::Writer,
+    mixins: encode::Writer,
+    ids: encode::CodeIds,
+    mixin_ids: mixins::MixinIds,
+}
+
+/// Encodes the code table and the mixin table into their own buffers,
+/// collecting every selector and name either one names into `symbols` along
+/// the way. Shared by `snapshot` and `build`: both need the same two tables,
+/// and both need them encoded before the (still-open) symbol table can be
+/// written, since it is the table's *contents* that fill it.
+fn encode_describing(root_class: &ClassRef, module: &CompiledModule) -> Result<Describing, String> {
+    let mut symbols = symbols::Builder::new();
+    let mut code = encode::Writer::new();
+    let ids = encode::encode_code_table(&mut code, module, root_class, &mut symbols)?;
+    // After the code table, whose ids its rows name; before the graph (or the
+    // entry field), whose class objects and selector respectively might name
+    // its rows.
+    let mut mixin_w = encode::Writer::new();
+    let mixin_ids = mixins::encode(&mut mixin_w, root_class, module, &mut symbols, &ids)?;
+    Ok(Describing {
+        symbols,
+        code,
+        mixins: mixin_w,
+        ids,
+        mixin_ids,
+    })
+}
+
+/// Writes header through root class. Everything after that is the caller's:
+/// the entry field, and for an image the graph.
+fn write_describing(
+    w: &mut encode::Writer,
+    source: Option<&str>,
+    origin: &SourceOrigin,
+    flags: u8,
+    d: Describing,
+    root_class: &ClassRef,
+) -> Result<(), String> {
+    encode::write_header(
+        w,
+        flags
+            | match source {
+                Some(_) => encode::FLAG_HAS_SOURCE,
+                None => 0,
+            },
+    );
+    if let Some(source) = source {
+        w.write_str(source);
+    }
+    encode::encode_source_origin(w, origin);
+    // The symbol table is written here, ahead of the code and mixin tables it
+    // fills, so a reader can decode it once before either asks it to resolve
+    // an id. Both callers are done with `d.mixin_ids` by this point --
+    // `snapshot` has already used it to encode the graph into its own buffer,
+    // `build` never needed it -- so consuming `d` here loses nothing.
+    d.symbols.write(w);
+    w.write_raw(&d.code.into_bytes());
+    w.write_raw(&d.mixins.into_bytes());
+    encode::encode_root_class(w, root_class)?;
+    Ok(())
+}
 
 /// Serializes a quiesced world: `roots` (the root instance and, if any,
 /// the entry send's result) plus everything reachable from them, together
@@ -49,55 +121,61 @@ pub fn snapshot(
     platform: &Value,
     roots: &[Value],
 ) -> Result<Vec<u8>, String> {
-    let mut w = encode::Writer::new();
-    encode::write_header(
-        &mut w,
-        match source {
-            Some(_) => encode::FLAG_HAS_SOURCE,
-            None => 0,
-        },
-    );
-    if let Some(source) = source {
-        w.write_str(source);
-    }
-    encode::encode_source_origin(&mut w, origin);
-
-    // The code table, the mixin table and the graph section all reference
-    // selectors and names by a symbol-table id, so each is encoded into its
-    // own buffer first (collecting those strings into `symbols` along the
-    // way) and only then does the finished table get written -- ahead of all
-    // three, so a reader can decode it once before any of them asks it to
-    // resolve an id.
-    let mut symbols = symbols::Builder::new();
-    let mut code_w = encode::Writer::new();
-    let ids = encode::encode_code_table(&mut code_w, module, root_class, &mut symbols)?;
-    // After the code table, whose ids its rows name; before the graph, whose
-    // class objects name its rows.
-    let mut mixin_w = encode::Writer::new();
-    let mixin_ids = mixins::encode(&mut mixin_w, root_class, module, &mut symbols, &ids)?;
+    let mut d = encode_describing(root_class, module)?;
+    // The graph section is encoded into its own buffer, against the same
+    // `symbols` builder the describing sections used, before `write_describing`
+    // consumes `d` -- the graph needs the mixin table's row ids, and those
+    // exist only on `d.mixin_ids`.
     let mut graph_w = encode::Writer::new();
     encode::encode_graph_section(
         &mut graph_w,
         roots,
         platform,
-        &ids,
+        &d.ids,
         root_class,
-        &mixin_ids,
-        &mut symbols,
+        &d.mixin_ids,
+        &mut d.symbols,
     )?;
-
-    symbols.write(&mut w);
-    w.write_raw(&code_w.into_bytes());
-    w.write_raw(&mixin_w.into_bytes());
-    // Between the mixin table it completes and the graph that needs the
-    // root class to already exist.
-    encode::encode_root_class(&mut w, root_class)?;
+    let mut w = encode::Writer::new();
+    write_describing(&mut w, source, origin, 0, d, root_class)?;
     // `snapshot` never names an entry selector of its own -- a snapshotted
     // world is resumed by loading it and sending to `roots`, not by starting
     // it fresh -- but the field is written unconditionally so every artifact
     // this format can produce shares one layout from here on.
     encode::encode_entry(&mut w, None);
     w.write_raw(&graph_w.into_bytes());
+    Ok(w.into_bytes())
+}
+
+/// Serializes a **stateless binary**: code and structure, no instance state,
+/// no activations, and the selector to send on start-up.
+///
+/// The caller has compiled but deliberately not instantiated. That omission is
+/// the whole point of this artifact -- the primary factory and every
+/// initializer run on load instead, against the loading world's own freshly
+/// bootstrapped platform, so the file has never held a capability.
+pub fn build(
+    source: Option<&str>,
+    origin: &SourceOrigin,
+    root_class: &ClassRef,
+    module: &CompiledModule,
+    entry: Symbol,
+) -> Result<Vec<u8>, String> {
+    let mut d = encode_describing(root_class, module)?;
+    // Interned before `write_describing` writes the table below: an id
+    // assigned after the table is on the wire is an id the table does not
+    // contain, which the decoder reports as an out-of-range symbol id.
+    let entry_id = d.symbols.intern(entry.as_str());
+    let mut w = encode::Writer::new();
+    write_describing(
+        &mut w,
+        source,
+        origin,
+        encode::FLAG_STATELESS,
+        d,
+        root_class,
+    )?;
+    encode::encode_entry(&mut w, Some(entry_id));
     Ok(w.into_bytes())
 }
 
