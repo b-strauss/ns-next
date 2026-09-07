@@ -230,7 +230,7 @@ impl Interpreter {
     /// (`instantiate.rs`) recognizes the shape and routes to
     /// `instantiate` directly; see its own doc comment for why this can
     /// never double-fire against the superclass clause's own deferred
-    /// factory message (`run_superclass_initializer` never calls `send`).
+    /// factory message (`run_initializer_level` never calls `send`).
     pub fn send(
         &mut self,
         receiver: Value,

@@ -1,6 +1,6 @@
-//! Image format round-trip tests, built up task by task: header + scalars
-//! (Task 12), the code table (Task 13), the object + frame tables (Task 14),
-//! whole-image `snapshot`/`load` and the two verification passes (Task 15).
+//! Image format round-trip tests, section by section: the header and its
+//! scalars, the mixin table, the code table, the object and frame tables,
+//! whole-image `snapshot`/`load`, and the two verification passes.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -233,7 +233,7 @@ fn an_invalid_bool_tag_is_an_error_not_a_panic() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 13: the code table and the root list.
+// The code table and the root list.
 // ---------------------------------------------------------------------------
 
 type Bindings = Rc<HashMap<Span, Binding>>;
@@ -864,7 +864,8 @@ fn a_huge_code_table_count_does_not_reserve_gigabytes() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 13, review fix round 1.
+// Depths the code table controls: a literal array nests as deep as the
+// image says, so decoding one has to be bounded.
 // ---------------------------------------------------------------------------
 
 /// A one-entry code table whose single instruction loads a literal array
@@ -978,9 +979,9 @@ fn a_mixin_table_with_no_root_row_is_a_decode_error() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 13, review fix round 2: the decoder's nesting ceiling must sit at or
-// above what `ns-syntax`'s parser lets a program contain, or the image
-// cannot read back what it just wrote.
+// The decoder's nesting ceiling must sit at or above what `ns-syntax`'s
+// parser lets a program contain, or the image cannot read back what it
+// just wrote.
 // ---------------------------------------------------------------------------
 
 /// A module whose one method returns a literal array nested `levels` deep:
@@ -1059,7 +1060,7 @@ fn the_deepest_literal_array_the_parser_accepts_survives_a_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 14: the object table and the frame table.
+// The object table and the frame table.
 // ---------------------------------------------------------------------------
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
@@ -2152,7 +2153,7 @@ fn a_closure_record_declaring_too_many_parameters_is_a_decode_error() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 15: whole-image `snapshot`/`load`.
+// Whole-image `snapshot`/`load`.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -2343,7 +2344,7 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 15: `verify_code_table` -- decoding is byte-safe, but a decoded body
+// `verify_code_table` -- decoding is byte-safe, but a decoded body
 // is not yet *coherent*. Every case below decodes cleanly and would panic
 // (or silently misaddress a register) inside `vm::run_code`.
 // ---------------------------------------------------------------------------
@@ -2769,7 +2770,7 @@ fn a_store_to_an_outer_local_is_checked_like_a_load() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 15: `build_module`'s arity and kind reconciliation.
+// `build_module`'s arity and kind reconciliation.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -2818,7 +2819,7 @@ fn a_method_root_naming_a_block_body_is_refused_at_install() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 15: `verify_graph` -- reconciling decoded frames and closures with
+// `verify_graph` -- reconciling decoded frames and closures with
 // the code that runs in them.
 // ---------------------------------------------------------------------------
 
@@ -3123,8 +3124,8 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
 }
 
 // ---------------------------------------------------------------------------
-// Task 15, review fix round 1: two crafted-image paths that still reached a
-// panic after the first commit.
+// Two crafted-image paths that reach a panic through `instantiate` rather
+// than through the verification passes.
 // ---------------------------------------------------------------------------
 
 /// A root class with one slot, so `class_has_initializer_code` is true and
@@ -3283,10 +3284,9 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
 }
 
 // ---------------------------------------------------------------------------
-// Review fix round 1, Finding 2: `compile_module` compiles the whole mixin
-// tree, so the code table must serialize every mixin's methods and
-// initializer -- not only the root's -- and `build_module` must
-// restore them all under the same keys.
+// `compile_module` compiles the whole mixin tree, so the code table must
+// serialize every mixin's methods and initializer -- not only the root's --
+// and `build_module` must restore them all under the same keys.
 // ---------------------------------------------------------------------------
 
 const NESTED_MODULE: &str = "\
@@ -3920,8 +3920,8 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
 
 /// The other direction, the same shape as the initializer's and the
 /// clause's: a mixin-table row whose clause passes arguments, in an image
-/// carrying no body for them, would panic on the first instantiation. `build_module` is the only place that sees both
-/// halves, so it refuses.
+/// carrying no body for them, would panic on the first instantiation.
+/// `build_module` is the only place that sees both halves, so it refuses.
 #[test]
 fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_refused() {
     let (_interp, class, bindings) = load(NESTED_SUPERCLASS_ARGS);
@@ -4187,7 +4187,7 @@ fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywh
 }
 
 // ---------------------------------------------------------------------------
-// Task 12: the mixin table. What the image says a declaration *is* -- its
+// The mixin table. What the image says a declaration *is* -- its
 // name, slots, methods, factory, superclass clause, nesting and class side --
 // no longer comes back by re-parsing the image's own source text.
 // ---------------------------------------------------------------------------
@@ -4443,9 +4443,9 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 12, fix round 1: the mixin table's nesting ceiling against the
-// parser's. A limit below what the front end accepts would refuse to
-// round-trip a program the runtime already runs from source.
+// The mixin table's nesting ceiling against the parser's. A limit below
+// what the front end accepts would refuse to round-trip a program the
+// runtime already runs from source.
 // ---------------------------------------------------------------------------
 
 /// `class C0 = Object new () ( public class C1 = ... )` -- `nested` class
@@ -4763,7 +4763,7 @@ fn a_class_object_whose_own_class_is_another_record_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 14: a source-free load path. `load` decodes the world it is given; it
+// A source-free load path. `load` decodes the world it is given; it
 // never parses, resolves or compiles, and the source blob it used to depend
 // on is now optional and, when present, purely documentary.
 // ---------------------------------------------------------------------------
@@ -5181,7 +5181,7 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 15: pinning the wire format. Every tag test above encodes and decodes
+// Pinning the wire format. Every tag test above encodes and decodes
 // against the same tables, so a change that shifted both sides together
 // would sail through unnoticed. A golden fixture makes that impossible to
 // miss; the determinism test next to it proves encoding really is

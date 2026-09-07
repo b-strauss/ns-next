@@ -180,9 +180,9 @@ fn make_class(
             declaring_class: None,
             // Deliberately no class-object superclass link: this test only
             // checks where the mixin's *own* slot lands, never a superclass
-            // level's own slots, so `run_superclass_initializer` (which
-            // walks this field, not the application's) finding nothing to
-            // recurse into is exactly right.
+            // level's own slots, so `run_initializer_level` (which walks
+            // this field, not the application's) finding nothing to recurse
+            // into is exactly right.
             superclass: None,
             builtin: None,
             metaclass: None,

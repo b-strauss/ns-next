@@ -141,8 +141,9 @@ pub fn run_code(
                 // `self`, silently skipped for a non-instance receiver.
                 // `own_index` is relative to the executing mixin's own
                 // slots (the same compiled body runs for every application
-                // of that mixin); `frame.slot_base` -- set per level by
-                // `Interpreter::run_own_initializer` from that level's own
+                // of that mixin); `frame.slot_base` -- set once, when
+                // `Interpreter::run_initializer_level` builds this level's
+                // frame, from that level's own
                 // `MixinApplication.own_slot_base` -- is what turns it into
                 // this instance's actual absolute field index.
                 let v = read_local(frame, *src);
