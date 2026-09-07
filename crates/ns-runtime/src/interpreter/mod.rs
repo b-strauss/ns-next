@@ -468,6 +468,36 @@ impl Interpreter {
         bindings: Rc<HashMap<Span, Binding>>,
         sender: Option<FrameRef>,
     ) -> EvalResult {
+        // A frame's locals are addressed as one run of registers -- the
+        // arguments first, the declared temporaries after them -- and
+        // `eval::read_local`/`write_local` find the boundary by asking the
+        // frame how many arguments it was *given*, not how many the method
+        // declares. A wrong-arity activation therefore does not fail; it
+        // silently shifts every temporary by the difference and reads
+        // arguments back where a temporary should be, under both engines
+        // identically, which is why the differential harness cannot see it.
+        // Silent wrong output with exit status 0 is the failure mode this
+        // repository's invariants single out, so the mismatch is refused
+        // here, in the orchestration both engines share, as an ordinary
+        // Newspeak error -- never a panic, since the caller may be a host.
+        //
+        // No Newspeak-level send can reach this: the parser builds a
+        // message whose argument count matches its selector by
+        // construction. The reachable callers are host-initiated sends --
+        // `ns-next run --send`, `snapshot --send`, `load --send`, and any
+        // future embedder driving `Interpreter::send` directly.
+        if args.len() != method.num_args {
+            return Err(Signal::Error(NewspeakError {
+                selector: method.selector,
+                receiver,
+                message: format!(
+                    "wrong number of arguments: `{}` takes {}, got {}",
+                    method.selector,
+                    method.num_args,
+                    args.len()
+                ),
+            }));
+        }
         // Hook 1 (spec: "`vm.rs` and the engine hook"): the frame, the
         // `uncontinuable` marking, and the `Signal::Return` catch are
         // shared; only the body's evaluation differs.
