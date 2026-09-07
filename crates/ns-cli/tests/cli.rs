@@ -246,6 +246,42 @@ fn run_corpus_malformed_whitelist_fails_with_error() {
     let _ = std::fs::remove_dir_all(modules.parent().unwrap());
 }
 
+#[test]
+fn bench_reports_both_engines() {
+    let out = ns_next()
+        .arg("bench")
+        .arg(repo_root().join("tests-fixtures/while_loop.ns"))
+        .arg("--iterations")
+        .arg("3")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("bytecode"), "{stdout}");
+    assert!(stdout.contains("tree-walk"), "{stdout}");
+}
+
+/// `bench` must reject a zero iteration count rather than dividing by it
+/// (the median computation indexes `timings[timings.len() / 2]`, which is
+/// only safe because `iterations >= 1` is enforced up front).
+#[test]
+fn bench_rejects_zero_iterations() {
+    let out = ns_next()
+        .arg("bench")
+        .arg(repo_root().join("tests-fixtures/while_loop.ns"))
+        .arg("--iterations")
+        .arg("0")
+        .output()
+        .unwrap();
+    assert_ne!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("iterations"));
+}
+
 // minimal tempdir helper to avoid a dev-dependency
 fn tempdir() -> std::path::PathBuf {
     let p = std::env::temp_dir().join(format!("ns-cli-test-{}", std::process::id()));

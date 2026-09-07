@@ -105,10 +105,10 @@ fn every_tests_fixtures_ns_file_behaves_identically_under_both_engines() {
         checked += 1;
     }
     assert!(
-        checked >= 6,
-        "expected all 6 tests-fixtures/*.ns fixtures (arithmetic, \
-         blocks_and_return, control_flow_fallback, hello, instance_init, \
-         while_loop)"
+        checked >= 7,
+        "expected all 7 tests-fixtures/*.ns fixtures (arithmetic, \
+         bench_loop, blocks_and_return, control_flow_fallback, hello, \
+         instance_init, while_loop)"
     );
 }
 

@@ -77,6 +77,28 @@ enum Cmd {
         #[arg(long)]
         print_source: bool,
     },
+    /// Time the entry send under both engines: bootstrap, load, and (for
+    /// the bytecode engine) compile once, then discard a warm-up run and
+    /// time `--iterations` further runs, reporting each engine's median
+    /// (with min and max) time for the entry send alone.
+    ///
+    /// Only the entry send is timed -- parsing, resolving, bootstrapping,
+    /// and compiling all happen once beforehand and are excluded, because
+    /// what Milestone 4's inline caches change is repeated dispatch, not
+    /// one-time startup. ALWAYS measure with `--release`: a debug build's
+    /// numbers are not comparable to anything and this subcommand warns on
+    /// stderr when it detects one.
+    Bench {
+        file: PathBuf,
+        /// The entry selector to time, sized exactly as `run --send` sizes
+        /// it.
+        #[arg(long, default_value = "main:args:")]
+        send: String,
+        /// How many timed runs to take the median of, after one discarded
+        /// warm-up run.
+        #[arg(long, default_value_t = 10)]
+        iterations: u32,
+    },
     /// Compile one method (or, with --initializer, the target class's
     /// instance initializer) and print its bytecode. Compile only: nothing
     /// is instantiated or run.
@@ -122,6 +144,11 @@ fn main() -> ExitCode {
             send,
             print_source,
         } => cmd_load(&image, send.as_deref(), print_source),
+        Cmd::Bench {
+            file,
+            send,
+            iterations,
+        } => cmd_bench(&file, &send, iterations),
         Cmd::Disasm {
             file,
             selector,
@@ -513,6 +540,172 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
         &bindings,
         None,
     ))
+}
+
+/// One engine's timing summary. Enough for the reported median to be
+/// interpretable on its own -- the iteration count it was computed from,
+/// plus the spread around it -- rather than a bare number nobody can
+/// sanity-check.
+struct BenchStats {
+    iterations: u32,
+    median: std::time::Duration,
+    min: std::time::Duration,
+    max: std::time::Duration,
+}
+
+/// The word each engine's report line leads with -- the same spelling
+/// `--engine` itself uses, so a result can be grepped by the same string
+/// that selects it.
+fn engine_label(engine: EngineArg) -> &'static str {
+    match engine {
+        EngineArg::Bytecode => "bytecode",
+        EngineArg::TreeWalk => "tree-walk",
+    }
+}
+
+/// Renders an `instantiate`/`send` failure for `bench`'s purposes. Neither
+/// call site treats it as fatal to the whole process the way `run` does --
+/// `cmd_bench` folds it into that engine's `Result` instead -- so this
+/// produces a `String`, not an `ExitCode`.
+fn signal_message(signal: ns_runtime::Signal) -> String {
+    match signal {
+        ns_runtime::Signal::Error(e) => format!("Uncaught Newspeak error: {}", e.message),
+        ns_runtime::Signal::Return(..) => {
+            "internal: non-local return escaped the entry send".to_string()
+        }
+    }
+}
+
+/// One instantiate-and-send sample. Instantiation happens but is
+/// deliberately *not* part of the timed span: it is fixed, once-per-run
+/// setup (an empty slot vector filled in and a fresh identity hash), not
+/// the repeated dispatch this benchmark measures. It cannot be hoisted
+/// outside the loop either, though -- a `main:args:`-shaped fixture mutates
+/// its own instance variables (loop counters, accumulators), so sending the
+/// same instance a second time would time a cheaper run against
+/// already-mutated state instead of the same workload every iteration.
+fn timed_send(
+    interp: &mut ns_runtime::Interpreter,
+    class: &ns_runtime::ClassRef,
+    factory_args: &[ns_runtime::Value],
+    selector: ns_runtime::Symbol,
+    entry_args: &[ns_runtime::Value],
+    bindings: &Rc<std::collections::HashMap<ns_syntax::Span, ns_runtime::Binding>>,
+) -> Result<std::time::Duration, String> {
+    let instance = interp
+        .instantiate(class.clone(), factory_args.to_vec(), bindings)
+        .map_err(signal_message)?;
+    let start = std::time::Instant::now();
+    let outcome = interp.send(instance, selector, entry_args.to_vec(), bindings, None);
+    let elapsed = start.elapsed();
+    outcome.map(|_| elapsed).map_err(signal_message)
+}
+
+/// Bootstraps `engine`, discards one warm-up `timed_send`, times
+/// `iterations` further ones, and reduces the samples to `BenchStats`.
+/// Bootstrapping, module loading, and (for the bytecode engine) compiling
+/// all happen here but before the loop starts -- once-per-process costs a
+/// real program pays at startup, excluded from the per-send timing for the
+/// same reason instantiation is.
+fn bench_engine(
+    loaded: &LoadedSource,
+    bindings: &Rc<std::collections::HashMap<ns_syntax::Span, ns_runtime::Binding>>,
+    send: &str,
+    iterations: u32,
+    engine: EngineArg,
+) -> Result<BenchStats, String> {
+    let (mut interp, class) = bootstrap_with_engine(loaded, engine);
+    let platform = interp.platform();
+    let factory_args = factory_args_for(&class, platform.clone())?;
+    let entry_args_list = entry_args(send, platform)?;
+    let selector = ns_runtime::Symbol::intern(send);
+
+    // Warm-up: discarded. It exercises the same allocation and lookup
+    // paths the timed runs will, so the first timed sample does not carry
+    // a one-time cost (e.g. a lazily-populated cache) the rest do not.
+    timed_send(
+        &mut interp,
+        &class,
+        &factory_args,
+        selector,
+        &entry_args_list,
+        bindings,
+    )?;
+
+    let mut timings = Vec::with_capacity(iterations as usize);
+    for _ in 0..iterations {
+        timings.push(timed_send(
+            &mut interp,
+            &class,
+            &factory_args,
+            selector,
+            &entry_args_list,
+            bindings,
+        )?);
+    }
+    timings.sort();
+    let min = timings[0];
+    let max = timings[timings.len() - 1];
+    // Median of N, not mean (the brief's own wording): a mean lets one
+    // GC-pause-sized outlier (there is no GC yet, but a scheduler
+    // preemption is the same shape of problem) drag the whole number with
+    // it, while the median shrugs off any one such sample.
+    let mid = timings.len() / 2;
+    let median = if timings.len() % 2 == 1 {
+        timings[mid]
+    } else {
+        (timings[mid - 1] + timings[mid]) / 2
+    };
+    Ok(BenchStats {
+        iterations,
+        median,
+        min,
+        max,
+    })
+}
+
+/// `ns-next bench`: see the `Bench` variant's doc comment for what is
+/// timed and why, and `bench_engine`/`timed_send` for how. Runs the
+/// bytecode engine first, then the tree-walker, so the two report lines
+/// come out in the same order `--engine`'s own default does.
+fn cmd_bench(file: &Path, send: &str, iterations: u32) -> ExitCode {
+    if cfg!(debug_assertions) {
+        eprintln!(
+            "warning: this is a debug build; the timings below measure debug-build overhead, \
+             not the engines. Rebuild and re-run with `--release`."
+        );
+    }
+    if iterations == 0 {
+        eprintln!("error: --iterations must be at least 1");
+        return ExitCode::FAILURE;
+    }
+    let loaded = match load_source(file) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+    let bindings = loaded.resolved.bindings.clone();
+    println!(
+        "timing: the entry send `{send}` only, after instantiation -- parsing, resolving, \
+         bootstrapping, and compiling all happened once beforehand and are excluded. \
+         {iterations} timed run(s) per engine, after one discarded warm-up run."
+    );
+    for engine in [EngineArg::Bytecode, EngineArg::TreeWalk] {
+        match bench_engine(&loaded, &bindings, send, iterations, engine) {
+            Ok(stats) => println!(
+                "{}: median {:?} (min {:?}, max {:?}, n={})",
+                engine_label(engine),
+                stats.median,
+                stats.min,
+                stats.max,
+                stats.iterations
+            ),
+            Err(msg) => {
+                eprintln!("error: {}: {msg}", engine_label(engine));
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 fn report_signal(signal: ns_runtime::Signal) -> ExitCode {
