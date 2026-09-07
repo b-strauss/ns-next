@@ -5464,3 +5464,74 @@ fn build_accepts_an_entry_selector_the_module_never_declares() {
     assert!(report.stateless);
     assert_eq!(report.entry.as_deref(), Some("neverDeclared"));
 }
+
+/// `load` on a binary must hand back an empty `roots` (a binary carries no
+/// instance to resume) and the recorded entry -- the two things a later
+/// `run` needs to instantiate `root_class` and start it, since there is no
+/// graph section to read a starting point out of.
+#[test]
+fn a_binary_loads_with_no_roots_and_its_entry() {
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let module = interp.compiled_module().expect("bytecode engine");
+    let origin = Origin::File(PathBuf::from("t.ns"));
+
+    let binary =
+        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
+
+    let loaded = image::load(&binary).expect("load a binary");
+    assert!(loaded.stateless);
+    assert!(loaded.roots.is_empty(), "a binary carries no instance");
+    assert_eq!(
+        loaded.entry.map(|s| s.to_string()).as_deref(),
+        Some("main:args:")
+    );
+    assert!(
+        loaded.interp.compiled_module().is_some(),
+        "the bytecode engine must be installed"
+    );
+}
+
+/// A binary that cannot say how it starts is not a deployment artifact, and
+/// accepting one would push the failure to a later, less obvious place --
+/// wherever the caller eventually looks for something to send. `load`
+/// refuses it up front instead.
+#[test]
+fn a_stateless_artifact_without_an_entry_is_refused() {
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let module = interp.compiled_module().expect("bytecode engine");
+    let origin = Origin::File(PathBuf::from("t.ns"));
+
+    let mut bytes =
+        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
+
+    // The entry field is the last thing in a binary, so truncating at its
+    // section start and writing a bare `0` (absent) byte in its place turns
+    // a valid binary into one with no entry, without hand-building a header.
+    let entry_start = image::inspect::inspect(&bytes)
+        .expect("inspect")
+        .sections
+        .iter()
+        .find(|s| s.name == "entry")
+        .expect("entry section")
+        .start;
+    bytes.truncate(entry_start);
+    bytes.push(0);
+
+    // Not `.expect_err`: `LoadedImage` carries an `Interpreter`, which has no
+    // `Debug` impl for the same reason `Value` does not (the bootstrap
+    // `Object` class is its own `.class`, so a derived `Debug` would
+    // recurse forever) -- `expect_err` requires `T: Debug` on the `Ok` side.
+    let err = match image::load(&bytes) {
+        Ok(_) => panic!("a binary must carry an entry"),
+        Err(e) => e,
+    };
+    assert!(err.contains("entry"), "unexpected error: {err}");
+}

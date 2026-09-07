@@ -503,6 +503,11 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
         origin: _,
         source,
         empty_bindings: bindings,
+        // A later task wires `load` on a binary (empty `roots`, an
+        // `entry` to send) into this command; until then it is only
+        // ever handed an image, where both are `None`/`false`.
+        entry: _,
+        stateless: _,
     } = match ns_runtime::image::load(&bytes) {
         Ok(l) => l,
         Err(e) => {

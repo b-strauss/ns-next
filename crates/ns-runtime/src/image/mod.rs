@@ -230,21 +230,36 @@ pub struct LoadedImage {
     /// which is exactly the load path this milestone removed -- and the
     /// map's only readers would still never look at it.
     pub empty_bindings: Rc<HashMap<Span, Binding>>,
+    /// The selector to send after instantiation. Mandatory in a binary,
+    /// always `None` in an image today.
+    pub entry: Option<Symbol>,
+    /// The artifact carried no object graph, so `roots` is empty and the
+    /// caller is expected to instantiate.
+    pub stateless: bool,
 }
 
-/// Decodes a world: symbols, code table, mixin table, root class, then the
-/// object graph, installing `Engine::Bytecode` and advancing the
-/// identity-hash counter past the image's maximum.
+/// Decodes an artifact: symbols, code table, mixin table, root class, entry,
+/// then -- for an image, never a binary -- the object graph. Installs
+/// `Engine::Bytecode` and, for an image, advances the identity-hash counter
+/// past the graph's maximum.
 ///
 /// Nothing here parses, resolves or compiles. The root class is rebuilt
 /// from mixin-table row 0 (`decode::build_root_class`), which is what makes
-/// the front end unnecessary -- and, since an image is untrusted input,
+/// the front end unnecessary -- and, since an artifact is untrusted input,
 /// what keeps the parser off the load path entirely.
+///
+/// A binary (`header.stateless`) carries no graph section, so `roots` comes
+/// back empty and `verify_graph` has nothing to check; it must carry an
+/// entry, since that selector is the only way it says how to start once a
+/// caller instantiates `root_class`, so a stateless artifact with no entry
+/// is refused here rather than accepted and left to fail wherever a caller
+/// later looks for something to send.
 ///
 /// Both verification passes run before anything the image describes can be
 /// executed: `verify_code_table` between decoding and installing the code
-/// table, `verify_graph` once the module exists to resolve each frame's
-/// body against. A corrupt but version-matching image is an `Err` here,
+/// table, `verify_graph` (image only) once the module exists to resolve
+/// each frame's body against. A corrupt but version-matching artifact is an
+/// `Err` here,
 /// never a panic in the VM later.
 pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let mut r = decode::Reader::new(bytes);
@@ -267,13 +282,25 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         decode::decode_root_superclass(&mut r, &interp).map_err(|e| e.to_string())?;
     let root_class = decode::build_root_class(&mut interp, &mixins, root_superclass)
         .map_err(|e| e.to_string())?;
-    // `snapshot` always writes this field (as absent), and a future
-    // stateless binary is what would need it read back to start itself --
-    // neither reads its value yet, but decoding it unconditionally is what
-    // keeps every artifact's layout in step with `inspect`'s.
-    decode::decode_entry(&mut r, &symbols).map_err(|e| e.to_string())?;
+    // `snapshot` always writes this field (as absent); a binary requires it
+    // present, since it is the only place a binary records how to start
+    // itself once instantiated.
+    let entry = decode::decode_entry(&mut r, &symbols).map_err(|e| e.to_string())?;
+    if header.stateless && entry.is_none() {
+        // A binary that cannot say how it starts is not a deployment
+        // artifact -- refusing here keeps the failure where the artifact is
+        // read, rather than wherever a caller eventually fails to find
+        // something to send.
+        return Err("a stateless artifact must record an entry selector".to_string());
+    }
     let platform = interp.platform();
-    let graph = {
+    // A binary carries no graph section at all -- `decode_graph_section`
+    // would read the next artifact's bytes (there are none) as if they were
+    // one. `DecodedGraph::empty()` is the graph a binary has: no roots, no
+    // objects, no frames, nothing for `verify_graph` to check.
+    let graph = if header.stateless {
+        decode::DecodedGraph::empty()
+    } else {
         let mut ctx = decode::DecodeContext {
             interp: &mut interp,
             root_class: &root_class,
@@ -284,8 +311,10 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         };
         decode::decode_graph_section(&mut r, &mut ctx, &symbols).map_err(|e| e.to_string())?
     };
-    decode::verify_graph(&graph, &table, &module).map_err(|e| e.to_string())?;
-    interp.advance_identity_hash_past(graph.max_identity_hash);
+    if !header.stateless {
+        decode::verify_graph(&graph, &table, &module).map_err(|e| e.to_string())?;
+        interp.advance_identity_hash_past(graph.max_identity_hash);
+    }
     // A byte sequence past the last section is refused, not ignored: with
     // two artifact shapes sharing one format, an unchecked tail would let a
     // binary with a graph appended -- or a truncated, then padded, image --
@@ -309,5 +338,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         origin,
         source,
         empty_bindings,
+        entry,
+        stateless: header.stateless,
     })
 }

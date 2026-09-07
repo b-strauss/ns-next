@@ -1422,6 +1422,21 @@ pub struct DecodedGraph {
     pub frames: Vec<FrameRef>,
 }
 
+impl DecodedGraph {
+    /// What a stateless binary carries in place of a graph section: nothing.
+    /// `load` skips `verify_graph` on this value rather than calling it --
+    /// an empty frame list would make `verify_graph` a no-op anyway, but
+    /// skipping it says directly that there is nothing to verify.
+    pub fn empty() -> Self {
+        DecodedGraph {
+            roots: Vec::new(),
+            max_identity_hash: 0,
+            objects: Vec::new(),
+            frames: Vec::new(),
+        }
+    }
+}
+
 /// The two placeholder-allocated tables, indexed by the ids in the stream.
 pub struct Tables<'a> {
     pub objects: &'a [ObjRef],
