@@ -3556,9 +3556,20 @@ fn class_of(value: &Value) -> ClassRef {
 /// The value sitting in `enclosing`'s hidden cache slot for nested
 /// declaration `name` -- §6's "one class object per enclosing instance",
 /// read straight out of the instance rather than through the accessor.
+///
+/// Resolved the way the accessor resolves it: the name picks a
+/// *declaration* off the class chain, and the declaration is what indexes
+/// the slot map -- a subclass's `class N` and the inherited one it shadows
+/// have different slots.
 fn cached_nested_class(enclosing: &Value, name: &str) -> Value {
-    let application = application_of(&class_of(enclosing));
-    let index = application.nested_slot[&Symbol::intern(name)];
+    let class = class_of(enclosing);
+    let ns_runtime::dispatch::Lookup::NestedClass(nested, _) =
+        ns_runtime::dispatch::lookup_defined_for(&class, Symbol::intern(name))
+    else {
+        panic!("{name} is a nested declaration of this object's class");
+    };
+    let application = application_of(&class);
+    let index = application.nested_slot[&ns_runtime::mixin::mixin_key(&nested)];
     match &obj(enclosing).borrow().data {
         ObjectData::Instance(fields) => fields[index].clone(),
         _ => panic!("an enclosing object is an instance"),

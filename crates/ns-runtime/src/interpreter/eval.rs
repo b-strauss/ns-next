@@ -493,7 +493,10 @@ pub(crate) fn dispatch_super_send(
         // `super N` for a nested class the superclass declares. The
         // receiver stays `self` (§5.10), which is also the enclosing object
         // the accessor caches against -- so `super N` and `N` name the same
-        // class object whenever they resolve to the same declaration.
+        // class object exactly when they resolve to the same declaration,
+        // and different ones when a subclass redeclares `N`: the accessor
+        // caches against the declaration's own hidden slot
+        // (`MixinApplication::nested_slot`), not against its name.
         Lookup::NestedClass(mixin, declaring_class) => crate::interpreter::nested::nested_class(
             interp,
             &self_value,

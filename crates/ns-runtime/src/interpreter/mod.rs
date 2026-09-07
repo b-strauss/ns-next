@@ -88,14 +88,14 @@ pub struct Interpreter {
     /// instance, so a class-object key would never hit and every instance
     /// would get its own behaviour.
     applications: HashMap<(usize, usize), Rc<crate::mixin::MixinApplication>>,
-    /// The (receiver address, declaration name) pairs whose nested class
+    /// The (receiver address, declaration identity) pairs whose nested class
     /// object is being created right now -- see
     /// `nested::cyclic_definition_error`. A stack, not a set: it is empty
     /// on every path that is not inside a superclass clause, and a clause
     /// nests only as deep as a program actually chains class creations, so
     /// a linear scan beats hashing and allocates nothing in the common
     /// case.
-    nested_in_progress: Vec<(usize, Symbol)>,
+    nested_in_progress: Vec<(usize, usize)>,
     /// Set by `image::load`: this world's declarations came off the wire,
     /// so they are mixins without `decl`s. See
     /// `EngineUnavailable::TreeWalkAfterLoad`.
@@ -895,10 +895,14 @@ impl Interpreter {
         // because the spec caches a nested class in the enclosing *object*;
         // a side table keyed by object would cost a hash lookup on a path
         // that is otherwise a slot read.
+        //
+        // Keyed by declaration identity: a subclass that redeclares an
+        // inherited nested class shadows it for a plain `N` but not for
+        // `super N`, so the two need separate slots -- see `nested_slot`.
         let mut nested_slot = superclass.map_or_else(HashMap::new, |s| s.nested_slot.clone());
         let mut next = inherited + mixin.slots.len();
         for nested in &mixin.nested {
-            nested_slot.insert(nested.name, next);
+            nested_slot.insert(crate::mixin::mixin_key(nested), next);
             next += 1;
         }
         let application = Rc::new(crate::mixin::MixinApplication {

@@ -113,7 +113,7 @@ pub(crate) fn nested_class(
     declaring_class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let Some(index) = cache_slot(interp, receiver, nested.name) else {
+    let Some(index) = cache_slot(interp, receiver, nested) else {
         return Err(no_cache_slot_error(receiver, nested.name));
     };
     // Step 1: the receiver's own cache. `Nil` is the "not yet" marker --
@@ -126,7 +126,7 @@ pub(crate) fn nested_class(
     // Step 2: the superclass clause, evaluated in the receiver's context
     // through the engine hook -- guarded against a class whose own creation
     // is already underway on this receiver.
-    let key = in_progress_key(receiver, nested.name);
+    let key = in_progress_key(receiver, nested);
     if interp.nested_in_progress.contains(&key) {
         return Err(cyclic_definition_error(receiver, nested.name));
     }
@@ -170,18 +170,22 @@ pub(crate) fn nested_class(
     Ok(Value::Obj(class))
 }
 
-/// The absolute index of `name`'s hidden cache slot in `receiver`'s own
+/// The absolute index of `nested`'s hidden cache slot in `receiver`'s own
 /// layout, or `None` when `receiver` has no such slot -- either because its
 /// class's application does not know the declaration (an internal
 /// inconsistency) or because its payload is not an `Instance` at all, which
 /// a user class inheriting a builtin's representation (`OrderedCollection`,
 /// `Array`) really is: `try_factory_send` gives those an `ObjectData::Array`
 /// payload with no fields to cache into.
-fn cache_slot(interp: &Interpreter, receiver: &Value, name: Symbol) -> Option<usize> {
+///
+/// The declaration itself, not its name: `MixinApplication::nested_slot` is
+/// keyed by declaration identity so that a subclass's `class N` and the
+/// inherited `class N` it shadows cache into different slots.
+fn cache_slot(interp: &Interpreter, receiver: &Value, nested: &Rc<Mixin>) -> Option<usize> {
     let class = interp.class_of(receiver);
     let index = crate::dispatch::class_application(&class)?
         .nested_slot
-        .get(&name)
+        .get(&mixin_key(nested))
         .copied()?;
     match receiver {
         Value::Obj(obj) => match &obj.borrow().data {
@@ -194,11 +198,15 @@ fn cache_slot(interp: &Interpreter, receiver: &Value, name: Symbol) -> Option<us
 
 /// The key `Interpreter::nested_in_progress` records while a declaration's
 /// class object is being created for a receiver: the receiver's address
-/// plus the declaration's name. The address is a safe key for the duration
-/// -- `receiver` is a live borrow held across the whole evaluation, so the
-/// object cannot be freed and its address cannot be reused while the entry
-/// is on the stack.
-fn in_progress_key(receiver: &Value, name: Symbol) -> (usize, Symbol) {
+/// plus the declaration's identity. The address is a safe key for the
+/// duration -- `receiver` is a live borrow held across the whole
+/// evaluation, so the object cannot be freed and its address cannot be
+/// reused while the entry is on the stack.
+///
+/// The declaration, not its name, for the same reason `cache_slot` uses it:
+/// `class N = super N (...)` is a subclass redeclaring what it inherits,
+/// not a cycle, and a name key would report the legal shape as one.
+fn in_progress_key(receiver: &Value, nested: &Rc<Mixin>) -> (usize, usize) {
     let address = match receiver {
         Value::Obj(obj) => Rc::as_ptr(obj) as *const () as usize,
         // `cache_slot` has already established that `receiver` is an object;
@@ -206,7 +214,7 @@ fn in_progress_key(receiver: &Value, name: Symbol) -> (usize, Symbol) {
         // never collides with a real entry.
         _ => 0,
     };
-    (address, name)
+    (address, mixin_key(nested))
 }
 
 fn read_cache_slot(receiver: &Value, index: usize) -> Option<Value> {

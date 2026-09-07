@@ -194,8 +194,16 @@ pub struct MixinApplication {
     /// declaration, including inherited ones. The slot stores the cached
     /// nested class object; accessing it is a slot read rather than a
     /// hash lookup. Inherited declarations keep the index their declaring
-    /// level gave them (exactly like inherited slots in slot_index).
-    pub nested_slot: HashMap<Symbol, usize>,
+    /// level gave them (exactly like inherited slots in `slot_index`).
+    ///
+    /// Keyed by `mixin_key` -- the declaration's identity -- and not by its
+    /// name, which is the one thing a subclass's nested declaration shares
+    /// with the inherited one it shadows. Both declarations are real, both
+    /// get their own physical slot, and `super N` reaches the inherited one
+    /// while `N` reaches the subclass's; a name key would collapse the two
+    /// entries onto one index and make whichever was resolved first the
+    /// answer to both.
+    pub nested_slot: HashMap<usize, usize>,
     pub num_slots: usize,
     /// Where this application's *own* slots start -- `superclass.num_slots`,
     /// or 0 with none. Read at run time (`Interpreter::run_own_initializer`)

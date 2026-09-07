@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use ns_runtime::mixin::Mixin;
+use ns_runtime::mixin::{mixin_key, Mixin};
 use ns_runtime::{Interpreter, Symbol};
 use ns_syntax::{ast, span::Span};
 
@@ -173,7 +173,9 @@ fn a_nested_declaration_reserves_a_hidden_cache_slot() {
     };
     let app = &data.application;
     assert_eq!(app.num_slots, 1, "Outer declares no slots but nests Inner");
-    assert_eq!(app.nested_slot[&Symbol::intern("Inner")], 0);
+    let inner = &app.mixin.nested[0];
+    assert_eq!(inner.name, Symbol::intern("Inner"));
+    assert_eq!(app.nested_slot[&mixin_key(inner)], 0);
 }
 
 #[test]
@@ -189,19 +191,42 @@ fn inherited_nested_declarations_keep_their_declaring_levels_slot() {
         sup.slots = vec![slot_decl("a")];
         sup.nested = vec![bare_mixin("Inner")];
     }
+    let sup_inner = sup.nested[0].clone();
     let sup_app = interp.apply_mixin(&sup, None);
     assert_eq!(sup_app.slot_index[&Symbol::intern("a")], 0);
-    assert_eq!(sup_app.nested_slot[&Symbol::intern("Inner")], 1);
+    assert_eq!(sup_app.nested_slot[&mixin_key(&sup_inner)], 1);
     assert_eq!(sup_app.num_slots, 2);
 
     let mut sub = bare_mixin("Sub");
     Rc::get_mut(&mut sub).unwrap().slots = vec![slot_decl("own")];
     let sub_app = interp.apply_mixin(&sub, Some(&sup_app));
     assert_eq!(
-        sub_app.nested_slot[&Symbol::intern("Inner")],
+        sub_app.nested_slot[&mixin_key(&sup_inner)],
         1,
         "an inherited nested declaration keeps its declaring level's slot"
     );
     assert_eq!(sub_app.slot_index[&Symbol::intern("own")], 2);
     assert_eq!(sub_app.num_slots, 3);
+}
+
+/// A subclass redeclaring a nested class its superclass already declares.
+/// Both declarations are real members -- `N` finds the subclass's, `super N`
+/// the superclass's -- so each needs its own cache slot; sharing one would
+/// make whichever was reached first the answer to both.
+#[test]
+fn a_redeclared_nested_class_gets_its_own_cache_slot() {
+    let mut interp = Interpreter::bootstrap();
+    let mut sup = bare_mixin("Sup");
+    Rc::get_mut(&mut sup).unwrap().nested = vec![bare_mixin("Inner")];
+    let sup_inner = sup.nested[0].clone();
+    let sup_app = interp.apply_mixin(&sup, None);
+
+    let mut sub = bare_mixin("Sub");
+    Rc::get_mut(&mut sub).unwrap().nested = vec![bare_mixin("Inner")];
+    let sub_inner = sub.nested[0].clone();
+    let sub_app = interp.apply_mixin(&sub, Some(&sup_app));
+
+    assert_eq!(sub_app.num_slots, 2, "one hidden slot per declaration");
+    assert_eq!(sub_app.nested_slot[&mixin_key(&sup_inner)], 0);
+    assert_eq!(sub_app.nested_slot[&mixin_key(&sub_inner)], 1);
 }
