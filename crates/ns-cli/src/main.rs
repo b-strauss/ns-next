@@ -705,6 +705,25 @@ fn cmd_bench(file: &Path, send: &str, iterations: u32) -> ExitCode {
             }
         }
     }
+    // The single caveat that matters most for reading these two numbers
+    // together: the baseline compiler inlines `whileTrue:`/`whileFalse:`/
+    // `ifTrue:...`/`and:`/`or:` into straight-line jumps when every block
+    // operand is a literal, parameter-less, temp-less block (M2 spec,
+    // "Control-flow inlining"; `compiler::control_flow::recognize`). The
+    // tree-walker has no such inlining and pays a real block invocation for
+    // each one. A loop written in that shape -- as any straightforward
+    // `whileTrue:` loop is -- therefore makes the bytecode engine skip work
+    // the tree-walker still does, for a reason that has nothing to do with
+    // send dispatch. Printed here, not only in a report, because this
+    // command and its output will still be read long after any one report
+    // is gone.
+    println!(
+        "note: control-flow selectors such as `whileTrue:` are inlined by the baseline \
+         compiler, so the cross-engine ratio above includes loop-control overhead the \
+         bytecode engine does not pay -- it is not a pure dispatch comparison. The bytecode \
+         median alone is the dispatch baseline: today every send is a full lookup, the \
+         inline-cache slot is reserved but not yet wired up."
+    );
     ExitCode::SUCCESS
 }
 
