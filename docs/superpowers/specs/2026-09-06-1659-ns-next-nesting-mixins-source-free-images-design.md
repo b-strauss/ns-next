@@ -1,6 +1,6 @@
 # ns-next — Nested Classes, Mixins, and Source-Free Images, Milestone 3 Design
 
-Status: approved for planning
+Status: implemented (Milestone 3 complete)
 Date: 2026-09-06
 Author: Benjamin
 

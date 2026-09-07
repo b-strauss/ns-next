@@ -2,6 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status: Complete.** All 19 tasks (94 steps) implemented, each reviewed
+> for spec compliance and quality, on `feature/m3-nesting-mixins`
+> (`7aa0ae9..45446c7`), merged to `master` at `0b41646`. Verified on the
+> merged result: 531 tests pass, `cargo clippy --workspace --all-targets`
+> is warning-free, `cargo fmt --all` is clean, `parse-corpus` reports
+> `parsed 210, failed 0, expected-fail 1, stale 0` and `run-corpus`
+> reports `ran 6, failed 0, skipped 205`. Task 9 ran before Tasks 4-8
+> because keying compiled code by mixin has to precede the first
+> per-instance class object; one task not in the original plan (10b) fixed
+> `outer` resolving along the receiver's dynamic chain instead of the
+> lexical declaration chain. Findings deferred rather than fixed are
+> recorded in the design spec's "Open questions".
+
 **Goal:** Make `ns-next` run Newspeak's nested classes with the language
 specification's semantics, and make the image format follow, which turns the
 image source-free.
@@ -115,7 +128,7 @@ Workspace crates `ns-syntax` (untouched by this milestone), `ns-runtime`,
 This task adds the types and the cache and nothing else — no existing code
 path changes yet, so the whole suite must stay green on unchanged behaviour.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 // crates/ns-runtime/tests/mixin.rs
@@ -178,12 +191,12 @@ fn inherited_slots_are_counted_before_own_slots() {
 `slot_decl(name)` builds a minimal `Rc<ast::SlotDecl>`; copy the construction
 a neighbouring test uses, or parse a one-slot class and take its slot.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test -p ns-runtime --test mixin`
 Expected: FAIL — `ns_runtime::mixin` does not exist.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```rust
 // crates/ns-runtime/src/mixin.rs
@@ -268,12 +281,12 @@ In `Interpreter`, add the cache and the operation:
     }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test -p ns-runtime --test mixin` — Expected: PASS.
 Run: `cargo test --workspace` — Expected: PASS, nothing else touched.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ns-runtime/src/mixin.rs crates/ns-runtime/src/lib.rs \
@@ -303,7 +316,7 @@ git commit -m "feat: add Mixin, MixinApplication, and the application cache"
 This is a pure refactor: one class per module still, no nesting yet. Every
 existing test must pass unchanged at the end of it. Do not add behaviour here.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 // append to crates/ns-runtime/tests/mixin.rs
@@ -329,12 +342,12 @@ fn a_class_object_carries_identity_and_its_application_carries_layout() {
 Copy the `load` helper from `crates/ns-runtime/tests/instantiate.rs`
 (parse → `resolve` → `Interpreter::bootstrap` → `load_module`).
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test -p ns-runtime --test mixin` — Expected: FAIL, `ClassData`
 has no field `application`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Shrink `ClassData` in `types.rs` to exactly:
 
@@ -367,12 +380,12 @@ Then move every reader over:
   the builtin's native method set with empty slots, apply it to the builtin
   superclass's application, and store the result.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS, including `differential.rs`.
 Run: `cargo clippy --workspace --all-targets` — Expected: no warnings.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -397,7 +410,7 @@ Milestone 1's `load_class` never recursed into `nested_classes` and dropped
 removes both gaps *structurally* — the mixins exist and are reachable. Nothing
 evaluates them yet; the accessor is Task 5.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 // append to crates/ns-runtime/tests/mixin.rs
@@ -431,13 +444,13 @@ fn the_mixin_tree_contains_nested_and_class_side_declarations() {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test -p ns-runtime --test mixin
 the_mixin_tree_contains_nested_and_class_side_declarations`
 Expected: FAIL — `nested` is empty and `class_side` is `None`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Replace `load_class` with `build_mixin`, which is a pure structural walk:
 
@@ -468,11 +481,11 @@ the result in a class object with `enclosing: None`.
 Keep `build_class_side` separate and small: a class side has methods but no
 nested classes of its own to load in this milestone.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -500,7 +513,7 @@ instance, contributed at the level that declares it, exactly like an ordinary
 inherited slot. Hidden slots are derived from `mixin.nested`, never declared,
 so nothing stores them separately.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 // append to crates/ns-runtime/tests/mixin.rs
@@ -552,13 +565,13 @@ Task 7 makes user-defined superclasses instantiable end to end; until then
 assert the layout directly through `apply_mixin` with a hand-built mixin
 chain, as Task 1's tests do.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test -p ns-runtime --test mixin
 a_nested_declaration_reserves_a_hidden_cache_slot`
 Expected: FAIL — `MixinApplication` has no field `nested_slot`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `apply_mixin`, after the declared slots are laid out:
 
@@ -577,11 +590,11 @@ In `apply_mixin`, after the declared slots are laid out:
 
 and set `num_slots: next`.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -608,7 +621,7 @@ evaluates Newspeak code (the superclass clause) and must therefore behave
 identically under both engines: it runs that code through the same
 body-execution hook `instantiate` already uses.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 // crates/ns-runtime/tests/nested_classes.rs
@@ -683,13 +696,13 @@ fn two_enclosing_instances_get_distinct_nested_classes() {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cargo test -p ns-runtime --test nested_classes`
 Expected: FAIL — `innerClass` raises `doesNotUnderstand:`, because nothing
 defines the accessor yet.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `dispatch::lookup_*` gain one arm: after the method dictionary of a level
 misses, check that level's `mixin.nested` for a declaration whose name equals
@@ -720,12 +733,12 @@ error (`newspeak-spec.pdf` §6.1: "It is a run time error if ec does not
 evaluate to a class object C"), so it raises a `NewspeakError` through the
 normal path — identical text under both engines — and never panics.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test -p ns-runtime --test nested_classes` — Expected: PASS.
 Run: `cargo test --workspace` — Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -750,7 +763,7 @@ git commit -m "feat: implement the implicit nested-class accessor"
 finally sets `enclosing`. This task proves it rather than changing it — if
 `outer` fails here, the defect is in Task 5's class-object construction.
 
-- [ ] **Step 1: Write the failing fixtures**
+- [x] **Step 1: Write the failing fixtures**
 
 `tests-fixtures/nested_outer.ns`:
 
@@ -772,7 +785,7 @@ class Outer usingPlatform: p = Object new (| t ::= p transcript. |) (
 a nested declaration overridden by a slot in a subclass, and the already-cached
 `Nested` keeping its superclass after that slot is reassigned.
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `cargo test -p ns-cli --test run_fixtures` — Expected: FAIL until the
 fixtures' expected output matches.
@@ -780,17 +793,17 @@ Run: `cargo test -p ns-cli --test differential` — Expected: both engines must
 agree; a disagreement here means the accessor is not going through the shared
 orchestration, and the tree-walker is the reference.
 
-- [ ] **Step 3: Fix whatever the fixtures expose**
+- [x] **Step 3: Fix whatever the fixtures expose**
 
 No new production code is planned for this task. If a fixture fails, the
 defect is in Task 4 or 5 — fix it there rather than special-casing here.
 
-- [ ] **Step 4: Run the full suite**
+- [x] **Step 4: Run the full suite**
 
 Run: `cargo test --workspace` — Expected: PASS, with the new fixtures counted
 in both the fixture runner and the differential harness.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests-fixtures/
@@ -816,7 +829,7 @@ frame". Per §6.2, the instance initializer evaluates the superclass clause's
 message, invokes the superclass's initializer on the same object with *those*
 arguments, and only then runs its own mixin's initializer.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 // crates/ns-runtime/tests/instantiate.rs
@@ -850,13 +863,13 @@ class Base withValue: v = Object new (| stored ::= v. |) (
 Write the two-class module out in full in the fixture and in the test source
 string; do not abbreviate it in a comment.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test -p ns-runtime --test instantiate
 a_superclass_factory_message_receives_its_own_arguments`
 Expected: FAIL — `stored` is `Nil`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `instantiate` walks the application chain to the root, then initializes
 downwards. At each level:
@@ -870,11 +883,11 @@ downwards. At each level:
 Keep the frame construction in `interpreter/`; `vm.rs` must not learn about
 initializer frames.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS, differential included.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -901,7 +914,7 @@ full §3.2 model — every class an instance of a unique metaclass, metaclasses
 as direct subclasses of a reified `Class` — is explicitly out of scope, and
 the spec records that as a deviation rather than an oversight.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -934,13 +947,13 @@ class Widget new = Object new () (
 `string_contents` reads `ObjectData::Str`; copy the helper from
 `crates/ns-runtime/tests/builtins_text.rs`.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test -p ns-runtime --test nested_classes
 a_class_side_method_dispatches_on_the_class_object`
 Expected: FAIL with `doesNotUnderstand: #describe`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 When a send's receiver is a class object, consult its metaclass before
 falling through to the existing class-object behaviour: `metaclass_of`
@@ -950,11 +963,11 @@ class it belongs to. Dispatch then proceeds exactly as for any other
 receiver — no separate lookup algorithm, so the access-control rules and the
 `doesNotUnderstand:` text stay identical.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -984,7 +997,7 @@ instance that would compile the same method body once per instance, which
 §6.2 rules out: applications of a mixin share code. This task is the reason
 the milestone can stay fast.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -1009,25 +1022,25 @@ fn a_nested_class_is_compiled_once_for_all_enclosing_instances() {
 `code_for` looks the method up through the class object's application mixin
 and indexes `interp.compiled_module()`'s `methods` by `method_key`.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test -p ns-runtime --test compiler
 a_nested_class_is_compiled_once_for_all_enclosing_instances`
 Expected: FAIL — the compiler never visited the nested declaration.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `compile_module` walks the mixin tree instead of the single root class,
 emitting one `CompiledCode` per method of every mixin (nested and class-side
 included) and one per initializer, keyed by `mixin_key`. `disasm` takes a
 mixin path (`Outer.Inner`) so nested code is addressable.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS, including the disasm
 snapshots (update them deliberately if the listing gained nested entries).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1057,7 +1070,7 @@ the receiver's own class. Milestone 4's inline caches record the same level
 index `k` next to the application, which is why this is worth getting exactly
 right now rather than at cache time.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests-fixtures/nested_super.ns` — a nested class inheriting from another
 nested class of the same enclosing object, so that `super` must walk the
@@ -1091,22 +1104,22 @@ If `current_class` were the receiver's own class rather than the defining
 level's, `super describe` would either recurse into `Derived describe` or
 `outer Outer label` would reach `nil` — both visible in this one fixture.
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cargo test -p ns-cli --test run_fixtures nested_super`
 Expected: FAIL — `outer` reaches the wrong enclosing object, or `nil`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Walk both chains in step in `lookup_public` / `lookup_protected` /
 `lookup_defined_for`, returning the class object that sits at the level where
 the method dictionary hit. Set `Frame.current_class` from it.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS, differential included.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1134,7 +1147,7 @@ call sites because dispatch is by name. One table at the head, referenced by
 index, deduplicates them and makes interning one pass instead of one
 `Symbol::intern` per send instruction.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -1157,11 +1170,11 @@ fn an_out_of_range_symbol_id_is_an_error_not_a_panic() {
 }
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `cargo test -p ns-runtime --test image` — Expected: FAIL, no symbol table.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Encode: collect into a `Vec<String>` with a `HashMap<String, u32>` for
 dedup, write the count then the strings, and replace every `write_str` of a
@@ -1172,11 +1185,11 @@ allocating, read each string, intern once, and hand out `Symbol`s by index.
 Every id is range-checked at the point of use — an out-of-range id is an
 `Err`, never an index panic.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1202,7 +1215,7 @@ arity, method table (selector → code id), nested declaration ids with their
 accessor names and accessibility, class-side mixin id, initializer code id,
 provenance span.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -1232,11 +1245,11 @@ fn a_mixin_id_pointing_past_the_table_is_an_error() {
 }
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `cargo test -p ns-runtime --test image` — Expected: FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Flatten the tree while encoding: assign ids breadth-first and reference
 children by id, so no structure is nested in the byte stream and decoding is
@@ -1247,11 +1260,11 @@ Validate before use: the count against the remaining length, every child id
 against the row count, every code id against the code table, and every
 accessor name against the symbol table.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1274,7 +1287,7 @@ This retires the binary `builtin`/`UserRoot` tag whose own comment records
 that a second user-defined class would decode as the root — a wrong class,
 not a decode error. Nesting is exactly what would have triggered it.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -1300,22 +1313,22 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
 }
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `cargo test -p ns-runtime --test image` — Expected: FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Encode class objects like any other object; decode them in two passes so a
 class object can reference a superclass or enclosing object that appears
 later in the table. Rebuild each application through `apply_mixin`, which
 gives sharing back for free because the cache key is content-derived.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1340,7 +1353,7 @@ bootstrap → `load_module` to rebuild the class graph and the bindings map.
 With a mixin table there is nothing left for it to rebuild, and the front end
 leaves the load path — along with the re-parsing of attacker-controlled text.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -1366,11 +1379,11 @@ fn a_frame_says_which_engine_its_pc_belongs_to() {
 }
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `cargo test -p ns-runtime --test image` — Expected: FAIL.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Header gains a flag byte for the optional source blob. `load` decodes symbols,
 mixins, code, then the graph, and installs `Engine::Bytecode` as it does
@@ -1389,11 +1402,11 @@ at run time — the only `bindings.get(&span)` call sites are in
 tree-walker, which cannot run from an image at all). Say that in the field's
 doc comment, so nobody later "fixes" it by reconstructing a real map.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1415,7 +1428,7 @@ Milestone 2 deferred this and tied it to "the first `FORMAT_VERSION` bump".
 There will be no bump — the project has no external users — so it lands here,
 with the format change it is meant to police.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -1437,11 +1450,11 @@ fn the_code_table_encoding_is_deterministic() {
 }
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `cargo test -p ns-runtime --test image` — Expected: FAIL, no fixture yet.
 
-- [ ] **Step 3: Generate the fixture and fix the determinism test**
+- [x] **Step 3: Generate the fixture and fix the determinism test**
 
 Generate the fixture with an ignored test that writes it, run once, then
 commit the bytes:
@@ -1460,11 +1473,11 @@ Run it with `cargo test -p ns-runtime --test image regenerate_the_golden_fixture
 `snapshot_of_without_source` twice, as written above, so it compiles the
 module twice instead of reusing one `CompiledModule`.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1488,7 +1501,7 @@ git commit -m "test: pin the image wire format with golden bytes"
 whose primary factory is `new`, fails with "wrong number of factory
 arguments: factory takes 0, got 1" — a CLI defect, not a language gap.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -1499,24 +1512,24 @@ fn a_zero_argument_factory_is_sent_without_the_platform() {
 }
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cargo test -p ns-cli --test run
 a_zero_argument_factory_is_sent_without_the_platform`
 Expected: FAIL with the factory-arity error.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Read the root mixin's `factory` pattern. A unary factory takes no arguments;
 a keyword factory whose single parameter names the platform takes
 `[platform]`. Any other arity is a clear error naming the declared selector,
 raised identically under both engines.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1540,7 +1553,7 @@ Built like `parse-corpus`, with a whitelist rather than a blacklist: a module
 is expected to run only once someone has put it on the list with its expected
 output. That makes growth deliberate and a regression loud.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -1552,12 +1565,12 @@ fn the_run_corpus_gate_reports_its_counts() {
 }
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cargo test -p ns-cli --test cli the_run_corpus_gate_reports_its_counts`
 Expected: FAIL — unknown subcommand.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `corpus/runnable.toml` starts with the modules that pass once Tasks 1–16 are
 in — begin with `ADummyPush.ns`, add every further module deliberately, each
@@ -1573,13 +1586,13 @@ whitelisted module demanded it. Do not add capabilities no listed module
 needs — a speculative platform library is what this milestone's non-goals
 exclude, and an unused capability has no test that would catch it rotting.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS.
 Run: `cargo run -p ns-cli -- run-corpus corpus/modules` — Expected:
 `failed 0`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1601,7 +1614,7 @@ Milestone 4 is the inline-cache milestone. Without a before-number no claimed
 improvement is verifiable, and the project treats performance as its highest
 priority — so the harness ships before the optimization, not after.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -1613,22 +1626,22 @@ fn bench_reports_both_engines() {
 }
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cargo test -p ns-cli --test cli bench_reports_both_engines`
 Expected: FAIL — unknown subcommand.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Discard a warm-up run, then time `--iterations` runs per engine and print
 each engine's median. Never judge performance from a debug build: the
 subcommand's help text says to measure with `--release`.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --workspace` — Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1645,26 +1658,26 @@ git commit -m "feat: add a bench mode with per-engine timings"
 - Consumes: everything above.
 - Produces: repository documentation describing the milestone's result.
 
-- [ ] **Step 1: Update `CLAUDE.md`**
+- [x] **Step 1: Update `CLAUDE.md`**
 
 Add the three-layer model to "Invariants that are easy to break": a class
 object is per enclosing instance, behaviour is the application, and inline
 caches key on the application. Add the `run-corpus` counter line beside the
 `parse-corpus` one.
 
-- [ ] **Step 2: Update `docs/PROGRESS.md`**
+- [x] **Step 2: Update `docs/PROGRESS.md`**
 
 Set the M3 row to Complete with the date, link the plan beside the spec, and
 add the milestone section describing what shipped — the current state, not
 the sequence of changes that produced it.
 
-- [ ] **Step 3: Run the gates one last time**
+- [x] **Step 3: Run the gates one last time**
 
 Run: `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
 `cargo fmt --all`, `cargo run -p ns-cli -- parse-corpus corpus/modules`,
 `cargo run -p ns-cli -- run-corpus corpus/modules`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add CLAUDE.md docs/PROGRESS.md
