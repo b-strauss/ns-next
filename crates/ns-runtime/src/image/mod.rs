@@ -17,6 +17,7 @@
 
 pub mod decode;
 pub mod encode;
+pub mod inspect;
 pub mod mixins;
 pub mod opcodes;
 pub mod symbols;

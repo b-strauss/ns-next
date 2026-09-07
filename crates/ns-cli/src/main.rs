@@ -115,6 +115,9 @@ enum Cmd {
         #[arg(long)]
         class: Option<String>,
     },
+    /// Print an artifact's structure: header flags, section offsets, the
+    /// symbol and mixin tables, and how much graph it carries.
+    Inspect { artifact: PathBuf },
 }
 
 /// `--engine`: which evaluator runs Newspeak-level code. `bytecode` is the
@@ -155,6 +158,7 @@ fn main() -> ExitCode {
             initializer,
             class,
         } => cmd_disasm(&file, selector.as_deref(), initializer, class.as_deref()),
+        Cmd::Inspect { artifact } => cmd_inspect(&artifact),
     }
 }
 
@@ -901,6 +905,29 @@ fn cmd_disasm(
         ns_runtime::bytecode::disassemble(code.as_ref(), &name)
     );
     ExitCode::SUCCESS
+}
+
+/// `ns-next inspect`: what is in this artifact. Read-only -- nothing is
+/// bootstrapped, instantiated or run, so inspecting a hostile file exercises
+/// only the decoders.
+fn cmd_inspect(artifact: &Path) -> ExitCode {
+    let bytes = match std::fs::read(artifact) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: reading {}: {e}", artifact.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    match ns_runtime::image::inspect::inspect(&bytes) {
+        Ok(report) => {
+            print!("{}", ns_runtime::image::inspect::render(&report));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {}: {e}", artifact.display());
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn cmd_parse_corpus(dir: &Path, blacklist: Option<&Path>) -> ExitCode {
