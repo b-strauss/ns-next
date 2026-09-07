@@ -70,3 +70,32 @@ their publishers grant.
   [An Image Problem](https://gbracha.blogspot.com/2009/10/image-problem.html) and
   [Serialization Killer](https://gbracha.blogspot.com/2010/02/serialization-killer.html).
 - The Newspeak implementation at <https://github.com/newspeaklanguage/newspeak>.
+- **Primordial Soup** — <https://github.com/rmacnak/primordialsoup>. Ryan Macnak's
+  Newspeak VM, running on Android, Fuchsia, Linux, macOS, Windows and the web. This is
+  the reference *implementation* of everything the image-format work has to be measured
+  against, in the way the papers above are the reference for semantics, and it is cited
+  directly rather than paraphrased because the blog posts alone leave the mechanism
+  ambiguous. The parts that carry design weight here:
+
+  - `docs/design.md` — the snapshot format. Clustered serialization (objects grouped by
+    class, all nodes encoded before all edges) rather than a memory dump; the **object
+    store**, an array at the root of the graph holding every object the VM must reach
+    without a name lookup; and the statement that running state is *not* persisted —
+    activations are not in snapshots, and activation objects materialize on demand when
+    a mirror asks for one. It also records that the object store and the current
+    activation are the only GC roots.
+  - `vm/object.h` — the object store's actual field list, which is what makes "what a
+    VM must be able to name by identity" concrete: the singletons, the selectors the VM
+    itself sends (`doesNotUnderstand:`, `cannotReturn:`, `dispatchMessage`, …), and the
+    classes with VM-known formats.
+  - `vm/main.cc` and `vm/isolate.cc` — startup. The VM maps the snapshot and posts an
+    isolate message; the jump into Newspeak takes its selector from the object store, so
+    the VM names no application entry point of its own.
+  - `newspeak/HelloApp.ns`, `newspeak/CompilerApp.ns`, `newspeak/Runtime.ns` — the
+    deployment convention: a module is packaged with `packageUsing: manifest` and
+    serialized having never seen a platform, which arrives later as `main:args:`'s first
+    argument. `CompilerApp.ns` also shows packaging itself, including the `keepSource:`
+    switch.
+
+  Linked rather than vendored: it is an actively developed source tree under its own
+  license, and pinning a copy here would rot without telling anyone.
