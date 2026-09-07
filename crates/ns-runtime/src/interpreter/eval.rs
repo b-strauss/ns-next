@@ -334,11 +334,40 @@ fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
     None
 }
 
+/// What an implicit-receiver send resolves to on one class, per
+/// `newspeak-spec.pdf` §5.9: a `private` declaration *at exactly this
+/// class* wins first, because a private member is never overridden and so
+/// there is no search; anything else goes through the ordinary
+/// `lookup_protected` walk.
+///
+/// A `private class N` is a private declaration on exactly the same footing
+/// (§6: the implicit accessor has the declaration's own accessibility), and
+/// has to be caught by the same first step: `lookup_protected` skips a
+/// private declaration transparently and keeps walking, so leaving the
+/// nested case out would make `private class N` unreachable from the class
+/// that declares it while `private n = (...)` is reachable.
+///
+/// One definition because `dispatch_lexical_send` asks it of two classes --
+/// a class object's metaclass and then the receiver's own class.
+fn lexical_lookup(class: &ClassRef, selector: Symbol) -> Lookup {
+    match dispatch::lookup_defined_for(class, selector) {
+        Lookup::Method(method, defining_class) if method.access == ast::AccessModifier::Private => {
+            Lookup::Method(method, defining_class)
+        }
+        Lookup::NestedClass(mixin, declaring_class)
+            if dispatch::nested_access(&mixin) == ast::AccessModifier::Private =>
+        {
+            Lookup::NestedClass(mixin, declaring_class)
+        }
+        _ => dispatch::lookup_protected(class, selector),
+    }
+}
+
 /// `newspeak-spec.pdf` §5.7-§5.9: `o` = the kth enclosing object of this
 /// activation's defining level (`dispatch::kth_enclosing_object`);
 /// dispatch privately (direct, non-virtual) if the target is `private` at
 /// depth `k`, otherwise virtually via `lookup_protected` on `o`'s actual
-/// class.
+/// class -- or, when `o` is a class object, on its metaclass first (§6.3).
 pub(crate) fn dispatch_lexical_send(
     interp: &mut Interpreter,
     frame: &FrameRef,
@@ -383,40 +412,32 @@ pub(crate) fn dispatch_lexical_send(
             }
         }
     }
-    // Check for a private declaration *at exactly this class* first (the
-    // non-virtual case -- private members are never overridden, so there
-    // is no search: newspeak-spec.pdf §5.9). A `private class N` is a
-    // private declaration on exactly the same footing (§6: the implicit
-    // accessor has the declaration's own accessibility), and it has to be
-    // caught here too: `lookup_protected` below skips a private
-    // declaration transparently and keeps walking, so leaving the nested
-    // case out would make `private class N` unreachable from the class
-    // that declares it while `private n = (...)` is reachable.
-    match dispatch::lookup_defined_for(&class, selector) {
-        Lookup::Method(method, defining_class) if method.access == ast::AccessModifier::Private => {
-            return interp.invoke_method(
-                o,
-                method,
-                defining_class,
-                args,
-                bindings.clone(),
-                Some(frame.clone()),
-            );
+    // §6.3: a class object's class side is the behaviour of that class
+    // object, so a send written inside a class-side method with no explicit
+    // receiver has to search the metaclass before the class object's own
+    // (native `Object`) behaviour -- the same order `Interpreter::send`
+    // gives an explicit-receiver send. Without it a class side reaches only
+    // what `lookup_public` on the metaclass happens to answer once the send
+    // has fallen all the way through to `send`: its `protected` and
+    // `private` members are unreachable, and any selector `Object` answers
+    // natively silently wins over the class side's own declaration.
+    let metaclass = match &o {
+        Value::Obj(obj) if matches!(obj.borrow().data, ObjectData::Class(_)) => {
+            interp.metaclass_of(obj)
         }
-        Lookup::NestedClass(mixin, declaring_class)
-            if dispatch::nested_access(&mixin) == ast::AccessModifier::Private =>
-        {
-            return crate::interpreter::nested::nested_class(
-                interp,
-                &o,
-                &mixin,
-                &declaring_class,
-                bindings,
-            );
-        }
-        _ => {}
-    }
-    match dispatch::lookup_protected(&class, selector) {
+        _ => None,
+    };
+    // A metaclass that does not declare the selector falls through to the
+    // class object's own behaviour, exactly as in `send`. Only a real
+    // declaration stops the search: a metaclass chain carries no builtin
+    // tag, so `Lookup::Native` can only come from the class-object chain
+    // below and means the same thing either way.
+    let lookup = metaclass
+        .as_ref()
+        .map(|metaclass| lexical_lookup(metaclass, selector))
+        .filter(|found| matches!(found, Lookup::Method(..) | Lookup::NestedClass(..)))
+        .unwrap_or_else(|| lexical_lookup(&class, selector));
+    match lookup {
         Lookup::Method(method, defining_class) => interp.invoke_method(
             o,
             method,

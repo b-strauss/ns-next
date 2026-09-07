@@ -1,0 +1,16 @@
+Newspeak3
+'Test'
+class ClassSideImplicit usingPlatform: p = Object new (| t ::= p transcript. |) (
+	public class Widget new = Object new () (
+	) : (
+		public describe = ( ^'widget, ', helper, ', ', secret )
+		public printString = ( ^'the Widget class' )
+		public shadowed = ( ^printString )
+		protected helper = ( ^'protected class side' )
+		private secret = ( ^'private class side' )
+	)
+	public main: platform args: args = (
+		t show: Widget describe; newLine.
+		t show: Widget shadowed; newLine.
+	)
+) : ()
