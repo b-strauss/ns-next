@@ -1,0 +1,122 @@
+# ns-next — Design
+
+`ns-next` is a native Rust runtime for [Newspeak](https://newspeaklanguage.org/):
+lexer, parser, resolver, tree-walking interpreter, bytecode compiler and register
+VM, and a versioned image format. Rust 1.98.0, edition 2021.
+
+This folder is the **living description of how the system is designed and how much
+of it exists**. It is updated in place. There is no series of dated design
+documents to reconcile: when a design changes, the document covering that aspect
+changes with it, and git carries the history.
+
+## How to read these documents
+
+Three conventions make a document's claims checkable rather than merely
+plausible.
+
+**Present tense means it exists.** If a document says the application cache is
+keyed by the superclass's application, that is what the code does today. Nothing
+is described in the present tense as a way of describing an intention.
+
+**Unbuilt work is marked, not paraphrased.** A section describing something that
+does not exist yet is headed `Planned: …` and says in its first line what would
+change. Something built but incomplete opens with **Partial:** and names what is
+missing. Planned work lives in the document whose mechanism it changes, not in a
+separate roadmap, because that is where a reader needs it.
+
+**Every document names its code.** Each opens with a status block listing the
+modules it describes, so a claim can be checked by opening a file. A document
+that cannot name its code is describing an intention, and should say so.
+
+## The map
+
+| Aspect | Document | Status | Planned next |
+|---|---|---|---|
+| Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
+| Values, objects, mixins, classes, scoping | [object-model.md](object-model.md) | Built | arena and handles |
+| Lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
+| Both engines, bytecode, compiler, VM | [execution.md](execution.md) | Built | trampolined sends, JIT tiers |
+| Object lifetime, identity, collection | [memory.md](memory.md) | Partial | a real collector |
+| Serialization, both artifacts | [image-format.md](image-format.md) | Partial | the stateless binary |
+| Builtins and the platform | [core-library.md](core-library.md) | Partial | widened on demand |
+| Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
+
+## Architecture
+
+Three crates, with the name-resolution pass as the seam the bytecode compiler
+plugs into:
+
+```
+crates/
+  ns-syntax/    lexer, tokens, AST, spans, diagnostics
+  ns-runtime/   resolver, object model, dispatch, both engines, builtins, image
+  ns-cli/       the `ns-next` binary
+```
+
+`ns-syntax` does not depend on `ns-runtime`. Nothing under `crates/ns-syntax`
+should change for runtime work.
+
+### From source to a running program
+
+```
+source bytes
+  -> ns-syntax::lex        Vec<Token>
+  -> ns-syntax::parse      Module (AST + spans)
+  -> ns-runtime::resolve   ResolvedModule (bindings + slot layout)
+  -> Interpreter::load     the module's root class object
+  -> compile               one CompiledCode per body, keyed by mixin
+  -> instantiate           the primary factory, then each level's initializer
+  -> the entry send        whatever the CLI was asked to send
+```
+
+The two serialization paths branch off this: `snapshot` serializes the world
+after instantiation, `load` rebuilds one without running the front end at all.
+See [image-format.md](image-format.md).
+
+### The `ns-next` binary
+
+`parse`, `parse-corpus`, `run`, `run-corpus`, `disasm`, `snapshot`, `load`,
+`bench`.
+
+## Gates
+
+These are non-regression gates, not suggestions. Each has caught a real
+regression.
+
+```bash
+cargo test --workspace          # includes the two-engine differential harness
+cargo clippy --workspace --all-targets   # must be warning-free
+cargo fmt --all                 # before every commit
+cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 210, failed 0, expected-fail 1, stale 0
+cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 205
+```
+
+Never judge performance from a debug build; `cargo build --workspace --release`
+is the one to measure.
+
+## Deviations from the language specification
+
+Places where the implementation deliberately differs from
+`docs/references/newspeak-spec.pdf`. Recorded so a deviation is a decision
+rather than an oversight.
+
+| Deviation | Spec | Where it is explained |
+|---|---|---|
+| No reified `Class`/`Metaclass` hierarchy; a class has a lazily created metaclass carrying its class side | §3.2 | [object-model.md](object-model.md) |
+| No formal "value object" notion, because there are no actors to need it | §3.1.1 | [liveness-and-reflection.md](liveness-and-reflection.md) |
+| `self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved; they are recognized contextually | §4.1 | [frontend.md](frontend.md) |
+| Integers are `i64`; overflow raises a Newspeak error rather than promoting | — | [core-library.md](core-library.md) |
+| A public slot's implicit accessors are not reachable through a send with an explicit receiver | §6 | [dispatch.md](dispatch.md) |
+
+## What lives elsewhere
+
+- **`CLAUDE.md`** — the invariants that are easy to break, each of which has
+  already produced a real defect. Load-bearing for anyone working in the
+  repository; the reasoning behind each one is in these documents.
+- **`docs/PROGRESS.md`** — milestone chronology: what was completed and when.
+  These documents describe the design; that one records the schedule.
+- **`docs/superpowers/plans/`** — implementation plans, dated. A plan is an
+  execution record of finished work and is legitimately historical, so it is not
+  a living document and is left as written.
+- **`docs/references/`** — the primary sources, with `PROVENANCE.md` recording
+  what each one is and why it is here.
