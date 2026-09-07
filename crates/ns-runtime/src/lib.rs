@@ -1,8 +1,11 @@
 #![warn(clippy::all)]
 
 //! Name resolution, object model, tree-walking interpreter, and bytecode
-//! compiler/VM for the Newspeak3 language (Milestones 1-2). See
-//! `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md`.
+//! compiler/VM for the Newspeak3 language (Milestones 1-3), including
+//! nested classes, mixin applications, and the source-free image format.
+//! See `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md`
+//! and
+//! `docs/superpowers/specs/2026-09-06-1659-ns-next-nesting-mixins-source-free-images-design.md`.
 
 pub mod builtins;
 pub mod bytecode;

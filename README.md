@@ -15,8 +15,9 @@ versioned image and loaded back.
 | M1 — Frontend (lexer, parser, AST) | Complete |
 | M1 — Runtime (resolver, object model, dispatch, interpreter) | Complete |
 | M2 — Bytecode compiler, register VM, image format | Complete |
-| M3 — Inline caches and GC | Not started |
-| M4–M5 — JIT | Not started |
+| M3 — Nested classes, mixins, source-free images | Complete |
+| M4 — Inline caches and GC | Not started |
+| M5–M6 — JIT | Not started |
 
 `docs/PROGRESS.md` carries the details and links the design spec and implementation plan
 behind each milestone.

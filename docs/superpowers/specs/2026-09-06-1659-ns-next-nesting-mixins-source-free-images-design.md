@@ -448,3 +448,39 @@ own merits, and the golden-bytes fixture lands with this milestone.
   whether the VM must store `pc` at every instruction rather than only
   where control can leave the loop is a debugger and profiler question,
   and belongs to the milestone that builds them.
+- **`Mixin` has no interior mutability.** Editing a live class's method
+  table re-applies a fresh mixin; existing instances keep the old
+  application, and their instances go on running the old code. §6.2
+  requires an edit to a mixin to affect all of its applications, so the
+  milestone that builds `MirrorBuilder` and edit-and-continue must choose
+  between interior mutability on `Mixin` and a mixin-versioning scheme —
+  and, either way, decide what happens to the `applications` cache, which
+  today grows without bound because every re-application mints a fresh
+  entry that nothing ever evicts.
+- **`Interpreter::send` never consults `dispatch::lookup_slot`.** A public
+  slot's implicit accessors are reachable only through an ordinary,
+  unqualified send, not through `send` with an explicit receiver — so the
+  language spec's own example spelling, `(g Inner: Array) Nested`, does
+  not work today. Fixing it means adding slot entries to `lookup_public`'s
+  walk, deciding setter-selector naming and its precedence against a
+  same-named method, and enforcing a slot's access modifier, none of
+  which exists yet.
+- **An entry send's return value is never printed.** `report_entry_send`
+  in `crates/ns-cli/src/main.rs` reports only failure (an uncaught
+  Newspeak error, or a non-local return escaping the entry send); on
+  success it discards the returned `Value`. A module whose result *is*
+  its output — rather than something it prints via `transcript show:` —
+  is silently unobservable through `ns-next run`.
+- **`Object::class` is not an `Option<ClassRef>`.** The iterative `Drop`
+  impl (`crates/ns-runtime/src/types.rs`) relies on that to unwind an
+  object graph without recursing, and the image decoder refuses an image
+  in which a class object's own class is another record rather than the
+  bootstrap `Object` placeholder. That matches the runtime's own
+  invariant today (every class object's `.class` is the bootstrap
+  `Object`), but it is a decision that must be revisited if §3.2's
+  reified `Class`/`Metaclass` hierarchy is ever built, since that model
+  makes a class object's class a real, distinct object.
+- **`nil printString` answers `an Object`.** `nil`'s class has no
+  `printString` override of its own, so the send falls through to the
+  generic `Object` builtin (`crates/ns-runtime/src/builtins/object_class.rs`)
+  instead of answering something that identifies `nil`.

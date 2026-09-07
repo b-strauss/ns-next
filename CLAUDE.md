@@ -60,6 +60,35 @@ The bootstrap `Object` class is its own `.class`, so `Debug` on a `Value::Obj` r
 forever, and `Signal` deliberately has no `Debug` (it holds a `FrameRef` cycle). Tests
 unwrap through a local `expect_ok` helper — copy the one in a neighbouring test file.
 
+**A class object is per enclosing instance; behaviour is the `MixinApplication`, shared.**
+`ClassData` carries identity and an `enclosing` object; method lookup, slots and layout
+live on `MixinApplication`, one per (mixin, superclass application) pair. **The
+application cache is keyed by the superclass's *application*, never by its class
+object** — a nested superclass's class object is itself per-instance, so a class-object
+key would never hit and every instance would mint its own application: wrong per §6.2,
+and every call site megamorphic since no two instances would ever share behaviour.
+
+**Compiled code is keyed by mixin, and `Instr::InitSlot`'s `own_index` is mixin-relative.**
+One mixin backs every application of it, so code is compiled once per mixin and reused
+across every application; an absolute field index baked into that shared code would be
+wrong the moment a second application inserts different inherited slots ahead of it. The
+VM resolves `own_index` against the executing `Frame.slot_base`
+(`MixinApplication.own_slot_base` for that level) at run time. The tree-walker must
+resolve the same slot by name instead of by index — it has no compiled `InitSlot` to
+share — so a bug here shows up as the two engines disagreeing, not as a single wrong
+answer.
+
+**`outer` walks the *lexical* declaration chain, never the receiver's dynamic class.**
+`Frame.current_class` seeds it and `ClassData::declaring_class` continues it level by
+level. A method or nested-class accessor inherited across a nesting boundary runs with
+the class that lexically declares it, not the receiver's own class — using the receiver's
+class instead silently resolves `outer` to the wrong enclosing object.
+
+**The tree-walking engine cannot run from a loaded image.** `image::load` decodes mixins
+and class objects, never AST-carrying bindings, so there is no source for the
+tree-walker to execute; `Interpreter::set_engine(Engine::TreeWalk)` refuses on a
+loaded image rather than running it against the wrong data.
+
 ## Working in this repository
 
 ```bash
