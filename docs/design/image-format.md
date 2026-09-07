@@ -103,7 +103,49 @@ the file and turns interning into one pass over the table instead of one
 each initializer, each superclass clause, every nested block body — in a flat
 id-addressed table, blocks before the code that creates them so a `MakeClosure`
 operand encodes as an already-decoded id. The image's bytecode is what runs after
-a load; nothing recompiles.
+a load; nothing recompiles. How each instruction is encoded is below.
+
+## The instruction encoding
+
+In memory an instruction is a Rust enum; on the wire it is **a tag byte followed
+by a fixed operand layout** for that tag. Registers are `u16`, jump targets are
+instruction indices, selectors and names are symbol-table ids, and a literal
+carries its own tag byte from a second table. `LoadLiteral` is the only
+instruction whose operands nest, and the nesting depth of a literal array is
+input-controlled and therefore bounded.
+
+**A tag is assigned once and never changes.** A new instruction takes the next
+free number; a removed one retires its number rather than freeing it for reuse.
+
+That is a stronger promise than the rest of this format makes, and it is
+deliberate. Images are disposable and `FORMAT_VERSION` is never bumped, so a
+stale image is not refused for being stale. If a tag changed meaning, the stale
+bytes would not fail — they would decode into a **different, perfectly valid
+program**, and it would run. The untrusted-input guarantee does not cover that
+case: it promises no panic, not no misreading. Retiring numbers instead means
+stale bytes hit an unknown tag and are refused, which is the outcome that can be
+noticed.
+
+| Instructions | | | |
+|---|---|---|---|
+| 0 `LoadLiteral` | 5 `LoadOuterLocal` | 10 `MakeClosure` | 15 `NonLocalReturn` |
+| 1 `LoadSelf` | 6 `StoreOuterLocal` | 11 `MakeArray` | 16 `Jump` |
+| 2 `LoadBuiltinClass` | 7 `SendLexical` | 12 `InitSlot` | 17 `JumpIfNotBoolean` |
+| 3 `Move` | 8 `SendPublic` | 13 `Return` | 18 `BranchIfFalse` |
+| 4 `StoreLocal` | 9 `SendSuper` | 14 `ImplicitReturn` | 19 `BranchIfTrue` |
+
+| Literals | | |
+|---|---|---|
+| 0 `Nil` | 4 `Str` | 8 `MalformedInt` |
+| 1 `Bool` | 5 `Sym` | 9 `UnresolvedIdent` |
+| 2 `SmallInt` | 6 `Char` | |
+| 3 `Float` | 7 `Array` | |
+
+Both tables are declared once, in `image/opcodes.rs`, and used by the encoder and
+the decoder alike rather than repeated as magic numbers on each side.
+`crates/ns-runtime/tests/opcode_tags.rs` pins every value and checks that no two
+share a number, so a renumbering fails the suite at the moment it happens instead
+of surfacing later as an image that no longer means what it said.
 
 **Mixin table.** One row per declaration: the name, its own slot names, the
 primary factory selector and arity, the method table as selector → code id, the

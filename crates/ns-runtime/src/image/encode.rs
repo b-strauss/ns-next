@@ -10,6 +10,7 @@ use crate::types::{
     ObjectData, PcKind, SourceOrigin, Value,
 };
 
+use super::opcodes::*;
 use super::{mixins, symbols};
 
 pub const MAGIC: &[u8; 4] = b"NSIM";
@@ -361,37 +362,37 @@ fn encode_regs(w: &mut Writer, regs: &[u16]) {
 fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symbols::Builder) {
     match instr {
         Instr::LoadLiteral { dst, literal } => {
-            w.write_u8(0);
+            w.write_u8(OP_LOAD_LITERAL);
             w.write_u16(*dst);
             encode_literal(w, literal, symbols);
         }
         Instr::LoadSelf { dst } => {
-            w.write_u8(1);
+            w.write_u8(OP_LOAD_SELF);
             w.write_u16(*dst);
         }
         Instr::LoadBuiltinClass { dst, kind } => {
-            w.write_u8(2);
+            w.write_u8(OP_LOAD_BUILTIN_CLASS);
             w.write_u16(*dst);
             w.write_u8(builtin_class_tag(*kind));
         }
         Instr::Move { dst, src } => {
-            w.write_u8(3);
+            w.write_u8(OP_MOVE);
             w.write_u16(*dst);
             w.write_u16(*src);
         }
         Instr::StoreLocal { src, slot } => {
-            w.write_u8(4);
+            w.write_u8(OP_STORE_LOCAL);
             w.write_u16(*src);
             w.write_u16(*slot);
         }
         Instr::LoadOuterLocal { dst, depth, index } => {
-            w.write_u8(5);
+            w.write_u8(OP_LOAD_OUTER_LOCAL);
             w.write_u16(*dst);
             w.write_u16(*depth);
             w.write_u16(*index);
         }
         Instr::StoreOuterLocal { src, depth, index } => {
-            w.write_u8(6);
+            w.write_u8(OP_STORE_OUTER_LOCAL);
             w.write_u16(*src);
             w.write_u16(*depth);
             w.write_u16(*index);
@@ -403,7 +404,7 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symb
             dst,
             call_site,
         } => {
-            w.write_u8(7);
+            w.write_u8(OP_SEND_LEXICAL);
             w.write_u16(*depth);
             w.write_u32(symbols.intern(selector.as_str()));
             encode_regs(w, arg_regs);
@@ -417,7 +418,7 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symb
             dst,
             call_site,
         } => {
-            w.write_u8(8);
+            w.write_u8(OP_SEND_PUBLIC);
             w.write_u32(symbols.intern(selector.as_str()));
             w.write_u16(*receiver_reg);
             encode_regs(w, arg_regs);
@@ -430,14 +431,14 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symb
             dst,
             call_site,
         } => {
-            w.write_u8(9);
+            w.write_u8(OP_SEND_SUPER);
             w.write_u32(symbols.intern(selector.as_str()));
             encode_regs(w, arg_regs);
             w.write_u16(*dst);
             encode_call_site(w, call_site);
         }
         Instr::MakeClosure { dst, params, code } => {
-            w.write_u8(10);
+            w.write_u8(OP_MAKE_CLOSURE);
             w.write_u16(*dst);
             w.write_u16(u16_field("closure parameter count", params.len()));
             for p in params.iter() {
@@ -446,43 +447,43 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symb
             w.write_u32(ids.id_of(code));
         }
         Instr::MakeArray { dst, elem_regs } => {
-            w.write_u8(11);
+            w.write_u8(OP_MAKE_ARRAY);
             w.write_u16(*dst);
             encode_regs(w, elem_regs);
         }
         Instr::InitSlot { src, own_index } => {
-            w.write_u8(12);
+            w.write_u8(OP_INIT_SLOT);
             w.write_u16(*src);
             w.write_u32(*own_index);
         }
         Instr::Return { reg } => {
-            w.write_u8(13);
+            w.write_u8(OP_RETURN);
             w.write_u16(*reg);
         }
         Instr::ImplicitReturn { reg } => {
-            w.write_u8(14);
+            w.write_u8(OP_IMPLICIT_RETURN);
             w.write_u16(*reg);
         }
         Instr::NonLocalReturn { reg } => {
-            w.write_u8(15);
+            w.write_u8(OP_NON_LOCAL_RETURN);
             w.write_u16(*reg);
         }
         Instr::Jump { target } => {
-            w.write_u8(16);
+            w.write_u8(OP_JUMP);
             w.write_u32(*target);
         }
         Instr::JumpIfNotBoolean { reg, target } => {
-            w.write_u8(17);
+            w.write_u8(OP_JUMP_IF_NOT_BOOLEAN);
             w.write_u16(*reg);
             w.write_u32(*target);
         }
         Instr::BranchIfFalse { reg, target } => {
-            w.write_u8(18);
+            w.write_u8(OP_BRANCH_IF_FALSE);
             w.write_u16(*reg);
             w.write_u32(*target);
         }
         Instr::BranchIfTrue { reg, target } => {
-            w.write_u8(19);
+            w.write_u8(OP_BRANCH_IF_TRUE);
             w.write_u16(*reg);
             w.write_u32(*target);
         }
@@ -491,44 +492,44 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symb
 
 fn encode_literal(w: &mut Writer, literal: &Literal, symbols: &mut symbols::Builder) {
     match literal {
-        Literal::Nil => w.write_u8(0),
+        Literal::Nil => w.write_u8(LIT_NIL),
         Literal::Bool(b) => {
-            w.write_u8(1);
+            w.write_u8(LIT_BOOL);
             w.write_bool(*b);
         }
         Literal::SmallInt(n) => {
-            w.write_u8(2);
+            w.write_u8(LIT_SMALL_INT);
             w.write_i64(*n);
         }
         Literal::Float(f) => {
-            w.write_u8(3);
+            w.write_u8(LIT_FLOAT);
             w.write_f64(*f);
         }
         Literal::Str(s) => {
-            w.write_u8(4);
+            w.write_u8(LIT_STR);
             w.write_str(s);
         }
         Literal::Sym(s) => {
-            w.write_u8(5);
+            w.write_u8(LIT_SYM);
             w.write_u32(symbols.intern(s.as_str()));
         }
         Literal::Char(c) => {
-            w.write_u8(6);
+            w.write_u8(LIT_CHAR);
             w.write_u32(*c as u32);
         }
         Literal::Array(elements) => {
-            w.write_u8(7);
+            w.write_u8(LIT_ARRAY);
             w.write_u32(u32_field("literal array length", elements.len()));
             for e in elements {
                 encode_literal(w, e, symbols);
             }
         }
         Literal::MalformedInt(text) => {
-            w.write_u8(8);
+            w.write_u8(LIT_MALFORMED_INT);
             w.write_str(text);
         }
         Literal::UnresolvedIdent(name) => {
-            w.write_u8(9);
+            w.write_u8(LIT_UNRESOLVED_IDENT);
             w.write_str(name);
         }
     }

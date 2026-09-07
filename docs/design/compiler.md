@@ -13,10 +13,12 @@ engines, the dispatch loop — is [execution.md](execution.md).
 
 `Instr` is a plain Rust enum dispatched by `match`, not hand-packed bytes.
 "Architecture-neutral and versioned" is a property of the *image encoding* of
-compiled code, not a requirement on the in-memory representation. Manual opcode
-packing is a technique that pays off once a JIT or a very hot interpreter loop
-demands it; building it now would add real complexity for no measurable benefit.
-Revisit only if profiling shows `match` dispatch is the bottleneck.
+compiled code — a tag byte and a fixed operand layout per instruction, with the
+tag numbers fixed for good; see [image-format.md](image-format.md) — not a
+requirement on the in-memory representation. Manual opcode packing is a technique
+that pays off once a JIT or a very hot interpreter loop demands it; building it
+now would add real complexity for no measurable benefit. Revisit only if
+profiling shows `match` dispatch is the bottleneck.
 
 Every register operand is a `u16`; every jump target is an instruction index. The
 set follows the resolver's `Binding` variants and the lookup shapes directly, so
@@ -25,9 +27,10 @@ that lowering is mostly a transliteration rather than a translation.
 **Loads and moves**
 
 - `LoadLiteral { dst, literal }` — the literal is already lowered:
-  `Nil | Bool | SmallInt | Float | Str | Sym | Char | Array | MalformedInt`, with
-  integer and float text parsed at compile time rather than at each execution.
-  `MalformedInt` is the deferred case; see "Compilation cannot fail".
+  `Nil | Bool | SmallInt | Float | Str | Sym | Char | Array | MalformedInt |
+  UnresolvedIdent`, with integer and float text parsed at compile time rather
+  than at each execution. The last two are the deferred cases; see "Compilation
+  cannot fail".
 - `LoadSelf { dst }`.
 - `LoadBuiltinClass { dst, kind }` — serves the convention that a bare builtin
   class name has no `Binding`, resolving at compile time what the tree-walker's

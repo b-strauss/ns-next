@@ -21,6 +21,7 @@ use crate::types::{
 use crate::Interpreter;
 use crate::Symbol;
 
+use super::opcodes::*;
 use super::{mixins, symbols};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1132,36 +1133,36 @@ fn decode_instr(
     symbols: &symbols::Table,
 ) -> Result<Instr, DecodeError> {
     Ok(match r.read_u8()? {
-        0 => {
+        OP_LOAD_LITERAL => {
             let dst = r.read_u16()?;
             Instr::LoadLiteral {
                 dst,
                 literal: decode_literal(r, 0, symbols)?,
             }
         }
-        1 => Instr::LoadSelf { dst: r.read_u16()? },
-        2 => {
+        OP_LOAD_SELF => Instr::LoadSelf { dst: r.read_u16()? },
+        OP_LOAD_BUILTIN_CLASS => {
             let dst = r.read_u16()?;
             Instr::LoadBuiltinClass {
                 dst,
                 kind: read_builtin_class(r)?,
             }
         }
-        3 => {
+        OP_MOVE => {
             let dst = r.read_u16()?;
             Instr::Move {
                 dst,
                 src: r.read_u16()?,
             }
         }
-        4 => {
+        OP_STORE_LOCAL => {
             let src = r.read_u16()?;
             Instr::StoreLocal {
                 src,
                 slot: r.read_u16()?,
             }
         }
-        5 => {
+        OP_LOAD_OUTER_LOCAL => {
             let dst = r.read_u16()?;
             let depth = r.read_u16()?;
             Instr::LoadOuterLocal {
@@ -1170,7 +1171,7 @@ fn decode_instr(
                 index: r.read_u16()?,
             }
         }
-        6 => {
+        OP_STORE_OUTER_LOCAL => {
             let src = r.read_u16()?;
             let depth = r.read_u16()?;
             Instr::StoreOuterLocal {
@@ -1179,7 +1180,7 @@ fn decode_instr(
                 index: r.read_u16()?,
             }
         }
-        7 => {
+        OP_SEND_LEXICAL => {
             let depth = r.read_u16()?;
             let selector = decode_symbol(r, symbols)?;
             let arg_regs = decode_regs(r)?;
@@ -1192,7 +1193,7 @@ fn decode_instr(
                 call_site: decode_call_site(r)?,
             }
         }
-        8 => {
+        OP_SEND_PUBLIC => {
             let selector = decode_symbol(r, symbols)?;
             let receiver_reg = r.read_u16()?;
             let arg_regs = decode_regs(r)?;
@@ -1205,7 +1206,7 @@ fn decode_instr(
                 call_site: decode_call_site(r)?,
             }
         }
-        9 => {
+        OP_SEND_SUPER => {
             let selector = decode_symbol(r, symbols)?;
             let arg_regs = decode_regs(r)?;
             let dst = r.read_u16()?;
@@ -1216,7 +1217,7 @@ fn decode_instr(
                 call_site: decode_call_site(r)?,
             }
         }
-        10 => {
+        OP_MAKE_CLOSURE => {
             let dst = r.read_u16()?;
             let n = r.read_u16()? as usize;
             let mut params = reserve_for(n, r);
@@ -1234,41 +1235,41 @@ fn decode_instr(
                 code: codes[id as usize].clone(),
             }
         }
-        11 => {
+        OP_MAKE_ARRAY => {
             let dst = r.read_u16()?;
             Instr::MakeArray {
                 dst,
                 elem_regs: decode_regs(r)?,
             }
         }
-        12 => {
+        OP_INIT_SLOT => {
             let src = r.read_u16()?;
             Instr::InitSlot {
                 src,
                 own_index: r.read_u32()?,
             }
         }
-        13 => Instr::Return { reg: r.read_u16()? },
-        14 => Instr::ImplicitReturn { reg: r.read_u16()? },
-        15 => Instr::NonLocalReturn { reg: r.read_u16()? },
-        16 => Instr::Jump {
+        OP_RETURN => Instr::Return { reg: r.read_u16()? },
+        OP_IMPLICIT_RETURN => Instr::ImplicitReturn { reg: r.read_u16()? },
+        OP_NON_LOCAL_RETURN => Instr::NonLocalReturn { reg: r.read_u16()? },
+        OP_JUMP => Instr::Jump {
             target: r.read_u32()?,
         },
-        17 => {
+        OP_JUMP_IF_NOT_BOOLEAN => {
             let reg = r.read_u16()?;
             Instr::JumpIfNotBoolean {
                 reg,
                 target: r.read_u32()?,
             }
         }
-        18 => {
+        OP_BRANCH_IF_FALSE => {
             let reg = r.read_u16()?;
             Instr::BranchIfFalse {
                 reg,
                 target: r.read_u32()?,
             }
         }
-        19 => {
+        OP_BRANCH_IF_TRUE => {
             let reg = r.read_u16()?;
             Instr::BranchIfTrue {
                 reg,
@@ -1321,20 +1322,20 @@ fn decode_literal(
         });
     }
     Ok(match r.read_u8()? {
-        0 => Literal::Nil,
-        1 => Literal::Bool(r.read_bool()?),
-        2 => Literal::SmallInt(r.read_i64()?),
-        3 => Literal::Float(r.read_f64()?),
-        4 => Literal::Str(r.read_str()?),
-        5 => Literal::Sym(decode_symbol(r, symbols)?),
-        6 => {
+        LIT_NIL => Literal::Nil,
+        LIT_BOOL => Literal::Bool(r.read_bool()?),
+        LIT_SMALL_INT => Literal::SmallInt(r.read_i64()?),
+        LIT_FLOAT => Literal::Float(r.read_f64()?),
+        LIT_STR => Literal::Str(r.read_str()?),
+        LIT_SYM => Literal::Sym(decode_symbol(r, symbols)?),
+        LIT_CHAR => {
             let code = r.read_u32()?;
             Literal::Char(char::from_u32(code).ok_or(DecodeError::InvalidTag {
                 what: "char",
                 tag: 6,
             })?)
         }
-        7 => {
+        LIT_ARRAY => {
             let n = r.read_u32()? as usize;
             let mut elements = reserve_for(n, r);
             for _ in 0..n {
@@ -1342,8 +1343,8 @@ fn decode_literal(
             }
             Literal::Array(elements)
         }
-        8 => Literal::MalformedInt(r.read_str()?),
-        9 => Literal::UnresolvedIdent(r.read_str()?),
+        LIT_MALFORMED_INT => Literal::MalformedInt(r.read_str()?),
+        LIT_UNRESOLVED_IDENT => Literal::UnresolvedIdent(r.read_str()?),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "literal",

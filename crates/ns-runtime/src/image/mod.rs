@@ -18,6 +18,7 @@
 pub mod decode;
 pub mod encode;
 pub mod mixins;
+pub mod opcodes;
 pub mod symbols;
 
 use std::collections::HashMap;
