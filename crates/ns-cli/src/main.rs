@@ -784,24 +784,67 @@ fn resolve_mixin_path(
     Ok(current)
 }
 
-/// `ns-next disasm`: bootstrap and load, compile the *whole* mixin tree
-/// (`compiler::compile_module`, exactly as the bytecode engine would) so a
-/// `--class` path can address any mixin's code, then look up exactly one
-/// method or the target mixin's initializer and print its bytecode
-/// listing. Never instantiates and never installs the bytecode engine --
-/// compile only.
+/// Whether `bytes` begins with the image format's magic.
+///
+/// Sniffing the content rather than the file extension is deliberate: an
+/// artifact has no required extension, `snapshot`/`build` write whatever path
+/// they are given, and a `.ns` file cannot begin with these four bytes because
+/// every module starts with the `Newspeak3` language identifier.
+fn looks_like_an_artifact(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && &bytes[0..4] == ns_runtime::image::encode::MAGIC
+}
+
+/// `ns-next disasm`: for a `.ns` file, bootstrap and compile the *whole*
+/// mixin tree (`compiler::compile_module`, exactly as the bytecode engine
+/// would); for a serialized artifact, decode it directly and reuse its own
+/// code table instead of recompiling anything. Either way, the result is a
+/// `(class, module)` pair from which a `--class` path can address any
+/// mixin's code, then look up exactly one method or the target mixin's
+/// initializer and print its bytecode listing. The source path never
+/// instantiates and never installs the bytecode engine -- compile only; the
+/// artifact path never instantiates either, since `image::load` only
+/// decodes the world.
 fn cmd_disasm(
     file: &Path,
     selector: Option<&str>,
     initializer: bool,
     class_path: Option<&str>,
 ) -> ExitCode {
-    let loaded = match load_source(file) {
-        Ok(l) => l,
-        Err(code) => return code,
+    let raw = match std::fs::read(file) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: reading {}: {e}", file.display());
+            return ExitCode::FAILURE;
+        }
     };
-    let bindings = loaded.resolved.bindings.clone();
-    let (_interp, class) = bootstrap_with_engine(&loaded, EngineArg::TreeWalk);
+
+    // Held only so the borrows below outlive the branch: the source path owns
+    // its interpreter, the artifact path owns the loaded world.
+    let (class, module) = if looks_like_an_artifact(&raw) {
+        match ns_runtime::image::load(&raw) {
+            Ok(loaded) => {
+                let module = loaded
+                    .interp
+                    .compiled_module()
+                    .expect("load installed the bytecode engine")
+                    .clone();
+                (loaded.root_class.clone(), module)
+            }
+            Err(e) => {
+                eprintln!("error: {}: {e}", file.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        let loaded = match load_source(file) {
+            Ok(l) => l,
+            Err(code) => return code,
+        };
+        let bindings = loaded.resolved.bindings.clone();
+        let (_interp, class) = bootstrap_with_engine(&loaded, EngineArg::TreeWalk);
+        let module = ns_runtime::compiler::compile_module(&class, &bindings);
+        (class, module)
+    };
     let root_mixin = match &class.borrow().data {
         ns_runtime::ObjectData::Class(data) => data.application.mixin.clone(),
         _ => {
@@ -816,7 +859,6 @@ fn cmd_disasm(
             return ExitCode::FAILURE;
         }
     };
-    let module = ns_runtime::compiler::compile_module(&class, &bindings);
     let (code, name) = match (selector, initializer) {
         (None, true) => {
             let code = module

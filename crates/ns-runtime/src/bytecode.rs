@@ -250,7 +250,7 @@ pub struct CompiledCode {
 /// same initializer body once per enclosing instance instead of once per
 /// mixin -- exactly what `compiler::compile_module` walking the mixin tree
 /// once, up front, is meant to avoid.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompiledModule {
     pub methods: HashMap<usize, Rc<CompiledCode>>,
     pub initializers: HashMap<usize, Rc<CompiledCode>>,
