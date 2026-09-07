@@ -1,6 +1,6 @@
 //! Bytecode compiler entry points: `compile_method`, `compile_initializer`,
 //! `compile_module`. See
-//! `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`.
+//! `docs/design/execution.md`.
 //! Compiling an already-resolved module is a total, deterministic lowering
 //! that can never raise a `NewspeakError`; a failure here is an `ns-runtime`
 //! bug and panics.

@@ -1,6 +1,5 @@
 //! The bytecode instruction set and compiled-code data shapes. Pure data --
-//! see `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`'s
-//! `bytecode.rs` section. `Instr` is a plain Rust enum, `match`-dispatched
+//! see `docs/design/execution.md`'s "Instructions" section. `Instr` is a plain Rust enum, `match`-dispatched
 //! by `vm.rs`; "architecture-neutral, versioned" describes `image::encode`'s
 //! wire format for a `CompiledCode`, not this in-memory type.
 

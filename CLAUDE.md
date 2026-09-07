@@ -11,14 +11,15 @@ image format. Rust 1.98.0, edition 2021, three crates:
 - `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run`, `run-corpus`,
   `disasm`, `snapshot`, `load`, `bench`.
 
-Read `docs/PROGRESS.md` first — it is the milestone-level status, and it links the
-design spec and implementation plan behind each milestone.
+Read `docs/design/README.md` first — it maps the living design documents and says
+how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology
+beside it.
 
 ## Invariants that are easy to break
 
 These are not style preferences. Each one has already produced a real defect in this
-repository; the reasoning behind them is in the design specs under
-`docs/superpowers/specs/`.
+repository; the reasoning behind them is in the design documents under
+`docs/design/`.
 
 **Two engines must agree byte for byte.** `ns-next run` defaults to `--engine=bytecode`;
 `--engine=tree-walk` is the Milestone 1 interpreter, kept permanently as the differential
@@ -52,8 +53,9 @@ with exit status 0, not a crash.
 **An image is untrusted input.** No byte sequence may cause a panic or a process abort:
 validate every id, tag, count and length before it indexes, allocates or slices, and
 bound any recursion whose depth the input controls. `image::load` also runs two
-structural verification passes before installing the engine. See the design spec's
-"Error Handling" section for the scope of what they do and do not guarantee.
+structural verification passes before installing the engine. See
+`docs/design/image-format.md`'s "Verification" section for the scope of what they
+do and do not guarantee.
 
 **Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an `EvalResult`.**
 The bootstrap `Object` class is its own `.class`, so `Debug` on a `Value::Obj` recurses
@@ -129,7 +131,10 @@ is hand-rolled on purpose.
   documentation are in English.
 - Classic terminology: `blacklist`, `whitelist`, `sane` — not their newer replacements.
 - Conventional commits (`feat:`, `fix:`, `perf:`, `test:`, `docs:`, `chore:`).
-- Specs and plans live in `docs/superpowers/{specs,plans}/` and are named
-  `YYYY-MM-DD-HHMM-<name>.md`, so several files from one day sort chronologically.
+- Design documents live in `docs/design/` and are living: update the document for
+  the aspect that changed rather than adding a dated file that supersedes it.
+  Implementation plans live in `docs/superpowers/plans/`, are named
+  `YYYY-MM-DD-HHMM-<name>.md` so several from one day sort chronologically, and
+  are execution records — left as written once complete.
 - Comments should explain the decision, not restate the mechanics. The reason a check
   exists — what it prevents — is the part a later reader cannot reconstruct.

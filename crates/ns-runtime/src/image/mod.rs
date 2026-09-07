@@ -1,7 +1,6 @@
 //! Image serialization: a versioned, architecture-neutral encoding of a
 //! live `ns-next` world, decoded on load (never a memory dump). See
-//! `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`'s
-//! "Image format" section. Layout: header, optional source text,
+//! `docs/design/image-format.md`. Layout: header, optional source text,
 //! `SourceOrigin`, symbol table, code table, mixin table, root class,
 //! object table, frame table, roots.
 //!

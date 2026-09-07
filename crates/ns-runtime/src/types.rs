@@ -1,7 +1,7 @@
 //! Core runtime data types: the object model, activation records, and the
 //! resolver's output shape. Pure data -- see
-//! `docs/superpowers/specs/2026-09-01-2252-ns-next-runtime-design.md`'s Object
-//! Model, Activation Records, and Resolver sections.
+//! `docs/design/object-model.md`, `docs/design/execution.md`'s
+//! "Activations", and `docs/design/dispatch.md`'s "Resolution".
 
 use std::cell::RefCell;
 use std::collections::HashMap;

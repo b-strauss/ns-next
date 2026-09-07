@@ -19,8 +19,8 @@ versioned image and loaded back.
 | M4 — Inline caches and GC | Not started |
 | M5–M6 — JIT | Not started |
 
-`docs/PROGRESS.md` carries the details and links the design spec and implementation plan
-behind each milestone.
+`docs/design/` describes how the system works and how much of each aspect exists;
+`docs/PROGRESS.md` is the milestone chronology beside it.
 
 ## Requirements
 
@@ -107,7 +107,8 @@ crates/ns-runtime    resolver, object model, dispatch, both engines, core librar
 crates/ns-cli        the `ns-next` binary
 corpus/              vendored Newspeak modules used as a parser corpus
 tests-fixtures/      end-to-end programs with their expected output
-docs/                progress tracker, design specs, implementation plans
+docs/design/         living design documents -- start at README.md
+docs/                milestone chronology, implementation plans
 docs/references/     the Newspeak papers the design argues from (third-party, see PROVENANCE.md)
 ```
 

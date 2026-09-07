@@ -5,8 +5,7 @@
 //! hooks for any user-defined target. No dispatch logic, no
 //! `doesNotUnderstand:`, no native dispatch, and no error text of its own
 //! live here -- that is what makes the tree-walker a byte-for-byte oracle.
-//! See `docs/superpowers/specs/2026-09-04-2243-ns-next-bytecode-vm-design.md`,
-//! "`vm.rs` and the engine hook".
+//! See `docs/design/execution.md`, "The VM and the three hooks".
 
 use std::collections::HashMap;
 use std::rc::Rc;
