@@ -56,7 +56,7 @@ file = "NewspeakASTs.ns"
 send = "AST"
 expected_status = 0
 expected_stdout = ""
-reason = "The largest module that runs: ~70 public nested AST classes over a shared `AST new` superclass, plus `platform collections List` in module state."
+reason = "The largest module that runs, and the row that stresses loading rather than evaluation: ~70 nested class declarations over a shared `AST new` superclass are parsed, resolved and built into the mixin tree, and `platform collections List` is bound in module state. Exactly one of those declarations is then evaluated -- `AST`, whose accessor this row sends."
 
 [[entry]]
 file = "V5BytecodeSimulation.ns"

@@ -172,3 +172,64 @@ fn run_supports_a_custom_entry_selector_via_send() {
     assert_eq!(stdout, "custom\n", "unexpected stdout: {stdout:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The probe that exposed the frame-shift defect end to end: a *unary*
+/// entry point with a declared temporary. `--send probe` used to hand it
+/// `[platform, nil]` regardless of arity, which shifted `t` off the
+/// surplus arguments and printed `NOTNIL-BUG` under both engines with exit
+/// status 0. Both halves of the fix are needed for this to pass: the CLI
+/// sizes the argument list to the selector, and `invoke_method` refuses a
+/// mismatch outright if anything ever gets it wrong again.
+const UNARY_PROBE: &str = "Newspeak3\n'Test'\nclass Probe usingPlatform: p = Object new (\n\t|\n\t\tprivate plat = p.\n\t|\n) (\n\
+     \tpublic probe = (\n\t\t| t |\n\t\tnil = t ifTrue: [ plat transcript show: 'nil-ok'; newLine ]\n\t\t\tifFalse: [ plat transcript show: 'NOTNIL-BUG'; newLine ]\n\t)\n) : ()\n";
+
+#[test]
+fn a_unary_entry_selector_gets_no_arguments_and_reads_its_temporary_as_nil() {
+    let dir = tempdir_named("unary-send");
+    let f = dir.join("Probe.ns");
+    std::fs::write(&f, UNARY_PROBE).unwrap();
+
+    for engine in ["bytecode", "tree-walk"] {
+        let out = ns_next()
+            .arg("run")
+            .arg(&f)
+            .arg("--send")
+            .arg("probe")
+            .arg("--engine")
+            .arg(engine)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{engine}: stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+        assert_eq!(stdout, "nil-ok\n", "{engine}: unexpected stdout");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_entry_selector_the_cli_cannot_fill_is_refused_before_the_send() {
+    let dir = tempdir_named("wide-send");
+    let f = dir.join("Wide.ns");
+    std::fs::write(
+        &f,
+        "Newspeak3\n'Test'\nclass Wide usingPlatform: p = Object new (\n) (\n\tpublic a: x b: y c: z = (\n\t\t^x\n\t)\n) : ()\n",
+    )
+    .unwrap();
+
+    let out = ns_next()
+        .arg("run")
+        .arg(&f)
+        .arg("--send")
+        .arg("a:b:c:")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("a:b:c:"), "stderr: {stderr}");
+    assert!(stderr.contains("3 argument(s)"), "stderr: {stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

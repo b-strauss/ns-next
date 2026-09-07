@@ -53,8 +53,8 @@ enum Cmd {
     Snapshot {
         file: PathBuf,
         out: PathBuf,
-        /// A selector to send (with `[platform, nil]`, as `run` does)
-        /// before snapshotting; its result becomes a second root.
+        /// A selector to send (with the arguments `run` supplies for its
+        /// arity) before snapshotting; its result becomes a second root.
         #[arg(long)]
         send: Option<String>,
         /// Store the module's source text in the image (the debug
@@ -65,7 +65,8 @@ enum Cmd {
         debug_source: bool,
     },
     /// Deserialize an image and optionally send one further message to
-    /// its root instance (`[platform, nil]`, as `run` does).
+    /// its root instance (with the arguments `run` supplies for the
+    /// selector's arity).
     Load {
         image: PathBuf,
         #[arg(long)]
@@ -293,9 +294,61 @@ fn class_name(class: &ns_runtime::ClassRef) -> String {
     }
 }
 
+/// How many arguments `selector` takes, read off its spelling.
+///
+/// The one place the CLI decides this. A keyword selector takes one
+/// argument per colon, a binary selector exactly one, a unary selector
+/// none -- Newspeak identifiers start with a letter or `_`, so anything
+/// else beginning a colon-free selector is an operator.
+fn selector_arity(selector: &str) -> usize {
+    if selector.contains(':') {
+        return selector.matches(':').count();
+    }
+    match selector.chars().next() {
+        Some(c) if c.is_alphabetic() || c == '_' => 0,
+        // A binary selector, e.g. `--send +`. Empty selectors reach the
+        // runtime and fail there as an ordinary unknown message.
+        Some(_) => 1,
+        None => 0,
+    }
+}
+
+/// The argument list an entry send (`run`/`snapshot`/`load`'s `--send`)
+/// supplies, sized to what the selector actually takes.
+///
+/// It used to be `[platform, nil]` unconditionally, which is right only
+/// for a two-parameter `main:args:`. Anything else got a frame whose
+/// argument count did not match its declaration -- and a method activation
+/// addresses its arguments and temporaries as one run of registers, so the
+/// surplus silently shifted every temporary rather than failing.
+/// `invoke_method` now refuses a mismatch outright; sizing the list here
+/// is what keeps a legitimate `--send` from tripping that refusal.
+///
+/// The template is the Core Library's `main: platform args: arguments`
+/// convention truncated to the selector's arity: a unary entry point takes
+/// nothing, a one-parameter one takes the platform, a two-parameter one
+/// takes the platform and `Nil` for the environment-args list -- there is
+/// still no command-line-argument passthrough into Newspeak. Beyond two
+/// the CLI has nothing to offer, and says so rather than padding.
+fn entry_args(
+    selector: &str,
+    platform: ns_runtime::Value,
+) -> Result<Vec<ns_runtime::Value>, String> {
+    match selector_arity(selector) {
+        0 => Ok(vec![]),
+        1 => Ok(vec![platform]),
+        2 => Ok(vec![platform, ns_runtime::Value::Nil]),
+        n => Err(format!(
+            "cannot send `{selector}`: it takes {n} argument(s), and this CLI only knows how \
+             to supply the platform and a `nil` argument list"
+        )),
+    }
+}
+
 /// `ns-next run`: parse, resolve, bootstrap, load, install the engine,
 /// instantiate the root class with whatever its declared primary factory
-/// takes, send the entry selector with `[platform, nil]`, report.
+/// takes, send the entry selector with whatever `entry_args` sizes for it,
+/// report.
 fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
     let loaded = match load_source(file) {
         Ok(l) => l,
@@ -315,16 +368,15 @@ fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
         Ok(v) => v,
         Err(signal) => return report_signal(signal),
     };
-    // `main:args:`'s two parameters: `Nil` for the environment-args list --
-    // no command-line-argument passthrough into Newspeak yet.
+    let args = match entry_args(send, platform) {
+        Ok(args) => args,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return ExitCode::FAILURE;
+        }
+    };
     let selector = ns_runtime::Symbol::intern(send);
-    report_entry_send(interp.send(
-        instance,
-        selector,
-        vec![platform, ns_runtime::Value::Nil],
-        &bindings,
-        None,
-    ))
+    report_entry_send(interp.send(instance, selector, args, &bindings, None))
 }
 
 /// `ns-next snapshot`: `run`'s pipeline up to (and optionally including)
@@ -353,7 +405,13 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
     };
     let mut roots = vec![instance.clone()];
     if let Some(selector) = send {
-        let args = vec![platform.clone(), ns_runtime::Value::Nil];
+        let args = match entry_args(selector, platform.clone()) {
+            Ok(args) => args,
+            Err(msg) => {
+                eprintln!("error: {msg}");
+                return ExitCode::FAILURE;
+            }
+        };
         match interp.send(
             instance,
             ns_runtime::Symbol::intern(selector),
@@ -395,7 +453,7 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
 }
 
 /// `ns-next load`: deserialize a world and, with `--send`, send one
-/// message to its root instance with the same `[platform, nil]` convention
+/// message to its root instance through the same `entry_args` convention
 /// `run` uses -- and report it through the same `report_entry_send`, so a
 /// `load --send main:args:` of a snapshot prints exactly what `run` prints
 /// and nothing else. A malformed image is a message, never a stack trace.
@@ -441,7 +499,13 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let platform = interp.platform();
-    let args = vec![platform, ns_runtime::Value::Nil];
+    let args = match entry_args(selector, platform) {
+        Ok(args) => args,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return ExitCode::FAILURE;
+        }
+    };
     report_entry_send(interp.send(
         instance,
         ns_runtime::Symbol::intern(selector),
@@ -709,10 +773,18 @@ fn run_one(exe: &Path, file: &Path, send: &str, engine: &str) -> Result<EngineOu
 /// counts as running only once someone has recorded what running it
 /// produces. Growth is therefore deliberate and a regression is loud.
 ///
-/// Every entry is run under both engines and the two are compared before
-/// either is compared to the expectation, which makes this a differential
-/// harness over real vendored Newspeak modules rather than only a
-/// non-regression counter.
+/// Every entry is run under both engines and the two are compared on exit
+/// status, stdout and stderr before either is compared to the expectation.
+///
+/// What that is worth, stated honestly: with `expected_stdout` empty on
+/// every real row -- no corpus module that currently runs writes to the
+/// transcript at all -- this is a tripwire that a whitelisted module still
+/// instantiates and still answers one message without error, plus a check
+/// that the two engines fail or succeed the same way. It is not yet a
+/// differential harness over observable *output* from real modules; it
+/// becomes one on the day a row can record something printed. Treat a
+/// green `run-corpus` as "nothing regressed", not as "the corpus is
+/// covered".
 fn cmd_run_corpus(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
     let wl_path = whitelist
         .map(PathBuf::from)
@@ -743,9 +815,12 @@ fn cmd_run_corpus(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
         })
         .count();
 
+    // `ran` counts rows whose module both engines actually executed, so a
+    // row naming a deleted file, or one whose child could not be spawned,
+    // reports as a failure without inflating the number a reader uses to
+    // judge coverage.
     let (mut ran, mut failed) = (0, 0);
     for entry in &entries {
-        ran += 1;
         let file = dir.join(&entry.file);
         if !file.is_file() {
             failed += 1;
@@ -768,6 +843,7 @@ fn cmd_run_corpus(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
                 continue;
             }
         };
+        ran += 1;
         if let Some(diff) = engines_disagree(&bytecode, &tree_walk) {
             failed += 1;
             eprintln!("FAIL {}: engines disagree on {diff}", entry.file);
