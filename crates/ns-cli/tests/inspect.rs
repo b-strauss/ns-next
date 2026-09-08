@@ -1,39 +1,11 @@
 //! `ns-next inspect` -- the structural listing of an artifact.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests-fixtures")
-        .join(name)
-}
-
-fn temp_dir(test: &str) -> PathBuf {
-    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir =
-        std::env::temp_dir().join(format!("ns-next-inspect-{}-{n}-{test}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    dir
-}
-
-fn ns_next(args: &[&std::ffi::OsStr]) -> (bool, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
-        .args(args)
-        .output()
-        .expect("run ns-next");
-    (
-        output.status.success(),
-        String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
-        String::from_utf8_lossy(&output.stderr).replace("\r\n", "\n"),
-    )
-}
+mod common;
+use common::{fixture, ns_next, ScratchDir};
 
 #[test]
 fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
-    let dir = temp_dir("arithmetic");
+    let dir = ScratchDir::new("arithmetic");
     let img = dir.join("world.img");
     let (ok, _, err) = ns_next(&[
         "snapshot".as_ref(),
@@ -67,7 +39,7 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
 
 #[test]
 fn inspect_reports_a_debug_variants_source_blob() {
-    let dir = temp_dir("debug-source");
+    let dir = ScratchDir::new("debug-source");
     let img = dir.join("world.img");
     let (ok, _, err) = ns_next(&[
         "snapshot".as_ref(),
@@ -84,7 +56,7 @@ fn inspect_reports_a_debug_variants_source_blob() {
 
 #[test]
 fn inspect_reports_a_corrupt_artifact_rather_than_panicking() {
-    let dir = temp_dir("corrupt");
+    let dir = ScratchDir::new("corrupt");
     let bad = dir.join("bad.img");
     std::fs::write(&bad, b"NSIM\x01\x00\x00\x00").expect("write");
 
@@ -100,7 +72,7 @@ fn inspect_reports_a_corrupt_artifact_rather_than_panicking() {
 /// already maps selector to code id, so naming them costs no new decoding.
 #[test]
 fn inspect_names_every_body_in_the_code_table() {
-    let dir = temp_dir("code-table");
+    let dir = ScratchDir::new("code-table");
     let out = dir.join("app.nsb");
     let (ok, _, err) = ns_next(&[
         "build".as_ref(),
@@ -132,7 +104,7 @@ fn inspect_names_every_body_in_the_code_table() {
 /// to thousands of lines.
 #[test]
 fn inspect_full_renders_every_mixin_and_every_body() {
-    let dir = temp_dir("full");
+    let dir = ScratchDir::new("full");
     let out = dir.join("app.nsb");
     let (ok, _, err) = ns_next(&[
         "build".as_ref(),
