@@ -64,6 +64,16 @@ impl Heap {
         obj.borrow().identity_hash
     }
 
+    /// Overwrites `obj`'s identity hash. `tests/image.rs`'s
+    /// `an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating` is
+    /// the only caller: it forces a live object's hash to one below the
+    /// ceiling by hand, which is the only way to reach
+    /// `advance_identity_hash_past`'s overflow guard without actually
+    /// allocating four billion objects first.
+    pub fn set_identity_hash(&mut self, obj: &ObjRef, hash: u32) {
+        obj.borrow_mut().identity_hash = hash;
+    }
+
     pub fn class_of_obj(&self, obj: &ObjRef) -> ClassRef {
         obj.borrow().class.clone()
     }
