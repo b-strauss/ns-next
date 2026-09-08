@@ -32,7 +32,7 @@ That guarantee is about **decoding**. `load` on a stateless binary instantiates
 and sends the recorded entry with no flag at all, so starting one executes its
 code with the same exposure as running the equivalent source -- recursion depth
 bounded only by the native stack until the VM is trampolined; see
-[execution.md](execution.md), "Planned: trampolined sends".
+[execution.md](execution.md), "Planned: activations on a stack, reified on demand".
 
 ## Two artifacts
 
@@ -397,8 +397,12 @@ reified on the heap and implicitly on the Rust stack. Only the first can be
 serialized; only the second can be resumed. There is no yield path out of
 `run_code` and no re-entry point that would continue a decoded frame at its `pc`.
 
-The fix is the trampoline described in [execution.md](execution.md), where the
-moving collector needs it anyway. `frame.pc` being stored only at sends,
+The fix is the explicit activation stack described in
+[execution.md](execution.md), which Milestone 4 builds for the cost of the
+present representation rather than for this. Suspending then means reifying the
+whole stack, which is the same operation a debugger performs on the frames it
+touches — and the same operation upstream performs, since Cog flushes its stack
+zone to contexts before taking a snapshot. `frame.pc` being stored only at sends,
 `MakeClosure` and `NonLocalReturn` is *not* an obstacle: those are exactly the
 safepoints, and a suspension could only happen at a send boundary.
 

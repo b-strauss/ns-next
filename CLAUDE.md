@@ -61,8 +61,9 @@ That guarantee covers **decoding**. `ns-next load` on a stateless binary instant
 and sends the recorded entry with no flag at all, so loading one *runs its code* --
 with the same exposure as running the equivalent source, including that recursion
 depth is bounded only by the native stack until the VM is trampolined (see
-`docs/design/execution.md`, "Planned: trampolined sends"). A mutated binary that
-decodes cleanly can still abort while executing, and that is not a decoder defect.
+`docs/design/execution.md`, "Planned: activations on a stack, reified on
+demand"). A mutated binary that decodes cleanly can still abort while executing,
+and that is not a decoder defect.
 
 **A wire tag is assigned once and never renumbered or reused.** Every instruction,
 literal and graph-section tag is declared in `crates/ns-runtime/src/image/opcodes.rs`

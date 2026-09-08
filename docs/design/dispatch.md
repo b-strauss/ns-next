@@ -196,6 +196,17 @@ This is recorded here rather than derived later because the obvious key — the
 class object — is the wrong one, and picking it would produce a cache that
 never hits.
 
+**Caches come after the representation change, not before it.** A cache removes
+the lookup and can carry the compiled body along with it, retiring the per-call
+`HashMap` lookup in `invoke_method`. It does not touch the ~68 ns an activation
+costs to build, which is about 41% of a user-method send — see
+[execution.md](execution.md)'s measurements. Wiring caches up first would
+optimize the half of a send that sits on top of a fixed cost the same milestone
+is about to remove, so the arena and the activation stack go first and the
+caches land on the cheaper representation. Each cache also carries a dependency
+key, per [liveness-and-reflection.md](liveness-and-reflection.md); the key is the
+application, for the same reason the guard is.
+
 ## Decisions
 
 - **Three lookup algorithms, not one.** A single "walk methods then superclass"

@@ -41,8 +41,11 @@ iteratively, because an image controls both depths.
 
 ## Planned: an arena, handles, and a real collector
 
-Replacing `Rc<RefCell<_>>` with an arena, a tagged machine-word value
-representation and a real collector is the next substantial change here.
+Replacing `Rc<RefCell<_>>` with an arena, a handle-shaped value representation and
+a real collector is the next substantial change here, and it is the largest single
+item in Milestone 4. It is one change, not three: the object representation, the
+activation representation and the root discipline are decided together because
+each one's answer constrains the other two.
 
 **The collector has to move objects.** `become:`-style identity swap and object
 forwarding are requirements, not conveniences: adding an instance variable to a
@@ -51,52 +54,68 @@ atomically swaps identity. That rules out a conservative non-moving collector,
 which makes `become:` hard. A copying or compacting collector can implement it,
 and MMTk supports object forwarding.
 
-### What a moving collector costs each engine
+### The representation: an arena of typed handles
 
-A moving collector must not only *find* every root but *update* it, and the two
-engines are in very different positions.
+The model is the Nova JavaScript engine's: a `Value` is a Rust enum carrying
+either its data inline or a 32-bit index into a typed arena, with no `Rc` and no
+`RefCell` anywhere in it. Nova is the useful comparison rather than V8 because it
+solves this problem in Rust, where the borrow checker is available as an
+enforcement mechanism and a C++ engine's conventions are not.
 
-**The VM keeps every intermediate in the frame.** `run_code` writes each result
-through `write_local` into `frame.temps`, and frames are heap objects chained by
-`sender` and `home`. A precise collector reaches every root of a running
-activation by walking that chain — which is what the reified frame chain exists
-for.
+What that removes is not an abstract elegance but the measured cost of the
+present model, itemized in [execution.md](execution.md)'s measurements section:
+three heap allocations per activation, reference-count traffic on every frame
+link and every shared `Rc`, a `RefCell` borrow on every single register read and
+write, and pointer-chasing where a contiguous array would do.
 
-**The tree-walker keeps intermediates in Rust locals.** `eval_expr` returns a
-value up the Rust stack, a dynamic array literal collects into a `Vec<Value>`
-there, and `eval_send` holds the evaluated receiver in a Rust variable across
-`eval_args`, which allocates, and then holds receiver and arguments across the
-send itself. Under `Rc` those references keep their objects alive and never need
-updating. Under a moving collector they are roots it cannot see and addresses it
-cannot rewrite.
+An arena is also closer to the shape the image format already writes. Handles are
+architecture-neutral by construction, which is requirement 4 in
+[liveness-and-reflection.md](liveness-and-reflection.md), and identity hashes
+already come from a counter rather than an address, so nothing about identity
+depends on where an object sits.
 
-Keeping the tree-walker past that point is possible but not free: it needs a
-handle layer — a shadow stack in the shape of V8's `HandleScope` or JNI local
-references — registering every intermediate in a heap-side list the collector
-scans and fixes up. The mechanism is well understood. The cost is that the
-discipline has to hold across all of `interpreter/eval.rs` and
-`interpreter/instantiate.rs`, be re-established on every later change, and that a
-missed handle is heap corruption visible only under collection pressure.
+### The root discipline: checked by the compiler, not by convention
 
-The rest of the swap is not the problem: an arena and handles hit both engines
-the same way, and the shared orchestration in `interpreter/` is ported once.
+A moving collector must not only *find* every root but *update* it, and roots
+held in Rust locals across a collection safepoint are the hard case: under `Rc`
+those references keep their objects alive and never need updating, and under a
+moving collector they are roots the collector cannot see and addresses it cannot
+rewrite.
 
-### Decision: the tree-walker is kept and gets the handle layer
+The mechanism is Nova's `GcScope`/`NoGcScope`: a handle carries a lifetime that
+must match the current scope, `NoGcScope` is the proof that no collection can
+happen in a region, and a value that must survive a safepoint is scoped
+explicitly. Holding an unrooted handle across a safepoint is then a **compile
+error** rather than heap corruption that only appears under collection pressure.
+It costs nothing at run time — the lifetimes are gone after monomorphization —
+and its price is ergonomic: Nova's own experience report is largely a complaint
+about the resulting `unbind()` noise. That price is accepted deliberately.
 
-The extra engineering was weighed and accepted deliberately. Two independent
-engines that must agree byte for byte are a verification property worth a
-permanent cost, and V8 is the existence proof that an interpreter can hold its
-roots in handles next to a moving collector without the design coming apart.
+This is what lets the two engines keep their present shape. The tree-walker holds
+intermediates in Rust locals — `eval_expr` returns values up the Rust stack, a
+dynamic array literal collects into a `Vec<Value>` there, and `eval_send` holds a
+receiver across argument evaluation, which allocates. Under a checked scope
+discipline that is expressible and verified, rather than a discipline that has to
+be re-established by hand on every later change. The same applies to every native
+in `builtins/` that holds values across an allocation.
 
-So this is not a choice between the collector and the tree-walker. Root
-discipline is implemented for both: the reified frame chain is the root set for
-the VM, a handle layer is the root set for the tree-walker's Rust-stack
-intermediates, and the collector scans and updates both.
+### Considered and rejected: conservative stack scanning
 
-This does not extend to images. The tree-walker executes the AST, so it runs only
-when execution starts from `.ns` source, where the AST is present by
-construction. A loaded image runs bytecode. That asymmetry is the boundary of
-what an AST engine can do, not a step toward retiring it.
+Scanning the Rust stack conservatively and *pinning* whatever ambiguous words
+point at is the other way to avoid a handle discipline, and it is what V8 has
+been moving toward: it ships in Oilpan, and pages with incoming ambiguous edges
+go into a quarantine that is not evacuated. It was rejected here for two reasons.
+Pinning is exactly the capability `become:` needs to not have, and after a decade
+of work it is still not deployed in V8's own JavaScript heap — which is a fair
+signal about how much of the difficulty is hidden.
+
+### What this leaves for the collector itself
+
+With the arena in place and roots checked, the collector's own root set is two
+things: the bootstrap, standing in for upstream's object store, and the
+activation stack described in [execution.md](execution.md) — a contiguous,
+precisely typed array rather than a pointer-chased chain of individually
+allocated frames.
 
 ### Open: what the collector owns
 
@@ -108,21 +127,22 @@ what an AST engine can do, not a step toward retiring it.
   because every re-application mints a fresh entry that nothing evicts. That is
   the same knot as `Mixin`'s lack of interior mutability; see
   [liveness-and-reflection.md](liveness-and-reflection.md).
-- **A trampolined VM is a prerequisite**, so that a running activation's roots
-  are reachable from the frame chain alone rather than from the Rust stack. See
-  [execution.md](execution.md).
-
-Upstream's own collector takes exactly two roots — the object store and the
-current activation — which is the shape this one should end up with too, with
-the bootstrap standing in for the object store.
+- **Whether a handle is globally unique or arena-relative.** Actors are designed
+  to get one heap each so that pauses stay local
+  ([liveness-and-reflection.md](liveness-and-reflection.md)), which makes a
+  handle's encoding a question that milestone will ask. Nothing in Milestone 4
+  needs the answer; it needs only to leave room for one.
 
 ## Decisions
 
 - **Identity hashes come from a counter, not an address**, so identity survives
   moving and snapshotting.
 - **A moving collector, not a conservative one**, because `become:` and instance
-  migration are requirements.
+  migration are requirements. Conservative scanning with pinning was considered
+  and rejected on the same grounds.
 - **Iterative `Drop` rather than a depth ceiling**, because a ceiling would
   exclude valid programs and the input controls the depth either way.
-- **The tree-walker survives the collector** with its own handle-based root
-  discipline.
+- **The tree-walker survives the collector.** Its Rust-held intermediates are
+  covered by the scope discipline, not by retiring the engine.
+- **The root discipline is enforced by the type system**, not by convention, and
+  the ergonomic cost of that is accepted rather than traded away.

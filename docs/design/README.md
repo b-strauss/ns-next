@@ -33,13 +33,13 @@ that cannot name its code is describing an intention, and should say so.
 | Aspect | Document | Status | Planned next |
 |---|---|---|---|
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
-| Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | arena and handles |
+| Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | arena, handles, stack activations |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | inline-cache slots wired up |
-| Activations, both engines, the VM loop | [execution.md](execution.md) | Built | trampolined sends, JIT tiers |
-| Object lifetime, identity, collection | [memory.md](memory.md) | Partial | a real collector |
+| Activations, both engines, the VM loop | [execution.md](execution.md) | Built | activations on a stack, JIT tiers |
+| Object lifetime, identity, collection | [memory.md](memory.md) | Partial | an arena, checked roots, a collector |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
-| Builtins and the platform | [core-library.md](core-library.md) | Partial | widened on demand |
+| Builtins and the platform | [core-library.md](core-library.md) | Partial | the leaf/callback split |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
 
 ## Architecture
