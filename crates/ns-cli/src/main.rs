@@ -972,6 +972,24 @@ fn cmd_inspect(artifact: &Path) -> ExitCode {
 /// record it, breaking the byte-identity guarantee with `snapshot` that this
 /// check exists to preserve (`docs/design/image-format.md`, "The consistency
 /// guarantee, stated precisely").
+///
+/// Walking past the root level (`app = a.superclass.clone()`) is safe only
+/// because of an invariant this function relies on but does not check:
+/// every non-own mixin reachable from a root class's superclass chain today
+/// is a builtin's, and a builtin mixin is `Mixin::empty()` -- empty
+/// `methods`, empty `nested` -- since native methods dispatch through
+/// `builtins::dispatch_native`, never through `Mixin.methods`, and
+/// cross-module inheritance does not exist yet. So the ancestor branch can
+/// never actually return `true` today; the loop climbs `superclass` only to
+/// stay correct if a root class's chain ever grows past one level of
+/// `Mixin::empty()`. If ns-next later gains cross-module inheritance, or a
+/// core-library superclass written in Newspeak, an ancestor mixin could
+/// carry real `methods`/`nested` entries that `mixins::encode` never
+/// interns for *this* module's symbol table (it only walks the module's own
+/// declaration tree) -- and this check would then accept a selector absent
+/// from that table, silently breaking the guarantee above instead of
+/// refusing the build. No test catches that today: every fixture here
+/// inherits directly from `Object`.
 fn root_class_answers(class: &ns_runtime::ClassRef, selector: &str) -> bool {
     let sym = ns_runtime::Symbol::intern(selector);
     let mut app = match &class.borrow().data {

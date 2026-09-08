@@ -297,7 +297,10 @@ identical in a `build` artifact and a `snapshot` artifact only when both hold:
 (a) is enforced, by the build-time entry validation described below under
 "Choosing the entry" — a later task adds it to `ns-next build`, and once it
 does, a selector that survives it was necessarily interned while encoding the
-declaration that defines it. (b) is not enforced anywhere, is expected to fail
+declaration that defines it. That enforcement is sound only while every
+ancestor mixin in a root class's superclass chain is an empty builtin mixin
+(no cross-module inheritance exists yet); cross-module inheritance would need
+this validation revisited. (b) is not enforced anywhere, is expected to fail
 for an arbitrary program, and is not something this format tries to guarantee
 — a `snapshot` of a world holding a run-time-minted symbol simply disagrees
 with a `build` of the same source from wherever the symbol table diverges
