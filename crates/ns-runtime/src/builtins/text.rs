@@ -9,18 +9,15 @@
 //! long.
 
 use crate::types::*;
-use crate::{Interpreter, Symbol};
+use crate::{Heap, Interpreter, Symbol};
 
 /// Extracts an owned `String` from `arg` if it is a `Str`-payload object
 /// (covers both `String` and `Character` arguments, since they share a
 /// payload representation). `None` for anything else, including `Symbol`
 /// (a distinct payload) and non-`Obj` values.
-fn arg_str(arg: Option<&Value>) -> Option<String> {
+fn arg_str(heap: &Heap, arg: Option<&Value>) -> Option<String> {
     match arg {
-        Some(Value::Obj(obj)) => match &obj.borrow().data {
-            ObjectData::Str(s) => Some(s.clone()),
-            _ => None,
-        },
+        Some(Value::Obj(obj)) => heap.str_value(obj),
         _ => None,
     }
 }
@@ -52,12 +49,10 @@ pub fn dispatch_string(
     let Value::Obj(obj) = &receiver else {
         return None;
     };
-    let ObjectData::Str(s) = &obj.borrow().data else {
-        return None;
-    };
+    let s = interp.heap.str_value(obj)?;
     match selector.as_str() {
         "size" => Some(Ok(Value::SmallInt(s.chars().count() as i64))),
-        "," => Some(match arg_str(args.first()) {
+        "," => Some(match arg_str(&interp.heap, args.first()) {
             Some(other) => Ok(Value::Obj(interp.new_string(format!("{s}{other}")))),
             None => Err(NewspeakError {
                 selector,
@@ -69,10 +64,10 @@ pub fn dispatch_string(
             }),
         }),
         "=" => Some(Ok(Value::Bool(
-            arg_str(args.first()).as_deref() == Some(s.as_str()),
+            arg_str(&interp.heap, args.first()).as_deref() == Some(s.as_str()),
         ))),
-        "asSymbol" => Some(Ok(interp.new_symbol(Symbol::intern(s)))),
-        "printString" => Some(Ok(Value::Obj(interp.new_string(quote_string(s))))),
+        "asSymbol" => Some(Ok(interp.new_symbol(Symbol::intern(&s)))),
+        "printString" => Some(Ok(Value::Obj(interp.new_string(quote_string(&s))))),
         _ => None,
     }
 }
@@ -86,15 +81,11 @@ pub fn dispatch_symbol(
     let Value::Obj(obj) = &receiver else {
         return None;
     };
-    let ObjectData::Sym(sym) = &obj.borrow().data else {
-        return None;
-    };
+    let sym = interp.heap.sym_value(obj)?;
     match selector.as_str() {
         "asString" => Some(Ok(Value::Obj(interp.new_string(sym.as_str().to_string())))),
         "=" => Some(Ok(Value::Bool(match args.first() {
-            Some(Value::Obj(arg_obj)) => {
-                matches!(&arg_obj.borrow().data, ObjectData::Sym(other) if other == sym)
-            }
+            Some(Value::Obj(arg_obj)) => interp.heap.sym_value(arg_obj) == Some(sym),
             _ => false,
         }))),
         "printString" => Some(Ok(Value::Obj(
@@ -113,9 +104,7 @@ pub fn dispatch_character(
     let Value::Obj(obj) = &receiver else {
         return None;
     };
-    let ObjectData::Str(s) = &obj.borrow().data else {
-        return None;
-    };
+    let s = interp.heap.str_value(obj)?;
     // Invariant from `Interpreter::new_character`: this payload is always
     // exactly one `char`. Fall back to `'\0'` rather than panicking if that
     // invariant is ever violated -- never panic on a Newspeak-input path.
@@ -124,7 +113,7 @@ pub fn dispatch_character(
         "asInteger" => Some(Ok(Value::SmallInt(c as i64))),
         "asString" => Some(Ok(Value::Obj(interp.new_string(c.to_string())))),
         "=" => Some(Ok(Value::Bool(
-            arg_str(args.first()).as_deref() == Some(s.as_str()),
+            arg_str(&interp.heap, args.first()).as_deref() == Some(s.as_str()),
         ))),
         _ => None,
     }

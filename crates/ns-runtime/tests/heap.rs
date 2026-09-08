@@ -36,6 +36,15 @@ fn an_array_accessor_on_a_non_array_answers_none_rather_than_panicking() {
 }
 
 #[test]
+fn an_out_of_range_index_answers_none_or_false_rather_than_panicking() {
+    let mut interp = Interpreter::bootstrap();
+    let obj = interp.new_array(vec![Value::SmallInt(1), Value::SmallInt(2)]);
+
+    assert!(interp.heap_ref().array_at(&obj, 99).is_none());
+    assert!(!interp.heap_mut().array_set(&obj, 99, Value::SmallInt(9)));
+}
+
+#[test]
 fn string_and_symbol_accessors_answer_only_for_their_own_shape() {
     let mut interp = Interpreter::bootstrap();
     let s = interp.new_string("hello".to_string());

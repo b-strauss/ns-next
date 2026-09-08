@@ -49,25 +49,22 @@ fn dispatch_common(
         return None;
     };
     match selector.as_str() {
-        "size" => match &obj.borrow().data {
-            ObjectData::Array(items) => Some(Ok(Value::SmallInt(items.len() as i64))),
-            _ => None,
-        },
+        "size" => interp
+            .heap
+            .array_len(obj)
+            .map(|len| Ok(Value::SmallInt(len as i64))),
         "at:" => {
-            let items = match &obj.borrow().data {
-                ObjectData::Array(items) => items.clone(),
-                _ => return None,
-            };
+            let len = interp.heap.array_len(obj)?;
             Some(match args.first() {
                 Some(Value::SmallInt(index)) => {
-                    if *index >= 1 && (*index as usize) <= items.len() {
-                        Ok(items[(*index as usize) - 1].clone())
+                    if *index >= 1 && (*index as usize) <= len {
+                        Ok(interp
+                            .heap
+                            .array_at(obj, (*index as usize) - 1)
+                            .unwrap_or(Value::Nil))
                     } else {
                         Err(Signal::Error(out_of_range(
-                            &receiver,
-                            selector,
-                            *index,
-                            items.len(),
+                            &receiver, selector, *index, len,
                         )))
                     }
                 }
@@ -81,10 +78,7 @@ fn dispatch_common(
         // this whole function's return type must be able to carry `Signal`,
         // not just `NewspeakError`, and this arm's `?` does exactly that.
         "do:" => {
-            let items = match &obj.borrow().data {
-                ObjectData::Array(items) => items.clone(),
-                _ => return None,
-            };
+            let items = interp.heap.array_elements(obj)?;
             let Some(block) = args.first().cloned() else {
                 return Some(Err(Signal::Error(NewspeakError {
                     selector,
@@ -114,10 +108,7 @@ pub fn dispatch_array(
         let Value::Obj(obj) = &receiver else {
             return None;
         };
-        let len = match &obj.borrow().data {
-            ObjectData::Array(items) => items.len(),
-            _ => return None,
-        };
+        let len = interp.heap.array_len(obj)?;
         let index = match args.first() {
             Some(Value::SmallInt(index)) => *index,
             other => {
@@ -132,9 +123,7 @@ pub fn dispatch_array(
             ))));
         }
         let value = args.get(1).cloned().unwrap_or(Value::Nil);
-        if let ObjectData::Array(items) = &mut obj.borrow_mut().data {
-            items[(index as usize) - 1] = value;
-        }
+        interp.heap.array_set(obj, (index as usize) - 1, value);
         return Some(Ok(receiver.clone()));
     }
     dispatch_common(interp, receiver, selector, args, sender)
@@ -151,15 +140,11 @@ pub fn dispatch_ordered_collection(
         let Value::Obj(obj) = &receiver else {
             return None;
         };
-        if !matches!(&obj.borrow().data, ObjectData::Array(_)) {
-            return None;
-        }
+        interp.heap.array_len(obj)?;
         // Matches the reference library's convention: `add:` returns the
         // argument, not the receiver.
         let value = args.first().cloned().unwrap_or(Value::Nil);
-        if let ObjectData::Array(items) = &mut obj.borrow_mut().data {
-            items.push(value.clone());
-        }
+        interp.heap.array_push(obj, value.clone());
         return Some(Ok(value));
     }
     dispatch_common(interp, receiver, selector, args, sender)

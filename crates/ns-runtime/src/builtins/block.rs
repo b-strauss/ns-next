@@ -18,13 +18,7 @@ pub fn dispatch(
     let Value::Obj(obj) = &receiver else {
         return None;
     };
-    let closure = {
-        let borrowed = obj.borrow();
-        let ObjectData::Closure(c) = &borrowed.data else {
-            return None;
-        };
-        c.clone()
-    };
+    let closure = interp.heap.closure_data(obj)?;
     match selector.as_str() {
         "value" | "value:" | "value:value:" | "value:value:value:" => {
             Some(super::call_block(interp, &receiver, args.to_vec(), sender))

@@ -145,10 +145,7 @@ pub(super) fn call_block(
 ) -> EvalResult {
     match block {
         Value::Obj(obj) => {
-            let closure_data = match &obj.borrow().data {
-                ObjectData::Closure(c) => Some(c.clone()),
-                _ => None,
-            };
+            let closure_data = interp.heap.closure_data(obj);
             match closure_data {
                 Some(closure_data) => {
                     let closure = std::rc::Rc::new(closure_data);
