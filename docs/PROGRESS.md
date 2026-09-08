@@ -96,3 +96,19 @@ that date use the old numbering.
 **Design documentation (2026-09-07).** The dated design specs under
 `docs/superpowers/specs/` were folded into the living documents in `docs/design/`
 and removed. Git holds the originals.
+
+**Deferred follow-ups from the artifact-inspection branch (2026-09-08).** The final
+whole-branch review raised these; they were judged real but not merge-blocking, and
+are recorded here rather than lost with the branch's scratch workspace.
+
+- `crates/ns-cli/tests/disasm_snapshots.rs` builds two ad-hoc temporary directories
+  that are never removed. The other CLI test files clean up after themselves.
+- The `fixture` / `temp_dir` / `ns_next` helpers are duplicated between
+  `crates/ns-cli/tests/build_load.rs` and `crates/ns-cli/tests/inspect.rs`. A
+  `tests/common/mod.rs` would hold one copy.
+- Several doc comments in `crates/ns-cli/src/main.rs` went stale as the branch
+  landed: `cmd_load`'s header describes only the stateful path; `factory_args_for`
+  and `class_name` each name two callers where there are now three; and the comment
+  above `cmd_disasm`'s input branch says it holds a value it does not hold.
+- `docs/design/image-format.md`'s "Code:" line omits `opcodes.rs`, which the same
+  document later names as the single source of the wire tag tables.
