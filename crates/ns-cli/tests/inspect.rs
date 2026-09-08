@@ -125,3 +125,44 @@ fn inspect_names_every_body_in_the_code_table() {
         "every code id should be attributed:\n{listing}"
     );
 }
+
+/// `--full` is the `javap -v` of this format: everything the artifact says,
+/// rendered, so a person can follow it end to end from the text alone. The
+/// default stays a table of contents, because a real module's full dump runs
+/// to thousands of lines.
+#[test]
+fn inspect_full_renders_every_mixin_and_every_body() {
+    let dir = temp_dir("full");
+    let out = dir.join("app.nsb");
+    let (ok, _, err) = ns_next(&[
+        "build".as_ref(),
+        fixture("arithmetic.ns").as_os_str(),
+        out.as_os_str(),
+    ]);
+    assert!(ok, "{err}");
+
+    let (ok, brief, err) = ns_next(&["inspect".as_ref(), out.as_os_str()]);
+    assert!(ok, "{err}");
+    let (ok, full, err) = ns_next(&["inspect".as_ref(), out.as_os_str(), "--full".as_ref()]);
+    assert!(ok, "{err}");
+
+    // The default is unchanged by the flag's existence.
+    assert!(brief.contains("code table"), "{brief}");
+    assert!(
+        !brief.contains("SendPublic"),
+        "the default must not disassemble:\n{brief}"
+    );
+
+    // Expanded mixin rows: the slot's name, not just how many there are.
+    assert!(full.contains("result"), "{full}");
+    assert!(full.contains("usingPlatform:/1"), "{full}");
+
+    // Every body, disassembled, labelled with the id the code table names.
+    assert!(full.contains("bodies"), "{full}");
+    assert!(full.contains("SendPublic"), "{full}");
+    assert!(full.contains("InitSlot"), "{full}");
+    assert!(
+        full.len() > brief.len() * 2,
+        "full should be substantially longer"
+    );
+}

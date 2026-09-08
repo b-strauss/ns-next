@@ -16,6 +16,8 @@
 use std::fmt::Write as _;
 
 use crate::bytecode::{CodeKind, CompiledCode};
+use std::rc::Rc;
+
 use crate::image::{decode, mixins, symbols};
 
 /// One named span of the file. `end` is exclusive.
@@ -40,6 +42,13 @@ pub struct Report {
     pub code: Vec<String>,
     /// One line per mixin row: name, slot count, factory, method count.
     pub mixins: Vec<String>,
+    /// The same rows expanded: slot names rather than a count, each method
+    /// against the code id that holds it, the nested declarations by name.
+    /// Rendered only by `render_full`.
+    pub mixin_detail: Vec<String>,
+    /// Every body disassembled, in code-id order. Rendered only by
+    /// `render_full`.
+    pub bodies: Vec<String>,
     pub entry: Option<String>,
     pub total_len: usize,
 }
@@ -53,11 +62,16 @@ pub struct Report {
 /// would be a code id no declaration claims and no body's kind explains, which
 /// is worth showing rather than hiding: `(unnamed)` in the output means the
 /// code table and the mixin table disagree.
-fn attribute_code(decoded: &mixins::Decoded, codes: &[std::rc::Rc<CompiledCode>]) -> Vec<String> {
-    let mut labels = vec![String::new(); codes.len()];
+///
+/// Returned as `(owner, what)` rather than one string because the two views
+/// want different halves: the code table prints both, while a body's own
+/// heading prints only the owner -- `disassemble` already states the kind, and
+/// "initializer code 1 Arithmetic initializer" would say it twice.
+fn attribute_code(decoded: &mixins::Decoded, codes: &[Rc<CompiledCode>]) -> Vec<(String, String)> {
+    let mut labels = vec![(String::new(), String::new()); codes.len()];
     let mut claim = |id: u32, owner: &str, what: &str| {
         if let Some(slot) = labels.get_mut(id as usize) {
-            *slot = format!("{owner}  {what}");
+            *slot = (owner.to_string(), what.to_string());
         }
     };
     for (mixin, code) in decoded.mixins.iter().zip(decoded.code.iter()) {
@@ -76,14 +90,57 @@ fn attribute_code(decoded: &mixins::Decoded, codes: &[std::rc::Rc<CompiledCode>]
         }
     }
     for (label, body) in labels.iter_mut().zip(codes.iter()) {
-        if label.is_empty() {
-            *label = match body.kind {
+        if label.0.is_empty() && label.1.is_empty() {
+            label.1 = match body.kind {
                 CodeKind::Block => "block body".to_string(),
                 _ => "(unnamed)".to_string(),
             };
         }
     }
     labels
+}
+
+/// A mixin row, expanded: everything the table records about one declaration,
+/// with each body named by the code id that holds it so the two views join up.
+fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "{} ({:?})", mixin.name, mixin.access);
+    match &mixin.factory {
+        Some(f) => {
+            let _ = writeln!(out, "      factory   {}/{}", f.selector, f.num_args);
+        }
+        None => {
+            let _ = writeln!(out, "      factory   -");
+        }
+    }
+    if mixin.slots.is_empty() {
+        let _ = writeln!(out, "      slots     -");
+    } else {
+        let names: Vec<String> = mixin.slots.iter().map(|s| s.name.to_string()).collect();
+        let _ = writeln!(out, "      slots     {}", names.join(", "));
+    }
+    for (selector, id) in &code.methods {
+        let _ = writeln!(out, "      method    {selector} -> code {id}");
+    }
+    for (what, id) in [
+        ("initializer", code.initializer),
+        ("superclass clause", code.superclass_clause),
+        ("superclass message", code.superclass_message),
+    ] {
+        if let Some(id) = id {
+            let _ = writeln!(out, "      {what} -> code {id}");
+        }
+    }
+    for nested in &mixin.nested {
+        let _ = writeln!(out, "      nested    {} ({:?})", nested.name, nested.access);
+    }
+    if mixin.class_side.is_some() {
+        // Naming it would print "class side" twice: every class-side mixin
+        // carries that as its name. It is a row of this table in its own
+        // right, so its detail is one row further down.
+        let _ = writeln!(out, "      class side  present");
+    }
+    out
 }
 
 /// Decodes `bytes` far enough to describe it. Every failure is an `Err`, never
@@ -169,7 +226,41 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         end: r.pos(),
         detail: format!("{} mixins", decoded.mixins.len()),
     });
-    let code_lines = attribute_code(&decoded, &table.codes);
+    let attributed = attribute_code(&decoded, &table.codes);
+    let code_lines = attributed
+        .iter()
+        .map(|(owner, what)| {
+            if owner.is_empty() {
+                what.clone()
+            } else {
+                format!("{owner}  {what}")
+            }
+        })
+        .collect::<Vec<_>>();
+    let mixin_detail = decoded
+        .mixins
+        .iter()
+        .zip(decoded.code.iter())
+        .map(|(m, c)| expand_mixin(m, c))
+        .collect::<Vec<_>>();
+    // Disassembled up front rather than on demand: a body is a few hundred
+    // instructions at most, and carrying the strings keeps `Report` a plain
+    // value that a caller can render either way without holding the decoded
+    // tables alive alongside it.
+    let bodies = table
+        .codes
+        .iter()
+        .zip(attributed.iter())
+        .enumerate()
+        .map(|(id, (body, (owner, _)))| {
+            let heading = if owner.is_empty() {
+                format!("code {id}")
+            } else {
+                format!("code {id}  {owner}")
+            };
+            crate::bytecode::disassemble(body.as_ref(), &heading)
+        })
+        .collect::<Vec<_>>();
 
     at = r.pos();
 
@@ -224,6 +315,8 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         symbols: symbol_list,
         code: code_lines,
         mixins: mixin_lines,
+        mixin_detail,
+        bodies,
         entry: entry.map(|s| s.to_string()),
         total_len: bytes.len(),
     })
@@ -271,6 +364,47 @@ pub fn render(report: &Report) -> String {
     let _ = writeln!(out, "\nmixins ({})", report.mixins.len());
     for (i, m) in report.mixins.iter().enumerate() {
         let _ = writeln!(out, "  {i:>4} {m}");
+    }
+
+    out
+}
+
+/// Everything the artifact says, rendered.
+///
+/// The default `render` is a table of contents; this is the whole book. It
+/// replaces the one-line mixin rows with their expanded form and appends every
+/// body disassembled, so an artifact can be followed end to end from the text
+/// without opening the file again. Kept behind a flag rather than made the
+/// default because a real module runs to thousands of lines -- 281 bodies for
+/// one corpus module -- and the table of contents is what a reader usually
+/// wants first.
+pub fn render_full(report: &Report) -> String {
+    let mut out = String::new();
+    // The head and the sections are identical either way; only what follows
+    // the section table differs, so the shared part is not duplicated here.
+    let brief = render(report);
+    let head_end = brief.find("\nsymbols (").unwrap_or(brief.len());
+    out.push_str(&brief[..head_end]);
+
+    let _ = writeln!(out, "\nsymbols ({})", report.symbols.len());
+    for (i, s) in report.symbols.iter().enumerate() {
+        let _ = writeln!(out, "  {i:>4} {s}");
+    }
+
+    let _ = writeln!(out, "\ncode table ({} bodies)", report.code.len());
+    for (i, c) in report.code.iter().enumerate() {
+        let _ = writeln!(out, "  {i:>4} {c}");
+    }
+
+    let _ = writeln!(out, "\nmixins ({})", report.mixin_detail.len());
+    for (i, m) in report.mixin_detail.iter().enumerate() {
+        let _ = writeln!(out, "  {i:>4} {m}");
+    }
+
+    let _ = writeln!(out, "\nbodies ({})", report.bodies.len());
+    for body in &report.bodies {
+        let _ = writeln!(out);
+        out.push_str(body);
     }
 
     out
