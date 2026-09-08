@@ -58,8 +58,8 @@ pub fn dispatch_string(
                 selector,
                 receiver: receiver.clone(),
                 message: format!(
-                    "String concatenation (,) requires a String argument, got {:?}",
-                    args.first()
+                    "String concatenation (,) requires a String argument, got {}",
+                    interp.heap.describe_arg(args.first())
                 ),
             }),
         }),

@@ -220,6 +220,35 @@ fn ordered_collection_at_out_of_range_is_a_newspeak_error_not_a_panic() {
 }
 
 #[test]
+fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
+    // Regression: `not_an_integer`'s message used to `{:?}`-format the
+    // argument. A `Value::Obj` there recurses through `Object`'s
+    // self-referential bootstrap class until the stack gives out, so the
+    // process aborted instead of reporting. Every existing `at:` test here
+    // passed a `SmallInt` index, which formats harmlessly, which is why the
+    // defect survived.
+    let mut interp = Interpreter::bootstrap();
+    let bindings = Rc::new(std::collections::HashMap::new());
+    let receiver = Value::Obj(interp.new_array(vec![Value::SmallInt(1)]));
+    let index = Value::Obj(interp.new_string("not an integer".to_string()));
+
+    let result = interp.send(
+        receiver,
+        Symbol::intern("at:"),
+        vec![index],
+        &bindings,
+        None,
+    );
+
+    let err = expect_error(result, "{1} at: 'not an integer'");
+    assert!(
+        err.message.contains("requires an Integer index"),
+        "unexpected message: {}",
+        err.message
+    );
+}
+
+#[test]
 fn block_value_invokes_a_zero_arg_closure() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^[42] value )\n) : ()";
     let (mut interp, class, resolved) = load(src);

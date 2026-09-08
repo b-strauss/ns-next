@@ -60,3 +60,51 @@ fn is_class_distinguishes_a_class_object_from_an_instance() {
     assert!(!interp.heap_ref().is_class(&s));
     assert!(interp.heap_ref().is_class(&class));
 }
+
+/// `describe` is the only sanctioned way to put a `Value` into an error
+/// message (never `{:?}` -- see `docs/design/memory.md`'s "The seam" and
+/// `heap.rs`'s doc comment on the method). Each shape must produce its own
+/// distinct, non-empty text, or two different failures would read
+/// identically to a user.
+#[test]
+fn describe_renders_a_distinct_non_empty_text_per_value_shape() {
+    let mut interp = Interpreter::bootstrap();
+    let s = Value::Obj(interp.new_string("hi".to_string()));
+    let arr = Value::Obj(interp.new_array(vec![Value::SmallInt(1)]));
+
+    let nil = interp.heap_ref().describe(&Value::Nil);
+    let small_int = interp.heap_ref().describe(&Value::SmallInt(42));
+    let string = interp.heap_ref().describe(&s);
+    let array = interp.heap_ref().describe(&arr);
+
+    let all = [&nil, &small_int, &string, &array];
+    for text in all {
+        assert!(!text.is_empty(), "description must not be empty");
+    }
+    for (i, a) in all.iter().enumerate() {
+        for (j, b) in all.iter().enumerate() {
+            if i != j {
+                assert_ne!(a, b, "descriptions must be distinct per shape");
+            }
+        }
+    }
+}
+
+#[test]
+fn describe_arg_none_names_the_absence_of_an_argument() {
+    let interp = Interpreter::bootstrap();
+    let text = interp.heap_ref().describe_arg(None);
+    assert!(!text.is_empty());
+    // Must not be confusable with a real value's description.
+    assert_ne!(text, interp.heap_ref().describe(&Value::Nil));
+}
+
+#[test]
+fn describe_arg_some_matches_describe_of_the_same_value() {
+    let interp = Interpreter::bootstrap();
+    let v = Value::SmallInt(7);
+    assert_eq!(
+        interp.heap_ref().describe_arg(Some(&v)),
+        interp.heap_ref().describe(&v)
+    );
+}

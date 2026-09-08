@@ -62,6 +62,32 @@ fn string_concatenation_with_a_non_string_argument_is_a_newspeak_error_not_a_pan
 }
 
 #[test]
+fn concatenating_a_string_with_an_object_is_an_error_not_a_stack_overflow() {
+    // Regression: this message used to `{:?}`-format the argument. A
+    // `Value::Obj` there recurses through `Object`'s self-referential
+    // bootstrap class until the stack gives out, so the process aborted
+    // instead of reporting. Every existing test here passed a `SmallInt`,
+    // which formats harmlessly, which is why the defect survived.
+    let mut interp = Interpreter::bootstrap();
+    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
+
+    let a = Value::Obj(interp.new_string("foo".to_string()));
+    let arg = Value::Obj(interp.new_array(vec![]));
+
+    let result = interp.send(a, Symbol::intern(","), vec![arg], &bindings, None);
+
+    match result {
+        Err(Signal::Error(e)) => assert!(
+            e.message.contains("requires a String argument"),
+            "unexpected message: {}",
+            e.message
+        ),
+        Ok(v) => panic!("expected a NewspeakError for 'foo' , anArray, got Ok({v:?})"),
+        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
+    }
+}
+
+#[test]
 fn string_equality_compares_payloads() {
     let mut interp = Interpreter::bootstrap();
     let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());

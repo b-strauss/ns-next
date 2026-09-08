@@ -136,6 +136,51 @@ impl Heap {
             _ => None,
         }
     }
+
+    /// Renders a value for a user-facing error message.
+    ///
+    /// Never `Debug`-format a `Value` instead: `Object`'s bootstrap class is
+    /// its own `.class`, so `Debug` on a `Value::Obj` recurses until the
+    /// stack gives out. Every caller of this is building the message of a
+    /// `NewspeakError`, which reaches stderr, so that recursion turns a
+    /// reportable program error into a process abort.
+    pub fn describe(&self, value: &Value) -> String {
+        match value {
+            Value::Nil => "nil".to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::SmallInt(n) => n.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::Obj(obj) => match &obj.borrow().data {
+                ObjectData::Str(s) => format!("the String {s:?}"),
+                ObjectData::Sym(s) => format!("the Symbol #{s}"),
+                ObjectData::Array(items) => format!("an Array of {}", items.len()),
+                ObjectData::Closure(_) => "a Block".to_string(),
+                ObjectData::Class(data) => {
+                    format!("the class {}", data.application.mixin.name)
+                }
+                ObjectData::Instance(_) => match &obj.borrow().class.borrow().data {
+                    ObjectData::Class(data) => {
+                        format!("an instance of {}", data.application.mixin.name)
+                    }
+                    // `types.rs`'s `ClassRef` doc: every `Object::class` is
+                    // an `ObjRef` whose own `data` is `ObjectData::Class`,
+                    // by convention rather than by the type system. This arm
+                    // exists only so the match is total, not because a
+                    // conforming object can reach it.
+                    _ => "an object".to_string(),
+                },
+            },
+        }
+    }
+
+    /// The `Option` form every one of these error constructors needs, so the
+    /// `map_or` is not written out three times.
+    pub fn describe_arg(&self, got: Option<&Value>) -> String {
+        match got {
+            Some(v) => self.describe(v),
+            None => "no argument".to_string(),
+        }
+    }
 }
 
 #[cfg(test)]

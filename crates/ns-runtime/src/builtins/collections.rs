@@ -14,7 +14,7 @@
 
 use crate::interpreter::{EvalResult, Signal};
 use crate::types::*;
-use crate::{Interpreter, Symbol};
+use crate::{Heap, Interpreter, Symbol};
 
 fn out_of_range(receiver: &Value, selector: Symbol, index: i64, len: usize) -> NewspeakError {
     NewspeakError {
@@ -24,11 +24,19 @@ fn out_of_range(receiver: &Value, selector: Symbol, index: i64, len: usize) -> N
     }
 }
 
-fn not_an_integer(receiver: &Value, selector: Symbol, got: Option<&Value>) -> NewspeakError {
+fn not_an_integer(
+    heap: &Heap,
+    receiver: &Value,
+    selector: Symbol,
+    got: Option<&Value>,
+) -> NewspeakError {
     NewspeakError {
         selector,
         receiver: receiver.clone(),
-        message: format!("{selector} requires an Integer index, got {got:?}"),
+        message: format!(
+            "{selector} requires an Integer index, got {}",
+            heap.describe_arg(got)
+        ),
     }
 }
 
@@ -68,7 +76,12 @@ fn dispatch_common(
                         )))
                     }
                 }
-                other => Err(Signal::Error(not_an_integer(&receiver, selector, other))),
+                other => Err(Signal::Error(not_an_integer(
+                    &interp.heap,
+                    &receiver,
+                    selector,
+                    other,
+                ))),
             })
         }
         // Task 12 fix: `do:` invokes its block argument via `call_block`,
@@ -113,7 +126,10 @@ pub fn dispatch_array(
             Some(Value::SmallInt(index)) => *index,
             other => {
                 return Some(Err(Signal::Error(not_an_integer(
-                    &receiver, selector, other,
+                    &interp.heap,
+                    &receiver,
+                    selector,
+                    other,
                 ))))
             }
         };

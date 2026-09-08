@@ -31,18 +31,24 @@
 //! which was actively misleading.
 
 use crate::types::*;
-use crate::{Interpreter, Symbol};
+use crate::{Heap, Interpreter, Symbol};
 
 /// A mixed-type numeric operation (see this module's known-gap note). Kept
 /// distinct from the overflow error below so the message never claims an
 /// overflow that did not happen.
-fn type_mismatch(receiver: &Value, selector: Symbol, got: Option<&Value>) -> NewspeakError {
+fn type_mismatch(
+    heap: &Heap,
+    receiver: &Value,
+    selector: Symbol,
+    got: Option<&Value>,
+) -> NewspeakError {
     NewspeakError {
         selector,
         receiver: receiver.clone(),
         message: format!(
             "{selector} requires a numeric argument of the receiver's own type \
-             (Milestone 1 has no Integer/Float coercion), got {got:?}"
+             (Milestone 1 has no Integer/Float coercion), got {}",
+            heap.describe_arg(got)
         ),
     }
 }
@@ -60,11 +66,15 @@ pub fn dispatch_integer(
         Some(Value::SmallInt(m)) => Some(*m),
         _ => None,
     };
-    let mismatch = |op: &str| type_mismatch(&receiver, Symbol::intern(op), args.first());
+    let mismatch =
+        |op: &str| type_mismatch(&interp.heap, &receiver, Symbol::intern(op), args.first());
     let overflow = |op: &str| NewspeakError {
         selector: Symbol::intern(op),
         receiver: Value::SmallInt(n),
-        message: format!("Integer overflow computing {n} {op} {:?}", args.first()),
+        message: format!(
+            "Integer overflow computing {n} {op} {}",
+            interp.heap.describe_arg(args.first())
+        ),
     };
     // `+`/`-`/`*`: a non-Integer argument is a type mismatch; only a genuine
     // `checked_*` failure is an overflow.
@@ -133,7 +143,8 @@ pub fn dispatch_float(
         Some(Value::SmallInt(y)) => Some(*y as f64),
         _ => None,
     };
-    let mismatch = |op: &str| type_mismatch(&receiver, Symbol::intern(op), args.first());
+    let mismatch =
+        |op: &str| type_mismatch(&interp.heap, &receiver, Symbol::intern(op), args.first());
     let arith = |op: &str, f: fn(f64, f64) -> f64| match arg_float() {
         None => Err(mismatch(op)),
         Some(y) => Ok(Value::Float(f(x, y))),
