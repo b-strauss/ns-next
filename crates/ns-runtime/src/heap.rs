@@ -46,7 +46,7 @@ impl Heap {
     /// Moves the counter past everything an image brought with it. Never
     /// moves it backwards -- a lower maximum from a second load would
     /// otherwise let a fresh allocation collide with a decoded object.
-    pub fn advance_identity_hash_past(&mut self, max: u32) {
+    pub(crate) fn advance_identity_hash_past(&mut self, max: u32) {
         if self.next_identity_hash <= max {
             self.next_identity_hash = max.saturating_add(1);
         }
@@ -135,5 +135,29 @@ impl Heap {
             ObjectData::Closure(c) => Some(c.clone()),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_hashes_are_monotonic_and_start_at_one() {
+        let mut heap = Heap::new();
+        assert_eq!(heap.alloc_identity_hash(), 1);
+        assert_eq!(heap.alloc_identity_hash(), 2);
+        assert_eq!(heap.alloc_identity_hash(), 3);
+    }
+
+    #[test]
+    fn advancing_past_a_maximum_never_moves_the_counter_backwards() {
+        let mut heap = Heap::new();
+        heap.advance_identity_hash_past(10);
+        assert_eq!(heap.alloc_identity_hash(), 11);
+        // A lower maximum must not rewind: an image's ids and freshly
+        // allocated ones would then collide.
+        heap.advance_identity_hash_past(3);
+        assert_eq!(heap.alloc_identity_hash(), 12);
     }
 }

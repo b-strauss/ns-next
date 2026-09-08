@@ -2,28 +2,8 @@
 //! contract, not about what sits behind it -- which is the point of the
 //! seam.
 
-use ns_runtime::heap::Heap;
 use ns_runtime::types::Value;
 use ns_runtime::Interpreter;
-
-#[test]
-fn identity_hashes_are_monotonic_and_start_at_one() {
-    let mut heap = Heap::new();
-    assert_eq!(heap.alloc_identity_hash(), 1);
-    assert_eq!(heap.alloc_identity_hash(), 2);
-    assert_eq!(heap.alloc_identity_hash(), 3);
-}
-
-#[test]
-fn advancing_past_a_maximum_never_moves_the_counter_backwards() {
-    let mut heap = Heap::new();
-    heap.advance_identity_hash_past(10);
-    assert_eq!(heap.alloc_identity_hash(), 11);
-    // A lower maximum must not rewind: an image's ids and freshly
-    // allocated ones would then collide.
-    heap.advance_identity_hash_past(3);
-    assert_eq!(heap.alloc_identity_hash(), 12);
-}
 
 #[test]
 fn array_accessors_read_and_write_through_the_seam() {
