@@ -1,9 +1,10 @@
 # Image format — serialization and deployment artifacts
 
-> **Status:** partial. The stateful image is built and round-trips; the stateless
-> binary is designed and not built.
+> **Status:** built. Both artifacts round-trip, and both can be inspected without
+> being loaded.
 > **Code:** `crates/ns-runtime/src/image/` — `mod.rs`, `encode.rs`, `decode.rs`,
-> `mixins.rs`, `symbols.rs`. CLI: `ns-next snapshot`, `ns-next load`.
+> `mixins.rs`, `symbols.rs`, `inspect.rs`. CLI: `ns-next snapshot`, `ns-next load`,
+> `ns-next build`, `ns-next inspect`.
 
 ## Principles
 
@@ -33,7 +34,7 @@ what is important is that you do not have just an image"
 ([An Image Problem](https://gbracha.blogspot.com/2009/10/image-problem.html)) —
 there are two:
 
-| | **Image** (built) | **Stateless binary** (planned) |
+| | **Image** | **Stateless binary** |
 |---|---|---|
 | Contains | code, structure, heap, reachable activations | code and structure only |
 | Produced by | `snapshot`, after instantiation | `build`, before instantiation |
@@ -213,39 +214,36 @@ the "bound any recursion whose depth the input controls" case. Symbol ids, mixin
 ids, class-object references, slot counts and arities are all validated before
 first use.
 
-**Known gap:** `load` does not check that the byte stream is exhausted when the
-last section has been read. `Reader::remaining()` exists but serves only as an
-allocation bound, so trailing bytes are silently ignored. With two artifact
-shapes that becomes a confusion vector, and the stateless-binary work fixes it.
+**Trailing bytes are refused, not ignored.** `load` checks that the byte stream
+is exhausted once the last section has been read and returns
+`DecodeError::TrailingBytes` if not. With two artifact shapes sharing one
+format, an unchecked tail would let a binary with a graph section appended — or
+a truncated, then padded, image — decode as something other than what it is;
+see `a_binary_with_a_graph_appended_is_refused` in `crates/ns-runtime/tests/image.rs`.
 
-## Planned: reading an artifact
+## Reading an artifact
 
-**You cannot presently look inside an image at all.** `disasm` takes a `.ns`
-file, compiles it, and prints the result; it cannot disassemble the bytecode that
-is actually in an artifact. `load --print-source` returns the debug variant's
-`.ns` text, not the file's structure. For anything else you have bytes.
+`disasm` accepts an artifact as well as a `.ns` file: the same decoder that
+`load` uses produces a `CompiledModule`, and `disasm` formats its `Instr`s
+exactly as it does for a freshly compiled one. `ns-next inspect <artifact>`
+prints a structural listing instead — header flags, section offsets, the
+symbol table, the mixin table (name, slot count, factory selector, method
+count), and object/frame counts — without instantiating or running anything.
+`load --print-source` still only returns the debug variant's `.ns` text; for
+anything else, `inspect` is the tool.
 
-That asymmetry gets worse with the stateless binary, whose entire purpose is to be
-shipped **without** source: the one tool that prints bytecode would require the
-thing the artifact was built to do without.
+This exists because the stateless binary's whole purpose is to ship **without**
+source: the one tool that prints bytecode would otherwise require the thing the
+artifact was built to do without. It also paid for itself in the binary's own
+tests: when the prefix-equality check between `build` and `snapshot` fails, a
+differing byte offset says nothing on its own, and a structural diff says
+exactly what moved; and the claim that the platform is cut out of an artifact,
+previously verifiable only by reading the encoder, is now verifiable against
+the artifact itself.
 
-Two additions, both wiring rather than new mechanism, and **this is the first
-piece of work**, ahead of the binary itself:
-
-- `disasm` accepts an artifact as well as a `.ns` file. The decoder already
-  produces a `CompiledModule` and `disasm` already formats `Instr`.
-- A structural listing: header flags, sections with their offsets, the symbol
-  table, the mixin table, class objects, and object and frame counts.
-
-It comes first because the binary's own tests need it. When the prefix-equality
-check fails, a differing byte offset says nothing and a structural diff says
-exactly what moved. And the claim that the platform is cut out of an artifact is
-today verifiable only by reading the encoder; with a listing it is verifiable
-against the artifact.
-
-**One-way only. There will be no text format that can be loaded back.** That
-would be a second encoder and decoder pair to keep in step with the binary one —
-the drift shape this project has already paid for twice, in two engines that must
+**One-way only. There is no text format that can be loaded back.** That would
+be a second encoder and decoder pair to keep in step with the binary one — the
+drift shape this project has already paid for twice, in two engines that must
 agree and in two copies of the tag table. The argument that would justify it is
 hand-authoring test images, and that need is already met differently: the
 untrusted-input tests take real images and corrupt them at located offsets, which
@@ -261,7 +259,7 @@ exercises real structures rather than the ones someone thought to write out.
 Part of why "export back to `.ns`" looks large is that the easy half gets counted
 into it. It is not in it.
 
-## Planned: the stateless binary
+## The stateless binary
 
 `ns-next build <file.ns> <out> [--entry SEL] [--debug-source]` runs the pipeline
 up to engine installation — parse, resolve, bootstrap, compile — and then **does
@@ -294,10 +292,10 @@ identical in a `build` artifact and a `snapshot` artifact only when both hold:
 "Choosing the entry" below); and
 (b) the snapshotted graph interns no string absent from those same tables.
 
-(a) is enforced, by the build-time entry validation described below under
-"Choosing the entry" — a later task adds it to `ns-next build`, and once it
-does, a selector that survives it was necessarily interned while encoding the
-declaration that defines it. That enforcement is sound only while every
+(a) is enforced by the build-time entry validation described below under
+"Choosing the entry": a selector that survives it was necessarily interned
+while encoding the declaration that defines it. That enforcement is sound
+only while every
 ancestor mixin in a root class's superclass chain is an empty builtin mixin
 (no cross-module inheritance exists yet); cross-module inheritance would need
 this validation revisited. (b) is not enforced anywhere, is expected to fail
@@ -325,11 +323,15 @@ Instantiation stays in the CLI rather than in `image::load`: deciding *that* a
 command-line entry point supplies the platform is a CLI concern, because nothing
 in the runtime needs to know it was invoked from a terminal.
 
-**Tests**, in order of importance: `build` then `load` must be byte-identical to
-`run --engine=bytecode` in stdout, stderr and exit status; prefix equality
-between `build` and `snapshot`; a binary lane in `run-corpus` over the same
-entries, where a row's `send` is the build's `--entry`; and mutation and
-truncation tests over the new flag, the entry field and the trailing-byte check.
+**Tests**, in order of importance: `build` then `load` reproduces
+`run --engine=bytecode`'s stdout, stderr and exit status byte for byte
+(`every_fixture_runs_identically_from_source_and_from_a_binary`); `build` and
+`snapshot` agree on the describing sections' bytes
+(`a_build_and_a_snapshot_agree_on_the_describing_sections`); `run-corpus`
+carries a third lane that builds and loads each whitelisted entry, where a
+row's `send` is the build's `--entry`; and mutation and truncation tests cover
+the new flag, the entry field and the trailing-byte check
+(`crates/ns-runtime/tests/image.rs`).
 
 ## Planned: suspend and resume
 

@@ -98,6 +98,22 @@ cargo run -p ns-cli -- parse tests-fixtures/hello.ns
 ```
 
 ```bash
+# compile to a stateless deployment binary: code and structure, no instance
+# state. `build` never instantiates; `load` does, against its own loading
+# world's platform, then sends the recorded entry (main:args: here, since the
+# root class declares it) -- override with --send
+cargo run -p ns-cli -- build tests-fixtures/arithmetic.ns app.nsb
+cargo run -p ns-cli -- load app.nsb
+```
+
+```bash
+# look inside an artifact -- header flags, section offsets, the symbol and
+# mixin tables, object/frame counts -- without instantiating or running it;
+# takes either a stateless binary or an image written by `snapshot`
+cargo run -p ns-cli -- inspect app.nsb
+```
+
+```bash
 # time one entry send under both engines; measure with --release, never a debug build
 cargo run --release -p ns-cli -- bench tests-fixtures/bench_loop.ns --iterations 30
 ```

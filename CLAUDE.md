@@ -8,8 +8,8 @@ image format. Rust 1.98.0, edition 2021, three crates:
 - `crates/ns-runtime` — resolver, object model, dispatch, both execution engines
   (`interpreter/` and `compiler/` + `vm.rs`), core library (`builtins/`), image format
   (`image/`).
-- `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run`, `run-corpus`,
-  `disasm`, `snapshot`, `load`, `bench`.
+- `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
+  `snapshot`, `load`, `bench`, `disasm`, `inspect`, `build`.
 
 Read `docs/design/README.md` first — it maps the living design documents and says
 how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology

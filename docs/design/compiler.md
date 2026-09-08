@@ -281,12 +281,11 @@ moment. Two literals carry that deferral:
 
 ## Reading the output
 
-`ns-next disasm <file.ns> <selector>` prints one body's instructions. It compiles
-only — nothing is instantiated or run — and addresses code through mixins, since
-that is what code is keyed by.
-
-**Planned: it will accept an artifact too.** Today it requires source, which is
-exactly what a deployed binary does not ship; see
+`ns-next disasm <file.ns> <selector>` prints one body's instructions, compiling
+only — nothing is instantiated or run — and addressing code through mixins,
+since that is what code is keyed by. It also accepts an artifact in place of a
+`.ns` file, decoding rather than compiling; a deployed binary ships no source
+at all, so that path is what makes `disasm` usable on one. See
 [image-format.md](image-format.md)'s "Reading an artifact".
 
 This is the first piece of the VM's own introspection tooling, the equivalent of

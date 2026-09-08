@@ -233,8 +233,11 @@ pub struct LoadedImage {
     /// The selector to send after instantiation. Mandatory in a binary,
     /// always `None` in an image today.
     pub entry: Option<Symbol>,
-    /// The artifact carried no object graph, so `roots` is empty and the
-    /// caller is expected to instantiate.
+    /// `header.stateless` (`FLAG_STATELESS`), carried through so the caller
+    /// can branch on the artifact's own declared shape rather than infer it
+    /// from `roots.is_empty()` -- a stateful image snapshotted with an empty
+    /// roots slice is a real, tested case that flag-less inference would
+    /// misread as a binary.
     pub stateless: bool,
 }
 

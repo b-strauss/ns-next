@@ -65,6 +65,27 @@ Six silent defects were found by review that the green suite never showed; four
 of them were identically wrong under both engines, where the differential harness
 is structurally blind.
 
+## Artifact inspection and the stateless binary (2026-09-08)
+
+Finishes the deployment-artifact half of M3's image-format work rather than
+opening a milestone of its own: `ns-next inspect` prints an artifact's
+structure — header flags, section offsets, the symbol and mixin tables,
+object/frame counts — without instantiating it; `disasm` accepts an artifact
+as well as a `.ns` file; and `ns-next build` compiles a module into a
+stateless binary, code and structure with no instance state, which `load`
+starts by instantiating against its own loading platform and sending the
+recorded entry. `load` now also refuses trailing bytes after an artifact's
+last section, closing the confusion vector two artifact shapes sharing one
+format would otherwise open.
+
+Gates: `build` then `load` reproduces `run --engine=bytecode`'s stdout,
+stderr and exit status byte for byte over every fixture; `build` and
+`snapshot` agree on their shared sections' bytes; `run-corpus`'s six entries
+now also run a third way, built and loaded — **ran 6, failed 0, skipped
+205**, with `parse-corpus` unchanged at **210/0/1/0**; and mutation and
+truncation tests cover the new header flag, the entry field, and the
+trailing-byte check.
+
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
