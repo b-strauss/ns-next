@@ -117,30 +117,24 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
     // to Sup's application is what recomputes `b`'s absolute index past
     // Sup's one inherited slot -- hand-editing the layout would let the two
     // chains disagree about the instance's shape.
-    let sup_application = {
-        let borrowed = sup_class.borrow();
-        let ns_runtime::ObjectData::Class(data) = &borrowed.data else {
-            panic!("expected Sup to be a class object");
-        };
-        data.application.clone()
-    };
-    let sub_mixin = {
-        let borrowed = sub_class.borrow();
-        let ns_runtime::ObjectData::Class(data) = &borrowed.data else {
-            panic!("expected Sub to be a class object");
-        };
-        data.application.mixin.clone()
-    };
+    let sup_application = interp
+        .heap_ref()
+        .class_application(&sup_class)
+        .unwrap_or_else(|| panic!("expected Sup to be a class object"));
+    let sub_mixin = interp
+        .heap_ref()
+        .class_application(&sub_class)
+        .unwrap_or_else(|| panic!("expected Sub to be a class object"))
+        .mixin
+        .clone();
     let sub_application = interp.apply_mixin(&sub_mixin, Some(&sup_application));
-    {
-        let mut borrowed = sub_class.borrow_mut();
-        if let ns_runtime::ObjectData::Class(data) = &mut borrowed.data {
-            data.superclass = Some(sup_class.clone());
-            data.application = sub_application;
-        } else {
-            panic!("expected Sub to be a class object");
-        }
-    }
+    let relinked = interp
+        .heap_mut()
+        .set_class_superclass(&sub_class, sup_class.clone())
+        && interp
+            .heap_mut()
+            .set_class_application(&sub_class, sub_application);
+    assert!(relinked, "expected Sub to be a class object");
 
     let receiver = expect_ok(
         interp.instantiate(sub_class, vec![], &sub_resolved.bindings),
@@ -235,9 +229,12 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
     );
 
     match &result {
-        Value::Obj(obj) => match &obj.borrow().data {
-            ns_runtime::ObjectData::Str(s) => assert_eq!(s, "99"),
-            other => panic!("expected ObjectData::Str(\"99\"), got {other:?}"),
+        Value::Obj(obj) => match interp.heap_ref().str_value(obj) {
+            Some(s) => assert_eq!(s, "99"),
+            None => panic!(
+                "expected ObjectData::Str(\"99\"), got {}",
+                interp.heap_ref().describe(&result)
+            ),
         },
         other => panic!("expected Value::Obj(<String>), got {other:?}"),
     }
@@ -302,7 +299,10 @@ fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
                 e.message
             );
         }
-        Ok(v) => panic!("expected a factory-arity NewspeakError, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a factory-arity NewspeakError, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `instantiate`"),
     }
 }
@@ -329,7 +329,10 @@ fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
         Err(Signal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("thisSelectorDoesNotExist"));
         }
-        Ok(v) => panic!("expected a doesNotUnderstand: error, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a doesNotUnderstand: error, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
 }

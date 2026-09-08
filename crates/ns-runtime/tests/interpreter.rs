@@ -178,7 +178,8 @@ fn method_with_explicit_return_returns_the_returned_value() {
     match result {
         Ok(v) => assert!(
             matches!(v, Value::SmallInt(42)),
-            "expected Value::SmallInt(42), got {v:?}"
+            "expected Value::SmallInt(42), got {}",
+            interp.heap_ref().describe(&v)
         ),
         Err(Signal::Return(..)) => panic!(
             "unexpected Signal::Return -- `send` should never see one escape `invoke_method`"
@@ -252,10 +253,11 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
 
     match result {
         Ok(Value::Obj(obj)) => {
+            let elements = interp.heap_ref().array_elements(&obj);
             assert!(
-                matches!(&obj.borrow().data, ObjectData::Array(elems) if elems.is_empty()),
-                "expected a fresh, empty OrderedCollection instance, got {:?}",
-                obj.borrow().data
+                matches!(&elements, Some(elems) if elems.is_empty()),
+                "expected a fresh, empty OrderedCollection instance, got {}",
+                interp.heap_ref().describe(&Value::Obj(obj.clone()))
             );
         }
         Ok(other) => panic!("expected Value::Obj(<OrderedCollection instance>), got {other:?}"),
@@ -341,7 +343,7 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
         matches!(first, Err(Signal::Return(ref target, Value::SmallInt(1))) if Rc::ptr_eq(target, &home))
     );
     assert!(
-        home.borrow().uncontinuable,
+        interp.heap_ref().frame_is_uncontinuable(&home),
         "a successful non-local return must mark its target uncontinuable"
     );
 
@@ -421,7 +423,10 @@ fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() 
                 || message.to_lowercase().contains("cannot return"),
             "expected a cannotReturn-shaped error message, got: {message}"
         ),
-        Ok(v) => panic!("expected a cannotReturn NewspeakError, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a cannotReturn NewspeakError, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!(
             "a non-local return into an already-returned home method escaped `send` as a raw \
              Signal::Return -- the home frame was never marked uncontinuable"

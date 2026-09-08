@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_runtime::{Interpreter, Signal, Symbol, Value};
+use ns_runtime::{Heap, Interpreter, Signal, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both --
@@ -37,12 +37,11 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     }
 }
 
-fn as_string(value: &Value) -> String {
+fn as_string(heap: &Heap, value: &Value) -> String {
     match value {
-        Value::Obj(obj) => match &obj.borrow().data {
-            ns_runtime::ObjectData::Str(s) => s.clone(),
-            other => panic!("expected ObjectData::Str, got {other:?}"),
-        },
+        Value::Obj(obj) => heap
+            .str_value(obj)
+            .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
         other => panic!("expected Value::Obj, got {other:?}"),
     }
 }
@@ -87,7 +86,10 @@ fn integer_addition_overflow_is_a_newspeak_error_not_a_panic() {
                 e.message
             );
         }
-        Ok(v) => panic!("expected a NewspeakError for i64::MAX + 1, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a NewspeakError for i64::MAX + 1, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
 }
@@ -181,7 +183,7 @@ fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
     );
 
     assert_eq!(
-        as_string(&expect_ok(result, "true and: [^'escaped']. ^'fell through'")),
+        as_string(interp.heap_ref(), &expect_ok(result, "true and: [^'escaped']. ^'fell through'")),
         "escaped",
         "the block's non-local return must unwind `m`'s own activation directly, not be swallowed into `false` and fall through to the second statement"
     );
@@ -212,10 +214,10 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
     );
 
     assert_eq!(
-        as_string(&expect_ok(
-            result,
-            "false and: [...]. true or: [...]. ^'correct'"
-        )),
+        as_string(
+            interp.heap_ref(),
+            &expect_ok(result, "false and: [...]. true or: [...]. ^'correct'")
+        ),
         "correct",
         "false and: [...] and true or: [...] must never invoke their block argument at all"
     );
@@ -252,7 +254,10 @@ fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
                 e.message
             );
         }
-        Ok(v) => panic!("expected a NewspeakError for `1 + 1.5`, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a NewspeakError for `1 + 1.5`, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
 }
@@ -277,7 +282,10 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
         Ok(Value::Bool(false)) => {
             panic!("`1 < 1.5` silently answered false instead of reporting the type mismatch")
         }
-        Ok(v) => panic!("expected a NewspeakError, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a NewspeakError, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
 }
@@ -346,7 +354,10 @@ fn a_real_integer_overflow_is_still_reported_as_an_overflow() {
             "expected an overflow-shaped message, got: {}",
             e.message
         ),
-        Ok(v) => panic!("expected a NewspeakError, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a NewspeakError, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
 }

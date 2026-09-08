@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_runtime::{BuiltinClass, Interpreter, ObjectData, Signal, Symbol, Value};
+use ns_runtime::{BuiltinClass, Heap, Interpreter, Signal, Symbol, Value};
 
 fn empty_bindings() -> Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> {
     Rc::new(HashMap::new())
@@ -26,12 +26,11 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     }
 }
 
-fn as_string(value: &Value) -> String {
+fn as_string(heap: &Heap, value: &Value) -> String {
     match value {
-        Value::Obj(obj) => match &obj.borrow().data {
-            ObjectData::Str(s) => s.clone(),
-            other => panic!("expected ObjectData::Str, got {other:?}"),
-        },
+        Value::Obj(obj) => heap
+            .str_value(obj)
+            .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
         other => panic!("expected Value::Obj, got {other:?}"),
     }
 }
@@ -77,7 +76,7 @@ fn builtins_without_their_own_print_string_inherit_objects_default() {
         None,
     );
     assert_eq!(
-        as_string(&expect_ok(nil_result, "nil printString")),
+        as_string(interp.heap_ref(), &expect_ok(nil_result, "nil printString")),
         "an Object"
     );
 
@@ -93,10 +92,10 @@ fn builtins_without_their_own_print_string_inherit_objects_default() {
     );
     let coll_result = interp.send(coll, Symbol::intern("printString"), vec![], &bindings, None);
     assert_eq!(
-        as_string(&expect_ok(
-            coll_result,
-            "(OrderedCollection new) printString"
-        )),
+        as_string(
+            interp.heap_ref(),
+            &expect_ok(coll_result, "(OrderedCollection new) printString")
+        ),
         "an Object"
     );
 }
@@ -157,7 +156,10 @@ fn an_unknown_selector_on_a_builtin_runs_objects_real_does_not_understand() {
                 "expected `object_class::dispatch`'s own doesNotUnderstand: message shape"
             );
         }
-        Ok(v) => panic!("expected a doesNotUnderstand: error for `3 frobnicate`, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a doesNotUnderstand: error for `3 frobnicate`, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
 }
@@ -182,7 +184,10 @@ fn an_unknown_selector_on_a_string_runs_objects_real_does_not_understand() {
         Err(Signal::Error(e)) => {
             assert_eq!(e.message, "an object does not understand #frobnicate");
         }
-        Ok(v) => panic!("expected a doesNotUnderstand: error, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a doesNotUnderstand: error, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
 }
@@ -206,7 +211,7 @@ fn a_builtins_own_implementation_still_wins_over_objects() {
         None,
     );
     assert_eq!(
-        as_string(&expect_ok(printed, "7 printString")),
+        as_string(interp.heap_ref(), &expect_ok(printed, "7 printString")),
         "7",
         "Integer's own printString must win over Object's generic default"
     );

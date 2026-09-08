@@ -34,10 +34,17 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     }
 }
 
-fn expect_error(result: Result<Value, Signal>, what: &str) -> ns_runtime::NewspeakError {
+fn expect_error(
+    heap: &ns_runtime::Heap,
+    result: Result<Value, Signal>,
+    what: &str,
+) -> ns_runtime::NewspeakError {
     match result {
         Err(Signal::Error(e)) => e,
-        Ok(v) => panic!("{what}: expected a NewspeakError, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "{what}: expected a NewspeakError, got Ok({})",
+            heap.describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
     }
 }
@@ -99,7 +106,7 @@ fn array_at_out_of_range_is_a_newspeak_error_not_a_panic() {
         &resolved.bindings,
         None,
     );
-    let err = expect_error(result, "{1. 2. 3} at: 5");
+    let err = expect_error(interp.heap_ref(), result, "{1. 2. 3} at: 5");
     assert!(
         err.message.to_lowercase().contains("range"),
         "expected an out-of-range-shaped error message, got: {}",
@@ -211,7 +218,7 @@ fn ordered_collection_at_out_of_range_is_a_newspeak_error_not_a_panic() {
         &bindings,
         None,
     );
-    let err = expect_error(result, "OrderedCollection (empty) at: 1");
+    let err = expect_error(interp.heap_ref(), result, "OrderedCollection (empty) at: 1");
     assert!(
         err.message.to_lowercase().contains("range"),
         "expected an out-of-range-shaped error message, got: {}",
@@ -240,7 +247,7 @@ fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
         None,
     );
 
-    let err = expect_error(result, "{1} at: 'not an integer'");
+    let err = expect_error(interp.heap_ref(), result, "{1} at: 'not an integer'");
     assert!(
         err.message.contains("requires an Integer index"),
         "unexpected message: {}",
@@ -330,7 +337,11 @@ fn block_called_with_too_few_arguments_is_a_newspeak_error_not_a_panic() {
         &resolved.bindings,
         None,
     );
-    let err = expect_error(result, "[:x | x] value (0 args, 1 param)");
+    let err = expect_error(
+        interp.heap_ref(),
+        result,
+        "[:x | x] value (0 args, 1 param)",
+    );
     assert!(
         err.message.to_lowercase().contains("argument"),
         "expected an argument-count-shaped error message, got: {}",
@@ -355,7 +366,7 @@ fn block_called_with_too_many_arguments_is_a_newspeak_error_not_a_panic() {
         &resolved.bindings,
         None,
     );
-    let err = expect_error(result, "[42] value: 1 (1 arg, 0 params)");
+    let err = expect_error(interp.heap_ref(), result, "[42] value: 1 (1 arg, 0 params)");
     assert!(
         err.message.to_lowercase().contains("argument"),
         "expected an argument-count-shaped error message, got: {}",
@@ -398,24 +409,26 @@ fn an_invoked_blocks_frame_records_its_sender() {
     let Value::Obj(obj) = &result else {
         panic!("expected the inner block literal as a Value::Obj, got {result:?}");
     };
-    let outer_block_frame = match &obj.borrow().data {
-        ObjectData::Closure(c) => c.captured_frame.clone(),
-        other => panic!("expected ObjectData::Closure, got {other:?}"),
-    };
+    let outer_block_frame = interp
+        .heap_ref()
+        .closure_data(obj)
+        .unwrap_or_else(|| panic!("expected ObjectData::Closure"))
+        .captured_frame;
 
-    let borrowed = outer_block_frame.borrow();
-    let sender = borrowed
-        .sender
-        .as_ref()
+    let sender = interp
+        .heap_ref()
+        .frame_sender(&outer_block_frame)
         .expect("an invoked block's frame must record the activation that invoked it");
-    let sender = sender.borrow();
     assert!(
-        matches!(sender.kind, ns_runtime::FrameKind::Method(_)),
+        matches!(
+            interp.heap_ref().frame_kind(&sender),
+            ns_runtime::FrameKind::Method(_)
+        ),
         "the block's sender must be `m`'s own method activation"
     );
-    match (&sender.receiver, &receiver) {
+    match (interp.heap_ref().receiver(&sender), &receiver) {
         (Value::Obj(a), Value::Obj(b)) => assert!(
-            Rc::ptr_eq(a, b),
+            Rc::ptr_eq(&a, b),
             "the sender frame's receiver must be the instance `m` was sent to"
         ),
         other => panic!("expected two Value::Obj receivers, got {other:?}"),

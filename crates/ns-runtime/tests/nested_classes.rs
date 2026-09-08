@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::{
-    compiler, Binding, Engine, Interpreter, ObjectData, Signal, SourceOrigin, Symbol, Value,
+    compiler, Binding, Engine, Heap, Interpreter, Signal, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
@@ -54,12 +54,11 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 /// `Debug` on a class-object-carrying `Value` recurses), so a class-side
 /// send's result is compared through this rather than `assert_eq!` on the
 /// `Value` itself.
-fn string_contents(value: &Value) -> String {
+fn string_contents(heap: &Heap, value: &Value) -> String {
     match value {
-        Value::Obj(obj) => match &obj.borrow().data {
-            ObjectData::Str(s) => s.clone(),
-            _ => panic!("expected ObjectData::Str"),
-        },
+        Value::Obj(obj) => heap
+            .str_value(obj)
+            .unwrap_or_else(|| panic!("expected ObjectData::Str")),
         _ => panic!("expected Value::Obj"),
     }
 }
@@ -144,12 +143,14 @@ fn distinct_per_receiver(bytecode: bool) {
         panic!("class objects")
     };
     assert!(!Rc::ptr_eq(a, b), "spec 6: a distinct class per instance");
-    let (da, db) = (a.borrow(), b.borrow());
-    let (ObjectData::Class(da), ObjectData::Class(db)) = (&da.data, &db.data) else {
+    let (Some(a_application), Some(b_application)) = (
+        interp.heap_ref().class_application(a),
+        interp.heap_ref().class_application(b),
+    ) else {
         panic!("class data")
     };
     assert!(
-        Rc::ptr_eq(&da.application, &db.application),
+        Rc::ptr_eq(&a_application, &b_application),
         "spec 6.2: applications of one mixin share code and structure -- this \
          is what keeps a call site monomorphic across enclosing instances"
     );
@@ -185,15 +186,11 @@ fn enclosing_object_is_the_receiver(bytecode: bool) {
     let (Value::Obj(inner), Value::Obj(outer)) = (&inner, &outer) else {
         panic!("class object and instance")
     };
-    let borrowed = inner.borrow();
-    let ObjectData::Class(data) = &borrowed.data else {
-        panic!("class data")
-    };
-    let enclosing = data
-        .enclosing
-        .as_ref()
+    let enclosing = interp
+        .heap_ref()
+        .class_enclosing(inner)
         .expect("spec 6: a nested class's one piece of state is its enclosing object");
-    assert!(Rc::ptr_eq(enclosing, outer));
+    assert!(Rc::ptr_eq(&enclosing, outer));
 }
 
 #[test]
@@ -381,13 +378,12 @@ fn inherited_nested_declaration(bytecode: bool) {
         panic!("class object and instance")
     };
     {
-        let borrowed = n_class.borrow();
-        let ObjectData::Class(data) = &borrowed.data else {
-            panic!("class data")
-        };
-        let enclosing = data.enclosing.as_ref().expect("an enclosing object");
+        let enclosing = interp
+            .heap_ref()
+            .class_enclosing(n_class)
+            .expect("an enclosing object");
         assert!(
-            Rc::ptr_eq(enclosing, derived_obj),
+            Rc::ptr_eq(&enclosing, derived_obj),
             "the enclosing object is the receiver, not the declaring level"
         );
     }
@@ -544,7 +540,10 @@ fn class_side_dispatch(bytecode: bool) {
         ),
         "class-side send",
     );
-    assert_eq!(string_contents(&described), "a widget class");
+    assert_eq!(
+        string_contents(interp.heap_ref(), &described),
+        "a widget class"
+    );
 }
 
 #[test]
@@ -635,7 +634,10 @@ fn class_side_is_inherited(bytecode: bool) {
         ),
         "inherited class-side send",
     );
-    assert_eq!(string_contents(&described), "a widget class");
+    assert_eq!(
+        string_contents(interp.heap_ref(), &described),
+        "a widget class"
+    );
 }
 
 #[test]
@@ -762,7 +764,10 @@ fn class_side_override_shadows_the_inherited_method(bytecode: bool) {
         ),
         "overriding class-side send",
     );
-    assert_eq!(string_contents(&described), "a special widget class");
+    assert_eq!(
+        string_contents(interp.heap_ref(), &described),
+        "a special widget class"
+    );
 }
 
 #[test]
@@ -808,7 +813,10 @@ fn nested_super_and_outer(bytecode: bool) {
         interp.send(outer, Symbol::intern("run"), vec![], &bindings, None),
         "run",
     );
-    assert_eq!(string_contents(&described), "outer/derived");
+    assert_eq!(
+        string_contents(interp.heap_ref(), &described),
+        "outer/derived"
+    );
 }
 
 #[test]
@@ -857,7 +865,7 @@ fn super_chain_progresses_past_an_inherited_middle_level(bytecode: bool) {
         interp.send(outer, Symbol::intern("run"), vec![], &bindings, None),
         "run",
     );
-    assert_eq!(string_contents(&described), "grand/mid");
+    assert_eq!(string_contents(interp.heap_ref(), &described), "grand/mid");
 }
 
 #[test]
@@ -905,7 +913,7 @@ fn outer_resolves_from_the_defining_level(bytecode: bool) {
         interp.send(outer, Symbol::intern("run"), vec![], &bindings, None),
         "run",
     );
-    assert_eq!(string_contents(&described), "top");
+    assert_eq!(string_contents(interp.heap_ref(), &described), "top");
 }
 
 #[test]
@@ -953,7 +961,7 @@ fn a_two_level_outer_resolves_from_the_defining_level(bytecode: bool) {
         interp.send(outer, Symbol::intern("run"), vec![], &bindings, None),
         "run",
     );
-    assert_eq!(string_contents(&described), "top");
+    assert_eq!(string_contents(interp.heap_ref(), &described), "top");
 }
 
 #[test]
@@ -1010,12 +1018,12 @@ fn class_side_outer_reaches_the_enclosing_object(bytecode: bool) {
         ),
         "shallow",
     );
-    assert_eq!(string_contents(&shallow), "top");
+    assert_eq!(string_contents(interp.heap_ref(), &shallow), "top");
     let deep = expect_ok(
         interp.send(outer, Symbol::intern("deep"), vec![], &bindings, None),
         "deep",
     );
-    assert_eq!(string_contents(&deep), "top");
+    assert_eq!(string_contents(interp.heap_ref(), &deep), "top");
 }
 
 #[test]

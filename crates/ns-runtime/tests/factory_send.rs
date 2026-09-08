@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_runtime::{BuiltinClass, Interpreter, ObjectData, Signal, Symbol, Value};
+use ns_runtime::{BuiltinClass, Interpreter, Signal, Symbol, Value};
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     match result {
@@ -39,8 +39,9 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     let Value::Obj(obj) = &receiver else {
         panic!("expected Value::Obj, got {receiver:?}");
     };
+    let elements = interp.heap_ref().array_elements(obj);
     assert!(
-        matches!(&obj.borrow().data, ObjectData::Array(items) if items.is_empty()),
+        matches!(&elements, Some(items) if items.is_empty()),
         "expected an empty ObjectData::Array payload"
     );
 
@@ -93,7 +94,10 @@ fn array_new_via_ordinary_send_does_not_understand_add() {
         Err(Signal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("add:"));
         }
-        Ok(v) => panic!("expected doesNotUnderstand: add:, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected doesNotUnderstand: add:, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("expected doesNotUnderstand: add:, got Signal::Return"),
     }
 }
@@ -182,7 +186,10 @@ fn a_class_object_receiving_a_non_factory_selector_falls_through_to_ordinary_dis
         Err(Signal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("thisSelectorDoesNotExist"));
         }
-        Ok(v) => panic!("expected doesNotUnderstand:, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected doesNotUnderstand:, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("expected doesNotUnderstand:, got Signal::Return"),
     }
 }

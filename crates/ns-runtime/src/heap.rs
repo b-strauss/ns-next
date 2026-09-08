@@ -303,6 +303,23 @@ impl Heap {
         }
     }
 
+    /// Relinks `class`'s superclass pointer. Answers whether the write
+    /// happened, mirroring `set_class_application` -- the matching relink on
+    /// the application chain that carries the layout, called right alongside
+    /// this one. `tests/instantiate.rs`'s
+    /// `superclass_slot_initializer_runs_before_the_subclass_own_slots` is the
+    /// only caller: a root class's superclass clause only resolves a fixed
+    /// list of builtin names (`resolve_superclass_receiver`), so linking a
+    /// subclass to an already-loaded sibling *user-defined* class has to
+    /// happen by hand on the class-object chain `super`/`instantiate` walk.
+    pub fn set_class_superclass(&mut self, class: &ClassRef, superclass: ClassRef) -> bool {
+        if let ObjectData::Class(data) = &mut class.borrow_mut().data {
+            data.superclass = Some(superclass);
+            return true;
+        }
+        false
+    }
+
     /// Answers whether the write happened, mirroring `array_set` and
     /// `set_instance_field`. `image::decode::rebuild_applications` is the
     /// only caller, and it only ever calls this on an object it filled in
@@ -331,8 +348,8 @@ impl Heap {
     // reach here, so this addressing is total.
     //
     // Only the accessors a caller actually needs are added here;
-    // `frame_arg_count`, `frame_pc` and `frame_sender` still have no caller
-    // and are left for the task that adds their first one.
+    // `frame_arg_count` and `frame_pc` still have no caller and are left
+    // for the task that adds their first one.
 
     pub fn receiver(&self, frame: &FrameRef) -> Value {
         frame.borrow().receiver.clone()
@@ -400,6 +417,15 @@ impl Heap {
 
     pub fn frame_home(&self, frame: &FrameRef) -> Option<FrameRef> {
         frame.borrow().home.clone()
+    }
+
+    /// The activation that invoked `frame`, `None` only for `FrameKind::TopLevel`.
+    /// `tests/builtins_collections_block.rs`'s sender-threading regression test is
+    /// the first caller: it walks a captured closure's frame back to the method
+    /// activation that invoked it, to check `sender` was actually recorded rather
+    /// than left `None` (the Final-review finding I6 defect this guards against).
+    pub fn frame_sender(&self, frame: &FrameRef) -> Option<FrameRef> {
+        frame.borrow().sender.clone()
     }
 
     /// The frame a closure activation captured, or `None` for any other

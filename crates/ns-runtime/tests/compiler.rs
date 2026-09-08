@@ -6,18 +6,17 @@ use std::rc::Rc;
 
 use ns_runtime::bytecode::{method_key, CallSite, CodeKind, Instr, Literal};
 use ns_runtime::mixin::mixin_key;
-use ns_runtime::{compiler, Binding, ClassRef, Interpreter, ObjectData, SourceOrigin, Symbol};
+use ns_runtime::{compiler, Binding, ClassRef, Heap, Interpreter, SourceOrigin, Symbol};
 use ns_syntax::Span;
 
 /// `class`'s own mixin identity -- the key `compile_module` files its
 /// initializer under, now that compiled code is keyed by mixin rather than
 /// by class object (applications of a mixin share code).
-fn class_mixin_key(class: &ClassRef) -> usize {
-    let borrowed = class.borrow();
-    let ObjectData::Class(data) = &borrowed.data else {
-        panic!("not a class")
-    };
-    mixin_key(&data.application.mixin)
+fn class_mixin_key(heap: &Heap, class: &ClassRef) -> usize {
+    let application = heap
+        .class_application(class)
+        .unwrap_or_else(|| panic!("not a class"));
+    mixin_key(&application.mixin)
 }
 
 fn load(src: &str) -> (Interpreter, ClassRef, Rc<HashMap<Span, Binding>>) {
@@ -46,7 +45,7 @@ fn compile_module_compiles_every_loaded_method_and_the_initializer() {
     }
     let init = module
         .initializers
-        .get(&class_mixin_key(&class))
+        .get(&class_mixin_key(interp.heap_ref(), &class))
         .expect("root initializer compiled");
     assert_eq!(init.kind, CodeKind::Initializer);
     assert_eq!(
@@ -61,18 +60,15 @@ fn compiled_method_is_reachable_by_its_dispatch_key() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n) : ()";
     let (interp, class, bindings) = load(src);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    let method = {
-        let borrowed = class.borrow();
-        let ObjectData::Class(data) = &borrowed.data else {
-            panic!()
-        };
-        data.application
-            .mixin
-            .methods
-            .get(&Symbol::intern("foo"))
-            .unwrap()
-            .clone()
-    };
+    let method = interp
+        .heap_ref()
+        .class_application(&class)
+        .unwrap_or_else(|| panic!())
+        .mixin
+        .methods
+        .get(&Symbol::intern("foo"))
+        .unwrap()
+        .clone();
     assert!(module.methods.contains_key(&method_key(&method)));
 }
 
@@ -173,11 +169,11 @@ fn compile_module_compiles_every_mixin_in_the_tree_not_just_the_root() {
     let (interp, class, bindings) = load(NESTED_SRC);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
 
-    let borrowed = class.borrow();
-    let ObjectData::Class(data) = &borrowed.data else {
-        panic!("expected a class object");
-    };
-    let mixin = &data.application.mixin;
+    let application = interp
+        .heap_ref()
+        .class_application(&class)
+        .unwrap_or_else(|| panic!("expected a class object"));
+    let mixin = &application.mixin;
 
     // The nested mixin's own method must be compiled -- proof the compiler
     // walked past the root's own method table into `nested`.
