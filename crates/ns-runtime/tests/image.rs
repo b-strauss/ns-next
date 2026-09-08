@@ -15,7 +15,7 @@ use ns_runtime::image::{decode, encode, mixins, symbols};
 use ns_runtime::mixin::mixin_key;
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
-    compiler, Binding, BuiltinClass, ClassData, ClassRef, ClosureBody, Engine, FrameKind,
+    compiler, Binding, BuiltinClass, ClassData, ClassRef, ClosureBody, Engine, FrameKind, Heap,
     Interpreter, Mixin, MixinApplication, Object, ObjectData, Signal, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
@@ -453,12 +453,14 @@ fn round_trip_code_table(
     module: &CompiledModule,
     class: &ClassRef,
 ) -> (decode::DecodedCodeTable, mixins::Decoded, encode::CodeIds) {
+    let heap = Heap::default();
     let mut w = encode::Writer::new();
     let mut symbols = symbols::Builder::new();
-    let ids =
-        encode::encode_code_table(&mut w, module, class, &mut symbols).expect("encode code table");
+    let ids = encode::encode_code_table(&mut w, &heap, module, class, &mut symbols)
+        .expect("encode code table");
     let mut mixin_w = encode::Writer::new();
-    mixins::encode(&mut mixin_w, class, module, &mut symbols, &ids).expect("encode mixin table");
+    mixins::encode(&mut mixin_w, &heap, class, module, &mut symbols, &ids)
+        .expect("encode mixin table");
     let bytes = w.into_bytes();
     let mixin_bytes = mixin_w.into_bytes();
     let table = symbols.build();
@@ -712,11 +714,12 @@ fn an_invalid_builtin_class_tag_is_a_decode_error_not_a_panic() {
 
 #[test]
 fn a_truncated_code_table_is_a_decode_error_not_a_panic() {
-    let (_interp, class, bindings) = load(RICH);
+    let (interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(&class, &bindings);
     let mut w = encode::Writer::new();
     let mut symbols = symbols::Builder::new();
-    encode::encode_code_table(&mut w, &module, &class, &mut symbols).expect("encode code table");
+    encode::encode_code_table(&mut w, interp.heap_ref(), &module, &class, &mut symbols)
+        .expect("encode code table");
     let table = symbols.build();
     let bytes = w.into_bytes();
     for cut in [1usize, bytes.len() / 3, bytes.len() / 2, bytes.len() - 1] {
@@ -791,8 +794,13 @@ fn a_method_added_after_compile_module_is_an_encoding_error_not_a_panic() {
         data.application = application;
     }
     let mut w = encode::Writer::new();
-    let Err(err) = encode::encode_code_table(&mut w, &module, &class, &mut symbols::Builder::new())
-    else {
+    let Err(err) = encode::encode_code_table(
+        &mut w,
+        interp.heap_ref(),
+        &module,
+        &class,
+        &mut symbols::Builder::new(),
+    ) else {
         panic!("a method with no compiled code must not encode");
     };
     assert!(
@@ -1084,6 +1092,7 @@ fn mixin_ids_for(
     let mut scratch = encode::Writer::new();
     mixins::encode(
         &mut scratch,
+        interp.heap_ref(),
         class,
         interp
             .compiled_module()
@@ -1112,6 +1121,7 @@ fn round_trip_graph(
     let mut w = encode::Writer::new();
     let ids = encode::encode_code_table(
         &mut w,
+        interp.heap_ref(),
         interp
             .compiled_module()
             .expect("the bytecode engine is active"),
@@ -1122,6 +1132,7 @@ fn round_trip_graph(
     let mixin_ids = mixin_ids_for(&class, &interp, &mut symbols, &ids);
     encode::encode_graph_section(
         &mut w,
+        interp.heap_ref(),
         &roots,
         &platform,
         &ids,
@@ -1366,10 +1377,11 @@ fn a_tree_walker_closure_is_a_snapshot_error_not_a_silent_omission() {
     let module = compiler::compile_module(&class, &bindings);
     let mut symbols = symbols::Builder::new();
     let mut w = encode::Writer::new();
-    let ids = encode::encode_code_table(&mut w, &module, &class, &mut symbols)
+    let ids = encode::encode_code_table(&mut w, interp.heap_ref(), &module, &class, &mut symbols)
         .expect("encode code table");
     let err = encode::encode_graph_section(
         &mut w,
+        interp.heap_ref(),
         &[closure],
         &platform,
         &ids,
@@ -1398,6 +1410,7 @@ fn a_decoded_closure_carries_the_loads_own_bindings_map() {
     let mut w = encode::Writer::new();
     let ids = encode::encode_code_table(
         &mut w,
+        interp.heap_ref(),
         interp
             .compiled_module()
             .expect("the bytecode engine is active"),
@@ -1408,6 +1421,7 @@ fn a_decoded_closure_carries_the_loads_own_bindings_map() {
     let mixin_ids = mixin_ids_for(&class, &interp, &mut symbols, &ids);
     encode::encode_graph_section(
         &mut w,
+        interp.heap_ref(),
         &roots,
         &platform,
         &ids,
@@ -1463,6 +1477,7 @@ fn the_graph_section_encoding_is_deterministic() {
         let mut w = encode::Writer::new();
         let ids = encode::encode_code_table(
             &mut w,
+            interp.heap_ref(),
             interp
                 .compiled_module()
                 .expect("the bytecode engine is active"),
@@ -1473,6 +1488,7 @@ fn the_graph_section_encoding_is_deterministic() {
         let mixin_ids = mixin_ids_for(&class, &interp, &mut symbols, &ids);
         encode::encode_graph_section(
             &mut w,
+            interp.heap_ref(),
             &roots,
             &platform,
             &ids,
@@ -1942,6 +1958,7 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
     let mut w = encode::Writer::new();
     let ids = encode::encode_code_table(
         &mut w,
+        interp.heap_ref(),
         interp
             .compiled_module()
             .expect("the bytecode engine is active"),
@@ -1954,6 +1971,7 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
     let mixin_ids = mixin_ids_for(&class, &interp, &mut symbols, &ids);
     encode::encode_graph_section(
         &mut w,
+        interp.heap_ref(),
         &roots,
         &platform,
         &ids,
@@ -2190,6 +2208,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
     );
     let platform = interp.platform();
     let bytes = image::snapshot(
+        interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -2241,6 +2260,7 @@ fn bytes_after_the_last_section_are_refused_not_ignored() {
         .expect("a source-built interpreter accepts the bytecode engine");
     let platform = interp.platform();
     let mut bytes = image::snapshot(
+        interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -2269,6 +2289,7 @@ fn load_refuses_a_version_mismatch() {
         .expect("a source-built interpreter accepts the bytecode engine");
     let platform = interp.platform();
     let mut bytes = image::snapshot(
+        interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -2337,6 +2358,7 @@ fn a_snapshot_of_a_tree_walker_closure_is_refused_rather_than_written() {
         .expect("a source-built interpreter accepts the bytecode engine");
     let platform = interp.platform();
     let err = image::snapshot(
+        interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -2362,6 +2384,7 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
     );
     let platform = interp.platform();
     let bytes = image::snapshot(
+        interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -3064,6 +3087,7 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
     );
     let platform = interp.platform();
     let bytes = image::snapshot(
+        interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -3126,6 +3150,7 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
     );
     let platform = interp.platform();
     let bytes = image::snapshot(
+        interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -3239,6 +3264,7 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
         bindings: bindings.clone(),
     };
     let bytes = image::snapshot(
+        interp.heap_ref(),
         Some(NEEDS_INITIALIZER),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -3299,6 +3325,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
     obj(&instance).borrow_mut().identity_hash = u32::MAX - 1;
     let platform = interp.platform();
     let bytes = image::snapshot(
+        interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -3424,6 +3451,7 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
         "instantiate Outer",
     );
     let bytes = image::snapshot(
+        interp.heap_ref(),
         Some(NESTED_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -3496,6 +3524,7 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
         "instantiate Outer",
     );
     let bytes = image::snapshot(
+        interp.heap_ref(),
         Some(NESTED_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -3572,6 +3601,7 @@ fn snapshot_world(
     roots: &[Value],
 ) -> Vec<u8> {
     image::snapshot(
+        interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3944,6 +3974,7 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
         "instantiate Args",
     );
     let bytes = image::snapshot(
+        interp.heap_ref(),
         Some(NESTED_SUPERCLASS_ARGS),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -4125,6 +4156,7 @@ fn snapshot_of(src: &str) -> Vec<u8> {
         .expect("a source-built interpreter accepts the bytecode engine");
     let platform = interp.platform();
     image::snapshot(
+        interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -4448,6 +4480,7 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
         "instantiate Args",
     );
     let bytes = image::snapshot(
+        interp.heap_ref(),
         Some(NESTED_SUPERCLASS_ARGS),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -4633,6 +4666,7 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
     };
     let platform = interp.platform();
     let Err(err) = image::snapshot(
+        interp.heap_ref(),
         Some(TRIVIAL_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -4882,6 +4916,7 @@ fn snapshot_module(src: &str, source: Option<&str>, extra_send: Option<&str>) ->
         ));
     }
     image::snapshot(
+        interp.heap_ref(),
         source,
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -5148,6 +5183,7 @@ fn a_world_holding_a_tree_walker_activation_is_refused_when_written() {
     })));
     let platform = interp.platform();
     let Err(err) = image::snapshot(
+        interp.heap_ref(),
         None,
         &Origin::File(PathBuf::from("t.ns")),
         &class,
@@ -5315,6 +5351,7 @@ fn snapshot_of_without_source(src: &str) -> Vec<u8> {
         "instantiate",
     );
     image::snapshot(
+        interp.heap_ref(),
         None,
         &Origin::File(PathBuf::from("golden.ns")),
         &class,
@@ -5434,9 +5471,25 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
     let origin = Origin::File(PathBuf::from("t.ns"));
     let module = interp.compiled_module().expect("bytecode engine");
 
-    let binary =
-        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
-    let img = image::snapshot(None, &origin, &class, module, &platform, &[]).expect("snapshot");
+    let binary = image::build(
+        interp.heap_ref(),
+        None,
+        &origin,
+        &class,
+        module,
+        Symbol::intern("main:args:"),
+    )
+    .expect("build");
+    let img = image::snapshot(
+        interp.heap_ref(),
+        None,
+        &origin,
+        &class,
+        module,
+        &platform,
+        &[],
+    )
+    .expect("snapshot");
 
     let b = image::inspect::inspect(&binary).expect("inspect binary");
     let i = image::inspect::inspect(&img).expect("inspect image");
@@ -5497,6 +5550,7 @@ fn build_accepts_an_entry_selector_the_module_never_declares() {
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let binary = image::build(
+        interp.heap_ref(),
         None,
         &origin,
         &class,
@@ -5524,8 +5578,15 @@ fn a_binary_loads_with_no_roots_and_its_entry() {
     let module = interp.compiled_module().expect("bytecode engine");
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let binary =
-        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
+    let binary = image::build(
+        interp.heap_ref(),
+        None,
+        &origin,
+        &class,
+        module,
+        Symbol::intern("main:args:"),
+    )
+    .expect("build");
 
     let loaded = image::load(&binary).expect("load a binary");
     assert!(loaded.stateless);
@@ -5560,7 +5621,16 @@ fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
     let origin = Origin::File(PathBuf::from("t.ns"));
     let module = interp.compiled_module().expect("bytecode engine");
 
-    let img = image::snapshot(None, &origin, &class, module, &platform, &[]).expect("snapshot");
+    let img = image::snapshot(
+        interp.heap_ref(),
+        None,
+        &origin,
+        &class,
+        module,
+        &platform,
+        &[],
+    )
+    .expect("snapshot");
 
     let loaded = image::load(&img).expect("load a stateful image with no roots");
     assert!(
@@ -5588,8 +5658,15 @@ fn a_stateless_artifact_without_an_entry_is_refused() {
     let module = interp.compiled_module().expect("bytecode engine");
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let mut bytes =
-        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
+    let mut bytes = image::build(
+        interp.heap_ref(),
+        None,
+        &origin,
+        &class,
+        module,
+        Symbol::intern("main:args:"),
+    )
+    .expect("build");
 
     // The entry field is the last thing in a binary, so truncating at its
     // section start and writing a bare `0` (absent) byte in its place turns
@@ -5631,8 +5708,15 @@ fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
     let module = interp.compiled_module().expect("bytecode engine");
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let binary =
-        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
+    let binary = image::build(
+        interp.heap_ref(),
+        None,
+        &origin,
+        &class,
+        module,
+        Symbol::intern("main:args:"),
+    )
+    .expect("build");
 
     for cut in 0..binary.len() {
         // `is_err()`, not a message check, is deliberate here and only here:
@@ -5675,10 +5759,25 @@ fn a_binary_with_a_graph_appended_is_refused() {
     let module = interp.compiled_module().expect("bytecode engine");
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let binary =
-        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
-    let image_bytes =
-        image::snapshot(None, &origin, &class, module, &platform, &[]).expect("snapshot");
+    let binary = image::build(
+        interp.heap_ref(),
+        None,
+        &origin,
+        &class,
+        module,
+        Symbol::intern("main:args:"),
+    )
+    .expect("build");
+    let image_bytes = image::snapshot(
+        interp.heap_ref(),
+        None,
+        &origin,
+        &class,
+        module,
+        &platform,
+        &[],
+    )
+    .expect("snapshot");
     // The append below only exercises anything if the image actually
     // extends past where the binary ends -- a snapshot's graph section
     // guarantees that here, but assert it so a future change to either
@@ -5729,8 +5828,16 @@ fn a_relabelled_snapshot_is_refused_for_missing_entry() {
     let module = interp.compiled_module().expect("bytecode engine");
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let mut bytes =
-        image::snapshot(None, &origin, &class, module, &platform, &[]).expect("snapshot");
+    let mut bytes = image::snapshot(
+        interp.heap_ref(),
+        None,
+        &origin,
+        &class,
+        module,
+        &platform,
+        &[],
+    )
+    .expect("snapshot");
 
     // Locate the flag byte from the header layout instead of hard-coding an
     // offset, so a header change fails this assertion loudly rather than
@@ -5794,8 +5901,16 @@ class X usingPlatform: p = Object new (
             Err(_) => Vec::new(),
         };
         let module = interp.compiled_module().expect("bytecode engine");
-        let img =
-            image::snapshot(None, &origin, &class, module, &platform, &roots).expect("snapshot");
+        let img = image::snapshot(
+            interp.heap_ref(),
+            None,
+            &origin,
+            &class,
+            module,
+            &platform,
+            &roots,
+        )
+        .expect("snapshot");
 
         let report = image::inspect::inspect(&img).expect("inspect the image");
         let graph = report

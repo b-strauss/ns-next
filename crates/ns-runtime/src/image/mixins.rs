@@ -28,8 +28,9 @@ use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
 
 use crate::bytecode::{method_key, CompiledCode, CompiledModule};
+use crate::heap::Heap;
 use crate::mixin::{mixin_key, Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
-use crate::types::{ClassRef, ObjectData};
+use crate::types::ClassRef;
 use crate::Symbol;
 
 use super::decode::{reserve_for, DecodeError, Reader};
@@ -111,14 +112,12 @@ pub struct Row {
 /// (which needs them to write the table). Recomputing it is one tree walk
 /// and one `HashMap`; sharing a cached copy between the two would trade that
 /// for a lifetime that has to thread through `snapshot`.
-pub fn plan(root_class: &ClassRef, module: &CompiledModule) -> Result<Vec<Row>, String> {
-    let root_mixin = {
-        let borrowed = root_class.borrow();
-        match &borrowed.data {
-            ObjectData::Class(data) => Some(data.application.mixin.clone()),
-            _ => None,
-        }
-    };
+pub fn plan(
+    heap: &Heap,
+    root_class: &ClassRef,
+    module: &CompiledModule,
+) -> Result<Vec<Row>, String> {
+    let root_mixin = heap.class_application(root_class).map(|a| a.mixin.clone());
     // Not a class object: no declarations to describe, so the table is
     // empty rather than an error -- `encode_code_table` has always tolerated
     // this, and the graph section is what actually refuses such a root.
@@ -236,12 +235,13 @@ pub(crate) type MixinIds = HashMap<usize, u32>;
 /// object graph addresses a class object's mixin by (Task 13).
 pub fn encode(
     w: &mut Writer,
+    heap: &Heap,
     root_class: &ClassRef,
     module: &CompiledModule,
     symbols: &mut symbols::Builder,
     codes: &CodeIds,
 ) -> Result<MixinIds, String> {
-    let rows = plan(root_class, module)?;
+    let rows = plan(heap, root_class, module)?;
     w.write_u32(u32_field("mixin table entry count", rows.len()));
     for row in &rows {
         let mixin = &row.mixin;

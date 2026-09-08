@@ -490,6 +490,7 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
         .compiled_module()
         .expect("bootstrap_with_engine installed the bytecode engine");
     let bytes = match ns_runtime::image::snapshot(
+        interp.heap_ref(),
         debug_source.then_some(loaded.source.as_str()),
         &loaded.origin,
         &class,
@@ -1134,6 +1135,7 @@ fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -
         .compiled_module()
         .expect("bootstrap_with_engine installed the bytecode engine");
     let bytes = match ns_runtime::image::build(
+        interp.heap_ref(),
         debug_source.then_some(loaded.source.as_str()),
         &loaded.origin,
         &class,

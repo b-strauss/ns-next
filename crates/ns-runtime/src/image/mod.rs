@@ -28,6 +28,7 @@ use std::rc::Rc;
 use ns_syntax::Span;
 
 use crate::bytecode::CompiledModule;
+use crate::heap::Heap;
 use crate::interpreter::Engine;
 use crate::types::{Binding, ClassRef, SourceOrigin, Value};
 use crate::{Interpreter, Symbol};
@@ -66,15 +67,19 @@ struct Describing {
 /// the way. Shared by `snapshot` and `build`: both need the same two tables,
 /// and both need them encoded before the (still-open) symbol table can be
 /// written, since it is the table's *contents* that fill it.
-fn encode_describing(root_class: &ClassRef, module: &CompiledModule) -> Result<Describing, String> {
+fn encode_describing(
+    root_class: &ClassRef,
+    module: &CompiledModule,
+    heap: &Heap,
+) -> Result<Describing, String> {
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
-    let ids = encode::encode_code_table(&mut code, module, root_class, &mut symbols)?;
+    let ids = encode::encode_code_table(&mut code, heap, module, root_class, &mut symbols)?;
     // After the code table, whose ids its rows name; before the graph (or the
     // entry field), whose class objects and selector respectively might name
     // its rows.
     let mut mixin_w = encode::Writer::new();
-    let mixin_ids = mixins::encode(&mut mixin_w, root_class, module, &mut symbols, &ids)?;
+    let mixin_ids = mixins::encode(&mut mixin_w, heap, root_class, module, &mut symbols, &ids)?;
     Ok(Describing {
         symbols,
         code,
@@ -93,6 +98,7 @@ fn write_describing(
     flags: u8,
     d: Describing,
     root_class: &ClassRef,
+    heap: &Heap,
 ) -> Result<(), String> {
     encode::write_header(
         w,
@@ -114,7 +120,7 @@ fn write_describing(
     d.symbols.write(w);
     w.write_raw(&d.code.into_bytes());
     w.write_raw(&d.mixins.into_bytes());
-    encode::encode_root_class(w, root_class)?;
+    encode::encode_root_class(w, heap, root_class)?;
     Ok(())
 }
 
@@ -128,6 +134,7 @@ fn write_describing(
 /// source. `Some(src)` additionally stores `src` verbatim; `load` hands it
 /// back on `LoadedImage::source` and does nothing else with it.
 pub fn snapshot(
+    heap: &Heap,
     source: Option<&str>,
     origin: &SourceOrigin,
     root_class: &ClassRef,
@@ -135,7 +142,7 @@ pub fn snapshot(
     platform: &Value,
     roots: &[Value],
 ) -> Result<Vec<u8>, String> {
-    let mut d = encode_describing(root_class, module)?;
+    let mut d = encode_describing(root_class, module, heap)?;
     // The graph section is encoded into its own buffer, against the same
     // `symbols` builder the describing sections used, before `write_describing`
     // consumes `d` -- the graph needs the mixin table's row ids, and those
@@ -143,6 +150,7 @@ pub fn snapshot(
     let mut graph_w = encode::Writer::new();
     encode::encode_graph_section(
         &mut graph_w,
+        heap,
         roots,
         platform,
         &d.ids,
@@ -151,7 +159,7 @@ pub fn snapshot(
         &mut d.symbols,
     )?;
     let mut w = encode::Writer::new();
-    write_describing(&mut w, source, origin, 0, d, root_class)?;
+    write_describing(&mut w, source, origin, 0, d, root_class, heap)?;
     // `snapshot` never names an entry selector of its own -- a snapshotted
     // world is resumed by loading it and sending to `roots`, not by starting
     // it fresh -- but the field is written unconditionally so every artifact
@@ -169,13 +177,14 @@ pub fn snapshot(
 /// initializer run on load instead, against the loading world's own freshly
 /// bootstrapped platform, so the file has never held a capability.
 pub fn build(
+    heap: &Heap,
     source: Option<&str>,
     origin: &SourceOrigin,
     root_class: &ClassRef,
     module: &CompiledModule,
     entry: Symbol,
 ) -> Result<Vec<u8>, String> {
-    let mut d = encode_describing(root_class, module)?;
+    let mut d = encode_describing(root_class, module, heap)?;
     // Interned before `write_describing` writes the table below: an id
     // assigned after the table is on the wire is an id the table does not
     // contain, which the decoder reports as an out-of-range symbol id.
@@ -188,6 +197,7 @@ pub fn build(
         encode::FLAG_STATELESS,
         d,
         root_class,
+        heap,
     )?;
     encode::encode_entry(&mut w, Some(entry_id));
     Ok(w.into_bytes())

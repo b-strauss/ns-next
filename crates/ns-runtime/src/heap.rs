@@ -157,6 +157,19 @@ impl Heap {
         }
     }
 
+    /// The whole of `obj`'s record -- `class`, `identity_hash` and `data`
+    /// -- in the one borrow all three live behind.
+    /// `image::encode::encode_object` writes a whole object record and
+    /// `GraphTable::visit_value` walks a whole object's references; both
+    /// need every field, so one accessor beats writing the borrow out twice
+    /// at the two call sites that each need all of it. Not for a hot path:
+    /// it clones `data` in full, which is a real cost for a large `Array`
+    /// or `Instance`, acceptable here because the encoder visits every
+    /// object exactly once regardless.
+    pub fn object_snapshot(&self, obj: &ObjRef) -> Object {
+        obj.borrow().clone()
+    }
+
     /// Renders a value for a user-facing error message.
     ///
     /// Never `Debug`-format a `Value` instead: `Object`'s bootstrap class is
@@ -260,6 +273,41 @@ impl Heap {
         if let ObjectData::Class(data) = &mut class.borrow_mut().data {
             data.metaclass = Some(metaclass);
         }
+    }
+
+    /// Answers whether the write happened, mirroring `array_set` and
+    /// `set_instance_field`. `image::decode::rebuild_applications` is the
+    /// only caller, and it only ever calls this on an object it filled in
+    /// as a class record two lines above -- a wrong-shape `class` here would
+    /// be a decoder bug, not an untrusted-input case, so the caller turns a
+    /// `false` into an `unreachable!` rather than a `DecodeError`.
+    pub fn set_class_application(
+        &mut self,
+        class: &ClassRef,
+        application: std::rc::Rc<crate::mixin::MixinApplication>,
+    ) -> bool {
+        if let ObjectData::Class(data) = &mut class.borrow_mut().data {
+            data.application = application;
+            return true;
+        }
+        false
+    }
+
+    /// The whole of a placeholder object's contents, replaced in one write.
+    /// `image::decode_graph_section`'s first pass placeholder-allocates
+    /// every object before any record is read, so cycles and shared
+    /// references round-trip with identity preserved; this is the second
+    /// pass filling one in, once its record has been decoded. Nothing may
+    /// observe a half-built record, which is why this replaces the whole
+    /// value rather than going field by field.
+    pub fn replace_object(&mut self, obj: &ObjRef, filled: Object) {
+        *obj.borrow_mut() = filled;
+    }
+
+    /// The frame equivalent of `replace_object`, for the placeholder frames
+    /// the same two-pass decode pre-allocates.
+    pub fn replace_frame(&mut self, frame: &FrameRef, filled: Frame) {
+        *frame.borrow_mut() = filled;
     }
 
     // ---------- Activation accessors ----------
@@ -367,6 +415,35 @@ impl Heap {
     /// loop runs.
     pub fn frame_is_method(&self, frame: &FrameRef) -> bool {
         matches!(frame.borrow().kind, FrameKind::Method(_))
+    }
+
+    /// A copy of `frame`'s `kind`. Cloning is cheap -- every variant holds
+    /// at most an `Rc` -- and `image::decode` is the only caller that needs
+    /// to match on the *whole* kind rather than one variant's payload
+    /// (`frame_captured`, `frame_is_method`): once to resolve which of
+    /// `Initializer`/`SuperclassClause`/`SuperclassMessage` a frame carries
+    /// a class for (`frame_body`), and once to check that a class-carrying
+    /// kind's class is itself a class reference (`check_class_references`).
+    pub fn frame_kind(&self, frame: &FrameRef) -> FrameKind {
+        frame.borrow().kind.clone()
+    }
+
+    /// `pc`, and how many of a frame's registers are `args` versus `temps`,
+    /// in the one borrow all three live behind.
+    /// `image::decode::verify_graph` checks all three against the shape of
+    /// the compiled body it reconciles every decoded frame against.
+    pub fn frame_register_shape(&self, frame: &FrameRef) -> (usize, usize, usize) {
+        let f = frame.borrow();
+        (f.pc, f.args.len(), f.temps.len())
+    }
+
+    /// The whole of `frame`'s contents, in the one borrow they all live
+    /// behind. `image::encode::encode_frame` writes a whole frame record
+    /// and `GraphTable::visit_frame` walks a whole frame's references;
+    /// both need every field. Not for a hot path, for the same reason as
+    /// `object_snapshot`.
+    pub fn frame_snapshot(&self, frame: &FrameRef) -> Frame {
+        frame.borrow().clone()
     }
 }
 

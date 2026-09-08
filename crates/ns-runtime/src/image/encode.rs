@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal};
+use crate::heap::Heap;
 use crate::types::{
     BuiltinClass, ClassData, ClassRef, ClosureBody, ClosureData, FrameKind, FrameRef, ObjRef,
     ObjectData, PcKind, SourceOrigin, Value,
@@ -231,18 +232,15 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
 /// is refused here rather than written wrongly; extending
 /// `resolve_superclass_receiver` is what would make it representable, and
 /// that extension is where this format would grow with it.
-pub fn encode_root_class(w: &mut Writer, root_class: &ClassRef) -> Result<(), String> {
-    let superclass = match &root_class.borrow().data {
-        ObjectData::Class(data) => data.superclass.clone(),
-        _ => return Err("image encoding's root object is not a class".to_string()),
-    };
+pub fn encode_root_class(w: &mut Writer, heap: &Heap, root_class: &ClassRef) -> Result<(), String> {
+    if !heap.is_class(root_class) {
+        return Err("image encoding's root object is not a class".to_string());
+    }
+    let superclass = heap.class_superclass(root_class);
     match superclass {
         None => w.write_bool(false),
         Some(superclass) => {
-            let builtin = match &superclass.borrow().data {
-                ObjectData::Class(data) => data.builtin,
-                _ => None,
-            };
+            let builtin = heap.class_builtin(&superclass);
             let Some(kind) = builtin else {
                 return Err(
                     "image encoding cannot serialize a root class whose superclass is a \
@@ -294,6 +292,7 @@ pub fn encode_entry(w: &mut Writer, entry: Option<u32>) {
 /// `encode_closure_record`'s tree-walker closure.
 pub fn encode_code_table(
     w: &mut Writer,
+    heap: &Heap,
     module: &CompiledModule,
     root_class: &ClassRef,
     symbols: &mut symbols::Builder,
@@ -302,7 +301,7 @@ pub fn encode_code_table(
     let mut ids = CodeIds {
         ids: HashMap::new(),
     };
-    let rows = mixins::plan(root_class, module)?;
+    let rows = mixins::plan(heap, root_class, module)?;
     for row in &rows {
         for (_, code) in &row.methods {
             collect_code(code, &mut order, &mut ids);
@@ -591,11 +590,8 @@ fn class_refs(data: &ClassData) -> impl Iterator<Item = ObjRef> + '_ {
 /// supplies, or the module's root class, which `load` rebuilds from the
 /// image's own source before the graph is decoded. Neither exists because
 /// the graph says so, so neither is a record. Every other class object is.
-fn is_class_tag(obj: &ObjRef, root_class: &ClassRef) -> bool {
-    match &obj.borrow().data {
-        ObjectData::Class(data) => data.builtin.is_some() || Rc::ptr_eq(obj, root_class),
-        _ => false,
-    }
+fn is_class_tag(heap: &Heap, obj: &ObjRef, root_class: &ClassRef) -> bool {
+    heap.class_builtin(obj).is_some() || Rc::ptr_eq(obj, root_class)
 }
 
 /// Every heap object (instances, strings, symbols, arrays, closures, and
@@ -619,7 +615,12 @@ impl GraphTable {
     /// failing. The order is exactly what the recursive formulation would
     /// produce (children pushed in reverse so they pop in order), which is
     /// what makes the encoding canonical.
-    pub fn build(roots: &[Value], platform: &Value, root_class: &ClassRef) -> GraphTable {
+    pub fn build(
+        heap: &Heap,
+        roots: &[Value],
+        platform: &Value,
+        root_class: &ClassRef,
+    ) -> GraphTable {
         let mut table = GraphTable {
             objects: Vec::new(),
             object_ids: HashMap::new(),
@@ -633,8 +634,8 @@ impl GraphTable {
             .collect();
         while let Some(pending) = stack.pop() {
             match pending {
-                Pending::Value(v) => table.visit_value(&v, platform, root_class, &mut stack),
-                Pending::Frame(f) => table.visit_frame(&f, &mut stack),
+                Pending::Value(v) => table.visit_value(heap, &v, platform, root_class, &mut stack),
+                Pending::Frame(f) => table.visit_frame(heap, &f, &mut stack),
             }
         }
         table
@@ -642,13 +643,14 @@ impl GraphTable {
 
     fn visit_value(
         &mut self,
+        heap: &Heap,
         v: &Value,
         platform: &Value,
         root_class: &ClassRef,
         stack: &mut Vec<Pending>,
     ) {
         let Value::Obj(obj) = v else { return };
-        if is_same_object(v, platform) || is_class_tag(obj, root_class) {
+        if is_same_object(v, platform) || is_class_tag(heap, obj, root_class) {
             return;
         }
         let key = Rc::as_ptr(obj) as usize;
@@ -660,13 +662,13 @@ impl GraphTable {
         self.objects.push(obj.clone());
         let before = stack.len();
         {
-            let borrowed = obj.borrow();
+            let record = heap.object_snapshot(obj);
             // An object's own class is a reference like every other: now
             // that a class object can be a record, reaching one only
             // through whatever values happen to point at it would leave
             // `encode_class_tag` with an id that was never assigned.
-            stack.push(Pending::Value(Value::Obj(borrowed.class.clone())));
-            match &borrowed.data {
+            stack.push(Pending::Value(Value::Obj(record.class.clone())));
+            match &record.data {
                 ObjectData::Instance(fields) | ObjectData::Array(fields) => {
                     stack.extend(fields.iter().cloned().map(Pending::Value));
                 }
@@ -687,7 +689,7 @@ impl GraphTable {
         stack[before..].reverse();
     }
 
-    fn visit_frame(&mut self, frame: &FrameRef, stack: &mut Vec<Pending>) {
+    fn visit_frame(&mut self, heap: &Heap, frame: &FrameRef, stack: &mut Vec<Pending>) {
         let key = Rc::as_ptr(frame) as usize;
         if self.frame_ids.contains_key(&key) {
             return;
@@ -697,7 +699,7 @@ impl GraphTable {
         self.frames.push(frame.clone());
         let before = stack.len();
         {
-            let f = frame.borrow();
+            let f = heap.frame_snapshot(frame);
             stack.push(Pending::Value(f.receiver.clone()));
             stack.extend(f.args.iter().cloned().map(Pending::Value));
             stack.extend(f.temps.iter().cloned().map(Pending::Value));
@@ -770,6 +772,7 @@ pub struct EncodeContext<'a> {
     /// `mixin::mixin_key` -> mixin-table row id, as `mixins::encode`
     /// assigned them.
     pub mixin_ids: &'a HashMap<usize, u32>,
+    pub heap: &'a Heap,
 }
 
 /// `Builtin(kind)` (0 + kind tag), `UserRoot` (1), or `Record` (2 + object
@@ -785,10 +788,10 @@ pub struct EncodeContext<'a> {
 /// instance of it, and there is one per enclosing instance, so no tag that
 /// names a class only by its position in the source could tell them apart.
 fn encode_class_tag(w: &mut Writer, class: &ClassRef, ctx: &EncodeContext) {
-    let builtin = match &class.borrow().data {
-        ObjectData::Class(data) => data.builtin,
-        _ => panic!("internal: a class reference does not point at a class object"),
-    };
+    if !ctx.heap.is_class(class) {
+        panic!("internal: a class reference does not point at a class object");
+    }
+    let builtin = ctx.heap.class_builtin(class);
     match builtin {
         Some(kind) => {
             w.write_u8(CLS_BUILTIN);
@@ -829,7 +832,7 @@ fn encode_value(w: &mut Writer, v: &Value, ctx: &EncodeContext) {
         w.write_u8(VAL_PLATFORM);
         return;
     }
-    if matches!(obj.borrow().data, ObjectData::Class(_)) {
+    if ctx.heap.is_class(obj) {
         w.write_u8(VAL_CLASS_TAG);
         encode_class_tag(w, obj, ctx);
         return;
@@ -942,10 +945,10 @@ fn encode_object(
     ctx: &EncodeContext,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
-    let borrowed = obj.borrow();
-    encode_class_tag(w, &borrowed.class, ctx);
-    w.write_u32(borrowed.identity_hash);
-    match &borrowed.data {
+    let record = ctx.heap.object_snapshot(obj);
+    encode_class_tag(w, &record.class, ctx);
+    w.write_u32(record.identity_hash);
+    match &record.data {
         ObjectData::Instance(fields) => {
             w.write_u8(OBJ_INSTANCE);
             encode_values(w, fields, ctx);
@@ -980,7 +983,7 @@ fn encode_frame(
     ctx: &EncodeContext,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
-    let f = frame.borrow();
+    let f = ctx.heap.frame_snapshot(frame);
     encode_value(w, &f.receiver, ctx);
     encode_values(w, &f.args, ctx);
     encode_values(w, &f.temps, ctx);
@@ -1034,8 +1037,10 @@ fn encode_frame(
 /// The object table, the frame table, and the roots. Both counts come
 /// first so the decoder can placeholder-allocate both tables before
 /// filling either (objects and frames reference each other freely).
+#[allow(clippy::too_many_arguments)]
 pub fn encode_graph_section(
     w: &mut Writer,
+    heap: &Heap,
     roots: &[Value],
     platform: &Value,
     code_ids: &CodeIds,
@@ -1043,13 +1048,14 @@ pub fn encode_graph_section(
     mixin_ids: &HashMap<usize, u32>,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
-    let table = GraphTable::build(roots, platform, root_class);
+    let table = GraphTable::build(heap, roots, platform, root_class);
     let ctx = EncodeContext {
         table: &table,
         code_ids,
         platform,
         root_class,
         mixin_ids,
+        heap,
     };
     w.write_u32(u32_field("object table entry count", table.objects().len()));
     w.write_u32(u32_field("frame table entry count", table.frames().len()));

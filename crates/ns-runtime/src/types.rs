@@ -29,7 +29,7 @@ pub enum Value {
     Obj(ObjRef),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Object {
     pub class: ClassRef,
     /// Monotonic, assigned at allocation -- never derived from the `Rc`
@@ -38,7 +38,7 @@ pub struct Object {
     pub data: ObjectData,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ObjectData {
     Instance(Vec<Value>),
     Str(String),
@@ -53,7 +53,7 @@ pub enum ObjectData {
 /// and the same superclass application share one `application`, which is
 /// what lets an inline cache stay monomorphic across enclosing instances
 /// once nested classes give a mixin one class object per enclosing object.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClassData {
     /// Behaviour: code, layout and the superclass chain. Shared with every
     /// other class object built from the same mixin and superclass.
@@ -186,7 +186,7 @@ pub enum SourceOrigin {
 
 pub type FrameRef = Rc<RefCell<Frame>>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FrameKind {
     Method(Rc<crate::mixin::MixinMethod>),
     Closure(Rc<ClosureData>),
@@ -235,7 +235,7 @@ pub enum PcKind {
     Bytecode,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Frame {
     pub receiver: Value,
     pub args: Vec<Value>,
