@@ -109,6 +109,15 @@ and class objects, never AST-carrying bindings, so there is no source for the
 tree-walker to execute; `Interpreter::set_engine(Engine::TreeWalk)` refuses on a
 loaded image rather than running it against the wrong data.
 
+**Object and frame access goes through `heap.rs`, never through a handle
+directly.** `ObjRef`, `ClassRef` and `FrameRef` are opaque newtypes whose
+contents only `heap.rs` and `types.rs` can reach. A `.borrow()` anywhere else
+is the thing the seam exists to prevent: it is what made a representation
+change a 276-site edit, and re-introducing one puts the next change back where
+this one started. Accessors copy out on purpose — if you want to lend out a
+reference instead, you are writing the rooting problem the arena's scope
+discipline exists to answer.
+
 ## Working in this repository
 
 ```bash

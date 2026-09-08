@@ -54,6 +54,20 @@ atomically swaps identity. That rules out a conservative non-moving collector,
 which makes `become:` hard. A copying or compacting collector can implement it,
 and MMTk supports object forwarding.
 
+### The seam
+
+`crates/ns-runtime/src/heap.rs` is the single place that knows what a handle
+is. Every read and write of an `Object` or a `Frame` goes through a `Heap`
+accessor, so replacing the store behind them touches that file rather than the
+276 call sites the workspace held before the seam existed.
+
+The accessors copy out rather than lend out. That follows what the call sites
+already did — borrow, clone one field, drop the borrow — and it is what keeps
+the arena from needing a rooting discipline at every site that calls back into
+the interpreter while holding a reference. Mutating accessors take `&mut self`
+even where the present store would not require it, so that the arena is a
+change of implementation rather than a second pass over every caller.
+
 ### The representation: an arena of typed handles
 
 The model is the Nova JavaScript engine's: a `Value` is a Rust enum carrying
