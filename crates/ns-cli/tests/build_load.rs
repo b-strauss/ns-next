@@ -179,6 +179,62 @@ fn every_fixture_runs_identically_from_source_and_from_a_binary() {
     );
 }
 
+/// For one source and one --debug-source setting, a build and a snapshot must
+/// agree byte for byte from `origin` through `root class`.
+///
+/// Not "the binary is a prefix of the image" -- that is false as soon as one
+/// records an entry and the other does not. The guarantee is about the
+/// sections that describe code and structure, and it is what keeps the shared
+/// section writers honest.
+#[test]
+fn a_build_and_a_snapshot_agree_on_the_describing_sections() {
+    let dir = temp_dir("prefix");
+    let src = fixture("arithmetic.ns");
+    let bin = dir.join("app.nsb");
+    let img = dir.join("world.img");
+
+    let (ok, _, err) = ns_next(&["build".as_ref(), src.as_os_str(), bin.as_os_str()]);
+    assert!(ok, "{err}");
+    let (ok, _, err) = ns_next(&["snapshot".as_ref(), src.as_os_str(), img.as_os_str()]);
+    assert!(ok, "{err}");
+
+    let bin_bytes = std::fs::read(&bin).expect("read binary");
+    let img_bytes = std::fs::read(&img).expect("read image");
+
+    // The window starts at `origin`, not at byte 0: the header's flag byte
+    // legitimately differs (a build is stateless, a snapshot is not), so
+    // starting from the header would fail on that difference instead of on
+    // the property this test actually guards.
+    let window = |bytes: &[u8]| {
+        let report = ns_runtime::image::inspect::inspect(bytes).expect("inspect");
+        let start = report
+            .sections
+            .iter()
+            .find(|s| s.name == "origin")
+            .expect("origin section")
+            .start;
+        let end = report
+            .sections
+            .iter()
+            .find(|s| s.name == "root class")
+            .expect("root class section")
+            .end;
+        (start, end)
+    };
+    let (bin_start, bin_end) = window(&bin_bytes);
+    let (img_start, img_end) = window(&img_bytes);
+    assert_eq!(
+        (bin_start, bin_end),
+        (img_start, img_end),
+        "the describing sections start or end at different offsets"
+    );
+    assert_eq!(
+        &bin_bytes[bin_start..bin_end],
+        &img_bytes[img_start..img_end],
+        "describing bytes differ; run `ns-next inspect` on both to see which section"
+    );
+}
+
 #[test]
 fn load_send_overrides_the_recorded_entry() {
     let dir = temp_dir("override");
