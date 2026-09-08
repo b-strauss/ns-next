@@ -272,9 +272,8 @@ impl Heap {
     // reach here, so this addressing is total.
     //
     // Only the accessors a caller actually needs are added here;
-    // `frame_arg_count`, `frame_pc`, `frame_sender` and `frame_slot_base`
-    // still have no caller and are left for the task that adds their first
-    // one.
+    // `frame_arg_count`, `frame_pc` and `frame_sender` still have no caller
+    // and are left for the task that adds their first one.
 
     pub fn receiver(&self, frame: &FrameRef) -> Value {
         frame.borrow().receiver.clone()
@@ -303,6 +302,26 @@ impl Heap {
 
     pub fn frame_current_class(&self, frame: &FrameRef) -> Option<ClassRef> {
         frame.borrow().current_class.clone()
+    }
+
+    /// The absolute field index a compiled `InitSlot`'s mixin-relative
+    /// `own_index` is offset by. Fixed for the frame's whole life --
+    /// `interpreter::instantiate` builds one frame per inheritance level and
+    /// sets this from that level's own `MixinApplication.own_slot_base`, so
+    /// there is nothing to save and restore between levels.
+    pub fn frame_slot_base(&self, frame: &FrameRef) -> usize {
+        frame.borrow().slot_base
+    }
+
+    /// Grows an activation's register file, filling with nil. Needed by
+    /// the initializer path, where a level's compiled body may declare
+    /// more registers than the frame was built with, and by
+    /// edit-and-continue later (`docs/design/liveness-and-reflection.md`).
+    pub fn grow_temps(&mut self, frame: &FrameRef, needed: usize) {
+        let mut f = frame.borrow_mut();
+        if f.temps.len() < needed {
+            f.temps.resize(needed, Value::Nil);
+        }
     }
 
     pub fn set_frame_pc(&mut self, frame: &FrameRef, pc: usize) {

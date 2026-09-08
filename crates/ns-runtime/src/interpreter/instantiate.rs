@@ -9,6 +9,7 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
+use crate::heap::Heap;
 use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
 use crate::types::*;
 use crate::Symbol;
@@ -205,16 +206,11 @@ impl Interpreter {
         let Value::Obj(obj) = receiver else {
             return None;
         };
-        let (factory_selector, builtin) = {
-            let borrowed = obj.borrow();
-            let ObjectData::Class(class_data) = &borrowed.data else {
-                return None;
-            };
-            (primary_factory_selector_of(class_data), class_data.builtin)
-        };
+        let factory_selector = primary_factory_selector(&self.heap, obj)?;
         if selector != factory_selector {
             return None;
         }
+        let builtin = self.heap.class_builtin(obj);
         let class_ref = obj.clone();
         Some(match builtin {
             // `Array`/`OrderedCollection`'s Milestone 1 representation is
@@ -323,17 +319,10 @@ impl Interpreter {
         // since a selector's keyword count is its parameter count. This
         // guard is what keeps that reasoning from being the only thing
         // between a decoded image's message body and an out-of-bounds index.
-        let declared_arity = {
-            let borrowed = class.borrow();
-            match &borrowed.data {
-                ObjectData::Class(data) => data
-                    .application
-                    .mixin
-                    .factory
-                    .map(|factory| factory.num_args),
-                _ => None,
-            }
-        };
+        let declared_arity = self
+            .heap
+            .class_application(class)
+            .and_then(|application| application.mixin.factory.map(|factory| factory.num_args));
         if let Some(declared_arity) = declared_arity {
             if factory_args.len() != declared_arity {
                 return Err(Signal::Error(NewspeakError {
@@ -351,13 +340,7 @@ impl Interpreter {
         // Step 3: the superclass clause's message, then the superclass's own
         // instance initializer on the same object -- deepest (Object) first,
         // because this recursion runs before this level's own steps 4-5.
-        let superclass = {
-            let borrowed = class.borrow();
-            match &borrowed.data {
-                ObjectData::Class(data) => data.superclass.clone(),
-                _ => None,
-            }
-        };
+        let superclass = self.heap.class_superclass(class);
         if let Some(superclass) = superclass {
             let super_args = self.eval_superclass_message(
                 class,
@@ -382,7 +365,7 @@ impl Interpreter {
         // is set here, with the rest of the level's identity, and never
         // changes: with a frame per level there is nothing to save and
         // restore, and no window in which a frame describes another level.
-        if !class_has_initializer_code(class) {
+        if !class_has_initializer_code(&self.heap, class) {
             return Ok(());
         }
         let frame = Rc::new(RefCell::new(Frame {
@@ -452,10 +435,10 @@ impl Interpreter {
         // spurious "not the primary factory message" error on the first
         // instantiation after a load.
         let selector = clause.map_or_else(|| Symbol::intern("new"), |clause| clause.selector);
-        let expected = primary_factory_selector(superclass);
+        let expected = primary_factory_selector(&self.heap, superclass);
         if Some(selector) != expected {
             return Err(not_the_primary_factory_error(
-                class, superclass, selector, expected,
+                &self.heap, class, superclass, selector, expected,
             ));
         }
         if !clause.is_some_and(|clause| clause.has_args) {
@@ -502,7 +485,7 @@ impl Interpreter {
             args_expr.as_ref(),
             bindings,
         )?;
-        argument_list(class, value)
+        argument_list(&self.heap, class, value)
     }
 
     /// Engine hook 3 (M2 spec, "`vm.rs` and the engine hook"): Class
@@ -544,7 +527,7 @@ impl Interpreter {
                 // test because `compile_module` emits no initializer for
                 // such a mixin, so the lookup below would have nothing to
                 // find if some other caller ever arrived here.
-                if !class_has_initializer_code(class) {
+                if !class_has_initializer_code(&self.heap, class) {
                     return Ok(());
                 }
                 Some({
@@ -574,17 +557,13 @@ impl Interpreter {
                 self.run_own_init_exprs(class, frame, bindings)
             }
             Some((code, own_slot_base)) => {
-                {
-                    let mut f = frame.borrow_mut();
-                    debug_assert_eq!(
-                        f.slot_base, own_slot_base,
-                        "an initializer frame must be built for the level it runs"
-                    );
-                    let needed = (code.num_registers - code.num_args) as usize;
-                    if f.temps.len() < needed {
-                        f.temps.resize(needed, Value::Nil);
-                    }
-                }
+                debug_assert_eq!(
+                    self.heap.frame_slot_base(frame),
+                    own_slot_base,
+                    "an initializer frame must be built for the level it runs"
+                );
+                let needed = (code.num_registers - code.num_args) as usize;
+                self.heap.grow_temps(frame, needed);
                 crate::vm::run_code(self, frame, &code, bindings).map(|_| ())
             }
         }
@@ -691,28 +670,19 @@ impl Interpreter {
 /// incoming send *is* the factory message) and `eval_superclass_message`
 /// (which decides whether a superclass clause names it) -- `newspeak-spec.pdf`
 /// §6.1 makes those the same question asked from two sides.
-pub(crate) fn primary_factory_selector(class: &ClassRef) -> Option<Symbol> {
-    let borrowed = class.borrow();
-    match &borrowed.data {
-        ObjectData::Class(data) => Some(primary_factory_selector_of(data)),
-        _ => None,
-    }
+pub(crate) fn primary_factory_selector(heap: &Heap, class: &ClassRef) -> Option<Symbol> {
+    heap.class_application(class)
+        .map(|application| match &application.mixin.factory {
+            Some(factory) => factory.selector,
+            None => Symbol::intern("new"),
+        })
 }
 
-/// `primary_factory_selector` for a caller that already holds the borrow.
-fn primary_factory_selector_of(data: &ClassData) -> Symbol {
-    match &data.application.mixin.factory {
-        Some(factory) => factory.selector,
-        None => Symbol::intern("new"),
-    }
-}
-
-fn class_name(class: &ClassRef) -> Symbol {
-    let borrowed = class.borrow();
-    match &borrowed.data {
-        ObjectData::Class(data) => data.application.mixin.name,
-        _ => Symbol::intern("an object"),
-    }
+fn class_name(heap: &Heap, class: &ClassRef) -> Symbol {
+    heap.class_application(class).map_or_else(
+        || Symbol::intern("an object"),
+        |application| application.mixin.name,
+    )
 }
 
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if the message
@@ -720,13 +690,14 @@ fn class_name(class: &ClassRef) -> Symbol {
 /// of C." Raised from shared orchestration, so both engines print the same
 /// stderr byte for byte.
 fn not_the_primary_factory_error(
+    heap: &Heap,
     class: &ClassRef,
     superclass: &ClassRef,
     selector: Symbol,
     expected: Option<Symbol>,
 ) -> Signal {
-    let subclass_name = class_name(class);
-    let superclass_name = class_name(superclass);
+    let subclass_name = class_name(heap, class);
+    let superclass_name = class_name(heap, superclass);
     let expected = match expected {
         Some(expected) => format!("#{expected}"),
         // `superclass` is not a class object at all -- an internally
@@ -751,10 +722,10 @@ fn not_the_primary_factory_error(
 /// body that produced this value can come off the wire, where
 /// `image::decode::build_module` reconciles its kind and arity but nothing
 /// constrains what it returns. An image is untrusted input.
-fn argument_list(class: &ClassRef, value: Value) -> Result<Vec<Value>, Signal> {
+fn argument_list(heap: &Heap, class: &ClassRef, value: Value) -> Result<Vec<Value>, Signal> {
     if let Value::Obj(obj) = &value {
-        if let ObjectData::Array(items) = &obj.borrow().data {
-            return Ok(items.clone());
+        if let Some(items) = heap.array_elements(obj) {
+            return Ok(items);
         }
     }
     Err(Signal::Error(NewspeakError {
@@ -763,7 +734,7 @@ fn argument_list(class: &ClassRef, value: Value) -> Result<Vec<Value>, Signal> {
         message: format!(
             "the superclass clause of class {} did not evaluate its message \
              arguments to an argument list",
-            class_name(class)
+            class_name(heap, class)
         ),
     }))
 }
@@ -831,12 +802,9 @@ pub(crate) fn pattern_param_count(pattern: &ast::MessagePattern) -> usize {
 /// every `BuiltinClass` and for a non-class object. Delegates to
 /// `mixin_needs_initializer_code`, the one definition of "needs initializer
 /// code" a class-level and a mixin-level caller both share.
-pub(crate) fn class_has_initializer_code(class: &ClassRef) -> bool {
-    let borrowed = class.borrow();
-    match &borrowed.data {
-        ObjectData::Class(data) => mixin_needs_initializer_code(&data.application.mixin),
-        _ => false,
-    }
+pub(crate) fn class_has_initializer_code(heap: &Heap, class: &ClassRef) -> bool {
+    heap.class_application(class)
+        .is_some_and(|application| mixin_needs_initializer_code(&application.mixin))
 }
 
 /// Whether `mixin` declares any slot or `initExpr` at all.
