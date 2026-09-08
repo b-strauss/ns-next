@@ -31,7 +31,7 @@ fn as_string(heap: &Heap, value: &Value) -> String {
         Value::Obj(obj) => heap
             .str_value(obj)
             .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
-        other => panic!("expected Value::Obj, got {other:?}"),
+        other => panic!("expected Value::Obj, got {}", heap.describe(other)),
     }
 }
 
@@ -56,7 +56,10 @@ fn a_builtin_receiver_inherits_objects_native_class() {
             Rc::ptr_eq(&obj, &expected),
             "`3 class` must yield the Integer class object"
         ),
-        other => panic!("expected Value::Obj(<Integer class>), got {other:?}"),
+        other => panic!(
+            "expected Value::Obj(<Integer class>), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 

@@ -86,7 +86,10 @@ fn array_at_returns_the_one_based_element() {
     );
     match expect_ok(result, "{1. 2. 3} at: 2") {
         Value::SmallInt(2) => {}
-        other => panic!("expected Value::SmallInt(2), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(2), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -131,7 +134,10 @@ fn array_at_put_writes_and_returns_the_receiver() {
     );
     match expect_ok(result, "at:put: then at:") {
         Value::SmallInt(99) => {}
-        other => panic!("expected Value::SmallInt(99), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(99), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -156,7 +162,10 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
     );
     match expect_ok(result, "{1. 2. 3} do: [:x | sum := sum + x]") {
         Value::SmallInt(6) => {}
-        other => panic!("expected Value::SmallInt(6), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(6), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -184,7 +193,10 @@ fn ordered_collection_add_and_size_through_a_real_cascade() {
     );
     match expect_ok(result, "OrderedCollection new add: 1; add: 2; size") {
         Value::SmallInt(2) => {}
-        other => panic!("expected Value::SmallInt(2), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(2), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -202,7 +214,10 @@ fn ordered_collection_add_returns_the_argument_not_the_receiver() {
     );
     match expect_ok(result, "OrderedCollection add: 42") {
         Value::SmallInt(42) => {}
-        other => panic!("expected Value::SmallInt(42) (the argument), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(42) (the argument), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -272,7 +287,10 @@ fn block_value_invokes_a_zero_arg_closure() {
     );
     match expect_ok(result, "[42] value") {
         Value::SmallInt(42) => {}
-        other => panic!("expected Value::SmallInt(42), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(42), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -293,7 +311,10 @@ fn block_value_colon_passes_the_argument_positionally() {
     );
     match expect_ok(result, "[:x | x + 1] value: 41") {
         Value::SmallInt(42) => {}
-        other => panic!("expected Value::SmallInt(42), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(42), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -314,7 +335,10 @@ fn block_num_args_reports_the_declared_parameter_count() {
     );
     match expect_ok(result, "[:x :y | x + y] numArgs") {
         Value::SmallInt(2) => {}
-        other => panic!("expected Value::SmallInt(2), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(2), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -407,7 +431,10 @@ fn an_invoked_blocks_frame_records_its_sender() {
     );
 
     let Value::Obj(obj) = &result else {
-        panic!("expected the inner block literal as a Value::Obj, got {result:?}");
+        panic!(
+            "expected the inner block literal as a Value::Obj, got {}",
+            interp.heap_ref().describe(&result)
+        );
     };
     let outer_block_frame = interp
         .heap_ref()
@@ -431,6 +458,10 @@ fn an_invoked_blocks_frame_records_its_sender() {
             Rc::ptr_eq(&a, b),
             "the sender frame's receiver must be the instance `m` was sent to"
         ),
-        other => panic!("expected two Value::Obj receivers, got {other:?}"),
+        (s, r) => panic!(
+            "expected two Value::Obj receivers, got {} and {}",
+            interp.heap_ref().describe(&s),
+            interp.heap_ref().describe(r)
+        ),
     }
 }

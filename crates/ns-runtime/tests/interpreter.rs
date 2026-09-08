@@ -153,7 +153,10 @@ fn method_with_no_explicit_return_returns_self() {
             Rc::ptr_eq(&obj, &instance),
             "a method with no explicit return must yield the receiver (self), not the last expression's value"
         ),
-        Ok(other) => panic!("expected Value::Obj(self), got {other:?}"),
+        Ok(other) => panic!(
+            "expected Value::Obj(self), got {}",
+            interp.heap_ref().describe(&other)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return -- `send` should never see one escape `invoke_method`"),
         Err(Signal::Error(e)) => panic!("unexpected Signal::Error: {}", e.message),
     }
@@ -260,7 +263,10 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
                 interp.heap_ref().describe(&Value::Obj(obj.clone()))
             );
         }
-        Ok(other) => panic!("expected Value::Obj(<OrderedCollection instance>), got {other:?}"),
+        Ok(other) => panic!(
+            "expected Value::Obj(<OrderedCollection instance>), got {}",
+            interp.heap_ref().describe(&other)
+        ),
         Err(Signal::Return(..)) => panic!(
             "unexpected Signal::Return -- `send` should never see one escape `invoke_method`"
         ),
@@ -310,7 +316,10 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
             panic!("expected the block's `^1` to raise a non-local return, not return normally")
         }
         Err(Signal::Return(_, other)) => {
-            panic!("expected Signal::Return(_, SmallInt(1)), got value {other:?}")
+            panic!(
+                "expected Signal::Return(_, SmallInt(1)), got value {}",
+                interp.heap_ref().describe(&other)
+            )
         }
         Err(Signal::Error(e)) => {
             panic!("expected Signal::Return, got Signal::Error: {}", e.message)

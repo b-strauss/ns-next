@@ -42,7 +42,7 @@ fn as_string(heap: &Heap, value: &Value) -> String {
         Value::Obj(obj) => heap
             .str_value(obj)
             .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
-        other => panic!("expected Value::Obj, got {other:?}"),
+        other => panic!("expected Value::Obj, got {}", heap.describe(other)),
     }
 }
 
@@ -61,7 +61,10 @@ fn integer_addition_via_direct_send_evaluates_correctly() {
 
     match expect_ok(result, "3 + 4") {
         Value::SmallInt(7) => {}
-        other => panic!("expected Value::SmallInt(7), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(7), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -114,7 +117,10 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
 
     match expect_ok(result, "true ifTrue:ifFalse:") {
         Value::SmallInt(1) => {}
-        other => panic!("expected Value::SmallInt(1), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(1), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -147,7 +153,10 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
 
     match expect_ok(result, "true ifTrue: [ x ] ifFalse: [ 0 ]") {
         Value::SmallInt(5) => {}
-        other => panic!("expected Value::SmallInt(5), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(5), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -308,7 +317,10 @@ fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
 
     match expect_ok(result, "1 = 1.0") {
         Value::Bool(false) => {}
-        other => panic!("expected Value::Bool(false), got {other:?}"),
+        other => panic!(
+            "expected Value::Bool(false), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -329,7 +341,10 @@ fn float_arithmetic_still_widens_an_integer_argument() {
 
     match expect_ok(result, "1.5 + 1") {
         Value::Float(f) => assert!((f - 2.5).abs() < f64::EPSILON, "expected 2.5, got {f}"),
-        other => panic!("expected Value::Float(2.5), got {other:?}"),
+        other => panic!(
+            "expected Value::Float(2.5), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -382,6 +397,9 @@ fn a_radix_integer_literal_evaluates() {
     );
     match expect_ok(result, "^16r1F") {
         Value::SmallInt(31) => {}
-        other => panic!("expected Value::SmallInt(31), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(31), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }

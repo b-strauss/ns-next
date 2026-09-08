@@ -37,7 +37,10 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     let receiver = expect_ok(result, "OrderedCollection new");
 
     let Value::Obj(obj) = &receiver else {
-        panic!("expected Value::Obj, got {receiver:?}");
+        panic!(
+            "expected Value::Obj, got {}",
+            interp.heap_ref().describe(&receiver)
+        );
     };
     let elements = interp.heap_ref().array_elements(obj);
     assert!(
@@ -57,7 +60,10 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     );
     match add_result {
         Value::SmallInt(1) => {}
-        other => panic!("expected add: to return its argument, got {other:?}"),
+        other => panic!(
+            "expected add: to return its argument, got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 
     let size_result = expect_ok(
@@ -66,7 +72,10 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     );
     match size_result {
         Value::SmallInt(1) => {}
-        other => panic!("expected Value::SmallInt(1), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(1), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -161,7 +170,11 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
 
     match (via_send_bar, via_instantiate_bar) {
         (Value::SmallInt(a), Value::SmallInt(b)) => assert_eq!(a, b),
-        (a, b) => panic!("expected two equal Value::SmallInt, got {a:?} and {b:?}"),
+        (a, b) => panic!(
+            "expected two equal Value::SmallInt, got {} and {}",
+            interp_a.heap_ref().describe(&a),
+            interp_b.heap_ref().describe(&b)
+        ),
     }
 }
 

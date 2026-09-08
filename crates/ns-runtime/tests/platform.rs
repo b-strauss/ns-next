@@ -99,7 +99,10 @@ fn platform_class_accessors_return_the_matching_builtin_class() {
     );
     match got {
         Value::Obj(obj) => assert!(Rc::ptr_eq(&obj, &expected)),
-        other => panic!("expected Value::Obj, got {other:?}"),
+        other => panic!(
+            "expected Value::Obj, got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 

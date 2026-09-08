@@ -61,7 +61,10 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 
     match result {
         Ok(Value::SmallInt(42)) => {}
-        Ok(other) => panic!("expected Value::SmallInt(42), got {other:?}"),
+        Ok(other) => panic!(
+            "expected Value::SmallInt(42), got {}",
+            interp.heap_ref().describe(&other)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
         Err(Signal::Error(e)) => panic!("unexpected Signal::Error: {}", e.message),
     }
@@ -155,7 +158,10 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
             "getB returned nil -- the superclass's own slot initializer (a = 10) did not run \
              before the subclass's own slot initializer (b = a) read it"
         ),
-        Ok(other) => panic!("expected Value::SmallInt(10), got {other:?}"),
+        Ok(other) => panic!(
+            "expected Value::SmallInt(10), got {}",
+            interp.heap_ref().describe(&other)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
         Err(Signal::Error(e)) => panic!("unexpected Signal::Error: {}", e.message),
     }
@@ -190,7 +196,10 @@ fn a_factory_parameter_is_visible_in_a_slot_initializer() {
     match result {
         Ok(Value::SmallInt(99)) => {}
         Ok(other) => {
-            panic!("expected the slot to hold the factory argument (SmallInt(99)), got {other:?}")
+            panic!(
+                "expected the slot to hold the factory argument (SmallInt(99)), got {}",
+                interp.heap_ref().describe(&other)
+            )
         }
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
         Err(Signal::Error(e)) => panic!("unexpected Signal::Error: {}", e.message),
@@ -236,7 +245,10 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
                 interp.heap_ref().describe(&result)
             ),
         },
-        other => panic!("expected Value::Obj(<String>), got {other:?}"),
+        other => panic!(
+            "expected Value::Obj(<String>), got {}",
+            interp.heap_ref().describe(other)
+        ),
     }
 }
 
@@ -268,7 +280,10 @@ fn a_factory_parameter_is_visible_in_an_init_expr() {
 
     match result {
         Ok(Value::SmallInt(7)) => {}
-        Ok(other) => panic!("expected SmallInt(7) assigned by the initExpr, got {other:?}"),
+        Ok(other) => panic!(
+            "expected SmallInt(7) assigned by the initExpr, got {}",
+            interp.heap_ref().describe(&other)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
         Err(Signal::Error(e)) => panic!("unexpected Signal::Error: {}", e.message),
     }

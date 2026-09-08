@@ -20,7 +20,7 @@ fn as_string(heap: &Heap, value: &Value) -> String {
         Value::Obj(obj) => heap
             .str_value(obj)
             .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
-        other => panic!("expected Value::Obj, got {other:?}"),
+        other => panic!("expected Value::Obj, got {}", heap.describe(other)),
     }
 }
 
@@ -156,7 +156,10 @@ fn symbol_round_trips_through_as_string_and_as_symbol() {
                 interp.heap_ref().describe(&back_to_symbol)
             ),
         },
-        other => panic!("expected Value::Obj, got {other:?}"),
+        other => panic!(
+            "expected Value::Obj, got {}",
+            interp.heap_ref().describe(other)
+        ),
     }
 }
 
