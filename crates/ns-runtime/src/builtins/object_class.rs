@@ -66,11 +66,9 @@ fn extract_dnu_selector(heap: &Heap, message_mirror_shaped_array: &Value) -> Sym
     // Matches `Interpreter::does_not_understand`'s `{selector. args}` array
     // shape from Task 6.
     if let Value::Obj(obj) = message_mirror_shaped_array {
-        if let Some(elements) = heap.array_elements(obj) {
-            if let Some(Value::Obj(sym_obj)) = elements.first() {
-                if let Some(s) = heap.sym_value(sym_obj) {
-                    return s;
-                }
+        if let Some(Value::Obj(sym_obj)) = heap.array_at(obj, 0) {
+            if let Some(s) = heap.sym_value(&sym_obj) {
+                return s;
             }
         }
     }
