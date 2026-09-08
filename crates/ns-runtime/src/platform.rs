@@ -30,12 +30,9 @@ pub fn dispatch(
     let Value::Obj(obj) = &receiver else {
         return None;
     };
-    let tag = match &obj.borrow().data {
-        ObjectData::Instance(fields) => fields.len(),
-        // Unreachable: every `BuiltinClass::Platform`-classed object is
-        // built by one of the three constructors named above.
-        _ => return None,
-    };
+    // The `?` below is unreachable: every `BuiltinClass::Platform`-classed
+    // object is built by one of the three constructors named above.
+    let tag = interp.heap_ref().instance_field_count(obj)?;
     if tag == 2 {
         return dispatch_collections(interp, selector);
     }
@@ -89,7 +86,7 @@ fn dispatch_collections(
 }
 
 fn dispatch_stream(
-    _interp: &mut Interpreter,
+    interp: &mut Interpreter,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
@@ -97,7 +94,7 @@ fn dispatch_stream(
     match selector.as_str() {
         "show:" => {
             if let Some(Value::Obj(s)) = args.first() {
-                if let ObjectData::Str(text) = &s.borrow().data {
+                if let Some(text) = interp.heap_ref().str_value(s) {
                     print!("{text}");
                     let _ = std::io::stdout().flush();
                 }

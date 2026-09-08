@@ -311,13 +311,13 @@ fn report_entry_send(result: Result<ns_runtime::Value, ns_runtime::Signal>) -> E
 /// refused here, before a guessed argument could reach `instantiate` and
 /// fail for a reason this message never mentions.
 fn factory_args_for(
+    heap: &ns_runtime::Heap,
     class: &ns_runtime::ClassRef,
     platform: ns_runtime::Value,
 ) -> Result<Vec<ns_runtime::Value>, String> {
-    let factory = match &class.borrow().data {
-        ns_runtime::ObjectData::Class(data) => data.application.mixin.factory,
-        _ => None,
-    };
+    let factory = heap
+        .class_application(class)
+        .and_then(|app| app.mixin.factory);
     match factory {
         // No declared factory (a builtin root, in principle) or a unary
         // one: a unary selector takes no arguments by definition, so there
@@ -337,7 +337,7 @@ fn factory_args_for(
             "cannot instantiate `{}`: its primary factory `{}` takes {} argument(s), and \
              this CLI only knows how to send a zero-argument factory or a one-argument \
              `usingPlatform:`",
-            class_name(class),
+            class_name(heap, class),
             factory.selector,
             factory.num_args
         )),
@@ -350,11 +350,10 @@ fn factory_args_for(
 /// stateless binary, from `image::load`'s rebuilt root class -- so the
 /// fallback is unreachable in practice and exists only to keep this a total
 /// function.
-fn class_name(class: &ns_runtime::ClassRef) -> String {
-    match &class.borrow().data {
-        ns_runtime::ObjectData::Class(data) => data.application.mixin.name.to_string(),
-        _ => "<non-class>".to_string(),
-    }
+fn class_name(heap: &ns_runtime::Heap, class: &ns_runtime::ClassRef) -> String {
+    heap.class_application(class)
+        .map(|app| app.mixin.name.to_string())
+        .unwrap_or_else(|| "<non-class>".to_string())
 }
 
 /// How many arguments `selector` takes, read off its spelling.
@@ -420,7 +419,7 @@ fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
     let bindings = loaded.resolved.bindings.clone();
     let (mut interp, class) = bootstrap_with_engine(&loaded, engine);
     let platform = interp.platform();
-    let factory_args = match factory_args_for(&class, platform.clone()) {
+    let factory_args = match factory_args_for(interp.heap_ref(), &class, platform.clone()) {
         Ok(args) => args,
         Err(msg) => {
             eprintln!("error: {msg}");
@@ -455,7 +454,7 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
     let bindings = loaded.resolved.bindings.clone();
     let (mut interp, class) = bootstrap_with_engine(&loaded, EngineArg::Bytecode);
     let platform = interp.platform();
-    let factory_args = match factory_args_for(&class, platform.clone()) {
+    let factory_args = match factory_args_for(interp.heap_ref(), &class, platform.clone()) {
         Ok(args) => args,
         Err(msg) => {
             eprintln!("error: {msg}");
@@ -591,7 +590,7 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
         // concern -- nothing in the runtime needs to know it was invoked
         // from a terminal.
         let platform = interp.platform();
-        let factory_args = match factory_args_for(&root_class, platform) {
+        let factory_args = match factory_args_for(interp.heap_ref(), &root_class, platform) {
             Ok(args) => args,
             Err(msg) => {
                 eprintln!("error: {msg}");
@@ -724,7 +723,7 @@ fn bench_engine(
 ) -> Result<BenchStats, String> {
     let (mut interp, class) = bootstrap_with_engine(loaded, engine);
     let platform = interp.platform();
-    let factory_args = factory_args_for(&class, platform.clone())?;
+    let factory_args = factory_args_for(interp.heap_ref(), &class, platform.clone())?;
     let entry_args_list = entry_args(send, platform)?;
     let selector = ns_runtime::Symbol::intern(send);
 
@@ -956,9 +955,13 @@ fn cmd_disasm(
         let module = ns_runtime::compiler::compile_module(&class, &bindings);
         (class, module)
     };
-    let root_mixin = match &class.borrow().data {
-        ns_runtime::ObjectData::Class(data) => data.application.mixin.clone(),
-        _ => {
+    // Both arms above deliberately drop their interpreter once `class` and
+    // `module` are extracted; a fresh `Heap` needs no state from either one
+    // to read data `class` already carries.
+    let heap = ns_runtime::Heap::new();
+    let root_mixin = match heap.class_application(&class) {
+        Some(app) => app.mixin.clone(),
+        None => {
             eprintln!("error: internal: loaded module did not produce a class object");
             return ExitCode::FAILURE;
         }
@@ -1080,12 +1083,13 @@ fn cmd_inspect(artifact: &Path, full: bool) -> ExitCode {
 /// from that table, silently breaking the guarantee above instead of
 /// refusing the build. No test catches that today: every fixture here
 /// inherits directly from `Object`.
-fn root_class_answers(class: &ns_runtime::ClassRef, selector: &str) -> bool {
+fn root_class_answers(
+    heap: &ns_runtime::Heap,
+    class: &ns_runtime::ClassRef,
+    selector: &str,
+) -> bool {
     let sym = ns_runtime::Symbol::intern(selector);
-    let mut app = match &class.borrow().data {
-        ns_runtime::ObjectData::Class(data) => Some(data.application.clone()),
-        _ => None,
-    };
+    let mut app = heap.class_application(class);
     while let Some(a) = app {
         if a.mixin.methods.contains_key(&sym) {
             return true;
@@ -1109,7 +1113,9 @@ fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -
 
     let entry = match entry {
         Some(e) => e.to_string(),
-        None if root_class_answers(&class, "main:args:") => "main:args:".to_string(),
+        None if root_class_answers(interp.heap_ref(), &class, "main:args:") => {
+            "main:args:".to_string()
+        }
         None => {
             eprintln!(
                 "error: {} declares no `main:args:`; pass --entry with the selector to send",
@@ -1123,7 +1129,7 @@ fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -
         eprintln!("error: cannot use `{entry}` as an entry point: {msg}");
         return ExitCode::FAILURE;
     }
-    if !root_class_answers(&class, &entry) {
+    if !root_class_answers(interp.heap_ref(), &class, &entry) {
         eprintln!(
             "error: the root class of {} does not answer `{entry}`",
             file.display()

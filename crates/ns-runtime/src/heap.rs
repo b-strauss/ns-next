@@ -79,6 +79,19 @@ impl Heap {
         }
     }
 
+    /// The number of fields in `obj`'s `ObjectData::Instance`, mirroring
+    /// `array_len`. `platform::dispatch` is the only caller: Milestone 1
+    /// tells the platform singleton, its stream and its `collections`
+    /// namespace apart by field count rather than a builtin variant of
+    /// their own (see `platform.rs`'s module doc), so the dispatcher needs
+    /// the count itself, not any one field's value.
+    pub fn instance_field_count(&self, obj: &ObjRef) -> Option<usize> {
+        match &obj.borrow().data {
+            ObjectData::Instance(fields) => Some(fields.len()),
+            _ => None,
+        }
+    }
+
     pub fn array_elements(&self, obj: &ObjRef) -> Option<Vec<Value>> {
         match &obj.borrow().data {
             ObjectData::Array(items) => Some(items.clone()),

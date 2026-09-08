@@ -16,7 +16,7 @@ use ns_syntax::Span;
 
 use crate::bytecode::{method_key, CodeKind, CompiledCode, CompiledModule};
 use crate::mixin::{mixin_key, Mixin};
-use crate::types::{Binding, ClassRef, ObjectData};
+use crate::types::{Binding, ClassRef};
 
 use lower::Lowerer;
 
@@ -67,12 +67,13 @@ pub fn compile_initializer(
     class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> CompiledCode {
-    let mixin = {
-        let borrowed = class.borrow();
-        let ObjectData::Class(data) = &borrowed.data else {
-            panic!("internal: compile_initializer called on a non-class object");
-        };
-        data.application.mixin.clone()
+    // `compile_initializer` is a public entry point with no interpreter of
+    // its own to borrow a `Heap` from; a fresh one needs no state to read
+    // data `class` already carries.
+    let heap = crate::Heap::new();
+    let mixin = match heap.class_application(class) {
+        Some(app) => app.mixin.clone(),
+        None => panic!("internal: compile_initializer called on a non-class object"),
     };
     compile_mixin_initializer(&mixin, bindings)
 }
@@ -185,12 +186,13 @@ pub fn compile_module(
     root_class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> CompiledModule {
-    let root_mixin = {
-        let borrowed = root_class.borrow();
-        match &borrowed.data {
-            ObjectData::Class(data) => data.application.mixin.clone(),
-            _ => panic!("internal: compile_module called on a non-class object"),
-        }
+    // Same reasoning as `compile_initializer` above: `compile_module` is a
+    // public entry point with no interpreter of its own, and a fresh `Heap`
+    // needs no state to read data `root_class` already carries.
+    let heap = crate::Heap::new();
+    let root_mixin = match heap.class_application(root_class) {
+        Some(app) => app.mixin.clone(),
+        None => panic!("internal: compile_module called on a non-class object"),
     };
     let mut module = CompiledModule {
         methods: HashMap::new(),

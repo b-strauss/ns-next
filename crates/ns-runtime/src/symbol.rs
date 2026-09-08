@@ -33,8 +33,7 @@ thread_local! {
 
 impl Symbol {
     pub fn intern(s: &str) -> Symbol {
-        INTERNER.with(|cell| {
-            let mut interner = cell.borrow_mut();
+        INTERNER.with_borrow_mut(|interner| {
             if let Some(&sym) = interner.lookup.get(s) {
                 return sym;
             }
@@ -47,7 +46,7 @@ impl Symbol {
     }
 
     pub fn as_str(self) -> &'static str {
-        INTERNER.with(|cell| cell.borrow().strings[self.0 as usize])
+        INTERNER.with_borrow(|interner| interner.strings[self.0 as usize])
     }
 }
 

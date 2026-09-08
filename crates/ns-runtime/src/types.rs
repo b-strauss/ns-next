@@ -537,8 +537,8 @@ mod tests {
     #[test]
     fn class_data_is_reachable_through_object_data() {
         let class = dummy_class();
-        let borrowed = class.borrow();
-        assert!(matches!(&borrowed.data, ObjectData::Class(_)));
+        let heap = crate::Heap::new();
+        assert!(heap.is_class(&class));
     }
 
     #[test]
