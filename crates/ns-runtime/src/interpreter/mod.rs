@@ -16,6 +16,7 @@ use ns_syntax::Span;
 
 use crate::bytecode::{method_key, CompiledModule};
 use crate::dispatch::{self, Lookup};
+use crate::heap::Heap;
 use crate::types::*;
 use crate::Symbol;
 
@@ -78,7 +79,7 @@ impl std::fmt::Display for EngineUnavailable {
 }
 
 pub struct Interpreter {
-    next_identity_hash: u32,
+    pub(crate) heap: Heap,
     builtin_classes: Option<HashMap<BuiltinClass, ClassRef>>,
     platform_singleton: Option<Value>,
     engine: Engine,
@@ -121,7 +122,7 @@ impl Default for Interpreter {
 impl Interpreter {
     pub fn new() -> Interpreter {
         Interpreter {
-            next_identity_hash: 1,
+            heap: Heap::new(),
             builtin_classes: None,
             platform_singleton: None,
             engine: Engine::TreeWalk,
@@ -134,7 +135,7 @@ impl Interpreter {
 
     pub fn bootstrap() -> Interpreter {
         let mut interp = Interpreter {
-            next_identity_hash: 1,
+            heap: Heap::new(),
             builtin_classes: None,
             platform_singleton: None,
             engine: Engine::TreeWalk,
@@ -198,9 +199,7 @@ impl Interpreter {
     /// `advance_identity_hash_past` puts it wherever the image's maximum
     /// says, so the `+= 1` here is on an image-controlled path.
     pub fn alloc_identity_hash(&mut self) -> u32 {
-        let h = self.next_identity_hash;
-        self.next_identity_hash = self.next_identity_hash.saturating_add(1);
-        h
+        self.heap.alloc_identity_hash()
     }
 
     /// After `image::load`: never hand out an identity hash a loaded object
@@ -214,9 +213,19 @@ impl Interpreter {
     /// allocation in range when the image's maximum is one below the
     /// ceiling.
     pub(crate) fn advance_identity_hash_past(&mut self, max: u32) {
-        if self.next_identity_hash <= max {
-            self.next_identity_hash = max + 1;
-        }
+        self.heap.advance_identity_hash_past(max);
+    }
+
+    /// The heap, for reading. Public so integration tests can exercise the
+    /// seam directly; the field itself stays `pub(crate)` so no caller
+    /// outside the crate can hold one across a call back into the
+    /// interpreter.
+    pub fn heap_ref(&self) -> &Heap {
+        &self.heap
+    }
+
+    pub fn heap_mut(&mut self) -> &mut Heap {
+        &mut self.heap
     }
 
     /// An ordinary (explicit-receiver) send: `newspeak-spec.pdf` §5.5.

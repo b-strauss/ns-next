@@ -9,6 +9,7 @@ pub mod builtins;
 pub mod bytecode;
 pub mod compiler;
 pub mod dispatch;
+pub mod heap;
 pub mod image;
 pub mod interpreter;
 pub mod mixin;
@@ -18,6 +19,7 @@ pub mod symbol;
 pub mod types;
 pub mod vm;
 
+pub use heap::Heap;
 pub use interpreter::{Engine, EngineUnavailable, Interpreter, Signal};
 pub use mixin::{Mixin, MixinApplication};
 pub use resolver::resolve;
