@@ -227,6 +227,11 @@ fn access_from_tag(tag: u8) -> Result<AccessModifier, DecodeError> {
     }
 }
 
+/// `mixin_key` -> mixin-table row id, as `encode` assigns them. Named so
+/// `image::mod`'s `Describing` struct can hold one without spelling out the
+/// map it happens to be today.
+pub(crate) type MixinIds = HashMap<usize, u32>;
+
 /// Writes the mixin table and returns the `mixin_key` -> row id map the
 /// object graph addresses a class object's mixin by (Task 13).
 pub fn encode(
@@ -235,7 +240,7 @@ pub fn encode(
     module: &CompiledModule,
     symbols: &mut symbols::Builder,
     codes: &CodeIds,
-) -> Result<HashMap<usize, u32>, String> {
+) -> Result<MixinIds, String> {
     let rows = plan(root_class, module)?;
     w.write_u32(u32_field("mixin table entry count", rows.len()));
     for row in &rows {

@@ -8,8 +8,8 @@ image format. Rust 1.98.0, edition 2021, three crates:
 - `crates/ns-runtime` — resolver, object model, dispatch, both execution engines
   (`interpreter/` and `compiler/` + `vm.rs`), core library (`builtins/`), image format
   (`image/`).
-- `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run`, `run-corpus`,
-  `disasm`, `snapshot`, `load`, `bench`.
+- `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
+  `snapshot`, `load`, `bench`, `disasm`, `inspect`, `build`.
 
 Read `docs/design/README.md` first — it maps the living design documents and says
 how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology
@@ -56,6 +56,13 @@ bound any recursion whose depth the input controls. `image::load` also runs two
 structural verification passes before installing the engine. See
 `docs/design/image-format.md`'s "Verification" section for the scope of what they
 do and do not guarantee.
+
+That guarantee covers **decoding**. `ns-next load` on a stateless binary instantiates
+and sends the recorded entry with no flag at all, so loading one *runs its code* --
+with the same exposure as running the equivalent source, including that recursion
+depth is bounded only by the native stack until the VM is trampolined (see
+`docs/design/execution.md`, "Planned: trampolined sends"). A mutated binary that
+decodes cleanly can still abort while executing, and that is not a decoder defect.
 
 **Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an `EvalResult`.**
 The bootstrap `Object` class is its own `.class`, so `Debug` on a `Value::Obj` recurses

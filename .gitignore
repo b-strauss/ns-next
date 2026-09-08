@@ -5,3 +5,4 @@ Cargo.lock.orig
 /.idea
 /.superpowers
 *.img
+*.nsb

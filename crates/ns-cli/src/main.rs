@@ -115,6 +115,23 @@ enum Cmd {
         #[arg(long)]
         class: Option<String>,
     },
+    /// Print an artifact's structure: header flags, section offsets, the
+    /// symbol and mixin tables, and how much graph it carries.
+    Inspect { artifact: PathBuf },
+    /// Compile a file into a stateless deployment binary: code and
+    /// structure, no instance state. Nothing is instantiated -- the primary
+    /// factory and every initializer run when the binary is loaded.
+    Build {
+        file: PathBuf,
+        out: PathBuf,
+        /// The selector to record as the entry point. Defaults to
+        /// `main:args:` when the root class declares it.
+        #[arg(long)]
+        entry: Option<String>,
+        /// Store the module's source text in the binary (the debug variant).
+        #[arg(long)]
+        debug_source: bool,
+    },
 }
 
 /// `--engine`: which evaluator runs Newspeak-level code. `bytecode` is the
@@ -155,6 +172,13 @@ fn main() -> ExitCode {
             initializer,
             class,
         } => cmd_disasm(&file, selector.as_deref(), initializer, class.as_deref()),
+        Cmd::Inspect { artifact } => cmd_inspect(&artifact),
+        Cmd::Build {
+            file,
+            out,
+            entry,
+            debug_source,
+        } => cmd_build(&file, &out, entry.as_deref(), debug_source),
     }
 }
 
@@ -494,11 +518,13 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
     };
     let ns_runtime::image::LoadedImage {
         mut interp,
-        root_class: _,
+        root_class,
         roots,
         origin: _,
         source,
         empty_bindings: bindings,
+        entry,
+        stateless,
     } = match ns_runtime::image::load(&bytes) {
         Ok(l) => l,
         Err(e) => {
@@ -517,13 +543,69 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
         print!("{source}");
         return ExitCode::SUCCESS;
     }
-    let Some(selector) = send else {
-        println!("loaded {}: {} root value(s)", image.display(), roots.len());
-        return ExitCode::SUCCESS;
+    // `stateless` (the decoded header flag), not `roots.is_empty()`, decides
+    // whether to instantiate: it says what the artifact *is*, where an empty
+    // `roots` is only what a binary happens to look like. `image::snapshot`
+    // is a library API that a caller can hand an empty `roots` slice to,
+    // producing a valid *stateful* image that carries zero root values --
+    // and that image must still be treated as stateful here, since
+    // instantiating it would re-run a primary factory and every instance
+    // initializer in a world where they already ran, minting a second,
+    // unrelated instance in place of the (absent) one the artifact
+    // deliberately carried. A decoded `stateless: true` with a non-empty
+    // `roots` would mean `image::load` built an inconsistent `LoadedImage`
+    // -- a decoder bug, not a case this branch tolerates.
+    let instance = if stateless {
+        // A binary carries no instance: the primary factory and every
+        // initializer run here, against this interpreter's freshly
+        // bootstrapped platform, so capabilities enter at start time rather
+        // than having been baked in at build time. Instantiating in the CLI
+        // rather than in `image::load` keeps an existing boundary: deciding
+        // *that* a command-line entry point supplies the platform is a CLI
+        // concern -- nothing in the runtime needs to know it was invoked
+        // from a terminal.
+        let platform = interp.platform();
+        let factory_args = match factory_args_for(&root_class, platform) {
+            Ok(args) => args,
+            Err(msg) => {
+                eprintln!("error: {msg}");
+                return ExitCode::FAILURE;
+            }
+        };
+        match interp.instantiate(root_class.clone(), factory_args, &bindings) {
+            Ok(v) => v,
+            Err(signal) => return report_signal(signal),
+        }
+    } else {
+        // Pre-existing behaviour for a stateful image, unconditional on
+        // `roots.len()`: no `--send` means report the root count and stop,
+        // sending nothing -- including a stateful image with zero roots,
+        // which reports "0 root value(s)" rather than being mistaken for a
+        // binary.
+        let Some(_) = send else {
+            println!("loaded {}: {} root value(s)", image.display(), roots.len());
+            return ExitCode::SUCCESS;
+        };
+        let Some(instance) = roots.into_iter().next() else {
+            eprintln!("error: image has no root instance to send to");
+            return ExitCode::FAILURE;
+        };
+        instance
     };
-    let Some(instance) = roots.into_iter().next() else {
-        eprintln!("error: image has no root instance to send to");
-        return ExitCode::FAILURE;
+    // `--send` overrides whatever the artifact recorded. In practice the
+    // `None` arm below is unreachable today: a binary always records an
+    // entry (`image::load` refuses a stateless artifact without one), and a
+    // stateful image with neither already returned above, in the `else`
+    // (stateful) branch. It stays as a real check rather than an
+    // `unreachable!()` because that pairing is an invariant of the image
+    // format, not of this function -- a future image that records an entry
+    // too should fall through to sending it, not panic.
+    let selector = match send.or_else(|| entry.map(ns_runtime::Symbol::as_str)) {
+        Some(s) => s,
+        None => {
+            eprintln!("error: this artifact records no entry point; pass --send");
+            return ExitCode::FAILURE;
+        }
     };
     let platform = interp.platform();
     let args = match entry_args(selector, platform) {
@@ -784,24 +866,67 @@ fn resolve_mixin_path(
     Ok(current)
 }
 
-/// `ns-next disasm`: bootstrap and load, compile the *whole* mixin tree
-/// (`compiler::compile_module`, exactly as the bytecode engine would) so a
-/// `--class` path can address any mixin's code, then look up exactly one
-/// method or the target mixin's initializer and print its bytecode
-/// listing. Never instantiates and never installs the bytecode engine --
-/// compile only.
+/// Whether `bytes` begins with the image format's magic.
+///
+/// Sniffing the content rather than the file extension is deliberate: an
+/// artifact has no required extension, `snapshot`/`build` write whatever path
+/// they are given, and a `.ns` file cannot begin with these four bytes because
+/// every module starts with the `Newspeak3` language identifier.
+fn looks_like_an_artifact(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && &bytes[0..4] == ns_runtime::image::encode::MAGIC
+}
+
+/// `ns-next disasm`: for a `.ns` file, bootstrap and compile the *whole*
+/// mixin tree (`compiler::compile_module`, exactly as the bytecode engine
+/// would); for a serialized artifact, decode it directly and reuse its own
+/// code table instead of recompiling anything. Either way, the result is a
+/// `(class, module)` pair from which a `--class` path can address any
+/// mixin's code, then look up exactly one method or the target mixin's
+/// initializer and print its bytecode listing. The source path never
+/// instantiates and never installs the bytecode engine -- compile only; the
+/// artifact path never instantiates either, since `image::load` only
+/// decodes the world.
 fn cmd_disasm(
     file: &Path,
     selector: Option<&str>,
     initializer: bool,
     class_path: Option<&str>,
 ) -> ExitCode {
-    let loaded = match load_source(file) {
-        Ok(l) => l,
-        Err(code) => return code,
+    let raw = match std::fs::read(file) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: reading {}: {e}", file.display());
+            return ExitCode::FAILURE;
+        }
     };
-    let bindings = loaded.resolved.bindings.clone();
-    let (_interp, class) = bootstrap_with_engine(&loaded, EngineArg::TreeWalk);
+
+    // Held only so the borrows below outlive the branch: the source path owns
+    // its interpreter, the artifact path owns the loaded world.
+    let (class, module) = if looks_like_an_artifact(&raw) {
+        match ns_runtime::image::load(&raw) {
+            Ok(loaded) => {
+                let module = loaded
+                    .interp
+                    .compiled_module()
+                    .expect("load installed the bytecode engine")
+                    .clone();
+                (loaded.root_class.clone(), module)
+            }
+            Err(e) => {
+                eprintln!("error: {}: {e}", file.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        let loaded = match load_source(file) {
+            Ok(l) => l,
+            Err(code) => return code,
+        };
+        let bindings = loaded.resolved.bindings.clone();
+        let (_interp, class) = bootstrap_with_engine(&loaded, EngineArg::TreeWalk);
+        let module = ns_runtime::compiler::compile_module(&class, &bindings);
+        (class, module)
+    };
     let root_mixin = match &class.borrow().data {
         ns_runtime::ObjectData::Class(data) => data.application.mixin.clone(),
         _ => {
@@ -816,7 +941,6 @@ fn cmd_disasm(
             return ExitCode::FAILURE;
         }
     };
-    let module = ns_runtime::compiler::compile_module(&class, &bindings);
     let (code, name) = match (selector, initializer) {
         (None, true) => {
             let code = module
@@ -859,6 +983,146 @@ fn cmd_disasm(
         ns_runtime::bytecode::disassemble(code.as_ref(), &name)
     );
     ExitCode::SUCCESS
+}
+
+/// `ns-next inspect`: what is in this artifact. Read-only -- nothing is
+/// bootstrapped, instantiated or run, so inspecting a hostile file exercises
+/// only the decoders.
+fn cmd_inspect(artifact: &Path) -> ExitCode {
+    let bytes = match std::fs::read(artifact) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: reading {}: {e}", artifact.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    match ns_runtime::image::inspect::inspect(&bytes) {
+        Ok(report) => {
+            print!("{}", ns_runtime::image::inspect::render(&report));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {}: {e}", artifact.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Whether the root class can answer `selector`: a method anywhere up its
+/// application chain, or the accessor of one of its nested declarations.
+///
+/// Checked at build time so a binary that could never start is refused where
+/// the mistake was made. It is a convenience, not a guarantee -- a selector
+/// that slips through still fails at start-up as an ordinary
+/// `doesNotUnderstand:`, through the same path `run` uses.
+///
+/// Deliberately narrow: only method selectors and nested-class accessor
+/// names, because those are exactly what `mixins::encode` interns into the
+/// symbol table while walking this same superclass chain over `mixin.methods`
+/// and `mixin.nested`. Accepting anything wider -- a slot's implicit *setter*,
+/// a builtin's native method -- would accept a selector the code and mixin
+/// tables never interned: a slot's *getter* is interned (`mixins::encode`
+/// writes every slot name), but the setter selector it is derived from at
+/// dispatch time is not a name `mixins::encode` ever writes. Accepting it
+/// would make `build` have to grow the symbol table to record it, breaking
+/// the byte-identity guarantee with `snapshot` that this check exists to
+/// preserve (`docs/design/image-format.md`, "The consistency guarantee,
+/// stated precisely").
+///
+/// Walking past the root level (`app = a.superclass.clone()`) is safe only
+/// because of an invariant this function relies on but does not check:
+/// every non-own mixin reachable from a root class's superclass chain today
+/// is a builtin's, and a builtin mixin is `Mixin::empty()` -- empty
+/// `methods`, empty `nested` -- since native methods dispatch through
+/// `builtins::dispatch_native`, never through `Mixin.methods`, and
+/// cross-module inheritance does not exist yet. So the ancestor branch can
+/// never actually return `true` today; the loop climbs `superclass` only to
+/// stay correct if a root class's chain ever grows past one level of
+/// `Mixin::empty()`. If ns-next later gains cross-module inheritance, or a
+/// core-library superclass written in Newspeak, an ancestor mixin could
+/// carry real `methods`/`nested` entries that `mixins::encode` never
+/// interns for *this* module's symbol table (it only walks the module's own
+/// declaration tree) -- and this check would then accept a selector absent
+/// from that table, silently breaking the guarantee above instead of
+/// refusing the build. No test catches that today: every fixture here
+/// inherits directly from `Object`.
+fn root_class_answers(class: &ns_runtime::ClassRef, selector: &str) -> bool {
+    let sym = ns_runtime::Symbol::intern(selector);
+    let mut app = match &class.borrow().data {
+        ns_runtime::ObjectData::Class(data) => Some(data.application.clone()),
+        _ => None,
+    };
+    while let Some(a) = app {
+        if a.mixin.methods.contains_key(&sym) {
+            return true;
+        }
+        if a.mixin.nested.iter().any(|n| n.name == sym) {
+            return true;
+        }
+        app = a.superclass.clone();
+    }
+    false
+}
+
+/// `ns-next build`: `run`'s pipeline up to engine installation, and then
+/// deliberately no instantiation.
+fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -> ExitCode {
+    let loaded = match load_source(file) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+    let (mut interp, class) = bootstrap_with_engine(&loaded, EngineArg::Bytecode);
+
+    let entry = match entry {
+        Some(e) => e.to_string(),
+        None if root_class_answers(&class, "main:args:") => "main:args:".to_string(),
+        None => {
+            eprintln!(
+                "error: {} declares no `main:args:`; pass --entry with the selector to send",
+                file.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(msg) = entry_args(&entry, interp.platform()) {
+        eprintln!("error: cannot use `{entry}` as an entry point: {msg}");
+        return ExitCode::FAILURE;
+    }
+    if !root_class_answers(&class, &entry) {
+        eprintln!(
+            "error: the root class of {} does not answer `{entry}`",
+            file.display()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let module = interp
+        .compiled_module()
+        .expect("bootstrap_with_engine installed the bytecode engine");
+    let bytes = match ns_runtime::image::build(
+        debug_source.then_some(loaded.source.as_str()),
+        &loaded.origin,
+        &class,
+        module,
+        ns_runtime::Symbol::intern(&entry),
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: build failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match std::fs::write(out, bytes) {
+        Ok(()) => {
+            println!("wrote {}", out.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: writing {}: {e}", out.display());
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn cmd_parse_corpus(dir: &Path, blacklist: Option<&Path>) -> ExitCode {
@@ -979,6 +1243,90 @@ fn run_one(exe: &Path, file: &Path, send: &str, engine: &str) -> Result<EngineOu
     })
 }
 
+/// A scratch directory for one row's binary lane, removed on drop so a
+/// `run-corpus` run leaves the temp directory clean on every exit path --
+/// including the early `?`/`continue` returns scattered through the caller --
+/// without every call site having to remember to clean up itself.
+struct ScratchDir(PathBuf);
+
+impl ScratchDir {
+    /// `tag` is only for a human reading the temp directory mid-run; the
+    /// counter is what actually guarantees uniqueness across the rows this
+    /// process runs, alongside the process id that separates concurrent
+    /// `run-corpus` invocations.
+    fn new(tag: &str) -> Result<Self, String> {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "ns-next-run-corpus-{}-{n}-{tag}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("scratch dir {}: {e}", dir.display()))?;
+        Ok(Self(dir))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        // Best-effort: a leftover temp directory is a nuisance, never a
+        // correctness problem, so a removal failure (e.g. a virus scanner
+        // still holding the file open) must not turn into a panic-during-
+        // unwind or a spurious second failure report for the row.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Runs one module the way a deployed binary would: `build` it with
+/// `--entry <send>` into a scratch file, then `load` it with no `--send` so
+/// the artifact's own recorded entry is what starts it. That is deliberate,
+/// not an oversight -- supplying `--send` again here would exercise the same
+/// override path `build_load.rs` already covers, not the round trip this
+/// gate exists to check: that the entry survives being written into the
+/// artifact and read back out of it.
+///
+/// The scratch file lives under the system temp directory, never under
+/// `corpus/`, so a `run-corpus` invocation leaves the working tree exactly
+/// as it found it; `ScratchDir`'s `Drop` removes it once this row is done
+/// whether the row passed or failed.
+fn run_one_binary(exe: &Path, file: &Path, send: &str) -> Result<EngineOutcome, String> {
+    let stem = file
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "row".to_string());
+    let scratch = ScratchDir::new(&stem)?;
+    let artifact = scratch.path().join("app.nsb");
+
+    let build = std::process::Command::new(exe)
+        .arg("build")
+        .arg(file)
+        .arg(&artifact)
+        .arg("--entry")
+        .arg(send)
+        .output()
+        .map_err(|e| format!("could not build {}: {e}", exe.display()))?;
+    if !build.status.success() {
+        return Err(format!(
+            "build failed: {}",
+            String::from_utf8_lossy(&build.stderr).trim_end()
+        ));
+    }
+
+    let out = std::process::Command::new(exe)
+        .arg("load")
+        .arg(&artifact)
+        .output()
+        .map_err(|e| format!("could not load {}: {e}", exe.display()))?;
+    Ok(EngineOutcome {
+        status: out.status.code(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
+}
+
 /// `ns-next run-corpus`: the mirror image of `parse-corpus`. `parse-corpus`
 /// works off a blacklist because parsing the corpus is expected to succeed
 /// everywhere; running it is not, so this works off a whitelist -- a module
@@ -987,15 +1335,24 @@ fn run_one(exe: &Path, file: &Path, send: &str, engine: &str) -> Result<EngineOu
 ///
 /// Every entry is run under both engines and the two are compared on exit
 /// status, stdout and stderr before either is compared to the expectation.
+/// Each entry is then run a third way -- built into a stateless binary with
+/// `--entry <row.send>` and loaded with no `--send`, so the recorded entry is
+/// what starts it -- and checked against the same expectations, with stderr
+/// checked against the bytecode engine's. A row's `send` doubling as the
+/// build's `--entry` is why `runnable.toml` needs no field of its own for
+/// this lane. Each row still counts once in `ran`/`failed`: the first lane
+/// that disagrees decides the row and the rest are skipped for it, the same
+/// way the two engine lanes already worked before this third lane existed.
 ///
 /// What that is worth, stated honestly: with `expected_stdout` empty on
 /// every real row -- no corpus module that currently runs writes to the
 /// transcript at all -- this is a tripwire that a whitelisted module still
 /// instantiates and still answers one message without error, plus a check
-/// that the two engines fail or succeed the same way. It is not yet a
-/// differential harness over observable *output* from real modules; it
-/// becomes one on the day a row can record something printed. Treat a
-/// green `run-corpus` as "nothing regressed", not as "the corpus is
+/// that the two engines fail or succeed the same way, plus a check that the
+/// same module still starts from a built binary instead of from source. It
+/// is not yet a differential harness over observable *output* from real
+/// modules; it becomes one on the day a row can record something printed.
+/// Treat a green `run-corpus` as "nothing regressed", not as "the corpus is
 /// covered".
 fn cmd_run_corpus(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
     let wl_path = whitelist
@@ -1080,6 +1437,45 @@ fn cmd_run_corpus(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
             eprintln!(
                 "FAIL {}: expected stdout {:?}, got {:?}",
                 entry.file, entry.expected_stdout, bytecode.stdout
+            );
+            continue;
+        }
+
+        let binary = match run_one_binary(&exe, &file, &entry.send) {
+            Ok(o) => o,
+            Err(e) => {
+                failed += 1;
+                eprintln!("FAIL {}: binary: {e}", entry.file);
+                continue;
+            }
+        };
+        if binary.status != Some(entry.expected_status) {
+            failed += 1;
+            eprintln!(
+                "FAIL {}: binary: expected exit {}, got {} (stderr: {})",
+                entry.file,
+                entry.expected_status,
+                match binary.status {
+                    Some(c) => c.to_string(),
+                    None => "signal".to_string(),
+                },
+                binary.stderr.trim_end()
+            );
+            continue;
+        }
+        if binary.stdout != entry.expected_stdout {
+            failed += 1;
+            eprintln!(
+                "FAIL {}: binary: expected stdout {:?}, got {:?}",
+                entry.file, entry.expected_stdout, binary.stdout
+            );
+            continue;
+        }
+        if binary.stderr != bytecode.stderr {
+            failed += 1;
+            eprintln!(
+                "FAIL {}: binary: stderr differs from the bytecode engine's: binary {:?}, bytecode {:?}",
+                entry.file, binary.stderr, bytecode.stderr
             );
         }
     }

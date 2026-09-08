@@ -240,6 +240,13 @@ pub enum DecodeError {
     /// overflow to `alloc_identity_hash`'s own `+= 1`. Refusing the image
     /// is the only answer that neither panics nor collides.
     IdentityHashExhausted,
+    /// Bytes remain after the last section. Refused rather than ignored: with
+    /// two artifact shapes in one format, silently accepting a tail means a
+    /// binary with a graph appended -- or an image truncated to a binary and
+    /// then padded -- loads as something its author did not write.
+    TrailingBytes {
+        count: usize,
+    },
 }
 
 impl std::fmt::Display for DecodeError {
@@ -393,6 +400,9 @@ impl std::fmt::Display for DecodeError {
                 "an image object's identity hash is {}, leaving no hash for a loaded world to allocate next",
                 u32::MAX
             ),
+            DecodeError::TrailingBytes { count } => {
+                write!(f, "{count} trailing byte(s) after the last section")
+            }
         }
     }
 }
@@ -497,6 +507,8 @@ pub struct Header {
     /// source is never executed and never re-parsed; it is carried so a
     /// loaded world can be shown, and eventually exported, as `.ns`.
     pub has_source: bool,
+    /// No graph section follows; the file ends after the entry field.
+    pub stateless: bool,
 }
 
 pub fn read_header(r: &mut Reader) -> Result<Header, DecodeError> {
@@ -520,7 +532,22 @@ pub fn read_header(r: &mut Reader) -> Result<Header, DecodeError> {
     }
     Ok(Header {
         has_source: flags & super::encode::FLAG_HAS_SOURCE != 0,
+        stateless: flags & super::encode::FLAG_STATELESS != 0,
     })
+}
+
+/// The inverse of `encode::encode_entry`: a presence byte and, when set, the
+/// symbol id it names, resolved against the image's own symbol table so an
+/// out-of-range id is a `DecodeError` rather than an index panic.
+pub fn decode_entry(
+    r: &mut Reader,
+    symbols: &symbols::Table,
+) -> Result<Option<Symbol>, DecodeError> {
+    match r.read_u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(symbols.get(r.read_u32()?)?)),
+        tag => Err(DecodeError::InvalidTag { what: "entry", tag }),
+    }
 }
 
 /// The inverse of `encode::encode_source_origin`: the provenance a loaded
@@ -1395,6 +1422,21 @@ pub struct DecodedGraph {
     pub frames: Vec<FrameRef>,
 }
 
+impl DecodedGraph {
+    /// What a stateless binary carries in place of a graph section: nothing.
+    /// `load` skips `verify_graph` on this value rather than calling it --
+    /// an empty frame list would make `verify_graph` a no-op anyway, but
+    /// skipping it says directly that there is nothing to verify.
+    pub fn empty() -> Self {
+        DecodedGraph {
+            roots: Vec::new(),
+            max_identity_hash: 0,
+            objects: Vec::new(),
+            frames: Vec::new(),
+        }
+    }
+}
+
 /// The two placeholder-allocated tables, indexed by the ids in the stream.
 pub struct Tables<'a> {
     pub objects: &'a [ObjRef],
@@ -1699,6 +1741,21 @@ pub fn build_root_class(
     Ok(interp.new_class_object(application, None, None, superclass))
 }
 
+/// The root-class section's bytes, read but not resolved: whether a
+/// superclass tag follows and, if so, which builtin it names. Shared by
+/// `decode_root_superclass`, which resolves the tag against a live
+/// interpreter, and `skip_root_superclass`, which only needs to know how
+/// many bytes the section spans -- duplicating this reading would let the
+/// two drift, and then the span `inspect` records would stop matching the
+/// real one.
+fn read_root_superclass_tag(r: &mut Reader) -> Result<Option<BuiltinClass>, DecodeError> {
+    if r.read_bool()? {
+        Ok(Some(read_builtin_class(r)?))
+    } else {
+        Ok(None)
+    }
+}
+
 /// The root-class section: the class the module's root class inherits from,
 /// as an optional builtin tag. The inverse of `encode::encode_root_class`,
 /// which explains why the format admits only a builtin here.
@@ -1706,11 +1763,16 @@ pub fn decode_root_superclass(
     r: &mut Reader,
     interp: &Interpreter,
 ) -> Result<Option<ClassRef>, DecodeError> {
-    if r.read_bool()? {
-        Ok(Some(interp.builtin_class(read_builtin_class(r)?)))
-    } else {
-        Ok(None)
-    }
+    Ok(read_root_superclass_tag(r)?.map(|tag| interp.builtin_class(tag)))
+}
+
+/// Reads the root-class section's bytes without resolving the tag to a live
+/// class. `inspect` has no interpreter to resolve a builtin tag against --
+/// it must not bootstrap one -- and only needs to know where this section
+/// ends.
+pub fn skip_root_superclass(r: &mut Reader) -> Result<(), DecodeError> {
+    read_root_superclass_tag(r)?;
+    Ok(())
 }
 
 /// A class record as read, before its application exists: the object-table
@@ -1984,6 +2046,43 @@ pub fn decode_graph_section(
         objects,
         frames,
     })
+}
+
+/// What `count_graph_section` can report about a graph section without
+/// resolving any of it. The root list's own count is not among these fields;
+/// see that function's doc comment for why it cannot be had this cheaply.
+pub struct GraphCounts {
+    pub objects: usize,
+    pub frames: usize,
+}
+
+/// A graph section's object and frame counts, read without a
+/// `DecodeContext` -- and so without the `Interpreter` one requires.
+///
+/// `inspect` must not bootstrap an interpreter, so it cannot call
+/// `decode_graph_section` itself: every record after the two leading counts
+/// resolves a class tag (a builtin, the root class, or an object-table id)
+/// through `ctx.interp`, and building even a throwaway `DecodeContext` needs
+/// a real one to hand `apply_mixin` and `builtin_class` calls to. Writing a
+/// second walker that reads the same record shapes without resolving them
+/// would just be `decode_graph_section` copied and stripped down -- exactly
+/// the duplication that lets two readers of one format drift apart -- for a
+/// gain that stops at the object and frame counts anyway, since nothing
+/// downstream of them needs resolution to count.
+///
+/// The section's *root* count is not similarly available: unlike the object
+/// and frame counts, which are header fields ahead of every record, the
+/// root list's own count sits after every object and every frame
+/// (`encode_graph_section`), so reading it needs the records between here
+/// and there walked -- which is exactly the resolution this function exists
+/// to avoid. `GraphCounts` therefore carries no `roots` field at all; the
+/// caller (`image::inspect`) also cannot use this call's final reader
+/// position as the section's end, since it stops right after the two counts
+/// rather than at the section's real end.
+pub fn count_graph_section(r: &mut Reader) -> Result<GraphCounts, DecodeError> {
+    let objects = bounded_count(r.read_u32()? as usize, MIN_OBJECT_RECORD_BYTES, r)?;
+    let frames = bounded_count(r.read_u32()? as usize, MIN_FRAME_RECORD_BYTES, r)?;
+    Ok(GraphCounts { objects, frames })
 }
 
 /// The inverse of `encode::encode_class_record`: the mixin-table row this

@@ -65,6 +65,27 @@ Six silent defects were found by review that the green suite never showed; four
 of them were identically wrong under both engines, where the differential harness
 is structurally blind.
 
+## Artifact inspection and the stateless binary (2026-09-08)
+
+Finishes the deployment-artifact half of M3's image-format work rather than
+opening a milestone of its own: `ns-next inspect` prints an artifact's
+structure — header flags, section offsets, the symbol and mixin tables,
+object/frame counts — without instantiating it; `disasm` accepts an artifact
+as well as a `.ns` file; and `ns-next build` compiles a module into a
+stateless binary, code and structure with no instance state, which `load`
+starts by instantiating against its own loading platform and sending the
+recorded entry. `load` now also refuses trailing bytes after an artifact's
+last section, closing the confusion vector two artifact shapes sharing one
+format would otherwise open.
+
+Gates: `build` then `load` reproduces `run --engine=bytecode`'s stdout,
+stderr and exit status byte for byte over every fixture; `build` and
+`snapshot` agree on their shared sections' bytes; `run-corpus`'s six entries
+now also run a third way, built and loaded — **ran 6, failed 0, skipped
+205**, with `parse-corpus` unchanged at **210/0/1/0**; and mutation and
+truncation tests cover the new header flag, the entry field, and the
+trailing-byte check.
+
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
@@ -75,3 +96,19 @@ that date use the old numbering.
 **Design documentation (2026-09-07).** The dated design specs under
 `docs/superpowers/specs/` were folded into the living documents in `docs/design/`
 and removed. Git holds the originals.
+
+**Deferred follow-ups from the artifact-inspection branch (2026-09-08).** The final
+whole-branch review raised these; they were judged real but not merge-blocking, and
+are recorded here rather than lost with the branch's scratch workspace.
+
+- `crates/ns-cli/tests/disasm_snapshots.rs` builds two ad-hoc temporary directories
+  that are never removed. The other CLI test files clean up after themselves.
+- The `fixture` / `temp_dir` / `ns_next` helpers are duplicated between
+  `crates/ns-cli/tests/build_load.rs` and `crates/ns-cli/tests/inspect.rs`. A
+  `tests/common/mod.rs` would hold one copy.
+- Several doc comments in `crates/ns-cli/src/main.rs` went stale as the branch
+  landed: `cmd_load`'s header describes only the stateful path; `factory_args_for`
+  and `class_name` each name two callers where there are now three; and the comment
+  above `cmd_disasm`'s input branch says it holds a value it does not hold.
+- `docs/design/image-format.md`'s "Code:" line omits `opcodes.rs`, which the same
+  document later names as the single source of the wire tag tables.

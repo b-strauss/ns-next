@@ -38,7 +38,7 @@ that cannot name its code is describing an intention, and should say so.
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | inline-cache slots wired up |
 | Activations, both engines, the VM loop | [execution.md](execution.md) | Built | trampolined sends, JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Partial | a real collector |
-| Serialization, both artifacts | [image-format.md](image-format.md) | Partial | artifact inspection, then the stateless binary |
+| Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | Partial | widened on demand |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
 
@@ -76,8 +76,8 @@ See [image-format.md](image-format.md).
 
 ### The `ns-next` binary
 
-`parse`, `parse-corpus`, `run`, `run-corpus`, `disasm`, `snapshot`, `load`,
-`bench`.
+`parse`, `parse-corpus`, `run-corpus`, `run`, `snapshot`, `load`, `bench`,
+`disasm`, `inspect`, `build`.
 
 ## Gates
 

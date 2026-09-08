@@ -141,3 +141,113 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+/// `disasm` of an artifact must print exactly what `disasm` of the source it
+/// was built from prints. The artifact carries the same compiled bodies; if
+/// these ever differ, the image's code table is not what the compiler emitted.
+#[test]
+fn disasm_of_an_image_matches_disasm_of_its_source() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/arithmetic.ns");
+    let dir = std::env::temp_dir().join(format!("ns-next-disasm-img-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let img = dir.join("world.img");
+
+    let snap = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+        .arg("snapshot")
+        .arg(&src)
+        .arg(&img)
+        .output()
+        .expect("run ns-next snapshot");
+    assert!(
+        snap.status.success(),
+        "{}",
+        String::from_utf8_lossy(&snap.stderr)
+    );
+
+    let from_image = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+        .arg("disasm")
+        .arg(&img)
+        .arg("main:args:")
+        .output()
+        .expect("run ns-next disasm on an image");
+    assert!(
+        from_image.status.success(),
+        "{}",
+        String::from_utf8_lossy(&from_image.stderr)
+    );
+
+    let from_source = disasm("arithmetic.ns", &["main:args:"]);
+    assert_eq!(
+        String::from_utf8_lossy(&from_image.stdout).replace("\r\n", "\n"),
+        from_source
+    );
+}
+
+/// The same property as `disasm_of_an_image_matches_disasm_of_its_source`,
+/// but for a stateless binary rather than an image. Only the image form was
+/// covered before this test existed, yet the whole reason `disasm` reads an
+/// artifact at all is the binary that ships *without* source -- a regression
+/// that broke `disasm` for `FLAG_STATELESS` specifically (a decode path the
+/// image form never exercises) could have passed the image test above.
+#[test]
+fn disasm_of_a_binary_matches_disasm_of_its_source() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/arithmetic.ns");
+    let dir = std::env::temp_dir().join(format!("ns-next-disasm-bin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let bin = dir.join("app.nsb");
+
+    let build = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+        .arg("build")
+        .arg(&src)
+        .arg(&bin)
+        .output()
+        .expect("run ns-next build");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let from_binary = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+        .arg("disasm")
+        .arg(&bin)
+        .arg("main:args:")
+        .output()
+        .expect("run ns-next disasm on a binary");
+    assert!(
+        from_binary.status.success(),
+        "{}",
+        String::from_utf8_lossy(&from_binary.stderr)
+    );
+
+    let from_source = disasm("arithmetic.ns", &["main:args:"]);
+    assert_eq!(
+        String::from_utf8_lossy(&from_binary.stdout).replace("\r\n", "\n"),
+        from_source
+    );
+}
+
+/// A file that is neither parseable source nor a valid artifact must report
+/// one clear failure, not a decoder backtrace.
+#[test]
+fn disasm_rejects_a_corrupt_artifact_with_a_message() {
+    let dir = std::env::temp_dir().join(format!("ns-next-disasm-bad-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let bad = dir.join("truncated.img");
+    // Magic, so it is taken for an artifact, and then nothing.
+    std::fs::write(&bad, b"NSIM").expect("write");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+        .arg("disasm")
+        .arg(&bad)
+        .arg("main:args:")
+        .output()
+        .expect("run ns-next disasm");
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.starts_with("error:"), "unexpected stderr: {err}");
+    assert!(!err.contains("panicked"), "decoder panicked: {err}");
+}

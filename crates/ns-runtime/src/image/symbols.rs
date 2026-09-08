@@ -93,6 +93,12 @@ impl Table {
             .copied()
             .ok_or(DecodeError::BadSymbolId(id))
     }
+
+    /// Every interned string, in table-id order. `inspect` is the only
+    /// reader that wants the whole table rather than one id's worth of it.
+    pub fn all(&self) -> &[Symbol] {
+        &self.symbols
+    }
 }
 
 /// Reads the count then that many strings, bounding the count against the

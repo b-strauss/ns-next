@@ -2222,6 +2222,34 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
 }
 
 #[test]
+fn bytes_after_the_last_section_are_refused_not_ignored() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(module))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let platform = interp.platform();
+    let mut bytes = image::snapshot(
+        Some(src),
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        &[],
+    )
+    .expect("snapshot");
+    assert!(image::load(&bytes).is_ok(), "the fixture itself must load");
+
+    bytes.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+    let err = load_err(&bytes);
+    assert!(
+        err.contains("trailing"),
+        "expected a trailing-bytes error, got: {err}"
+    );
+}
+
+#[test]
 fn load_refuses_a_version_mismatch() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
     let (mut interp, class, bindings) = load(src);
@@ -5278,4 +5306,403 @@ fn the_code_table_encoding_is_deterministic() {
 fn regenerate_the_golden_fixture() {
     let bytes = snapshot_of_without_source(GOLDEN_SRC);
     std::fs::write("tests/fixtures/golden-image.bin", bytes).expect("write fixture");
+}
+
+#[test]
+fn the_entry_field_round_trips_present_and_absent() {
+    use ns_runtime::image::{decode, encode, symbols};
+
+    let mut symbol_builder = symbols::Builder::new();
+    let id = symbol_builder.intern("main:args:");
+    let mut w = encode::Writer::new();
+    symbol_builder.write(&mut w);
+    encode::encode_entry(&mut w, Some(id));
+    encode::encode_entry(&mut w, None);
+    let bytes = w.into_bytes();
+
+    let mut r = decode::Reader::new(&bytes);
+    let table = symbols::decode(&mut r).expect("symbol table");
+    let present = decode::decode_entry(&mut r, &table).expect("present entry");
+    let absent = decode::decode_entry(&mut r, &table).expect("absent entry");
+
+    assert_eq!(
+        present.map(|s| s.to_string()).as_deref(),
+        Some("main:args:")
+    );
+    assert_eq!(absent, None);
+}
+
+#[test]
+fn an_out_of_range_entry_symbol_id_is_a_decode_error_not_a_panic() {
+    use ns_runtime::image::{decode, encode, symbols};
+
+    let mut w = encode::Writer::new();
+    symbols::Builder::new().write(&mut w);
+    encode::encode_entry(&mut w, Some(9999));
+    let bytes = w.into_bytes();
+
+    let mut r = decode::Reader::new(&bytes);
+    let table = symbols::decode(&mut r).expect("symbol table");
+    assert!(decode::decode_entry(&mut r, &table).is_err());
+}
+
+#[test]
+fn an_unknown_header_flag_is_still_rejected_now_that_two_are_known() {
+    // Bit 2 is not assigned. A flag this build does not implement means a
+    // section it cannot see, so continuing would read the next field out of
+    // whatever that section occupies.
+    let mut w = ns_runtime::image::encode::Writer::new();
+    ns_runtime::image::encode::write_header(&mut w, 0b100);
+    let bytes = w.into_bytes();
+    let mut r = ns_runtime::image::decode::Reader::new(&bytes);
+    assert!(ns_runtime::image::decode::read_header(&mut r).is_err());
+}
+
+/// `image::build` (the stateless binary) and `image::snapshot` (the world
+/// snapshot) share one encoder for the sections that describe code and
+/// structure. This is the property that sharing is supposed to guarantee:
+/// built from the same compiled module, the two artifacts must agree byte
+/// for byte from `origin` through `root class`, and differ only from the
+/// entry field on -- present-and-mandatory for one, absent for the other.
+///
+/// The module declares `main:args:` itself, so the entry selector `build`
+/// interns is already in the symbol table by the time it does -- the mixin
+/// table names every method's selector, and `Builder::intern` dedupes by
+/// content. An entry selector absent from the module would still round-trip,
+/// but it would grow `build`'s symbol table past `snapshot`'s and the
+/// byte-equality assertion below would fail for a reason that has nothing to
+/// do with the refactor under test.
+const ENTRY_SRC: &str =
+    "Newspeak3\n'T'\nclass X = Object new (\n) (\n  main: p args: q = ( ^1 )\n) : ()";
+
+#[test]
+fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class() {
+    // Build both from one compiled module so the only difference is the
+    // artifact shape, then compare through the inspector rather than by raw
+    // offset: a raw offset says two files differ, a section says which one.
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let platform = interp.platform();
+    let origin = Origin::File(PathBuf::from("t.ns"));
+    let module = interp.compiled_module().expect("bytecode engine");
+
+    let binary =
+        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
+    let img = image::snapshot(None, &origin, &class, module, &platform, &[]).expect("snapshot");
+
+    let b = image::inspect::inspect(&binary).expect("inspect binary");
+    let i = image::inspect::inspect(&img).expect("inspect image");
+
+    let upto = |r: &image::inspect::Report| {
+        r.sections
+            .iter()
+            .take_while(|s| s.name != "entry")
+            .map(|s| (s.name, s.start, s.end))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(upto(&b), upto(&i), "the describing sections must line up");
+
+    // From `origin`, not from byte 0: the header's flags byte necessarily
+    // differs (`FLAG_STATELESS` is only ever set on `binary`), and that
+    // difference is correct, not a defect the refactor should paper over.
+    let start = b
+        .sections
+        .iter()
+        .find(|s| s.name == "origin")
+        .expect("origin section")
+        .start;
+    let end = b
+        .sections
+        .iter()
+        .find(|s| s.name == "root class")
+        .expect("root class section")
+        .end;
+    assert_eq!(
+        &binary[start..end],
+        &img[start..end],
+        "describing bytes must be equal"
+    );
+
+    assert!(b.stateless);
+    assert!(!i.stateless);
+    assert_eq!(b.entry.as_deref(), Some("main:args:"));
+}
+
+/// `image::build` itself does not require the entry selector to already be
+/// declared in the module -- validating that a selector exists (and has the
+/// right arity) is `ns-next build`'s job, not this encoder's. An entry the
+/// module never declares is exactly the case that breaks byte-identity
+/// against a `snapshot` of the same source (see `Describing`'s doc comment:
+/// interning it grows `build`'s symbol table past what the describing
+/// sections alone produced). This test is what keeps that distinction from
+/// blurring: the coupling affects only whether the two artifacts *agree*,
+/// never whether `build` on its own is *correct* -- so nobody should "fix"
+/// `build` later to chase an identity this format never promised here.
+#[test]
+fn build_accepts_an_entry_selector_the_module_never_declares() {
+    let (mut interp, class, bindings) = load(TRIVIAL_MODULE);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let module = interp.compiled_module().expect("bytecode engine");
+    let origin = Origin::File(PathBuf::from("t.ns"));
+
+    let binary = image::build(
+        None,
+        &origin,
+        &class,
+        module,
+        Symbol::intern("neverDeclared"),
+    )
+    .expect("build does not itself validate the entry selector against the module");
+
+    let report = image::inspect::inspect(&binary).expect("inspect");
+    assert!(report.stateless);
+    assert_eq!(report.entry.as_deref(), Some("neverDeclared"));
+}
+
+/// `load` on a binary must hand back an empty `roots` (a binary carries no
+/// instance to resume) and the recorded entry -- the two things a later
+/// `run` needs to instantiate `root_class` and start it, since there is no
+/// graph section to read a starting point out of.
+#[test]
+fn a_binary_loads_with_no_roots_and_its_entry() {
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let module = interp.compiled_module().expect("bytecode engine");
+    let origin = Origin::File(PathBuf::from("t.ns"));
+
+    let binary =
+        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
+
+    let loaded = image::load(&binary).expect("load a binary");
+    assert!(loaded.stateless);
+    assert!(loaded.roots.is_empty(), "a binary carries no instance");
+    assert_eq!(
+        loaded.entry.map(|s| s.to_string()).as_deref(),
+        Some("main:args:")
+    );
+    assert!(
+        loaded.interp.compiled_module().is_some(),
+        "the bytecode engine must be installed"
+    );
+}
+
+/// `image::snapshot` is a library API: a caller can hand it an empty
+/// `roots` slice and still get back a *stateful* image (`header.stateless`
+/// unset), not a binary -- only `image::build` sets that flag. `load` must
+/// tell the two apart by the decoded flag, not by `roots.is_empty()`, since
+/// that observed shape is the same for both: a stateful image with no root
+/// values must still report itself as stateful, so a caller (`ns-next
+/// load`) does not mistake it for a binary and instantiate a fresh,
+/// unrelated instance in place of the one this artifact deliberately
+/// carried none of.
+#[test]
+fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let platform = interp.platform();
+    let origin = Origin::File(PathBuf::from("t.ns"));
+    let module = interp.compiled_module().expect("bytecode engine");
+
+    let img = image::snapshot(None, &origin, &class, module, &platform, &[]).expect("snapshot");
+
+    let loaded = image::load(&img).expect("load a stateful image with no roots");
+    assert!(
+        !loaded.stateless,
+        "a snapshot, even with an empty roots slice, is not a binary"
+    );
+    assert!(loaded.roots.is_empty());
+    assert!(
+        loaded.entry.is_none(),
+        "snapshot never records an entry selector"
+    );
+}
+
+/// A binary that cannot say how it starts is not a deployment artifact, and
+/// accepting one would push the failure to a later, less obvious place --
+/// wherever the caller eventually looks for something to send. `load`
+/// refuses it up front instead.
+#[test]
+fn a_stateless_artifact_without_an_entry_is_refused() {
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let module = interp.compiled_module().expect("bytecode engine");
+    let origin = Origin::File(PathBuf::from("t.ns"));
+
+    let mut bytes =
+        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
+
+    // The entry field is the last thing in a binary, so truncating at its
+    // section start and writing a bare `0` (absent) byte in its place turns
+    // a valid binary into one with no entry, without hand-building a header.
+    let entry_start = image::inspect::inspect(&bytes)
+        .expect("inspect")
+        .sections
+        .iter()
+        .find(|s| s.name == "entry")
+        .expect("entry section")
+        .start;
+    bytes.truncate(entry_start);
+    bytes.push(0);
+
+    // Not `.expect_err`: `LoadedImage` carries an `Interpreter`, which has no
+    // `Debug` impl for the same reason `Value` does not (the bootstrap
+    // `Object` class is its own `.class`, so a derived `Debug` would
+    // recurse forever) -- `expect_err` requires `T: Debug` on the `Ok` side.
+    let err = match image::load(&bytes) {
+        Ok(_) => panic!("a binary must carry an entry"),
+        Err(e) => e,
+    };
+    assert!(err.contains("entry"), "unexpected error: {err}");
+}
+
+/// The stateless binary is untrusted input exactly like the snapshot image
+/// is -- the differential harness never runs a binary that a fuzzer or a
+/// half-written file produced, so this sweep is the only thing standing
+/// between a truncated binary and a panic. Mirrors
+/// `every_truncation_of_an_image_is_reported_rather_than_panicking`, the
+/// existing model for the image shape.
+#[test]
+fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let module = interp.compiled_module().expect("bytecode engine");
+    let origin = Origin::File(PathBuf::from("t.ns"));
+
+    let binary =
+        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
+
+    for cut in 0..binary.len() {
+        // `is_err()`, not a message check, is deliberate here and only here:
+        // the failure mode varies by cut (a truncated header, a truncated
+        // symbol table, a truncated entry field, ...) and the point of this
+        // sweep is that every one of those is a decode error rather than a
+        // panic, not that they share one message. Never `{:?}` the `Ok`
+        // side either: a `LoadedImage` carries an `Interpreter`, whose
+        // bootstrap `Object` class is its own `.class`, so a derived
+        // `Debug` would recurse forever.
+        assert!(
+            image::load(&binary[..cut]).is_err(),
+            "a binary truncated to {cut} bytes must be refused, not panic"
+        );
+    }
+    image::load(&binary).expect("the untruncated binary still loads");
+}
+
+/// The shape Task 3's trailing-byte check exists for, stated as the case
+/// that motivated it rather than only as a generic tail: a binary followed
+/// by an unrelated image's graph section, byte for byte what a caller gets
+/// by concatenating the two artifact kinds instead of choosing one.
+///
+/// The message assertion is load-bearing, not decorative: this binary sets
+/// `FLAG_STATELESS` and carries a present entry selector, so the earlier
+/// "stateless artifact must record an entry" check does not fire and
+/// `load` reaches the graph-section boundary before failing. A test that
+/// only checked `is_err()` would keep passing if that boundary check were
+/// deleted and some *other* check downstream happened to reject the same
+/// bytes for an unrelated reason -- see the sibling test below, which is
+/// exactly that failure mode caught in review.
+#[test]
+fn a_binary_with_a_graph_appended_is_refused() {
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let platform = interp.platform();
+    let module = interp.compiled_module().expect("bytecode engine");
+    let origin = Origin::File(PathBuf::from("t.ns"));
+
+    let binary =
+        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
+    let image_bytes =
+        image::snapshot(None, &origin, &class, module, &platform, &[]).expect("snapshot");
+    // The append below only exercises anything if the image actually
+    // extends past where the binary ends -- a snapshot's graph section
+    // guarantees that here, but assert it so a future change to either
+    // artifact's layout fails loudly instead of silently appending nothing.
+    assert!(
+        image_bytes.len() > binary.len(),
+        "the snapshot must be longer than the binary for this append to test anything"
+    );
+
+    let mut frankenstein = binary.clone();
+    frankenstein.extend_from_slice(&image_bytes[binary.len().min(image_bytes.len())..]);
+
+    let err = match image::load(&frankenstein) {
+        Ok(_) => panic!("a binary with a graph section appended must be refused"),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("trailing byte"),
+        "expected the trailing-byte check to fire, got: {err}"
+    );
+}
+
+/// `image::snapshot` never records an entry selector -- it is not a
+/// startable artifact, so it has none to record (see the doc comment on
+/// `snapshot`'s `encode_entry(&mut w, None)` call). Flipping
+/// `FLAG_STATELESS` on such a snapshot therefore hits `load`'s
+/// `header.stateless && entry.is_none()` check and is refused for *that*
+/// reason -- well before the graph section, and the trailing bytes it
+/// would leave behind, are ever reached.
+///
+/// This is deliberately not a route to the trailing-byte check: a snapshot
+/// relabelled stateless fails on the missing entry first, so it never
+/// proves the trailing-byte check does anything. That path is already
+/// covered above by `a_binary_with_a_graph_appended_is_refused`, which uses
+/// a real binary (stateless flag set *and* an entry present) with a graph
+/// appended -- reproducing it here with a different input would add
+/// runtime without adding coverage. What this input does demonstrate, and
+/// what the assertion below checks, is that a relabelled snapshot is
+/// refused specifically because it has no entry to start from.
+#[test]
+fn a_relabelled_snapshot_is_refused_for_missing_entry() {
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let platform = interp.platform();
+    let module = interp.compiled_module().expect("bytecode engine");
+    let origin = Origin::File(PathBuf::from("t.ns"));
+
+    let mut bytes =
+        image::snapshot(None, &origin, &class, module, &platform, &[]).expect("snapshot");
+
+    // Locate the flag byte from the header layout instead of hard-coding an
+    // offset, so a header change fails this assertion loudly rather than
+    // quietly flipping the wrong byte.
+    let flag_offset = encode::MAGIC.len() + std::mem::size_of::<u32>();
+    assert_eq!(
+        flag_offset, 8,
+        "header layout: magic (4) + FORMAT_VERSION (4)"
+    );
+    bytes[flag_offset] |= encode::FLAG_STATELESS;
+
+    let err = match image::load(&bytes) {
+        Ok(_) => panic!("a snapshot relabelled stateless must still be refused"),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("entry"),
+        "expected the missing-entry check to fire, got: {err}"
+    );
 }
