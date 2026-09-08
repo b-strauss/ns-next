@@ -48,8 +48,8 @@ recorded entry point.
 ## Layout
 
 ```
-Image:   [header][source?][origin][symbols][code][mixins][root class][entry?][graph]
-Binary:  [header][source?][origin][symbols][code][mixins][root class][entry ]
+Image:   [header][source?][origin][symbols][code][mixins][root class][entry][graph]
+Binary:  [header][source?][origin][symbols][code][mixins][root class][entry]
 ```
 
 The header carries magic, `FORMAT_VERSION` and a flag byte. `read_header`
@@ -288,8 +288,8 @@ with no source occurrence at all. So for the same source file and the same
 identical in a `build` artifact and a `snapshot` artifact only when both hold:
 
 (a) the entry selector is one the code or mixin tables already interned
-(equivalently, one the root application's lookup already finds — see
-"Choosing the entry" below); and
+(equivalently, one the root class's own mixin chain carries as a method or
+as a nested declaration — see "Choosing the entry" below); and
 (b) the snapshotted graph interns no string absent from those same tables.
 
 (a) is enforced by the build-time entry validation described below under
@@ -308,8 +308,12 @@ only whether the two agree byte-for-byte on top of it.
 **Choosing the entry.** If the root class declares `main:args:` that is the
 default, which makes upstream's convention a default rather than a rule.
 Otherwise `--entry` is required. `build` refuses an arity other than 0, 1 or 2,
-and a selector the root application's lookup cannot find, rather than deferring
-either to start-up.
+and a selector the root class's own mixin chain carries as neither a method
+nor a nested declaration, rather than deferring either to start-up. This is
+narrower than what a real send would find at start-up — `doesNotUnderstand:`
+and every native method live outside a mixin's own `methods` table — on
+purpose: see `root_class_answers` in `crates/ns-cli/src/main.rs` for why only
+this narrower set keeps the byte-identity guarantee above sound.
 
 **Loading.** `load` reads the header and branches. A stateful image is unchanged.
 A stateless binary decodes symbols → code → mixins → root class → entry id, with
