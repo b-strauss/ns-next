@@ -141,15 +141,15 @@ pub fn encode_source_origin(w: &mut Writer, origin: &SourceOrigin) {
 /// for `Value::Obj`, which `encode_value` (the object-graph encoder) handles.
 pub fn encode_scalar_value(w: &mut Writer, v: &Value) -> bool {
     match v {
-        Value::Nil => w.write_u8(0),
-        Value::Bool(false) => w.write_u8(1),
-        Value::Bool(true) => w.write_u8(2),
+        Value::Nil => w.write_u8(VAL_NIL),
+        Value::Bool(false) => w.write_u8(VAL_FALSE),
+        Value::Bool(true) => w.write_u8(VAL_TRUE),
         Value::SmallInt(n) => {
-            w.write_u8(3);
+            w.write_u8(VAL_SMALL_INT);
             w.write_i64(*n);
         }
         Value::Float(f) => {
-            w.write_u8(4);
+            w.write_u8(VAL_FLOAT);
             w.write_f64(*f);
         }
         Value::Obj(_) => return false,
@@ -791,12 +791,12 @@ fn encode_class_tag(w: &mut Writer, class: &ClassRef, ctx: &EncodeContext) {
     };
     match builtin {
         Some(kind) => {
-            w.write_u8(0);
+            w.write_u8(CLS_BUILTIN);
             w.write_u8(builtin_class_tag(kind));
         }
-        None if Rc::ptr_eq(class, ctx.root_class) => w.write_u8(1),
+        None if Rc::ptr_eq(class, ctx.root_class) => w.write_u8(CLS_USER_ROOT),
         None => {
-            w.write_u8(2);
+            w.write_u8(CLS_RECORD);
             w.write_u32(ctx.table.object_id(class));
         }
     }
@@ -826,15 +826,15 @@ fn encode_value(w: &mut Writer, v: &Value, ctx: &EncodeContext) {
         unreachable!("encode_scalar_value handles every non-Obj case")
     };
     if is_same_object(v, ctx.platform) {
-        w.write_u8(7);
+        w.write_u8(VAL_PLATFORM);
         return;
     }
     if matches!(obj.borrow().data, ObjectData::Class(_)) {
-        w.write_u8(6);
+        w.write_u8(VAL_CLASS_TAG);
         encode_class_tag(w, obj, ctx);
         return;
     }
-    w.write_u8(5);
+    w.write_u8(VAL_OBJECT_ID);
     w.write_u32(ctx.table.object_id(obj));
 }
 
@@ -947,27 +947,27 @@ fn encode_object(
     w.write_u32(borrowed.identity_hash);
     match &borrowed.data {
         ObjectData::Instance(fields) => {
-            w.write_u8(0);
+            w.write_u8(OBJ_INSTANCE);
             encode_values(w, fields, ctx);
         }
         ObjectData::Str(s) => {
-            w.write_u8(1);
+            w.write_u8(OBJ_STR);
             w.write_str(s);
         }
         ObjectData::Sym(s) => {
-            w.write_u8(2);
+            w.write_u8(OBJ_SYM);
             w.write_u32(symbols.intern(s.as_str()));
         }
         ObjectData::Array(elements) => {
-            w.write_u8(3);
+            w.write_u8(OBJ_ARRAY);
             encode_values(w, elements, ctx);
         }
         ObjectData::Closure(c) => {
-            w.write_u8(4);
+            w.write_u8(OBJ_CLOSURE);
             encode_closure_record(w, c, ctx, symbols)?;
         }
         ObjectData::Class(data) => {
-            w.write_u8(5);
+            w.write_u8(OBJ_CLASS);
             encode_class_record(w, data, ctx)?;
         }
     }
@@ -992,7 +992,7 @@ fn encode_frame(
     // `pc` would decode as an index into a body it never ran. Refused for
     // the same reason `encode_closure_record` refuses `ClosureBody::Ast`.
     match f.pc_kind {
-        PcKind::Bytecode => w.write_u8(1),
+        PcKind::Bytecode => w.write_u8(PC_KIND_BYTECODE),
         PcKind::TreeWalk => {
             return Err(
                 "image encoding cannot serialize a tree-walker activation: its `pc` counts \
@@ -1006,24 +1006,24 @@ fn encode_frame(
     encode_optional_class(w, f.current_class.as_ref(), ctx);
     match &f.kind {
         FrameKind::Method(method) => {
-            w.write_u8(0);
+            w.write_u8(FRAME_METHOD);
             w.write_u32(symbols.intern(method.selector.as_str()));
         }
         FrameKind::Closure(c) => {
-            w.write_u8(1);
+            w.write_u8(FRAME_CLOSURE);
             encode_closure_record(w, c, ctx, symbols)?;
         }
-        FrameKind::TopLevel => w.write_u8(2),
+        FrameKind::TopLevel => w.write_u8(FRAME_TOP_LEVEL),
         FrameKind::Initializer(class) => {
-            w.write_u8(3);
+            w.write_u8(FRAME_INITIALIZER);
             encode_class_tag(w, class, ctx);
         }
         FrameKind::SuperclassClause(class) => {
-            w.write_u8(4);
+            w.write_u8(FRAME_SUPERCLASS_CLAUSE);
             encode_class_tag(w, class, ctx);
         }
         FrameKind::SuperclassMessage(class) => {
-            w.write_u8(5);
+            w.write_u8(FRAME_SUPERCLASS_MESSAGE);
             encode_class_tag(w, class, ctx);
         }
     }

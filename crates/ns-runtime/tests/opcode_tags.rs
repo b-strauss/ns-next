@@ -106,3 +106,83 @@ fn no_two_tags_share_a_number() {
     deduped.dedup();
     assert_eq!(deduped.len(), lits.len(), "duplicate literal tag");
 }
+
+/// The graph section's tags, pinned for the same reason as the instruction
+/// tags above: three readers now share this numbering -- the encoder, the
+/// loader's decoder, and `inspect`'s structural walk -- and a renumbering
+/// would make the viewer quietly disagree with the loader about what a file
+/// says.
+#[test]
+fn graph_section_tags_are_fixed() {
+    assert_eq!(VAL_NIL, 0);
+    assert_eq!(VAL_FALSE, 1);
+    assert_eq!(VAL_TRUE, 2);
+    assert_eq!(VAL_SMALL_INT, 3);
+    assert_eq!(VAL_FLOAT, 4);
+    assert_eq!(VAL_OBJECT_ID, 5);
+    assert_eq!(VAL_CLASS_TAG, 6);
+    assert_eq!(VAL_PLATFORM, 7);
+
+    assert_eq!(OBJ_INSTANCE, 0);
+    assert_eq!(OBJ_STR, 1);
+    assert_eq!(OBJ_SYM, 2);
+    assert_eq!(OBJ_ARRAY, 3);
+    assert_eq!(OBJ_CLOSURE, 4);
+    assert_eq!(OBJ_CLASS, 5);
+
+    assert_eq!(CLS_BUILTIN, 0);
+    assert_eq!(CLS_USER_ROOT, 1);
+    assert_eq!(CLS_RECORD, 2);
+
+    assert_eq!(FRAME_METHOD, 0);
+    assert_eq!(FRAME_CLOSURE, 1);
+    assert_eq!(FRAME_TOP_LEVEL, 2);
+    assert_eq!(FRAME_INITIALIZER, 3);
+    assert_eq!(FRAME_SUPERCLASS_CLAUSE, 4);
+    assert_eq!(FRAME_SUPERCLASS_MESSAGE, 5);
+
+    assert_eq!(PC_KIND_TREE_WALK, 0);
+    assert_eq!(PC_KIND_BYTECODE, 1);
+}
+
+/// Within each family a number means one thing. Nothing but a copy-paste
+/// stops two constants sharing one, and the compiler would not object.
+#[test]
+fn no_two_graph_tags_in_a_family_share_a_number() {
+    let families: [&[u8]; 5] = [
+        &[
+            VAL_NIL,
+            VAL_FALSE,
+            VAL_TRUE,
+            VAL_SMALL_INT,
+            VAL_FLOAT,
+            VAL_OBJECT_ID,
+            VAL_CLASS_TAG,
+            VAL_PLATFORM,
+        ],
+        &[
+            OBJ_INSTANCE,
+            OBJ_STR,
+            OBJ_SYM,
+            OBJ_ARRAY,
+            OBJ_CLOSURE,
+            OBJ_CLASS,
+        ],
+        &[CLS_BUILTIN, CLS_USER_ROOT, CLS_RECORD],
+        &[
+            FRAME_METHOD,
+            FRAME_CLOSURE,
+            FRAME_TOP_LEVEL,
+            FRAME_INITIALIZER,
+            FRAME_SUPERCLASS_CLAUSE,
+            FRAME_SUPERCLASS_MESSAGE,
+        ],
+        &[PC_KIND_TREE_WALK, PC_KIND_BYTECODE],
+    ];
+    for family in families {
+        let mut seen = family.to_vec();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), family.len(), "duplicate tag within a family");
+    }
+}

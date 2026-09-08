@@ -55,3 +55,60 @@ pub const LIT_ARRAY: u8 = 7;
 /// the same code the tree-walker uses.
 pub const LIT_MALFORMED_INT: u8 = 8;
 pub const LIT_UNRESOLVED_IDENT: u8 = 9;
+
+// ---------------------------------------------------------------------------
+// Graph-section tags. Same rule as above: assigned once, never renumbered.
+//
+// These describe the object and frame records, which only an image carries.
+// They were bare literals in `encode.rs` and again in `decode.rs` until
+// `inspect` grew a third reader over the same bytes -- a structural walk that
+// reports records instead of materializing them. Three hand-kept copies of one
+// numbering is how a viewer starts quietly disagreeing with the loader about
+// what a file says, so the numbering lives here and all three read it.
+// ---------------------------------------------------------------------------
+
+/// How a `Value` is encoded. Scalars carry their payload inline; the last
+/// three name something outside the value itself.
+pub const VAL_NIL: u8 = 0;
+pub const VAL_FALSE: u8 = 1;
+pub const VAL_TRUE: u8 = 2;
+pub const VAL_SMALL_INT: u8 = 3;
+pub const VAL_FLOAT: u8 = 4;
+/// An index into the object table.
+pub const VAL_OBJECT_ID: u8 = 5;
+/// A class, named by a class tag rather than by object identity.
+pub const VAL_CLASS_TAG: u8 = 6;
+/// The `platform` singleton, resolved to the loading interpreter's own.
+pub const VAL_PLATFORM: u8 = 7;
+
+/// An object record's body, following its class tag and identity hash.
+pub const OBJ_INSTANCE: u8 = 0;
+pub const OBJ_STR: u8 = 1;
+pub const OBJ_SYM: u8 = 2;
+pub const OBJ_ARRAY: u8 = 3;
+pub const OBJ_CLOSURE: u8 = 4;
+pub const OBJ_CLASS: u8 = 5;
+
+/// How a class reference is named. A builtin and the module's root class are
+/// not in the graph at all -- the bootstrap and the mixin table produce them --
+/// so only the third case indexes the object table.
+pub const CLS_BUILTIN: u8 = 0;
+pub const CLS_USER_ROOT: u8 = 1;
+pub const CLS_RECORD: u8 = 2;
+
+/// What a frame was activated for.
+pub const FRAME_METHOD: u8 = 0;
+pub const FRAME_CLOSURE: u8 = 1;
+pub const FRAME_TOP_LEVEL: u8 = 2;
+pub const FRAME_INITIALIZER: u8 = 3;
+pub const FRAME_SUPERCLASS_CLAUSE: u8 = 4;
+pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
+
+/// The unit `Frame.pc` counts in.
+///
+/// A tree-walker activation counts statements, which an image's code table
+/// does not carry, so this value is written by nothing and refused by the
+/// decoder. It is retired rather than free: bytecode took the next number so
+/// that a stale artifact naming 0 fails instead of being read as bytecode.
+pub const PC_KIND_TREE_WALK: u8 = 0;
+pub const PC_KIND_BYTECODE: u8 = 1;

@@ -117,7 +117,13 @@ enum Cmd {
     },
     /// Print an artifact's structure: header flags, section offsets, the
     /// symbol and mixin tables, and how much graph it carries.
-    Inspect { artifact: PathBuf },
+    Inspect {
+        artifact: PathBuf,
+        /// Render everything: the mixin rows expanded, and every compiled
+        /// body disassembled. The default is a table of contents.
+        #[arg(long)]
+        full: bool,
+    },
     /// Compile a file into a stateless deployment binary: code and
     /// structure, no instance state. Nothing is instantiated -- the primary
     /// factory and every initializer run when the binary is loaded.
@@ -172,7 +178,7 @@ fn main() -> ExitCode {
             initializer,
             class,
         } => cmd_disasm(&file, selector.as_deref(), initializer, class.as_deref()),
-        Cmd::Inspect { artifact } => cmd_inspect(&artifact),
+        Cmd::Inspect { artifact, full } => cmd_inspect(&artifact, full),
         Cmd::Build {
             file,
             out,
@@ -988,7 +994,7 @@ fn cmd_disasm(
 /// `ns-next inspect`: what is in this artifact. Read-only -- nothing is
 /// bootstrapped, instantiated or run, so inspecting a hostile file exercises
 /// only the decoders.
-fn cmd_inspect(artifact: &Path) -> ExitCode {
+fn cmd_inspect(artifact: &Path, full: bool) -> ExitCode {
     let bytes = match std::fs::read(artifact) {
         Ok(b) => b,
         Err(e) => {
@@ -998,7 +1004,12 @@ fn cmd_inspect(artifact: &Path) -> ExitCode {
     };
     match ns_runtime::image::inspect::inspect(&bytes) {
         Ok(report) => {
-            print!("{}", ns_runtime::image::inspect::render(&report));
+            let rendered = if full {
+                ns_runtime::image::inspect::render_full(&report)
+            } else {
+                ns_runtime::image::inspect::render(&report)
+            };
+            print!("{rendered}");
             ExitCode::SUCCESS
         }
         Err(e) => {
