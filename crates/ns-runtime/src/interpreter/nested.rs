@@ -26,6 +26,7 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
+use crate::heap::Heap;
 use crate::mixin::{mixin_key, Mixin};
 use crate::types::*;
 use crate::Symbol;
@@ -120,7 +121,7 @@ pub(crate) fn nested_class(
     // `instantiate` fills every slot, hidden ones included, with `Nil`, and
     // a materialized class object is never `Nil`, so no separate occupancy
     // flag is needed.
-    if let Some(cached) = read_cache_slot(receiver, index) {
+    if let Some(cached) = read_cache_slot(&interp.heap, receiver, index) {
         return Ok(cached);
     }
     // Step 2: the superclass clause, evaluated in the receiver's context
@@ -195,10 +196,7 @@ fn cache_slot(interp: &Interpreter, receiver: &Value, nested: &Rc<Mixin>) -> Opt
         .get(&mixin_key(nested))
         .copied()?;
     match receiver {
-        Value::Obj(obj) => match &obj.borrow().data {
-            ObjectData::Instance(fields) if index < fields.len() => Some(index),
-            _ => None,
-        },
+        Value::Obj(obj) => interp.heap.instance_field(obj, index).map(|_| index),
         _ => None,
     }
 }
@@ -224,17 +222,13 @@ fn in_progress_key(receiver: &Value, nested: &Rc<Mixin>) -> (usize, usize) {
     (address, mixin_key(nested))
 }
 
-fn read_cache_slot(receiver: &Value, index: usize) -> Option<Value> {
+fn read_cache_slot(heap: &Heap, receiver: &Value, index: usize) -> Option<Value> {
     let Value::Obj(obj) = receiver else {
         return None;
     };
-    let borrowed = obj.borrow();
-    let ObjectData::Instance(fields) = &borrowed.data else {
-        return None;
-    };
-    match fields.get(index) {
+    match heap.instance_field(obj, index) {
         Some(Value::Nil) | None => None,
-        Some(value) => Some(value.clone()),
+        Some(value) => Some(value),
     }
 }
 
@@ -360,7 +354,7 @@ pub(super) fn run_clause_body(
              of a mixin decoded from an image"
         ),
     };
-    frame.borrow_mut().uncontinuable = true;
+    interp.heap.mark_uncontinuable(&frame);
     match result {
         Ok(value) => Ok(value),
         Err(Signal::Return(target, value)) if Rc::ptr_eq(&target, &frame) => Ok(value),

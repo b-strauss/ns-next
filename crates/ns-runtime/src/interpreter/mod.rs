@@ -260,7 +260,7 @@ impl Interpreter {
         // second `doesNotUnderstand:` path, only a second class to try
         // `lookup_public` against first.
         if let Value::Obj(obj) = &receiver {
-            let is_class = matches!(obj.borrow().data, ObjectData::Class(_));
+            let is_class = self.heap.is_class(obj);
             if is_class {
                 if let Some(metaclass) = self.metaclass_of(obj) {
                     match dispatch::lookup_public(&self.heap, &metaclass, selector) {
@@ -571,7 +571,7 @@ impl Interpreter {
                  decoded from an image"
             ),
         };
-        frame.borrow_mut().uncontinuable = true;
+        self.heap.mark_uncontinuable(&frame);
         match result {
             Ok(value) => Ok(value),
             Err(Signal::Return(target, value)) if Rc::ptr_eq(&target, &frame) => Ok(value),
@@ -587,7 +587,7 @@ impl Interpreter {
     ) -> EvalResult {
         let mut last = Value::Nil;
         for (i, stmt) in stmts.iter().enumerate() {
-            frame.borrow_mut().pc = i;
+            self.heap.set_frame_pc(frame, i);
             match stmt {
                 ast::Stmt::Expr(e) => {
                     last = eval::eval_expr(self, e, frame, bindings)?;
@@ -603,22 +603,22 @@ impl Interpreter {
         // invocation handles the closure case directly and never calls
         // `run_statements` through this method-shaped path for a closure
         // body's implicit-return value; see Task 6 Step 2.
-        match &frame.borrow().kind {
-            FrameKind::Method(_) => Ok(frame.borrow().receiver.clone()),
-            _ => Ok(last),
+        if self.heap.frame_is_method(frame) {
+            Ok(self.heap.receiver(frame))
+        } else {
+            Ok(last)
         }
     }
 
-    fn raise_return(&self, frame: &FrameRef, value: Value) -> Signal {
-        let target = match &frame.borrow().kind {
-            FrameKind::Method(_)
-            | FrameKind::TopLevel
-            | FrameKind::Initializer(_)
-            | FrameKind::SuperclassClause(_)
-            | FrameKind::SuperclassMessage(_) => frame.clone(),
-            FrameKind::Closure(closure) => closure.home.clone(),
-        };
-        if target.borrow().uncontinuable {
+    fn raise_return(&mut self, frame: &FrameRef, value: Value) -> Signal {
+        // `Frame.home` is populated exactly when `kind` is
+        // `FrameKind::Closure` (`eval::invoke_closure` sets it to that
+        // closure's own `home` at construction, and nothing else ever sets
+        // it), so reading it here reaches the same target the per-kind
+        // match used to: the closure's enclosing method/initializer for a
+        // block activation, or the activation itself for every other kind.
+        let target = self.heap.frame_home(frame).unwrap_or_else(|| frame.clone());
+        if self.heap.frame_is_uncontinuable(&target) {
             return Signal::Error(NewspeakError {
                 selector: Symbol::intern("^"),
                 receiver: value,
@@ -626,17 +626,17 @@ impl Interpreter {
                     .to_string(),
             });
         }
-        target.borrow_mut().uncontinuable = true;
+        self.heap.mark_uncontinuable(&target);
         Signal::Return(target, value)
     }
 
-    pub(crate) fn raise_return_pub(&self, frame: &FrameRef, value: Value) -> Signal {
+    pub(crate) fn raise_return_pub(&mut self, frame: &FrameRef, value: Value) -> Signal {
         self.raise_return(frame, value)
     }
 
     pub fn class_of(&self, value: &Value) -> ClassRef {
         match value {
-            Value::Obj(obj) => obj.borrow().class.clone(),
+            Value::Obj(obj) => self.heap.class_of_obj(obj),
             // Nil/Bool/SmallInt/Float classes are wired up by the bootstrap
             // (Task 11) into interpreter-held globals; Task 7-10 read them
             // via `Interpreter::builtin_class(kind)` (added in Task 7).
@@ -697,15 +697,13 @@ impl Interpreter {
         let mut super_metaclass: Option<ClassRef> = None;
         let mut level = class.clone();
         loop {
-            let (cached, superclass) = {
-                let borrowed = level.borrow();
-                match &borrowed.data {
-                    ObjectData::Class(data) => (data.metaclass.clone(), data.superclass.clone()),
-                    // Not a class object: it has no metaclass, and nothing
-                    // below it can inherit one through this level.
-                    _ => break,
-                }
-            };
+            // Not a class object: it has no metaclass, and nothing below it
+            // can inherit one through this level.
+            if !self.heap.is_class(&level) {
+                break;
+            }
+            let cached = self.heap.class_metaclass(&level);
+            let superclass = self.heap.class_superclass(&level);
             if cached.is_some() {
                 super_metaclass = cached;
                 break;
@@ -715,17 +713,13 @@ impl Interpreter {
             level = superclass;
         }
         for level in chain.iter().rev() {
-            let (own_mixin, enclosing, declaring_class) = {
-                let borrowed = level.borrow();
-                match &borrowed.data {
-                    ObjectData::Class(data) => (
-                        data.application.mixin.clone(),
-                        data.enclosing.clone(),
-                        data.declaring_class.clone(),
-                    ),
-                    _ => unreachable!("only class objects are pushed onto the chain"),
-                }
-            };
+            let own_application = self
+                .heap
+                .class_application(level)
+                .expect("only class objects are pushed onto the chain");
+            let own_mixin = own_application.mixin.clone();
+            let enclosing = self.heap.class_enclosing(level);
+            let declaring_class = self.heap.class_declaring(level);
             let class_side = own_mixin.class_side.clone();
             let class_side_mixin = match class_side {
                 Some(mixin) => mixin,
@@ -756,10 +750,7 @@ impl Interpreter {
             // starting a new, empty one.
             let metaclass =
                 self.new_class_object(application, enclosing, declaring_class, super_metaclass);
-            match &mut level.borrow_mut().data {
-                ObjectData::Class(data) => data.metaclass = Some(metaclass.clone()),
-                _ => unreachable!("checked above"),
-            }
+            self.heap.set_class_metaclass(level, metaclass.clone());
             super_metaclass = Some(metaclass);
         }
         // The last level built is `chain[0]`, which is `class` itself; an

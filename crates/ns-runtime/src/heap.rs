@@ -249,6 +249,19 @@ impl Heap {
         }
     }
 
+    pub fn class_metaclass(&self, class: &ClassRef) -> Option<ClassRef> {
+        match &class.borrow().data {
+            ObjectData::Class(data) => data.metaclass.clone(),
+            _ => None,
+        }
+    }
+
+    pub fn set_class_metaclass(&mut self, class: &ClassRef, metaclass: ClassRef) {
+        if let ObjectData::Class(data) = &mut class.borrow_mut().data {
+            data.metaclass = Some(metaclass);
+        }
+    }
+
     // ---------- Activation accessors ----------
     //
     // `local`/`set_local` carry the register-file addressing that
@@ -258,10 +271,9 @@ impl Heap {
     // A wrong-arity activation is refused in `invoke_method` before it can
     // reach here, so this addressing is total.
     //
-    // Only the accessors `interpreter/eval.rs` actually calls are added
-    // here; `frame_arg_count`, `frame_pc`, `frame_sender`,
-    // `frame_is_uncontinuable`, `mark_uncontinuable` and `frame_slot_base`
-    // have no caller yet and are left for the task that adds their first
+    // Only the accessors a caller actually needs are added here;
+    // `frame_arg_count`, `frame_pc`, `frame_sender` and `frame_slot_base`
+    // still have no caller and are left for the task that adds their first
     // one.
 
     pub fn receiver(&self, frame: &FrameRef) -> Value {
@@ -308,6 +320,23 @@ impl Heap {
             FrameKind::Closure(closure) => Some(closure.captured_frame.clone()),
             _ => None,
         }
+    }
+
+    pub fn frame_is_uncontinuable(&self, frame: &FrameRef) -> bool {
+        frame.borrow().uncontinuable
+    }
+
+    pub fn mark_uncontinuable(&mut self, frame: &FrameRef) {
+        frame.borrow_mut().uncontinuable = true;
+    }
+
+    /// Whether `frame`'s kind is `FrameKind::Method` --
+    /// `Interpreter::run_statements` needs this to decide what an implicit
+    /// (non-`^`) fall-off-the-end return value is: `self` for a method body
+    /// (spec §3.5), the last statement's value for every other body this
+    /// loop runs.
+    pub fn frame_is_method(&self, frame: &FrameRef) -> bool {
+        matches!(frame.borrow().kind, FrameKind::Method(_))
     }
 }
 
