@@ -1,5 +1,19 @@
 # Artifact Inspection and the Stateless Binary — Implementation Plan
 
+> **Status: Complete.** All 13 tasks (62 steps) implemented, each reviewed for
+> spec compliance and quality, on `feature/artifact-inspection-stateless-binary`
+> (`c509fe3..e1e1335`), merged to `master` at `ac2c96e`. Five fix rounds, all
+> closed in one round each. A whole-branch review then raised two Important
+> findings and seven Minor ones; its single fix wave landed as `e1e1335..3f42aa0`.
+>
+> Two things this plan got wrong, corrected during execution and worth knowing
+> before reading it as a reference. The byte-identity guarantee it states has
+> **two** conditions, not one — the second, that a snapshot's graph interns no
+> new symbol, is neither stated here nor enforced anywhere; see
+> `docs/design/image-format.md`. And Task 12's third test as written passes for
+> the wrong reason, which the review caught. The design document is the current
+> authority; this file is the execution record.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make a serialized artifact readable as text, then add a stateless binary
@@ -104,7 +118,7 @@ class carries its `application.mixin` and therefore the whole nested-mixin tree 
   `ns_runtime::image::encode::MAGIC`, `Interpreter::compiled_module()`.
 - Produces: nothing later tasks depend on.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `crates/ns-cli/tests/disasm_snapshots.rs`:
 
@@ -148,7 +162,7 @@ fn disasm_of_an_image_matches_disasm_of_its_source() {
 }
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `cargo test -p ns-cli --test disasm_snapshots disasm_of_an_image -- --nocapture`
 
@@ -156,7 +170,7 @@ Expected: FAIL. `disasm` hands the image to the parser, which reports a lexer or
 parser diagnostic on binary bytes, so the command exits non-zero and the assertion
 on `from_image.status.success()` fires.
 
-- [ ] **Step 3: Add the artifact branch**
+- [x] **Step 3: Add the artifact branch**
 
 In `crates/ns-cli/src/main.rs`, add above `cmd_disasm`:
 
@@ -227,7 +241,7 @@ If `CompiledModule` is not `Clone`, derive it (`#[derive(Clone)]` on the struct 
 `crates/ns-runtime/src/bytecode.rs`) rather than restructuring the branch — every
 field is already `HashMap`/`Rc`, so the derive is cheap and total.
 
-- [ ] **Step 4: Run the test**
+- [x] **Step 4: Run the test**
 
 Run: `cargo test -p ns-cli --test disasm_snapshots`
 
@@ -235,7 +249,7 @@ Expected: PASS, including the six pre-existing snapshot tests, which must be
 byte-identical — this refactor changes how `class` and `module` are obtained, not
 what is printed.
 
-- [ ] **Step 5: Add the failure-path test**
+- [x] **Step 5: Add the failure-path test**
 
 Append:
 
@@ -264,7 +278,7 @@ fn disasm_rejects_a_corrupt_artifact_with_a_message() {
 }
 ```
 
-- [ ] **Step 6: Run the full suite and the gates**
+- [x] **Step 6: Run the full suite and the gates**
 
 ```bash
 cargo test --workspace
@@ -273,7 +287,7 @@ cargo fmt --all && cargo clippy --workspace --all-targets
 
 Expected: green, warning-free.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/ns-cli/src/main.rs crates/ns-cli/tests/disasm_snapshots.rs
@@ -309,7 +323,7 @@ of an artifact" checkable against the artifact instead of against the encoder.
   `pub fn render(report: &Report) -> String`. Task 10 uses `inspect` to diff two
   artifacts structurally.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `crates/ns-cli/tests/inspect.rs`:
 
@@ -403,14 +417,14 @@ fn inspect_reports_a_corrupt_artifact_rather_than_panicking() {
 }
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `cargo test -p ns-cli --test inspect`
 
 Expected: FAIL — `error: unrecognized subcommand 'inspect'`, so `ok` is false in the
 first test.
 
-- [ ] **Step 3: Write the inspector**
+- [x] **Step 3: Write the inspector**
 
 Create `crates/ns-runtime/src/image/inspect.rs`:
 
@@ -649,7 +663,7 @@ Three helpers this calls do not exist yet and must be added:
 `decode::decode_entry` arrives in Task 4; until then, stub it in `inspect.rs` as
 `Ok(None)` with a `// Task 4 replaces this` comment, and remove the stub in Task 4.
 
-- [ ] **Step 4: Declare the module and add the subcommand**
+- [x] **Step 4: Declare the module and add the subcommand**
 
 In `crates/ns-runtime/src/image/mod.rs`, add `pub mod inspect;` beside the other
 module declarations, keeping them alphabetical.
@@ -695,20 +709,20 @@ fn cmd_inspect(artifact: &Path) -> ExitCode {
 }
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `cargo test -p ns-cli --test inspect`
 
 Expected: PASS, all three.
 
-- [ ] **Step 6: Gates**
+- [x] **Step 6: Gates**
 
 ```bash
 cargo test --workspace
 cargo fmt --all && cargo clippy --workspace --all-targets
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/ns-runtime/src/image/ crates/ns-cli/src/main.rs crates/ns-cli/tests/inspect.rs
@@ -740,7 +754,7 @@ appended loads without complaint.
 **Interfaces:**
 - Produces: `DecodeError::TrailingBytes { count: usize }`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `crates/ns-runtime/tests/image.rs` (use the file's existing helpers for
 building a real image — copy the setup from a neighbouring test such as
@@ -761,13 +775,13 @@ fn bytes_after_the_last_section_are_refused_not_ignored() {
 }
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `cargo test -p ns-runtime --test image bytes_after_the_last_section`
 
 Expected: FAIL — `load` returns `Ok`, so `expect_err` panics.
 
-- [ ] **Step 3: Add the error and the check**
+- [x] **Step 3: Add the error and the check**
 
 In `decode.rs`, add to `DecodeError`:
 
@@ -802,7 +816,7 @@ Place it before `set_engine` and before `mark_decoded_from_image` so a refusal
 leaves no half-built interpreter behind, matching the ordering comment already in
 `load`.
 
-- [ ] **Step 4: Run the test**
+- [x] **Step 4: Run the test**
 
 Run: `cargo test -p ns-runtime --test image`
 
@@ -810,7 +824,7 @@ Expected: PASS. The whole image suite must stay green — if an existing test's
 fixture had slack bytes, that fixture was wrong and the test is now telling you so;
 fix the fixture, not the check.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ns-runtime/src/image/ crates/ns-runtime/tests/image.rs
@@ -840,7 +854,7 @@ with graph-shaped bytes appended loaded without complaint."
   - `decode::decode_entry(r: &mut Reader, symbols: &symbols::Table) ->
     Result<Option<Symbol>, DecodeError>`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `crates/ns-runtime/tests/image.rs`:
 
@@ -893,13 +907,13 @@ fn an_unknown_header_flag_is_still_rejected_now_that_two_are_known() {
 }
 ```
 
-- [ ] **Step 2: Run and watch them fail**
+- [x] **Step 2: Run and watch them fail**
 
 Run: `cargo test -p ns-runtime --test image entry_field`
 
 Expected: FAIL to compile — `encode_entry` and `decode_entry` do not exist.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `encode.rs`, beside `FLAG_HAS_SOURCE`:
 
@@ -976,13 +990,13 @@ differ, use them rather than changing the variant.
 Finally, delete the `Ok(None)` stub in `inspect.rs` and call the real
 `decode::decode_entry`.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p ns-runtime --test image`
 
 Expected: PASS, whole file green.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ns-runtime/src/image/
@@ -1007,7 +1021,7 @@ that leaves the describing sections byte-equal between the two."
   root_class: &ClassRef, module: &CompiledModule, entry: Symbol) ->
   Result<Vec<u8>, String>`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -1046,13 +1060,13 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
 }
 ```
 
-- [ ] **Step 2: Run and watch it fail**
+- [x] **Step 2: Run and watch it fail**
 
 Run: `cargo test -p ns-runtime --test image a_built_binary_and_a_snapshot`
 
 Expected: FAIL to compile — `image::build` does not exist.
 
-- [ ] **Step 3: Factor the shared prefix, then add `build`**
+- [x] **Step 3: Factor the shared prefix, then add `build`**
 
 In `mod.rs`, extract from `snapshot` the part both artifacts share. The constraint
 that shapes this: the symbol table is written *before* the code, mixin and graph
@@ -1162,7 +1176,7 @@ If `CodeIds` or `MixinIds` are private today, widen them to `pub(crate)` rather 
 restructuring; keeping them private would force a second encoding path, which is
 what this factoring exists to prevent.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p ns-runtime --test image`
 
@@ -1172,7 +1186,7 @@ entry presence byte, which is now written into every image. If a hand-written by
 fixture in the test file asserts an exact layout past the root class, update that
 fixture, and say so in the commit.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ns-runtime/src/image/mod.rs crates/ns-runtime/tests/image.rs
@@ -1196,7 +1210,7 @@ format change and the comparison test would find out only afterwards."
 - Produces: `LoadedImage.entry: Option<Symbol>`, `LoadedImage.stateless: bool`,
   and `roots` empty on the stateless path.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -1238,13 +1252,13 @@ fn a_stateless_artifact_without_an_entry_is_refused() {
 }
 ```
 
-- [ ] **Step 2: Run and watch them fail**
+- [x] **Step 2: Run and watch them fail**
 
 Run: `cargo test -p ns-runtime --test image a_binary_loads`
 
 Expected: FAIL — `LoadedImage` has no `stateless` or `entry` field.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add to `LoadedImage`:
 
@@ -1292,13 +1306,13 @@ the point of having added it first.
 
 Finally populate the two new fields in the returned `LoadedImage`.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p ns-runtime --test image`
 
 Expected: PASS.
 
-- [ ] **Step 5: Gates and commit**
+- [x] **Step 5: Gates and commit**
 
 ```bash
 cargo test --workspace && cargo fmt --all && cargo clippy --workspace --all-targets
@@ -1324,7 +1338,7 @@ caller eventually fails to find something to send."
 - Consumes: `image::build`, `factory_args_for`, `selector_arity`.
 - Produces: the `build` subcommand.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `crates/ns-cli/tests/build_load.rs` with the same `fixture` / `temp_dir` /
 `ns_next` helpers as `crates/ns-cli/tests/inspect.rs` (copy them; a shared helper
@@ -1393,13 +1407,13 @@ fn build_requires_an_entry_when_the_root_class_declares_no_main() {
 }
 ```
 
-- [ ] **Step 2: Run and watch them fail**
+- [x] **Step 2: Run and watch them fail**
 
 Run: `cargo test -p ns-cli --test build_load`
 
 Expected: FAIL — `unrecognized subcommand 'build'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add to `Cmd`:
 
@@ -1513,13 +1527,13 @@ Wire it into the dispatch `match` beside `Cmd::Snapshot`.
 field shape differs, adapt the walk to what `crates/ns-runtime/src/mixin.rs`
 actually declares rather than changing the mixin.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p ns-cli --test build_load`
 
 Expected: PASS, all four.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ns-cli/
@@ -1538,7 +1552,7 @@ where the mistake was made rather than at someone else's start-up."
 - Modify: `crates/ns-cli/src/main.rs` (`cmd_load`)
 - Test: `crates/ns-cli/tests/build_load.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -1597,14 +1611,14 @@ fn load_send_overrides_the_recorded_entry() {
 }
 ```
 
-- [ ] **Step 2: Run and watch them fail**
+- [x] **Step 2: Run and watch them fail**
 
 Run: `cargo test -p ns-cli --test build_load a_built_binary_runs`
 
 Expected: FAIL — `cmd_load` sends to `roots[0]`, which does not exist, so it
 reports an error or panics on an empty vector.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `cmd_load`, after destructuring `LoadedImage`, branch on whether an instance
 came with the artifact:
@@ -1656,13 +1670,13 @@ currently succeeds by doing nothing, keep that and only apply the message above 
 the stateless path. Read `cmd_load` before editing and keep every existing exit path
 intact; `crates/ns-cli/tests/snapshot_load.rs` pins them.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p ns-cli`
 
 Expected: PASS, including `snapshot_load.rs` unchanged.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ns-cli/
@@ -1685,7 +1699,7 @@ which is what actually protects the property.
 **Files:**
 - Modify: `crates/ns-cli/tests/build_load.rs`
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 ```rust
 /// `build` then `load` must be indistinguishable from `run` on the same
@@ -1738,14 +1752,14 @@ fn every_fixture_runs_identically_from_source_and_from_a_binary() {
 }
 ```
 
-- [ ] **Step 2: Run it**
+- [x] **Step 2: Run it**
 
 Run: `cargo test -p ns-cli --test build_load every_fixture -- --nocapture`
 
 Expected: PASS. If a fixture fails, the message names it — fix the runtime, not the
 test. A divergence here is exactly the class of defect this gate exists for.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/ns-cli/tests/build_load.rs
@@ -1759,7 +1773,7 @@ git commit -m "test: pin build+load against run over every fixture"
 **Files:**
 - Modify: `crates/ns-cli/tests/build_load.rs`
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 ```rust
 /// For one source and one --debug-source setting, a build and a snapshot must
@@ -1808,13 +1822,13 @@ This test needs `ns-runtime` as a dev-dependency of `ns-cli`; check
 `crates/ns-cli/Cargo.toml` and add it under `[dev-dependencies]` if the crate is
 only a normal dependency today.
 
-- [ ] **Step 2: Run it**
+- [x] **Step 2: Run it**
 
 Run: `cargo test -p ns-cli --test build_load a_build_and_a_snapshot`
 
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/ns-cli/
@@ -1829,7 +1843,7 @@ git commit -m "test: pin the describing sections equal between build and snapsho
 - Modify: wherever `run-corpus` is implemented (grep `run-corpus` in
   `crates/ns-cli/src/`)
 
-- [ ] **Step 1: Read the existing lane**
+- [x] **Step 1: Read the existing lane**
 
 Read the current implementation end to end before changing it. It runs each
 whitelisted module under both engines and compares against the recorded
@@ -1837,7 +1851,7 @@ whitelisted module under both engines and compares against the recorded
 row, not a new configuration format: **a row's `send` is the build's `--entry`**, so
 `corpus/runnable.toml` needs no new field.
 
-- [ ] **Step 2: Add the lane**
+- [x] **Step 2: Add the lane**
 
 For each entry, after the two engine runs:
 
@@ -1850,7 +1864,7 @@ Keep the reported summary line exactly `ran N, failed M, skipped K` — the gate
 `CLAUDE.md`, `README.md` and `docs/design/README.md` quotes it, and changing the
 wording silently breaks a documented check. Count a row once, not three times.
 
-- [ ] **Step 3: Run the gate**
+- [x] **Step 3: Run the gate**
 
 ```bash
 cargo run -p ns-cli -- run-corpus corpus/modules
@@ -1858,7 +1872,7 @@ cargo run -p ns-cli -- run-corpus corpus/modules
 
 Expected: `ran 6, failed 0, skipped 205`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/ns-cli/
@@ -1874,7 +1888,7 @@ A row's send is the build's entry, so the whitelist needs no new field."
 **Files:**
 - Modify: `crates/ns-runtime/tests/image.rs`
 
-- [ ] **Step 1: Write the tests**
+- [x] **Step 1: Write the tests**
 
 Follow the file's existing pattern — build a real artifact, then corrupt it at a
 located offset. Add:
@@ -1916,13 +1930,13 @@ Locate the flag byte from the header layout rather than hard-coding `8` if the
 offset differs — magic is 4 bytes, `FORMAT_VERSION` is a `u32`, so the flag byte is
 at offset 8; assert that in the test so a header change fails loudly.
 
-- [ ] **Step 2: Run them**
+- [x] **Step 2: Run them**
 
 Run: `cargo test -p ns-runtime --test image`
 
 Expected: PASS. Any panic here is a real defect in the decoder, not a bad test.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/ns-runtime/tests/image.rs
@@ -1937,7 +1951,7 @@ git commit -m "test: cover the binary's bytes as untrusted input"
 - Modify: `docs/design/image-format.md`, `docs/design/compiler.md`,
   `docs/design/README.md`, `docs/PROGRESS.md`, `README.md`, `CLAUDE.md`
 
-- [ ] **Step 1: Flip the status in the design documents**
+- [x] **Step 1: Flip the status in the design documents**
 
 In `docs/design/image-format.md`:
 - Status block: the stateless binary is **built**, not planned; add `inspect.rs` to
@@ -1957,7 +1971,7 @@ paragraph and fold the capability into the `disasm` description.
 In `docs/design/README.md`, update the map row for `image-format.md`: status and
 what is planned next.
 
-- [ ] **Step 2: Update the user-facing documents**
+- [x] **Step 2: Update the user-facing documents**
 
 - `README.md`: add `build` and `inspect` to the usage examples, with a real command
   each. Run both commands exactly as written before committing.
@@ -1966,7 +1980,7 @@ what is planned next.
 - `docs/PROGRESS.md`: this work is not a milestone of its own — add it to the M3
   section or open an M4 row only if the user has said so. Ask rather than guess.
 
-- [ ] **Step 3: Verify the documented commands actually work**
+- [x] **Step 3: Verify the documented commands actually work**
 
 ```bash
 cargo run -p ns-cli -- build tests-fixtures/arithmetic.ns /tmp/app.nsb
@@ -1977,7 +1991,7 @@ cargo run -p ns-cli -- load /tmp/app.nsb
 Every command in the README must be run as written before it is committed. A
 documented command that does not work is worse than an undocumented one.
 
-- [ ] **Step 4: Final gates**
+- [x] **Step 4: Final gates**
 
 ```bash
 cargo fmt --all
@@ -1987,7 +2001,7 @@ cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 210, failed 0, exp
 cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 205
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/ README.md CLAUDE.md

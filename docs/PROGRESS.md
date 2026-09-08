@@ -10,8 +10,36 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Inline caches + GC | Not started | — | — |
+| M4 — Inline caches, moving GC, trampolined sends | Not started | — | — |
 | M5–M6 — JIT | Not started | — | — |
+
+## Where the next session starts
+
+M4 is next, and its three pieces are one milestone because they need each other.
+Each is designed in the document for its own aspect, under a `Planned:` heading;
+those documents are the authority, and this is only the map to them.
+
+- **Trampolined sends** — [execution.md](design/execution.md). `run_code` recurses
+  through the Rust call stack, so a Newspeak activation chain exists twice: reified
+  on the heap and implicitly on the native stack. Only the first can be serialized,
+  only the second can be resumed. Replacing the recursion with an explicit frame
+  stack is what the other two need, which is why it goes first.
+- **A moving collector** — [memory.md](design/memory.md). `become:` and instance
+  migration rule out a conservative non-moving design. The reified frame chain is
+  the VM's root set; the tree-walker gets a `HandleScope`-style handle layer for the
+  intermediates it holds in Rust locals, because it is kept rather than retired.
+- **Inline caches** — [dispatch.md](design/dispatch.md). The call-site slots are
+  already emitted and inert, so wiring them up needs no bytecode format break. A
+  cache must guard on the **mixin application**, not on the class object; the
+  obvious key is the wrong one and would never hit.
+
+What M4 unlocks beyond speed is recorded where it applies: suspending a running
+computation and serializing it ([image-format.md](design/image-format.md)) waits on
+the trampoline, and so does the debugger
+([liveness-and-reflection.md](design/liveness-and-reflection.md)).
+
+Before starting, `ns-next bench` on a release build gives the before-number: every
+send today is still a full lookup.
 
 ## M1 — Frontend (2026-09-01)
 
@@ -66,6 +94,8 @@ of them were identically wrong under both engines, where the differential harnes
 is structurally blind.
 
 ## Artifact inspection and the stateless binary (2026-09-08)
+
+Plan: [artifact-inspection-and-stateless-binary](superpowers/plans/2026-09-08-0044-ns-next-artifact-inspection-and-stateless-binary.md).
 
 Finishes the deployment-artifact half of M3's image-format work rather than
 opening a milestone of its own. `ns-next build` compiles a module into a

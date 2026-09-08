@@ -64,6 +64,16 @@ depth is bounded only by the native stack until the VM is trampolined (see
 `docs/design/execution.md`, "Planned: trampolined sends"). A mutated binary that
 decodes cleanly can still abort while executing, and that is not a decoder defect.
 
+**A wire tag is assigned once and never renumbered or reused.** Every instruction,
+literal and graph-section tag is declared in `crates/ns-runtime/src/image/opcodes.rs`
+and read from there by the encoder, the decoder and `inspect`'s structural walk alike;
+`crates/ns-runtime/tests/opcode_tags.rs` pins each value. A new tag takes the next free
+number, a removed one retires its number. This is stricter than the rest of the format
+needs — images are disposable and `FORMAT_VERSION` is never bumped — because
+renumbering fails in the one way the untrusted-input guarantee does not cover: a stale
+artifact would decode into a *different, perfectly valid* program and run it, reporting
+nothing. Retiring numbers means those bytes hit an unknown tag and are refused.
+
 **Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an `EvalResult`.**
 The bootstrap `Object` class is its own `.class`, so `Debug` on a `Value::Obj` recurses
 forever, and `Signal` deliberately has no `Debug` (it holds a `FrameRef` cycle). Tests
