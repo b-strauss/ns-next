@@ -70,6 +70,13 @@ impl Heap {
     /// ceiling by hand, which is the only way to reach
     /// `advance_identity_hash_past`'s overflow guard without actually
     /// allocating four billion objects first.
+    ///
+    /// Calling this on anything but that one object under test is a raw,
+    /// unchecked overwrite of the one value identity-keyed lookups,
+    /// `become:` and a loaded image's roots all rest on: it can leave two
+    /// live objects sharing a hash, and every identity-keyed collection and
+    /// `become:`'s stability guarantee then silently breaks, with nothing
+    /// anywhere raising an error to say so.
     pub fn set_identity_hash(&mut self, obj: &ObjRef, hash: u32) {
         obj.borrow_mut().identity_hash = hash;
     }
