@@ -50,7 +50,7 @@ pub fn run_code(
                 write_local(&mut interp.heap, frame, *dst, v);
             }
             Instr::LoadSelf { dst } => {
-                let v = frame.borrow().receiver.clone();
+                let v = interp.heap.receiver(frame);
                 write_local(&mut interp.heap, frame, *dst, v);
             }
             Instr::LoadBuiltinClass { dst, kind } => {
@@ -87,7 +87,7 @@ pub fn run_code(
             } => {
                 let receiver = read_local(&interp.heap, frame, *receiver_reg);
                 let args = collect(&interp.heap, frame, arg_regs);
-                frame.borrow_mut().pc = pc;
+                interp.heap.set_frame_pc(frame, pc);
                 let result =
                     interp.send(receiver, *selector, args, bindings, Some(frame.clone()))?;
                 write_local(&mut interp.heap, frame, *dst, result);
@@ -100,7 +100,7 @@ pub fn run_code(
                 ..
             } => {
                 let args = collect(&interp.heap, frame, arg_regs);
-                frame.borrow_mut().pc = pc;
+                interp.heap.set_frame_pc(frame, pc);
                 let result =
                     dispatch_lexical_send(interp, frame, *depth, *selector, args, bindings)?;
                 write_local(&mut interp.heap, frame, *dst, result);
@@ -112,7 +112,7 @@ pub fn run_code(
                 ..
             } => {
                 let args = collect(&interp.heap, frame, arg_regs);
-                frame.borrow_mut().pc = pc;
+                interp.heap.set_frame_pc(frame, pc);
                 let result = dispatch_super_send(interp, frame, *selector, args, bindings)?;
                 write_local(&mut interp.heap, frame, *dst, result);
             }
@@ -121,7 +121,7 @@ pub fn run_code(
                 params,
                 code: block,
             } => {
-                frame.borrow_mut().pc = pc;
+                interp.heap.set_frame_pc(frame, pc);
                 let closure = Rc::new(ClosureData {
                     params: (**params).clone(),
                     body: ClosureBody::Compiled(block.clone()),
@@ -149,8 +149,8 @@ pub fn run_code(
                 // `MixinApplication.own_slot_base` -- is what turns it into
                 // this instance's actual absolute field index.
                 let v = read_local(&interp.heap, frame, *src);
-                let receiver = frame.borrow().receiver.clone();
-                let base = frame.borrow().slot_base;
+                let receiver = interp.heap.receiver(frame);
+                let base = interp.heap.frame_slot_base(frame);
                 store_instance_field(&mut interp.heap, &receiver, base + *own_index as usize, v);
             }
             Instr::Return { reg } | Instr::ImplicitReturn { reg } => {
@@ -158,7 +158,7 @@ pub fn run_code(
             }
             Instr::NonLocalReturn { reg } => {
                 let v = read_local(&interp.heap, frame, *reg);
-                frame.borrow_mut().pc = pc;
+                interp.heap.set_frame_pc(frame, pc);
                 return Err(interp.raise_return_pub(frame, v));
             }
             Instr::Jump { target } => {
@@ -221,7 +221,7 @@ fn make_value(interp: &mut Interpreter, frame: &FrameRef, literal: &Literal) -> 
             Err(message) => return Err(malformed_int_error(message)),
         },
         Literal::UnresolvedIdent(name) => {
-            let receiver = frame.borrow().receiver.clone();
+            let receiver = interp.heap.receiver(frame);
             return Err(unresolved_identifier_error(name, receiver));
         }
     })
