@@ -3,8 +3,9 @@
 > **Status:** built. Both artifacts round-trip, and both can be inspected without
 > being loaded.
 > **Code:** `crates/ns-runtime/src/image/` — `mod.rs`, `encode.rs`, `decode.rs`,
-> `mixins.rs`, `symbols.rs`, `inspect.rs`. CLI: `ns-next snapshot`, `ns-next load`,
-> `ns-next build`, `ns-next inspect`.
+> `mixins.rs`, `symbols.rs`, `opcodes.rs`, `inspect.rs`. CLI: `ns-next snapshot`,
+> `ns-next load`, `ns-next build`, `ns-next inspect`, and `ns-next disasm` on an
+> artifact.
 
 ## Principles
 
@@ -154,6 +155,17 @@ the decoder alike rather than repeated as magic numbers on each side.
 share a number, so a renumbering fails the suite at the moment it happens instead
 of surfacing later as an image that no longer means what it said.
 
+The graph section's five tag families live there under the same rule: how a
+`Value` is encoded, an object record's body, how a class reference is named,
+what a frame was activated for, and the unit `pc` counts in. They were bare
+literals in the encoder and again in the decoder until `inspect` became a third
+reader of those bytes — and three hand-kept copies of one numbering is how a
+viewer starts quietly disagreeing with the loader. One value there is *retired*
+rather than free: `pc` kind 0 means a tree-walker activation, whose statement
+counter an image's code table cannot represent, so nothing writes it and the
+decoder refuses it. Bytecode deliberately took the next number, so a stale
+artifact naming 0 fails instead of being read as bytecode.
+
 **Mixin table.** One row per declaration: the name, its own slot names, the
 primary factory selector and arity, the method table as selector → code id, the
 ids of its nested declarations with their accessor names and accessibility, the
@@ -231,10 +243,43 @@ see `a_binary_with_a_graph_appended_is_refused` in `crates/ns-runtime/tests/imag
 
 `disasm` accepts an artifact as well as a `.ns` file: the same decoder that
 `load` uses produces a `CompiledModule`, and `disasm` formats its `Instr`s
-exactly as it does for a freshly compiled one. `ns-next inspect <artifact>`
-prints a structural listing instead — header flags, section offsets, the
-symbol table, the mixin table (name, slot count, factory selector, method
-count), and object/frame counts — without instantiating or running anything.
+exactly as it does for a freshly compiled one.
+
+`ns-next inspect <artifact>` prints the file itself. Its default is a table of
+contents — header flags, section offsets, the symbol table, **the code table
+with every body named**, and the mixin table — and `--full` prints everything:
+the mixin rows expanded to slot names and per-body code ids, then every body
+disassembled. The intent is `javap -v`'s: an artifact should be followable end
+to end from the text, without opening the file again. The default stays brief
+because a real corpus module runs to 281 bodies.
+
+The code table's listing is what joins the two views. A section line saying
+"4 bodies" tells a reader that four exist but not what to ask `disasm` for; the
+mixin table already maps selector to code id, so attributing them costs no new
+decoding. A body no declaration claims is labelled by its kind — a block body
+is reachable only from the `MakeClosure` that creates it — and anything left
+over prints as `(unnamed)`, which means the code table and the mixin table
+disagree and is worth seeing rather than hiding.
+
+**An image's object graph is read, not rebuilt.** `decode_graph_section`
+materializes objects and resolves class tags against live builtins, so it needs
+an `Interpreter`; a viewer must not bootstrap one, any more than `javap`
+instantiates a class to print it. `inspect` therefore walks the same bytes and
+reports each record: an object's class tag, identity hash and slot values, a
+frame's receiver, arguments, temporaries, `pc` and kind, and the roots. That is
+the half an image has and a binary does not, and nothing else showed it.
+
+Being a second reader over one layout is a drift risk, taken deliberately and
+held by two things. The tags it interprets are the shared constants in
+`opcodes.rs`, so it cannot disagree with the loader about what a byte *means*.
+And the walk must consume the section exactly — its recorded end is the file's
+last byte — so a disagreement about record *shape* desynchronizes it and fails
+loudly instead of printing plausible nonsense. That guard is only as good as
+its fixtures: the first version of the test passed with a field deliberately
+dropped, because every fixture produced zero frames and the frame half was
+never walked. A source with a block in a slot, the only way a frame reaches the
+graph, is what makes it bite.
+
 `load --print-source` still only returns the debug variant's `.ns` text; for
 anything else, `inspect` is the tool.
 
