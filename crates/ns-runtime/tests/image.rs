@@ -5569,3 +5569,98 @@ fn a_stateless_artifact_without_an_entry_is_refused() {
     };
     assert!(err.contains("entry"), "unexpected error: {err}");
 }
+
+/// The stateless binary is untrusted input exactly like the snapshot image
+/// is -- the differential harness never runs a binary that a fuzzer or a
+/// half-written file produced, so this sweep is the only thing standing
+/// between a truncated binary and a panic. Mirrors
+/// `every_truncation_of_an_image_is_reported_rather_than_panicking`, the
+/// existing model for the image shape.
+#[test]
+fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let module = interp.compiled_module().expect("bytecode engine");
+    let origin = Origin::File(PathBuf::from("t.ns"));
+
+    let binary =
+        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
+
+    for cut in 0..binary.len() {
+        // Never `{:?}` the `Ok` side: a `LoadedImage` carries an
+        // `Interpreter`, whose bootstrap `Object` class is its own `.class`,
+        // so a derived `Debug` would recurse forever.
+        assert!(
+            image::load(&binary[..cut]).is_err(),
+            "a binary truncated to {cut} bytes must be refused, not panic"
+        );
+    }
+    image::load(&binary).expect("the untruncated binary still loads");
+}
+
+/// The shape Task 3's trailing-byte check exists for, stated as the case
+/// that motivated it rather than only as a generic tail: a binary followed
+/// by an unrelated image's graph section, byte for byte what a caller gets
+/// by concatenating the two artifact kinds instead of choosing one.
+#[test]
+fn a_binary_with_a_graph_appended_is_refused() {
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let platform = interp.platform();
+    let module = interp.compiled_module().expect("bytecode engine");
+    let origin = Origin::File(PathBuf::from("t.ns"));
+
+    let binary =
+        image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
+    let image_bytes =
+        image::snapshot(None, &origin, &class, module, &platform, &[]).expect("snapshot");
+
+    let mut frankenstein = binary.clone();
+    frankenstein.extend_from_slice(&image_bytes[binary.len().min(image_bytes.len())..]);
+    assert!(
+        image::load(&frankenstein).is_err(),
+        "a binary with a graph section appended must be refused, not silently truncated"
+    );
+}
+
+/// Setting `FLAG_STATELESS` on a snapshot's header, without also removing
+/// its graph section, is exactly the confusion the trailing-byte check
+/// exists to catch: the header now claims the artifact carries no state,
+/// but the graph section still sits right after the fields a binary ends
+/// with, so it reads as trailing bytes rather than as the state it actually
+/// is. `load` must refuse it rather than silently ignore the graph.
+#[test]
+fn a_stateless_flag_on_an_artifact_that_has_a_graph_is_refused() {
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let platform = interp.platform();
+    let module = interp.compiled_module().expect("bytecode engine");
+    let origin = Origin::File(PathBuf::from("t.ns"));
+
+    let mut bytes =
+        image::snapshot(None, &origin, &class, module, &platform, &[]).expect("snapshot");
+
+    // Locate the flag byte from the header layout instead of hard-coding an
+    // offset, so a header change fails this assertion loudly rather than
+    // quietly flipping the wrong byte.
+    let flag_offset = encode::MAGIC.len() + std::mem::size_of::<u32>();
+    assert_eq!(
+        flag_offset, 8,
+        "header layout: magic (4) + FORMAT_VERSION (4)"
+    );
+    bytes[flag_offset] |= encode::FLAG_STATELESS;
+
+    assert!(
+        image::load(&bytes).is_err(),
+        "a stateless flag with a graph still attached must be refused"
+    );
+}
