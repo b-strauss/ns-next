@@ -56,16 +56,19 @@ and MMTk supports object forwarding.
 
 ### The seam
 
+> **Partial:** object access goes through it. Activation access and the opaque
+> handles are not migrated yet.
+
 `crates/ns-runtime/src/heap.rs` is the single place that knows what a handle
-is. Every read and write of an `Object` or a `Frame` goes through a `Heap`
-accessor, so replacing the store behind them touches that file rather than the
-276 call sites the workspace held before the seam existed.
+is. Object reads and writes go through a `Heap` accessor, so replacing the
+store behind them touches that file rather than the 276 call sites the
+workspace held before the seam existed.
 
 The accessors copy out rather than lend out. That follows what the call sites
 already did — borrow, clone one field, drop the borrow — and it is what keeps
 the arena from needing a rooting discipline at every site that calls back into
 the interpreter while holding a reference. Mutating accessors take `&mut self`
-even where the present store would not require it, so that the arena is a
+even where the present store does not require it, so that the arena is a
 change of implementation rather than a second pass over every caller.
 
 ### The representation: an arena of typed handles

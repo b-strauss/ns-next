@@ -109,15 +109,6 @@ and class objects, never AST-carrying bindings, so there is no source for the
 tree-walker to execute; `Interpreter::set_engine(Engine::TreeWalk)` refuses on a
 loaded image rather than running it against the wrong data.
 
-**Object and frame access goes through `heap.rs`, never through a handle
-directly.** `ObjRef`, `ClassRef` and `FrameRef` are opaque newtypes whose
-contents only `heap.rs` and `types.rs` can reach. A `.borrow()` anywhere else
-is the thing the seam exists to prevent: it is what made a representation
-change a 276-site edit, and re-introducing one puts the next change back where
-this one started. Accessors copy out on purpose — if you want to lend out a
-reference instead, you are writing the rooting problem the arena's scope
-discipline exists to answer.
-
 ## Working in this repository
 
 ```bash
@@ -165,3 +156,11 @@ is hand-rolled on purpose.
   are execution records — left as written once complete.
 - Comments should explain the decision, not restate the mechanics. The reason a check
   exists — what it prevents — is the part a later reader cannot reconstruct.
+- **Object access goes through `crates/ns-runtime/src/heap.rs`, not directly
+  through a handle.** The seam exists so that replacing the store behind a
+  handle — `Rc<RefCell<_>>` today, an arena next — is a change to one file
+  rather than to the 276 call sites the workspace held before it. If an
+  accessor you need is missing, add it there; never widen a field's visibility
+  to reach past it, and never write a `.borrow()` outside it. The accessors
+  copy out rather than lend out on purpose; see `docs/design/memory.md`,
+  "The seam".
