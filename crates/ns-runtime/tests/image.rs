@@ -5495,6 +5495,40 @@ fn a_binary_loads_with_no_roots_and_its_entry() {
     );
 }
 
+/// `image::snapshot` is a library API: a caller can hand it an empty
+/// `roots` slice and still get back a *stateful* image (`header.stateless`
+/// unset), not a binary -- only `image::build` sets that flag. `load` must
+/// tell the two apart by the decoded flag, not by `roots.is_empty()`, since
+/// that observed shape is the same for both: a stateful image with no root
+/// values must still report itself as stateful, so a caller (`ns-next
+/// load`) does not mistake it for a binary and instantiate a fresh,
+/// unrelated instance in place of the one this artifact deliberately
+/// carried none of.
+#[test]
+fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
+    let (mut interp, class, bindings) = load(ENTRY_SRC);
+    let compiled = compiler::compile_module(&class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(compiled))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let platform = interp.platform();
+    let origin = Origin::File(PathBuf::from("t.ns"));
+    let module = interp.compiled_module().expect("bytecode engine");
+
+    let img = image::snapshot(None, &origin, &class, module, &platform, &[]).expect("snapshot");
+
+    let loaded = image::load(&img).expect("load a stateful image with no roots");
+    assert!(
+        !loaded.stateless,
+        "a snapshot, even with an empty roots slice, is not a binary"
+    );
+    assert!(loaded.roots.is_empty());
+    assert!(
+        loaded.entry.is_none(),
+        "snapshot never records an entry selector"
+    );
+}
+
 /// A binary that cannot say how it starts is not a deployment artifact, and
 /// accepting one would push the failure to a later, less obvious place --
 /// wherever the caller eventually looks for something to send. `load`

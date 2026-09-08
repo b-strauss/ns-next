@@ -524,7 +524,7 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
         source,
         empty_bindings: bindings,
         entry,
-        stateless: _,
+        stateless,
     } = match ns_runtime::image::load(&bytes) {
         Ok(l) => l,
         Err(e) => {
@@ -543,13 +543,19 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
         print!("{source}");
         return ExitCode::SUCCESS;
     }
-    // A stateful image already carries the instance to send to; a binary
-    // carries none, so `roots.is_empty()` (rather than `stateless`, which
-    // `image::load` never sets on an image anyway) is what tells the two
-    // shapes apart here. Pre-existing behaviour for a stateful image with no
-    // `--send` -- report the root count and stop, sending nothing -- is
-    // unconditional on that branch and does not change.
-    let instance = if roots.is_empty() {
+    // `stateless` (the decoded header flag), not `roots.is_empty()`, decides
+    // whether to instantiate: it says what the artifact *is*, where an empty
+    // `roots` is only what a binary happens to look like. `image::snapshot`
+    // is a library API that a caller can hand an empty `roots` slice to,
+    // producing a valid *stateful* image that carries zero root values --
+    // and that image must still be treated as stateful here, since
+    // instantiating it would re-run a primary factory and every instance
+    // initializer in a world where they already ran, minting a second,
+    // unrelated instance in place of the (absent) one the artifact
+    // deliberately carried. A decoded `stateless: true` with a non-empty
+    // `roots` would mean `image::load` built an inconsistent `LoadedImage`
+    // -- a decoder bug, not a case this branch tolerates.
+    let instance = if stateless {
         // A binary carries no instance: the primary factory and every
         // initializer run here, against this interpreter's freshly
         // bootstrapped platform, so capabilities enter at start time rather
@@ -571,20 +577,26 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
             Err(signal) => return report_signal(signal),
         }
     } else {
+        // Pre-existing behaviour for a stateful image, unconditional on
+        // `roots.len()`: no `--send` means report the root count and stop,
+        // sending nothing -- including a stateful image with zero roots,
+        // which reports "0 root value(s)" rather than being mistaken for a
+        // binary.
         let Some(_) = send else {
             println!("loaded {}: {} root value(s)", image.display(), roots.len());
             return ExitCode::SUCCESS;
         };
-        roots
-            .into_iter()
-            .next()
-            .expect("roots.is_empty() was checked above")
+        let Some(instance) = roots.into_iter().next() else {
+            eprintln!("error: image has no root instance to send to");
+            return ExitCode::FAILURE;
+        };
+        instance
     };
     // `--send` overrides whatever the artifact recorded. In practice the
     // `None` arm below is unreachable today: a binary always records an
     // entry (`image::load` refuses a stateless artifact without one), and a
-    // stateful image with neither already returned above, in the `roots`
-    // non-empty branch. It stays as a real check rather than an
+    // stateful image with neither already returned above, in the `else`
+    // (stateful) branch. It stays as a real check rather than an
     // `unreachable!()` because that pairing is an invariant of the image
     // format, not of this function -- a future image that records an entry
     // too should fall through to sending it, not panic.
