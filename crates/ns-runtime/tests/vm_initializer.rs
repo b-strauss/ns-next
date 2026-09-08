@@ -26,7 +26,7 @@ fn load(src: &str, bytecode: bool) -> (Interpreter, ClassRef, Bindings) {
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
     if bytecode {
-        let compiled = compiler::compile_module(&class, &bindings);
+        let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
         interp
             .set_engine(Engine::Bytecode(compiled))
             .expect("a source-built interpreter accepts the bytecode engine");
@@ -276,7 +276,11 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     for bytecode in [false, true] {
         interp
             .set_engine(if bytecode {
-                Engine::Bytecode(compiler::compile_module(&class_a, &bindings))
+                Engine::Bytecode(compiler::compile_module(
+                    interp.heap_ref(),
+                    &class_a,
+                    &bindings,
+                ))
             } else {
                 Engine::TreeWalk
             })

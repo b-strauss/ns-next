@@ -63,14 +63,19 @@ pub fn compile_method(
 /// `compile_mixin_initializer`; kept as a `ClassRef`-taking entry point
 /// because `ns-cli`'s `disasm` and this module's own tests address a class
 /// directly, without going through `compile_module`'s tree walk.
+///
+/// Takes `heap` rather than building one: a throwaway `Heap` reads correctly
+/// only by accident of today's `Rc<RefCell<_>>` representation, where every
+/// instance is interchangeable because the only state `Heap` carries is an
+/// identity-hash counter this call never touches. Once `Heap` owns the
+/// arena, a freshly constructed one is an *empty* arena, and this lookup
+/// would silently miss instead of failing loudly -- exactly the failure
+/// mode the seam exists to prevent.
 pub fn compile_initializer(
+    heap: &crate::Heap,
     class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> CompiledCode {
-    // `compile_initializer` is a public entry point with no interpreter of
-    // its own to borrow a `Heap` from; a fresh one needs no state to read
-    // data `class` already carries.
-    let heap = crate::Heap::new();
     let mixin = match heap.class_application(class) {
         Some(app) => app.mixin.clone(),
         None => panic!("internal: compile_initializer called on a non-class object"),
@@ -182,14 +187,13 @@ fn compile_superclass_message(
     Some(lowerer.finish(clause.span))
 }
 
+/// Takes `heap` rather than building one; see `compile_initializer`'s doc
+/// comment for why a throwaway `Heap` is unsafe under the planned arena.
 pub fn compile_module(
+    heap: &crate::Heap,
     root_class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> CompiledModule {
-    // Same reasoning as `compile_initializer` above: `compile_module` is a
-    // public entry point with no interpreter of its own, and a fresh `Heap`
-    // needs no state to read data `root_class` already carries.
-    let heap = crate::Heap::new();
     let root_mixin = match heap.class_application(root_class) {
         Some(app) => app.mixin.clone(),
         None => panic!("internal: compile_module called on a non-class object"),

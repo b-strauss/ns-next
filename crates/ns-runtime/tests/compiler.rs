@@ -37,8 +37,8 @@ fn load(src: &str) -> (Interpreter, ClassRef, Rc<HashMap<Span, Binding>>) {
 #[test]
 fn compile_module_compiles_every_loaded_method_and_the_initializer() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n  bar = ( ^2 )\n) : ()";
-    let (_interp, class, bindings) = load(src);
-    let module = compiler::compile_module(&class, &bindings);
+    let (interp, class, bindings) = load(src);
+    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
     assert_eq!(module.methods.len(), 2);
     for compiled in module.methods.values() {
         assert_eq!(compiled.kind, CodeKind::Method);
@@ -59,8 +59,8 @@ fn compile_module_compiles_every_loaded_method_and_the_initializer() {
 #[test]
 fn compiled_method_is_reachable_by_its_dispatch_key() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n) : ()";
-    let (_interp, class, bindings) = load(src);
-    let module = compiler::compile_module(&class, &bindings);
+    let (interp, class, bindings) = load(src);
+    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
     let method = {
         let borrowed = class.borrow();
         let ObjectData::Class(data) = &borrowed.data else {
@@ -79,8 +79,8 @@ fn compiled_method_is_reachable_by_its_dispatch_key() {
 #[test]
 fn compile_initializer_lowers_slots_then_init_exprs_with_own_slot_indices() {
     let src = "Newspeak3\n'T'\nclass Foo x: a = Object new (\n  | p = a. q ::= 5. |\n  q := p.\n) (\n) : ()";
-    let (_interp, class, bindings) = load(src);
-    let init = compiler::compile_initializer(&class, &bindings);
+    let (interp, class, bindings) = load(src);
+    let init = compiler::compile_initializer(interp.heap_ref(), &class, &bindings);
     assert_eq!(init.kind, CodeKind::Initializer);
     assert_eq!(
         init.num_args, 1,
@@ -131,8 +131,8 @@ fn compile_initializer_lowers_slots_then_init_exprs_with_own_slot_indices() {
 #[test]
 fn an_uninitialized_slot_emits_nothing() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | a. b = 1. |\n) (\n) : ()";
-    let (_interp, class, bindings) = load(src);
-    let init = compiler::compile_initializer(&class, &bindings);
+    let (interp, class, bindings) = load(src);
+    let init = compiler::compile_initializer(interp.heap_ref(), &class, &bindings);
     let init_slots: Vec<u32> = init
         .instrs
         .iter()
@@ -170,8 +170,8 @@ class Outer usingPlatform: p = Object new () (
 
 #[test]
 fn compile_module_compiles_every_mixin_in_the_tree_not_just_the_root() {
-    let (_interp, class, bindings) = load(NESTED_SRC);
-    let module = compiler::compile_module(&class, &bindings);
+    let (interp, class, bindings) = load(NESTED_SRC);
+    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
 
     let borrowed = class.borrow();
     let ObjectData::Class(data) = &borrowed.data else {

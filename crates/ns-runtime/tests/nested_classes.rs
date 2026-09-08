@@ -31,7 +31,7 @@ fn load(src: &str, bytecode: bool) -> (Interpreter, ns_runtime::ClassRef, Bindin
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
     if bytecode {
-        let compiled = compiler::compile_module(&class, &bindings);
+        let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
         interp
             .set_engine(Engine::Bytecode(compiled))
             .expect("a source-built interpreter accepts the bytecode engine");

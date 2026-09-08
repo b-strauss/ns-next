@@ -267,7 +267,11 @@ fn bootstrap_with_engine(
     let mut interp = ns_runtime::Interpreter::bootstrap();
     let class = interp.load_module(&loaded.resolved);
     if engine == EngineArg::Bytecode {
-        let compiled = ns_runtime::compiler::compile_module(&class, &loaded.resolved.bindings);
+        let compiled = ns_runtime::compiler::compile_module(
+            interp.heap_ref(),
+            &class,
+            &loaded.resolved.bindings,
+        );
         interp
             .set_engine(ns_runtime::Engine::Bytecode(compiled))
             // Only `Engine::TreeWalk` on a loaded world is ever refused,
@@ -951,8 +955,8 @@ fn cmd_disasm(
             Err(code) => return code,
         };
         let bindings = loaded.resolved.bindings.clone();
-        let (_interp, class) = bootstrap_with_engine(&loaded, EngineArg::TreeWalk);
-        let module = ns_runtime::compiler::compile_module(&class, &bindings);
+        let (interp, class) = bootstrap_with_engine(&loaded, EngineArg::TreeWalk);
+        let module = ns_runtime::compiler::compile_module(interp.heap_ref(), &class, &bindings);
         (class, module)
     };
     // Both arms above deliberately drop their interpreter once `class` and
