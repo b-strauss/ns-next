@@ -362,10 +362,7 @@ pub(crate) fn dispatch_lexical_send(
     // The lexical depth counts levels out from the class that *defines* this
     // method, so the walk needs this activation's `current_class`, not the
     // receiver's own class -- see `dispatch::kth_enclosing_object`.
-    let (self_value, defining_class) = (
-        interp.heap.receiver(frame),
-        interp.heap.frame_current_class(frame),
-    );
+    let (self_value, defining_class) = interp.heap.receiver_and_current_class(frame);
     let o =
         dispatch::kth_enclosing_object(&interp.heap, &self_value, defining_class.as_ref(), depth);
     let class = interp.class_of(&o);

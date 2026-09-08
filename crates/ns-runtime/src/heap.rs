@@ -279,6 +279,17 @@ impl Heap {
         frame.borrow().receiver.clone()
     }
 
+    /// The receiver and `current_class` together, in one borrow.
+    /// `dispatch_lexical_send`'s head needs both on every implicit-receiver
+    /// send -- five times per `bench_loop.ns` iteration -- and fetching them
+    /// through `receiver` then `frame_current_class` took two separate
+    /// borrows where one already carries both fields; that doubling measured
+    /// as the whole of Task 5's regression (see `docs/design/memory.md`).
+    pub fn receiver_and_current_class(&self, frame: &FrameRef) -> (Value, Option<ClassRef>) {
+        let borrowed = frame.borrow();
+        (borrowed.receiver.clone(), borrowed.current_class.clone())
+    }
+
     pub fn local(&self, frame: &FrameRef, index: u16) -> Value {
         let borrowed = frame.borrow();
         let i = index as usize;
