@@ -188,6 +188,9 @@ impl Heap {
     // than panicking: a class reference decoded from an image is untrusted
     // until verified, and the verifier is a caller of these.
 
+    /// One accessor for the behaviour half of a class object, so a
+    /// construction site that needs a superclass's application never has to
+    /// re-derive the borrow-and-match itself.
     pub fn class_application(
         &self,
         class: &ClassRef,
@@ -223,19 +226,6 @@ impl Heap {
         match &class.borrow().data {
             ObjectData::Class(data) => data.builtin,
             _ => None,
-        }
-    }
-
-    pub fn class_metaclass(&self, class: &ClassRef) -> Option<ClassRef> {
-        match &class.borrow().data {
-            ObjectData::Class(data) => data.metaclass.clone(),
-            _ => None,
-        }
-    }
-
-    pub fn set_class_metaclass(&mut self, class: &ClassRef, metaclass: ClassRef) {
-        if let ObjectData::Class(data) = &mut class.borrow_mut().data {
-            data.metaclass = Some(metaclass);
         }
     }
 }
