@@ -152,8 +152,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     // object graph, so reading one past the entry field would run off the
     // end of the file.
     if !header.stateless {
-        let counts =
-            decode::count_graph_section(&mut r, &symbol_table).map_err(|e| e.to_string())?;
+        let counts = decode::count_graph_section(&mut r).map_err(|e| e.to_string())?;
         sections.push(Section {
             name: "graph",
             start: at,

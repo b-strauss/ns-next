@@ -2049,12 +2049,11 @@ pub fn decode_graph_section(
 }
 
 /// What `count_graph_section` can report about a graph section without
-/// resolving any of it: see that function's doc comment for why `roots` is
-/// always `0`.
+/// resolving any of it. The root list's own count is not among these fields;
+/// see that function's doc comment for why it cannot be had this cheaply.
 pub struct GraphCounts {
     pub objects: usize,
     pub frames: usize,
-    pub roots: usize,
 }
 
 /// A graph section's object and frame counts, read without a
@@ -2076,21 +2075,14 @@ pub struct GraphCounts {
 /// root list's own count sits after every object and every frame
 /// (`encode_graph_section`), so reading it needs the records between here
 /// and there walked -- which is exactly the resolution this function exists
-/// to avoid. `roots` is therefore always `0`, not a real count; the caller
-/// (`image::inspect`) also cannot use this call's final reader position as
-/// the section's end, since it stops right after the two counts rather than
-/// at the section's real end.
-pub fn count_graph_section(
-    r: &mut Reader,
-    _symbols: &symbols::Table,
-) -> Result<GraphCounts, DecodeError> {
+/// to avoid. `GraphCounts` therefore carries no `roots` field at all; the
+/// caller (`image::inspect`) also cannot use this call's final reader
+/// position as the section's end, since it stops right after the two counts
+/// rather than at the section's real end.
+pub fn count_graph_section(r: &mut Reader) -> Result<GraphCounts, DecodeError> {
     let objects = bounded_count(r.read_u32()? as usize, MIN_OBJECT_RECORD_BYTES, r)?;
     let frames = bounded_count(r.read_u32()? as usize, MIN_FRAME_RECORD_BYTES, r)?;
-    Ok(GraphCounts {
-        objects,
-        frames,
-        roots: 0,
-    })
+    Ok(GraphCounts { objects, frames })
 }
 
 /// The inverse of `encode::encode_class_record`: the mixin-table row this
