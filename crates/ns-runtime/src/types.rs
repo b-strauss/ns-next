@@ -537,6 +537,11 @@ mod tests {
     #[test]
     fn class_data_is_reachable_through_object_data() {
         let class = dummy_class();
+        // `heap` is inert here: `Heap` today holds only an identity-hash
+        // counter, so a freshly built one reads `class` correctly no matter
+        // which heap (if any) built it. Once the arena lands, `dummy_class`
+        // will need to allocate through a real `Heap` for this to keep
+        // meaning anything, so this test will need rewriting alongside it.
         let heap = crate::Heap::new();
         assert!(heap.is_class(&class));
     }

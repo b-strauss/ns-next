@@ -905,11 +905,24 @@ fn looks_like_an_artifact(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && &bytes[0..4] == ns_runtime::image::encode::MAGIC
 }
 
+/// The mixin behind a class object, or the message for the one case where
+/// there is none. Shared by both of `cmd_disasm`'s branches so each can
+/// read it from its own `class` while that class's interpreter is still
+/// alive, rather than through a `Heap` built after the fact.
+fn root_mixin_of(
+    heap: &ns_runtime::Heap,
+    class: &ns_runtime::ClassRef,
+) -> Result<Rc<ns_runtime::Mixin>, String> {
+    heap.class_application(class)
+        .map(|app| app.mixin.clone())
+        .ok_or_else(|| "internal: loaded module did not produce a class object".to_string())
+}
+
 /// `ns-next disasm`: for a `.ns` file, bootstrap and compile the *whole*
 /// mixin tree (`compiler::compile_module`, exactly as the bytecode engine
 /// would); for a serialized artifact, decode it directly and reuse its own
 /// code table instead of recompiling anything. Either way, the result is a
-/// `(class, module)` pair from which a `--class` path can address any
+/// `(root_mixin, module)` pair from which a `--class` path can address any
 /// mixin's code, then look up exactly one method or the target mixin's
 /// initializer and print its bytecode listing. The source path never
 /// instantiates and never installs the bytecode engine -- compile only; the
@@ -931,10 +944,16 @@ fn cmd_disasm(
 
     // Two ways to reach the same pair. Compiling from source needs the
     // resolver.s bindings; an artifact already carries compiled bodies, so
-    // loading it is a decode and nothing is recompiled. Both hand back owning
-    // values, so whichever interpreter was built along the way is dropped at
-    // the end of its arm.
-    let (class, module) = if looks_like_an_artifact(&raw) {
+    // loading it is a decode and nothing is recompiled. Each arm reads
+    // `root_mixin` out of its own `class` before that arm's interpreter (or
+    // `loaded.interp`) goes out of scope, rather than a fresh `Heap`
+    // afterwards: a `Heap` built after the interpreter that allocated
+    // `class` is gone would still read `class` correctly today, purely
+    // because `Heap` is a bare counter and every instance is
+    // interchangeable -- but a moving arena's fresh `Heap` starts out
+    // holding nothing, and the read would silently miss instead of finding
+    // `class`'s data.
+    let (root_mixin, module) = if looks_like_an_artifact(&raw) {
         match ns_runtime::image::load(&raw) {
             Ok(loaded) => {
                 let module = loaded
@@ -942,7 +961,14 @@ fn cmd_disasm(
                     .compiled_module()
                     .expect("load installed the bytecode engine")
                     .clone();
-                (loaded.root_class.clone(), module)
+                let root_mixin = match root_mixin_of(loaded.interp.heap_ref(), &loaded.root_class) {
+                    Ok(m) => m,
+                    Err(msg) => {
+                        eprintln!("error: {msg}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+                (root_mixin, module)
             }
             Err(e) => {
                 eprintln!("error: {}: {e}", file.display());
@@ -957,18 +983,14 @@ fn cmd_disasm(
         let bindings = loaded.resolved.bindings.clone();
         let (interp, class) = bootstrap_with_engine(&loaded, EngineArg::TreeWalk);
         let module = ns_runtime::compiler::compile_module(interp.heap_ref(), &class, &bindings);
-        (class, module)
-    };
-    // Both arms above deliberately drop their interpreter once `class` and
-    // `module` are extracted; a fresh `Heap` needs no state from either one
-    // to read data `class` already carries.
-    let heap = ns_runtime::Heap::new();
-    let root_mixin = match heap.class_application(&class) {
-        Some(app) => app.mixin.clone(),
-        None => {
-            eprintln!("error: internal: loaded module did not produce a class object");
-            return ExitCode::FAILURE;
-        }
+        let root_mixin = match root_mixin_of(interp.heap_ref(), &class) {
+            Ok(m) => m,
+            Err(msg) => {
+                eprintln!("error: {msg}");
+                return ExitCode::FAILURE;
+            }
+        };
+        (root_mixin, module)
     };
     let mixin = match resolve_mixin_path(&root_mixin, class_path) {
         Ok(m) => m,
