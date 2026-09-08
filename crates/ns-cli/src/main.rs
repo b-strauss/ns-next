@@ -1019,12 +1019,15 @@ fn cmd_inspect(artifact: &Path) -> ExitCode {
 /// Deliberately narrow: only method selectors and nested-class accessor
 /// names, because those are exactly what `mixins::encode` interns into the
 /// symbol table while walking this same superclass chain over `mixin.methods`
-/// and `mixin.nested`. Accepting anything wider -- a slot's implicit setter,
+/// and `mixin.nested`. Accepting anything wider -- a slot's implicit *setter*,
 /// a builtin's native method -- would accept a selector the code and mixin
-/// tables never interned, and `build` would have to grow the symbol table to
-/// record it, breaking the byte-identity guarantee with `snapshot` that this
-/// check exists to preserve (`docs/design/image-format.md`, "The consistency
-/// guarantee, stated precisely").
+/// tables never interned: a slot's *getter* is interned (`mixins::encode`
+/// writes every slot name), but the setter selector it is derived from at
+/// dispatch time is not a name `mixins::encode` ever writes. Accepting it
+/// would make `build` have to grow the symbol table to record it, breaking
+/// the byte-identity guarantee with `snapshot` that this check exists to
+/// preserve (`docs/design/image-format.md`, "The consistency guarantee,
+/// stated precisely").
 ///
 /// Walking past the root level (`app = a.superclass.clone()`) is safe only
 /// because of an invariant this function relies on but does not check:
