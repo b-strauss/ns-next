@@ -518,15 +518,12 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
     };
     let ns_runtime::image::LoadedImage {
         mut interp,
-        root_class: _,
+        root_class,
         roots,
         origin: _,
         source,
         empty_bindings: bindings,
-        // A later task wires `load` on a binary (empty `roots`, an
-        // `entry` to send) into this command; until then it is only
-        // ever handed an image, where both are `None`/`false`.
-        entry: _,
+        entry,
         stateless: _,
     } = match ns_runtime::image::load(&bytes) {
         Ok(l) => l,
@@ -546,13 +543,57 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
         print!("{source}");
         return ExitCode::SUCCESS;
     }
-    let Some(selector) = send else {
-        println!("loaded {}: {} root value(s)", image.display(), roots.len());
-        return ExitCode::SUCCESS;
+    // A stateful image already carries the instance to send to; a binary
+    // carries none, so `roots.is_empty()` (rather than `stateless`, which
+    // `image::load` never sets on an image anyway) is what tells the two
+    // shapes apart here. Pre-existing behaviour for a stateful image with no
+    // `--send` -- report the root count and stop, sending nothing -- is
+    // unconditional on that branch and does not change.
+    let instance = if roots.is_empty() {
+        // A binary carries no instance: the primary factory and every
+        // initializer run here, against this interpreter's freshly
+        // bootstrapped platform, so capabilities enter at start time rather
+        // than having been baked in at build time. Instantiating in the CLI
+        // rather than in `image::load` keeps an existing boundary: deciding
+        // *that* a command-line entry point supplies the platform is a CLI
+        // concern -- nothing in the runtime needs to know it was invoked
+        // from a terminal.
+        let platform = interp.platform();
+        let factory_args = match factory_args_for(&root_class, platform) {
+            Ok(args) => args,
+            Err(msg) => {
+                eprintln!("error: {msg}");
+                return ExitCode::FAILURE;
+            }
+        };
+        match interp.instantiate(root_class.clone(), factory_args, &bindings) {
+            Ok(v) => v,
+            Err(signal) => return report_signal(signal),
+        }
+    } else {
+        let Some(_) = send else {
+            println!("loaded {}: {} root value(s)", image.display(), roots.len());
+            return ExitCode::SUCCESS;
+        };
+        roots
+            .into_iter()
+            .next()
+            .expect("roots.is_empty() was checked above")
     };
-    let Some(instance) = roots.into_iter().next() else {
-        eprintln!("error: image has no root instance to send to");
-        return ExitCode::FAILURE;
+    // `--send` overrides whatever the artifact recorded. In practice the
+    // `None` arm below is unreachable today: a binary always records an
+    // entry (`image::load` refuses a stateless artifact without one), and a
+    // stateful image with neither already returned above, in the `roots`
+    // non-empty branch. It stays as a real check rather than an
+    // `unreachable!()` because that pairing is an invariant of the image
+    // format, not of this function -- a future image that records an entry
+    // too should fall through to sending it, not panic.
+    let selector = match send.or_else(|| entry.map(ns_runtime::Symbol::as_str)) {
+        Some(s) => s,
+        None => {
+            eprintln!("error: this artifact records no entry point; pass --send");
+            return ExitCode::FAILURE;
+        }
     };
     let platform = interp.platform();
     let args = match entry_args(selector, platform) {
