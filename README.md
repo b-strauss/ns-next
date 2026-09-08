@@ -82,7 +82,8 @@ cargo run -p ns-cli -- run tests-fixtures/while_loop.ns --engine tree-walk
 ```
 
 ```bash
-# print one method's bytecode; compile only, nothing is instantiated or run
+# print one compiled body; nothing is instantiated or run. Takes a .ns file,
+# which it compiles, or an artifact, whose bodies it decodes instead
 cargo run -p ns-cli -- disasm tests-fixtures/blocks_and_return.ns find:in:
 ```
 
@@ -107,10 +108,13 @@ cargo run -p ns-cli -- load app.nsb
 ```
 
 ```bash
-# look inside an artifact -- header flags, section offsets, the symbol and
-# mixin tables, object/frame counts -- without instantiating or running it;
-# takes either a stateless binary or an image written by `snapshot`
+# look inside an artifact without instantiating or running it: header flags,
+# section offsets, the symbol table, every body in the code table, and the
+# mixin table. Takes a stateless binary or an image written by `snapshot`
 cargo run -p ns-cli -- inspect app.nsb
+# everything, the way `javap -v` renders a class file: mixin rows expanded and
+# every body disassembled, plus an image's object graph read record by record
+cargo run -p ns-cli -- inspect world.img --full
 ```
 
 ```bash

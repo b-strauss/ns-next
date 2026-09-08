@@ -1,41 +1,13 @@
 //! `ns-next snapshot` then `ns-next load`, end to end through the binary.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests-fixtures")
-        .join(name)
-}
-
-fn temp_image(test: &str) -> PathBuf {
-    // The counter, not just the test name, is what keeps two tests -- which
-    // cargo runs as threads of one process, so with one pid -- from
-    // deleting each other's directory when they snapshot the same fixture.
-    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("ns-next-image-{}-{n}-{test}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    dir.join("world.img")
-}
-
-fn ns_next(args: &[&std::ffi::OsStr]) -> (bool, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
-        .args(args)
-        .output()
-        .expect("run ns-next");
-    (
-        output.status.success(),
-        String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
-        String::from_utf8_lossy(&output.stderr).replace("\r\n", "\n"),
-    )
-}
+mod common;
+use common::{fixture, ns_next, ScratchDir};
+use std::path::Path;
 
 #[test]
 fn a_snapshot_taken_after_the_entry_send_loads_and_reruns_it_identically() {
-    let img = temp_image("arithmetic");
+    let dir = ScratchDir::new("arithmetic");
+    let img = dir.join("world.img");
     let src = fixture("arithmetic.ns");
     let (ok, out, err) = ns_next(&[
         "snapshot".as_ref(),
@@ -61,12 +33,12 @@ fn a_snapshot_taken_after_the_entry_send_loads_and_reruns_it_identically() {
         out, "42\n",
         "the loaded instance's slot still holds 6 * 7; nothing else is printed"
     );
-    let _ = std::fs::remove_dir_all(img.parent().unwrap());
 }
 
 #[test]
 fn a_loaded_world_does_not_rerun_its_instance_initializer() {
-    let img = temp_image("instance-init");
+    let dir = ScratchDir::new("instance-init");
+    let img = dir.join("world.img");
     let src = fixture("instance_init.ns");
     let (ok, out, err) = ns_next(&["snapshot".as_ref(), src.as_os_str(), img.as_os_str()]);
     assert!(ok, "{err}");
@@ -82,7 +54,6 @@ fn a_loaded_world_does_not_rerun_its_instance_initializer() {
         out, "hi 2\n",
         "slots (including the transcript stream object) survived; the initializer did not run again"
     );
-    let _ = std::fs::remove_dir_all(img.parent().unwrap());
 }
 
 /// A world whose hidden nested-class cache slots hold class objects, and
@@ -94,7 +65,8 @@ fn a_loaded_world_does_not_rerun_its_instance_initializer() {
 /// walk down the receiver's dynamic chain would answer with.
 #[test]
 fn a_world_holding_nested_class_objects_snapshots_and_reruns_identically() {
-    let img = temp_image("nested-outer-inherited");
+    let dir = ScratchDir::new("nested-outer-inherited");
+    let img = dir.join("world.img");
     let src = fixture("nested_outer_inherited.ns");
     let expected = std::fs::read_to_string(fixture("nested_outer_inherited.expected"))
         .expect("read expected")
@@ -118,12 +90,12 @@ fn a_world_holding_nested_class_objects_snapshots_and_reruns_identically() {
     ]);
     assert!(ok, "{err}");
     assert_eq!(out, expected);
-    let _ = std::fs::remove_dir_all(img.parent().unwrap());
 }
 
 #[test]
 fn load_without_send_prints_a_summary_and_a_corrupt_image_is_reported() {
-    let img = temp_image("summary");
+    let dir = ScratchDir::new("summary");
+    let img = dir.join("world.img");
     let src = fixture("hello.ns");
     let (ok, _out, err) = ns_next(&["snapshot".as_ref(), src.as_os_str(), img.as_os_str()]);
     assert!(ok, "{err}");
@@ -136,7 +108,6 @@ fn load_without_send_prints_a_summary_and_a_corrupt_image_is_reported() {
     let (ok, _out, err) = ns_next(&["load".as_ref(), img.as_os_str()]);
     assert!(!ok);
     assert!(err.contains("version"), "{err}");
-    let _ = std::fs::remove_dir_all(img.parent().unwrap());
 }
 
 /// One source, snapshotted and reloaded: everything `run` produces --
@@ -145,7 +116,8 @@ fn load_without_send_prints_a_summary_and_a_corrupt_image_is_reported() {
 /// load. Returns the three `run` outputs so a caller can assert what the
 /// program itself did.
 fn assert_snapshot_load_matches_run(name: &str, src: &Path) -> (bool, String, String) {
-    let img = temp_image(name);
+    let dir = ScratchDir::new(name);
+    let img = dir.join("world.img");
     let (run_ok, run_out, run_err) = ns_next(&["run".as_ref(), src.as_os_str()]);
     let (snapshot_ok, snapshot_out, snapshot_err) =
         ns_next(&["snapshot".as_ref(), src.as_os_str(), img.as_os_str()]);
@@ -188,7 +160,6 @@ fn assert_snapshot_load_matches_run(name: &str, src: &Path) -> (bool, String, St
         run_ok,
         "{name}: snapshot-then-load must succeed exactly when `run` does"
     );
-    let _ = std::fs::remove_dir_all(img.parent().unwrap());
     (run_ok, run_out, run_err)
 }
 
@@ -220,9 +191,7 @@ fn a_snapshot_and_a_load_reproduce_exactly_what_run_prints() {
 /// stays shared.
 #[test]
 fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
-    let dir = std::env::temp_dir().join(format!("ns-next-image-src-{}-raises", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let dir = ScratchDir::new("raises");
     let src = dir.join("raises.ns");
     std::fs::write(
         &src,
@@ -236,7 +205,6 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
         err.starts_with("Uncaught Newspeak error: "),
         "the error text is what both paths must agree on: {err}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A version-matching image whose body has been corrupted is a reported
@@ -245,7 +213,8 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
 /// by one of the two verification passes.
 #[test]
 fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
-    let img = temp_image("corruption");
+    let dir = ScratchDir::new("corruption");
+    let img = dir.join("world.img");
     let src = fixture("blocks_and_return.ns");
     let (ok, _out, err) = ns_next(&[
         "snapshot".as_ref(),
@@ -286,7 +255,6 @@ fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
         swept > 100 && rejected * 4 >= swept,
         "{rejected} of {swept} corrupted images were rejected"
     );
-    let _ = std::fs::remove_dir_all(img.parent().unwrap());
 }
 
 /// The image `snapshot` writes by default carries no program text, and the
@@ -314,7 +282,8 @@ fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
         .collect();
     assert!(lines.len() >= 4, "the fixture must have text to look for");
 
-    let plain = temp_image("source-free");
+    let plain_dir = ScratchDir::new("source-free");
+    let plain = plain_dir.join("world.img");
     let (ok, _out, err) = ns_next(&["snapshot".as_ref(), src.as_os_str(), plain.as_os_str()]);
     assert!(ok, "{err}");
     let plain_bytes = std::fs::read(&plain).expect("read image");
@@ -341,9 +310,9 @@ fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
     ]);
     assert!(!ok);
     assert!(err.contains("carries no source"), "{err}");
-    let _ = std::fs::remove_dir_all(plain.parent().unwrap());
 
-    let debug = temp_image("debug-source");
+    let debug_dir = ScratchDir::new("debug-source");
+    let debug = debug_dir.join("world.img");
     let (ok, _out, err) = ns_next(&[
         "snapshot".as_ref(),
         src.as_os_str(),
@@ -384,7 +353,6 @@ fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
     ]);
     assert!(ok, "{err}");
     assert_eq!(out, "42\n");
-    let _ = std::fs::remove_dir_all(debug.parent().unwrap());
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {

@@ -288,9 +288,14 @@ since that is what code is keyed by. It also accepts an artifact in place of a
 at all, so that path is what makes `disasm` usable on one. See
 [image-format.md](image-format.md)'s "Reading an artifact".
 
-This is the first piece of the VM's own introspection tooling, the equivalent of
-`d8`; the rest, inline-cache transition traces and deoptimization reasons, arrives
-with the mechanisms it would observe.
+For every body at once rather than one, `ns-next inspect <artifact> --full`
+disassembles the whole code table with each body attributed to the declaration
+that owns it. `disasm` is the way in when you know which body you want;
+`inspect` is the way in when you do not.
+
+These are the first pieces of the VM's own introspection tooling, the equivalent
+of `d8`; the rest, inline-cache transition traces and deoptimization reasons,
+arrives with the mechanisms it would observe.
 
 ## Decisions
 

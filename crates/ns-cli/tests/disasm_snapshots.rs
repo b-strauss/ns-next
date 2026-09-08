@@ -3,6 +3,9 @@
 //! inlined ifTrue:ifFalse:, inlined whileTrue:, the non-inlined fallback
 //! case, an instance initializer). Catches accidental codegen changes.
 
+mod common;
+use common::ScratchDir;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -85,7 +88,8 @@ fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
 /// never runs the module.
 #[test]
 fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
-    let path = std::env::temp_dir().join("ns_next_disasm_nested_path_test.ns");
+    let dir = ScratchDir::new("disasm-nested-path");
+    let path = dir.join("nested.ns");
     std::fs::write(
         &path,
         "Newspeak3\n'T'\nclass Outer usingPlatform: p = Object new () (\n\
@@ -148,9 +152,7 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
 #[test]
 fn disasm_of_an_image_matches_disasm_of_its_source() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/arithmetic.ns");
-    let dir = std::env::temp_dir().join(format!("ns-next-disasm-img-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let dir = ScratchDir::new("disasm-img");
     let img = dir.join("world.img");
 
     let snap = Command::new(env!("CARGO_BIN_EXE_ns-next"))
@@ -193,9 +195,7 @@ fn disasm_of_an_image_matches_disasm_of_its_source() {
 #[test]
 fn disasm_of_a_binary_matches_disasm_of_its_source() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/arithmetic.ns");
-    let dir = std::env::temp_dir().join(format!("ns-next-disasm-bin-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let dir = ScratchDir::new("disasm-bin");
     let bin = dir.join("app.nsb");
 
     let build = Command::new(env!("CARGO_BIN_EXE_ns-next"))
@@ -233,9 +233,7 @@ fn disasm_of_a_binary_matches_disasm_of_its_source() {
 /// one clear failure, not a decoder backtrace.
 #[test]
 fn disasm_rejects_a_corrupt_artifact_with_a_message() {
-    let dir = std::env::temp_dir().join(format!("ns-next-disasm-bad-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let dir = ScratchDir::new("disasm-bad");
     let bad = dir.join("truncated.img");
     // Magic, so it is taken for an artifact, and then nothing.
     std::fs::write(&bad, b"NSIM").expect("write");
