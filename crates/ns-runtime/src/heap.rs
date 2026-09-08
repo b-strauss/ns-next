@@ -170,6 +170,21 @@ impl Heap {
         obj.borrow().clone()
     }
 
+    /// Replaces the entirety of a placeholder object's contents in one
+    /// write. `image::decode::decode_graph_section`'s second pass is the
+    /// only caller, and it only ever calls this on a handle its first pass
+    /// placeholder-allocated and nothing else has observed yet -- before
+    /// `check_class_references` and `verify_graph` run, both of which
+    /// assume every object is already filled in. Call this on any handle
+    /// something else already holds -- after those passes ran, or on an
+    /// object already reachable from `roots` -- and it silently replaces
+    /// that object's already-verified invariants with unverified ones: no
+    /// error, and no way for verification to notice, because verification
+    /// has already finished.
+    pub fn replace_object(&mut self, obj: &ObjRef, filled: Object) {
+        *obj.borrow_mut() = filled;
+    }
+
     /// Renders a value for a user-facing error message.
     ///
     /// Never `Debug`-format a `Value` instead: `Object`'s bootstrap class is
@@ -291,23 +306,6 @@ impl Heap {
             return true;
         }
         false
-    }
-
-    /// The whole of a placeholder object's contents, replaced in one write.
-    /// `image::decode_graph_section`'s first pass placeholder-allocates
-    /// every object before any record is read, so cycles and shared
-    /// references round-trip with identity preserved; this is the second
-    /// pass filling one in, once its record has been decoded. Nothing may
-    /// observe a half-built record, which is why this replaces the whole
-    /// value rather than going field by field.
-    pub fn replace_object(&mut self, obj: &ObjRef, filled: Object) {
-        *obj.borrow_mut() = filled;
-    }
-
-    /// The frame equivalent of `replace_object`, for the placeholder frames
-    /// the same two-pass decode pre-allocates.
-    pub fn replace_frame(&mut self, frame: &FrameRef, filled: Frame) {
-        *frame.borrow_mut() = filled;
     }
 
     // ---------- Activation accessors ----------
@@ -444,6 +442,19 @@ impl Heap {
     /// `object_snapshot`.
     pub fn frame_snapshot(&self, frame: &FrameRef) -> Frame {
         frame.borrow().clone()
+    }
+
+    /// The frame equivalent of `replace_object`.
+    /// `image::decode::decode_graph_section`'s second pass is the only
+    /// caller, and it only ever calls this on a handle its first pass
+    /// placeholder-allocated and nothing else has observed yet -- before
+    /// `verify_graph` runs, which assumes every frame is already filled in.
+    /// Call this on any handle something else already holds and it silently
+    /// replaces that frame's already-verified `pc`/register-file shape with
+    /// an unverified one: no error, and no way for `verify_graph` to
+    /// notice, because it has already finished.
+    pub fn replace_frame(&mut self, frame: &FrameRef, filled: Frame) {
+        *frame.borrow_mut() = filled;
     }
 }
 
