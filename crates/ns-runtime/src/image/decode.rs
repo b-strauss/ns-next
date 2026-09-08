@@ -1454,9 +1454,9 @@ pub fn decode_class_tag(
     tables: &Tables,
 ) -> Result<ClassRef, DecodeError> {
     match r.read_u8()? {
-        0 => Ok(ctx.interp.builtin_class(read_builtin_class(r)?)),
-        1 => Ok(ctx.root_class.clone()),
-        2 => {
+        CLS_BUILTIN => Ok(ctx.interp.builtin_class(read_builtin_class(r)?)),
+        CLS_USER_ROOT => Ok(ctx.root_class.clone()),
+        CLS_RECORD => {
             let id = r.read_u32()?;
             tables
                 .objects
@@ -1486,12 +1486,12 @@ fn decode_value(
     tables: &Tables,
 ) -> Result<Value, DecodeError> {
     match r.read_u8()? {
-        0 => Ok(Value::Nil),
-        1 => Ok(Value::Bool(false)),
-        2 => Ok(Value::Bool(true)),
-        3 => Ok(Value::SmallInt(r.read_i64()?)),
-        4 => Ok(Value::Float(r.read_f64()?)),
-        5 => {
+        VAL_NIL => Ok(Value::Nil),
+        VAL_FALSE => Ok(Value::Bool(false)),
+        VAL_TRUE => Ok(Value::Bool(true)),
+        VAL_SMALL_INT => Ok(Value::SmallInt(r.read_i64()?)),
+        VAL_FLOAT => Ok(Value::Float(r.read_f64()?)),
+        VAL_OBJECT_ID => {
             let id = r.read_u32()?;
             tables
                 .objects
@@ -1500,8 +1500,8 @@ fn decode_value(
                 .map(Value::Obj)
                 .ok_or(DecodeError::BadObjectId(id))
         }
-        6 => Ok(Value::Obj(decode_class_tag(r, ctx, tables)?)),
-        7 => Ok(ctx.platform.clone()),
+        VAL_CLASS_TAG => Ok(Value::Obj(decode_class_tag(r, ctx, tables)?)),
+        VAL_PLATFORM => Ok(ctx.platform.clone()),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
     }
 }
@@ -1619,8 +1619,8 @@ fn decode_frame(
     // `Bytecode`, which would reinterpret the number instead of refusing
     // it. `verify_graph` then bounds the `pc` itself against the body.
     let pc_kind = match r.read_u8()? {
-        0 => return Err(DecodeError::TreeWalkFrame),
-        1 => PcKind::Bytecode,
+        PC_KIND_TREE_WALK => return Err(DecodeError::TreeWalkFrame),
+        PC_KIND_BYTECODE => PcKind::Bytecode,
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "frame pc kind",
@@ -1632,16 +1632,18 @@ fn decode_frame(
     let home = decode_frame_ref(r, tables)?;
     let current_class = decode_optional_class(r, ctx, tables)?;
     let kind = match r.read_u8()? {
-        0 => FrameKind::Method(method_decl(
+        FRAME_METHOD => FrameKind::Method(method_decl(
             ctx,
             current_class.as_ref(),
             decode_symbol(r, symbols)?,
         )?),
-        1 => FrameKind::Closure(Rc::new(decode_closure_record(r, ctx, tables, symbols)?)),
-        2 => FrameKind::TopLevel,
-        3 => FrameKind::Initializer(decode_class_tag(r, ctx, tables)?),
-        4 => FrameKind::SuperclassClause(decode_class_tag(r, ctx, tables)?),
-        5 => FrameKind::SuperclassMessage(decode_class_tag(r, ctx, tables)?),
+        FRAME_CLOSURE => {
+            FrameKind::Closure(Rc::new(decode_closure_record(r, ctx, tables, symbols)?))
+        }
+        FRAME_TOP_LEVEL => FrameKind::TopLevel,
+        FRAME_INITIALIZER => FrameKind::Initializer(decode_class_tag(r, ctx, tables)?),
+        FRAME_SUPERCLASS_CLAUSE => FrameKind::SuperclassClause(decode_class_tag(r, ctx, tables)?),
+        FRAME_SUPERCLASS_MESSAGE => FrameKind::SuperclassMessage(decode_class_tag(r, ctx, tables)?),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "frame kind",
@@ -2007,12 +2009,12 @@ pub fn decode_graph_section(
         }
         max_identity_hash = max_identity_hash.max(identity_hash);
         let data = match r.read_u8()? {
-            0 => ObjectData::Instance(decode_values(r, ctx, &tables)?),
-            1 => ObjectData::Str(r.read_str()?),
-            2 => ObjectData::Sym(decode_symbol(r, symbols)?),
-            3 => ObjectData::Array(decode_values(r, ctx, &tables)?),
-            4 => ObjectData::Closure(decode_closure_record(r, ctx, &tables, symbols)?),
-            5 => {
+            OBJ_INSTANCE => ObjectData::Instance(decode_values(r, ctx, &tables)?),
+            OBJ_STR => ObjectData::Str(r.read_str()?),
+            OBJ_SYM => ObjectData::Sym(decode_symbol(r, symbols)?),
+            OBJ_ARRAY => ObjectData::Array(decode_values(r, ctx, &tables)?),
+            OBJ_CLOSURE => ObjectData::Closure(decode_closure_record(r, ctx, &tables, symbols)?),
+            OBJ_CLASS => {
                 let (data, mixin) = decode_class_record(r, ctx, &tables, &placeholder_application)?;
                 pending_classes.push(PendingClass {
                     object: index,
