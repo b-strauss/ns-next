@@ -5590,9 +5590,14 @@ fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
         image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
 
     for cut in 0..binary.len() {
-        // Never `{:?}` the `Ok` side: a `LoadedImage` carries an
-        // `Interpreter`, whose bootstrap `Object` class is its own `.class`,
-        // so a derived `Debug` would recurse forever.
+        // `is_err()`, not a message check, is deliberate here and only here:
+        // the failure mode varies by cut (a truncated header, a truncated
+        // symbol table, a truncated entry field, ...) and the point of this
+        // sweep is that every one of those is a decode error rather than a
+        // panic, not that they share one message. Never `{:?}` the `Ok`
+        // side either: a `LoadedImage` carries an `Interpreter`, whose
+        // bootstrap `Object` class is its own `.class`, so a derived
+        // `Debug` would recurse forever.
         assert!(
             image::load(&binary[..cut]).is_err(),
             "a binary truncated to {cut} bytes must be refused, not panic"
@@ -5605,6 +5610,15 @@ fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
 /// that motivated it rather than only as a generic tail: a binary followed
 /// by an unrelated image's graph section, byte for byte what a caller gets
 /// by concatenating the two artifact kinds instead of choosing one.
+///
+/// The message assertion is load-bearing, not decorative: this binary sets
+/// `FLAG_STATELESS` and carries a present entry selector, so the earlier
+/// "stateless artifact must record an entry" check does not fire and
+/// `load` reaches the graph-section boundary before failing. A test that
+/// only checked `is_err()` would keep passing if that boundary check were
+/// deleted and some *other* check downstream happened to reject the same
+/// bytes for an unrelated reason -- see the sibling test below, which is
+/// exactly that failure mode caught in review.
 #[test]
 fn a_binary_with_a_graph_appended_is_refused() {
     let (mut interp, class, bindings) = load(ENTRY_SRC);
@@ -5620,23 +5634,47 @@ fn a_binary_with_a_graph_appended_is_refused() {
         image::build(None, &origin, &class, module, Symbol::intern("main:args:")).expect("build");
     let image_bytes =
         image::snapshot(None, &origin, &class, module, &platform, &[]).expect("snapshot");
+    // The append below only exercises anything if the image actually
+    // extends past where the binary ends -- a snapshot's graph section
+    // guarantees that here, but assert it so a future change to either
+    // artifact's layout fails loudly instead of silently appending nothing.
+    assert!(
+        image_bytes.len() > binary.len(),
+        "the snapshot must be longer than the binary for this append to test anything"
+    );
 
     let mut frankenstein = binary.clone();
     frankenstein.extend_from_slice(&image_bytes[binary.len().min(image_bytes.len())..]);
+
+    let err = match image::load(&frankenstein) {
+        Ok(_) => panic!("a binary with a graph section appended must be refused"),
+        Err(e) => e,
+    };
     assert!(
-        image::load(&frankenstein).is_err(),
-        "a binary with a graph section appended must be refused, not silently truncated"
+        err.contains("trailing byte"),
+        "expected the trailing-byte check to fire, got: {err}"
     );
 }
 
-/// Setting `FLAG_STATELESS` on a snapshot's header, without also removing
-/// its graph section, is exactly the confusion the trailing-byte check
-/// exists to catch: the header now claims the artifact carries no state,
-/// but the graph section still sits right after the fields a binary ends
-/// with, so it reads as trailing bytes rather than as the state it actually
-/// is. `load` must refuse it rather than silently ignore the graph.
+/// `image::snapshot` never records an entry selector -- it is not a
+/// startable artifact, so it has none to record (see the doc comment on
+/// `snapshot`'s `encode_entry(&mut w, None)` call). Flipping
+/// `FLAG_STATELESS` on such a snapshot therefore hits `load`'s
+/// `header.stateless && entry.is_none()` check and is refused for *that*
+/// reason -- well before the graph section, and the trailing bytes it
+/// would leave behind, are ever reached.
+///
+/// This is deliberately not a route to the trailing-byte check: a snapshot
+/// relabelled stateless fails on the missing entry first, so it never
+/// proves the trailing-byte check does anything. That path is already
+/// covered above by `a_binary_with_a_graph_appended_is_refused`, which uses
+/// a real binary (stateless flag set *and* an entry present) with a graph
+/// appended -- reproducing it here with a different input would add
+/// runtime without adding coverage. What this input does demonstrate, and
+/// what the assertion below checks, is that a relabelled snapshot is
+/// refused specifically because it has no entry to start from.
 #[test]
-fn a_stateless_flag_on_an_artifact_that_has_a_graph_is_refused() {
+fn a_relabelled_snapshot_is_refused_for_missing_entry() {
     let (mut interp, class, bindings) = load(ENTRY_SRC);
     let compiled = compiler::compile_module(&class, &bindings);
     interp
@@ -5659,8 +5697,12 @@ fn a_stateless_flag_on_an_artifact_that_has_a_graph_is_refused() {
     );
     bytes[flag_offset] |= encode::FLAG_STATELESS;
 
+    let err = match image::load(&bytes) {
+        Ok(_) => panic!("a snapshot relabelled stateless must still be refused"),
+        Err(e) => e,
+    };
     assert!(
-        image::load(&bytes).is_err(),
-        "a stateless flag with a graph still attached must be refused"
+        err.contains("entry"),
+        "expected the missing-entry check to fire, got: {err}"
     );
 }
