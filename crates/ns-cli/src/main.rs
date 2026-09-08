@@ -64,9 +64,10 @@ enum Cmd {
         #[arg(long)]
         debug_source: bool,
     },
-    /// Deserialize an image and optionally send one further message to
-    /// its root instance (with the arguments `run` supplies for the
-    /// selector's arity).
+    /// Deserialize an artifact and start it. An image already holds its
+    /// instance; a stateless binary is instantiated here and sent the entry
+    /// selector it recorded. --send overrides that selector, with the
+    /// arguments `run` supplies for its arity.
     Load {
         image: PathBuf,
         #[arg(long)]
@@ -99,9 +100,10 @@ enum Cmd {
         #[arg(long, default_value_t = 10)]
         iterations: u32,
     },
-    /// Compile one method (or, with --initializer, the target class's
-    /// instance initializer) and print its bytecode. Compile only: nothing
-    /// is instantiated or run.
+    /// Print one compiled body: a method, or with --initializer the target
+    /// class's instance initializer. Takes either a .ns file, which is
+    /// compiled first, or a serialized artifact, whose bodies are decoded
+    /// rather than compiled. Nothing is instantiated or run either way.
     Disasm {
         file: PathBuf,
         /// The method selector, e.g. `main:args:`.
@@ -116,7 +118,8 @@ enum Cmd {
         class: Option<String>,
     },
     /// Print an artifact's structure: header flags, section offsets, the
-    /// symbol and mixin tables, and how much graph it carries.
+    /// symbol table, the code table with every body named, the mixin table,
+    /// and -- for an image -- its object graph, read record by record.
     Inspect {
         artifact: PathBuf,
         /// Render everything: the mixin rows expanded, and every compiled
@@ -291,7 +294,8 @@ fn report_entry_send(result: Result<ns_runtime::Value, ns_runtime::Signal>) -> E
     }
 }
 
-/// The argument list `cmd_run`/`cmd_snapshot` pass to `interp.instantiate`,
+/// The argument list `cmd_run`, `cmd_snapshot` and `cmd_load` pass to
+/// `interp.instantiate`,
 /// built from the root class's own declared primary factory pattern
 /// (`Mixin::factory`) rather than assumed.
 ///
@@ -341,9 +345,11 @@ fn factory_args_for(
 }
 
 /// The mixin name behind a class object, for `factory_args_for`'s error
-/// message. `class` is always `ObjectData::Class` at every call site (both
-/// come straight out of `bootstrap_with_engine`), so the fallback is
-/// unreachable in practice and exists only to keep this a total function.
+/// message. `class` is always `ObjectData::Class` at every call site -- it
+/// comes either from `bootstrap_with_engine` or, when `load` starts a
+/// stateless binary, from `image::load`'s rebuilt root class -- so the
+/// fallback is unreachable in practice and exists only to keep this a total
+/// function.
 fn class_name(class: &ns_runtime::ClassRef) -> String {
     match &class.borrow().data {
         ns_runtime::ObjectData::Class(data) => data.application.mixin.name.to_string(),
@@ -509,11 +515,24 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
     }
 }
 
-/// `ns-next load`: deserialize a world and, with `--send`, send one
-/// message to its root instance through the same `entry_args` convention
-/// `run` uses -- and report it through the same `report_entry_send`, so a
-/// `load --send main:args:` of a snapshot prints exactly what `run` prints
-/// and nothing else. A malformed image is a message, never a stack trace.
+/// `ns-next load`: deserialize an artifact and start it. What "start" means
+/// depends on which of the two shapes it is, and the header says which.
+///
+/// A **stateful image** already carries its instance, so a `--send` is sent
+/// to the root it decoded, and without one the command reports what it loaded
+/// and stops.
+///
+/// A **stateless binary** carries no instance at all. Its root class is
+/// instantiated here, against this interpreter's own freshly bootstrapped
+/// platform, and then the selector it recorded is sent -- `--send` overrides
+/// that selector but not the instantiation. Running the factory and every
+/// initializer at load is what makes the artifact stateless in the first
+/// place: it has never held a capability.
+///
+/// Either way the entry send goes through the same `entry_args` convention
+/// and the same `report_entry_send` as `run`, so `load` of an artifact prints
+/// exactly what `run` of its source prints and nothing else. A malformed
+/// artifact is a message, never a stack trace.
 fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
     let bytes = match std::fs::read(image) {
         Ok(b) => b,
@@ -906,8 +925,11 @@ fn cmd_disasm(
         }
     };
 
-    // Held only so the borrows below outlive the branch: the source path owns
-    // its interpreter, the artifact path owns the loaded world.
+    // Two ways to reach the same pair. Compiling from source needs the
+    // resolver.s bindings; an artifact already carries compiled bodies, so
+    // loading it is a decode and nothing is recompiled. Both hand back owning
+    // values, so whichever interpreter was built along the way is dropped at
+    // the end of its arm.
     let (class, module) = if looks_like_an_artifact(&raw) {
         match ns_runtime::image::load(&raw) {
             Ok(loaded) => {
