@@ -123,6 +123,62 @@ fn loading_a_binary_runs_its_initializers_against_the_loading_platform() {
     assert_eq!((load_ok, load_out), (run_ok, run_out));
 }
 
+/// `build` then `load` must be indistinguishable from `run` on the same
+/// source: exit status, stdout and stderr.
+///
+/// This is the binary's substitute for the two-engine differential check,
+/// which it structurally cannot have -- a binary has no AST, so the
+/// tree-walker cannot run it. Because the differential harness already pins
+/// bytecode against tree-walk over these same fixtures, equality here holds
+/// transitively against the tree-walker too.
+#[test]
+fn every_fixture_runs_identically_from_source_and_from_a_binary() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
+    let dir = temp_dir("all-fixtures");
+    let mut checked = 0;
+
+    for entry in std::fs::read_dir(&fixtures).expect("read tests-fixtures") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("ns") {
+            continue;
+        }
+        let out = dir.join(format!(
+            "{}.nsb",
+            path.file_stem().unwrap().to_string_lossy()
+        ));
+
+        let (built, _, build_err) = ns_next(&["build".as_ref(), path.as_os_str(), out.as_os_str()]);
+        if !built {
+            // A fixture whose root class declares no `main:args:` and needs an
+            // explicit entry is not a failure of this property. Anything else
+            // is, so the reason is asserted rather than assumed.
+            assert!(
+                build_err.contains("--entry"),
+                "build failed for {}: {build_err}",
+                path.display()
+            );
+            continue;
+        }
+
+        let (run_ok, run_out, run_err) = ns_next(&["run".as_ref(), path.as_os_str()]);
+        let (load_ok, load_out, load_err) = ns_next(&["load".as_ref(), out.as_os_str()]);
+        assert_eq!(
+            load_ok,
+            run_ok,
+            "exit status differs for {}",
+            path.display()
+        );
+        assert_eq!(load_out, run_out, "stdout differs for {}", path.display());
+        assert_eq!(load_err, run_err, "stderr differs for {}", path.display());
+        checked += 1;
+    }
+
+    assert!(
+        checked >= 5,
+        "expected several fixtures to be covered, got {checked}"
+    );
+}
+
 #[test]
 fn load_send_overrides_the_recorded_entry() {
     let dir = temp_dir("override");
