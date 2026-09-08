@@ -27,6 +27,12 @@ abort. Every id, tag, count and length is validated before it indexes, allocates
 or slices, and any recursion whose depth the input controls is bounded or made
 iterative.
 
+That guarantee is about **decoding**. `load` on a stateless binary instantiates
+and sends the recorded entry with no flag at all, so starting one executes its
+code with the same exposure as running the equivalent source -- recursion depth
+bounded only by the native stack until the VM is trampolined; see
+[execution.md](execution.md), "Planned: trampolined sends".
+
 ## Two artifacts
 
 Following Bracha's position — "Ideally, you have images and a binary format …

@@ -57,6 +57,13 @@ structural verification passes before installing the engine. See
 `docs/design/image-format.md`'s "Verification" section for the scope of what they
 do and do not guarantee.
 
+That guarantee covers **decoding**. `ns-next load` on a stateless binary instantiates
+and sends the recorded entry with no flag at all, so loading one *runs its code* --
+with the same exposure as running the equivalent source, including that recursion
+depth is bounded only by the native stack until the VM is trampolined (see
+`docs/design/execution.md`, "Planned: trampolined sends"). A mutated binary that
+decodes cleanly can still abort while executing, and that is not a decoder defect.
+
 **Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an `EvalResult`.**
 The bootstrap `Object` class is its own `.class`, so `Debug` on a `Value::Obj` recurses
 forever, and `Signal` deliberately has no `Debug` (it holds a `FrameRef` cycle). Tests
