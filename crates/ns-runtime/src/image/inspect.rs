@@ -15,6 +15,7 @@
 
 use std::fmt::Write as _;
 
+use crate::bytecode::{CodeKind, CompiledCode};
 use crate::image::{decode, mixins, symbols};
 
 /// One named span of the file. `end` is exclusive.
@@ -33,10 +34,56 @@ pub struct Report {
     pub origin: String,
     pub sections: Vec<Section>,
     pub symbols: Vec<String>,
+    /// One line per code id, in id order, naming the declaration that owns it
+    /// and what it is. This is the bridge between the two views: it tells a
+    /// reader which body to ask `disasm` for.
+    pub code: Vec<String>,
     /// One line per mixin row: name, slot count, factory, method count.
     pub mixins: Vec<String>,
     pub entry: Option<String>,
     pub total_len: usize,
+}
+
+/// Attributes each code id to the declaration that owns it.
+///
+/// A mixin row names its methods, its initializer and its two superclass-clause
+/// bodies by id, so those attribute directly. A block body is named by no row
+/// at all -- it is reachable only from the `MakeClosure` instruction that
+/// creates it -- so it is labelled by its kind instead. Anything left over
+/// would be a code id no declaration claims and no body's kind explains, which
+/// is worth showing rather than hiding: `(unnamed)` in the output means the
+/// code table and the mixin table disagree.
+fn attribute_code(decoded: &mixins::Decoded, codes: &[std::rc::Rc<CompiledCode>]) -> Vec<String> {
+    let mut labels = vec![String::new(); codes.len()];
+    let mut claim = |id: u32, owner: &str, what: &str| {
+        if let Some(slot) = labels.get_mut(id as usize) {
+            *slot = format!("{owner}  {what}");
+        }
+    };
+    for (mixin, code) in decoded.mixins.iter().zip(decoded.code.iter()) {
+        let owner = mixin.name.to_string();
+        for (selector, id) in &code.methods {
+            claim(*id, &owner, &selector.to_string());
+        }
+        if let Some(id) = code.initializer {
+            claim(id, &owner, "initializer");
+        }
+        if let Some(id) = code.superclass_clause {
+            claim(id, &owner, "superclass clause");
+        }
+        if let Some(id) = code.superclass_message {
+            claim(id, &owner, "superclass message");
+        }
+    }
+    for (label, body) in labels.iter_mut().zip(codes.iter()) {
+        if label.is_empty() {
+            *label = match body.kind {
+                CodeKind::Block => "block body".to_string(),
+                _ => "(unnamed)".to_string(),
+            };
+        }
+    }
+    labels
 }
 
 /// Decodes `bytes` far enough to describe it. Every failure is an `Err`, never
@@ -122,6 +169,8 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         end: r.pos(),
         detail: format!("{} mixins", decoded.mixins.len()),
     });
+    let code_lines = attribute_code(&decoded, &table.codes);
+
     at = r.pos();
 
     // The root class's superclass reference. Decoding it needs an interpreter
@@ -173,6 +222,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         origin: format!("{origin:?}"),
         sections,
         symbols: symbol_list,
+        code: code_lines,
         mixins: mixin_lines,
         entry: entry.map(|s| s.to_string()),
         total_len: bytes.len(),
@@ -211,6 +261,11 @@ pub fn render(report: &Report) -> String {
     let _ = writeln!(out, "\nsymbols ({})", report.symbols.len());
     for (i, s) in report.symbols.iter().enumerate() {
         let _ = writeln!(out, "  {i:>4} {s}");
+    }
+
+    let _ = writeln!(out, "\ncode table ({} bodies)", report.code.len());
+    for (i, c) in report.code.iter().enumerate() {
+        let _ = writeln!(out, "  {i:>4} {c}");
     }
 
     let _ = writeln!(out, "\nmixins ({})", report.mixins.len());

@@ -93,3 +93,35 @@ fn inspect_reports_a_corrupt_artifact_rather_than_panicking() {
     assert!(err.starts_with("error:"), "{err}");
     assert!(!err.contains("panicked"), "{err}");
 }
+
+/// The section line says how many bodies a code table holds; it did not say
+/// which. That gap is what made the output hard to follow: a reader could see
+/// that four bodies existed but not what to ask `disasm` for. The mixin table
+/// already maps selector to code id, so naming them costs no new decoding.
+#[test]
+fn inspect_names_every_body_in_the_code_table() {
+    let dir = temp_dir("code-table");
+    let out = dir.join("app.nsb");
+    let (ok, _, err) = ns_next(&[
+        "build".as_ref(),
+        fixture("arithmetic.ns").as_os_str(),
+        out.as_os_str(),
+    ]);
+    assert!(ok, "{err}");
+
+    let (ok, listing, err) = ns_next(&["inspect".as_ref(), out.as_os_str()]);
+    assert!(ok, "{err}");
+
+    assert!(listing.contains("code table"), "{listing}");
+    // arithmetic.ns declares one method and one slot initializer on a root
+    // class whose superclass clause is `Object new`.
+    assert!(listing.contains("main:args:"), "{listing}");
+    assert!(listing.contains("initializer"), "{listing}");
+    assert!(listing.contains("superclass clause"), "{listing}");
+    // Every body must be accounted for -- an unnamed row would be exactly the
+    // gap this closes.
+    assert!(
+        !listing.contains("  (unnamed)"),
+        "every code id should be attributed:\n{listing}"
+    );
+}
