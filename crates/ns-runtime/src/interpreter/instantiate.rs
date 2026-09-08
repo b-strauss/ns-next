@@ -630,7 +630,12 @@ impl Interpreter {
                 // superclass slot at the same low index instead of this
                 // class's own slot.
                 if let Some(&index) = application.slot_index.get(&name) {
-                    crate::interpreter::eval::store_instance_field(instance, index, value);
+                    crate::interpreter::eval::store_instance_field(
+                        &mut self.heap,
+                        instance,
+                        index,
+                        value,
+                    );
                 }
             }
         }

@@ -4,6 +4,7 @@
 
 use ns_runtime::types::Value;
 use ns_runtime::Interpreter;
+use ns_runtime::{ResolvedModule, Signal, Symbol};
 
 #[test]
 fn array_accessors_read_and_write_through_the_seam() {
@@ -124,4 +125,60 @@ fn a_builtin_class_reports_its_kind_through_the_seam() {
     let s = interp.new_string("x".to_string());
     let class = interp.class_of(&Value::Obj(s));
     assert!(interp.heap_ref().class_builtin(&class).is_some());
+}
+
+fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef, ResolvedModule) {
+    let module = ns_syntax::parse(src).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        src.into(),
+        ns_runtime::SourceOrigin::File("test.ns".into()),
+    )
+    .expect("resolve");
+    let mut interp = Interpreter::bootstrap();
+    let class = interp.load_module(&resolved);
+    (interp, class, resolved)
+}
+
+fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+    match result {
+        Ok(v) => v,
+        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
+        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+    }
+}
+
+#[test]
+fn register_addressing_puts_arguments_before_temporaries() {
+    // Exercised through a real activation rather than a hand-built frame:
+    // the argument/temporary boundary is exactly what the accessor
+    // encodes, and a synthetic frame could encode it wrongly and then
+    // agree with itself.
+    let src = "Newspeak3\n'T'\nclass T usingPlatform: p = Object new () (\n\
+               \tpublic run: a = (| t | t := a. ^t)\n) : ()\n";
+    let (mut interp, class, resolved) = load(src);
+    // Computed ahead of the call: `send` takes `&mut Interpreter`, and so
+    // does `platform()`, so the two cannot be nested in one expression.
+    let platform = interp.platform();
+    let instance = expect_ok(
+        interp.send(
+            Value::Obj(class),
+            Symbol::intern("usingPlatform:"),
+            vec![platform],
+            &resolved.bindings,
+            None,
+        ),
+        "instantiate",
+    );
+    let result = expect_ok(
+        interp.send(
+            instance,
+            Symbol::intern("run:"),
+            vec![Value::SmallInt(41)],
+            &resolved.bindings,
+            None,
+        ),
+        "run:",
+    );
+    assert!(matches!(result, Value::SmallInt(41)));
 }

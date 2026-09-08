@@ -166,7 +166,12 @@ pub(crate) fn nested_class(
         Some(superclass),
     );
     // Step 5: cache before returning, so step 1 hits from now on.
-    crate::interpreter::eval::store_instance_field(receiver, index, Value::Obj(class.clone()));
+    crate::interpreter::eval::store_instance_field(
+        &mut interp.heap,
+        receiver,
+        index,
+        Value::Obj(class.clone()),
+    );
     Ok(Value::Obj(class))
 }
 

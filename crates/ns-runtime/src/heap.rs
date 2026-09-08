@@ -1,9 +1,8 @@
-//! The heap seam. Every read and write of an `Object` -- and, from Task 5,
-//! of a `Frame` -- goes through `Heap`, so that replacing what sits behind
-//! a handle changes this file rather than its call sites. The store behind
-//! the accessors is `Rc<RefCell<_>>` today and an arena of typed handles
-//! next; see `docs/design/memory.md`, "Planned: an arena, handles, and a
-//! real collector".
+//! The heap seam. Every read and write of an `Object` or a `Frame` goes
+//! through `Heap`, so that replacing what sits behind a handle changes this
+//! file rather than its call sites. The store behind the accessors is
+//! `Rc<RefCell<_>>` today and an arena of typed handles next; see
+//! `docs/design/memory.md`.
 //!
 //! The accessors copy out rather than lend out. That is not a stylistic
 //! choice: almost every call site borrows, clones one field and drops the
@@ -112,6 +111,27 @@ impl Heap {
         if let ObjectData::Array(items) = &mut obj.borrow_mut().data {
             items.push(value);
             return true;
+        }
+        false
+    }
+
+    /// The instance field at `index`, or `None` when `obj`'s payload is not
+    /// `ObjectData::Instance` or `index` is out of range -- the same
+    /// total-rather-than-panicking shape as the array accessors above.
+    pub fn instance_field(&self, obj: &ObjRef, index: usize) -> Option<Value> {
+        match &obj.borrow().data {
+            ObjectData::Instance(fields) => fields.get(index).cloned(),
+            _ => None,
+        }
+    }
+
+    /// Answers whether the write happened, mirroring `array_set`.
+    pub fn set_instance_field(&mut self, obj: &ObjRef, index: usize, value: Value) -> bool {
+        if let ObjectData::Instance(fields) = &mut obj.borrow_mut().data {
+            if index < fields.len() {
+                fields[index] = value;
+                return true;
+            }
         }
         false
     }
@@ -225,6 +245,67 @@ impl Heap {
     pub fn class_builtin(&self, class: &ClassRef) -> Option<BuiltinClass> {
         match &class.borrow().data {
             ObjectData::Class(data) => data.builtin,
+            _ => None,
+        }
+    }
+
+    // ---------- Activation accessors ----------
+    //
+    // `local`/`set_local` carry the register-file addressing that
+    // `eval::read_local` used to own: arguments occupy the first
+    // `args.len()` indices and declared temporaries follow, and the
+    // boundary comes from how many arguments the activation was *given*.
+    // A wrong-arity activation is refused in `invoke_method` before it can
+    // reach here, so this addressing is total.
+    //
+    // Only the accessors `interpreter/eval.rs` actually calls are added
+    // here; `frame_arg_count`, `frame_pc`, `frame_sender`,
+    // `frame_is_uncontinuable`, `mark_uncontinuable` and `frame_slot_base`
+    // have no caller yet and are left for the task that adds their first
+    // one.
+
+    pub fn receiver(&self, frame: &FrameRef) -> Value {
+        frame.borrow().receiver.clone()
+    }
+
+    pub fn local(&self, frame: &FrameRef, index: u16) -> Value {
+        let borrowed = frame.borrow();
+        let i = index as usize;
+        if i < borrowed.args.len() {
+            borrowed.args[i].clone()
+        } else {
+            borrowed.temps[i - borrowed.args.len()].clone()
+        }
+    }
+
+    pub fn set_local(&mut self, frame: &FrameRef, index: u16, value: Value) {
+        let mut borrowed = frame.borrow_mut();
+        let i = index as usize;
+        if i < borrowed.args.len() {
+            borrowed.args[i] = value;
+        } else {
+            let temp_index = i - borrowed.args.len();
+            borrowed.temps[temp_index] = value;
+        }
+    }
+
+    pub fn frame_current_class(&self, frame: &FrameRef) -> Option<ClassRef> {
+        frame.borrow().current_class.clone()
+    }
+
+    pub fn set_frame_pc(&mut self, frame: &FrameRef, pc: usize) {
+        frame.borrow_mut().pc = pc;
+    }
+
+    pub fn frame_home(&self, frame: &FrameRef) -> Option<FrameRef> {
+        frame.borrow().home.clone()
+    }
+
+    /// The frame a closure activation captured, or `None` for any other
+    /// kind. `eval::frame_at_depth` walks this.
+    pub fn frame_captured(&self, frame: &FrameRef) -> Option<FrameRef> {
+        match &frame.borrow().kind {
+            FrameKind::Closure(closure) => Some(closure.captured_frame.clone()),
             _ => None,
         }
     }
