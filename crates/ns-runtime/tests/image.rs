@@ -5706,3 +5706,64 @@ fn a_relabelled_snapshot_is_refused_for_missing_entry() {
         "expected the missing-entry check to fire, got: {err}"
     );
 }
+
+/// `inspect` walks the graph section record by record rather than rebuilding
+/// it, which means it mirrors a layout the loader also implements. This is
+/// what keeps the two from drifting: the walk must consume the section
+/// exactly, so its end lands on the file's last byte.
+///
+/// A layout mistake -- a field read in the wrong order, a width wrong by one,
+/// a record shape that gained a member the walk does not know about --
+/// desynchronizes the reader and lands it somewhere else. The assertion
+/// therefore fails loudly on the class of bug that would otherwise let the
+/// viewer print plausible nonsense.
+#[test]
+fn the_graph_walk_consumes_the_section_exactly() {
+    // The third source is the one that matters: a block in a slot is the only
+    // way a frame reaches the graph at all, so without it the frame half of
+    // the layout is never walked and this guard would be blind to it.
+    const WITH_A_FRAME: &str = "Newspeak3
+'T'
+class X usingPlatform: p = Object new (
+  | blk = [ 2 ]. |
+) (
+) : ()";
+    for src in [ENTRY_SRC, TRIVIAL_MODULE, WITH_A_FRAME] {
+        let (mut interp, class, bindings) = load(src);
+        let compiled = compiler::compile_module(&class, &bindings);
+        interp
+            .set_engine(Engine::Bytecode(compiled))
+            .expect("a source-built interpreter accepts the bytecode engine");
+        let platform = interp.platform();
+        let origin = Origin::File(PathBuf::from("t.ns"));
+        let instance = {
+            let module = interp.compiled_module().expect("bytecode engine");
+            let _ = module;
+            let args = vec![platform.clone()];
+            interp.instantiate(class.clone(), args, &bindings)
+        };
+        let roots: Vec<_> = match instance {
+            Ok(v) => vec![v],
+            // A module whose factory takes no platform argument still gives a
+            // graph worth walking -- just without an instance in it.
+            Err(_) => Vec::new(),
+        };
+        let module = interp.compiled_module().expect("bytecode engine");
+        let img =
+            image::snapshot(None, &origin, &class, module, &platform, &roots).expect("snapshot");
+
+        let report = image::inspect::inspect(&img).expect("inspect the image");
+        let graph = report
+            .sections
+            .iter()
+            .find(|s| s.name == "graph")
+            .expect("a snapshot has a graph section");
+        assert_eq!(
+            graph.end,
+            img.len(),
+            "the graph walk must end at the file's last byte, not {} of {}",
+            graph.end,
+            img.len()
+        );
+    }
+}

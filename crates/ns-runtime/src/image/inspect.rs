@@ -18,7 +18,7 @@ use std::fmt::Write as _;
 use crate::bytecode::{CodeKind, CompiledCode};
 use std::rc::Rc;
 
-use crate::image::{decode, mixins, symbols};
+use crate::image::{decode, mixins, opcodes, symbols};
 
 /// One named span of the file. `end` is exclusive.
 pub struct Section {
@@ -49,6 +49,11 @@ pub struct Report {
     /// Every body disassembled, in code-id order. Rendered only by
     /// `render_full`.
     pub bodies: Vec<String>,
+    /// The object graph, read record by record rather than rebuilt. Empty for
+    /// a stateless binary, which carries none.
+    pub graph_objects: Vec<String>,
+    pub graph_frames: Vec<String>,
+    pub graph_roots: Vec<String>,
     pub entry: Option<String>,
     pub total_len: usize,
 }
@@ -141,6 +146,189 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
         let _ = writeln!(out, "      class side  present");
     }
     out
+}
+
+/// The object graph, read rather than rebuilt.
+///
+/// `decode_graph_section` materializes: it allocates real objects, resolves
+/// class tags against live builtins and therefore needs an `Interpreter`. A
+/// viewer must not do that -- `javap` does not instantiate a class to print
+/// it -- so this walks the same bytes and reports each record instead.
+///
+/// It is a second reader over one layout, which is a drift risk taken with
+/// eyes open. Two things hold it: the tags it interprets are the shared
+/// constants in `opcodes.rs`, not a private copy, so it cannot disagree with
+/// the loader about what a byte *means*; and `graph_walk_consumes_the_whole_
+/// section` pins that it ends exactly at the file's end, so any disagreement
+/// about record *shape* desynchronizes the walk and fails loudly rather than
+/// printing plausible nonsense.
+struct GraphView {
+    objects: Vec<String>,
+    frames: Vec<String>,
+    roots: Vec<String>,
+}
+
+fn read_class_tag(r: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    Ok(match r.read_u8()? {
+        opcodes::CLS_BUILTIN => format!("{:?}", decode::read_builtin_class(r)?),
+        opcodes::CLS_USER_ROOT => "<root class>".to_string(),
+        opcodes::CLS_RECORD => format!("object {}", r.read_u32()?),
+        tag => {
+            return Err(decode::DecodeError::InvalidTag {
+                what: "class tag",
+                tag,
+            })
+        }
+    })
+}
+
+fn read_optional_class(r: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    if r.read_bool()? {
+        read_class_tag(r)
+    } else {
+        Ok("-".to_string())
+    }
+}
+
+fn read_frame_ref(r: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    Ok(if r.read_bool()? {
+        format!("frame {}", r.read_u32()?)
+    } else {
+        "-".to_string()
+    })
+}
+
+fn read_value(r: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    Ok(match r.read_u8()? {
+        opcodes::VAL_NIL => "nil".to_string(),
+        opcodes::VAL_FALSE => "false".to_string(),
+        opcodes::VAL_TRUE => "true".to_string(),
+        opcodes::VAL_SMALL_INT => r.read_i64()?.to_string(),
+        opcodes::VAL_FLOAT => r.read_f64()?.to_string(),
+        opcodes::VAL_OBJECT_ID => format!("object {}", r.read_u32()?),
+        opcodes::VAL_CLASS_TAG => format!("class {}", read_class_tag(r)?),
+        opcodes::VAL_PLATFORM => "<platform>".to_string(),
+        tag => return Err(decode::DecodeError::InvalidTag { what: "value", tag }),
+    })
+}
+
+fn read_values(r: &mut decode::Reader) -> Result<Vec<String>, decode::DecodeError> {
+    let n = decode::bounded_count(r.read_u32()? as usize, 1, r)?;
+    (0..n).map(|_| read_value(r)).collect()
+}
+
+fn read_closure_record(
+    r: &mut decode::Reader,
+    symbols: &symbols::Table,
+) -> Result<String, decode::DecodeError> {
+    let params = r.read_u16()? as usize;
+    let mut names = Vec::with_capacity(params);
+    for _ in 0..params {
+        names.push(symbols.get(r.read_u32()?)?.to_string());
+    }
+    let code = r.read_u32()?;
+    let captured = r.read_u32()?;
+    let home = r.read_u32()?;
+    Ok(format!(
+        "[{}] code {code}, captured frame {captured}, home frame {home}",
+        names.join(", ")
+    ))
+}
+
+fn walk_graph(
+    r: &mut decode::Reader,
+    symbols: &symbols::Table,
+) -> Result<GraphView, decode::DecodeError> {
+    let object_count = decode::bounded_count(r.read_u32()? as usize, 1, r)?;
+    let frame_count = decode::bounded_count(r.read_u32()? as usize, 1, r)?;
+
+    let mut objects = Vec::with_capacity(object_count);
+    for _ in 0..object_count {
+        let class = read_class_tag(r)?;
+        let hash = r.read_u32()?;
+        let body = match r.read_u8()? {
+            opcodes::OBJ_INSTANCE => format!("instance {{{}}}", read_values(r)?.join(", ")),
+            opcodes::OBJ_STR => format!("string {:?}", r.read_str()?),
+            opcodes::OBJ_SYM => format!("symbol #{}", symbols.get(r.read_u32()?)?),
+            opcodes::OBJ_ARRAY => format!("array [{}]", read_values(r)?.join(", ")),
+            opcodes::OBJ_CLOSURE => format!("closure {}", read_closure_record(r, symbols)?),
+            opcodes::OBJ_CLASS => {
+                let mixin = r.read_u32()?;
+                let superclass = read_optional_class(r)?;
+                let enclosing = if r.read_bool()? {
+                    read_value(r)?
+                } else {
+                    "-".to_string()
+                };
+                let declaring = read_optional_class(r)?;
+                format!(
+                    "class mixin {mixin}, superclass {superclass}, enclosing {enclosing}, \
+                     declaring {declaring}"
+                )
+            }
+            tag => {
+                return Err(decode::DecodeError::InvalidTag {
+                    what: "object body",
+                    tag,
+                })
+            }
+        };
+        objects.push(format!("class {class}, hash {hash}, {body}"));
+    }
+
+    let mut frames = Vec::with_capacity(frame_count);
+    for _ in 0..frame_count {
+        let receiver = read_value(r)?;
+        let args = read_values(r)?;
+        let temps = read_values(r)?;
+        let pc = r.read_u32()?;
+        let pc_kind = match r.read_u8()? {
+            opcodes::PC_KIND_BYTECODE => "bytecode",
+            opcodes::PC_KIND_TREE_WALK => return Err(decode::DecodeError::TreeWalkFrame),
+            tag => {
+                return Err(decode::DecodeError::InvalidTag {
+                    what: "pc kind",
+                    tag,
+                })
+            }
+        };
+        let sender = read_frame_ref(r)?;
+        let home = read_frame_ref(r)?;
+        let current_class = read_optional_class(r)?;
+        let kind = match r.read_u8()? {
+            opcodes::FRAME_METHOD => format!("method {}", symbols.get(r.read_u32()?)?),
+            opcodes::FRAME_CLOSURE => format!("closure {}", read_closure_record(r, symbols)?),
+            opcodes::FRAME_TOP_LEVEL => "top level".to_string(),
+            opcodes::FRAME_INITIALIZER => format!("initializer of {}", read_class_tag(r)?),
+            opcodes::FRAME_SUPERCLASS_CLAUSE => {
+                format!("superclass clause of {}", read_class_tag(r)?)
+            }
+            opcodes::FRAME_SUPERCLASS_MESSAGE => {
+                format!("superclass message of {}", read_class_tag(r)?)
+            }
+            tag => {
+                return Err(decode::DecodeError::InvalidTag {
+                    what: "frame kind",
+                    tag,
+                })
+            }
+        };
+        let uncontinuable = r.read_bool()?;
+        frames.push(format!(
+            "{kind}, receiver {receiver}, args [{}], temps [{}], pc {pc} ({pc_kind}), \
+             sender {sender}, home {home}, current class {current_class}, \
+             uncontinuable {uncontinuable}",
+            args.join(", "),
+            temps.join(", ")
+        ));
+    }
+
+    let roots = read_values(r)?;
+    Ok(GraphView {
+        objects,
+        frames,
+        roots,
+    })
 }
 
 /// Decodes `bytes` far enough to describe it. Every failure is an `Err`, never
@@ -291,18 +479,26 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     // A stateless artifact ends here: it carries code and structure but no
     // object graph, so reading one past the entry field would run off the
     // end of the file.
+    let mut graph = GraphView {
+        objects: Vec::new(),
+        frames: Vec::new(),
+        roots: Vec::new(),
+    };
     if !header.stateless {
-        let counts = decode::count_graph_section(&mut r).map_err(|e| e.to_string())?;
+        graph = walk_graph(&mut r, &symbol_table).map_err(|e| e.to_string())?;
         sections.push(Section {
             name: "graph",
             start: at,
-            // `count_graph_section` reads only the section's two leading counts,
-            // not the records after them (see its own doc comment for why), so
-            // `r.pos()` here would land just past those two counts, not at the
-            // section's real end. The graph section is always last, so the
-            // file's own length stands in for the end this can't otherwise see.
-            end: bytes.len(),
-            detail: format!("{} objects, {} frames", counts.objects, counts.frames),
+            // The walk consumes the section record by record, so this is the
+            // real end rather than a stand-in. That it lands on the file.s
+            // last byte is what `graph_walk_consumes_the_whole_section` pins.
+            end: r.pos(),
+            detail: format!(
+                "{} objects, {} frames, {} roots",
+                graph.objects.len(),
+                graph.frames.len(),
+                graph.roots.len()
+            ),
         });
     }
 
@@ -317,6 +513,9 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         mixins: mixin_lines,
         mixin_detail,
         bodies,
+        graph_objects: graph.objects,
+        graph_frames: graph.frames,
+        graph_roots: graph.roots,
         entry: entry.map(|s| s.to_string()),
         total_len: bytes.len(),
     })
@@ -399,6 +598,22 @@ pub fn render_full(report: &Report) -> String {
     let _ = writeln!(out, "\nmixins ({})", report.mixin_detail.len());
     for (i, m) in report.mixin_detail.iter().enumerate() {
         let _ = writeln!(out, "  {i:>4} {m}");
+    }
+
+    // Only an image has one. A binary's whole point is that it does not, so
+    // printing an empty heading there would invite the reader to look for
+    // state that is deliberately absent.
+    if !report.graph_objects.is_empty() || !report.graph_frames.is_empty() {
+        let _ = writeln!(out, "\ngraph");
+        let _ = writeln!(out, "  objects ({})", report.graph_objects.len());
+        for (i, o) in report.graph_objects.iter().enumerate() {
+            let _ = writeln!(out, "    {i:>4} {o}");
+        }
+        let _ = writeln!(out, "  frames ({})", report.graph_frames.len());
+        for (i, f) in report.graph_frames.iter().enumerate() {
+            let _ = writeln!(out, "    {i:>4} {f}");
+        }
+        let _ = writeln!(out, "  roots  {}", report.graph_roots.join(", "));
     }
 
     let _ = writeln!(out, "\nbodies ({})", report.bodies.len());

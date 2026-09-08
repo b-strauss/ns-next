@@ -1710,7 +1710,11 @@ const MIN_FRAME_RECORD_BYTES: usize = 19;
 /// keeps the bound proportional to the real record sizes: at one byte
 /// apiece a 100 MB image could still drive ~22 GB of placeholder
 /// allocation before the first record failed to read.
-fn bounded_count(count: usize, bytes_per_record: usize, r: &Reader) -> Result<usize, DecodeError> {
+pub(crate) fn bounded_count(
+    count: usize,
+    bytes_per_record: usize,
+    r: &Reader,
+) -> Result<usize, DecodeError> {
     if count > r.remaining() / bytes_per_record {
         return Err(DecodeError::UnexpectedEof);
     }
@@ -2048,43 +2052,6 @@ pub fn decode_graph_section(
         objects,
         frames,
     })
-}
-
-/// What `count_graph_section` can report about a graph section without
-/// resolving any of it. The root list's own count is not among these fields;
-/// see that function's doc comment for why it cannot be had this cheaply.
-pub struct GraphCounts {
-    pub objects: usize,
-    pub frames: usize,
-}
-
-/// A graph section's object and frame counts, read without a
-/// `DecodeContext` -- and so without the `Interpreter` one requires.
-///
-/// `inspect` must not bootstrap an interpreter, so it cannot call
-/// `decode_graph_section` itself: every record after the two leading counts
-/// resolves a class tag (a builtin, the root class, or an object-table id)
-/// through `ctx.interp`, and building even a throwaway `DecodeContext` needs
-/// a real one to hand `apply_mixin` and `builtin_class` calls to. Writing a
-/// second walker that reads the same record shapes without resolving them
-/// would just be `decode_graph_section` copied and stripped down -- exactly
-/// the duplication that lets two readers of one format drift apart -- for a
-/// gain that stops at the object and frame counts anyway, since nothing
-/// downstream of them needs resolution to count.
-///
-/// The section's *root* count is not similarly available: unlike the object
-/// and frame counts, which are header fields ahead of every record, the
-/// root list's own count sits after every object and every frame
-/// (`encode_graph_section`), so reading it needs the records between here
-/// and there walked -- which is exactly the resolution this function exists
-/// to avoid. `GraphCounts` therefore carries no `roots` field at all; the
-/// caller (`image::inspect`) also cannot use this call's final reader
-/// position as the section's end, since it stops right after the two counts
-/// rather than at the section's real end.
-pub fn count_graph_section(r: &mut Reader) -> Result<GraphCounts, DecodeError> {
-    let objects = bounded_count(r.read_u32()? as usize, MIN_OBJECT_RECORD_BYTES, r)?;
-    let frames = bounded_count(r.read_u32()? as usize, MIN_FRAME_RECORD_BYTES, r)?;
-    Ok(GraphCounts { objects, frames })
 }
 
 /// The inverse of `encode::encode_class_record`: the mixin-table row this
