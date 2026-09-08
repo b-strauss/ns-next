@@ -74,7 +74,7 @@ impl Interpreter {
         // computes -- or can disagree about -- an instance's shape.
         let super_application = superclass
             .as_ref()
-            .and_then(crate::dispatch::class_application);
+            .and_then(|superclass| self.heap.class_application(superclass));
         let application = self.apply_mixin(&mixin, super_application.as_ref());
         // `enclosing`/`declaring_class` are both `None` -- the module's root
         // class is the outermost level, so no object encloses it and no
@@ -267,7 +267,10 @@ impl Interpreter {
         // Step 1: one instance, every slot nil. The application already
         // knows the whole layout, inherited slots included -- summing the
         // chain here again would be a second answer to the same question.
-        let slot_count = crate::dispatch::class_application(&class).map_or(0, |a| a.num_slots);
+        let slot_count = self
+            .heap
+            .class_application(&class)
+            .map_or(0, |a| a.num_slots);
         let instance = self.new_instance_object(
             class.clone(),
             ObjectData::Instance(vec![Value::Nil; slot_count]),
@@ -400,7 +403,10 @@ impl Interpreter {
             current_class: Some(class.clone()),
             kind: FrameKind::Initializer(class.clone()),
             uncontinuable: false,
-            slot_base: crate::dispatch::class_application(class).map_or(0, |a| a.own_slot_base),
+            slot_base: self
+                .heap
+                .class_application(class)
+                .map_or(0, |a| a.own_slot_base),
         }));
 
         // Steps 4-5: this class's own slot clauses (declaration order), then
@@ -433,7 +439,7 @@ impl Interpreter {
         // One lookup of the application for both questions below: the clause
         // this class was declared with, and (under the bytecode engine) the
         // mixin its compiled message body is keyed by.
-        let application = crate::dispatch::class_application(class);
+        let application = self.heap.class_application(class);
         let clause = application
             .as_ref()
             .and_then(|application| application.mixin.superclass);
@@ -548,7 +554,7 @@ impl Interpreter {
                     // own `Rc` identity. The application itself is kept
                     // (not just its mixin) because its `own_slot_base` is
                     // what makes the shared code correct for *this* level.
-                    let application = crate::dispatch::class_application(class).expect(
+                    let application = self.heap.class_application(class).expect(
                         "internal: class_has_initializer_code confirmed this is a class object",
                     );
                     let code = module
@@ -597,7 +603,7 @@ impl Interpreter {
         // tree-walker's hottest path (and in the baseline `bench` hands the
         // next milestone). Holding the `Rc` also releases the borrow on
         // `class`, so the loop below can call back into `self`.
-        let Some(application) = crate::dispatch::class_application(class) else {
+        let Some(application) = self.heap.class_application(class) else {
             return Ok(());
         };
         // Only the tree-walker reaches this function, and
@@ -658,7 +664,7 @@ impl Interpreter {
         // read-only here, so this is an `Rc` bump rather than a clone of
         // every `initExpr` node on every instantiation. Holding it also
         // releases the borrow on `class` for the loop below.
-        let Some(application) = crate::dispatch::class_application(class) else {
+        let Some(application) = self.heap.class_application(class) else {
             return Ok(());
         };
         for stmt in &application.mixin.init_exprs {

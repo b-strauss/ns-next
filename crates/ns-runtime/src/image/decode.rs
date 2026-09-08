@@ -11,7 +11,7 @@ use ns_syntax::Span;
 use crate::bytecode::{
     method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
 };
-use crate::dispatch::class_application;
+use crate::heap::Heap;
 use crate::interpreter::instantiate;
 use crate::mixin::mixin_key;
 use crate::types::{
@@ -1598,7 +1598,11 @@ fn method_decl(
     selector: Symbol,
 ) -> Result<Rc<crate::mixin::MixinMethod>, DecodeError> {
     let class = current_class.unwrap_or(ctx.root_class);
-    let found = class_application(class).and_then(|a| a.mixin.methods.get(&selector).cloned());
+    let found = ctx
+        .interp
+        .heap
+        .class_application(class)
+        .and_then(|a| a.mixin.methods.get(&selector).cloned());
     found.ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
 }
 
@@ -1742,7 +1746,9 @@ pub fn build_root_class(
     superclass: Option<ClassRef>,
 ) -> Result<ClassRef, DecodeError> {
     let root_mixin = mixins.root().cloned().ok_or(DecodeError::NotAClass)?;
-    let super_application = superclass.as_ref().and_then(class_application);
+    let super_application = superclass
+        .as_ref()
+        .and_then(|superclass| interp.heap.class_application(superclass));
     let application = interp.apply_mixin(&root_mixin, super_application.as_ref());
     Ok(interp.new_class_object(application, None, None, superclass))
 }
@@ -1852,9 +1858,12 @@ fn rebuild_applications(
         for &i in chain.iter().rev() {
             let object = &objects[pending[i].object];
             let super_application = match class_superclass(object) {
-                Some(superclass) => {
-                    Some(class_application(&superclass).ok_or(DecodeError::NotAClassReference)?)
-                }
+                Some(superclass) => Some(
+                    ctx.interp
+                        .heap
+                        .class_application(&superclass)
+                        .ok_or(DecodeError::NotAClassReference)?,
+                ),
                 None => None,
             };
             let application = ctx
@@ -1982,8 +1991,11 @@ pub fn decode_graph_section(
     // object and `placeholder_frame`, and for the same reason: nothing may
     // observe a half-built record, and a `None` here would need an
     // `Option` on `ClassData` that no live class object could ever be.
-    let placeholder_application =
-        class_application(&placeholder_class).ok_or(DecodeError::NotAClass)?;
+    let placeholder_application = ctx
+        .interp
+        .heap
+        .class_application(&placeholder_class)
+        .ok_or(DecodeError::NotAClass)?;
     let objects: Vec<ObjRef> = (0..object_count)
         .map(|_| {
             Rc::new(RefCell::new(Object {
@@ -2135,18 +2147,18 @@ fn decode_class_record(
 /// Neither can be entered -- nothing re-activates a decoded frame, and no
 /// closure may be captured by one (`verify_closure` refuses that) -- so
 /// there is nothing to reconcile.
-fn frame_body(frame: &Frame, module: &CompiledModule) -> Option<Rc<CompiledCode>> {
+fn frame_body(heap: &Heap, frame: &Frame, module: &CompiledModule) -> Option<Rc<CompiledCode>> {
     /// The mixin whose code table a class-carrying frame kind names. `None`
     /// only if the decoded value is not a class object -- `decode_class_tag`
     /// never produces one, but returning `None` keeps a future change to it
     /// from turning an untrusted image into a panic here.
-    fn frame_mixin(class: &crate::types::ClassRef) -> Option<Rc<crate::mixin::Mixin>> {
-        class_application(class).map(|a| a.mixin.clone())
+    fn frame_mixin(heap: &Heap, class: &crate::types::ClassRef) -> Option<Rc<crate::mixin::Mixin>> {
+        heap.class_application(class).map(|a| a.mixin.clone())
     }
     match &frame.kind {
         FrameKind::Method(decl) => module.methods.get(&method_key(decl)).cloned(),
         FrameKind::Initializer(class) => {
-            frame_mixin(class).and_then(|m| module.initializers.get(&mixin_key(&m)).cloned())
+            frame_mixin(heap, class).and_then(|m| module.initializers.get(&mixin_key(&m)).cloned())
         }
         // Each clause activation resolves against the table its own body
         // lives in. They share `Initializer`'s frame shape -- a class's code
@@ -2154,12 +2166,10 @@ fn frame_body(frame: &Frame, module: &CompiledModule) -> Option<Rc<CompiledCode>
         // as initializers would reconcile a frame against a body that never
         // ran in it: a legitimate image refused, and a crafted one checked
         // against the wrong register file.
-        FrameKind::SuperclassClause(class) => {
-            frame_mixin(class).and_then(|m| module.superclass_clauses.get(&mixin_key(&m)).cloned())
-        }
-        FrameKind::SuperclassMessage(class) => {
-            frame_mixin(class).and_then(|m| module.superclass_messages.get(&mixin_key(&m)).cloned())
-        }
+        FrameKind::SuperclassClause(class) => frame_mixin(heap, class)
+            .and_then(|m| module.superclass_clauses.get(&mixin_key(&m)).cloned()),
+        FrameKind::SuperclassMessage(class) => frame_mixin(heap, class)
+            .and_then(|m| module.superclass_messages.get(&mixin_key(&m)).cloned()),
         FrameKind::Closure(closure) => match &closure.body {
             ClosureBody::Compiled(code) => Some(code.clone()),
             // Unreachable from the wire: the format has no representation
@@ -2194,6 +2204,7 @@ pub fn verify_graph(
     graph: &DecodedGraph,
     table: &DecodedCodeTable,
     module: &CompiledModule,
+    heap: &Heap,
 ) -> Result<(), DecodeError> {
     // Recomputed rather than threaded through from `verify_code_table`:
     // one more linear pass over the code table at load time, in exchange
@@ -2202,7 +2213,7 @@ pub fn verify_graph(
     let index_of = code_index(table);
     for frame in &graph.frames {
         let borrowed = frame.borrow();
-        let Some(code) = frame_body(&borrowed, module) else {
+        let Some(code) = frame_body(heap, &borrowed, module) else {
             continue;
         };
         // `vm::run_code` stores the index of the instruction it is
@@ -2228,12 +2239,12 @@ pub fn verify_graph(
     }
     for object in &graph.objects {
         if let ObjectData::Closure(closure) = &object.borrow().data {
-            verify_closure(closure, table, &parents, &index_of, module)?;
+            verify_closure(closure, table, &parents, &index_of, module, heap)?;
         }
     }
     for frame in &graph.frames {
         if let FrameKind::Closure(closure) = &frame.borrow().kind {
-            verify_closure(closure, table, &parents, &index_of, module)?;
+            verify_closure(closure, table, &parents, &index_of, module, heap)?;
         }
     }
     Ok(())
@@ -2245,6 +2256,7 @@ fn verify_closure(
     parents: &[Option<usize>],
     index_of: &HashMap<usize, usize>,
     module: &CompiledModule,
+    heap: &Heap,
 ) -> Result<(), DecodeError> {
     let ClosureBody::Compiled(code) = &closure.body else {
         // As in `frame_body`: the format cannot express an AST body.
@@ -2261,7 +2273,7 @@ fn verify_closure(
     // bound the real chain need not respect. Refusing keeps the two walks
     // in step.
     let parent = parents[id].ok_or(DecodeError::CapturedFrameMismatch)?;
-    let running = frame_body(&closure.captured_frame.borrow(), module)
+    let running = frame_body(heap, &closure.captured_frame.borrow(), module)
         .ok_or(DecodeError::CapturedFrameMismatch)?;
     if !Rc::ptr_eq(&running, &table.codes[parent]) {
         return Err(DecodeError::CapturedFrameMismatch);

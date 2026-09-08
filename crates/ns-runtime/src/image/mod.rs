@@ -315,7 +315,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         decode::decode_graph_section(&mut r, &mut ctx, &symbols).map_err(|e| e.to_string())?
     };
     if !header.stateless {
-        decode::verify_graph(&graph, &table, &module).map_err(|e| e.to_string())?;
+        decode::verify_graph(&graph, &table, &module, &interp.heap).map_err(|e| e.to_string())?;
         interp.advance_identity_hash_past(graph.max_identity_hash);
     }
     // A byte sequence past the last section is refused, not ignored: with

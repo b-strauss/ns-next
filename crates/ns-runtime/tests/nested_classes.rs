@@ -665,8 +665,11 @@ fn nested_class_object(
     }
 }
 
-fn application_of(class: &ns_runtime::ClassRef) -> Rc<ns_runtime::MixinApplication> {
-    ns_runtime::dispatch::class_application(class).expect("a class object")
+fn application_of(
+    heap: &ns_runtime::Heap,
+    class: &ns_runtime::ClassRef,
+) -> Rc<ns_runtime::MixinApplication> {
+    heap.class_application(class).expect("a class object")
 }
 
 /// §6.2 on the metaclass side: two class objects that share one
@@ -698,7 +701,10 @@ fn an_inherited_class_side_shares_one_application(bytecode: bool) {
         "spec 6: one class object per enclosing instance"
     );
     assert!(
-        Rc::ptr_eq(&application_of(&a), &application_of(&b)),
+        Rc::ptr_eq(
+            &application_of(interp.heap_ref(), &a),
+            &application_of(interp.heap_ref(), &b)
+        ),
         "spec 6.2: both share one instance-side application"
     );
     let ma = interp
@@ -708,7 +714,10 @@ fn an_inherited_class_side_shares_one_application(bytecode: bool) {
         .metaclass_of(&b)
         .expect("SpecialWidget inherits Widget's class side");
     assert!(
-        Rc::ptr_eq(&application_of(&ma), &application_of(&mb)),
+        Rc::ptr_eq(
+            &application_of(interp.heap_ref(), &ma),
+            &application_of(interp.heap_ref(), &mb)
+        ),
         "spec 6.2: an inherited class side must share one metaclass application too"
     );
 }

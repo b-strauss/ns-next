@@ -1702,8 +1702,11 @@ fn a_well_formed_class_record_decodes_into_a_live_class_object() {
     let graph = fixture
         .decode(&one_class_object(0, no_class_refs))
         .expect("a class record naming row 0 of the mixin table");
-    let application =
-        ns_runtime::dispatch::class_application(&graph.objects[0]).expect("a class object");
+    let application = fixture
+        .interp
+        .heap_ref()
+        .class_application(&graph.objects[0])
+        .expect("a class object");
     assert!(
         Rc::ptr_eq(&application.mixin, &fixture.mixins[0]),
         "the record's mixin id names the decoded declaration tree, row by row"
@@ -1721,11 +1724,18 @@ fn two_class_records_with_the_same_mixin_and_superclass_share_one_application() 
     class_record(&mut w, 0, no_class_refs);
     w.write_u32(0); // no roots
     let bytes = w.into_bytes();
-    let graph = GraphFixture::new()
-        .decode(&bytes)
-        .expect("two class records");
-    let a = ns_runtime::dispatch::class_application(&graph.objects[0]).expect("a class object");
-    let b = ns_runtime::dispatch::class_application(&graph.objects[1]).expect("a class object");
+    let mut fixture = GraphFixture::new();
+    let graph = fixture.decode(&bytes).expect("two class records");
+    let a = fixture
+        .interp
+        .heap_ref()
+        .class_application(&graph.objects[0])
+        .expect("a class object");
+    let b = fixture
+        .interp
+        .heap_ref()
+        .class_application(&graph.objects[1])
+        .expect("a class object");
     assert!(!Rc::ptr_eq(&graph.objects[0], &graph.objects[1]));
     assert!(Rc::ptr_eq(&a, &b), "one rebuilt application, shared");
 }
@@ -2971,7 +2981,8 @@ fn a_closure_captured_by_its_lexical_parents_activation_verifies() {
     let graph = fixture
         .decode(&closure_over_frame(foo_frame(2)))
         .expect("decode");
-    decode::verify_graph(&graph, &table, &module).expect("the captured frame runs `foo`");
+    decode::verify_graph(&graph, &table, &module, fixture.interp.heap_ref())
+        .expect("the captured frame runs `foo`");
 }
 
 #[test]
@@ -2984,7 +2995,8 @@ fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
     let graph = fixture
         .decode(&closure_over_frame(foo_frame(1)))
         .expect("decode");
-    let err = decode::verify_graph(&graph, &table, &module).expect_err("undersized frame");
+    let err = decode::verify_graph(&graph, &table, &module, fixture.interp.heap_ref())
+        .expect_err("undersized frame");
     assert_eq!(
         err,
         decode::DecodeError::FrameRegisterFile {
@@ -3021,7 +3033,7 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
         }))
         .expect("decode");
     assert_eq!(
-        decode::verify_graph(&graph, &table, &module),
+        decode::verify_graph(&graph, &table, &module, fixture.interp.heap_ref()),
         Err(decode::DecodeError::CapturedFrameMismatch)
     );
 }
@@ -3432,8 +3444,11 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
     // code `build_module` actually restored, not code compiled fresh
     // just now.
     let object_class = loaded.interp.builtin_class(BuiltinClass::Object);
-    let object_application =
-        ns_runtime::dispatch::class_application(&object_class).expect("Object is a class object");
+    let object_application = loaded
+        .interp
+        .heap_ref()
+        .class_application(&object_class)
+        .expect("Object is a class object");
     let inner_class = apply_and_wrap(
         &mut loaded.interp,
         object_class,
@@ -3569,12 +3584,12 @@ fn snapshot_world(
 
 /// The `MixinApplication` behind a class object -- the behaviour half two
 /// class objects built from one mixin and one superclass must *share*.
-fn application_of(class: &ClassRef) -> Rc<MixinApplication> {
-    ns_runtime::dispatch::class_application(class).expect("a class object")
+fn application_of(heap: &ns_runtime::Heap, class: &ClassRef) -> Rc<MixinApplication> {
+    heap.class_application(class).expect("a class object")
 }
 
-fn class_name(class: &ClassRef) -> String {
-    application_of(class).mixin.name.as_str().to_string()
+fn class_name(heap: &ns_runtime::Heap, class: &ClassRef) -> String {
+    application_of(heap, class).mixin.name.as_str().to_string()
 }
 
 fn class_of(value: &Value) -> ClassRef {
@@ -3589,14 +3604,14 @@ fn class_of(value: &Value) -> ClassRef {
 /// *declaration* off the class chain, and the declaration is what indexes
 /// the slot map -- a subclass's `class N` and the inherited one it shadows
 /// have different slots.
-fn cached_nested_class(enclosing: &Value, name: &str) -> Value {
+fn cached_nested_class(heap: &ns_runtime::Heap, enclosing: &Value, name: &str) -> Value {
     let class = class_of(enclosing);
     let ns_runtime::dispatch::Lookup::NestedClass(nested, _) =
-        ns_runtime::dispatch::lookup_defined_for(&class, Symbol::intern(name))
+        ns_runtime::dispatch::lookup_defined_for(heap, &class, Symbol::intern(name))
     else {
         panic!("{name} is a nested declaration of this object's class");
     };
-    let application = application_of(&class);
+    let application = application_of(heap, &class);
     let index = application.nested_slot[&ns_runtime::mixin::mixin_key(&nested)];
     match &obj(enclosing).borrow().data {
         ObjectData::Instance(fields) => fields[index].clone(),
@@ -3664,7 +3679,10 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
         .cloned()
         .expect("the snapshotted Outer");
     let reloaded_inner = nested_class_of(&mut loaded, reloaded_outer, "Inner");
-    assert_eq!(class_name(&reloaded_inner), "Inner");
+    assert_eq!(
+        class_name(loaded.interp.heap_ref(), &reloaded_inner),
+        "Inner"
+    );
     let instance = expect_ok(
         loaded
             .interp
@@ -3690,7 +3708,10 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
         .first()
         .cloned()
         .expect("the snapshotted Inner instance");
-    assert_eq!(class_name(&class_of(&reloaded_instance)), "Inner");
+    assert_eq!(
+        class_name(loaded.interp.heap_ref(), &class_of(&reloaded_instance)),
+        "Inner"
+    );
     match send_to(&mut loaded, reloaded_instance, "value") {
         Value::SmallInt(9) => {}
         _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
@@ -3728,7 +3749,10 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
         .expect("the snapshotted Outer");
     let root_class = loaded.root_class.clone();
     let inner = nested_class_of(&mut loaded, reloaded_outer, "Inner");
-    assert_ne!(class_name(&inner), class_name(&root_class));
+    assert_ne!(
+        class_name(loaded.interp.heap_ref(), &inner),
+        class_name(loaded.interp.heap_ref(), &root_class)
+    );
     assert!(
         !Rc::ptr_eq(&inner, &root_class),
         "the nested class must not decode as the module's root class"
@@ -3769,7 +3793,10 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
         "one class object per enclosing instance, before the snapshot"
     );
     assert!(
-        Rc::ptr_eq(&application_of(&before_a), &application_of(&before_b)),
+        Rc::ptr_eq(
+            &application_of(interp.heap_ref(), &before_a),
+            &application_of(interp.heap_ref(), &before_b)
+        ),
         "one shared application, before the snapshot"
     );
 
@@ -3789,16 +3816,33 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
     // Pinned rather than assumed: a load that dropped the cached slots
     // would still satisfy every assertion below.
     assert!(
-        Rc::ptr_eq(&a, obj(&cached_nested_class(&outers[0], "Inner"))),
+        Rc::ptr_eq(
+            &a,
+            obj(&cached_nested_class(
+                loaded.interp.heap_ref(),
+                &outers[0],
+                "Inner"
+            ))
+        ),
         "the accessor answered out of the decoded cache slot"
     );
     assert!(
-        Rc::ptr_eq(&b, obj(&cached_nested_class(&outers[1], "Inner"))),
+        Rc::ptr_eq(
+            &b,
+            obj(&cached_nested_class(
+                loaded.interp.heap_ref(),
+                &outers[1],
+                "Inner"
+            ))
+        ),
         "the accessor answered out of the decoded cache slot"
     );
     assert!(!Rc::ptr_eq(&a, &b), "distinct class objects");
     assert!(
-        Rc::ptr_eq(&application_of(&a), &application_of(&b)),
+        Rc::ptr_eq(
+            &application_of(loaded.interp.heap_ref(), &a),
+            &application_of(loaded.interp.heap_ref(), &b)
+        ),
         "one shared application"
     );
 }
@@ -3854,7 +3898,7 @@ fn outer_still_resolves_through_a_declaration_chain_that_came_from_an_image() {
     // exactly because `Derived` inherits the declaration across a nesting
     // boundary, which is the case a dynamic-chain walk gets wrong.
     assert_eq!(
-        class_name(&class_of(&reloaded_deep)),
+        class_name(loaded.interp.heap_ref(), &class_of(&reloaded_deep)),
         "Deep",
         "the reloaded instance keeps its own nested class"
     );
@@ -4997,7 +5041,8 @@ fn a_frame_pc_past_its_bodys_last_instruction_is_refused() {
     let graph = fixture
         .decode(&closure_over_frame(foo_frame_at_pc(2, 99)))
         .expect("decode");
-    let err = decode::verify_graph(&graph, &table, &module).expect_err("out-of-range pc");
+    let err = decode::verify_graph(&graph, &table, &module, fixture.interp.heap_ref())
+        .expect_err("out-of-range pc");
     assert_eq!(err, decode::DecodeError::PcOutOfRange { pc: 99, instrs: 2 });
 }
 

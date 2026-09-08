@@ -137,7 +137,7 @@ pub(crate) fn nested_class(
     let Value::Obj(superclass) = superclass else {
         return Err(not_a_class_error(nested.name, superclass));
     };
-    let Some(super_application) = crate::dispatch::class_application(&superclass) else {
+    let Some(super_application) = interp.heap.class_application(&superclass) else {
         return Err(not_a_class_error(nested.name, Value::Obj(superclass)));
     };
     // Step 3: the application cache decides whether this behaviour already
@@ -183,7 +183,9 @@ pub(crate) fn nested_class(
 /// inherited `class N` it shadows cache into different slots.
 fn cache_slot(interp: &Interpreter, receiver: &Value, nested: &Rc<Mixin>) -> Option<usize> {
     let class = interp.class_of(receiver);
-    let index = crate::dispatch::class_application(&class)?
+    let index = interp
+        .heap
+        .class_application(&class)?
         .nested_slot
         .get(&mixin_key(nested))
         .copied()?;

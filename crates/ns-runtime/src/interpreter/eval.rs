@@ -349,8 +349,8 @@ fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
 ///
 /// One definition because `dispatch_lexical_send` asks it of two classes --
 /// a class object's metaclass and then the receiver's own class.
-fn lexical_lookup(class: &ClassRef, selector: Symbol) -> Lookup {
-    match dispatch::lookup_defined_for(class, selector) {
+fn lexical_lookup(heap: &crate::heap::Heap, class: &ClassRef, selector: Symbol) -> Lookup {
+    match dispatch::lookup_defined_for(heap, class, selector) {
         Lookup::Method(method, defining_class) if method.access == ast::AccessModifier::Private => {
             Lookup::Method(method, defining_class)
         }
@@ -359,7 +359,7 @@ fn lexical_lookup(class: &ClassRef, selector: Symbol) -> Lookup {
         {
             Lookup::NestedClass(mixin, declaring_class)
         }
-        _ => dispatch::lookup_protected(class, selector),
+        _ => dispatch::lookup_protected(heap, class, selector),
     }
 }
 
@@ -383,7 +383,8 @@ pub(crate) fn dispatch_lexical_send(
         let borrowed = frame.borrow();
         (borrowed.receiver.clone(), borrowed.current_class.clone())
     };
-    let o = dispatch::kth_enclosing_object(&self_value, defining_class.as_ref(), depth);
+    let o =
+        dispatch::kth_enclosing_object(&interp.heap, &self_value, defining_class.as_ref(), depth);
     let class = interp.class_of(&o);
     // Slot access fix (Task 7 "must fix before committing" #2): a
     // `LexicalSend` to a user-defined class's own slot must resolve here,
@@ -394,7 +395,7 @@ pub(crate) fn dispatch_lexical_send(
     // access-controlled by the slot's own declared modifier (see the task's
     // design note) -- revisit if a fixture needs it.
     if let Some((name, is_setter)) = slot_selector_shape(selector) {
-        if let Some(index) = dispatch::lookup_slot(&class, name) {
+        if let Some(index) = dispatch::lookup_slot(&interp.heap, &class, name) {
             if let Value::Obj(obj) = &o {
                 if is_setter {
                     let value = args.first().cloned().unwrap_or(Value::Nil);
@@ -434,9 +435,9 @@ pub(crate) fn dispatch_lexical_send(
     // below and means the same thing either way.
     let lookup = metaclass
         .as_ref()
-        .map(|metaclass| lexical_lookup(metaclass, selector))
+        .map(|metaclass| lexical_lookup(&interp.heap, metaclass, selector))
         .filter(|found| matches!(found, Lookup::Method(..) | Lookup::NestedClass(..)))
-        .unwrap_or_else(|| lexical_lookup(&class, selector));
+        .unwrap_or_else(|| lexical_lookup(&interp.heap, &class, selector));
     match lookup {
         Lookup::Method(method, defining_class) => interp.invoke_method(
             o,
@@ -502,7 +503,7 @@ pub(crate) fn dispatch_super_send(
         }));
     };
     let self_value = frame.borrow().receiver.clone();
-    match dispatch::lookup_defined_for(&superclass, selector) {
+    match dispatch::lookup_defined_for(&interp.heap, &superclass, selector) {
         Lookup::Method(method, defining_class) => interp.invoke_method(
             self_value,
             method,

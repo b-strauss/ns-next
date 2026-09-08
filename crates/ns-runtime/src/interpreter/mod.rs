@@ -263,7 +263,7 @@ impl Interpreter {
             let is_class = matches!(obj.borrow().data, ObjectData::Class(_));
             if is_class {
                 if let Some(metaclass) = self.metaclass_of(obj) {
-                    match dispatch::lookup_public(&metaclass, selector) {
+                    match dispatch::lookup_public(&self.heap, &metaclass, selector) {
                         Lookup::Method(method, defining_class) => {
                             return self.invoke_method(
                                 receiver,
@@ -294,7 +294,7 @@ impl Interpreter {
             }
         }
         let class = self.class_of(&receiver);
-        match dispatch::lookup_public(&class, selector) {
+        match dispatch::lookup_public(&self.heap, &class, selector) {
             Lookup::Method(method, defining_class) => self.invoke_method(
                 receiver,
                 method,
@@ -412,7 +412,7 @@ impl Interpreter {
         // `{selector. args}` rather than a real MessageMirror object
         // (mirrors are a later milestone's Non-Goal). Callers relying on a
         // real `MessageMirror` API are out of scope.
-        match dispatch::lookup_defined_for(&class, dnu_selector) {
+        match dispatch::lookup_defined_for(&self.heap, &class, dnu_selector) {
             Lookup::Method(method, defining_class) => {
                 let selector_value = self.new_symbol(selector);
                 let args_value = Value::Obj(self.new_array(args));
@@ -745,7 +745,7 @@ impl Interpreter {
             };
             let super_application = super_metaclass
                 .as_ref()
-                .and_then(dispatch::class_application);
+                .and_then(|metaclass| self.heap.class_application(metaclass));
             let application = self.apply_mixin(&class_side_mixin, super_application.as_ref());
             // §6.3.1: a class side is written inside the same class
             // declaration its instance side is, and `resolver::resolve_class`

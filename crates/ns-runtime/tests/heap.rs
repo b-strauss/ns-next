@@ -108,3 +108,20 @@ fn describe_arg_some_matches_describe_of_the_same_value() {
         interp.heap_ref().describe(&v)
     );
 }
+
+#[test]
+fn class_accessors_answer_none_for_an_instance() {
+    let mut interp = Interpreter::bootstrap();
+    let s = interp.new_string("x".to_string());
+    assert!(interp.heap_ref().class_application(&s).is_none());
+    assert!(interp.heap_ref().class_superclass(&s).is_none());
+    assert!(interp.heap_ref().class_builtin(&s).is_none());
+}
+
+#[test]
+fn a_builtin_class_reports_its_kind_through_the_seam() {
+    let mut interp = Interpreter::bootstrap();
+    let s = interp.new_string("x".to_string());
+    let class = interp.class_of(&Value::Obj(s));
+    assert!(interp.heap_ref().class_builtin(&class).is_some());
+}

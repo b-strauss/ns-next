@@ -181,6 +181,63 @@ impl Heap {
             None => "no argument".to_string(),
         }
     }
+
+    // ---------- Class accessors ----------
+    //
+    // Each answers `None` for a handle whose data is not a class, rather
+    // than panicking: a class reference decoded from an image is untrusted
+    // until verified, and the verifier is a caller of these.
+
+    pub fn class_application(
+        &self,
+        class: &ClassRef,
+    ) -> Option<std::rc::Rc<crate::mixin::MixinApplication>> {
+        match &class.borrow().data {
+            ObjectData::Class(data) => Some(data.application.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn class_enclosing(&self, class: &ClassRef) -> Option<ObjRef> {
+        match &class.borrow().data {
+            ObjectData::Class(data) => data.enclosing.clone(),
+            _ => None,
+        }
+    }
+
+    pub fn class_declaring(&self, class: &ClassRef) -> Option<ClassRef> {
+        match &class.borrow().data {
+            ObjectData::Class(data) => data.declaring_class.clone(),
+            _ => None,
+        }
+    }
+
+    pub fn class_superclass(&self, class: &ClassRef) -> Option<ClassRef> {
+        match &class.borrow().data {
+            ObjectData::Class(data) => data.superclass.clone(),
+            _ => None,
+        }
+    }
+
+    pub fn class_builtin(&self, class: &ClassRef) -> Option<BuiltinClass> {
+        match &class.borrow().data {
+            ObjectData::Class(data) => data.builtin,
+            _ => None,
+        }
+    }
+
+    pub fn class_metaclass(&self, class: &ClassRef) -> Option<ClassRef> {
+        match &class.borrow().data {
+            ObjectData::Class(data) => data.metaclass.clone(),
+            _ => None,
+        }
+    }
+
+    pub fn set_class_metaclass(&mut self, class: &ClassRef, metaclass: ClassRef) {
+        if let ObjectData::Class(data) = &mut class.borrow_mut().data {
+            data.metaclass = Some(metaclass);
+        }
+    }
 }
 
 #[cfg(test)]
