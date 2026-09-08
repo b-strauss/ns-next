@@ -237,6 +237,13 @@ fn a_build_and_a_snapshot_agree_on_the_describing_sections() {
 
 #[test]
 fn load_send_overrides_the_recorded_entry() {
+    // The recorded entry (`return42`) and the `--send` override
+    // (`signalError`) must be *different* selectors with observably
+    // different outcomes: `return42` exits cleanly, `signalError` sends
+    // `Error signal:` and fails. Using the same selector on both sides (as
+    // an earlier version of this test did) would pass whether or not
+    // `--send` actually takes precedence -- exactly the failure class an
+    // earlier review caught in another file.
     let dir = temp_dir("override");
     let out = dir.join("app.nsb");
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/modules/TestActor.ns");
@@ -249,11 +256,21 @@ fn load_send_overrides_the_recorded_entry() {
     ]);
     assert!(ok, "{err}");
 
+    // If `--send` did not override the recorded entry, this would silently
+    // run `return42` instead and exit successfully with no error message --
+    // so both the failing exit and the message are asserted, not just one.
     let (ok, _, err) = ns_next(&[
         "load".as_ref(),
         out.as_os_str(),
         "--send".as_ref(),
-        "return42".as_ref(),
+        "signalError".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(
+        !ok,
+        "expected `--send signalError` to override the recorded `return42` entry"
+    );
+    assert!(
+        err.contains("Uncaught Newspeak error"),
+        "expected signalError's error to surface, got: {err}"
+    );
 }
