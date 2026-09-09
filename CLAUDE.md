@@ -61,11 +61,14 @@ allocates one placeholder object and activation per declared record before it ca
 validate any of them, and the arena never reclaims a slot, so a rejected image
 holds its placeholders until the load finishes. That is a transient peak, not a
 leak — `image::load` owns its `Interpreter` in a local, so every `Err` path drops
-it and both arenas with it — but the peak is amplified against the file: an
-`Object` is 64 bytes against a 6-byte minimum record and a `Frame` is 128 against
-19, so roughly 10.7x and 6.7x. `bounded_count` is what keeps that proportional to
-the file's size rather than to a `u32` — do not add a pre-allocation that is not
-bounded that way.
+it and both arenas with it — but the peak is amplified against the bytes remaining
+at the graph section, and both `bounded_count` calls divide the *same* remainder,
+so one file maxes out both arenas rather than trading one against the other:
+about **17.4x in a release build** (an `Object` is 64 bytes against a 6-byte
+minimum record, a `Frame` 128 against 19) and about 21.8x in a debug build, where
+both structs are larger. `bounded_count` is what keeps this proportional to the
+input at all rather than to a `u32` — do not add a pre-allocation that is not
+bounded that way. `docs/design/memory.md` has the breakdown.
 
 That guarantee covers **decoding**. `ns-next load` on a stateless binary instantiates
 and sends the recorded entry with no flag at all, so loading one *runs its code* --

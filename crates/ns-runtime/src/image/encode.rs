@@ -603,9 +603,9 @@ fn is_class_tag(heap: &Heap, obj: &ObjRef, root_class: &ClassRef) -> bool {
 /// each is named by a tag of its own.
 pub struct GraphTable {
     objects: Vec<ObjRef>,
-    object_ids: HashMap<u64, u32>,
+    object_ids: HashMap<usize, u32>,
     frames: Vec<FrameRef>,
-    frame_ids: HashMap<u64, u32>,
+    frame_ids: HashMap<usize, u32>,
 }
 
 impl GraphTable {

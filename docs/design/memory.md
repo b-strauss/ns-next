@@ -319,12 +319,25 @@ allocated frames.
 
   It is not retained past that. `image::load` owns its `Interpreter` in a local,
   so every `Err` path drops it and both arenas with it — the cost is a transient
-  peak during loading, not a leak for the process's life. What is worth recording
-  is the *amplification*: an `Object` is 64 bytes in a release build against a
-  6-byte `MIN_OBJECT_RECORD_BYTES`, and a `Frame` is 128 against 19, so a crafted
-  file turns into roughly 10.7x and 6.7x its own size in placeholders before the
-  first record is checked. `bounded_count` is what keeps that proportional to the
-  file at all rather than to a 32-bit count.
+  peak during loading, not a leak for the process's life.
+
+  What is worth recording is the *amplification*, and it compounds in a way the
+  obvious reading misses. `decode_graph_section` bounds each count with
+  `bounded_count`, but both calls divide the **same** `r.remaining()` — only the
+  two count words separate them — so one file can max out both at once rather
+  than trading one against the other. Against the bytes remaining at the graph
+  section, not against the whole file:
+
+  | | `Object` | `Frame` | Combined |
+  |---|---|---|---|
+  | Record minimum | 6 B | 19 B | — |
+  | Release size | 64 B → 10.7x | 128 B → 6.7x | **~17.4x** |
+  | Debug size | 88 B → 14.7x | 136 B → 7.2x | ~21.8x |
+
+  `bounded_count` is what keeps this proportional to the input at all rather
+  than to a 32-bit count — without it a crafted `u32::MAX` would allocate
+  billions of placeholders. The residual factor is the price of allocating
+  before validating, which the format's back-references require.
 
   This is also *better* than the model it replaced, which is the part that makes
   it an accepted cost rather than a regression. Under `Rc<RefCell<_>>` each

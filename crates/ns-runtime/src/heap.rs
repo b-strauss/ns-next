@@ -80,19 +80,19 @@ impl ObjRef {
     /// even though the field itself is private. They all treat the result as
     /// an opaque key, which is what keeps that a check rather than a rewrite.
     ///
-    /// A debug build folds the origin heap into the key. `same` can assert
-    /// that two handles agree because it is handed both; this is handed one
-    /// and no `Heap`, so there is nothing here to compare and an assertion
-    /// is not expressible. Making the key *carry* the origin is the stronger
-    /// answer anyway: two handles from different heaps then cannot collide
-    /// in a caller's map, rather than colliding and being reported. The key
-    /// is documented opaque and never crosses a process boundary, so
-    /// differing between debug and release costs nothing.
-    pub(crate) fn identity_key(&self) -> u64 {
-        #[cfg(debug_assertions)]
-        return ((self.origin as u64) << 32) | self.index as u64;
-        #[cfg(not(debug_assertions))]
-        return self.index as u64;
+    /// **Unguarded, unlike `same` and every accessor.** Two handles from
+    /// different heaps produce the same key here and collide in a caller's
+    /// map. It is not guarded because this method is handed one handle and
+    /// no `Heap`, so there is nothing to check against -- and folding the
+    /// `origin` field into the key instead would be worse than leaving it:
+    /// that field exists only in a debug build, so the collision would
+    /// become impossible in the build that would have reported it and stay
+    /// exactly as possible in the build that ships. The fix is to move these
+    /// onto `Heap`, where the existing origin check applies; see
+    /// `docs/PROGRESS.md`'s Notes for why that is a follow-up rather than
+    /// done here.
+    pub(crate) fn identity_key(&self) -> usize {
+        self.index as usize
     }
 }
 
@@ -136,14 +136,20 @@ pub struct FrameRef {
 impl FrameRef {
     /// Activation identity. Replaces `Rc::ptr_eq` at every call site, so
     /// that identity has one spelling that survives the store changing
-    /// under it -- `invoke_method`'s `Signal::Return` catch and
-    /// `raise_return`'s target check both depend on this rather than on
-    /// the representation directly.
+    /// under it.
     ///
-    /// Guarded like an accessor: see `ObjRef::same`. Both call sites named
-    /// above decide where a non-local return lands, so a false *yes* here
-    /// would return to the wrong activation rather than merely answer
-    /// wrongly.
+    /// Its two call sites both ask the same question -- "is this returning
+    /// signal aimed at *my* activation?" -- and both answer it by catching
+    /// `Signal::Return(target, _)` when `target.same(&frame)`:
+    /// `Interpreter::invoke_method` (`interpreter/mod.rs`) for a method or
+    /// initializer body, and `interpreter::nested`'s superclass-clause
+    /// activation (`nested.rs`). `raise_return` picks the target rather than
+    /// comparing one, through `frame_home` and `frame_is_uncontinuable`, so
+    /// it is not a caller.
+    ///
+    /// Guarded like an accessor: see `ObjRef::same`. A false *yes* at either
+    /// site swallows a non-local return meant for an outer activation, which
+    /// is a wrong answer that looks like ordinary control flow.
     pub fn same(&self, other: &FrameRef) -> bool {
         #[cfg(debug_assertions)]
         debug_assert_eq!(
@@ -159,13 +165,9 @@ impl FrameRef {
     /// `image::encode::GraphTable`'s frame-id map. Crate-internal: its
     /// only current caller lives inside `ns-runtime`.
     ///
-    /// A debug build folds the origin heap into the key, for the reason
-    /// `ObjRef::identity_key` gives.
-    pub(crate) fn identity_key(&self) -> u64 {
-        #[cfg(debug_assertions)]
-        return ((self.origin as u64) << 32) | self.index as u64;
-        #[cfg(not(debug_assertions))]
-        return self.index as u64;
+    /// Unguarded, for the reason `ObjRef::identity_key` gives.
+    pub(crate) fn identity_key(&self) -> usize {
+        self.index as usize
     }
 }
 
@@ -1089,25 +1091,30 @@ mod tests {
         let _ = mine.same(&theirs);
     }
 
-    /// Two handles from different heaps must not collide as map keys
-    /// either. `identity_key` is handed one handle and no `Heap`, so it has
-    /// nothing to assert against -- it folds the origin in instead, which
-    /// makes the collision impossible rather than merely detected.
+    /// Why `identity_key` exists at all, rather than callers keying on
+    /// `identity_hash`. Both allocators that fix the hash at 0 --
+    /// `alloc_placeholder_object` and `alloc_self_referential_class` -- can
+    /// produce several objects in one heap sharing that hash, and a map
+    /// keyed on it would fold them into one entry. `image::decode` builds a
+    /// whole graph out of exactly those placeholders, so this is the case
+    /// that would break, not a hypothetical one.
+    ///
+    /// The cross-heap case is deliberately *not* pinned here: two handles
+    /// from different heaps do collide, `identity_key` does not guard
+    /// against it, and `docs/PROGRESS.md`'s Notes record the follow-up that
+    /// fixes it properly.
     #[test]
-    #[cfg(debug_assertions)]
-    fn identity_keys_from_different_heaps_do_not_collide() {
-        let mut origin = Heap::new();
-        let class = origin.alloc_self_referential_class(ObjectData::Instance(vec![]));
-        let mine = origin.alloc_object(class, ObjectData::Str("mine".to_string()));
+    fn identity_keys_separate_objects_that_share_an_identity_hash() {
+        let mut heap = Heap::new();
+        let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let a = heap.alloc_placeholder_object(class, ObjectData::Instance(Vec::new()));
+        let b = heap.alloc_placeholder_object(class, ObjectData::Instance(Vec::new()));
 
-        let mut other = Heap::new();
-        let other_class = other.alloc_self_referential_class(ObjectData::Instance(vec![]));
-        let theirs = other.alloc_object(other_class, ObjectData::Str("theirs".to_string()));
-
-        assert_ne!(mine.identity_key(), theirs.identity_key());
-        // Still stable and equal for the same handle, which is the property
-        // every caller actually relies on.
-        assert_eq!(mine.identity_key(), mine.identity_key());
+        assert_eq!(heap.identity_hash(&a), 0);
+        assert_eq!(heap.identity_hash(&a), heap.identity_hash(&b));
+        assert_ne!(a.identity_key(), b.identity_key());
+        // Stable for one handle, which is what every caller relies on.
+        assert_eq!(a.identity_key(), a.identity_key());
     }
 
     #[test]

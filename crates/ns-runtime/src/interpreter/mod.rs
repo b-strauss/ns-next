@@ -105,7 +105,7 @@ pub struct Interpreter {
     /// nests only as deep as a program actually chains class creations, so
     /// a linear scan beats hashing and allocates nothing in the common
     /// case.
-    nested_in_progress: Vec<(u64, usize)>,
+    nested_in_progress: Vec<(usize, usize)>,
     /// Set by `image::load`: this world's declarations came off the wire,
     /// so they are mixins without `decl`s. See
     /// `EngineUnavailable::TreeWalkAfterLoad`.

@@ -311,6 +311,37 @@ step 3", `interpreter/nested.rs`'s numbered accessor steps), and a few comments
 say something real *through* the task reference, so the fix is to state what the
 comment means rather than to delete the sentence.
 
+*`identity_key` is the one handle operation with no origin check, and the
+obvious fix is the wrong one.* Every accessor on `Heap` verifies that a handle
+came from this heap, and `ObjRef::same`/`FrameRef::same` gained the same
+`debug_assert_eq!` on the arena branch. `ObjRef::identity_key` and
+`FrameRef::identity_key` did not: they are handed one handle and no `Heap`, so
+there is nothing in scope to check against. Two handles from different heaps
+therefore produce the same key and collide in a caller's map.
+
+**Do not fix this by folding the `origin` field into the key.** That was tried
+and reverted, and the reason it is wrong is worth keeping: `origin` exists only
+in a debug build, so folding it in makes the collision impossible in exactly the
+build that would have *reported* it, and leaves it exactly as possible in the
+build that ships. It inverts the regime every other guard here follows — a
+silent release wrong answer becomes a loud debug panic — by concealing the
+symptom in debug instead.
+
+The right fix is to move the operation onto `Heap`, where the existing check
+applies: `Heap::object_identity_key(&self, obj)` and
+`Heap::frame_identity_key(&self, frame)`, each calling
+`check_object_origin`/`check_frame_origin` first. That gives detection rather
+than concealment, keeps debug and release identical, and is enforced by the
+compiler in the most literal way available — no `Heap`, no key. All seven call
+sites already have one in reach: `EncodeContext` carries `heap: &'a Heap`,
+`visit_frame` takes a `&Heap` parameter, `rebuild_applications` reaches
+`ctx.interp.heap`, and `nested.rs`'s `in_progress_key` caller already holds
+`interp`. The work is `heap.rs` plus those seven sites plus threading a `&Heap`
+through `GraphTable::object_id`, `GraphTable::frame_id` and `encode_frame_ref`,
+which currently take only a `&GraphTable`. It is separated from the arena commit
+because it changes three signatures for a failure nothing in production can
+reach today.
+
 *`.iter().cloned()` over a `Copy` element.* `Value`, `ObjRef` and `FrameRef` are
 all `Copy` now, so an iterator chain ending in `.cloned()` reads as a deep copy
 of what is really a register move; `.copied()` says what happens.
