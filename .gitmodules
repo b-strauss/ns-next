@@ -10,3 +10,9 @@
 [submodule "prior-art/somns"]
 	path = prior-art/somns
 	url = https://github.com/smarr/SOMns.git
+[submodule "prior-art/nova"]
+	path = prior-art/nova
+	url = https://github.com/trynova/nova.git
+[submodule "prior-art/opensmalltalk-vm"]
+	path = prior-art/opensmalltalk-vm
+	url = https://github.com/OpenSmalltalk/opensmalltalk-vm.git

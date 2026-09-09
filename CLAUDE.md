@@ -176,16 +176,22 @@ Add no new external dependency without a reason that survives review — the ima
 is hand-rolled on purpose.
 
 **Ground a design decision in prior art before proposing options.** `prior-art/` holds
-four reference implementations as submodules: the canonical Newspeak on Squeak, its
-cross-language benchmark suite, Ryan Macnak's Primordial Soup (a Newspeak VM in C++,
-with its own bytecode set, image format and collector) and Stefan Marr's SOMns (a
-Newspeak on Truffle/Graal). When a question is "how should this work", read how a
-working system answered it and cite that, rather than reasoning from first principles
-alone — the design documents already argue this way against Nova, Cog and V8. Nothing
-there is built, tested or linked, and no gate depends on it; a plain clone does not
-even fetch it (`git submodule update --init`). Copying code out of any of them is a
-licensing decision, not a technical one — see `prior-art/PROVENANCE.md`, which also
-explains why `newspeaklanguage/newspeak` appears both there and under `corpus/`.
+six reference implementations as submodules. Four answer "what does Newspeak do here":
+the canonical Newspeak on Squeak, its cross-language benchmark suite, Ryan Macnak's
+Primordial Soup (a Newspeak VM in C++, with its own bytecode set, image format and
+collector) and Stefan Marr's SOMns (a Newspeak on Truffle/Graal). Two are there because
+the design documents name them as models for work that is still ahead: `nova/` for the
+arena of typed handles and the `GcScope`/`NoGcScope` root discipline (`memory.md`), and
+`opensmalltalk-vm/` for Cog's activations-on-a-stack, reified on demand (`execution.md`).
+
+When a question is "how should this work", read how a working system answered it and
+cite that, rather than reasoning from first principles alone. Nothing there is built,
+tested or linked, and no gate depends on it; a plain clone does not even fetch it
+(`git submodule update --init <name>` — by name, since `opensmalltalk-vm` alone is
+~255 MB). Copying code out of any of them is a licensing decision, not a technical one,
+and `nova` is MPL-2.0, the most restrictive of the six. See `prior-art/PROVENANCE.md`,
+which also explains why `newspeaklanguage/newspeak` appears both there and under
+`corpus/`, and why neither copy may be deleted.
 
 ## Conventions
 
