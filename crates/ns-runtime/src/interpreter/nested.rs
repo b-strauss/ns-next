@@ -127,7 +127,7 @@ pub(crate) fn nested_class(
     // Step 2: the superclass clause, evaluated in the receiver's context
     // through the engine hook -- guarded against a class whose own creation
     // is already underway on this receiver.
-    let key = in_progress_key(&obj, nested);
+    let key = in_progress_key(&interp.heap, &obj, nested);
     if interp.nested_in_progress.contains(&key) {
         return Err(cyclic_definition_error(receiver, nested.name));
     }
@@ -209,8 +209,8 @@ fn cache_slot(
 
 /// The key `Interpreter::nested_in_progress` records while a declaration's
 /// class object is being created for `obj`: its arena index plus the
-/// declaration's identity. The index is a safe key for as long as this
-/// `Heap` exists, not merely for the duration of this stack entry: the
+/// declaration's identity. The index is a safe key for as long as `heap`
+/// exists, not merely for the duration of this stack entry: the
 /// arena never reuses a slot (there is no collector yet), so no other
 /// object -- live or not -- can ever carry the same index. Taking `&ObjRef`
 /// rather than `&Value` is what makes that the whole of this function's
@@ -222,8 +222,8 @@ fn cache_slot(
 /// The declaration, not its name, for the same reason `cache_slot` uses it:
 /// `class N = super N (...)` is a subclass redeclaring what it inherits,
 /// not a cycle, and a name key would report the legal shape as one.
-fn in_progress_key(obj: &ObjRef, nested: &Rc<Mixin>) -> (usize, usize) {
-    (obj.identity_key(), mixin_key(nested))
+fn in_progress_key(heap: &Heap, obj: &ObjRef, nested: &Rc<Mixin>) -> (usize, usize) {
+    (heap.object_identity_key(obj), mixin_key(nested))
 }
 
 fn read_cache_slot(heap: &Heap, receiver: &Value, index: usize) -> Option<Value> {
