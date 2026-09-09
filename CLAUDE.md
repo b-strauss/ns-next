@@ -175,6 +175,18 @@ catch it rotting.
 Add no new external dependency without a reason that survives review — the image format
 is hand-rolled on purpose.
 
+**Ground a design decision in prior art before proposing options.** `prior-art/` holds
+four reference implementations as submodules: the canonical Newspeak on Squeak, its
+cross-language benchmark suite, Ryan Macnak's Primordial Soup (a Newspeak VM in C++,
+with its own bytecode set, image format and collector) and Stefan Marr's SOMns (a
+Newspeak on Truffle/Graal). When a question is "how should this work", read how a
+working system answered it and cite that, rather than reasoning from first principles
+alone — the design documents already argue this way against Nova, Cog and V8. Nothing
+there is built, tested or linked, and no gate depends on it; a plain clone does not
+even fetch it (`git submodule update --init`). Copying code out of any of them is a
+licensing decision, not a technical one — see `prior-art/PROVENANCE.md`, which also
+explains why `newspeaklanguage/newspeak` appears both there and under `corpus/`.
+
 ## Conventions
 
 - All code, identifiers, comments, doc comments, commit messages and developer

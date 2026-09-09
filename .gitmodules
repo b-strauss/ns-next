@@ -1,0 +1,12 @@
+[submodule "prior-art/newspeak"]
+	path = prior-art/newspeak
+	url = https://github.com/newspeaklanguage/newspeak.git
+[submodule "prior-art/newspeak-benchmarks"]
+	path = prior-art/newspeak-benchmarks
+	url = https://github.com/newspeaklanguage/benchmarks.git
+[submodule "prior-art/primordialsoup"]
+	path = prior-art/primordialsoup
+	url = https://github.com/rmacnak/primordialsoup.git
+[submodule "prior-art/somns"]
+	path = prior-art/somns
+	url = https://github.com/smarr/SOMns.git

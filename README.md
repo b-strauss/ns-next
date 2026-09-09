@@ -132,13 +132,22 @@ crates/ns-runtime    resolver, object model, dispatch, both engines, core librar
 crates/ns-cli        the `ns-next` binary
 corpus/              vendored Newspeak modules used as a parser corpus
 tests-fixtures/      end-to-end programs with their expected output
+prior-art/           reference implementations as submodules, read but never built (see PROVENANCE.md)
 docs/design/         living design documents — start at its README.md
 docs/PROGRESS.md     milestone chronology
 docs/superpowers/    implementation plans, kept as execution records
 docs/references/     the Newspeak papers the design argues from (third-party, see PROVENANCE.md)
 ```
 
+`prior-art/` holds the canonical Newspeak implementation, its benchmark suite,
+Primordial Soup and SOMns, so that a design decision can be grounded in how a
+working system solved the same problem. They are submodules, so a plain clone
+does not fetch them and nothing in the build, the tests or either gate depends
+on them; `git submodule update --init` gets them when you want them.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). The vendored corpus under `corpus/` is third-party
 material with its own terms — see `corpus/PROVENANCE.md` and `corpus/UPSTREAM-LICENSE`.
+The submodules under `prior-art/` each keep their own license in their own tree;
+none of their code is vendored here — see `prior-art/PROVENANCE.md`.
