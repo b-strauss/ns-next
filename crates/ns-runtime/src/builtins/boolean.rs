@@ -67,8 +67,7 @@ pub fn dispatch(
 }
 
 /// `and:`/`or:`/`ifTrue:` etc. take a zero-arg block; invoking it goes
-/// through the shared `call_block` primitive (Task 10 refactor -- this used
-/// to be a local `invoke_block` copy of that same logic) rather than a full
+/// through the shared `call_block` primitive rather than a full
 /// `send`, since these are the language's fundamental control-flow
 /// primitives and must not depend on `Block`'s own native methods being
 /// registered yet in dispatch order.

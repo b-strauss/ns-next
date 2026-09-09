@@ -3368,9 +3368,9 @@ fn root_mixin_of(heap: &Heap, class: &ClassRef) -> Rc<Mixin> {
 
 #[test]
 fn a_snapshotted_nested_mixins_method_and_initializer_survive_a_load() {
-    // Finding 2, the coverage-gap half: before this fix, `encode_code_table`
-    // still wrote only the root's own section, so a `snapshot` -> `load`
-    // cycle silently narrowed the module `compile_module` had produced.
+    // `encode_code_table` must write more than the root's own section:
+    // writing only the root lets a `snapshot` -> `load` cycle silently
+    // narrow the module `compile_module` produced.
     // Checked here purely at the compiled-module level -- reaching the
     // nested method with an actual send is the next test, since it needs a
     // hand-built class object anyway (no accessor exists yet).
@@ -3432,7 +3432,7 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
     let inner_mixin = root_mixin.nested[0].clone();
 
     // Nothing materializes a nested class's own class object without the
-    // accessor (a later task), so this reproduces exactly what it will
+    // accessor, which does not exist yet, so this reproduces what it will
     // eventually do: apply the decoded `Inner` mixin to `Object`, by hand,
     // in the *loaded* interpreter -- proving the send below runs against
     // code `build_module` actually restored, not code compiled fresh
@@ -3504,7 +3504,7 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
     let reloaded_outer = loaded
         .roots
         .first()
-        .cloned()
+        .copied()
         .expect("the snapshotted Outer");
     let inner_class = expect_ok(
         loaded.interp.send(
@@ -3664,7 +3664,7 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     let reloaded_outer = loaded
         .roots
         .first()
-        .cloned()
+        .copied()
         .expect("the snapshotted Outer");
     let reloaded_inner = nested_class_of(&mut loaded, reloaded_outer, "Inner");
     assert_eq!(
@@ -3694,7 +3694,7 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     let reloaded_instance = loaded
         .roots
         .first()
-        .cloned()
+        .copied()
         .expect("the snapshotted Inner instance");
     assert_eq!(
         class_name(
@@ -3730,7 +3730,7 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
     let reloaded_outer = loaded
         .roots
         .first()
-        .cloned()
+        .copied()
         .expect("the snapshotted Outer");
     let root_class = loaded.root_class;
     let inner = nested_class_of(&mut loaded, reloaded_outer, "Inner");
@@ -3917,7 +3917,7 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
     .expect("snapshot");
 
     let mut loaded = image::load(&bytes).expect("load");
-    let reloaded = loaded.roots.first().cloned().expect("the snapshotted Args");
+    let reloaded = loaded.roots.first().copied().expect("the snapshotted Args");
     let derived = expect_ok(
         loaded.interp.send(
             reloaded,
@@ -4114,12 +4114,11 @@ fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
         .count()
 }
 
-/// The image's bytes from the symbol table onward, skipping the header and
-/// -- until a later milestone makes the image source-free -- the verbatim
-/// source text and its origin, which necessarily still contain every
-/// selector as plain source. The dedup property this task adds only
-/// applies from the symbol table on: everything that used to be an inline
-/// `write_str` of a selector or name lives at or after it.
+/// The image's bytes from the symbol table onward, skipping the header, the
+/// verbatim source text and its origin -- which necessarily still contain
+/// every selector as plain source. The dedup property applies only from the
+/// symbol table on: everything that would otherwise be an inline `write_str`
+/// of a selector or name lives at or after it.
 fn bytes_from_symbol_table(bytes: &[u8]) -> &[u8] {
     let mut r = decode::Reader::new(bytes);
     decode::read_header(&mut r).expect("valid header");
@@ -4131,14 +4130,14 @@ fn bytes_from_symbol_table(bytes: &[u8]) -> &[u8] {
 #[test]
 fn a_repeated_selector_is_stored_once() {
     // `distinctiveSelector` is deliberately long and specific: a single
-    // byte (the brief's original example, `b"b"`) recurs throughout any
-    // binary stream by chance, which would make `occurrences` meaningless.
+    // byte such as `b"b"` recurs throughout any binary stream by chance,
+    // which would make `occurrences` meaningless.
     // This selector is the method-dictionary key for one method and the
-    // send target at three call sites -- four inline occurrences before
-    // this task, one symbol-table entry after it. (The verbatim source
+    // send target at three call sites -- four inline occurrences without
+    // deduplication, one symbol-table entry with it. (The verbatim source
     // text, stored earlier in the image, still contains the selector as
-    // plain text -- `bytes_from_symbol_table` excludes that section, since
-    // this task does not touch it.)
+    // plain text -- `bytes_from_symbol_table` excludes that section, which
+    // the symbol table does not cover.)
     let bytes = snapshot_of(
         "Newspeak3\n'T'\nclass C = Object new (\n) (\n  a = ( ^self distinctiveSelector )\n  b = ( ^self distinctiveSelector )\n  distinctiveSelector = ( ^self distinctiveSelector )\n) : ()",
     );
@@ -4447,7 +4446,7 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
     assert!(clause.has_args, "`Base withBase: 7` passes an argument");
 
     let mut loaded = image::load(&bytes).expect("load");
-    let reloaded = loaded.roots.first().cloned().expect("the snapshotted Args");
+    let reloaded = loaded.roots.first().copied().expect("the snapshotted Args");
     let derived_class = expect_ok(
         loaded.interp.send(
             reloaded,
@@ -4872,7 +4871,7 @@ fn a_source_free_image_still_runs() {
     );
     let mut loaded = image::load(&bytes).expect("load");
     assert!(loaded.source.is_none());
-    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let instance = loaded.roots.first().copied().expect("the root instance");
     let result = expect_ok(
         loaded.interp.send(
             instance,
@@ -4896,7 +4895,7 @@ fn a_source_free_image_still_runs() {
 fn a_source_free_image_still_reaches_its_nested_classes() {
     let bytes = snapshot_module(SOURCE_FREE_MODULE, None, None);
     let mut loaded = image::load(&bytes).expect("load");
-    let outer = loaded.roots.first().cloned().expect("the root instance");
+    let outer = loaded.roots.first().copied().expect("the root instance");
     let inner_class = nested_class_of(&mut loaded, outer, "Inner");
     let bindings = loaded.empty_bindings.clone();
     let instance = expect_ok(
@@ -4920,7 +4919,7 @@ fn the_debug_variant_still_carries_source() {
         "the debug variant hands its source back verbatim"
     );
     // And it is still a working world, not merely a readable file.
-    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let instance = loaded.roots.first().copied().expect("the root instance");
     let result = expect_ok(
         loaded.interp.send(
             instance,
@@ -4955,7 +4954,7 @@ fn a_frame_says_which_engine_its_pc_belongs_to() {
     // table is non-empty.
     let bytes = snapshot_module(SOURCE_FREE_MODULE, None, Some("block"));
     let loaded = image::load(&bytes).expect("load");
-    let block = loaded.roots.get(1).cloned().expect("the block root");
+    let block = loaded.roots.get(1).copied().expect("the block root");
     let heap = loaded.interp.heap_ref();
     let closure = heap
         .closure_data(obj(&block))
@@ -5028,7 +5027,7 @@ fn the_tree_walking_engine_is_refused_after_a_load() {
     );
     // And the refusal left the bytecode engine in place: the world still
     // runs, rather than being wedged by the attempt.
-    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let instance = loaded.roots.first().copied().expect("the root instance");
     let result = expect_ok(
         loaded.interp.send(
             instance,
@@ -5213,7 +5212,7 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
     // And the world the source-free image describes still runs -- so what
     // was left out really was only text.
     let mut loaded = image::load(&bytes).expect("load");
-    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let instance = loaded.roots.first().copied().expect("the root instance");
     match send_to(&mut loaded, instance, "quixoticAccumulator") {
         Value::SmallInt(146) => {}
         _ => panic!("expected SmallInt(146) from the loaded world, got a different Value"),
@@ -5665,7 +5664,7 @@ fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
     image::load(&binary).expect("the untruncated binary still loads");
 }
 
-/// The shape Task 3's trailing-byte check exists for, stated as the case
+/// The shape the trailing-byte check exists for, stated as the case
 /// that motivated it rather than only as a generic tail: a binary followed
 /// by an unrelated image's graph section, byte for byte what a caller gets
 /// by concatenating the two artifact kinds instead of choosing one.

@@ -62,38 +62,6 @@ impl ObjRef {
         );
         self.index == other.index
     }
-
-    /// An opaque, hashable key unique to this handle, for code that needs
-    /// `ObjRef` as a `HashMap`/`HashSet` key rather than a comparison --
-    /// `identity_hash` cannot serve that role, because two placeholder
-    /// objects may legitimately share hash 0
-    /// (`Heap::alloc_placeholder_object`,
-    /// `Heap::alloc_self_referential_class`), which would fold two distinct
-    /// objects into one table entry. Crate-internal: every current caller
-    /// (`image::encode::GraphTable`'s object-id map,
-    /// `image::decode::rebuild_applications`'s superclass-position map,
-    /// `interpreter::nested::in_progress_key`) lives inside `ns-runtime`.
-    ///
-    /// This and `FrameRef::identity_key` are the only ways a handle's index
-    /// leaves this module, so anything that changes what a handle encodes --
-    /// widening it to carry a heap tag, say -- has to check these callers
-    /// even though the field itself is private. They all treat the result as
-    /// an opaque key, which is what keeps that a check rather than a rewrite.
-    ///
-    /// **Unguarded, unlike `same` and every accessor.** Two handles from
-    /// different heaps produce the same key here and collide in a caller's
-    /// map. It is not guarded because this method is handed one handle and
-    /// no `Heap`, so there is nothing to check against -- and folding the
-    /// `origin` field into the key instead would be worse than leaving it:
-    /// that field exists only in a debug build, so the collision would
-    /// become impossible in the build that would have reported it and stay
-    /// exactly as possible in the build that ships. The fix is to move these
-    /// onto `Heap`, where the existing origin check applies; see
-    /// `docs/PROGRESS.md`'s Notes for why that is a follow-up rather than
-    /// done here.
-    pub(crate) fn identity_key(&self) -> usize {
-        self.index as usize
-    }
 }
 
 /// Prints the arena index and nothing else. Under `Rc` this impl was
@@ -158,16 +126,6 @@ impl FrameRef {
             self.origin, other.origin
         );
         self.index == other.index
-    }
-
-    /// An opaque, hashable key unique to this handle, for code that needs
-    /// `FrameRef` as a `HashMap` key rather than a comparison --
-    /// `image::encode::GraphTable`'s frame-id map. Crate-internal: its
-    /// only current caller lives inside `ns-runtime`.
-    ///
-    /// Unguarded, for the reason `ObjRef::identity_key` gives.
-    pub(crate) fn identity_key(&self) -> usize {
-        self.index as usize
     }
 }
 
@@ -468,6 +426,33 @@ impl Heap {
         self.objects[obj.index as usize].identity_hash
     }
 
+    /// An opaque, hashable key unique to `obj`, for code that needs an
+    /// `ObjRef` as a `HashMap`/`HashSet` key rather than a comparison --
+    /// `image::encode::GraphTable`'s object-id map,
+    /// `image::decode::rebuild_applications`'s superclass-position map and
+    /// `interpreter::nested::in_progress_key`. `identity_hash` cannot serve
+    /// that role, because two placeholder objects may legitimately share
+    /// hash 0 (`alloc_placeholder_object`, `alloc_self_referential_class`),
+    /// which would fold two distinct objects into one table entry.
+    ///
+    /// It lives on `Heap` rather than on `ObjRef` so that the origin check
+    /// applies to it like it does to every accessor. Two handles from
+    /// different heaps carry the same index and so produce the same key,
+    /// which collides silently in a caller's map; requiring the `Heap` that
+    /// minted the handle is what turns that into a panic, and it is the
+    /// compiler that requires it, since there is no way to reach the index
+    /// without one.
+    ///
+    /// This and `frame_identity_key` are the only ways a handle's index
+    /// leaves this module, so anything that changes what a handle encodes --
+    /// widening it to carry a heap tag, say -- has to check their callers
+    /// even though the field itself is private. They all treat the result as
+    /// an opaque key, which is what keeps that a check rather than a rewrite.
+    pub(crate) fn object_identity_key(&self, obj: &ObjRef) -> usize {
+        self.check_object_origin(obj);
+        obj.index as usize
+    }
+
     /// Overwrites `obj`'s identity hash. `tests/image.rs`'s
     /// `an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating` is
     /// the only caller: it forces a live object's hash to one below the
@@ -529,7 +514,7 @@ impl Heap {
     pub fn array_at(&self, obj: &ObjRef, index: usize) -> Option<Value> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
-            ObjectData::Array(items) => items.get(index).cloned(),
+            ObjectData::Array(items) => items.get(index).copied(),
             _ => None,
         }
     }
@@ -564,7 +549,7 @@ impl Heap {
     pub fn instance_field(&self, obj: &ObjRef, index: usize) -> Option<Value> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
-            ObjectData::Instance(fields) => fields.get(index).cloned(),
+            ObjectData::Instance(fields) => fields.get(index).copied(),
             _ => None,
         }
     }
@@ -827,8 +812,17 @@ impl Heap {
     // reach here, so this addressing is total.
     //
     // Only the accessors a caller actually needs are added here;
-    // `frame_arg_count` and `frame_pc` still have no caller and are left
-    // for the task that adds their first one.
+    // `frame_arg_count` and `frame_pc` have no caller yet, so they are
+    // not here.
+
+    /// An opaque, hashable key unique to `frame`, for code that needs a
+    /// `FrameRef` as a `HashMap` key rather than a comparison --
+    /// `image::encode::GraphTable`'s frame-id map is the only caller. On
+    /// `Heap`, and guarded, for the reason `object_identity_key` gives.
+    pub(crate) fn frame_identity_key(&self, frame: &FrameRef) -> usize {
+        self.check_frame_origin(frame);
+        frame.index as usize
+    }
 
     pub fn receiver(&self, frame: &FrameRef) -> Value {
         self.check_frame_origin(frame);
@@ -921,7 +915,7 @@ impl Heap {
     /// `tests/builtins_collections_block.rs`'s sender-threading regression test is
     /// the first caller: it walks a captured closure's frame back to the method
     /// activation that invoked it, to check `sender` was actually recorded rather
-    /// than left `None` (the Final-review finding I6 defect this guards against).
+    /// than left `None`, which would cut the chain at every block boundary.
     pub fn frame_sender(&self, frame: &FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].sender
@@ -1091,18 +1085,16 @@ mod tests {
         let _ = mine.same(&theirs);
     }
 
-    /// Why `identity_key` exists at all, rather than callers keying on
-    /// `identity_hash`. Both allocators that fix the hash at 0 --
+    /// Why `object_identity_key` exists at all, rather than callers keying
+    /// on `identity_hash`. Both allocators that fix the hash at 0 --
     /// `alloc_placeholder_object` and `alloc_self_referential_class` -- can
     /// produce several objects in one heap sharing that hash, and a map
     /// keyed on it would fold them into one entry. `image::decode` builds a
     /// whole graph out of exactly those placeholders, so this is the case
     /// that would break, not a hypothetical one.
     ///
-    /// The cross-heap case is deliberately *not* pinned here: two handles
-    /// from different heaps do collide, `identity_key` does not guard
-    /// against it, and `docs/PROGRESS.md`'s Notes record the follow-up that
-    /// fixes it properly.
+    /// The cross-heap case is pinned separately, by
+    /// `keying_a_handle_through_a_foreign_heap_panics` below.
     #[test]
     fn identity_keys_separate_objects_that_share_an_identity_hash() {
         let mut heap = Heap::new();
@@ -1112,9 +1104,36 @@ mod tests {
 
         assert_eq!(heap.identity_hash(&a), 0);
         assert_eq!(heap.identity_hash(&a), heap.identity_hash(&b));
-        assert_ne!(a.identity_key(), b.identity_key());
+        assert_ne!(heap.object_identity_key(&a), heap.object_identity_key(&b));
         // Stable for one handle, which is what every caller relies on.
-        assert_eq!(a.identity_key(), a.identity_key());
+        assert_eq!(heap.object_identity_key(&a), heap.object_identity_key(&a));
+    }
+
+    /// The hole that moving `identity_key` onto `Heap` closes. Keying a
+    /// handle through the wrong heap used to be the one handle operation
+    /// with no origin check: it was handed a handle and no `Heap`, so two
+    /// objects from different arenas produced the same key and collided in
+    /// a caller's map -- `image::encode::GraphTable` would have given one
+    /// object the other's id. Requiring the `Heap` is what makes the check
+    /// possible, and the compiler is what requires it.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "handle belongs to a different heap")]
+    fn keying_a_handle_through_a_foreign_heap_panics() {
+        let mut origin = Heap::new();
+        let class = origin.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let mine = origin.alloc_object(class, ObjectData::Str("mine".to_string()));
+
+        let mut other = Heap::new();
+        let other_class = other.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let theirs = other.alloc_object(other_class, ObjectData::Str("theirs".to_string()));
+
+        // Both are the second object their own heap allocated, so both
+        // carry the same index: without the guard these two keys are equal.
+        assert_ne!(
+            origin.object_identity_key(&mine),
+            origin.object_identity_key(&theirs)
+        );
     }
 
     #[test]

@@ -12,11 +12,11 @@ use crate::Symbol;
 /// Names Object supports with no Newspeak-source declaration to find --
 /// resolving a superclass-clause receiver (or a bare implicit send) against
 /// these is the base case that lets a lexical/inheritance search bottom out.
-/// Extend this list as Tasks 8-10 add core-library classes and their public
-/// selectors that user code may reasonably reference by bare name from a
-/// superclass clause (in practice, just the class *names* below matter for
-/// superclass resolution -- Object's own instance-side selectors matter for
-/// implicit sends that fall all the way through to Object).
+/// Extend this list as the core library gains classes and public selectors
+/// that user code may reasonably reference by bare name from a superclass
+/// clause (in practice, just the class *names* below matter for superclass
+/// resolution -- Object's own instance-side selectors matter for implicit
+/// sends that fall all the way through to Object).
 pub(super) const BUILTIN_CLASS_NAMES: &[&str] = &[
     "Object",
     "Boolean",

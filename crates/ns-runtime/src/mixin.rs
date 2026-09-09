@@ -141,7 +141,7 @@ pub struct Mixin {
     /// evaluated directly by the tree-walker. Empty for a decoded mixin.
     pub init_exprs: Vec<ast::Stmt>,
     /// The nested class declarations, in declaration order. Each one gets an
-    /// implicit accessor and a hidden cache slot (Task 4).
+    /// implicit accessor and a hidden cache slot.
     pub nested: Vec<Rc<Mixin>>,
     pub class_side: Option<Rc<Mixin>>,
     /// Provenance for reflection and the image.

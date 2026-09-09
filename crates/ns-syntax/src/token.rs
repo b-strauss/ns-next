@@ -4,7 +4,7 @@ use crate::span::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
-    // Task 3
+    // Names, keywords, and punctuation
     Identifier,
     Keyword,
     SetterKeyword,
@@ -31,12 +31,12 @@ pub enum TokenKind {
     Pound,
     LessThan,
     GreaterThan,
-    // Task 4
+    // Literals
     Number,
     String,
     Symbol,
     CharConstant,
-    // Task 5
+    // End of input
     Eoi,
 }
 

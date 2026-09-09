@@ -1,7 +1,8 @@
 //! Native ("primitive") method dispatch for the Milestone 1 core library
-//! classes. `BuiltinClass::Object` (Task 7) is the first real arm; Tasks
-//! 8-10 add the rest.
+//! classes: one module per `BuiltinClass` family -- `object_class` for
+//! `Object` itself, then `boolean`, `numbers`, `text`, `collections` and
 
+//! `block`.
 pub mod block;
 pub mod boolean;
 pub mod collections;
@@ -15,10 +16,10 @@ use crate::{platform, Interpreter, Symbol};
 
 /// `None` = this builtin does not implement `selector` (let the caller fall
 /// through to `doesNotUnderstand:`). `Some(Err(Signal::Error(_)))` = a
-/// genuine Newspeak-level error (e.g. arithmetic overflow in Task 9).
+/// genuine Newspeak-level error (e.g. arithmetic overflow).
 /// `Some(Err(Signal::Return(..)))` = a non-local return (`^expr` inside a
 /// block argument, e.g. `coll do: [:each | ... ifTrue: [^x]]`) genuinely
-/// escaping a native primitive's block invocation -- Task 12's own
+/// escaping a native primitive's block invocation -- the
 /// `blocks_and_return.ns` fixture depends on this propagating all the way
 /// out to the enclosing method activation rather than being swallowed here.
 ///
@@ -107,36 +108,30 @@ fn wrap_error(result: Result<Value, NewspeakError>) -> EvalResult {
 /// reference library's convention that `ifTrue: aValue` degrades to
 /// `aValue` when `aValue` isn't a block.
 ///
-/// Originally a local `invoke_block` helper duplicated inside `boolean.rs`
-/// (Task 8); moved here and generalized to take real `args` so `do:`
-/// (Task 10) can reuse it instead of accumulating a third copy. Keeps
-/// reading `closure.bindings.clone()` -- the resolver's bindings map the
-/// block body was originally resolved under (Task 8's fix) -- rather than
-/// a fresh empty map; regressing that was a real, task-reviewed bug in an
-/// earlier draft.
+/// It invokes the closure under `closure.bindings.clone()` -- the
+/// resolver's bindings the block body was resolved under -- and never a
+/// fresh empty map. A block body's free names resolve against the scope it
+/// was written in, so an empty map silently changes what they mean.
 ///
-/// Task 12 fix: returns `EvalResult` (forwarding `invoke_closure`'s own
-/// result directly) rather than the earlier `Result<Value, NewspeakError>`,
-/// which used to convert *every* `Signal::Return` escaping the block into a
-/// generic "non-local return escaped a block invoked as a native primitive"
-/// `NewspeakError` -- unconditionally, even when the return's target frame
-/// was a still-live activation further up the very call stack this
-/// primitive is itself running on (the ordinary, correct case for e.g.
-/// `coll do: [:each | each = target ifTrue: [^'found']]`, where the
-/// `^'found'` targets the enclosing method, not `do:`'s or `ifTrue:`'s own
-/// activation). That made *every* `ifTrue: [^expr]`/`do: [:e | ... ^expr]`
-/// idiom fail; a genuine non-local-return-to-a-dead-frame case is already
-/// correctly turned into a `cannotReturn`-style `NewspeakError` further
-/// down, by `Interpreter::raise_return`'s own `uncontinuable` check (see
-/// `interpreter/mod.rs`) -- that check runs regardless of how many native
-/// primitive frames the `Signal::Return` passes through on its way up, so
+/// Returns `EvalResult`, forwarding `invoke_closure`'s own result directly,
+/// so a `Signal::Return` escaping the block passes straight through. It
+/// must not be converted into a `NewspeakError` here: the ordinary case is
+/// a return aimed at a still-live activation further up the very call stack
+/// this primitive is itself running on -- `coll do: [:each | each = target
+/// ifTrue: [^'found']]`, where `^'found'` targets the enclosing method, not
+/// `do:`'s or `ifTrue:`'s own activation. Converting unconditionally breaks
+/// every `ifTrue: [^expr]` and `do: [:e | ... ^expr]` idiom there is. A
+/// return that really is aimed at a dead frame becomes a
+/// `cannotReturn`-style `NewspeakError` further down, in
+/// `Interpreter::raise_return`'s own `uncontinuable` check
+/// (`interpreter/mod.rs`), and that check runs regardless of how many
+/// native primitive frames the signal passes through on its way up -- so
 /// nothing here needs to re-implement it.
 ///
-/// Finding I6: `sender` -- the activation invoking the block -- is forwarded
-/// to `invoke_closure` so the new closure activation's `Frame.sender` is the
-/// real caller rather than the unconditional `None` it used to be, keeping
-/// the liveness spec's reified call chain walkable across every block
-/// invocation boundary.
+/// `sender` -- the activation invoking the block -- is forwarded to
+/// `invoke_closure`, so the closure activation's `Frame.sender` is the real
+/// caller. The liveness spec's reified call chain has to stay walkable
+/// across every block invocation boundary.
 pub(super) fn call_block(
     interp: &mut Interpreter,
     block: &Value,
@@ -155,7 +150,7 @@ pub(super) fn call_block(
                         &closure,
                         args,
                         &bindings,
-                        sender.cloned(),
+                        sender.copied(),
                     )
                 }
                 None => Ok(*block),

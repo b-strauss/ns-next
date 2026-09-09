@@ -1460,7 +1460,7 @@ pub fn decode_class_tag(
             tables
                 .objects
                 .get(id as usize)
-                .cloned()
+                .copied()
                 .ok_or(DecodeError::BadObjectId(id))
         }
         tag => Err(DecodeError::InvalidTag { what: "class", tag }),
@@ -1495,7 +1495,7 @@ fn decode_value(
             tables
                 .objects
                 .get(id as usize)
-                .cloned()
+                .copied()
                 .map(Value::Obj)
                 .ok_or(DecodeError::BadObjectId(id))
         }
@@ -1523,7 +1523,7 @@ fn decode_frame_id(r: &mut Reader, tables: &Tables) -> Result<FrameRef, DecodeEr
     tables
         .frames
         .get(id as usize)
-        .cloned()
+        .copied()
         .ok_or(DecodeError::BadFrameId(id))
 }
 
@@ -1825,7 +1825,7 @@ fn rebuild_applications(
     // handle, not as the id it was written with.
     let mut position: HashMap<usize, usize> = HashMap::with_capacity(pending.len());
     for (i, p) in pending.iter().enumerate() {
-        position.insert(objects[p.object].identity_key(), i);
+        position.insert(ctx.interp.heap.object_identity_key(&objects[p.object]), i);
     }
     let mut done = vec![false; pending.len()];
     let mut on_chain = vec![false; pending.len()];
@@ -1846,7 +1846,8 @@ fn rebuild_applications(
                 .heap
                 .class_superclass(&objects[pending[current].object]);
             let Some(superclass) = superclass else { break };
-            let Some(&next) = position.get(&superclass.identity_key()) else {
+            let Some(&next) = position.get(&ctx.interp.heap.object_identity_key(&superclass))
+            else {
                 break;
             };
             if done[next] {

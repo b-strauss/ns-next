@@ -582,7 +582,7 @@ fn class_refs(data: &ClassData) -> impl Iterator<Item = ObjRef> + '_ {
         .iter()
         .chain(data.enclosing.iter())
         .chain(data.declaring_class.iter())
-        .cloned()
+        .copied()
 }
 
 /// Whether `obj` is a class object the format names with a *tag* rather
@@ -651,7 +651,7 @@ impl GraphTable {
         if is_same_object(v, platform) || is_class_tag(heap, obj, root_class) {
             return;
         }
-        let key = obj.identity_key();
+        let key = heap.object_identity_key(obj);
         if self.object_ids.contains_key(&key) {
             return;
         }
@@ -668,7 +668,7 @@ impl GraphTable {
             stack.push(Pending::Value(Value::Obj(record.class)));
             match &record.data {
                 ObjectData::Instance(fields) | ObjectData::Array(fields) => {
-                    stack.extend(fields.iter().cloned().map(Pending::Value));
+                    stack.extend(fields.iter().copied().map(Pending::Value));
                 }
                 ObjectData::Closure(c) => {
                     stack.push(Pending::Frame(c.captured_frame));
@@ -688,7 +688,7 @@ impl GraphTable {
     }
 
     fn visit_frame(&mut self, heap: &Heap, frame: &FrameRef, stack: &mut Vec<Pending>) {
-        let key = frame.identity_key();
+        let key = heap.frame_identity_key(frame);
         if self.frame_ids.contains_key(&key) {
             return;
         }
@@ -699,19 +699,19 @@ impl GraphTable {
         {
             let f = heap.frame_snapshot(frame);
             stack.push(Pending::Value(f.receiver));
-            stack.extend(f.args.iter().cloned().map(Pending::Value));
-            stack.extend(f.temps.iter().cloned().map(Pending::Value));
+            stack.extend(f.args.iter().copied().map(Pending::Value));
+            stack.extend(f.temps.iter().copied().map(Pending::Value));
             stack.extend(
                 f.sender
                     .iter()
                     .chain(f.home.iter())
-                    .cloned()
+                    .copied()
                     .map(Pending::Frame),
             );
             stack.extend(
                 f.current_class
                     .iter()
-                    .cloned()
+                    .copied()
                     .map(|c| Pending::Value(Value::Obj(c))),
             );
             match &f.kind {
@@ -734,17 +734,17 @@ impl GraphTable {
         stack[before..].reverse();
     }
 
-    pub fn object_id(&self, obj: &ObjRef) -> u32 {
+    pub fn object_id(&self, heap: &Heap, obj: &ObjRef) -> u32 {
         *self
             .object_ids
-            .get(&obj.identity_key())
+            .get(&heap.object_identity_key(obj))
             .expect("object was visited by build()")
     }
 
-    pub fn frame_id(&self, frame: &FrameRef) -> u32 {
+    pub fn frame_id(&self, heap: &Heap, frame: &FrameRef) -> u32 {
         *self
             .frame_ids
-            .get(&frame.identity_key())
+            .get(&heap.frame_identity_key(frame))
             .expect("frame was visited by build()")
     }
 
@@ -798,7 +798,7 @@ fn encode_class_tag(w: &mut Writer, class: &ClassRef, ctx: &EncodeContext) {
         None if class.same(ctx.root_class) => w.write_u8(CLS_USER_ROOT),
         None => {
             w.write_u8(CLS_RECORD);
-            w.write_u32(ctx.table.object_id(class));
+            w.write_u32(ctx.table.object_id(ctx.heap, class));
         }
     }
 }
@@ -836,7 +836,7 @@ fn encode_value(w: &mut Writer, v: &Value, ctx: &EncodeContext) {
         return;
     }
     w.write_u8(VAL_OBJECT_ID);
-    w.write_u32(ctx.table.object_id(obj));
+    w.write_u32(ctx.table.object_id(ctx.heap, obj));
 }
 
 fn encode_values(w: &mut Writer, values: &[Value], ctx: &EncodeContext) {
@@ -846,11 +846,11 @@ fn encode_values(w: &mut Writer, values: &[Value], ctx: &EncodeContext) {
     }
 }
 
-fn encode_frame_ref(w: &mut Writer, frame: Option<&FrameRef>, table: &GraphTable) {
+fn encode_frame_ref(w: &mut Writer, heap: &Heap, frame: Option<&FrameRef>, table: &GraphTable) {
     match frame {
         Some(f) => {
             w.write_bool(true);
-            w.write_u32(table.frame_id(f));
+            w.write_u32(table.frame_id(heap, f));
         }
         None => w.write_bool(false),
     }
@@ -878,8 +878,8 @@ fn encode_closure_record(
         w.write_u32(symbols.intern(p.as_str()));
     }
     w.write_u32(ctx.code_ids.id_of(code));
-    w.write_u32(ctx.table.frame_id(&closure.captured_frame));
-    w.write_u32(ctx.table.frame_id(&closure.home));
+    w.write_u32(ctx.table.frame_id(ctx.heap, &closure.captured_frame));
+    w.write_u32(ctx.table.frame_id(ctx.heap, &closure.home));
     Ok(())
 }
 
@@ -1002,8 +1002,8 @@ fn encode_frame(
             )
         }
     }
-    encode_frame_ref(w, f.sender.as_ref(), ctx.table);
-    encode_frame_ref(w, f.home.as_ref(), ctx.table);
+    encode_frame_ref(w, ctx.heap, f.sender.as_ref(), ctx.table);
+    encode_frame_ref(w, ctx.heap, f.home.as_ref(), ctx.table);
     encode_optional_class(w, f.current_class.as_ref(), ctx);
     match &f.kind {
         FrameKind::Method(method) => {

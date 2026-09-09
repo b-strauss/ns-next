@@ -62,7 +62,7 @@ fn every_corpus_file_parses_or_is_blacklisted() {
     // Libtest captures this; it is the quick "where are we" line.
     eprintln!("corpus: {parsed}/{} files parse", modules.len());
 
-    // The real Milestone 1 assertions (Task 14b): every non-blacklisted file
+    // The real Milestone 1 assertions: every non-blacklisted file
     // parses, and no blacklist entry is stale (a listed file that now parses).
     assert!(
         failures.is_empty() && stale.is_empty(),

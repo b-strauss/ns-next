@@ -1,5 +1,5 @@
 //! Unit-level tests for `Interpreter::platform` and `crate::platform`'s
-//! dispatch (Task 11). `crates/ns-cli/tests/run.rs` covers the full,
+//! dispatch. `crates/ns-cli/tests/run.rs` covers the full,
 //! real-stdout end-to-end path through `ns-next run`; these tests exercise
 //! the same dispatch chain directly via `Interpreter::send`, without
 //! spawning a process, and check the singleton/identity behavior a

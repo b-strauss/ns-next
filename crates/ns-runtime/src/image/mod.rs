@@ -51,9 +51,9 @@ use crate::{Interpreter, Symbol};
 /// (a) the entry selector `build` is given is already interned by the code or
 /// mixin tables, and (b) the roots `snapshot` is given intern no string the
 /// describing sections did not already contain. Neither is enforced here:
-/// (a) is a build-time validation a later task adds; (b) is not enforced at
-/// all, is expected to fail for an arbitrary program, and is not something
-/// this format tries to guarantee.
+/// (a) is a build-time validation that does not exist yet; (b) is not
+/// enforced at all, is expected to fail for an arbitrary program, and is
+/// not something this format tries to guarantee.
 struct Describing {
     symbols: symbols::Builder,
     code: encode::Writer,

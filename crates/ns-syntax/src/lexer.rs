@@ -27,7 +27,7 @@ impl<'a> Lexer<'a> {
 
     pub fn run(mut self) -> (Vec<Token>, Vec<Diagnostic>) {
         while self.pos < self.bytes.len() {
-            self.skip_trivia(); // full impl in Task 5; for now: skip ASCII whitespace
+            self.skip_trivia();
             if self.pos >= self.bytes.len() {
                 break;
             }
@@ -127,9 +127,9 @@ impl<'a> Lexer<'a> {
                 }
             }
             _ if b == b'_' || b.is_ascii_alphabetic() => self.lex_word(),
-            _ if b.is_ascii_digit() => self.lex_number(), // Task 4
-            b'\'' => self.lex_string(),                   // Task 4
-            b'"' => self.lex_char_constant(),             // Task 4
+            _ if b.is_ascii_digit() => self.lex_number(),
+            b'\'' => self.lex_string(),
+            b'"' => self.lex_char_constant(),
             _ if b == b'-'
                 && self.peek_at(1).is_some_and(|n| n.is_ascii_digit())
                 && (!self.prev_ends_value() || self.preceded_by_whitespace()) =>

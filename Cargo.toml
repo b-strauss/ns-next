@@ -24,3 +24,11 @@ toml = "0.8"
 [profile.release]
 lto = "fat"
 codegen-units = 1
+
+# `Value`, `ObjRef` and `FrameRef` are `Copy`, so an iterator chain ending in
+# `.cloned()` reads as a deep copy of what is really a register move. This lint
+# is in `clippy::pedantic` and off by default; enabling it here is what keeps the
+# distinction enforced by `cargo clippy --workspace --all-targets` rather than by
+# a note somewhere reminding whoever looks next to re-derive the list.
+[workspace.lints.clippy]
+cloned_instead_of_copied = "warn"

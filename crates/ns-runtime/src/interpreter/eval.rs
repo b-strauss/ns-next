@@ -59,15 +59,14 @@ fn eval_ident(
             vec![],
             bindings,
         ),
-        // Gap 1 fix: the resolver (`resolve_ident`) records no `Binding`
-        // at all for a bare identifier that names a Milestone 1 builtin
-        // class (e.g. plain `OrderedCollection` in `OrderedCollection
-        // new`, outside any superclass clause) -- mirroring
-        // `resolve_superclass_clause`'s existing convention for the
-        // analogous superclass-clause case. Resolve such a name against
-        // the builtin table by name here, symmetrically, instead of
-        // treating an absent binding as always an internal resolver
-        // error.
+        // The resolver (`resolve_ident`) records no `Binding` at all for a
+        // bare identifier that names a Milestone 1 builtin class (e.g.
+        // plain `OrderedCollection` in `OrderedCollection new`, outside any
+        // superclass clause) -- mirroring `resolve_superclass_clause`'s
+        // existing convention for the analogous superclass-clause case.
+        // Resolve such a name against the builtin table by name here,
+        // symmetrically, instead of treating an absent binding as always an
+        // internal resolver error.
         Some(Binding::SuperSend) | None => {
             if let Some(kind) = super::instantiate::builtin_kind_from_name(&id.name) {
                 return Ok(Value::Obj(interp.builtin_class(kind)));
@@ -363,19 +362,18 @@ pub(crate) fn dispatch_lexical_send(
     let o =
         dispatch::kth_enclosing_object(&interp.heap, &self_value, defining_class.as_ref(), depth);
     let class = interp.class_of(&o);
-    // Slot access fix (Task 7 "must fix before committing" #2): a
-    // `LexicalSend` to a user-defined class's own slot must resolve here,
+    // A `LexicalSend` to a user-defined class's own slot must resolve here,
     // *before* the method/native lookups below -- `build_mixin` never puts a
     // slot's implicit getter/setter into the mixin's method table, so
     // `lookup_defined_for`/`lookup_protected` would never find one.
     // Milestone 1 known gap: unlike a method send, this is never
-    // access-controlled by the slot's own declared modifier (see the task's
-    // design note) -- revisit if a fixture needs it.
+    // access-controlled by the slot's own declared modifier -- revisit if a
+    // fixture needs it.
     if let Some((name, is_setter)) = slot_selector_shape(selector) {
         if let Some(index) = dispatch::lookup_slot(&interp.heap, &class, name) {
             if let Value::Obj(obj) = &o {
                 if is_setter {
-                    let value = args.first().cloned().unwrap_or(Value::Nil);
+                    let value = args.first().copied().unwrap_or(Value::Nil);
                     interp.heap.set_instance_field(obj, index, value);
                     return Ok(o);
                 } else if let Some(value) = interp.heap.instance_field(obj, index) {
@@ -574,13 +572,13 @@ fn eval_block_literal(
     Ok(Value::Obj(interp.new_closure(closure)))
 }
 
-/// Invokes a closure with `args`. Called by `builtins::block` (Task 10) for
+/// Invokes a closure with `args`. Called by `builtins::block` for
 /// `value`, `value:`, `value:value:`, etc. Public because block-invocation
 /// selectors are Milestone 1 *native* methods on `BuiltinClass::Block`, not
 /// user-overridable Newspeak methods.
 ///
 /// `sender` is the activation performing the invocation, threaded here from
-/// the send that reached the block-invoking native primitive (finding I6).
+/// the send that reached the block-invoking native primitive.
 /// It becomes the new closure activation's own `Frame.sender`, exactly as
 /// `Interpreter::invoke_method` does for a method activation, so the
 /// liveness spec's reified call chain (`Frame.sender`) stays walkable across
@@ -594,7 +592,7 @@ pub fn invoke_closure(
     bindings: &Rc<HashMap<Span, Binding>>,
     sender: Option<FrameRef>,
 ) -> EvalResult {
-    // Task 10 fix: reject a wrong argument count as a NewspeakError up
+    // Reject a wrong argument count as a NewspeakError up
     // front, before it can reach `read_local`. Without this guard, a call
     // with too few args can panic outright -- `read_local`'s
     // `i < borrowed.args.len()` check falls through to

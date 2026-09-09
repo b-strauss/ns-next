@@ -1,10 +1,8 @@
 //! Tests for the `Interpreter::send`-level `ClassName new` -> `instantiate`
-//! wiring added in Task 11 (see `interpreter/instantiate.rs`'s
-//! `try_factory_send`). Prior tasks (through Task 10) only ever called
-//! `Interpreter::instantiate` directly from Rust; these tests go through
-//! `Interpreter::send` instead -- the code path an ordinary Newspeak
-//! `ClassName new` message send actually takes -- to prove the real gap
-//! Task 10 flagged is now closed.
+//! wiring (see `interpreter/instantiate.rs`'s `try_factory_send`). These
+//! tests go through `Interpreter::send` rather than calling
+//! `Interpreter::instantiate` directly from Rust -- the code path an
+//! ordinary Newspeak `ClassName new` message send actually takes.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -22,7 +20,7 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 /// `OrderedCollection new` via ordinary `send` (not a direct
 /// `interp.instantiate(...)` call) must produce an `ObjectData::Array`-backed
 /// object -- the payload shape `builtins::collections`' dispatch functions
-/// (Task 10) actually pattern-match on -- and that object must go on to
+/// actually pattern-match on -- and that object must go on to
 /// support `add:`/`size` through the real dispatch chain, which also proves
 /// the result stays classed as `OrderedCollection` (not `Array`: `Array`'s
 /// own native dispatch has no `add:`, so `add:` succeeding rules out the

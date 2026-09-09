@@ -750,7 +750,7 @@ fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name_under_b
     class_side_override_shadows_the_inherited_method(true);
 }
 
-/// Task 10: `Frame.current_class` must be the class object of the level
+/// `Frame.current_class` must be the class object of the level
 /// that *defines* the running method, not the receiver's own (dynamic)
 /// class -- otherwise `super`/`outer` inside an inherited method read the
 /// wrong level. `Derived` inherits nothing here (it overrides `describe`
@@ -801,7 +801,7 @@ fn super_and_outer_both_resolve_through_the_defining_level_under_bytecode() {
 
 /// A *three*-level hierarchy where the middle level (`Mid`) is reached only
 /// through inheritance -- `Leaf` declares no `describe` of its own. This is
-/// the shape Task 10's two-level fixture cannot exercise: if
+/// the shape a two-level fixture cannot exercise: if
 /// `invoke_method` set `current_class` to the receiver's own (dynamic)
 /// class rather than the level `dispatch` found the method at, `Mid`'s
 /// activation would compute its `super` target from *`Leaf`'s* superclass

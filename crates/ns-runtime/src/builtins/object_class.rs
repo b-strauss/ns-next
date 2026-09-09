@@ -59,12 +59,14 @@ fn identity_hash_of(heap: &Heap, value: &Value) -> u32 {
 }
 
 fn describe(_value: &Value, _interp: &Interpreter) -> String {
-    "an object".to_string() // Task 9's printString work supersedes this for real classes
+    // The default `doesNotUnderstand:` message names the receiver by kind
+    // only. `Heap::describe` is the value-aware description.
+    "an object".to_string()
 }
 
 fn extract_dnu_selector(heap: &Heap, message_mirror_shaped_array: &Value) -> Symbol {
     // Matches `Interpreter::does_not_understand`'s `{selector. args}` array
-    // shape from Task 6.
+    // shape.
     if let Value::Obj(obj) = message_mirror_shaped_array {
         if let Some(Value::Obj(sym_obj)) = heap.array_at(obj, 0) {
             if let Some(s) = heap.sym_value(&sym_obj) {

@@ -72,7 +72,7 @@ fn run_while(
                     Symbol::intern("mustBeBoolean"),
                     vec![],
                     bindings,
-                    sender.cloned(),
+                    sender.copied(),
                 )
             }
         }

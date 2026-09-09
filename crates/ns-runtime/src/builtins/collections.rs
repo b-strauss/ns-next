@@ -92,7 +92,7 @@ fn dispatch_common(
         // `NewspeakError`, and this arm's `?` does exactly that.
         "do:" => {
             let items = interp.heap.array_elements(obj)?;
-            let Some(block) = args.first().cloned() else {
+            let Some(block) = args.first().copied() else {
                 return Some(Err(Signal::Error(NewspeakError {
                     selector,
                     receiver,
@@ -138,7 +138,7 @@ pub fn dispatch_array(
                 &receiver, selector, index, len,
             ))));
         }
-        let value = args.get(1).cloned().unwrap_or(Value::Nil);
+        let value = args.get(1).copied().unwrap_or(Value::Nil);
         interp.heap.array_set(obj, (index as usize) - 1, value);
         return Some(Ok(receiver));
     }
@@ -159,7 +159,7 @@ pub fn dispatch_ordered_collection(
         interp.heap.array_len(obj)?;
         // Matches the reference library's convention: `add:` returns the
         // argument, not the receiver.
-        let value = args.first().cloned().unwrap_or(Value::Nil);
+        let value = args.first().copied().unwrap_or(Value::Nil);
         interp.heap.array_push(obj, value);
         return Some(Ok(value));
     }

@@ -1,4 +1,4 @@
-//! Integration tests for Task 9's `String`/`Symbol`/`Character` native
+//! Integration tests for the `String`/`Symbol`/`Character` native
 //! methods, wired through `crate::builtins::dispatch_native` via
 //! `Interpreter::send`.
 
