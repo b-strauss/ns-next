@@ -946,13 +946,14 @@ fn cmd_disasm(
     // resolver.s bindings; an artifact already carries compiled bodies, so
     // loading it is a decode and nothing is recompiled. Each arm reads
     // `root_mixin` out of its own `class` before that arm's interpreter (or
-    // `loaded.interp`) goes out of scope, rather than a fresh `Heap`
-    // afterwards: a `Heap` built after the interpreter that allocated
-    // `class` is gone would still read `class` correctly today, purely
-    // because `Heap` is a bare counter and every instance is
-    // interchangeable -- but a moving arena's fresh `Heap` starts out
-    // holding nothing, and the read would silently miss instead of finding
-    // `class`'s data.
+    // `loaded.interp`) goes out of scope, rather than through a fresh
+    // `Heap` afterwards. A `ClassRef` is an index into the arena of the
+    // `Heap` that allocated it and means nothing against any other one, so
+    // a `Heap` built after that interpreter is gone does not answer
+    // `class`'s data: in a debug build the origin guard panics at the read,
+    // and in a release build the index is in range and names whatever
+    // object that heap put there -- a different, perfectly valid object,
+    // disassembled without a word of complaint.
     let (root_mixin, module) = if looks_like_an_artifact(&raw) {
         match ns_runtime::image::load(&raw) {
             Ok(loaded) => {

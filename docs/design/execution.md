@@ -1,9 +1,10 @@
 # Execution — activations, both engines, the VM
 
 > **Status:** built.
-> **Code:** `crates/ns-runtime/src/types.rs` (`Frame` and the `FrameRef`
-> handle), `heap.rs` (every read and write of an activation), `vm.rs`,
-> `interpreter/` (the shared orchestration and the three engine hooks).
+> **Code:** `crates/ns-runtime/src/heap.rs` (the frame arena, the `FrameRef`
+> handle, every read and write of an activation), `types.rs` (`Frame`),
+> `vm.rs`, `interpreter/` (the shared orchestration and the three engine
+> hooks).
 
 This is the consumer side. What produces the bytecode — the instruction set,
 lowering, register allocation, inlining — is [compiler.md](compiler.md).
@@ -120,8 +121,9 @@ signal.
 
 Nothing can read `pc` while a straight-line instruction executes, because
 `run_code` never yields between them. Keeping the store out of the straight-line
-arms takes a `RefCell` borrow and a write off the hot path for a value nothing
-observes there.
+arms takes a write to the frame arena off the hot path for a value nothing
+observes there. It used to take a `RefCell` borrow with it; the arena removed
+that half, so what this saves is smaller than it was.
 
 Whether a debugger will force `pc` at every instruction is an open question for
 the milestone that builds one; it is a deliberate trade, not an oversight.
@@ -155,7 +157,7 @@ reviewer has to catch. Tests unwrap through a local `expect_ok` helper.
 
 `ns-next bench` times the entry send alone — parsing, resolving, bootstrapping and
 compiling excluded — over a 50,000-iteration `whileTrue:` loop, on a release
-build. Over `bench_loop.ns`: bytecode median ~19.6 ms against tree-walk ~37.4 ms.
+build. Over `bench_loop.ns`: bytecode median ~16.5 ms against tree-walk ~37 ms.
 
 That ratio is **not** a pure dispatch comparison: the compiler inlines
 `whileTrue:`, so the bytecode engine does not pay the loop-control overhead the
@@ -163,9 +165,18 @@ tree-walker does.
 
 Never judge performance from a debug build.
 
+Every figure in this section is a median of a whole-program benchmark on one
+machine. Only numbers measured against each other in one sitting are compared
+here; a figure carried across sessions says more about the machine's load than
+about the code.
+
 ### What a send costs, and where it goes
 
-Milestone 4's design rests on a decomposition rather than on the aggregate.
+Milestone 4's design rests on a decomposition rather than on the aggregate. The
+decomposition below was measured on the pre-arena `Rc<RefCell<_>>`
+representation, and it is what chose the milestone's order. It has not been
+re-taken since; "What the arena moved" below re-measures the aggregate only, and
+says which of the itemized costs it removed.
 Three separate fixtures, shaped like `bench_loop.ns` but not it -- each with
 the body `[n < 50000] whileTrue: [<first statement>. n := n + 1]` -- isolate
 the pieces, because each differs from the next by exactly one send. Row
@@ -201,6 +212,50 @@ Two caveats. `U - N` is an incremental difference, not a profiler attribution:
 the native path pays a `match selector.as_str()` string comparison chain the
 user path does not. And these are medians of a whole-program benchmark.
 
+### What the arena moved
+
+Replacing `Rc<RefCell<_>>` with an arena of 32-bit handles, for objects and
+activations together (`docs/design/memory.md`, "The representation"), was
+measured before and after in one sitting: the pre-arena binary was built from
+this branch's merge-base into a throwaway worktree, and both binaries ran the
+same `ns-next bench tests-fixtures/bench_loop.ns` — ten timed runs after a
+discarded warm-up — three times each, alternating.
+
+| Run | Before, bytecode | After, bytecode | Before, tree-walk | After, tree-walk |
+|---|---|---|---|---|
+| 1 | 19.38 ms | 16.45 ms | 37.04 ms | 36.78 ms |
+| 2 | 19.54 ms | 16.82 ms | 37.50 ms | 37.23 ms |
+| 3 | 19.60 ms | 16.53 ms | 37.13 ms | 37.12 ms |
+
+**The bytecode engine gained about 15%**, from ~19.5 ms to ~16.5 ms. The three
+before-figures and the three after-figures do not overlap, and the split is
+larger than either group's own spread, so this is a real move rather than noise.
+
+What moved is precisely two of the itemized costs above: the `Rc` box and its
+reference-count traffic on `sender`, `home` and every shared handle, and the
+`RefCell` borrow on every register read and write — which is why the gain is
+spread across the straight-line instructions rather than concentrated in sends.
+
+What did **not** move is the rest of the activation cost, and this is the part
+worth stating plainly rather than rounding away. `Frame.args` and `Frame.temps`
+are still a `Vec` allocation apiece on every activation, so two of the three heap
+allocations per send survive; the `HashMap` lookup per invocation that finds the
+compiled body survives; and building an activation is still an allocation rather
+than an index bump. Those belong to "Planned: activations on a stack, reified on
+demand" below, and the ~68 ns activation cost above is not claimed to have been
+re-measured.
+
+**The tree-walker did not move**, and its medians are within noise of each
+other — expected, since it allocates activations at a rate the bytecode engine
+does not reach for this loop and pays for them in ways the arena did not touch.
+Its maximum, however, got worse: ~117 ms in every after-run against ~38 ms
+before, on the same ten timed runs. That is the arena's `Vec` doubling, not
+dispatch. Nothing reclaims a slot, so the frame arena grows monotonically across
+the ten runs, and the copy at a doubling point has both buffers resident and
+shows up as one slow run. The cost is an interim one with a collector behind it;
+it is recorded in [memory.md](memory.md) with the peak-memory figures, because
+that is where the collector's design has to see it.
+
 ### A 13% regression, found and recovered
 
 Routing every `Object`/`Frame` access through `Heap` (`docs/design/memory.md`,
@@ -224,26 +279,33 @@ in `dispatch::walk`, on the per-inheritance-level path method lookup walks,
 and cost nothing measurable there. The difference is not that one borrow is
 expensive and the other cheap; it is executions per benchmark run. A lexical
 send runs 250,000 times in this benchmark, an inheritance level far fewer.
-The lesson generalizes to the arena migration ahead: a per-access cost is
+The lesson generalized to the arena migration that followed: a per-access cost is
 only worth chasing where the access count is large, and the way to tell
 which sites those are is to measure, not to guess from the shape of the code.
 
 ## Planned: activations on a stack, reified on demand
 
-Today every activation is an individually heap-allocated `Rc<RefCell<Frame>>`,
-whether or not anything ever looks at it. The measurements above price that at
-about 41% of a send. The plan is the model Cog uses for Smalltalk: activations
-live as entries in a stack, cheap to push and pop, and are **reified into
-first-class frame objects only when something needs one** — a debugger, a mirror,
-`thisContext`, the image encoder, a closure that captures its activation, or a
-non-local return target.
+Today every activation is a separate entry in the `Heap`'s frame arena, created
+whether or not anything ever looks at it, and each one allocates its own `args`
+and `temps` vectors. The arena already took the `Rc` box and the `RefCell` borrow
+out of that — about 15% of the benchmark, measured above — but not the
+allocations and not the "always reified" part. The plan is the model Cog uses for
+Smalltalk: activations live as entries in a stack, cheap to push and pop, and are
+**reified into first-class frame objects only when something needs one** — a
+debugger, a mirror, `thisContext`, the image encoder, a closure that captures its
+activation, or a non-local return target.
 
-Pushing then costs an index bump rather than three allocations; the caller's
-argument registers *are* the callee's argument window, so `collect`'s vector
-disappears; `sender` is the entry below rather than a counted reference; and
-because the stack is owned rather than shared, a register access is a slice index
-with no borrow flag — which removes a cost from every instruction, not only from
-sends.
+Pushing then costs an index bump rather than an arena append plus two vector
+allocations; the caller's argument registers *are* the callee's argument window,
+so `collect`'s vector disappears; and `sender` is the entry below rather than a
+stored handle. Register access is already a slice index rather than a borrow —
+that arrived with the arena — so what remains here is the allocation and the
+reification, not the borrow flag.
+
+It also puts a bound on something the arena currently leaves unbounded. A stack
+entry is popped, so the storage an activation uses is reused the moment it
+returns, where the arena retains every activation the process ever made until a
+collector exists ([memory.md](memory.md)).
 
 **The trampoline falls out of this rather than driving it.** An explicit
 activation stack is what a trampolined `run_code` needs anyway, so replacing the
@@ -317,6 +379,8 @@ binds it is that no native code may ever enter an image.
   body rather than by a run-time flag.
 - **`pc` is stored only at observable points**, not at every instruction — a
   deliberate hot-path trade the debugger milestone may have to revisit.
-- **Activations are stack entries, reified on demand**, because the present
+- **Activations are stack entries, reified on demand**, because the
   always-reified model costs about 41% of a send for a structure most activations
-  never expose.
+  never expose. Moving activations into an arena took part of that — the `Rc` box
+  and the `RefCell` borrow, worth about 15% of the benchmark — and left the two
+  vector allocations and the reification itself for this step.

@@ -139,11 +139,13 @@ pub struct Heap {
     /// (`docs/design/memory.md`).
     next_identity_hash: u32,
     /// Every activation, addressed by a `FrameRef`'s index. Nothing is ever
-    /// removed: reclaiming a slot needs a collector, which is Milestone 4's
-    /// step 5. Until then an activation is retained for the process's
-    /// lifetime -- the interim cost this milestone's ordering accepts, and
-    /// the one step 3 removes by construction when activations move onto a
-    /// stack.
+    /// removed: reclaiming a slot needs a collector, and there is none. Until
+    /// then an activation is retained for the process's lifetime -- the
+    /// interim cost the milestone's ordering accepts, and the one the
+    /// activation stack removes by construction, since a stack entry is
+    /// popped. Both steps are enumerated in `docs/PROGRESS.md`, "Where the
+    /// next session starts"; what the retention measured is in
+    /// `docs/design/memory.md`, "What the collector owns".
     frames: Vec<Frame>,
     /// Every object, addressed by an `ObjRef`'s index. Nothing is ever
     /// removed, for the same reason as `frames`.
@@ -794,9 +796,11 @@ impl Heap {
     /// Under the arena the two reads are two slice indexes rather than two
     /// `RefCell` borrows, so the cost this batching removed is smaller than
     /// it was. It is kept because this is still the hottest call count in
-    /// the workspace, and because the batched shape is what step 3's
-    /// register-stack accessors want anyway; whether it still pays is a
-    /// measurement, not an assumption.
+    /// the workspace, and because the batched shape is what the activation
+    /// stack's register accessors want anyway (`docs/PROGRESS.md`, "Where
+    /// the next session starts", enumerates that step; it is designed in
+    /// `docs/design/execution.md`); whether it still pays is a measurement,
+    /// not an assumption.
     pub fn receiver_and_current_class(&self, frame: &FrameRef) -> (Value, Option<ClassRef>) {
         self.check_frame_origin(frame);
         let f = &self.frames[frame.index as usize];

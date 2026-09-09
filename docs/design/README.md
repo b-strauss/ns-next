@@ -33,11 +33,11 @@ that cannot name its code is describing an intention, and should say so.
 | Aspect | Document | Status | Planned next |
 |---|---|---|---|
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
-| Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | arena, handles, stack activations |
+| Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | stack activations, then `become:` |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | inline-cache slots wired up |
 | Activations, both engines, the VM loop | [execution.md](execution.md) | Built | activations on a stack, JIT tiers |
-| Object lifetime, identity, collection | [memory.md](memory.md) | Partial | an arena, checked roots, a collector |
+| Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena is built, nothing reclaims | checked roots, a collector |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | Partial | the leaf/callback split |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
@@ -54,13 +54,16 @@ crates/
   ns-cli/       the `ns-next` binary
 ```
 
-Inside `ns-runtime`, one file cuts across every other: `heap.rs`. Every read
-and write of an object or an activation goes through the `Heap` it defines,
-and `ObjRef`, `ClassRef` and `FrameRef` are opaque handles rather than
-`Rc<RefCell<_>>` aliases. That seam exists so the store behind a handle can be
-replaced — an arena is what replaces it — by changing one file rather than
-every caller. Start at [memory.md](memory.md) for what it guarantees and what
-it does not.
+Inside `ns-runtime`, one file cuts across every other: `heap.rs`. It owns the
+two arenas an object and an activation live in, and `ObjRef`, `ClassRef` and
+`FrameRef` are opaque 32-bit handles into them whose inner index is private to
+that file — so every read and write goes through a `Heap` accessor because the
+compiler refuses anything else. That seam exists so the store behind a handle
+can be replaced by changing one file rather than every caller; replacing
+`Rc<RefCell<_>>` with the arena is the evidence that it works, since no call
+site outside `heap.rs` and `types.rs` changed. Start at
+[memory.md](memory.md) for what it guarantees and what it does not — notably
+that nothing reclaims a slot yet.
 
 `ns-syntax` does not depend on `ns-runtime`. Nothing under `crates/ns-syntax`
 should change for runtime work.

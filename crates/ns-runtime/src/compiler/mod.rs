@@ -67,9 +67,10 @@ pub fn compile_method(
 /// Takes `heap` rather than building one. `Heap` owns real per-instance
 /// state -- both the frame and the object arenas -- so a freshly built
 /// `Heap` is not the interchangeable, counter-only value it used to be:
-/// `class` is an index into a specific `Heap.objects`, and reading it
-/// through any other `Heap` either indexes out of range and panics, or
-/// silently names a different object entirely.
+/// `class` is an index into a specific `Heap.objects`. Reading it through
+/// any other `Heap` trips the debug-build origin guard; in a release build
+/// it either indexes out of range and panics, or silently names a
+/// different object entirely.
 pub fn compile_initializer(
     heap: &crate::Heap,
     class: &ClassRef,
@@ -187,7 +188,7 @@ fn compile_superclass_message(
 }
 
 /// Takes `heap` rather than building one; see `compile_initializer`'s doc
-/// comment for why a throwaway `Heap` is unsafe.
+/// comment for why a throwaway `Heap` reads the wrong object.
 pub fn compile_module(
     heap: &crate::Heap,
     root_class: &ClassRef,

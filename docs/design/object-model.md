@@ -1,15 +1,15 @@
 # Object model — values, objects, mixins, classes
 
 > **Status:** built.
-> **Code:** `crates/ns-runtime/src/types.rs` (the handle types themselves),
-> `heap.rs` (every read and write of one), `mixin.rs`,
-> `interpreter/instantiate.rs`, `interpreter/nested.rs`.
+> **Code:** `crates/ns-runtime/src/heap.rs` (the handle types and every read
+> and write of one), `types.rs` (`Object`, `ObjectData`, `Value`),
+> `mixin.rs`, `interpreter/instantiate.rs`, `interpreter/nested.rs`.
 
 ## Values and objects
 
 ```rust
-Value = Nil | Bool(bool) | SmallInt(i64) | Float(f64) | Obj(ObjRef)
-ObjRef = Rc<RefCell<Object>>
+Value = Nil | Bool(bool) | SmallInt(i64) | Float(f64) | Obj(ObjRef)   // Copy
+ObjRef = a 32-bit index into the `Heap`'s object arena; ClassRef is an alias
 
 Object { class: ClassRef, identity_hash: u32, data: ObjectData }
 
@@ -21,17 +21,25 @@ ObjectData = Instance(Vec<Value>) | Str(String) | Sym(Symbol)
 objects, which is why nothing resembling an object store is needed to name them
 in a serialized image.
 
+**An `ObjRef` is an index, not a pointer.** Every `Object` lives in one
+`Heap`'s arena and is reached only through a `Heap` accessor; the index is
+private to `crates/ns-runtime/src/heap.rs`, so the compiler refuses to read it
+anywhere else. `Value` is therefore `Copy` and a handle has no destructor. What
+that representation buys, what it costs while nothing reclaims a slot, and why a
+handle means nothing against a different `Heap` are in [memory.md](memory.md).
+
 **The identity hash is a monotonic counter assigned at allocation**, never
-derived from the `Rc` pointer address. An address-derived hash would break the
-moment a moving collector relocates the object or a `become:` swaps identities,
-and identity has to be stable across a snapshot. See [memory.md](memory.md).
+derived from an address and never from the arena index. An address- or
+index-derived hash would break the moment a moving collector relocates the
+object or a `become:` swaps identities, and identity has to be stable across a
+snapshot. See [memory.md](memory.md).
 
 `ClosureData { params, captured_frame: FrameRef, body, home: ObjRef }` captures
 its defining frame for closure semantics and its home activation for non-local
 return.
 
-**Never `{:?}` a `Value`.** `ObjRef`'s hand-written `Debug` prints identity
-only, so this no longer recurses -- but it renders Rust internals such as
+**Never `{:?}` a `Value`.** `ObjRef`'s hand-written `Debug` prints its arena
+index only, so this cannot recurse -- but it renders Rust internals such as
 `ObjRef(#42)`, useless in a message meant for a Newspeak programmer.
 `Heap::describe` answers "the String \"foo\"" instead.
 
@@ -225,9 +233,10 @@ What reflection will need beyond it is not yet known; see
 
 One consequence is load-bearing elsewhere: `Object::class` is not an
 `Option<ClassRef>`, because every class object's own class is the bootstrap
-`Object` placeholder. The iterative `Drop` implementation and the image decoder
-both rely on that. Building §3.2's hierarchy would make a class object's class a
-real, distinct object and would invalidate both.
+`Object` placeholder. The image decoder relies on that: it allocates every
+record as a placeholder pointing at the bootstrap `Object` before it reads the
+record that says what the class really is. Building §3.2's hierarchy would make
+a class object's class a real, distinct object and would invalidate it.
 
 ## Source retention and provenance
 
@@ -244,30 +253,38 @@ and cheap to carry.
   can add a variant for code entered live in the debugger without changing the
   type its call sites depend on.
 
-## Planned: arena allocation and handles
+## Arena allocation and handles
 
-`Rc<RefCell<Object>>` is the Milestone 1 model and still in place. Replacing it
-with an arena of typed handles is the largest item in Milestone 4, and it is
-designed in [memory.md](memory.md) together with the root discipline that goes
-with it and what the change costs the tree-walking engine.
+`Rc<RefCell<Object>>` was the Milestone 1 model. It is gone: an object is an
+entry in one `Heap`'s arena and an `ObjRef` is a 32-bit index into it, private to
+`heap.rs`. The representation, what it measured, and the root discipline and
+collector that are still to come are designed in [memory.md](memory.md).
 
 Two consequences belong here rather than there, because they are about this
 document's subject.
 
-**An activation is an object too.** `Frame` moves into the same change: instead
-of one `Rc<RefCell<Frame>>` per activation, activations become entries in a stack
-and are reified into frame objects on demand. That is designed in
-[execution.md](execution.md), and it is not a separable second project — frame
-storage would otherwise be built twice, once on `Rc` and once on the arena.
+**An activation is an object too**, and half of that is done. A `Frame` is an
+entry in the same `Heap`, in its own arena, addressed by a `FrameRef` with the
+same privacy — so an activation and an object are stored the same way, and
+neither costs an `Rc` box or a `RefCell` borrow. What has *not* happened is the
+other half: an activation is still individually allocated and always reified,
+rather than a stack entry turned into a first-class frame object only when
+something looks at one. That is designed in [execution.md](execution.md),
+"Planned: activations on a stack, reified on demand", and it is where the rest of
+an activation's cost — `args` and `temps`, a `Vec` allocation apiece — goes. The
+two were not separable in the other direction: frame storage would otherwise have
+been built twice, once on `Rc` and once on the arena.
 
-**`become:` becomes expressible.** Adding or removing an instance slot on a class
-with live instances requires allocating new-shape instances, copying fields and
-swapping identity, which the layout model already anticipates: the class owns the
-layout and access resolves through the current one. What is missing today is a
-representation in which identity can be swapped at all. Object forwarding in a
-moving collector supplies it, so the MirrorBuilder in
-[liveness-and-reflection.md](liveness-and-reflection.md) stops being blocked on
-the representation.
+**Planned: `become:` becomes expressible**, once there is a collector. Adding or
+removing an instance slot on a class with live instances requires allocating
+new-shape instances, copying fields and swapping identity, which the layout model
+already anticipates: the class owns the layout and access resolves through the
+current one. The arena supplies the precondition — identity is an index the
+`Heap` owns, not a pointer a caller holds — but not the mechanism. Swapping
+identity safely means finding and rewriting every reference, which is object
+forwarding in a moving collector, and no collector exists yet
+([memory.md](memory.md)). Until one does, the MirrorBuilder in
+[liveness-and-reflection.md](liveness-and-reflection.md) stays blocked on it.
 
 ## Decisions
 

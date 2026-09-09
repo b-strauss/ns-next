@@ -7,7 +7,8 @@ image format. Rust 1.98.0, edition 2021, three crates:
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`.
 - `crates/ns-runtime` — resolver, object model, dispatch, both execution engines
   (`interpreter/` and `compiler/` + `vm.rs`), core library (`builtins/`), image format
-  (`image/`).
+  (`image/`). Objects and activations live in arenas owned by one `Heap`
+  (`heap.rs`) and are addressed by 32-bit handles; nothing reclaims a slot yet.
 - `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
   `snapshot`, `load`, `bench`, `disasm`, `inspect`, `build`.
 
@@ -55,7 +56,12 @@ validate every id, tag, count and length before it indexes, allocates or slices,
 bound any recursion whose depth the input controls. `image::load` also runs two
 structural verification passes before installing the engine. See
 `docs/design/image-format.md`'s "Verification" section for the scope of what they
-do and do not guarantee.
+do and do not guarantee. Note what refusing an image does *not* undo: the decoder
+allocates one placeholder object and activation per declared record before it can
+validate any of them, and the arena never reclaims a slot, so a rejected image
+still costs the `Heap` that memory for the rest of its life. `bounded_count` keeps
+that proportional to the file's size rather than to a `u32` — do not add a
+pre-allocation that is not bounded that way.
 
 That guarantee covers **decoding**. `ns-next load` on a stateless binary instantiates
 and sends the recorded entry with no flag at all, so loading one *runs its code* --
@@ -74,6 +80,17 @@ needs — images are disposable and `FORMAT_VERSION` is never bumped — because
 renumbering fails in the one way the untrusted-input guarantee does not cover: a stale
 artifact would decode into a *different, perfectly valid* program and run it, reporting
 nothing. Retiring numbers means those bytes hit an unknown tag and are refused.
+
+**A handle means nothing against a `Heap` that did not mint it.** An `ObjRef`, a
+`ClassRef` and a `FrameRef` are indices into one `Heap`'s arenas. Never build a
+`Heap::new()` to stand in for one that is out of scope, and never hold a handle
+across the death of the interpreter that allocated it: the index is in range in the
+other heap too, so the read answers a **different, perfectly valid object** rather
+than failing. Pass the real `&Heap` down instead — `compiler::compile_module`,
+`compile_initializer` and `ns-cli`'s `cmd_disasm` each carry one for exactly this
+reason. A `debug_assertions`-only origin guard turns the mistake into a panic at
+the read, so a debug-build test run catches it; a release build does not, which is
+why this is an invariant and not a check to rely on.
 
 **Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an `EvalResult`.**
 `ObjRef` and `FrameRef` each carry a hand-written `Debug` that prints identity only, so

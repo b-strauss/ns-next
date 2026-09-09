@@ -34,8 +34,10 @@ use crate::types::*;
 /// while a straight-line instruction executes: `run_code` never yields
 /// between them, and the only reader in the tree, `image::encode_frame`,
 /// runs on a frame that reached it through one of those three. Keeping the
-/// store out of the straight-line arms takes a `RefCell` borrow and a write
-/// off the hot path for a value nothing observes there.
+/// store out of the straight-line arms takes a bounds-checked arena write
+/// off the hot path for a value nothing observes there. It used to take a
+/// `RefCell` borrow with it, which the arena removed, so what this saves is
+/// smaller than it was -- whether it still pays is a measurement.
 pub fn run_code(
     interp: &mut Interpreter,
     frame: &FrameRef,
