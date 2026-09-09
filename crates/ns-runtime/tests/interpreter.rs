@@ -113,7 +113,7 @@ fn method_with_no_explicit_return_returns_self() {
     let instance = instance_of(&mut interp, class);
 
     let result = interp.send(
-        Value::Obj(instance.clone()),
+        Value::Obj(instance),
         Symbol::intern("bar"),
         vec![],
         &bindings,
@@ -232,7 +232,7 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
             assert!(
                 matches!(&elements, Some(elems) if elems.is_empty()),
                 "expected a fresh, empty OrderedCollection instance, got {}",
-                interp.heap_ref().describe(&Value::Obj(obj.clone()))
+                interp.heap_ref().describe(&Value::Obj(obj))
             );
         }
         Ok(other) => panic!(
@@ -263,8 +263,8 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
     let closure = Rc::new(ClosureData {
         params: vec![],
         body: ns_runtime::ClosureBody::Ast(Rc::new(block_body)),
-        captured_frame: home.clone(),
-        home: home.clone(),
+        captured_frame: home,
+        home,
         bindings: bindings.clone(),
     });
 
@@ -310,8 +310,8 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
     let closure = Rc::new(ClosureData {
         params: vec![],
         body: ns_runtime::ClosureBody::Ast(Rc::new(block_body)),
-        captured_frame: home.clone(),
-        home: home.clone(),
+        captured_frame: home,
+        home,
         bindings: bindings.clone(),
     });
 
@@ -382,13 +382,7 @@ fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() 
     };
 
     // `capture` returns normally -- no `^` anywhere in its body.
-    match interp.send(
-        receiver.clone(),
-        Symbol::intern("capture"),
-        vec![],
-        &bindings,
-        None,
-    ) {
+    match interp.send(receiver, Symbol::intern("capture"), vec![], &bindings, None) {
         Ok(_) => {}
         Err(Signal::Error(e)) => panic!("capture: unexpected Signal::Error: {}", e.message),
         Err(Signal::Return(..)) => panic!("capture: unexpected Signal::Return"),

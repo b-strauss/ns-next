@@ -210,7 +210,7 @@ impl Interpreter {
             return None;
         }
         let builtin = self.heap.class_builtin(obj);
-        let class_ref = obj.clone();
+        let class_ref = *obj;
         Some(match builtin {
             // `Array`/`OrderedCollection`'s Milestone 1 representation is
             // `ObjectData::Array`, not the generic `instantiate()`'s
@@ -266,10 +266,8 @@ impl Interpreter {
             .heap
             .class_application(&class)
             .map_or(0, |a| a.num_slots);
-        let instance = self.new_instance_object(
-            class.clone(),
-            ObjectData::Instance(vec![Value::Nil; slot_count]),
-        );
+        let instance =
+            self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil; slot_count]));
         let receiver = Value::Obj(instance);
 
         // Steps 2-5, for this class and then, recursively, for every level
@@ -326,7 +324,7 @@ impl Interpreter {
             if factory_args.len() != declared_arity {
                 return Err(Signal::Error(NewspeakError {
                     selector: Symbol::intern("new"),
-                    receiver: Value::Obj(class.clone()),
+                    receiver: Value::Obj(*class),
                     message: format!(
                         "wrong number of factory arguments: factory takes {}, got {}",
                         declared_arity,
@@ -368,7 +366,7 @@ impl Interpreter {
             return Ok(());
         }
         let frame = self.heap.alloc_frame(Frame {
-            receiver: instance.clone(),
+            receiver: *instance,
             args: factory_args,
             temps: vec![],
             pc: 0,
@@ -382,8 +380,8 @@ impl Interpreter {
             },
             sender: None,
             home: None,
-            current_class: Some(class.clone()),
-            kind: FrameKind::Initializer(class.clone()),
+            current_class: Some(*class),
+            kind: FrameKind::Initializer(*class),
             uncontinuable: false,
             slot_base: self
                 .heap
@@ -479,7 +477,7 @@ impl Interpreter {
             instance,
             factory_args.to_vec(),
             class,
-            FrameKind::SuperclassMessage(class.clone()),
+            FrameKind::SuperclassMessage(*class),
             compiled,
             args_expr.as_ref(),
             bindings,
@@ -706,7 +704,7 @@ fn not_the_primary_factory_error(
     };
     Signal::Error(NewspeakError {
         selector,
-        receiver: Value::Obj(superclass.clone()),
+        receiver: Value::Obj(*superclass),
         message: format!(
             "the superclass clause of class {subclass_name} sends #{selector}, \
              but the primary factory of class {superclass_name} is {expected}"

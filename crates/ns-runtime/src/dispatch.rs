@@ -71,7 +71,7 @@ pub fn kth_enclosing_object(
     depth: u16,
 ) -> Value {
     if depth == 0 {
-        return self_value.clone();
+        return *self_value;
     }
     let Some(mut level) = defining_class.cloned() else {
         return Value::Nil;
@@ -201,7 +201,7 @@ fn walk(
 /// what ends a walk that was handed one.
 fn level_of(heap: &Heap, class: &ClassRef) -> Option<(ClassRef, Rc<MixinApplication>)> {
     heap.class_application(class)
-        .map(|application| (class.clone(), application))
+        .map(|application| (*class, application))
 }
 
 /// Steps both chains together. Every construction site (`load_module`,

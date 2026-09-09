@@ -32,7 +32,7 @@ fn next_heap_id() -> u32 {
 /// A handle is meaningful only against the `Heap` that allocated it. The
 /// arena never reuses a slot -- there is no collector yet -- so two live
 /// objects never share an index.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct ObjRef {
     index: u32,
     /// The heap that allocated this handle. Debug builds only: it exists to
@@ -91,7 +91,7 @@ pub type ClassRef = ObjRef;
 /// arena never reuses a slot -- there is no collector yet -- so two live
 /// activations never share an index, which is what `Signal::Return`'s
 /// target check depends on.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct FrameRef {
     index: u32,
     /// The heap that allocated this handle. Debug builds only: it exists to
@@ -287,7 +287,7 @@ impl Heap {
         let index = self.next_object_index();
         let handle = self.object_handle(index);
         self.objects.push(Object {
-            class: handle.clone(),
+            class: handle,
             identity_hash: 0,
             data,
         });
@@ -436,7 +436,7 @@ impl Heap {
 
     pub fn class_of_obj(&self, obj: &ObjRef) -> ClassRef {
         self.check_object_origin(obj);
-        self.objects[obj.index as usize].class.clone()
+        self.objects[obj.index as usize].class
     }
 
     pub fn is_class(&self, obj: &ObjRef) -> bool {
@@ -659,7 +659,7 @@ impl Heap {
     pub fn class_enclosing(&self, class: &ClassRef) -> Option<ObjRef> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.enclosing.clone(),
+            ObjectData::Class(data) => data.enclosing,
             _ => None,
         }
     }
@@ -667,7 +667,7 @@ impl Heap {
     pub fn class_declaring(&self, class: &ClassRef) -> Option<ClassRef> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.declaring_class.clone(),
+            ObjectData::Class(data) => data.declaring_class,
             _ => None,
         }
     }
@@ -675,7 +675,7 @@ impl Heap {
     pub fn class_superclass(&self, class: &ClassRef) -> Option<ClassRef> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.superclass.clone(),
+            ObjectData::Class(data) => data.superclass,
             _ => None,
         }
     }
@@ -697,7 +697,7 @@ impl Heap {
     ) -> Option<(Option<BuiltinClass>, Option<ClassRef>)> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => Some((data.builtin, data.superclass.clone())),
+            ObjectData::Class(data) => Some((data.builtin, data.superclass)),
             _ => None,
         }
     }
@@ -705,7 +705,7 @@ impl Heap {
     pub fn class_metaclass(&self, class: &ClassRef) -> Option<ClassRef> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.metaclass.clone(),
+            ObjectData::Class(data) => data.metaclass,
             _ => None,
         }
     }
@@ -780,7 +780,7 @@ impl Heap {
 
     pub fn receiver(&self, frame: &FrameRef) -> Value {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].receiver.clone()
+        self.frames[frame.index as usize].receiver
     }
 
     /// The receiver and `current_class` together, in one borrow.
@@ -800,7 +800,7 @@ impl Heap {
     pub fn receiver_and_current_class(&self, frame: &FrameRef) -> (Value, Option<ClassRef>) {
         self.check_frame_origin(frame);
         let f = &self.frames[frame.index as usize];
-        (f.receiver.clone(), f.current_class.clone())
+        (f.receiver, f.current_class)
     }
 
     pub fn local(&self, frame: &FrameRef, index: u16) -> Value {
@@ -808,9 +808,9 @@ impl Heap {
         let f = &self.frames[frame.index as usize];
         let i = index as usize;
         if i < f.args.len() {
-            f.args[i].clone()
+            f.args[i]
         } else {
-            f.temps[i - f.args.len()].clone()
+            f.temps[i - f.args.len()]
         }
     }
 
@@ -828,7 +828,7 @@ impl Heap {
 
     pub fn frame_current_class(&self, frame: &FrameRef) -> Option<ClassRef> {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].current_class.clone()
+        self.frames[frame.index as usize].current_class
     }
 
     /// The absolute field index a compiled `InitSlot`'s mixin-relative
@@ -860,7 +860,7 @@ impl Heap {
 
     pub fn frame_home(&self, frame: &FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].home.clone()
+        self.frames[frame.index as usize].home
     }
 
     /// The activation that invoked `frame`, `None` only for `FrameKind::TopLevel`.
@@ -870,7 +870,7 @@ impl Heap {
     /// than left `None` (the Final-review finding I6 defect this guards against).
     pub fn frame_sender(&self, frame: &FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].sender.clone()
+        self.frames[frame.index as usize].sender
     }
 
     /// The frame a closure activation captured, or `None` for any other
@@ -878,7 +878,7 @@ impl Heap {
     pub fn frame_captured(&self, frame: &FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
         match &self.frames[frame.index as usize].kind {
-            FrameKind::Closure(closure) => Some(closure.captured_frame.clone()),
+            FrameKind::Closure(closure) => Some(closure.captured_frame),
             _ => None,
         }
     }
@@ -968,7 +968,7 @@ mod tests {
 
         let mut other = Heap::new();
         let other_class = other.alloc_self_referential_class(ObjectData::Instance(vec![]));
-        other.alloc_object(other_class.clone(), ObjectData::Str("theirs".to_string()));
+        other.alloc_object(other_class, ObjectData::Str("theirs".to_string()));
         other.alloc_object(other_class, ObjectData::Str("theirs".to_string()));
 
         // In range for `other` -- which is exactly why this is silent
@@ -1074,9 +1074,9 @@ mod tests {
         // index 0 -- see `a_self_referential_class_is_its_own_class`.
         heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
         let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
-        let first = heap.alloc_object(class.clone(), ObjectData::Str("first".to_string()));
+        let first = heap.alloc_object(class, ObjectData::Str("first".to_string()));
         for _ in 0..1000 {
-            heap.alloc_object(class.clone(), ObjectData::Str("filler".to_string()));
+            heap.alloc_object(class, ObjectData::Str("filler".to_string()));
         }
         assert_eq!(heap.str_value(&first).as_deref(), Some("first"));
         assert!(heap.class_of_obj(&first).same(&class));

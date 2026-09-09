@@ -88,8 +88,7 @@ pub fn run_code(
                 let receiver = read_local(&interp.heap, frame, *receiver_reg);
                 let args = collect(&interp.heap, frame, arg_regs);
                 interp.heap.set_frame_pc(frame, pc);
-                let result =
-                    interp.send(receiver, *selector, args, bindings, Some(frame.clone()))?;
+                let result = interp.send(receiver, *selector, args, bindings, Some(*frame))?;
                 write_local(&mut interp.heap, frame, *dst, result);
             }
             Instr::SendLexical {
@@ -125,7 +124,7 @@ pub fn run_code(
                 let closure = Rc::new(ClosureData {
                     params: (**params).clone(),
                     body: ClosureBody::Compiled(block.clone()),
-                    captured_frame: frame.clone(),
+                    captured_frame: *frame,
                     home: home_of(&interp.heap, frame),
                     bindings: bindings.clone(),
                 });

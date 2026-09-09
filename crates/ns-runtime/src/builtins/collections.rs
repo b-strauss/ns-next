@@ -19,7 +19,7 @@ use crate::{Heap, Interpreter, Symbol};
 fn out_of_range(receiver: &Value, selector: Symbol, index: i64, len: usize) -> NewspeakError {
     NewspeakError {
         selector,
-        receiver: receiver.clone(),
+        receiver: *receiver,
         message: format!("index {index} out of range: valid indices are 1..{len} (size {len})"),
     }
 }
@@ -32,7 +32,7 @@ fn not_an_integer(
 ) -> NewspeakError {
     NewspeakError {
         selector,
-        receiver: receiver.clone(),
+        receiver: *receiver,
         message: format!(
             "{selector} requires an Integer index, got {}",
             heap.describe_arg(got)
@@ -95,7 +95,7 @@ fn dispatch_common(
             let Some(block) = args.first().cloned() else {
                 return Some(Err(Signal::Error(NewspeakError {
                     selector,
-                    receiver: receiver.clone(),
+                    receiver,
                     message: "do: requires a block argument".to_string(),
                 })));
             };
@@ -104,7 +104,7 @@ fn dispatch_common(
                     return Some(Err(signal));
                 }
             }
-            Some(Ok(receiver.clone()))
+            Some(Ok(receiver))
         }
         _ => None,
     }
@@ -140,7 +140,7 @@ pub fn dispatch_array(
         }
         let value = args.get(1).cloned().unwrap_or(Value::Nil);
         interp.heap.array_set(obj, (index as usize) - 1, value);
-        return Some(Ok(receiver.clone()));
+        return Some(Ok(receiver));
     }
     dispatch_common(interp, receiver, selector, args, sender)
 }
@@ -160,7 +160,7 @@ pub fn dispatch_ordered_collection(
         // Matches the reference library's convention: `add:` returns the
         // argument, not the receiver.
         let value = args.first().cloned().unwrap_or(Value::Nil);
-        interp.heap.array_push(obj, value.clone());
+        interp.heap.array_push(obj, value);
         return Some(Ok(value));
     }
     dispatch_common(interp, receiver, selector, args, sender)

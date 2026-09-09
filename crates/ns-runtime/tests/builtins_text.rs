@@ -102,7 +102,7 @@ fn string_equality_compares_payloads() {
     let c = Value::Obj(interp.new_string("different".to_string()));
 
     let equal = expect_ok(
-        interp.send(a.clone(), Symbol::intern("="), vec![b], &bindings, None),
+        interp.send(a, Symbol::intern("="), vec![b], &bindings, None),
         "'same' = 'same'",
     );
     assert!(matches!(equal, Value::Bool(true)));

@@ -20,7 +20,7 @@ use crate::Symbol;
 /// `pub use types::*` is how the rest of the workspace names them.
 pub use crate::heap::{ClassRef, FrameRef, ObjRef};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Value {
     Nil,
     Bool(bool),
@@ -342,8 +342,8 @@ mod tests {
         let mut heap = crate::Heap::new();
         let class = dummy_class(&mut heap);
         let instance = heap.alloc_object(class, ObjectData::Instance(vec![]));
-        let a = Value::Obj(instance.clone());
-        let b = a.clone();
+        let a = Value::Obj(instance);
+        let b = a;
         match (a, b) {
             (Value::Obj(x), Value::Obj(y)) => assert!(x.same(&y)),
             _ => panic!("expected Value::Obj"),

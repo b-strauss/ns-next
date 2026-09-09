@@ -1152,7 +1152,7 @@ fn round_trip_graph(
             root_class: &class,
             codes: &code_table.codes,
             bindings: &bindings,
-            platform: platform.clone(),
+            platform,
             mixins: &mixin_order,
         };
         decode::decode_graph_section(&mut r, &mut ctx, &symbol_table).expect("graph")
@@ -1180,7 +1180,7 @@ fn instances_and_arrays_round_trip_with_shared_identity_preserved() {
     let (interp, _c, original, decoded, _max) = round_trip_graph(EMPTY, |interp, _, _| {
         let shared = Value::Obj(interp.new_string("shared".to_string()));
         vec![Value::Obj(interp.new_array(vec![
-            shared.clone(),
+            shared,
             shared,
             Value::SmallInt(7),
         ]))]
@@ -1229,7 +1229,7 @@ fn class_references_resolve_to_the_same_live_class_objects() {
     let (interp, class, _o, decoded, _max) = round_trip_graph(EMPTY, |interp, class, _| {
         vec![
             Value::Obj(interp.builtin_class(BuiltinClass::Integer)),
-            Value::Obj(class.clone()),
+            Value::Obj(*class),
         ]
     });
     assert!(obj(&decoded[0]).same(&interp.builtin_class(BuiltinClass::Integer)));
@@ -1248,7 +1248,7 @@ fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | a = 1. b = 'two'. |\n) (\n) : ()";
     let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class, bindings| {
         vec![expect_ok(
-            interp.instantiate(class.clone(), vec![], bindings),
+            interp.instantiate(*class, vec![], bindings),
             "instantiate",
         )]
     });
@@ -1270,10 +1270,7 @@ fn a_closure_and_its_paused_frame_chain_round_trip() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  mk = ( ^[ 1 ] )\n  public outer = ( ^mk )\n) : ()";
     let (interp, class, original, decoded, _max) =
         round_trip_graph(src, |interp, class, bindings| {
-            let instance = expect_ok(
-                interp.instantiate(class.clone(), vec![], bindings),
-                "instantiate",
-            );
+            let instance = expect_ok(interp.instantiate(*class, vec![], bindings), "instantiate");
             let closure = expect_ok(
                 interp.send(instance, Symbol::intern("outer"), vec![], bindings, None),
                 "outer",
@@ -1357,7 +1354,7 @@ fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
     let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class, bindings| {
         vec![expect_ok(
-            interp.instantiate(class.clone(), vec![], bindings),
+            interp.instantiate(*class, vec![], bindings),
             "instantiate",
         )]
     });
@@ -1377,10 +1374,7 @@ fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
 fn a_tree_walker_closure_is_a_snapshot_error_not_a_silent_omission() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public mk = ( ^[ 1 ] )\n) : ()";
     let (mut interp, class, bindings) = load(src); // tree-walk engine
-    let instance = expect_ok(
-        interp.instantiate(class.clone(), vec![], &bindings),
-        "instantiate",
-    );
+    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     let closure = expect_ok(
         interp.send(instance, Symbol::intern("mk"), vec![], &bindings, None),
         "mk",
@@ -1414,7 +1408,7 @@ fn a_decoded_closure_carries_the_loads_own_bindings_map() {
         .set_engine(Engine::Bytecode(module))
         .expect("a source-built interpreter accepts the bytecode engine");
     let roots = vec![expect_ok(
-        interp.instantiate(class.clone(), vec![], &bindings),
+        interp.instantiate(class, vec![], &bindings),
         "instantiate",
     )];
     let platform = interp.platform();
@@ -1456,7 +1450,7 @@ fn a_decoded_closure_carries_the_loads_own_bindings_map() {
         root_class: &class,
         codes: &table.codes,
         bindings: &loads_bindings,
-        platform: platform.clone(),
+        platform,
         mixins: &mixin_order,
     };
     let decoded = decode::decode_graph_section(&mut r, &mut ctx, &symbol_table).expect("graph");
@@ -1479,7 +1473,7 @@ fn the_graph_section_encoding_is_deterministic() {
             .set_engine(Engine::Bytecode(module))
             .expect("a source-built interpreter accepts the bytecode engine");
         let roots = vec![expect_ok(
-            interp.instantiate(class.clone(), vec![], &bindings),
+            interp.instantiate(class, vec![], &bindings),
             "instantiate",
         )];
         let platform = interp.platform();
@@ -1553,7 +1547,7 @@ impl GraphFixture {
             root_class: &self.class,
             codes: &self.codes,
             bindings: &self.bindings,
-            platform: self.platform.clone(),
+            platform: self.platform,
             mixins: &self.mixins,
         };
         decode::decode_graph_section(&mut decode::Reader::new(bytes), &mut ctx, &self.symbols)
@@ -1959,7 +1953,7 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         .set_engine(Engine::Bytecode(module))
         .expect("a source-built interpreter accepts the bytecode engine");
     let roots = vec![expect_ok(
-        interp.instantiate(class.clone(), vec![], &bindings),
+        interp.instantiate(class, vec![], &bindings),
         "instantiate",
     )];
     let platform = interp.platform();
@@ -1998,7 +1992,7 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         root_class: &class,
         codes: &[],
         bindings: &bindings,
-        platform: platform.clone(),
+        platform,
         mixins: &mixin_order,
     };
     for cut in 1..graph.len() {
@@ -2017,10 +2011,7 @@ fn a_closure_capturing_a_block_activation_round_trips() {
     // frame, the one frame kind the quiesced worlds above never produce.
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public mk = ( ^[:x | [ x ] ] value: 5 )\n) : ()";
     let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class, bindings| {
-        let instance = expect_ok(
-            interp.instantiate(class.clone(), vec![], bindings),
-            "instantiate",
-        );
+        let instance = expect_ok(interp.instantiate(*class, vec![], bindings), "instantiate");
         vec![expect_ok(
             interp.send(instance, Symbol::intern("mk"), vec![], bindings, None),
             "mk",
@@ -2200,18 +2191,9 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
     interp
         .set_engine(Engine::Bytecode(module))
         .expect("a source-built interpreter accepts the bytecode engine");
-    let instance = expect_ok(
-        interp.instantiate(class.clone(), vec![], &bindings),
-        "instantiate",
-    );
+    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     expect_ok(
-        interp.send(
-            instance.clone(),
-            Symbol::intern("bump"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(instance, Symbol::intern("bump"), vec![], &bindings, None),
         "bump",
     );
     let platform = interp.platform();
@@ -2240,7 +2222,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
     let bindings = loaded.empty_bindings.clone();
     let n = expect_ok(
         loaded.interp.send(
-            loaded.roots[0].clone(),
+            loaded.roots[0],
             Symbol::intern("bump"),
             vec![],
             &bindings,
@@ -2357,10 +2339,7 @@ fn a_snapshot_of_a_tree_walker_closure_is_refused_rather_than_written() {
     // encoder must refuse rather than write an image nothing could read.
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
     let (mut interp, class, bindings) = load(src);
-    let instance = expect_ok(
-        interp.instantiate(class.clone(), vec![], &bindings),
-        "instantiate",
-    );
+    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
     interp
         .set_engine(Engine::Bytecode(module))
@@ -2387,10 +2366,7 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
     interp
         .set_engine(Engine::Bytecode(module))
         .expect("a source-built interpreter accepts the bytecode engine");
-    let instance = expect_ok(
-        interp.instantiate(class.clone(), vec![], &bindings),
-        "instantiate",
-    );
+    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     let platform = interp.platform();
     let bytes = image::snapshot(
         interp.heap_ref(),
@@ -3079,18 +3055,9 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
     interp
         .set_engine(Engine::Bytecode(module))
         .expect("a source-built interpreter accepts the bytecode engine");
-    let instance = expect_ok(
-        interp.instantiate(class.clone(), vec![], &bindings),
-        "instantiate",
-    );
+    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     expect_ok(
-        interp.send(
-            instance.clone(),
-            Symbol::intern("keep"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(instance, Symbol::intern("keep"), vec![], &bindings, None),
         "keep",
     );
     let platform = interp.platform();
@@ -3108,7 +3075,7 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
     let bindings = loaded.empty_bindings.clone();
     let held = expect_ok(
         loaded.interp.send(
-            loaded.roots[0].clone(),
+            loaded.roots[0],
             Symbol::intern("keep"),
             vec![],
             &bindings,
@@ -3142,18 +3109,9 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
     interp
         .set_engine(Engine::Bytecode(module))
         .expect("a source-built interpreter accepts the bytecode engine");
-    let instance = expect_ok(
-        interp.instantiate(class.clone(), vec![], &bindings),
-        "instantiate",
-    );
+    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     expect_ok(
-        interp.send(
-            instance.clone(),
-            Symbol::intern("keep"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(instance, Symbol::intern("keep"), vec![], &bindings, None),
         "keep",
     );
     let platform = interp.platform();
@@ -3249,10 +3207,7 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
     interp
         .set_engine(Engine::Bytecode(module))
         .expect("a source-built interpreter accepts the bytecode engine");
-    let instance = expect_ok(
-        interp.instantiate(class.clone(), vec![], &bindings),
-        "instantiate",
-    );
+    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     let platform = interp.platform();
     let doctored = CompiledModule {
         methods: interp
@@ -3330,10 +3285,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
     interp
         .set_engine(Engine::Bytecode(module))
         .expect("a source-built interpreter accepts the bytecode engine");
-    let instance = expect_ok(
-        interp.instantiate(class.clone(), vec![], &bindings),
-        "instantiate",
-    );
+    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     interp
         .heap_mut()
         .set_identity_hash(obj(&instance), u32::MAX - 1);
@@ -3461,7 +3413,7 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
         .expect("a source-built interpreter accepts the bytecode engine");
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        interp.instantiate(class, vec![platform], &bindings),
         "instantiate Outer",
     );
     let bytes = image::snapshot(
@@ -3534,7 +3486,7 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
         .expect("a source-built interpreter accepts the bytecode engine");
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        interp.instantiate(class, vec![platform], &bindings),
         "instantiate Outer",
     );
     let bytes = image::snapshot(
@@ -3601,7 +3553,7 @@ fn instantiated_world(src: &str) -> (Interpreter, ClassRef, Bindings, Value, Val
         .expect("a source-built interpreter accepts the bytecode engine");
     let platform = interp.platform();
     let root = expect_ok(
-        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        interp.instantiate(class, vec![platform], &bindings),
         "instantiate the root class",
     );
     (interp, class, bindings, platform, root)
@@ -3689,13 +3641,7 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     // class object is an ordinary record in the object table.
     let (mut interp, class, bindings, platform, outer) = instantiated_world(NESTED_MODULE);
     let inner_class = expect_ok(
-        interp.send(
-            outer.clone(),
-            Symbol::intern("Inner"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(outer, Symbol::intern("Inner"), vec![], &bindings, None),
         "Inner",
     );
     let Value::Obj(inner_class) = inner_class else {
@@ -3770,13 +3716,7 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
     // with no field count to contradict it, rather than a decode error.
     let (mut interp, class, bindings, platform, outer) = instantiated_world(NESTED_MODULE);
     let _ = expect_ok(
-        interp.send(
-            outer.clone(),
-            Symbol::intern("Inner"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(outer, Symbol::intern("Inner"), vec![], &bindings, None),
         "Inner",
     );
     let bytes = snapshot_world(
@@ -3792,7 +3732,7 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
         .first()
         .cloned()
         .expect("the snapshotted Outer");
-    let root_class = loaded.root_class.clone();
+    let root_class = loaded.root_class;
     let inner = nested_class_of(&mut loaded, reloaded_outer, "Inner");
     assert_ne!(
         class_name(loaded.interp.heap_ref(), &inner),
@@ -3815,17 +3755,11 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
     // is why this is a property test rather than a shape test.
     let (mut interp, class, bindings, platform, first) = instantiated_world(NESTED_MODULE);
     let second = expect_ok(
-        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        interp.instantiate(class, vec![platform], &bindings),
         "a second Outer",
     );
     let inner_of = |interp: &mut Interpreter, outer: &Value| match expect_ok(
-        interp.send(
-            outer.clone(),
-            Symbol::intern("Inner"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(*outer, Symbol::intern("Inner"), vec![], &bindings, None),
         "Inner",
     ) {
         Value::Obj(class) => class,
@@ -3845,17 +3779,11 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
         "one shared application, before the snapshot"
     );
 
-    let bytes = snapshot_world(
-        &interp,
-        NESTED_MODULE,
-        &class,
-        &platform,
-        &[first.clone(), second.clone()],
-    );
+    let bytes = snapshot_world(&interp, NESTED_MODULE, &class, &platform, &[first, second]);
     let mut loaded = image::load(&bytes).expect("load");
     let outers: Vec<Value> = loaded.roots.clone();
-    let a = nested_class_of(&mut loaded, outers[0].clone(), "Inner");
-    let b = nested_class_of(&mut loaded, outers[1].clone(), "Inner");
+    let a = nested_class_of(&mut loaded, outers[0], "Inner");
+    let b = nested_class_of(&mut loaded, outers[1], "Inner");
     // The accessor answers out of the hidden cache slot, so `a` and `b` are
     // the *decoded* class objects and not two freshly materialized ones.
     // Pinned rather than assumed: a load that dropped the cached slots
@@ -3915,13 +3843,7 @@ class Outer usingPlatform: p = Object new () (
 fn outer_still_resolves_through_a_declaration_chain_that_came_from_an_image() {
     let (mut interp, class, bindings, platform, outer) = instantiated_world(DEEP_OUTER_MODULE);
     let deep = expect_ok(
-        interp.send(
-            outer.clone(),
-            Symbol::intern("makeDeep"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(outer, Symbol::intern("makeDeep"), vec![], &bindings, None),
         "makeDeep",
     );
     let bytes = snapshot_world(
@@ -3929,10 +3851,10 @@ fn outer_still_resolves_through_a_declaration_chain_that_came_from_an_image() {
         DEEP_OUTER_MODULE,
         &class,
         &platform,
-        &[outer.clone(), deep.clone()],
+        &[outer, deep],
     );
     let mut loaded = image::load(&bytes).expect("load");
-    let reloaded_deep = loaded.roots[1].clone();
+    let reloaded_deep = loaded.roots[1];
     // `Deep`'s declaring class is `Base`, not `Derived` -- the two differ
     // exactly because `Derived` inherits the declaration across a nesting
     // boundary, which is the case a dynamic-chain walk gets wrong.
@@ -3980,7 +3902,7 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
         .expect("a source-built interpreter accepts the bytecode engine");
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        interp.instantiate(class, vec![platform], &bindings),
         "instantiate Args",
     );
     let bytes = image::snapshot(
@@ -4288,7 +4210,7 @@ fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywh
     let instance = expect_ok(
         loaded
             .interp
-            .instantiate(loaded.root_class.clone(), vec![], &loaded.empty_bindings),
+            .instantiate(loaded.root_class, vec![], &loaded.empty_bindings),
         "instantiate",
     );
     let bindings = loaded.empty_bindings.clone();
@@ -4487,7 +4409,7 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
         .expect("a source-built interpreter accepts the bytecode engine");
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        interp.instantiate(class, vec![platform], &bindings),
         "instantiate Args",
     );
     let bytes = image::snapshot(
@@ -4711,7 +4633,7 @@ const DEEP: u32 = 200_000;
 fn superclass_depth(heap: &Heap, head: &Value) -> u32 {
     let mut depth = 0;
     let mut level = match head {
-        Value::Obj(class) => Some(class.clone()),
+        Value::Obj(class) => Some(*class),
         _ => None,
     };
     while let Some(class) = level {
@@ -4725,7 +4647,7 @@ fn superclass_depth(heap: &Heap, head: &Value) -> u32 {
 fn instance_chain_depth(heap: &Heap, head: &Value) -> u32 {
     let mut depth = 0;
     let mut level = match head {
-        Value::Obj(o) => Some(o.clone()),
+        Value::Obj(o) => Some(*o),
         _ => None,
     };
     while let Some(object) = level {
@@ -4813,7 +4735,7 @@ fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
     // chain a four-megabyte image describes.
     let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
     let mut loaded = image::load(&bytes).expect("load");
-    let head = loaded.roots[0].clone();
+    let head = loaded.roots[0];
     assert_eq!(superclass_depth(loaded.interp.heap_ref(), &head), DEEP);
     let bindings = loaded.empty_bindings.clone();
     // Nothing on the chain declares the selector, so the send ends in an
@@ -4915,10 +4837,10 @@ fn snapshot_module(src: &str, source: Option<&str>, extra_send: Option<&str>) ->
         .expect("a source-built interpreter accepts the bytecode engine");
     let platform = interp.platform();
     let instance = expect_ok(
-        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        interp.instantiate(class, vec![platform], &bindings),
         "instantiate",
     );
-    let mut roots = vec![instance.clone()];
+    let mut roots = vec![instance];
     if let Some(selector) = extra_send {
         roots.push(expect_ok(
             interp.send(instance, Symbol::intern(selector), vec![], &bindings, None),
@@ -5174,7 +5096,7 @@ fn a_world_holding_a_tree_walker_activation_is_refused_when_written() {
         pc_kind: ns_runtime::PcKind::TreeWalk,
         sender: None,
         home: None,
-        current_class: Some(class.clone()),
+        current_class: Some(class),
         kind: FrameKind::TopLevel,
         uncontinuable: false,
         slot_base: 0,
@@ -5185,7 +5107,7 @@ fn a_world_holding_a_tree_walker_activation_is_refused_when_written() {
         ObjectData::Closure(ns_runtime::ClosureData {
             params: vec![],
             body: ClosureBody::Compiled(foo),
-            captured_frame: frame.clone(),
+            captured_frame: frame,
             home: frame,
             bindings: bindings.clone(),
         }),
@@ -5356,7 +5278,7 @@ fn snapshot_of_without_source(src: &str) -> Vec<u8> {
         .expect("a source-built interpreter accepts the bytecode engine");
     let platform = interp.platform();
     let instance = expect_ok(
-        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        interp.instantiate(class, vec![platform], &bindings),
         "instantiate",
     );
     image::snapshot(
@@ -5899,8 +5821,8 @@ class X usingPlatform: p = Object new (
         let instance = {
             let module = interp.compiled_module().expect("bytecode engine");
             let _ = module;
-            let args = vec![platform.clone()];
-            interp.instantiate(class.clone(), args, &bindings)
+            let args = vec![platform];
+            interp.instantiate(class, args, &bindings)
         };
         let roots: Vec<_> = match instance {
             Ok(v) => vec![v],

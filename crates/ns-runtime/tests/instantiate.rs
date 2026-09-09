@@ -133,7 +133,7 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
     let sub_application = interp.apply_mixin(&sub_mixin, Some(&sup_application));
     let relinked = interp
         .heap_mut()
-        .set_class_superclass(&sub_class, sup_class.clone())
+        .set_class_superclass(&sub_class, sup_class)
         && interp
             .heap_mut()
             .set_class_application(&sub_class, sub_application);

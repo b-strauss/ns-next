@@ -180,12 +180,12 @@ impl Interpreter {
     }
 
     pub fn builtin_class(&self, kind: BuiltinClass) -> ClassRef {
-        self.builtin_classes
+        *self
+            .builtin_classes
             .as_ref()
             .expect("bootstrap() must run before builtin_class()")
             .get(&kind)
             .expect("every BuiltinClass variant is registered by build_builtin_classes")
-            .clone()
     }
 
     /// A thin delegate; see `Heap::alloc_identity_hash`'s doc comment for why
@@ -341,7 +341,7 @@ impl Interpreter {
         sender: Option<&FrameRef>,
     ) -> Option<EvalResult> {
         if let Some(result) =
-            crate::builtins::dispatch_native(self, kind, receiver.clone(), selector, args, sender)
+            crate::builtins::dispatch_native(self, kind, *receiver, selector, args, sender)
         {
             return Some(result);
         }
@@ -351,7 +351,7 @@ impl Interpreter {
         crate::builtins::dispatch_native(
             self,
             BuiltinClass::Object,
-            receiver.clone(),
+            *receiver,
             selector,
             args,
             sender,
@@ -609,7 +609,7 @@ impl Interpreter {
         // it), so reading it here reaches the same target the per-kind
         // match used to: the closure's enclosing method/initializer for a
         // block activation, or the activation itself for every other kind.
-        let target = self.heap.frame_home(frame).unwrap_or_else(|| frame.clone());
+        let target = self.heap.frame_home(frame).unwrap_or(*frame);
         if self.heap.frame_is_uncontinuable(&target) {
             return Signal::Error(NewspeakError {
                 selector: Symbol::intern("^"),
@@ -687,7 +687,7 @@ impl Interpreter {
         // so the build below runs it in reverse.
         let mut chain: Vec<ClassRef> = Vec::new();
         let mut super_metaclass: Option<ClassRef> = None;
-        let mut level = class.clone();
+        let mut level = *class;
         loop {
             // Not a class object: it has no metaclass, and nothing below it
             // can inherit one through this level.
@@ -742,7 +742,7 @@ impl Interpreter {
             // starting a new, empty one.
             let metaclass =
                 self.new_class_object(application, enclosing, declaring_class, super_metaclass);
-            if !self.heap.set_class_metaclass(level, metaclass.clone()) {
+            if !self.heap.set_class_metaclass(level, metaclass) {
                 unreachable!("only class objects are pushed onto the chain");
             }
             super_metaclass = Some(metaclass);
@@ -808,12 +808,12 @@ impl Interpreter {
     /// sees the same object identity.
     pub fn platform(&mut self) -> Value {
         if let Some(p) = &self.platform_singleton {
-            return p.clone();
+            return *p;
         }
         let class = self.builtin_class(BuiltinClass::Platform);
         let obj = self.new_instance_object(class, ObjectData::Instance(vec![]));
         let value = Value::Obj(obj);
-        self.platform_singleton = Some(value.clone());
+        self.platform_singleton = Some(value);
         value
     }
 
@@ -1008,12 +1008,12 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
             (None, object_application.clone())
         } else {
             (
-                Some(class_of_class.clone()),
+                Some(class_of_class),
                 interp.apply_mixin(&builtin_mixin(kind), Some(&object_application)),
             )
         };
         let obj = interp.heap.alloc_object(
-            class_of_class.clone(),
+            class_of_class,
             ObjectData::Class(ClassData {
                 application,
                 enclosing: None,

@@ -156,8 +156,8 @@ pub(crate) fn nested_class(
     // only ever reaches here for a receiver `cache_slot` matched as one.
     let class = interp.new_class_object(
         application,
-        Some(obj.clone()),
-        Some(declaring_class.clone()),
+        Some(obj),
+        Some(*declaring_class),
         Some(superclass),
     );
     // Step 5: cache before returning, so step 1 hits from now on.
@@ -165,7 +165,7 @@ pub(crate) fn nested_class(
         &mut interp.heap,
         receiver,
         index,
-        Value::Obj(class.clone()),
+        Value::Obj(class),
     );
     Ok(Value::Obj(class))
 }
@@ -202,7 +202,7 @@ fn cache_slot(
         Value::Obj(obj) => interp
             .heap
             .instance_field(obj, index)
-            .map(|_| (obj.clone(), index)),
+            .map(|_| (*obj, index)),
         _ => None,
     }
 }
@@ -289,7 +289,7 @@ fn eval_superclass_clause(
         receiver,
         vec![],
         declaring_class,
-        FrameKind::SuperclassClause(declaring_class.clone()),
+        FrameKind::SuperclassClause(*declaring_class),
         compiled,
         expr.as_ref(),
         bindings,
@@ -328,7 +328,7 @@ pub(super) fn run_clause_body(
         .as_ref()
         .map_or(0, |code| (code.num_registers - code.num_args) as usize);
     let frame = interp.heap.alloc_frame(Frame {
-        receiver: receiver.clone(),
+        receiver: *receiver,
         args,
         temps: vec![Value::Nil; temp_count],
         pc: 0,
@@ -341,7 +341,7 @@ pub(super) fn run_clause_body(
         },
         sender: None,
         home: None,
-        current_class: Some(current_class.clone()),
+        current_class: Some(*current_class),
         kind,
         uncontinuable: false,
         slot_base: 0, // no clause body ever contains InitSlot
@@ -396,7 +396,7 @@ fn not_a_class_error(name: Symbol, value: Value) -> Signal {
 fn cyclic_definition_error(receiver: &Value, name: Symbol) -> Signal {
     Signal::Error(NewspeakError {
         selector: name,
-        receiver: receiver.clone(),
+        receiver: *receiver,
         message: format!(
             "cyclic class definition: evaluating the superclass clause of class {name} \
              requires class {name} itself"
@@ -414,7 +414,7 @@ fn cyclic_definition_error(receiver: &Value, name: Symbol) -> Signal {
 fn no_cache_slot_error(receiver: &Value, name: Symbol) -> Signal {
     Signal::Error(NewspeakError {
         selector: name,
-        receiver: receiver.clone(),
+        receiver: *receiver,
         message: format!(
             "cannot access nested class {name}: this object has no slot storage to cache it in"
         ),

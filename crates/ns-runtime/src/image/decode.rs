@@ -1454,7 +1454,7 @@ pub fn decode_class_tag(
 ) -> Result<ClassRef, DecodeError> {
     match r.read_u8()? {
         CLS_BUILTIN => Ok(ctx.interp.builtin_class(read_builtin_class(r)?)),
-        CLS_USER_ROOT => Ok(ctx.root_class.clone()),
+        CLS_USER_ROOT => Ok(*ctx.root_class),
         CLS_RECORD => {
             let id = r.read_u32()?;
             tables
@@ -1500,7 +1500,7 @@ fn decode_value(
                 .ok_or(DecodeError::BadObjectId(id))
         }
         VAL_CLASS_TAG => Ok(Value::Obj(decode_class_tag(r, ctx, tables)?)),
-        VAL_PLATFORM => Ok(ctx.platform.clone()),
+        VAL_PLATFORM => Ok(ctx.platform),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
     }
 }
@@ -1994,10 +1994,9 @@ pub fn decode_graph_section(
         .ok_or(DecodeError::NotAClass)?;
     let objects: Vec<ObjRef> = (0..object_count)
         .map(|_| {
-            ctx.interp.heap.alloc_placeholder_object(
-                placeholder_class.clone(),
-                ObjectData::Instance(Vec::new()),
-            )
+            ctx.interp
+                .heap
+                .alloc_placeholder_object(placeholder_class, ObjectData::Instance(Vec::new()))
         })
         .collect();
     let frames: Vec<FrameRef> = (0..frame_count)
