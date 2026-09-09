@@ -104,15 +104,23 @@ handle encodes *which* heap. A handle is 32 bits and its field is private to
 debug guard is already the place that knows a handle has an origin at all.
 
 One deliberate escape exists, and it is opaque rather than a hole.
-`identity_key()` is `pub(crate)` and returns the index as a `usize` for the three
-places that need a handle as a `HashMap`/`HashSet` key rather than a comparison:
-`image/encode.rs`, `image/decode.rs` and `interpreter/nested.rs`, seven call
-sites in all. Every one stores it, compares it, or looks it up; none does
-arithmetic on it, and none assumes it is an index into anything. So the property
-that matters survives — a handle's *encoding* is still `heap.rs`'s alone to
-change — but the narrower claim that nothing outside the module ever sees the
-bits is not true, and `identity_key` is where to look first if the encoding
-changes.
+`Heap::object_identity_key` and `Heap::frame_identity_key` are `pub(crate)` and
+return the index as a `usize` for the three places that need a handle as a
+`HashMap`/`HashSet` key rather than a comparison: `image/encode.rs`,
+`image/decode.rs` and `interpreter/nested.rs`, seven call sites in all. Every
+one stores it, compares it, or looks it up; none does arithmetic on it, and none
+assumes it is an index into anything. So the property that matters survives — a
+handle's *encoding* is still `heap.rs`'s alone to change — but the narrower
+claim that nothing outside the module ever sees the bits is not true, and these
+two are where to look first if the encoding changes.
+
+They sit on `Heap`, not on the handle, so that the origin check applies to them
+like it does to every accessor. Handed a handle and no heap, the operation has
+nothing to check against, and two handles from different arenas then produce the
+same key and collide silently in a caller's map. Folding the debug-only `origin`
+field into the key instead was tried and reverted: that makes the collision
+impossible in exactly the build that would have reported it and leaves it
+exactly as possible in the build that ships.
 
 ### Iterative teardown
 
@@ -170,9 +178,11 @@ alias are declared in `heap.rs` with a **private** inner field, so reading a
 handle's index from anywhere else — any other module of `ns-runtime`
 included — fails to compile. There is no grep gate to remember and no
 visibility to widen: an accessor that is missing has to be added in `heap.rs`,
-which is where the store is. The one way out is the `pub(crate)`
-`identity_key()` described above, which hands the index over as an opaque key
-and is used as one; it is a named exception rather than an unenforced boundary.
+which is where the store is. The one way out is the pair of
+`pub(crate)` identity-key accessors described above, which hand the index over
+as an opaque key and are used as one — a named exception rather than an
+unenforced boundary, and one the origin guard still covers, since they are
+accessors on `Heap` like any other.
 
 Where a site needs several fields of one object or frame at once, a batched
 accessor answers them together rather than the caller taking several —

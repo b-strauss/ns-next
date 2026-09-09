@@ -292,72 +292,41 @@ remember is cleanup that some call site will forget.
 what they create, and rewriting working tests for symmetry is tidying rather
 than fixing.
 
-**Deferred follow-ups from the object-and-frame-arena branch (2026-09-09).**
-Two items found while doing that work, deliberately not done in a commit about
-the arena.
+**Deferred follow-ups from the object-and-frame-arena branch — cleared
+2026-09-10.** Three items were left out of the arena commit deliberately;
+all three are done.
 
-*Source comments citing plan task numbers.* `grep -rnE "Task[s]? [0-9]+[a-z]?"
-crates --include=*.rs` matches 65 lines across 25 files — 53 in `ns-runtime`
-(`src/dispatch.rs`, `src/mixin.rs`, `src/resolver/`, `src/interpreter/`,
-`src/builtins/`, and nine files under `tests/`) and 12 in `ns-syntax`
-(`src/lexer.rs`, `src/token.rs`, `src/parser/`, `tests/corpus.rs`); `ns-cli`
-carries none. They cite the execution bookkeeping of Milestones 1–3 — "the Task
-10 refactor", "see Tasks 8-10", "Task 14b" — which a reader of the source cannot
-resolve and which says nothing about the code. The arena branch removed four
-that sat inside comments it was rewriting anyway; the rest is a repo-wide
-sweep. Beware two things when doing it: some matches are genuine algorithm or
-specification steps and must stay (`newspeak-spec.pdf`'s "Class Instantiation
-step 3", `interpreter/nested.rs`'s numbered accessor steps), and a few comments
-say something real *through* the task reference, so the fix is to state what the
-comment means rather than to delete the sentence.
+*`identity_key` moved onto `Heap`.* It was the one handle operation with no
+origin check, because it was handed a handle and no `Heap` to check against:
+two handles from different arenas produced the same key and collided silently
+in a caller's map. Folding the debug-only `origin` field into the key was
+tried on the arena branch and reverted — it would have made the collision
+impossible in exactly the build that reports it and left it as possible in
+the build that ships. `Heap::object_identity_key` and
+`Heap::frame_identity_key` check the origin like every other accessor, and
+the compiler enforces the rule in the most literal way available: no `Heap`,
+no key. All seven call sites already had one in reach;
+`GraphTable::object_id`, `GraphTable::frame_id` and `encode_frame_ref` gained
+a `&Heap` parameter to pass it on.
 
-*`identity_key` is the one handle operation with no origin check, and the
-obvious fix is the wrong one.* Every accessor on `Heap` verifies that a handle
-came from this heap, and `ObjRef::same`/`FrameRef::same` gained the same
-`debug_assert_eq!` on the arena branch. `ObjRef::identity_key` and
-`FrameRef::identity_key` did not: they are handed one handle and no `Heap`, so
-there is nothing in scope to check against. Two handles from different heaps
-therefore produce the same key and collide in a caller's map.
+*Source comments citing plan bookkeeping.* The sweep was wider than the
+`Task[s]? [0-9]+` grep that motivated it: the same unresolvable references
+also appear as "Gap 1 (Task 12 brief)", "Final-review finding I6", "the
+brief's original example" and "a later task's job". 99 lines across 32 files,
+comments only, no code changed. Three outcomes per site — drop the
+reference where the sentence stands without it, state what the comment means
+where it carried its point through the reference, and keep it where the
+number is a genuine algorithm or specification step
+(`newspeak-spec.pdf`'s Class Instantiation steps, `interpreter/nested.rs`'s
+numbered accessor steps, `image/mixins.rs`'s decode steps). Two comments
+turned out to be stale rather than merely opaque and were corrected:
+`build_mixin`'s claim that a class side has no accessor to dispatch to
+(`metaclass_of` applies it) and the lexer's claim that `skip_trivia` only
+skips ASCII whitespace (it handles nested block comments too).
 
-**Do not fix this by folding the `origin` field into the key.** That was tried
-and reverted, and the reason it is wrong is worth keeping: `origin` exists only
-in a debug build, so folding it in makes the collision impossible in exactly the
-build that would have *reported* it, and leaves it exactly as possible in the
-build that ships. It inverts the regime every other guard here follows — a
-silent release wrong answer becomes a loud debug panic — by concealing the
-symptom in debug instead.
-
-The right fix is to move the operation onto `Heap`, where the existing check
-applies: `Heap::object_identity_key(&self, obj)` and
-`Heap::frame_identity_key(&self, frame)`, each calling
-`check_object_origin`/`check_frame_origin` first. That gives detection rather
-than concealment, keeps debug and release identical, and is enforced by the
-compiler in the most literal way available — no `Heap`, no key. All seven call
-sites already have one in reach: `EncodeContext` carries `heap: &'a Heap`,
-`visit_frame` takes a `&Heap` parameter, `rebuild_applications` reaches
-`ctx.interp.heap`, and `nested.rs`'s `in_progress_key` caller already holds
-`interp`. The work is `heap.rs` plus those seven sites plus threading a `&Heap`
-through `GraphTable::object_id`, `GraphTable::frame_id` and `encode_frame_ref`,
-which currently take only a `&GraphTable`. It is separated from the arena commit
-because it changes three signatures for a failure nothing in production can
-reach today.
-
-*`.iter().cloned()` over a `Copy` element.* `Value`, `ObjRef` and `FrameRef` are
-all `Copy` now, so an iterator chain ending in `.cloned()` reads as a deep copy
-of what is really a register move; `.copied()` says what happens.
-
-Recorded as a command rather than a list, deliberately. Grepping for `.cloned()`
-finds 41 sites under `src`, but most are correct — cloning an `Rc<Mixin>` or an
-`Rc<CompiledCode>` is a refcount bump and `.copied()` would not compile there —
-and telling the two apart needs the element's type, which grep cannot see. The
-exact set is what a pedantic lint already knows:
-
-```bash
-cargo clippy --workspace --all-targets -- -W clippy::cloned_instead_of_copied
-```
-
-That reports **30 sites: 18 under `src`, 12 under `tests`** — re-derive rather
-than trust the number, since it moves with the code. The lint is off by default
-(it is in `clippy::pedantic`), which is why the workspace is warning-free with it
-unmentioned. Whoever does the sweep should decide whether to enable it in
-`Cargo.toml` so the answer stops needing a note here at all.
+*`.cloned()` over a `Copy` element.* 30 sites, 18 under `src` and 12 under
+`tests`, applied with `cargo clippy --fix`. The lint that finds them,
+`clippy::cloned_instead_of_copied`, is in `clippy::pedantic` and off by
+default; it is now enabled in `[workspace.lints.clippy]` with `[lints]
+workspace = true` in each crate manifest, so the existing "clippy must be
+warning-free" gate covers it and the question stops needing a note here.
