@@ -150,7 +150,7 @@ pub(super) fn call_block(
                         &closure,
                         args,
                         &bindings,
-                        sender.cloned(),
+                        sender.copied(),
                     )
                 }
                 None => Ok(*block),

@@ -1460,7 +1460,7 @@ pub fn decode_class_tag(
             tables
                 .objects
                 .get(id as usize)
-                .cloned()
+                .copied()
                 .ok_or(DecodeError::BadObjectId(id))
         }
         tag => Err(DecodeError::InvalidTag { what: "class", tag }),
@@ -1495,7 +1495,7 @@ fn decode_value(
             tables
                 .objects
                 .get(id as usize)
-                .cloned()
+                .copied()
                 .map(Value::Obj)
                 .ok_or(DecodeError::BadObjectId(id))
         }
@@ -1523,7 +1523,7 @@ fn decode_frame_id(r: &mut Reader, tables: &Tables) -> Result<FrameRef, DecodeEr
     tables
         .frames
         .get(id as usize)
-        .cloned()
+        .copied()
         .ok_or(DecodeError::BadFrameId(id))
 }
 

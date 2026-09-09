@@ -373,7 +373,7 @@ pub(crate) fn dispatch_lexical_send(
         if let Some(index) = dispatch::lookup_slot(&interp.heap, &class, name) {
             if let Value::Obj(obj) = &o {
                 if is_setter {
-                    let value = args.first().cloned().unwrap_or(Value::Nil);
+                    let value = args.first().copied().unwrap_or(Value::Nil);
                     interp.heap.set_instance_field(obj, index, value);
                     return Ok(o);
                 } else if let Some(value) = interp.heap.instance_field(obj, index) {

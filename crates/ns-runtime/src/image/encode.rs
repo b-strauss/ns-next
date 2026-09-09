@@ -582,7 +582,7 @@ fn class_refs(data: &ClassData) -> impl Iterator<Item = ObjRef> + '_ {
         .iter()
         .chain(data.enclosing.iter())
         .chain(data.declaring_class.iter())
-        .cloned()
+        .copied()
 }
 
 /// Whether `obj` is a class object the format names with a *tag* rather
@@ -668,7 +668,7 @@ impl GraphTable {
             stack.push(Pending::Value(Value::Obj(record.class)));
             match &record.data {
                 ObjectData::Instance(fields) | ObjectData::Array(fields) => {
-                    stack.extend(fields.iter().cloned().map(Pending::Value));
+                    stack.extend(fields.iter().copied().map(Pending::Value));
                 }
                 ObjectData::Closure(c) => {
                     stack.push(Pending::Frame(c.captured_frame));
@@ -699,19 +699,19 @@ impl GraphTable {
         {
             let f = heap.frame_snapshot(frame);
             stack.push(Pending::Value(f.receiver));
-            stack.extend(f.args.iter().cloned().map(Pending::Value));
-            stack.extend(f.temps.iter().cloned().map(Pending::Value));
+            stack.extend(f.args.iter().copied().map(Pending::Value));
+            stack.extend(f.temps.iter().copied().map(Pending::Value));
             stack.extend(
                 f.sender
                     .iter()
                     .chain(f.home.iter())
-                    .cloned()
+                    .copied()
                     .map(Pending::Frame),
             );
             stack.extend(
                 f.current_class
                     .iter()
-                    .cloned()
+                    .copied()
                     .map(|c| Pending::Value(Value::Obj(c))),
             );
             match &f.kind {

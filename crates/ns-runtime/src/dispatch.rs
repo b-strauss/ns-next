@@ -73,7 +73,7 @@ pub fn kth_enclosing_object(
     if depth == 0 {
         return *self_value;
     }
-    let Some(mut level) = defining_class.cloned() else {
+    let Some(mut level) = defining_class.copied() else {
         return Value::Nil;
     };
     let mut remaining = depth;

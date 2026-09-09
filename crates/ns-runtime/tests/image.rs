@@ -3504,7 +3504,7 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
     let reloaded_outer = loaded
         .roots
         .first()
-        .cloned()
+        .copied()
         .expect("the snapshotted Outer");
     let inner_class = expect_ok(
         loaded.interp.send(
@@ -3664,7 +3664,7 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     let reloaded_outer = loaded
         .roots
         .first()
-        .cloned()
+        .copied()
         .expect("the snapshotted Outer");
     let reloaded_inner = nested_class_of(&mut loaded, reloaded_outer, "Inner");
     assert_eq!(
@@ -3694,7 +3694,7 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     let reloaded_instance = loaded
         .roots
         .first()
-        .cloned()
+        .copied()
         .expect("the snapshotted Inner instance");
     assert_eq!(
         class_name(
@@ -3730,7 +3730,7 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
     let reloaded_outer = loaded
         .roots
         .first()
-        .cloned()
+        .copied()
         .expect("the snapshotted Outer");
     let root_class = loaded.root_class;
     let inner = nested_class_of(&mut loaded, reloaded_outer, "Inner");
@@ -3917,7 +3917,7 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
     .expect("snapshot");
 
     let mut loaded = image::load(&bytes).expect("load");
-    let reloaded = loaded.roots.first().cloned().expect("the snapshotted Args");
+    let reloaded = loaded.roots.first().copied().expect("the snapshotted Args");
     let derived = expect_ok(
         loaded.interp.send(
             reloaded,
@@ -4446,7 +4446,7 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
     assert!(clause.has_args, "`Base withBase: 7` passes an argument");
 
     let mut loaded = image::load(&bytes).expect("load");
-    let reloaded = loaded.roots.first().cloned().expect("the snapshotted Args");
+    let reloaded = loaded.roots.first().copied().expect("the snapshotted Args");
     let derived_class = expect_ok(
         loaded.interp.send(
             reloaded,
@@ -4871,7 +4871,7 @@ fn a_source_free_image_still_runs() {
     );
     let mut loaded = image::load(&bytes).expect("load");
     assert!(loaded.source.is_none());
-    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let instance = loaded.roots.first().copied().expect("the root instance");
     let result = expect_ok(
         loaded.interp.send(
             instance,
@@ -4895,7 +4895,7 @@ fn a_source_free_image_still_runs() {
 fn a_source_free_image_still_reaches_its_nested_classes() {
     let bytes = snapshot_module(SOURCE_FREE_MODULE, None, None);
     let mut loaded = image::load(&bytes).expect("load");
-    let outer = loaded.roots.first().cloned().expect("the root instance");
+    let outer = loaded.roots.first().copied().expect("the root instance");
     let inner_class = nested_class_of(&mut loaded, outer, "Inner");
     let bindings = loaded.empty_bindings.clone();
     let instance = expect_ok(
@@ -4919,7 +4919,7 @@ fn the_debug_variant_still_carries_source() {
         "the debug variant hands its source back verbatim"
     );
     // And it is still a working world, not merely a readable file.
-    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let instance = loaded.roots.first().copied().expect("the root instance");
     let result = expect_ok(
         loaded.interp.send(
             instance,
@@ -4954,7 +4954,7 @@ fn a_frame_says_which_engine_its_pc_belongs_to() {
     // table is non-empty.
     let bytes = snapshot_module(SOURCE_FREE_MODULE, None, Some("block"));
     let loaded = image::load(&bytes).expect("load");
-    let block = loaded.roots.get(1).cloned().expect("the block root");
+    let block = loaded.roots.get(1).copied().expect("the block root");
     let heap = loaded.interp.heap_ref();
     let closure = heap
         .closure_data(obj(&block))
@@ -5027,7 +5027,7 @@ fn the_tree_walking_engine_is_refused_after_a_load() {
     );
     // And the refusal left the bytecode engine in place: the world still
     // runs, rather than being wedged by the attempt.
-    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let instance = loaded.roots.first().copied().expect("the root instance");
     let result = expect_ok(
         loaded.interp.send(
             instance,
@@ -5212,7 +5212,7 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
     // And the world the source-free image describes still runs -- so what
     // was left out really was only text.
     let mut loaded = image::load(&bytes).expect("load");
-    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let instance = loaded.roots.first().copied().expect("the root instance");
     match send_to(&mut loaded, instance, "quixoticAccumulator") {
         Value::SmallInt(146) => {}
         _ => panic!("expected SmallInt(146) from the loaded world, got a different Value"),

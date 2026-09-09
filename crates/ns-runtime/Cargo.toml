@@ -7,3 +7,6 @@ license.workspace = true
 
 [dependencies]
 ns-syntax = { path = "../ns-syntax" }
+
+[lints]
+workspace = true

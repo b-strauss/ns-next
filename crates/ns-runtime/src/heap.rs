@@ -514,7 +514,7 @@ impl Heap {
     pub fn array_at(&self, obj: &ObjRef, index: usize) -> Option<Value> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
-            ObjectData::Array(items) => items.get(index).cloned(),
+            ObjectData::Array(items) => items.get(index).copied(),
             _ => None,
         }
     }
@@ -549,7 +549,7 @@ impl Heap {
     pub fn instance_field(&self, obj: &ObjRef, index: usize) -> Option<Value> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
-            ObjectData::Instance(fields) => fields.get(index).cloned(),
+            ObjectData::Instance(fields) => fields.get(index).copied(),
             _ => None,
         }
     }
