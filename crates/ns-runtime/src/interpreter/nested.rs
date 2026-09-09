@@ -10,7 +10,7 @@
 //! Two consequences shape this module. Identity is per receiver -- "each
 //! nested class has one piece of state, its enclosing object, and so there
 //! must be a distinct class per instance of the enclosing class" -- so the
-//! result is cached in a hidden slot of `r` itself (`nested_slot`, Task 4).
+//! result is cached in a hidden slot of `r` itself (`nested_slot`).
 //! Behaviour is per mixin application (§6.2), so the class object is built
 //! around whatever `Interpreter::apply_mixin` returns, which is shared by
 //! every enclosing instance that resolves the clause to the same superclass.

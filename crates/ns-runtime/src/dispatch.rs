@@ -223,8 +223,8 @@ fn next_level(
 /// application's `slot_index` already carries every inherited slot at its
 /// absolute offset, with an own slot's entry overriding an inherited one of
 /// the same name. There is no access check -- slot access is never
-/// access-controlled the way a method send is in Milestone 1; see Task 7's
-/// design note on this known gap. Used by `eval.rs::dispatch_lexical_send`
+/// access-controlled the way a method send is in Milestone 1, which is a
+/// known gap. Used by `eval.rs::dispatch_lexical_send`
 /// before falling through to `lookup_defined_for`/`lookup_protected`.
 pub fn lookup_slot(heap: &Heap, class: &ClassRef, name: Symbol) -> Option<usize> {
     heap.class_application(class)?

@@ -48,7 +48,7 @@ fn outer_named_send_resolves_to_the_exact_depth() {
         .any(|b| matches!(b, Binding::LexicalSend { depth: 1 })));
 }
 
-/// Gap 1 (Task 12 brief): a bare reference to a builtin class name --
+/// A bare reference to a builtin class name --
 /// outside any superclass clause -- must resolve without a `ResolveError`,
 /// and must record *no* `Binding` at all at that identifier's span,
 /// mirroring `resolve_superclass_clause`'s existing convention for the

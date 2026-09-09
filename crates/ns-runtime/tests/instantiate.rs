@@ -81,9 +81,9 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 /// `interpreter/instantiate.rs`'s `resolve_superclass_receiver`: a
 /// superclass clause naming a sibling *user-defined* class (as opposed to a
 /// builtin) by name is not resolved there -- only a fixed list of builtin
-/// names is. Rather than expanding that (out of this task's scope -- the
-/// brief calls it out explicitly as "extend here if a fixture needs it",
-/// and this fixture can route around it), `Sub` is parsed with a builtin
+/// names is. Rather than expanding that list -- `resolve_superclass_receiver`
+/// says to extend it only when a fixture needs it, and this fixture can route
+/// around it -- `Sub` is parsed with a builtin
 /// `Object` superclass clause (so `load_module` resolves cleanly through the
 /// ordinary pipeline), and its `ClassData.superclass`/`application` are then
 /// relinked directly to the already-loaded `Sup` class -- both `pub` fields
@@ -167,14 +167,14 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
     }
 }
 
-/// Final-review finding C2: the class's *own* factory parameters are locals
+/// The class's *own* factory parameters are locals
 /// in the instance-initializer activation (the runtime spec's Class
 /// Instantiation section, step 2 -- "the same arguments as the factory
 /// message"), so a slot initializer may reference them. This is the
 /// `class M usingPlatform: platform = Object new (| t = platform ... |)`
-/// idiom every real Newspeak module is built out of; before the fix the
-/// resolver pushed an empty `LocalScope` here and `platform` fell through to
-/// a `LexicalSend`, failing at runtime with `doesNotUnderstand: #platform`.
+/// idiom every real Newspeak module is built out of. Pushing an empty
+/// `LocalScope` here instead makes `platform` fall through to a
+/// `LexicalSend`, which fails at run time with `doesNotUnderstand: #platform`.
 #[test]
 fn a_factory_parameter_is_visible_in_a_slot_initializer() {
     let src = "Newspeak3\n'T'\nclass M usingPlatform: platform = Object new (|t = platform.|) (public getT = (^t)) : ()";

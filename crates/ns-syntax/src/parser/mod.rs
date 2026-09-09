@@ -99,8 +99,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // Returns `&'a str` (not the brief's elided lifetime): the slice borrows
-    // `self.src: &'a str`, not `&self`, so later tasks can call
+    // Returns `&'a str`, not an elided lifetime: the slice borrows
+    // `self.src: &'a str`, not `&self`, so a caller can write
     // `self.text(self.bump())` without a borrow-checker conflict.
     fn text(&self, tok: Token) -> &'a str {
         tok.span.text(self.src)
@@ -545,7 +545,7 @@ mod tests {
         assert!(matches!(b.body.stmts[0], Stmt::Return(_)));
     }
 
-    // --- Task 14b ---
+    // --- Type annotations and other grammar corners ---
 
     #[test]
     fn typed_block_params() {

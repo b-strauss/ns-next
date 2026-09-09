@@ -757,7 +757,7 @@ fn bench_engine(
     timings.sort();
     let min = timings[0];
     let max = timings[timings.len() - 1];
-    // Median of N, not mean (the brief's own wording): a mean lets one
+    // Median of N, not mean: a mean lets one
     // GC-pause-sized outlier (there is no GC yet, but a scheduler
     // preemption is the same shape of problem) drag the whole number with
     // it, while the median shrugs off any one such sample.

@@ -1,4 +1,4 @@
-//! Final-review finding C1: every builtin class's superclass is `Object`,
+//! Every builtin class's superclass is `Object`,
 //! but `dispatch::walk` stops at the first `builtin: Some(kind)` class it
 //! reaches and never continues up that class's own superclass chain. These
 //! tests pin the call-site fallback that restores the one missing

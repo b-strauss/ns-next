@@ -1,5 +1,4 @@
-//! Declaration-level parsing: code bodies (and, in later tasks, classes and
-//! methods).
+//! Declaration-level parsing: classes, methods, slots and code bodies.
 
 use super::Parser;
 use crate::ast::*;
@@ -819,7 +818,7 @@ mod slot_tests {
         assert_eq!(s.len(), 2);
     }
 
-    // --- Task 14b ---
+    // --- Slot type annotations, and `class` as a name ---
 
     #[test]
     fn slot_type_annotation() {
@@ -861,10 +860,10 @@ mod class_tests {
         (m, clean)
     }
 
-    // Task 14b fix: a dot-less final slot initializer (invalid — grammar :165
-    // makes the trailing `.` mandatory) must not have its section-closing `|`
-    // eaten as a binary `|` operator, which pre-fix cascaded into and swallowed
-    // the following G2 declaration.
+    // A dot-less final slot initializer (invalid — grammar :165 makes the
+    // trailing `.` mandatory) must not have its section-closing `|` eaten as
+    // a binary `|` operator, which cascades into and swallows the following
+    // G2 declaration.
     #[test]
     fn dotless_final_slot_init_does_not_swallow_following_decl() {
         let src = "Newspeak3\n'X'\n\
@@ -1137,7 +1136,7 @@ mod method_tests {
         assert!(matches!(m.pattern, MessagePattern::Binary { .. }));
     }
 
-    // --- Task 14b: declaration-position `<Type>` annotations & friends ---
+    // --- Declaration-position `<Type>` annotations & friends ---
 
     #[test]
     fn keyword_method_param_type_annotation() {

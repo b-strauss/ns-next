@@ -183,7 +183,7 @@ fn a_variable_block_receiver_takes_the_native_loop_under_both_engines() {
     assert_eq!(outcome.stdout, "3\n");
 }
 
-/// Beyond the brief's three: `and:`/`or:` short-circuiting (which side
+/// `and:`/`or:` short-circuiting (which side
 /// effects run) and `truthy_arg`'s coercion of a non-Boolean block value are
 /// the inlined shapes with no end-to-end coverage above.
 #[test]

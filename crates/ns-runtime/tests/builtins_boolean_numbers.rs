@@ -1,4 +1,4 @@
-//! Integration tests for Task 8's `Boolean`/`True`/`False` and
+//! Integration tests for the `Boolean`/`True`/`False` and
 //! `Integer`/`Float` native methods, wired through
 //! `crate::builtins::dispatch_native` via `Interpreter::send`.
 
@@ -129,10 +129,10 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
 /// `Binding::LexicalSend` keyed by this block's own `Span` in the resolver's
 /// bindings map. If `invoke_block` (or `invoke_closure`'s caller more
 /// generally) invoked this closure with a fresh, empty bindings map instead
-/// of the one the block was actually resolved under (the bug the brief
-/// flagged), `x`'s `Span` would not be present in that empty map and
-/// `eval_ident` would fall through to its `None` arm -- an "unresolved
-/// identifier" `NewspeakError`, not `SmallInt(5)`.
+/// of the one the block was actually resolved under, `x`'s `Span` would not
+/// be present in that empty map and `eval_ident` would fall through to its
+/// `None` arm -- an "unresolved identifier" `NewspeakError`, not
+/// `SmallInt(5)`.
 #[test]
 fn if_true_block_body_resolves_an_enclosing_slot_reference() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (|x = 5.|) (\n  public m = ( ^true ifTrue: [ x ] ifFalse: [ 0 ] )\n) : ()";
@@ -232,7 +232,7 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
     );
 }
 
-/// Final-review finding I7: Milestone 1 has no Integer/Float coercion. That
+/// Milestone 1 has no Integer/Float coercion. That
 /// is a documented gap, but it used to fail *dishonestly*: `1 + 1.5` went
 /// through `arg_int()`, which only accepts `Value::SmallInt`, and reported
 /// the resulting `None` as an "Integer overflow". The gap stays; the message
@@ -417,9 +417,8 @@ fn a_real_integer_overflow_is_still_reported_as_an_overflow() {
     }
 }
 
-/// Final-review finding I5, end to end: a radix integer literal in real
-/// source now evaluates instead of failing with a misleading "integer
-/// literal out of i64 range".
+/// End to end: a radix integer literal in real source evaluates, rather than
+/// failing with a misleading "integer literal out of i64 range".
 #[test]
 fn a_radix_integer_literal_evaluates() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^16r1F )\n) : ()";

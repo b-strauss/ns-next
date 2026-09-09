@@ -3368,9 +3368,9 @@ fn root_mixin_of(heap: &Heap, class: &ClassRef) -> Rc<Mixin> {
 
 #[test]
 fn a_snapshotted_nested_mixins_method_and_initializer_survive_a_load() {
-    // Finding 2, the coverage-gap half: before this fix, `encode_code_table`
-    // still wrote only the root's own section, so a `snapshot` -> `load`
-    // cycle silently narrowed the module `compile_module` had produced.
+    // `encode_code_table` must write more than the root's own section:
+    // writing only the root lets a `snapshot` -> `load` cycle silently
+    // narrow the module `compile_module` produced.
     // Checked here purely at the compiled-module level -- reaching the
     // nested method with an actual send is the next test, since it needs a
     // hand-built class object anyway (no accessor exists yet).
@@ -3432,7 +3432,7 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
     let inner_mixin = root_mixin.nested[0].clone();
 
     // Nothing materializes a nested class's own class object without the
-    // accessor (a later task), so this reproduces exactly what it will
+    // accessor, which does not exist yet, so this reproduces what it will
     // eventually do: apply the decoded `Inner` mixin to `Object`, by hand,
     // in the *loaded* interpreter -- proving the send below runs against
     // code `build_module` actually restored, not code compiled fresh
@@ -4114,12 +4114,11 @@ fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
         .count()
 }
 
-/// The image's bytes from the symbol table onward, skipping the header and
-/// -- until a later milestone makes the image source-free -- the verbatim
-/// source text and its origin, which necessarily still contain every
-/// selector as plain source. The dedup property this task adds only
-/// applies from the symbol table on: everything that used to be an inline
-/// `write_str` of a selector or name lives at or after it.
+/// The image's bytes from the symbol table onward, skipping the header, the
+/// verbatim source text and its origin -- which necessarily still contain
+/// every selector as plain source. The dedup property applies only from the
+/// symbol table on: everything that would otherwise be an inline `write_str`
+/// of a selector or name lives at or after it.
 fn bytes_from_symbol_table(bytes: &[u8]) -> &[u8] {
     let mut r = decode::Reader::new(bytes);
     decode::read_header(&mut r).expect("valid header");
@@ -4131,14 +4130,14 @@ fn bytes_from_symbol_table(bytes: &[u8]) -> &[u8] {
 #[test]
 fn a_repeated_selector_is_stored_once() {
     // `distinctiveSelector` is deliberately long and specific: a single
-    // byte (the brief's original example, `b"b"`) recurs throughout any
-    // binary stream by chance, which would make `occurrences` meaningless.
+    // byte such as `b"b"` recurs throughout any binary stream by chance,
+    // which would make `occurrences` meaningless.
     // This selector is the method-dictionary key for one method and the
-    // send target at three call sites -- four inline occurrences before
-    // this task, one symbol-table entry after it. (The verbatim source
+    // send target at three call sites -- four inline occurrences without
+    // deduplication, one symbol-table entry with it. (The verbatim source
     // text, stored earlier in the image, still contains the selector as
-    // plain text -- `bytes_from_symbol_table` excludes that section, since
-    // this task does not touch it.)
+    // plain text -- `bytes_from_symbol_table` excludes that section, which
+    // the symbol table does not cover.)
     let bytes = snapshot_of(
         "Newspeak3\n'T'\nclass C = Object new (\n) (\n  a = ( ^self distinctiveSelector )\n  b = ( ^self distinctiveSelector )\n  distinctiveSelector = ( ^self distinctiveSelector )\n) : ()",
     );
@@ -5665,7 +5664,7 @@ fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
     image::load(&binary).expect("the untruncated binary still loads");
 }
 
-/// The shape Task 3's trailing-byte check exists for, stated as the case
+/// The shape the trailing-byte check exists for, stated as the case
 /// that motivated it rather than only as a generic tail: a binary followed
 /// by an unrelated image's graph section, byte for byte what a caller gets
 /// by concatenating the two artifact kinds instead of choosing one.

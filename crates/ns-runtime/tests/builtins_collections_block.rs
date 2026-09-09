@@ -1,4 +1,4 @@
-//! Integration tests for Task 10's `Array`/`OrderedCollection` native
+//! Integration tests for the `Array`/`OrderedCollection` native
 //! methods (`crate::builtins::collections`) and `Block` native methods
 //! (`crate::builtins::block`), wired through `crate::builtins::dispatch_native`
 //! via `Interpreter::send` -- same pattern as `tests/builtins_boolean_numbers.rs`.
@@ -51,10 +51,10 @@ fn expect_error(
 /// to a real `ObjectData::Array`-backed instance (that requires both a
 /// global-name binding for `OrderedCollection` from Newspeak source, and a
 /// builtin-aware `new` that special-cases the collection classes instead of
-/// `Interpreter::instantiate`'s generic `ObjectData::Instance` -- both are a
-/// later task's job, not this task's Step 1 selector table). Constructing
-/// the object directly, the same way `Interpreter::new_array` does
-/// internally, is sufficient to exercise `dispatch_ordered_collection`.
+/// `Interpreter::instantiate`'s generic `ObjectData::Instance`, and neither
+/// exists yet). Constructing the object directly, the same way
+/// `Interpreter::new_array` does internally, is sufficient to exercise
+/// `dispatch_ordered_collection`.
 fn new_ordered_collection(interp: &mut Interpreter) -> Value {
     let class = interp.builtin_class(BuiltinClass::OrderedCollection);
     Value::Obj(
@@ -137,10 +137,8 @@ fn array_at_put_writes_and_returns_the_receiver() {
     }
 }
 
-/// `do:` traversal via a mutable-slot accumulator, per the brief's Step 3.
-/// Also exercises `call_block` invoking a real one-argument closure with a
-/// real argument -- the generalization Task 10's `call_block` refactor
-/// added over Task 8's always-zero-arg `invoke_block`.
+/// `do:` traversal via a mutable-slot accumulator. Also exercises
+/// `call_block` invoking a real one-argument closure with a real argument.
 #[test]
 fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( | sum | sum := 0. {1. 2. 3} do: [:x | sum := sum + x]. ^sum )\n) : ()";
@@ -165,12 +163,12 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
     }
 }
 
-/// `OrderedCollection new add: 1; add: 2; size` -> `2`, per the brief's
-/// Step 3 -- exercises cascades (Task 6) together with `add:`/`size`. The
-/// receiver is built via `new_ordered_collection` (see its doc comment for
-/// why) and passed in as a method argument, so the cascade's receiver
-/// expression (`aColl`) is a real `Expr::Cascade` evaluated by
-/// `eval.rs::eval_cascade`, not something faked in Rust.
+/// `OrderedCollection new add: 1; add: 2; size` -> `2` -- exercises cascades
+/// together with `add:`/`size`. The receiver is built via
+/// `new_ordered_collection` (see its doc comment for why) and passed in as a
+/// method argument, so the cascade's receiver expression (`aColl`) is a real
+/// `Expr::Cascade` evaluated by `eval.rs::eval_cascade`, not something faked
+/// in Rust.
 #[test]
 fn ordered_collection_add_and_size_through_a_real_cascade() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m: aColl = ( ^aColl add: 1; add: 2; size )\n) : ()";
@@ -338,9 +336,8 @@ fn block_num_args_reports_the_declared_parameter_count() {
     }
 }
 
-/// Required cross-cutting fix: a block called with too few arguments must
-/// be a `NewspeakError`, never a Rust panic (`invoke_closure`'s new
-/// argument-count guard, Task 10).
+/// A block called with too few arguments must be a `NewspeakError`, never a
+/// Rust panic (`invoke_closure`'s argument-count guard).
 #[test]
 fn block_called_with_too_few_arguments_is_a_newspeak_error_not_a_panic() {
     let src =
@@ -394,11 +391,11 @@ fn block_called_with_too_many_arguments_is_a_newspeak_error_not_a_panic() {
     );
 }
 
-/// Final-review finding I6: `invoke_closure` used to hard-code
-/// `sender: None` on every closure `Frame` it built, cutting the liveness
-/// spec's reified call chain (`Frame.sender`) at every block invocation
-/// boundary. The caller is now threaded through `dispatch_native` ->
-/// `block::dispatch` -> `call_block` -> `invoke_closure`.
+/// A closure `Frame`'s `sender` must be the activation that invoked it. An
+/// unconditional `sender: None` would cut the liveness spec's reified call
+/// chain (`Frame.sender`) at every block invocation boundary, so the caller
+/// is threaded through `dispatch_native` -> `block::dispatch` ->
+/// `call_block` -> `invoke_closure`.
 ///
 /// Observing a closure activation's own frame from outside needs a handle
 /// on it: `[ [1] ] value` gives one, because evaluating the *inner* block

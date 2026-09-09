@@ -63,7 +63,7 @@ impl Interpreter {
     /// mixin exists, but *applying* a mixin -- resolving a superclass and
     /// computing a slot layout -- only happens for the root here. A nested
     /// mixin gets its own application when something actually materializes
-    /// it (the accessor, Task 5); until then it is pure, unapplied structure.
+    /// it (the accessor); until then it is pure, unapplied structure.
     pub fn load_module(&mut self, resolved: &ResolvedModule) -> ClassRef {
         let decl = &resolved.module.root_class;
         let mixin = self.build_mixin(decl);
@@ -83,14 +83,6 @@ impl Interpreter {
         self.new_class_object(application, None, None, superclass)
     }
 
-    /// Note on the brief's original signature: `decl` is taken here as
-    /// `&ast::ClassDecl`, not `&Rc<ast::ClassDecl>` -- `ast::Module::root_class`
-    /// is a plain (non-`Rc`) `ClassDecl` (see `crates/ns-syntax/src/ast.rs`),
-    /// so `load_module`'s `&resolved.module.root_class` argument is
-    /// `&ast::ClassDecl`; a `&Rc<ast::ClassDecl>` parameter here would not
-    /// type-check against that call site. This is the kind of small,
-    /// mechanical fix every task in this plan has needed at least once.
-    ///
     /// Builds the mixin for `decl`, recursively including its nested
     /// declarations and its class side. Pure structure -- no Newspeak code is
     /// evaluated here, which is what keeps module loading total.
@@ -100,9 +92,8 @@ impl Interpreter {
     /// `Mixin` too, instead of being discarded. Neither is *applied* here (no
     /// superclass is resolved, no slot layout computed, no class object
     /// built) -- a nested mixin has no class object of its own until
-    /// something materializes it (the accessor, Task 5), and a class side
-    /// has no accessor to dispatch to yet (Task 9). Reachable in the tree is
-    /// as far as this task goes.
+    /// something materializes it (the accessor), and a class side until
+    /// `Interpreter::metaclass_of` builds the metaclass that applies it.
     fn build_mixin(&mut self, decl: &ast::ClassDecl) -> Rc<Mixin> {
         let methods = build_methods(&decl.instance_side);
         let slots = build_slots(&decl.instance_side);
@@ -215,7 +206,7 @@ impl Interpreter {
             // `Array`/`OrderedCollection`'s Milestone 1 representation is
             // `ObjectData::Array`, not the generic `instantiate()`'s
             // `ObjectData::Instance` -- `builtins::collections`' dispatch
-            // functions (Task 10) pattern-match on `ObjectData::Array`
+            // functions pattern-match on `ObjectData::Array`
             // directly, so handing them a generic instance payload would
             // leave every native method on the result silently unable to
             // find its data (falling straight through to
@@ -737,7 +728,7 @@ fn argument_list(heap: &Heap, class: &ClassRef, value: Value) -> Result<Vec<Valu
 }
 
 /// `pub(crate)` (rather than private) so `eval.rs`'s `eval_ident` can reuse
-/// this exact string->`BuiltinClass` mapping for Gap 1's bare-builtin-name
+/// this exact string->`BuiltinClass` mapping for its bare-builtin-name
 /// fallback, instead of duplicating it. Returns `None` for any name that is
 /// not a Milestone 1 builtin class name (an explicit `Object` arm replaces
 /// the old catch-all default of `BuiltinClass::Object`, since a caller

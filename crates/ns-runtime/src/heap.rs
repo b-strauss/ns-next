@@ -812,8 +812,8 @@ impl Heap {
     // reach here, so this addressing is total.
     //
     // Only the accessors a caller actually needs are added here;
-    // `frame_arg_count` and `frame_pc` still have no caller and are left
-    // for the task that adds their first one.
+    // `frame_arg_count` and `frame_pc` have no caller yet, so they are
+    // not here.
 
     /// An opaque, hashable key unique to `frame`, for code that needs a
     /// `FrameRef` as a `HashMap` key rather than a comparison --
@@ -915,7 +915,7 @@ impl Heap {
     /// `tests/builtins_collections_block.rs`'s sender-threading regression test is
     /// the first caller: it walks a captured closure's frame back to the method
     /// activation that invoked it, to check `sender` was actually recorded rather
-    /// than left `None` (the Final-review finding I6 defect this guards against).
+    /// than left `None`, which would cut the chain at every block boundary.
     pub fn frame_sender(&self, frame: &FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].sender

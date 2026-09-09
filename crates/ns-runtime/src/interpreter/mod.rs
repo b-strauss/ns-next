@@ -316,10 +316,9 @@ impl Interpreter {
     /// `dispatch::walk` deliberately treats a class tagged
     /// `builtin: Some(kind)` as a *dispatch leaf*: it returns
     /// `Lookup::Native(kind)` the moment it reaches one, without continuing
-    /// up that class's own superclass chain (Task 5's design note -- that
-    /// early return is what keeps `lookupPublic`'s `hard_stop_on_mismatch`
-    /// semantics uniform, and restructuring it is out of scope). Every
-    /// non-`Object` builtin's superclass is `Object` (see
+    /// up that class's own superclass chain -- that early return is what
+    /// keeps `lookupPublic`'s `hard_stop_on_mismatch` semantics uniform.
+    /// Every non-`Object` builtin's superclass is `Object` (see
     /// `build_builtin_classes` below), and none of `numbers`/`text`/
     /// `collections`/`block`/`boolean` implements `class`/`==`/`=`/`hash`/
     /// `printString`/`doesNotUnderstand:` itself -- so without this helper
@@ -382,14 +381,14 @@ impl Interpreter {
     /// §5.5's `doesNotUnderstand:` fallback -- access-blind (`lookup_defined_for`),
     /// per the runtime spec's Dispatch section.
     ///
-    /// Task 6 left this handling only the `Lookup::Method` case (a
-    /// user-overridden `doesNotUnderstand:`); Task 7 adds `Object`'s own
-    /// *native* `doesNotUnderstand:` (`builtins::object_class::dispatch`),
-    /// reached here via `Lookup::Native` exactly like `dispatch_native_or_dnu`
-    /// reaches any other native method -- without this arm, `Object`'s
-    /// builtin `doesNotUnderstand:` (which every class inherits, since
+    /// Two cases reach here. A user-overridden `doesNotUnderstand:` arrives
+    /// as `Lookup::Method`; `Object`'s own *native* one
+    /// (`builtins::object_class::dispatch`) arrives as `Lookup::Native`,
+    /// exactly like `dispatch_native_or_dnu` reaches any other native
+    /// method. Without the native arm, `Object`'s builtin
+    /// `doesNotUnderstand:` -- which every class inherits, since
     /// `lookup_defined_for` finds `ClassData.builtin` on any class with no
-    /// method override) would never actually run.
+    /// method override -- would never actually run.
     fn does_not_understand(
         &mut self,
         receiver: Value,
@@ -594,7 +593,7 @@ impl Interpreter {
         // return the last expression's value (§5.1.8). `eval.rs`'s block
         // invocation handles the closure case directly and never calls
         // `run_statements` through this method-shaped path for a closure
-        // body's implicit-return value; see Task 6 Step 2.
+        // body's implicit-return value.
         if self.heap.frame_is_method(frame) {
             Ok(self.heap.receiver(frame))
         } else {
@@ -630,8 +629,8 @@ impl Interpreter {
         match value {
             Value::Obj(obj) => self.heap.class_of_obj(obj),
             // Nil/Bool/SmallInt/Float classes are wired up by the bootstrap
-            // (Task 11) into interpreter-held globals; Task 7-10 read them
-            // via `Interpreter::builtin_class(kind)` (added in Task 7).
+            // into interpreter-held globals, read from there via
+            // `Interpreter::builtin_class(kind)`.
             _ => self.builtin_class_for_primitive(value),
         }
     }
@@ -791,7 +790,7 @@ impl Interpreter {
         // wrapped the same way String literals are (Str), consistent with
         // how the language spec itself treats characters as "a special
         // case of string literals" going forward (`newspeak-spec.pdf`
-        // §2.2.3). `builtins::text` (Task 9) tags the *class* as
+        // §2.2.3). `builtins::text` tags the *class* as
         // `BuiltinClass::Character` so dispatch still lands on the right
         // native methods; only the payload representation is shared.
         let class = self.builtin_class(BuiltinClass::Character);
@@ -961,13 +960,13 @@ impl Interpreter {
 /// Every non-`Object` builtin's superclass below is `Object` directly, a
 /// Milestone 1 simplification of the real class hierarchy
 /// (`newspeak-spec.pdf` places `Boolean` above `True`/`False`, for
-/// instance): `builtins::boolean` (Task 8) must not rely on `True`/`False`
+/// instance): `builtins::boolean` must not rely on `True`/`False`
 /// actually inheriting from a `Boolean` superclass node, since they do not
 /// yet. Fix this only if a corpus module or fixture test needs real
 /// `Boolean`/`True`/`False` inheritance to observe correct behavior.
 fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, ClassRef> {
-    // NOTE: deliberately *not* `use BuiltinClass::*;` here (the brief's
-    // original draft did) -- `BuiltinClass::Object` and `crate::types::Object`
+    // NOTE: deliberately *not* `use BuiltinClass::*;` here --
+    // `BuiltinClass::Object` and `crate::types::Object`
     // (the object-model struct, brought into scope by `use crate::types::*;`
     // above) share the bare name `Object`. A glob-import of the enum's
     // variants shadows the struct, so any bare `Object { .. }` literal

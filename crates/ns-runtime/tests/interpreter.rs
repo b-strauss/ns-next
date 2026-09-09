@@ -1,7 +1,7 @@
 //! Interpreter core tests: expression evaluation, ordinary sends, and
 //! non-local return, built over hand-assembled `ClassData`/`Object`/`Frame`
 //! values -- the same construction pattern `dispatch.rs`'s own test module
-//! (Task 5) uses, extended here to actually *run* method bodies rather than
+//! uses, extended here to actually *run* method bodies rather than
 //! only look them up.
 
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ fn dummy_class(heap: &mut ns_runtime::Heap) -> ns_runtime::ClassRef {
 /// `Rc<ast::MethodDecl>`s by unary selector name, plus the module's
 /// resolved `Rc<HashMap<Span, Binding>>`. Building `MethodDecl`s via a real
 /// parse -- rather than hand-constructing deeply nested AST literals --
-/// follows `dispatch.rs`'s `class_with_method` helper (Task 5).
+/// follows `dispatch.rs`'s `class_with_method` helper.
 fn parse_methods(
     src: &str,
 ) -> (
@@ -179,8 +179,8 @@ fn parse_block_body(src: &str) -> ns_syntax::ast::CodeBody {
 /// Builds a `Frame` shaped exactly like the one `Interpreter::invoke_method`
 /// would build for a trivial no-arg method -- used as a block's `home` in
 /// the non-local-return tests below, since block-invocation-selector native
-/// dispatch (`value`) does not exist until Task 10 and so cannot be reached
-/// through `Interpreter::send`.
+/// dispatch (`value`) could not be reached through `Interpreter::send` when
+/// these tests were written.
 fn method_frame(heap: &mut ns_runtime::Heap) -> ns_runtime::FrameRef {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^0 )\n) : ()";
     let module = ns_syntax::parse(src).expect("parse");
@@ -202,7 +202,7 @@ fn method_frame(heap: &mut ns_runtime::Heap) -> ns_runtime::FrameRef {
     })
 }
 
-/// Gap 1 (Task 12 brief): sending a method whose body contains a bare
+/// Sending a method whose body contains a bare
 /// `OrderedCollection new` (no `platform` prefix, outside any superclass
 /// clause) must produce a real, working `OrderedCollection` instance --
 /// `eval_ident`'s symmetric fix to the resolver's `resolve_ident` change,
@@ -275,8 +275,8 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
     // convert a matching `Signal::Return` back into an ordinary value
     // (`Err(Signal::Return(target, value)) if target.same(&frame)`)
     // -- reproduced here since `home` was hand-built rather than produced
-    // by a live `invoke_method` call (which block dispatch would normally
-    // supply starting Task 10).
+    // by a live `invoke_method` call, which block dispatch would normally
+    // supply.
     match result {
         Err(Signal::Return(target, Value::SmallInt(1))) => {
             assert!(
@@ -349,15 +349,14 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
     }
 }
 
-/// Final-review finding I1: `Frame.uncontinuable` used to be set only by
-/// `Interpreter::raise_return`, i.e. only when the home method activation
-/// itself executed an explicit `^`. A method that returns *normally* (falls
-/// off the end) left its frame continuable forever, so a block captured
-/// during it and invoked afterwards would raise a `Signal::Return` at a
-/// frame whose Rust-level `invoke_method` call had already returned -- with
-/// no live catcher left, that escaped all the way out of the entry send and
-/// surfaced as the interpreter-invariant-shaped "internal: non-local return
-/// escaped the entry send" rather than the spec's `cannotReturn` case.
+/// `Frame.uncontinuable` must be set when a method returns *normally*, not
+/// only when `Interpreter::raise_return` handles an explicit `^`. A frame
+/// left continuable after its Rust-level `invoke_method` call returned has
+/// no live catcher, so a block captured during it and invoked afterwards
+/// raises a `Signal::Return` that escapes all the way out of the entry send
+/// and surfaces as the interpreter-invariant-shaped "internal: non-local
+/// return escaped the entry send" rather than the spec's `cannotReturn`
+/// case.
 ///
 /// `capture` here has no explicit `^` at all: it stores `[^1]` into a slot
 /// and falls off the end (returning self). `runIt`, a *later, separate*

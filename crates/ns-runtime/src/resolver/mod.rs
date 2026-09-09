@@ -61,7 +61,7 @@ fn collect_member_sets(decl: &ast::ClassDecl, sets: &mut HashMap<Symbol, HashSet
     // Inherit the superclass's member set if we've already computed it
     // (nested classes are declared textually after their enclosing class,
     // and Object/builtins are the fixed base case -- their own instance
-    // side selectors are added by Tasks 8-10's bootstrap, not resolved
+    // side selectors are added by the bootstrap, not resolved
     // here). Missing/builtin superclasses contribute an empty set here;
     // that's fine because `depth_search` only needs *this* module's own
     // lexically declared names to pick a depth.
@@ -280,7 +280,7 @@ impl Resolver {
     /// below): try locals first, then the §5.7 depth search treating the
     /// name itself as a zero-arg implicit send. `self`/`super` alone (no
     /// message) need no binding entry -- the interpreter special-cases
-    /// them directly against the current `Frame` (see Task 6).
+    /// them directly against the current `Frame`.
     ///
     /// Mirrors `resolve_superclass_clause`'s `None` prefix case: a bare
     /// name that genuinely resolves nowhere lexically (`find_member_depth`
@@ -361,7 +361,7 @@ impl Resolver {
         // Ordinary explicit-receiver send: resolve the receiver
         // sub-expression on its own merits; the send itself needs no
         // binding (dispatch.rs's lookupPublic runs on the receiver's
-        // actual runtime class -- see Task 5).
+        // actual runtime class).
         self.resolve_expr(&send.receiver, scope, chain);
         self.resolve_message_send(&send.message, scope, chain);
     }

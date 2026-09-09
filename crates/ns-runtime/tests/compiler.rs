@@ -141,16 +141,12 @@ fn an_uninitialized_slot_emits_nothing() {
     assert_eq!(init.statement_pc.len(), 1);
 }
 
-/// The brief's original test for this task instantiated `Outer` twice and
-/// compared the nested class's compiled code across instances -- but that
-/// needs the nested-class accessor (`innerClass`), which does not exist yet
-/// (this task was moved ahead of it, in the ORDERING RULING, specifically
-/// because keying by class object -- one per enclosing instance -- would
-/// have made the bytecode engine unable to find a freshly materialized
-/// nested class's code at all). What is testable now, and is the actual
-/// defect this task fixes, is that `compile_module` visits the *whole*
-/// mixin tree -- nested declarations and class sides, not only the root's
-/// own method table.
+/// Comparing a nested class's compiled code across two instances of `Outer`
+/// would be the sharper test, but it needs the nested-class accessor
+/// (`innerClass`), which does not exist yet. What is testable without it is
+/// the property that matters: `compile_module` visits the *whole* mixin tree
+/// -- nested declarations and class sides, not only the root's own method
+/// table.
 const NESTED_SRC: &str = "\
 Newspeak3
 'Test'
