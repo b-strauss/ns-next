@@ -576,6 +576,20 @@ fn new_object_handle(class: ClassRef, identity_hash: u32, data: ObjectData) -> O
 /// Identity hash fixed at 0, like `alloc_placeholder_object`: none of the
 /// four callers link this object into a real hierarchy a hash could ever
 /// distinguish it within.
+///
+/// The four call sites above (`Interpreter::bootstrap`'s
+/// `build_self_referential_object_class`, and the `dummy_class` test
+/// helpers in `dispatch.rs`, `types.rs` and `tests/interpreter.rs`) are the
+/// only legitimate callers. Nothing here restricts `data` to
+/// `ObjectData::Class`, and nothing stops a fifth call site from minting
+/// its own: calling this from anywhere else silently produces a second
+/// live, genuinely self-referential object sharing identity hash 0 with
+/// every placeholder `alloc_placeholder_object` has ever built. Once that
+/// object becomes reachable from anything real, it collides with those
+/// placeholders on the one axis (`Rc` identity aside) code elsewhere uses
+/// to reason about hash-0 objects being throwaway and never observed
+/// outside their own construction -- with nothing raising an error to say
+/// so.
 pub fn bootstrap_self_referential_object(data: ObjectData) -> ObjRef {
     let uninit: std::rc::Rc<std::mem::MaybeUninit<std::cell::RefCell<Object>>> =
         std::rc::Rc::new_uninit();

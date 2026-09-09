@@ -29,15 +29,17 @@ impl ObjRef {
         Rc::ptr_eq(&self.0, &other.0)
     }
 
-    /// An opaque, hashable key unique to this handle, for a table keyed by
-    /// object identity rather than by `identity_hash`.
-    /// `image::encode::GraphTable` is the only caller: it dedupes objects
-    /// it has already assigned a table id to as it walks the graph, and
-    /// `identity_hash` cannot serve that key -- two placeholder objects may
+    /// An opaque, hashable key unique to this handle for as long as it
+    /// (or a clone of it) stays alive, for code that needs `ObjRef` as a
+    /// `HashMap`/`HashSet` key rather than a comparison -- `identity_hash`
+    /// cannot serve that role, because two placeholder objects may
     /// legitimately share hash 0 (`Heap::alloc_placeholder_object`,
     /// `heap::bootstrap_self_referential_object`), which would fold two
-    /// distinct objects into one table entry.
-    pub fn identity_key(&self) -> usize {
+    /// distinct objects into one table entry. Crate-internal: every
+    /// current caller (`image::encode::GraphTable`'s object-id map,
+    /// `image::decode::rebuild_applications`'s superclass-position map,
+    /// `interpreter::nested::in_progress_key`) lives inside `ns-runtime`.
+    pub(crate) fn identity_key(&self) -> usize {
         Rc::as_ptr(&self.0) as usize
     }
 }
