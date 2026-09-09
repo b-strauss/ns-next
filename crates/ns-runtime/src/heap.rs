@@ -1,8 +1,7 @@
 //! The heap seam. Every read and write of an `Object` or a `Frame` goes
 //! through `Heap`, so that replacing what sits behind a handle changes this
-//! file rather than its call sites. The store behind the accessors is
-//! `Rc<RefCell<_>>` today and an arena of typed handles next; see
-//! `docs/design/memory.md`.
+//! file rather than its call sites. The store behind the accessors is an
+//! arena of typed handles for both; see `docs/design/memory.md`.
 //!
 //! The accessors copy out rather than lend out. That is not a stylistic
 //! choice: almost every call site borrows, clones one field and drops the
@@ -25,21 +24,26 @@ pub struct Heap {
     /// the one step 3 removes by construction when activations move onto a
     /// stack.
     frames: Vec<Frame>,
+    /// Every object, addressed by an `ObjRef`'s index. Nothing is ever
+    /// removed, for the same reason as `frames`.
+    objects: Vec<Object>,
 }
 
-/// Prints the counter and the arena's length, never a frame's contents. A
-/// derived `Debug` would walk every activation ever allocated, and a
-/// `ClosureBody::Ast(Rc<CodeBody>)` inside one of them would print a whole
-/// AST -- the same hazard `CLAUDE.md`'s "never `{:?}` a `Value`" names for
-/// an object, now reachable through the heap itself rather than through
-/// one handle. Nothing prints a `Heap` today, so this is latent, but a
-/// derive would have turned a future `{:?}` on a `Heap` -- or on anything
-/// that embeds one -- into an unbounded print of every activation's data.
+/// Prints the counter and both arenas' lengths, never their contents. A
+/// derived `Debug` would walk every activation and every object ever
+/// allocated, and a `ClosureBody::Ast(Rc<CodeBody>)` reachable through
+/// either one would print a whole AST -- the same hazard `CLAUDE.md`'s
+/// "never `{:?}` a `Value`" names for a single object, now reachable
+/// through the heap itself rather than through one handle. Nothing prints
+/// a `Heap` today, so this is latent, but a derive would have turned a
+/// future `{:?}` on a `Heap` -- or on anything that embeds one -- into an
+/// unbounded print of every activation's and every object's data.
 impl std::fmt::Debug for Heap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Heap")
             .field("next_identity_hash", &self.next_identity_hash)
             .field("frames.len()", &self.frames.len())
+            .field("objects.len()", &self.objects.len())
             .finish()
     }
 }
@@ -55,24 +59,19 @@ impl Default for Heap {
 
 impl Heap {
     /// A `Heap` built on the spot -- rather than the one `Interpreter` owns
-    /// -- is an empty frame arena: every frame accessor indexes directly
-    /// into `self.frames`, so a `FrameRef` minted by a different `Heap`
-    /// either falls out of range and panics, or -- should the two arenas
-    /// happen to share a length -- silently names a different activation,
-    /// with no error at all. Objects are unaffected at this commit: `ObjRef`
-    /// is still `Rc<RefCell<_>>`, so a class object read through a
-    /// throwaway `Heap` still reads correctly no matter which `Heap` reads
-    /// it, because a class's data lives on its own `Rc`, not in an arena
-    /// slot. That asymmetry is exactly why `compile_initializer`,
-    /// `compile_module` and `cmd_disasm` already take a real `&Heap`
-    /// parameter instead of building one on the spot: not because today's
-    /// object read needs it, but because the object side moves onto the
-    /// same arena next, and each of those call sites already reads through
-    /// the heap that will then matter.
+    /// -- is an empty arena: every object and frame accessor indexes
+    /// directly into `self.objects`/`self.frames`, so an `ObjRef` or
+    /// `FrameRef` minted by a different `Heap` either falls out of range
+    /// and panics, or -- should the two arenas happen to share a length --
+    /// silently names a different object or activation, with no error at
+    /// all. That is why `compile_initializer`, `compile_module` and
+    /// `cmd_disasm` take a real `&Heap` parameter instead of building one on
+    /// the spot.
     pub fn new() -> Heap {
         Heap {
             next_identity_hash: 1,
             frames: Vec::new(),
+            objects: Vec::new(),
         }
     }
 
@@ -103,18 +102,20 @@ impl Heap {
 
     // ---------- Object construction ----------
     //
-    // Every ordinary construction of an `ObjRef` in the workspace -- src or
-    // tests -- goes through one of the two methods below, so that replacing
-    // what backs a handle only ever touches this file. The unsafe
-    // self-referential bootstrap below them is the one exception the type
-    // system cannot avoid, kept here for the same reason.
+    // Every construction of an `ObjRef` in the workspace -- src or tests --
+    // goes through one of the three methods below, so that replacing what
+    // backs a handle only ever touches this file.
 
     /// Allocates `data` under `class`, with a fresh identity hash drawn from
     /// the counter. The ordinary constructor -- everything that is a real,
     /// observable object goes through this one.
     pub fn alloc_object(&mut self, class: ClassRef, data: ObjectData) -> ObjRef {
         let identity_hash = self.alloc_identity_hash();
-        new_object_handle(class, identity_hash, data)
+        self.push_object(Object {
+            class,
+            identity_hash,
+            data,
+        })
     }
 
     /// Allocates `data` under `class` with identity hash fixed at 0,
@@ -130,27 +131,47 @@ impl Heap {
     /// 0 is the value every other such placeholder already shares
     /// (`alloc_identity_hash`'s own doc comment).
     pub fn alloc_placeholder_object(&mut self, class: ClassRef, data: ObjectData) -> ObjRef {
-        new_object_handle(class, 0, data)
+        self.push_object(Object {
+            class,
+            identity_hash: 0,
+            data,
+        })
     }
 
-    /// Allocates a class object that is genuinely its own `.class` -- the shape
-    /// every one of the crate's four bootstraps needs
-    /// (`Interpreter::bootstrap`'s `build_self_referential_object_class` in
-    /// production; the `dummy_class` helpers in `dispatch.rs`, `types.rs`
-    /// and `tests/interpreter.rs`, each satisfying `Object.class`'s
-    /// non-optional type without wiring up a whole hierarchy).
-    ///
-    /// Takes `&mut self` although today's body ignores it, for the same
-    /// reason every accessor here already does: under the arena the object
-    /// has to be allocated *into* a heap, and a caller that reached this
-    /// through a throwaway `Heap` would silently read a different heap's
-    /// slot afterwards.
+    /// An object that is genuinely its own `.class`. Under `Rc` this needed
+    /// `Rc::new_uninit`, a manual strong-count bump and `Rc::from_raw`,
+    /// because `Object.class` is non-optional and `Rc::new_cyclic` only ever
+    /// offers a `Weak` that fails to upgrade until construction finishes.
+    /// An arena has no such problem: the slot's index is known before the
+    /// slot is filled, so the object can name itself in safe Rust.
     ///
     /// Identity hash fixed at 0, like `alloc_placeholder_object`: none of
     /// the four callers links this object into a real hierarchy a hash
     /// could distinguish it within.
     pub fn alloc_self_referential_class(&mut self, data: ObjectData) -> ObjRef {
-        bootstrap_self_referential_object(data)
+        let index = self.next_object_index();
+        let handle = ObjRef { index };
+        self.objects.push(Object {
+            class: handle.clone(),
+            identity_hash: 0,
+            data,
+        });
+        handle
+    }
+
+    /// The one place an object enters the arena. The ceiling is the
+    /// representation's, not an implementation limit: a handle is 32 bits
+    /// by design (`docs/design/memory.md`), so a heap holding more than
+    /// `u32::MAX` objects cannot be addressed at all, and failing loudly at
+    /// the allocation beats handing out an index that wrapped.
+    fn push_object(&mut self, object: Object) -> ObjRef {
+        let index = self.next_object_index();
+        self.objects.push(object);
+        ObjRef { index }
+    }
+
+    fn next_object_index(&self) -> u32 {
+        u32::try_from(self.objects.len()).expect("more than u32::MAX objects allocated in one heap")
     }
 
     // ---------- Frame construction ----------
@@ -190,15 +211,12 @@ impl Heap {
 
     // ---------- Object accessors ----------
     //
-    // `&self` is unused while a handle is an `Rc`, because the data hangs
-    // off the handle itself. It is in these signatures from the start
-    // because the arena will need it, and adding it afterwards would touch
-    // every call site this module exists to protect. The mutating
-    // accessors take `&mut self` for the same reason, even though the
-    // `RefCell` behind the handle would make `&self` sufficient today.
+    // `&self`/`&mut self` index into `self.objects`, so the borrow checker
+    // ties every accessor's result to the `Heap` it read from -- the same
+    // discipline `docs/design/memory.md` describes for the frame arena.
 
     pub fn identity_hash(&self, obj: &ObjRef) -> u32 {
-        obj.0.borrow().identity_hash
+        self.objects[obj.index as usize].identity_hash
     }
 
     /// Overwrites `obj`'s identity hash. `tests/image.rs`'s
@@ -215,19 +233,19 @@ impl Heap {
     /// `become:`'s stability guarantee then silently breaks, with nothing
     /// anywhere raising an error to say so.
     pub fn set_identity_hash(&mut self, obj: &ObjRef, hash: u32) {
-        obj.0.borrow_mut().identity_hash = hash;
+        self.objects[obj.index as usize].identity_hash = hash;
     }
 
     pub fn class_of_obj(&self, obj: &ObjRef) -> ClassRef {
-        obj.0.borrow().class.clone()
+        self.objects[obj.index as usize].class.clone()
     }
 
     pub fn is_class(&self, obj: &ObjRef) -> bool {
-        matches!(obj.0.borrow().data, ObjectData::Class(_))
+        matches!(self.objects[obj.index as usize].data, ObjectData::Class(_))
     }
 
     pub fn array_len(&self, obj: &ObjRef) -> Option<usize> {
-        match &obj.0.borrow().data {
+        match &self.objects[obj.index as usize].data {
             ObjectData::Array(items) => Some(items.len()),
             _ => None,
         }
@@ -240,21 +258,21 @@ impl Heap {
     /// their own (see `platform.rs`'s module doc), so the dispatcher needs
     /// the count itself, not any one field's value.
     pub fn instance_field_count(&self, obj: &ObjRef) -> Option<usize> {
-        match &obj.0.borrow().data {
+        match &self.objects[obj.index as usize].data {
             ObjectData::Instance(fields) => Some(fields.len()),
             _ => None,
         }
     }
 
     pub fn array_elements(&self, obj: &ObjRef) -> Option<Vec<Value>> {
-        match &obj.0.borrow().data {
+        match &self.objects[obj.index as usize].data {
             ObjectData::Array(items) => Some(items.clone()),
             _ => None,
         }
     }
 
     pub fn array_at(&self, obj: &ObjRef, index: usize) -> Option<Value> {
-        match &obj.0.borrow().data {
+        match &self.objects[obj.index as usize].data {
             ObjectData::Array(items) => items.get(index).cloned(),
             _ => None,
         }
@@ -265,7 +283,7 @@ impl Heap {
     /// here have already produced their own Newspeak error for it -- so
     /// this reports rather than panics.
     pub fn array_set(&mut self, obj: &ObjRef, index: usize, value: Value) -> bool {
-        if let ObjectData::Array(items) = &mut obj.0.borrow_mut().data {
+        if let ObjectData::Array(items) = &mut self.objects[obj.index as usize].data {
             if index < items.len() {
                 items[index] = value;
                 return true;
@@ -275,7 +293,7 @@ impl Heap {
     }
 
     pub fn array_push(&mut self, obj: &ObjRef, value: Value) -> bool {
-        if let ObjectData::Array(items) = &mut obj.0.borrow_mut().data {
+        if let ObjectData::Array(items) = &mut self.objects[obj.index as usize].data {
             items.push(value);
             return true;
         }
@@ -286,7 +304,7 @@ impl Heap {
     /// `ObjectData::Instance` or `index` is out of range -- the same
     /// total-rather-than-panicking shape as the array accessors above.
     pub fn instance_field(&self, obj: &ObjRef, index: usize) -> Option<Value> {
-        match &obj.0.borrow().data {
+        match &self.objects[obj.index as usize].data {
             ObjectData::Instance(fields) => fields.get(index).cloned(),
             _ => None,
         }
@@ -294,7 +312,7 @@ impl Heap {
 
     /// Answers whether the write happened, mirroring `array_set`.
     pub fn set_instance_field(&mut self, obj: &ObjRef, index: usize, value: Value) -> bool {
-        if let ObjectData::Instance(fields) = &mut obj.0.borrow_mut().data {
+        if let ObjectData::Instance(fields) = &mut self.objects[obj.index as usize].data {
             if index < fields.len() {
                 fields[index] = value;
                 return true;
@@ -304,21 +322,21 @@ impl Heap {
     }
 
     pub fn str_value(&self, obj: &ObjRef) -> Option<String> {
-        match &obj.0.borrow().data {
+        match &self.objects[obj.index as usize].data {
             ObjectData::Str(s) => Some(s.clone()),
             _ => None,
         }
     }
 
     pub fn sym_value(&self, obj: &ObjRef) -> Option<Symbol> {
-        match &obj.0.borrow().data {
+        match &self.objects[obj.index as usize].data {
             ObjectData::Sym(s) => Some(*s),
             _ => None,
         }
     }
 
     pub fn closure_data(&self, obj: &ObjRef) -> Option<ClosureData> {
-        match &obj.0.borrow().data {
+        match &self.objects[obj.index as usize].data {
             ObjectData::Closure(c) => Some(c.clone()),
             _ => None,
         }
@@ -334,7 +352,7 @@ impl Heap {
     /// or `Instance`, acceptable here because the encoder visits every
     /// object exactly once regardless.
     pub fn object_snapshot(&self, obj: &ObjRef) -> Object {
-        obj.0.borrow().clone()
+        self.objects[obj.index as usize].clone()
     }
 
     /// Replaces the entirety of a placeholder object's contents in one
@@ -349,7 +367,7 @@ impl Heap {
     /// error, and no way for verification to notice, because verification
     /// has already finished.
     pub fn replace_object(&mut self, obj: &ObjRef, filled: Object) {
-        *obj.0.borrow_mut() = filled;
+        self.objects[obj.index as usize] = filled;
     }
 
     /// Renders a value for a user-facing error message.
@@ -366,7 +384,7 @@ impl Heap {
             Value::Bool(b) => b.to_string(),
             Value::SmallInt(n) => n.to_string(),
             Value::Float(f) => f.to_string(),
-            Value::Obj(obj) => match &obj.0.borrow().data {
+            Value::Obj(obj) => match &self.objects[obj.index as usize].data {
                 ObjectData::Str(s) => format!("the String {s:?}"),
                 ObjectData::Sym(s) => format!("the Symbol #{s}"),
                 ObjectData::Array(items) => format!("an Array of {}", items.len()),
@@ -374,17 +392,21 @@ impl Heap {
                 ObjectData::Class(data) => {
                     format!("the class {}", data.application.mixin.name)
                 }
-                ObjectData::Instance(_) => match &obj.0.borrow().class.0.borrow().data {
-                    ObjectData::Class(data) => {
-                        format!("an instance of {}", data.application.mixin.name)
+                ObjectData::Instance(_) => {
+                    let class = &self.objects[obj.index as usize].class;
+                    match &self.objects[class.index as usize].data {
+                        ObjectData::Class(data) => {
+                            format!("an instance of {}", data.application.mixin.name)
+                        }
+                        // `types.rs`'s `ClassRef` doc: every `Object::class`
+                        // is an `ObjRef` whose own `data` is
+                        // `ObjectData::Class`, by convention rather than by
+                        // the type system. This arm exists only so the match
+                        // is total, not because a conforming object can
+                        // reach it.
+                        _ => "an object".to_string(),
                     }
-                    // `types.rs`'s `ClassRef` doc: every `Object::class` is
-                    // an `ObjRef` whose own `data` is `ObjectData::Class`,
-                    // by convention rather than by the type system. This arm
-                    // exists only so the match is total, not because a
-                    // conforming object can reach it.
-                    _ => "an object".to_string(),
-                },
+                }
             },
         }
     }
@@ -411,35 +433,35 @@ impl Heap {
         &self,
         class: &ClassRef,
     ) -> Option<std::rc::Rc<crate::mixin::MixinApplication>> {
-        match &class.0.borrow().data {
+        match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => Some(data.application.clone()),
             _ => None,
         }
     }
 
     pub fn class_enclosing(&self, class: &ClassRef) -> Option<ObjRef> {
-        match &class.0.borrow().data {
+        match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.enclosing.clone(),
             _ => None,
         }
     }
 
     pub fn class_declaring(&self, class: &ClassRef) -> Option<ClassRef> {
-        match &class.0.borrow().data {
+        match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.declaring_class.clone(),
             _ => None,
         }
     }
 
     pub fn class_superclass(&self, class: &ClassRef) -> Option<ClassRef> {
-        match &class.0.borrow().data {
+        match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.superclass.clone(),
             _ => None,
         }
     }
 
     pub fn class_builtin(&self, class: &ClassRef) -> Option<BuiltinClass> {
-        match &class.0.borrow().data {
+        match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.builtin,
             _ => None,
         }
@@ -452,14 +474,14 @@ impl Heap {
         &self,
         class: &ClassRef,
     ) -> Option<(Option<BuiltinClass>, Option<ClassRef>)> {
-        match &class.0.borrow().data {
+        match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => Some((data.builtin, data.superclass.clone())),
             _ => None,
         }
     }
 
     pub fn class_metaclass(&self, class: &ClassRef) -> Option<ClassRef> {
-        match &class.0.borrow().data {
+        match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.metaclass.clone(),
             _ => None,
         }
@@ -475,7 +497,7 @@ impl Heap {
     /// stable, which is what inline caches are meant to key on. The caller
     /// turns a `false` into an `unreachable!` rather than swallowing it.
     pub fn set_class_metaclass(&mut self, class: &ClassRef, metaclass: ClassRef) -> bool {
-        if let ObjectData::Class(data) = &mut class.0.borrow_mut().data {
+        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
             data.metaclass = Some(metaclass);
             return true;
         }
@@ -492,7 +514,7 @@ impl Heap {
     /// subclass to an already-loaded sibling *user-defined* class has to
     /// happen by hand on the class-object chain `super`/`instantiate` walk.
     pub fn set_class_superclass(&mut self, class: &ClassRef, superclass: ClassRef) -> bool {
-        if let ObjectData::Class(data) = &mut class.0.borrow_mut().data {
+        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
             data.superclass = Some(superclass);
             return true;
         }
@@ -510,7 +532,7 @@ impl Heap {
         class: &ClassRef,
         application: std::rc::Rc<crate::mixin::MixinApplication>,
     ) -> bool {
-        if let ObjectData::Class(data) = &mut class.0.borrow_mut().data {
+        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
             data.application = application;
             return true;
         }
@@ -682,71 +704,6 @@ impl Heap {
     pub fn replace_frame(&mut self, frame: &FrameRef, filled: Frame) {
         self.frames[frame.index as usize] = filled;
     }
-}
-
-/// The one place an `ObjRef`'s inner `Rc<RefCell<Object>>` is actually
-/// built. `alloc_object` and `alloc_placeholder_object` differ only in
-/// where the identity hash comes from; this is the shared tail both call.
-fn new_object_handle(class: ClassRef, identity_hash: u32, data: ObjectData) -> ObjRef {
-    ObjRef(std::rc::Rc::new(std::cell::RefCell::new(Object {
-        class,
-        identity_hash,
-        data,
-    })))
-}
-
-/// Builds a class object that is genuinely its own `.class` -- the shape
-/// every one of the crate's four bootstraps needs (`Interpreter::bootstrap`
-/// building the real `Object` class in production; `dispatch.rs`'s,
-/// `types.rs`'s and `tests/interpreter.rs`'s own test suites each building a
-/// throwaway one to satisfy `Object.class`'s non-optional type without
-/// wiring up a whole hierarchy). `Object.class` is non-optional (no
-/// `Option`/`Weak`), so this cannot be built via `Rc::new_cyclic` in one
-/// safe step: `new_cyclic`'s closure only ever gets a `Weak` that fails to
-/// upgrade until construction finishes, and using `unreachable!()` as a
-/// throwaway placeholder panics immediately on evaluation (eager, not
-/// lazy) rather than compiling to something inert. Instead: allocate the
-/// memory uninitialized, mint a second strong `Rc` handle to the SAME
-/// allocation (its count balanced via `Rc::increment_strong_count` before
-/// `Rc::from_raw`), write the real value using that handle as `class`,
-/// then `assume_init`.
-///
-/// Identity hash fixed at 0, like `alloc_placeholder_object`: none of the
-/// four callers link this object into a real hierarchy a hash could ever
-/// distinguish it within.
-///
-/// Private to this module: `Heap::alloc_self_referential_class` is the only
-/// caller, so a fifth call site cannot mint a second live self-referential
-/// object outside a heap. That mattered even before the arena -- such an
-/// object shares identity hash 0 with every placeholder
-/// `alloc_placeholder_object` has ever built, and code elsewhere reasons
-/// about hash-0 objects being throwaway and never observed outside their
-/// own construction.
-fn bootstrap_self_referential_object(data: ObjectData) -> ObjRef {
-    let uninit: std::rc::Rc<std::mem::MaybeUninit<std::cell::RefCell<Object>>> =
-        std::rc::Rc::new_uninit();
-    let raw_mut =
-        std::rc::Rc::as_ptr(&uninit) as *mut std::mem::MaybeUninit<std::cell::RefCell<Object>>;
-    let data_ptr = raw_mut as *const std::cell::RefCell<Object>;
-    // SAFETY: `data_ptr` points at the allocation `uninit` owns; we bump
-    // its strong count by one before minting a second `Rc` handle to it
-    // via `from_raw`, so the two handles (`uninit`, and the `class` field
-    // written below) share a correctly balanced count. `MaybeUninit<T>` is
-    // guaranteed to have the same layout as `T`, so the pointer cast is
-    // sound; neither handle is dereferenced before the `write` below
-    // completes.
-    unsafe { std::rc::Rc::increment_strong_count(data_ptr) };
-    let self_ref = ObjRef(unsafe { std::rc::Rc::from_raw(data_ptr) });
-    unsafe {
-        (*raw_mut).write(std::cell::RefCell::new(Object {
-            class: self_ref,
-            identity_hash: 0,
-            data,
-        }));
-    }
-    // SAFETY: the write above just initialized the payload; `uninit` is
-    // the allocation's original handle, now fully initialized.
-    ObjRef(unsafe { uninit.assume_init() })
 }
 
 #[cfg(test)]

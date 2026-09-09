@@ -3,7 +3,6 @@
 //! `docs/design/object-model.md`, `docs/design/execution.md`'s
 //! "Activations", and `docs/design/dispatch.md`'s "Resolution".
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -15,49 +14,51 @@ use crate::Symbol;
 
 // ---------- Values and objects ----------
 
-/// An opaque handle to an object. The inner `Rc` is private, and only
-/// `types.rs` and `heap.rs` can reach it: that privacy is what makes
-/// replacing the store behind it a change to those two files rather than
-/// to every caller. See `docs/design/memory.md`, "The seam".
+/// An opaque handle to an object: an index into `Heap.objects`. The inner
+/// index is private to the crate, and only `types.rs` and `heap.rs` reach
+/// it -- that privacy is what made replacing `Rc<RefCell<Object>>` with
+/// this a change to those two files rather than to every caller. See
+/// `docs/design/memory.md`, "The seam".
+///
+/// A handle is meaningful only against the `Heap` that allocated it. The
+/// arena never reuses a slot -- there is no collector yet -- so two live
+/// objects never share an index.
 #[derive(Clone)]
-pub struct ObjRef(pub(crate) Rc<RefCell<Object>>);
+pub struct ObjRef {
+    pub(crate) index: u32,
+}
 
 impl ObjRef {
     /// Object identity. Replaces `Rc::ptr_eq` at every call site, so that
     /// identity has one spelling that survives the store changing under it.
     pub fn same(&self, other: &ObjRef) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
+        self.index == other.index
     }
 
-    /// An opaque, hashable key unique to this handle for as long as it
-    /// (or a clone of it) stays alive, for code that needs `ObjRef` as a
-    /// `HashMap`/`HashSet` key rather than a comparison -- `identity_hash`
-    /// cannot serve that role, because two placeholder objects may
-    /// legitimately share hash 0 (`Heap::alloc_placeholder_object`,
-    /// `heap::bootstrap_self_referential_object`), which would fold two
-    /// distinct objects into one table entry. Crate-internal: every
-    /// current caller (`image::encode::GraphTable`'s object-id map,
+    /// An opaque, hashable key unique to this handle, for code that needs
+    /// `ObjRef` as a `HashMap`/`HashSet` key rather than a comparison --
+    /// `identity_hash` cannot serve that role, because two placeholder
+    /// objects may legitimately share hash 0
+    /// (`Heap::alloc_placeholder_object`,
+    /// `Heap::alloc_self_referential_class`), which would fold two distinct
+    /// objects into one table entry. Crate-internal: every current caller
+    /// (`image::encode::GraphTable`'s object-id map,
     /// `image::decode::rebuild_applications`'s superclass-position map,
     /// `interpreter::nested::in_progress_key`) lives inside `ns-runtime`.
     pub(crate) fn identity_key(&self) -> usize {
-        Rc::as_ptr(&self.0) as usize
+        self.index as usize
     }
 }
 
-/// Prints identity only, never `class` or `data`: the bootstrap `Object`
-/// class is its own `.class`, so a `Debug` that visited fields would
-/// recurse forever the first time anything derives `Debug` through an
-/// `ObjRef` (`Object`, `Value::Obj`, every `Option<ClassRef>` on
-/// `ClassData` -- see `CLAUDE.md`'s "Never `{:?}` a `Value`"). `try_borrow`
-/// rather than `borrow`: `Debug` can run while a caller elsewhere on the
-/// stack already holds the `RefCell` mutably (a panic message formatting a
-/// receiver mid-mutation, say), and formatting must not itself panic.
+/// Prints the arena index and nothing else. Under `Rc` this impl was
+/// hand-written to stop `Debug` recursing through the bootstrap `Object`
+/// class, which is its own `.class`; an index has nothing to descend into,
+/// so the recursion hazard is gone by construction. It still renders Rust
+/// internals, which is why `CLAUDE.md`'s "Never `{:?}` a `Value`" rule
+/// stands: `Heap::describe` is what a Newspeak-facing message needs.
 impl std::fmt::Debug for ObjRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0.try_borrow() {
-            Ok(obj) => write!(f, "ObjRef(#{})", obj.identity_hash),
-            Err(_) => write!(f, "ObjRef(<borrowed>)"),
-        }
+        write!(f, "ObjRef(#{})", self.index)
     }
 }
 
@@ -361,120 +362,6 @@ pub struct Frame {
     /// (left at 0) for every other frame kind: a method, block, clause, or
     /// top-level body never contains `InitSlot`.
     pub slot_base: usize,
-}
-
-// ---------- Iterative teardown ----------
-
-// `Rc`'s own drop glue is recursive: releasing the last handle to an object
-// drops its fields, which releases the last handle to the next object, and
-// so on. How deep that chain runs is the *program's* choice -- a Newspeak
-// program can chain a million instances -- and, once a world is decoded
-// from an image, an attacker's: `image::decode` builds the graph from
-// untrusted bytes, at well under twenty bytes per link. A few hundred
-// thousand links overflow the stack, which aborts the process rather than
-// failing, and an abort is exactly what an image must never be able to
-// cause.
-//
-// So `Object` (here) and `MixinApplication` (`mixin.rs`) release what they
-// own through an explicit worklist instead of through the Rust stack. No
-// ceiling comes with it and none is wanted: every chain is still released
-// in full, however deep, because refusing a deep one would refuse worlds
-// this runtime builds happily from source.
-//
-// A frame is no longer part of this: it is an index into `Heap.frames`, and
-// the arena that owns the storage outlives every handle into it, so there
-// is no reference chain a frame's own teardown would ever need to unwind.
-//
-// The one reference that cannot join the worklist is `Object::class`: it is
-// not an `Option`, and `Drop::drop` receives `&mut self`, so there is no
-// value to swap in and the field's own glue runs after `drop` returns.
-// `image::decode::check_class_references` closes that gap from the other
-// end, by refusing an image in which a class object's own `class` is
-// another decoded record -- which is not a depth ceiling but the runtime's
-// own invariant, since `Interpreter::new_class_object` gives every class
-// object the shared bootstrap `Object` placeholder. A `class` chain is
-// therefore at most one link long and costs a bounded number of frames.
-
-/// Hands `obj` to `work` if this is its last handle, and simply releases it
-/// otherwise.
-///
-/// The count test is what keeps the worklist -- and its allocation -- out
-/// of the common case entirely: an object whose fields all point at things
-/// someone else still holds pushes nothing, and `Vec::new()` does not
-/// allocate until the first push. It is also what makes two fields of one
-/// dying object pointing at the same third object work out: the first
-/// handle sees a count of two and is released on the spot, the second sees
-/// one and is queued.
-fn push_obj(obj: ObjRef, work: &mut Vec<ObjRef>) {
-    if Rc::strong_count(&obj.0) == 1 {
-        work.push(obj);
-    }
-}
-
-fn push_value(value: Value, work: &mut Vec<ObjRef>) {
-    if let Value::Obj(obj) = value {
-        push_obj(obj, work);
-    }
-}
-
-/// Moves every reference an object's payload owns onto `work`. Takes the
-/// payload by value: `ObjectData` has an empty variant to leave behind
-/// (`Instance(vec![])`), so nothing here needs a stand-in.
-fn drain_object_data(data: ObjectData, work: &mut Vec<ObjRef>) {
-    match data {
-        ObjectData::Instance(fields) | ObjectData::Array(fields) => {
-            for value in fields {
-                push_value(value, work);
-            }
-        }
-        // A `ClosureData` owns its `captured_frame` and `home`, both
-        // `FrameRef`s into the arena rather than object references, so
-        // there is nothing here for the worklist to pick up.
-        ObjectData::Closure(_) => {}
-        ObjectData::Class(class) => {
-            // `application` is released through `MixinApplication`'s own
-            // `Drop`, which unlinks its superclass list the same way.
-            for reference in [
-                class.superclass,
-                class.enclosing,
-                class.declaring_class,
-                class.metaclass,
-            ]
-            .into_iter()
-            .flatten()
-            {
-                push_obj(reference, work);
-            }
-        }
-        ObjectData::Str(_) | ObjectData::Sym(_) => {}
-    }
-}
-
-fn take_object_data(obj: &mut Object) -> ObjectData {
-    std::mem::replace(&mut obj.data, ObjectData::Instance(Vec::new()))
-}
-
-/// Releases everything on `work`, and everything reachable from it, in a
-/// loop. Each entry was queued because its handle was the last one, so
-/// `Rc::try_unwrap` yields the value itself; emptying it there means its
-/// own `Drop` finds nothing left to descend into.
-fn run_teardown(work: &mut Vec<ObjRef>) {
-    while let Some(obj) = work.pop() {
-        if let Ok(cell) = Rc::try_unwrap(obj.0) {
-            let mut object = cell.into_inner();
-            let data = take_object_data(&mut object);
-            drain_object_data(data, work);
-        }
-    }
-}
-
-impl Drop for Object {
-    fn drop(&mut self) {
-        let mut work = Vec::new();
-        let data = take_object_data(self);
-        drain_object_data(data, &mut work);
-        run_teardown(&mut work);
-    }
 }
 
 // ---------- Errors ----------

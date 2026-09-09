@@ -64,15 +64,12 @@ pub fn compile_method(
 /// because `ns-cli`'s `disasm` and this module's own tests address a class
 /// directly, without going through `compile_module`'s tree walk.
 ///
-/// Takes `heap` rather than building one. `Heap` already owns real
-/// per-instance state -- the frame arena -- so a freshly built `Heap` is
-/// not the interchangeable, counter-only value it used to be; this
-/// particular lookup only reads `class`'s `Rc<RefCell<_>>`-backed data, so
-/// it happens to still return the right answer through a throwaway `Heap`
-/// today, but only because objects have not moved onto the arena yet. Once
-/// they do, a throwaway `Heap` here would silently miss instead of failing
-/// loudly -- exactly the failure mode a `FrameRef` from a throwaway `Heap`
-/// already hits.
+/// Takes `heap` rather than building one. `Heap` owns real per-instance
+/// state -- both the frame and the object arenas -- so a freshly built
+/// `Heap` is not the interchangeable, counter-only value it used to be:
+/// `class` is an index into a specific `Heap.objects`, and reading it
+/// through any other `Heap` either indexes out of range and panics, or
+/// silently names a different object entirely.
 pub fn compile_initializer(
     heap: &crate::Heap,
     class: &ClassRef,
