@@ -741,4 +741,47 @@ mod tests {
         let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
         assert!(heap.class_of_obj(&class).same(&class));
     }
+
+    fn top_level_frame() -> Frame {
+        Frame {
+            receiver: Value::Nil,
+            args: vec![],
+            temps: vec![],
+            pc: 0,
+            pc_kind: PcKind::TreeWalk,
+            sender: None,
+            home: None,
+            current_class: None,
+            kind: FrameKind::TopLevel,
+            uncontinuable: false,
+            slot_base: 0,
+        }
+    }
+
+    /// A frame is addressed by its position in the arena, so a handle must
+    /// stay valid across the reallocation that growing the arena performs.
+    /// Under `Rc` this was free; under an arena it is the property the
+    /// representation rests on.
+    #[test]
+    fn a_frame_handle_survives_the_arena_growing_under_it() {
+        let mut heap = Heap::new();
+        let first = heap.alloc_frame(top_level_frame());
+        for _ in 0..1000 {
+            heap.alloc_frame(top_level_frame());
+        }
+        assert!(matches!(heap.receiver(&first), Value::Nil));
+        assert_eq!(heap.frame_register_shape(&first), (0, 0, 0));
+    }
+
+    /// Activation identity is what `Signal::Return`'s target check and
+    /// `invoke_method`'s catch both rest on, so two live activations may
+    /// never compare equal however alike their contents are.
+    #[test]
+    fn two_frames_are_never_the_same_activation() {
+        let mut heap = Heap::new();
+        let a = heap.alloc_frame(top_level_frame());
+        let b = heap.alloc_frame(top_level_frame());
+        assert!(!a.same(&b));
+        assert!(a.same(&a.clone()));
+    }
 }
