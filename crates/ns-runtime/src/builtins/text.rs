@@ -56,7 +56,7 @@ pub fn dispatch_string(
             Some(other) => Ok(Value::Obj(interp.new_string(format!("{s}{other}")))),
             None => Err(NewspeakError {
                 selector,
-                receiver: receiver.clone(),
+                receiver,
                 message: format!(
                     "String concatenation (,) requires a String argument, got {}",
                     interp.heap.describe_arg(args.first())

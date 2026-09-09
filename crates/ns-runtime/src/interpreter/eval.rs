@@ -114,11 +114,9 @@ pub(crate) fn write_local(heap: &mut Heap, frame: &FrameRef, index: u16, value: 
 }
 
 pub(crate) fn frame_at_depth(heap: &Heap, frame: &FrameRef, depth: u16) -> FrameRef {
-    let mut current = frame.clone();
+    let mut current = *frame;
     for _ in 0..depth {
-        let next = heap
-            .frame_captured(&current)
-            .unwrap_or_else(|| current.clone());
+        let next = heap.frame_captured(&current).unwrap_or(current);
         current = next;
     }
     current
@@ -136,7 +134,7 @@ pub(crate) fn frame_at_depth(heap: &Heap, frame: &FrameRef, depth: u16) -> Frame
 /// with no enclosing method to return through), so the fallback below
 /// covers all of them without naming `FrameKind` here.
 pub(crate) fn home_of(heap: &Heap, frame: &FrameRef) -> FrameRef {
-    heap.frame_home(frame).unwrap_or_else(|| frame.clone())
+    heap.frame_home(frame).unwrap_or(*frame)
 }
 
 /// Writes `value` into instance field `index` on `instance`'s
@@ -272,7 +270,7 @@ fn eval_send(
                 selector_of(&send.message),
                 args,
                 bindings,
-                Some(frame.clone()),
+                Some(*frame),
             )
         }
     }
@@ -416,25 +414,18 @@ pub(crate) fn dispatch_lexical_send(
             defining_class,
             args,
             bindings.clone(),
-            Some(frame.clone()),
+            Some(*frame),
         ),
         Lookup::NestedClass(mixin, declaring_class) => {
             crate::interpreter::nested::nested_class(interp, &o, &mixin, &declaring_class, bindings)
         }
         Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(
-                interp,
-                kind,
-                o.clone(),
-                selector,
-                &args,
-                Some(frame),
-            ) {
+            match crate::builtins::dispatch_native(interp, kind, o, selector, &args, Some(frame)) {
                 Some(result) => result,
-                None => interp.send(o, selector, args, bindings, Some(frame.clone())),
+                None => interp.send(o, selector, args, bindings, Some(*frame)),
             }
         }
-        Lookup::NotFound => interp.send(o, selector, args, bindings, Some(frame.clone())),
+        Lookup::NotFound => interp.send(o, selector, args, bindings, Some(*frame)),
     }
 }
 
@@ -475,7 +466,7 @@ pub(crate) fn dispatch_super_send(
             defining_class,
             args,
             bindings.clone(),
-            Some(frame.clone()),
+            Some(*frame),
         ),
         // `super N` for a nested class the superclass declares. The
         // receiver stays `self` (§5.10), which is also the enclosing object
@@ -495,16 +486,16 @@ pub(crate) fn dispatch_super_send(
             match crate::builtins::dispatch_native(
                 interp,
                 kind,
-                self_value.clone(),
+                self_value,
                 selector,
                 &args,
                 Some(frame),
             ) {
                 Some(result) => result,
-                None => interp.send(self_value, selector, args, bindings, Some(frame.clone())),
+                None => interp.send(self_value, selector, args, bindings, Some(*frame)),
             }
         }
-        Lookup::NotFound => interp.send(self_value, selector, args, bindings, Some(frame.clone())),
+        Lookup::NotFound => interp.send(self_value, selector, args, bindings, Some(*frame)),
     }
 }
 
@@ -517,21 +508,15 @@ fn eval_cascade(
     let receiver = eval_expr(interp, &cascade.receiver, frame, bindings)?;
     let first_args = eval_args(interp, &cascade.first, frame, bindings)?;
     let mut result = interp.send(
-        receiver.clone(),
+        receiver,
         selector_of(&cascade.first),
         first_args,
         bindings,
-        Some(frame.clone()),
+        Some(*frame),
     )?;
     for m in &cascade.rest {
         let args = eval_args(interp, m, frame, bindings)?;
-        result = interp.send(
-            receiver.clone(),
-            selector_of(m),
-            args,
-            bindings,
-            Some(frame.clone()),
-        )?;
+        result = interp.send(receiver, selector_of(m), args, bindings, Some(*frame))?;
     }
     Ok(result)
 }
@@ -549,13 +534,13 @@ fn eval_assign(
 ) -> EvalResult {
     let v = eval_expr(interp, value, frame, bindings)?;
     match bindings.get(&target.span) {
-        Some(Binding::Local(i)) => write_local(&mut interp.heap, frame, *i, v.clone()),
+        Some(Binding::Local(i)) => write_local(&mut interp.heap, frame, *i, v),
         Some(Binding::OuterLocal { depth, index }) => {
-            write_outer_local(&mut interp.heap, frame, *depth, *index, v.clone())
+            write_outer_local(&mut interp.heap, frame, *depth, *index, v)
         }
         Some(Binding::LexicalSend { depth }) => {
             let setter = Symbol::intern(&format!("{}:", target.name));
-            dispatch_lexical_send(interp, frame, *depth, setter, vec![v.clone()], bindings)?;
+            dispatch_lexical_send(interp, frame, *depth, setter, vec![v], bindings)?;
         }
         _ => {
             return Err(Signal::Error(NewspeakError {
@@ -582,7 +567,7 @@ fn eval_block_literal(
             .map(|p| Symbol::intern(&p.name))
             .collect(),
         body: ClosureBody::Ast(Rc::new(block.body.clone())),
-        captured_frame: frame.clone(),
+        captured_frame: *frame,
         home,
         bindings: bindings.clone(),
     });
@@ -652,7 +637,7 @@ pub fn invoke_closure(
             ClosureBody::Compiled(_) => PcKind::Bytecode,
         },
         sender,
-        home: Some(closure.home.clone()),
+        home: Some(closure.home),
         current_class,
         kind: FrameKind::Closure(closure.clone()),
         uncontinuable: false,

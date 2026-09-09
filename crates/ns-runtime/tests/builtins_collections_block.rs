@@ -417,7 +417,7 @@ fn an_invoked_blocks_frame_records_its_sender() {
     );
     let result = expect_ok(
         interp.send(
-            receiver.clone(),
+            receiver,
             Symbol::intern("m"),
             vec![],
             &resolved.bindings,

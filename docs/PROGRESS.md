@@ -10,57 +10,61 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | — |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
 
 M4 is under way. Its pieces are one change: the object representation, the
 activation representation and the root discipline each constrain the other
-two, and building any of them on the present model means building it twice.
-Each piece is designed in the document for its own aspect, under a
-`Planned:` heading; those documents are the authority, and this is only the
-map to them.
+two, which is why the object and activation representations were converted
+together rather than one at a time. Each piece is designed in the document for
+its own aspect; those documents are the authority, and this is only the map to
+them.
 
-The heap seam is done — every object and frame access already routes
-through `Heap` (`crates/ns-runtime/src/heap.rs`), and `ObjRef`/`FrameRef`
-are opaque newtypes (see "M4 — The heap seam" below). That was groundwork,
-not step 1 below: step 1 is what replaces the store those accessors reach
-into.
+**Two pieces are done.** The heap seam routes every object and activation
+access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
+it replaced `Rc<RefCell<_>>`: an `ObjRef` or a `FrameRef` is now a 32-bit
+index into a `Vec` the `Heap` owns, with a private field so the compiler
+enforces the seam. That is worth ~15% of the benchmark and is described in
+[memory.md](design/memory.md); see "M4 — The heap seam" and "M4 — The object
+and frame arena" below. **Nothing reclaims a slot** — the arena grows for the
+life of the process. That is a deliberate interim cost, and step 4 below, the
+collector, is what ends it.
 
-The order below is the order the work goes in, and it is not the order the
-milestone was originally sketched in. What settled it is a measurement rather
-than a preference: on a release build, a user-method send costs ~165 ns, of which
-~68 ns — about 41% — is spent building the activation, and none of that is
+The order below is the order the remaining work goes in, and it is not the order
+the milestone was originally sketched in. What settled it is a measurement rather
+than a preference: on a release build a user-method send cost ~165 ns, of which
+~68 ns — about 41% — was spent building the activation, and none of that is
 touched by an inline cache. The decomposition is in
-[execution.md](design/execution.md)'s measurements section.
+[execution.md](design/execution.md)'s measurements section. The arena took part
+of that activation cost; step 2 takes the rest.
 
-1. **An arena of typed handles** — [memory.md](design/memory.md) and
-   [object-model.md](design/object-model.md). `Rc<RefCell<_>>` goes, for objects
-   and for activations together. This is where the measured cost actually sits:
-   three allocations per activation, reference-count traffic, and a `RefCell`
-   borrow on every register access.
-2. **A compiler-checked root discipline** — [memory.md](design/memory.md). Nova's
+1. **A compiler-checked root discipline** — [memory.md](design/memory.md). Nova's
    `GcScope`/`NoGcScope`, where holding an unrooted handle across a collection
    safepoint is a type error rather than corruption found later under collection
    pressure. Free at run time; the ergonomic cost is accepted deliberately.
-3. **Activations on a stack, reified on demand** —
-   [execution.md](design/execution.md). Cog's model. The trampoline falls out of
-   this rather than driving it, and it absorbs `Block value` on the way.
-4. **Inline caches** — [dispatch.md](design/dispatch.md). The call-site slots are
+2. **Activations on a stack, reified on demand** —
+   [execution.md](design/execution.md). Cog's model. What the arena left behind:
+   `Frame.args` and `Frame.temps` are still a `Vec` allocation apiece per
+   activation, and every activation is reified whether or not anything looks at
+   it. The trampoline falls out of this rather than driving it, and it absorbs
+   `Block value` on the way.
+3. **Inline caches** — [dispatch.md](design/dispatch.md). The call-site slots are
    already emitted and inert, so no bytecode format break. A cache must guard on
    the **mixin application**, not on the class object; the obvious key is the
    wrong one and would never hit.
-5. **A moving collector** — [memory.md](design/memory.md). `become:` and instance
+4. **A moving collector** — [memory.md](design/memory.md). `become:` and instance
    migration rule out a conservative non-moving design, and pinning whatever a
    conservative stack scan finds was considered and rejected for the same reason.
+   This is what ends the arena's never-reclaim interim.
 
 Deferred past the milestone on purpose: moving `do:` out of Rust and into
 Newspeak. It is required eventually, because a Rust native that calls back into
 Newspeak is a permanent barrier to optimization
-([core-library.md](design/core-library.md)), but doing it before steps 1–4 makes
-the numbers worse and after them costs nothing. M4 owes it only that the rewrite
-not deepen the investment in Rust callbacks.
+([core-library.md](design/core-library.md)), but doing it before the steps above
+makes the numbers worse and after them costs nothing. M4 owes it only that the
+rewrite not deepen the investment in Rust callbacks.
 
 What M4 unlocks beyond speed is recorded where it applies: suspending a running
 computation and serializing it ([image-format.md](design/image-format.md)) waits
@@ -160,14 +164,15 @@ The first piece of M4's representation change, done ahead of the arena
 itself: every read and write of an `Object` or a `Frame` across the workspace
 now goes through one `Heap` (`crates/ns-runtime/src/heap.rs`), replacing the
 193 call sites (109 under `src`, 84 in the integration tests) that used to
-reach `Rc<RefCell<_>>` directly. `ObjRef` and
-`FrameRef` are now opaque newtypes with a `pub(crate)` inner field: the
-crate boundary is compiler-enforced (`ns-cli` and the integration-test
-crates under `crates/ns-runtime/tests/` cannot reach it at all), while
-containment inside `ns-runtime`'s own `src/` is the grep gate this
-migration ran throughout, since `pub(crate)` is visible from every module
-in the crate. Each handle also gained a hand-written, non-recursive `Debug`
-that prints identity only.
+reach `Rc<RefCell<_>>` directly. `ObjRef` and `FrameRef` became opaque
+newtypes with a `pub(crate)` inner field: the crate boundary was
+compiler-enforced (`ns-cli` and the integration-test crates under
+`crates/ns-runtime/tests/` could not reach it at all), while containment
+inside `ns-runtime`'s own `src/` was the grep gate this migration ran
+throughout, since `pub(crate)` is visible from every module in the crate.
+The arena below closed that half too, by moving the handles into `heap.rs`
+with a private field. Each handle also gained a hand-written, non-recursive
+`Debug` that prints identity only.
 
 It did not come free. Migrating `interpreter/eval.rs` turned
 `dispatch_lexical_send`'s single borrow yielding both the receiver and the
@@ -185,6 +190,77 @@ Confirmed by measurement, not assumption: three fresh release-build runs of
 19.59 and 19.72 ms, against the pre-plan session baseline of 19.91 ms (min
 19.80, max 20.07) — within noise, so the seam costs nothing once the one
 regression it introduced was found and fixed.
+
+## M4 — The object and frame arena (2026-09-09)
+
+Plan: [ns-next-object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md).
+
+`Rc<RefCell<_>>` is gone. One `Heap` owns `objects: Vec<Object>` and
+`frames: Vec<Frame>`; an `ObjRef`, a `FrameRef` and the `ClassRef` alias are
+32-bit indices into them, declared in `crates/ns-runtime/src/heap.rs` with a
+**private** field — so the compiler, not a grep gate, refuses every read of a
+handle from anywhere else. The grep gate `CLAUDE.md` used to carry is removed.
+`ObjRef`, `FrameRef` and `Value` are now `Copy`. Converted in two steps —
+activations first, then objects — so that each landed against a green suite and
+a measurable benchmark rather than as one unreviewable change.
+
+The seam paid for itself exactly as designed: **no call site outside `heap.rs`
+and `types.rs` changed**, for the frame conversion or the object one.
+
+What it deleted rather than moved:
+
+- `types.rs`'s ~176-line iterative-teardown section — `Dying`, the four `push_*`
+  helpers, `drain_object_data`, `drain_frame`, `take_object_data`,
+  `run_teardown`, and `impl Drop` for both `Object` and `Frame`. An arena entry
+  holds indices, so there is no reference chain to unwind.
+  `mixin.rs`'s `impl Drop for MixinApplication` remains, and is now the only
+  hand-written iterative `Drop` in the crate — not the only recursive graph:
+  `Mixin`'s `nested`/`class_side` links still drop recursively, bounded by
+  `image/mixins.rs`'s `MAX_MIXIN_DEPTH` rather than by iteration.
+- `bootstrap_self_referential_object`'s `Rc::new_uninit`/`Rc::from_raw`
+  construction, the crate's only `unsafe`. An arena knows a slot's index before
+  it fills the slot, so an object can name itself in safe Rust.
+  `grep -rn "unsafe" crates/ns-runtime/src/heap.rs` is empty.
+
+What it added: a `debug_assertions`-only origin guard. Each `Heap` carries an id,
+each handle records the id of the heap that minted it, and all 46 accessor sites
+assert the two match. This exists because reading a handle through the wrong heap
+is the one new failure mode the arena introduces and it is *silent* — an index
+from another heap is in range and names a different, perfectly valid object. In a
+release build neither the field nor the check exists, so a handle is exactly its
+32-bit index. The same reasoning retired a proof `interpreter/nested.rs` had been
+relying on: `cache_slot` used `0` as the sentinel for a non-object receiver,
+justified by "0 is an address no live `Rc` has", and under the arena index 0 is
+the first object allocated. It now returns `Option<(ObjRef, usize)>`, so the case
+cannot be expressed rather than being commented differently.
+
+Measured before and after in one sitting, on a release build, alternating three
+runs of each binary — the "before" built from this branch's merge-base in a
+throwaway worktree, because a figure carried across sessions measures the
+machine's load rather than the code:
+
+| | bytecode medians | tree-walk medians |
+|---|---|---|
+| Before | 19.38, 19.54, 19.60 ms | 37.04, 37.50, 37.13 ms |
+| After | 16.45, 16.82, 16.53 ms | 36.78, 37.23, 37.12 ms |
+
+**About 15% off the bytecode engine**, with the two groups not overlapping. What
+moved is the `Rc` box, its reference-count traffic, and the `RefCell` borrow on
+every register read and write. What did **not** move is the rest of the
+activation cost — `args` and `temps` are still a `Vec` allocation apiece per
+activation, and that is the next step's, not this one's. The tree-walker is
+unchanged within noise, as expected.
+
+The interim cost is real and is the number the collector will be judged against.
+Nothing reclaims a slot, so Windows peak working set over `bench_loop.ns` went
+from 4.6 MB to 25.4 MB for one tree-walk run, and from 4.6 MB to 340.7 MB for
+`bench`'s twenty-two entry sends. Retention is proportional to every activation
+ever created, not to what is live. The tree-walk maximum in the same ten timed
+runs also went from ~38 ms to ~117 ms, which the arena's `Vec` doubling would
+explain — an inference from the shape of the growth curve rather than a measured
+cause. Both, with the conditions the figures were taken under and the control
+that would settle the attribution, are in [memory.md](design/memory.md), "What
+the collector owns".
 
 ## Notes
 
@@ -215,3 +291,73 @@ remember is cleanup that some call site will forget.
 `cli.rs`, `differential.rs` and `run.rs` keep their own handling: they remove
 what they create, and rewriting working tests for symmetry is tidying rather
 than fixing.
+
+**Deferred follow-ups from the object-and-frame-arena branch (2026-09-09).**
+Two items found while doing that work, deliberately not done in a commit about
+the arena.
+
+*Source comments citing plan task numbers.* `grep -rnE "Task[s]? [0-9]+[a-z]?"
+crates --include=*.rs` matches 65 lines across 25 files — 53 in `ns-runtime`
+(`src/dispatch.rs`, `src/mixin.rs`, `src/resolver/`, `src/interpreter/`,
+`src/builtins/`, and nine files under `tests/`) and 12 in `ns-syntax`
+(`src/lexer.rs`, `src/token.rs`, `src/parser/`, `tests/corpus.rs`); `ns-cli`
+carries none. They cite the execution bookkeeping of Milestones 1–3 — "the Task
+10 refactor", "see Tasks 8-10", "Task 14b" — which a reader of the source cannot
+resolve and which says nothing about the code. The arena branch removed four
+that sat inside comments it was rewriting anyway; the rest is a repo-wide
+sweep. Beware two things when doing it: some matches are genuine algorithm or
+specification steps and must stay (`newspeak-spec.pdf`'s "Class Instantiation
+step 3", `interpreter/nested.rs`'s numbered accessor steps), and a few comments
+say something real *through* the task reference, so the fix is to state what the
+comment means rather than to delete the sentence.
+
+*`identity_key` is the one handle operation with no origin check, and the
+obvious fix is the wrong one.* Every accessor on `Heap` verifies that a handle
+came from this heap, and `ObjRef::same`/`FrameRef::same` gained the same
+`debug_assert_eq!` on the arena branch. `ObjRef::identity_key` and
+`FrameRef::identity_key` did not: they are handed one handle and no `Heap`, so
+there is nothing in scope to check against. Two handles from different heaps
+therefore produce the same key and collide in a caller's map.
+
+**Do not fix this by folding the `origin` field into the key.** That was tried
+and reverted, and the reason it is wrong is worth keeping: `origin` exists only
+in a debug build, so folding it in makes the collision impossible in exactly the
+build that would have *reported* it, and leaves it exactly as possible in the
+build that ships. It inverts the regime every other guard here follows — a
+silent release wrong answer becomes a loud debug panic — by concealing the
+symptom in debug instead.
+
+The right fix is to move the operation onto `Heap`, where the existing check
+applies: `Heap::object_identity_key(&self, obj)` and
+`Heap::frame_identity_key(&self, frame)`, each calling
+`check_object_origin`/`check_frame_origin` first. That gives detection rather
+than concealment, keeps debug and release identical, and is enforced by the
+compiler in the most literal way available — no `Heap`, no key. All seven call
+sites already have one in reach: `EncodeContext` carries `heap: &'a Heap`,
+`visit_frame` takes a `&Heap` parameter, `rebuild_applications` reaches
+`ctx.interp.heap`, and `nested.rs`'s `in_progress_key` caller already holds
+`interp`. The work is `heap.rs` plus those seven sites plus threading a `&Heap`
+through `GraphTable::object_id`, `GraphTable::frame_id` and `encode_frame_ref`,
+which currently take only a `&GraphTable`. It is separated from the arena commit
+because it changes three signatures for a failure nothing in production can
+reach today.
+
+*`.iter().cloned()` over a `Copy` element.* `Value`, `ObjRef` and `FrameRef` are
+all `Copy` now, so an iterator chain ending in `.cloned()` reads as a deep copy
+of what is really a register move; `.copied()` says what happens.
+
+Recorded as a command rather than a list, deliberately. Grepping for `.cloned()`
+finds 41 sites under `src`, but most are correct — cloning an `Rc<Mixin>` or an
+`Rc<CompiledCode>` is a refcount bump and `.copied()` would not compile there —
+and telling the two apart needs the element's type, which grep cannot see. The
+exact set is what a pedantic lint already knows:
+
+```bash
+cargo clippy --workspace --all-targets -- -W clippy::cloned_instead_of_copied
+```
+
+That reports **30 sites: 18 under `src`, 12 under `tests`** — re-derive rather
+than trust the number, since it moves with the code. The lint is off by default
+(it is in `clippy::pedantic`), which is why the workspace is warning-free with it
+unmentioned. Whoever does the sweep should decide whether to enable it in
+`Cargo.toml` so the answer stops needing a note here at all.

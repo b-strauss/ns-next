@@ -114,7 +114,7 @@ pub(crate) fn nested_class(
     declaring_class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let Some(index) = cache_slot(interp, receiver, nested) else {
+    let Some((obj, index)) = cache_slot(interp, receiver, nested) else {
         return Err(no_cache_slot_error(receiver, nested.name));
     };
     // Step 1: the receiver's own cache. `Nil` is the "not yet" marker --
@@ -127,7 +127,7 @@ pub(crate) fn nested_class(
     // Step 2: the superclass clause, evaluated in the receiver's context
     // through the engine hook -- guarded against a class whose own creation
     // is already underway on this receiver.
-    let key = in_progress_key(receiver, nested);
+    let key = in_progress_key(&obj, nested);
     if interp.nested_in_progress.contains(&key) {
         return Err(cyclic_definition_error(receiver, nested.name));
     }
@@ -151,19 +151,13 @@ pub(crate) fn nested_class(
     // `dispatch::next_level` steps both and stops if either is missing.
     // `declaring_class` records the level this declaration is written in,
     // which is what `dispatch::kth_enclosing_object` steps out along; unlike
-    // the superclass chain it does not follow inheritance.
-    let enclosing = match receiver {
-        Value::Obj(obj) => Some(obj.clone()),
-        // Unreachable in practice: `cache_slot` above already established
-        // that `receiver` is an object with an instance layout. Kept total
-        // rather than unwrapped so a future caller cannot turn a changed
-        // precondition into a panic.
-        _ => None,
-    };
+    // the superclass chain it does not follow inheritance. `obj`, from
+    // `cache_slot` above, already *is* the enclosing object -- this function
+    // only ever reaches here for a receiver `cache_slot` matched as one.
     let class = interp.new_class_object(
         application,
-        enclosing,
-        Some(declaring_class.clone()),
+        Some(obj),
+        Some(*declaring_class),
         Some(superclass),
     );
     // Step 5: cache before returning, so step 1 hits from now on.
@@ -171,23 +165,32 @@ pub(crate) fn nested_class(
         &mut interp.heap,
         receiver,
         index,
-        Value::Obj(class.clone()),
+        Value::Obj(class),
     );
     Ok(Value::Obj(class))
 }
 
-/// The absolute index of `nested`'s hidden cache slot in `receiver`'s own
-/// layout, or `None` when `receiver` has no such slot -- either because its
-/// class's application does not know the declaration (an internal
-/// inconsistency) or because its payload is not an `Instance` at all, which
-/// a user class inheriting a builtin's representation (`OrderedCollection`,
-/// `Array`) really is: `try_factory_send` gives those an `ObjectData::Array`
-/// payload with no fields to cache into.
+/// `receiver`'s own object handle together with the absolute index of
+/// `nested`'s hidden cache slot in its layout, or `None` when `receiver`
+/// has no such slot -- either because its class's application does not
+/// know the declaration (an internal inconsistency) or because its payload
+/// is not an `Instance` at all, which a user class inheriting a builtin's
+/// representation (`OrderedCollection`, `Array`) really is:
+/// `try_factory_send` gives those an `ObjectData::Array` payload with no
+/// fields to cache into. Handing back the handle, not just the index,
+/// means every caller downstream already holds proof that `receiver` is an
+/// object instead of re-deriving it from `receiver` a second time --
+/// `in_progress_key` below is exactly that: it takes an `ObjRef`, not a
+/// `Value`, so a non-object receiver cannot reach it at all.
 ///
 /// The declaration itself, not its name: `MixinApplication::nested_slot` is
 /// keyed by declaration identity so that a subclass's `class N` and the
 /// inherited `class N` it shadows cache into different slots.
-fn cache_slot(interp: &Interpreter, receiver: &Value, nested: &Rc<Mixin>) -> Option<usize> {
+fn cache_slot(
+    interp: &Interpreter,
+    receiver: &Value,
+    nested: &Rc<Mixin>,
+) -> Option<(ObjRef, usize)> {
     let class = interp.class_of(receiver);
     let index = interp
         .heap
@@ -196,30 +199,31 @@ fn cache_slot(interp: &Interpreter, receiver: &Value, nested: &Rc<Mixin>) -> Opt
         .get(&mixin_key(nested))
         .copied()?;
     match receiver {
-        Value::Obj(obj) => interp.heap.instance_field(obj, index).map(|_| index),
+        Value::Obj(obj) => interp
+            .heap
+            .instance_field(obj, index)
+            .map(|_| (*obj, index)),
         _ => None,
     }
 }
 
 /// The key `Interpreter::nested_in_progress` records while a declaration's
-/// class object is being created for a receiver: the receiver's address
-/// plus the declaration's identity. The address is a safe key for the
-/// duration -- `receiver` is a live borrow held across the whole
-/// evaluation, so the object cannot be freed and its address cannot be
-/// reused while the entry is on the stack.
+/// class object is being created for `obj`: its arena index plus the
+/// declaration's identity. The index is a safe key for as long as this
+/// `Heap` exists, not merely for the duration of this stack entry: the
+/// arena never reuses a slot (there is no collector yet), so no other
+/// object -- live or not -- can ever carry the same index. Taking `&ObjRef`
+/// rather than `&Value` is what makes that the whole of this function's
+/// contract: there is no "receiver is not an object" case to key at all,
+/// so no sentinel is needed and none could collide with a real entry.
+/// `cache_slot` is the only caller, and it only ever hands back the object
+/// it already matched `receiver` against.
 ///
 /// The declaration, not its name, for the same reason `cache_slot` uses it:
 /// `class N = super N (...)` is a subclass redeclaring what it inherits,
 /// not a cycle, and a name key would report the legal shape as one.
-fn in_progress_key(receiver: &Value, nested: &Rc<Mixin>) -> (usize, usize) {
-    let address = match receiver {
-        Value::Obj(obj) => obj.identity_key(),
-        // `cache_slot` has already established that `receiver` is an object;
-        // 0 is an address no live `Rc` has, so a non-object receiver simply
-        // never collides with a real entry.
-        _ => 0,
-    };
-    (address, mixin_key(nested))
+fn in_progress_key(obj: &ObjRef, nested: &Rc<Mixin>) -> (usize, usize) {
+    (obj.identity_key(), mixin_key(nested))
 }
 
 fn read_cache_slot(heap: &Heap, receiver: &Value, index: usize) -> Option<Value> {
@@ -285,7 +289,7 @@ fn eval_superclass_clause(
         receiver,
         vec![],
         declaring_class,
-        FrameKind::SuperclassClause(declaring_class.clone()),
+        FrameKind::SuperclassClause(*declaring_class),
         compiled,
         expr.as_ref(),
         bindings,
@@ -324,7 +328,7 @@ pub(super) fn run_clause_body(
         .as_ref()
         .map_or(0, |code| (code.num_registers - code.num_args) as usize);
     let frame = interp.heap.alloc_frame(Frame {
-        receiver: receiver.clone(),
+        receiver: *receiver,
         args,
         temps: vec![Value::Nil; temp_count],
         pc: 0,
@@ -337,7 +341,7 @@ pub(super) fn run_clause_body(
         },
         sender: None,
         home: None,
-        current_class: Some(current_class.clone()),
+        current_class: Some(*current_class),
         kind,
         uncontinuable: false,
         slot_base: 0, // no clause body ever contains InitSlot
@@ -392,7 +396,7 @@ fn not_a_class_error(name: Symbol, value: Value) -> Signal {
 fn cyclic_definition_error(receiver: &Value, name: Symbol) -> Signal {
     Signal::Error(NewspeakError {
         selector: name,
-        receiver: receiver.clone(),
+        receiver: *receiver,
         message: format!(
             "cyclic class definition: evaluating the superclass clause of class {name} \
              requires class {name} itself"
@@ -410,7 +414,7 @@ fn cyclic_definition_error(receiver: &Value, name: Symbol) -> Signal {
 fn no_cache_slot_error(receiver: &Value, name: Symbol) -> Signal {
     Signal::Error(NewspeakError {
         selector: name,
-        receiver: receiver.clone(),
+        receiver: *receiver,
         message: format!(
             "cannot access nested class {name}: this object has no slot storage to cache it in"
         ),

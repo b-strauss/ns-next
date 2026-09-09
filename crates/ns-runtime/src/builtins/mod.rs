@@ -158,9 +158,9 @@ pub(super) fn call_block(
                         sender.cloned(),
                     )
                 }
-                None => Ok(block.clone()),
+                None => Ok(*block),
             }
         }
-        other => Ok(other.clone()),
+        other => Ok(*other),
     }
 }

@@ -57,7 +57,7 @@ fn string_and_symbol_accessors_answer_only_for_their_own_shape() {
 fn is_class_distinguishes_a_class_object_from_an_instance() {
     let mut interp = Interpreter::bootstrap();
     let s = interp.new_string("x".to_string());
-    let class = interp.class_of(&Value::Obj(s.clone()));
+    let class = interp.class_of(&Value::Obj(s));
     assert!(!interp.heap_ref().is_class(&s));
     assert!(interp.heap_ref().is_class(&class));
 }

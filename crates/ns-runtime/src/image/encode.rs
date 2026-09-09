@@ -629,11 +629,7 @@ impl GraphTable {
             frames: Vec::new(),
             frame_ids: HashMap::new(),
         };
-        let mut stack: Vec<Pending> = roots
-            .iter()
-            .rev()
-            .map(|v| Pending::Value(v.clone()))
-            .collect();
+        let mut stack: Vec<Pending> = roots.iter().rev().map(|v| Pending::Value(*v)).collect();
         while let Some(pending) = stack.pop() {
             match pending {
                 Pending::Value(v) => table.visit_value(heap, &v, platform, root_class, &mut stack),
@@ -661,7 +657,7 @@ impl GraphTable {
         }
         self.object_ids
             .insert(key, u32_field("object table id", self.objects.len()));
-        self.objects.push(obj.clone());
+        self.objects.push(*obj);
         let before = stack.len();
         {
             let record = heap.object_snapshot(obj);
@@ -669,14 +665,14 @@ impl GraphTable {
             // that a class object can be a record, reaching one only
             // through whatever values happen to point at it would leave
             // `encode_class_tag` with an id that was never assigned.
-            stack.push(Pending::Value(Value::Obj(record.class.clone())));
+            stack.push(Pending::Value(Value::Obj(record.class)));
             match &record.data {
                 ObjectData::Instance(fields) | ObjectData::Array(fields) => {
                     stack.extend(fields.iter().cloned().map(Pending::Value));
                 }
                 ObjectData::Closure(c) => {
-                    stack.push(Pending::Frame(c.captured_frame.clone()));
-                    stack.push(Pending::Frame(c.home.clone()));
+                    stack.push(Pending::Frame(c.captured_frame));
+                    stack.push(Pending::Frame(c.home));
                 }
                 // A class object's three references. `metaclass` is not one
                 // of them: it is a lazy cache `Interpreter::metaclass_of`
@@ -698,11 +694,11 @@ impl GraphTable {
         }
         self.frame_ids
             .insert(key, u32_field("frame table id", self.frames.len()));
-        self.frames.push(frame.clone());
+        self.frames.push(*frame);
         let before = stack.len();
         {
             let f = heap.frame_snapshot(frame);
-            stack.push(Pending::Value(f.receiver.clone()));
+            stack.push(Pending::Value(f.receiver));
             stack.extend(f.args.iter().cloned().map(Pending::Value));
             stack.extend(f.temps.iter().cloned().map(Pending::Value));
             stack.extend(
@@ -722,15 +718,15 @@ impl GraphTable {
                 // A `FrameKind::Closure` frame's own closure record is
                 // encoded inline, so its two frame references need ids too.
                 FrameKind::Closure(c) => {
-                    stack.push(Pending::Frame(c.captured_frame.clone()));
-                    stack.push(Pending::Frame(c.home.clone()));
+                    stack.push(Pending::Frame(c.captured_frame));
+                    stack.push(Pending::Frame(c.home));
                 }
                 // The three class-carrying kinds name a class the same way
                 // `current_class` does, so the class needs an id the same way.
                 FrameKind::Initializer(c)
                 | FrameKind::SuperclassClause(c)
                 | FrameKind::SuperclassMessage(c) => {
-                    stack.push(Pending::Value(Value::Obj(c.clone())));
+                    stack.push(Pending::Value(Value::Obj(*c)));
                 }
                 FrameKind::Method(_) | FrameKind::TopLevel => {}
             }
@@ -933,7 +929,7 @@ fn encode_class_record(
     match &data.enclosing {
         Some(enclosing) => {
             w.write_bool(true);
-            encode_value(w, &Value::Obj(enclosing.clone()), ctx);
+            encode_value(w, &Value::Obj(*enclosing), ctx);
         }
         None => w.write_bool(false),
     }

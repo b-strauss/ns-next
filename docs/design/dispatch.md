@@ -198,13 +198,19 @@ never hits.
 
 **Caches come after the representation change, not before it.** A cache removes
 the lookup and can carry the compiled body along with it, retiring the per-call
-`HashMap` lookup in `invoke_method`. It does not touch the ~68 ns an activation
-costs to build, which is about 41% of a user-method send — see
-[execution.md](execution.md)'s measurements. Wiring caches up first would
-optimize the half of a send that sits on top of a fixed cost the same milestone
-is about to remove, so the arena and the activation stack go first and the
-caches land on the cheaper representation. Each cache also carries a dependency
-key, per [liveness-and-reflection.md](liveness-and-reflection.md); the key is the
+`HashMap` lookup in `invoke_method`. It does not touch what an activation costs
+to build, which was measured at ~68 ns — about 41% of a user-method send — on
+the pre-arena representation; see [execution.md](execution.md)'s measurements.
+Wiring caches up first would optimize the half of a send that sits on top of a
+fixed cost the same milestone removes anyway, so the representation goes first
+and the caches land on the cheaper one.
+
+Half of that has happened. The arena is built: objects and activations live in
+`Heap`-owned arenas rather than `Rc<RefCell<_>>`, worth about 15% of the
+benchmark ([memory.md](memory.md)). The activation stack is not, so two `Vec`
+allocations per activation and the per-call `HashMap` lookup are both still
+there, and caches still wait on it. Each cache also carries a dependency key, per
+[liveness-and-reflection.md](liveness-and-reflection.md); the key is the
 application, for the same reason the guard is.
 
 ## Decisions

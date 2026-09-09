@@ -71,7 +71,7 @@ pub fn kth_enclosing_object(
     depth: u16,
 ) -> Value {
     if depth == 0 {
-        return self_value.clone();
+        return *self_value;
     }
     let Some(mut level) = defining_class.cloned() else {
         return Value::Nil;
@@ -201,7 +201,7 @@ fn walk(
 /// what ends a walk that was handed one.
 fn level_of(heap: &Heap, class: &ClassRef) -> Option<(ClassRef, Rc<MixinApplication>)> {
     heap.class_application(class)
-        .map(|application| (class.clone(), application))
+        .map(|application| (*class, application))
 }
 
 /// Steps both chains together. Every construction site (`load_module`,
@@ -247,10 +247,10 @@ mod tests {
     /// tests (nor `walk`/`lookup_*`) ever read a class object's own
     /// `.class` field -- `walk` only reads `.data` -- so any
     /// non-panicking placeholder is sufficient; a self-referential one
-    /// is the simplest to build. The unsafe construction itself lives in
-    /// `heap::bootstrap_self_referential_object`.
-    fn dummy_class() -> ClassRef {
-        crate::heap::bootstrap_self_referential_object(ObjectData::Instance(vec![]))
+    /// is the simplest to build. The construction itself lives in
+    /// `Heap::alloc_self_referential_class`.
+    fn dummy_class(heap: &mut Heap) -> ClassRef {
+        heap.alloc_self_referential_class(ObjectData::Instance(vec![]))
     }
 
     fn class_with_method(
@@ -291,8 +291,9 @@ mod tests {
             num_slots: 0,
             own_slot_base: 0,
         });
+        let class_of_class = dummy_class(heap);
         heap.alloc_placeholder_object(
-            dummy_class(),
+            class_of_class,
             ObjectData::Class(ClassData {
                 application,
                 enclosing: None,

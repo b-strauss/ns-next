@@ -91,13 +91,7 @@ fn accessor_is_stable(bytecode: bool) {
         "instantiate Outer",
     );
     let first = expect_ok(
-        interp.send(
-            outer.clone(),
-            Symbol::intern("innerClass"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None),
         "first Inner",
     );
     let second = expect_ok(
@@ -124,7 +118,7 @@ fn distinct_per_receiver(bytecode: bool) {
     let (mut interp, class, bindings) = load(SRC, bytecode);
     let platform = interp.platform();
     let one = expect_ok(
-        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        interp.instantiate(class, vec![platform], &bindings),
         "instantiate first Outer",
     );
     let two = expect_ok(
@@ -174,13 +168,7 @@ fn enclosing_object_is_the_receiver(bytecode: bool) {
         "instantiate Outer",
     );
     let inner = expect_ok(
-        interp.send(
-            outer.clone(),
-            Symbol::intern("innerClass"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None),
         "Inner",
     );
     let (Value::Obj(inner), Value::Obj(outer)) = (&inner, &outer) else {
@@ -297,13 +285,7 @@ fn protected_nested_access(bytecode: bool) {
     );
     // Lexically, from inside Outer: reachable, and it really is a class.
     let value = expect_ok(
-        interp.send(
-            outer.clone(),
-            Symbol::intern("reach"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(outer, Symbol::intern("reach"), vec![], &bindings, None),
         "reach",
     );
     let Value::SmallInt(value) = value else {
@@ -365,13 +347,7 @@ fn inherited_nested_declaration(bytecode: bool) {
     // `N` is declared on Base, reached here through Derived's chain -- and
     // its hidden cache slot is the inherited entry in Derived's layout.
     let n_class = expect_ok(
-        interp.send(
-            derived.clone(),
-            Symbol::intern("N"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(derived, Symbol::intern("N"), vec![], &bindings, None),
         "N",
     );
     let (Value::Obj(n_class), Value::Obj(derived_obj)) = (&n_class, &derived) else {
@@ -397,7 +373,7 @@ fn inherited_nested_declaration(bytecode: bool) {
     };
     assert!(n_class.same(again), "spec 6: cached within r");
     let instance = expect_ok(
-        interp.instantiate(n_class.clone(), vec![], &bindings),
+        interp.instantiate(*n_class, vec![], &bindings),
         "instantiate N",
     );
     let tag = expect_ok(
@@ -484,13 +460,7 @@ fn cyclic_definition(bytecode: bool) {
         "instantiate Outer",
     );
     let message = expect_error(
-        interp.send(
-            outer.clone(),
-            Symbol::intern("innerClass"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None),
         "innerClass",
     );
     assert_eq!(
@@ -689,7 +659,7 @@ fn an_inherited_class_side_shares_one_application(bytecode: bool) {
     let (mut interp, class, bindings) = load(&src, bytecode);
     let platform = interp.platform();
     let one = expect_ok(
-        interp.instantiate(class.clone(), vec![platform.clone()], &bindings),
+        interp.instantiate(class, vec![platform], &bindings),
         "instantiate first ClassSide",
     );
     let two = expect_ok(
@@ -1009,13 +979,7 @@ fn class_side_outer_reaches_the_enclosing_object(bytecode: bool) {
         "instantiate Outer",
     );
     let shallow = expect_ok(
-        interp.send(
-            outer.clone(),
-            Symbol::intern("shallow"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(outer, Symbol::intern("shallow"), vec![], &bindings, None),
         "shallow",
     );
     assert_eq!(string_contents(interp.heap_ref(), &shallow), "top");

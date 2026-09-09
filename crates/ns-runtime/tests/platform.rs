@@ -53,7 +53,7 @@ fn platform_transcript_show_and_new_line_round_trip() {
     let s = Value::Obj(interp.new_string("hi".to_string()));
     let after_show = expect_ok(
         interp.send(
-            transcript.clone(),
+            transcript,
             Symbol::intern("show:"),
             vec![s],
             &bindings,

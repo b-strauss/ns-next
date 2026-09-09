@@ -56,10 +56,7 @@ fn expect_error(result: Result<Value, Signal>, what: &str) -> NewspeakError {
 }
 
 fn new_instance(interp: &mut Interpreter, class: &ClassRef, bindings: &Bindings) -> Value {
-    expect_ok(
-        interp.instantiate(class.clone(), vec![], bindings),
-        "instantiate",
-    )
+    expect_ok(interp.instantiate(*class, vec![], bindings), "instantiate")
 }
 
 fn send(
@@ -149,7 +146,7 @@ fn slots_read_and_write_through_lexical_sends() {
     let (mut interp, class, bindings) = setup(src);
     let instance = new_instance(&mut interp, &class, &bindings);
     expect_ok(
-        send(&mut interp, instance.clone(), "bump", vec![], &bindings),
+        send(&mut interp, instance, "bump", vec![], &bindings),
         "bump",
     );
     let result = expect_ok(
@@ -226,7 +223,7 @@ fn empty_and_multi_statement_blocks_return_nil_and_the_last_value() {
     let (mut interp, class, bindings) = setup(src);
     let instance = new_instance(&mut interp, &class, &bindings);
     let empty = expect_ok(
-        send(&mut interp, instance.clone(), "empty", vec![], &bindings),
+        send(&mut interp, instance, "empty", vec![], &bindings),
         "empty",
     );
     assert!(matches!(empty, Value::Nil));
@@ -245,7 +242,7 @@ fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks()
     let yes = expect_ok(
         send(
             &mut interp,
-            instance.clone(),
+            instance,
             "foo:",
             vec![Value::Bool(true)],
             &bindings,
@@ -323,10 +320,7 @@ fn a_method_that_falls_off_its_end_implicitly_returns_self() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( 1 + 1 )\n) : ()";
     let (mut interp, class, bindings) = setup(src);
     let instance = new_instance(&mut interp, &class, &bindings);
-    let result = expect_ok(
-        send(&mut interp, instance.clone(), "foo", vec![], &bindings),
-        "foo",
-    );
+    let result = expect_ok(send(&mut interp, instance, "foo", vec![], &bindings), "foo");
     assert!(matches!((&result, &instance), (Value::Obj(a), Value::Obj(b)) if a.same(b)));
 }
 

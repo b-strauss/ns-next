@@ -423,7 +423,7 @@ fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
     let bindings = loaded.resolved.bindings.clone();
     let (mut interp, class) = bootstrap_with_engine(&loaded, engine);
     let platform = interp.platform();
-    let factory_args = match factory_args_for(interp.heap_ref(), &class, platform.clone()) {
+    let factory_args = match factory_args_for(interp.heap_ref(), &class, platform) {
         Ok(args) => args,
         Err(msg) => {
             eprintln!("error: {msg}");
@@ -458,20 +458,20 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
     let bindings = loaded.resolved.bindings.clone();
     let (mut interp, class) = bootstrap_with_engine(&loaded, EngineArg::Bytecode);
     let platform = interp.platform();
-    let factory_args = match factory_args_for(interp.heap_ref(), &class, platform.clone()) {
+    let factory_args = match factory_args_for(interp.heap_ref(), &class, platform) {
         Ok(args) => args,
         Err(msg) => {
             eprintln!("error: {msg}");
             return ExitCode::FAILURE;
         }
     };
-    let instance = match interp.instantiate(class.clone(), factory_args, &bindings) {
+    let instance = match interp.instantiate(class, factory_args, &bindings) {
         Ok(v) => v,
         Err(signal) => return report_signal(signal),
     };
-    let mut roots = vec![instance.clone()];
+    let mut roots = vec![instance];
     if let Some(selector) = send {
-        let args = match entry_args(selector, platform.clone()) {
+        let args = match entry_args(selector, platform) {
             Ok(args) => args,
             Err(msg) => {
                 eprintln!("error: {msg}");
@@ -601,7 +601,7 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        match interp.instantiate(root_class.clone(), factory_args, &bindings) {
+        match interp.instantiate(root_class, factory_args, &bindings) {
             Ok(v) => v,
             Err(signal) => return report_signal(signal),
         }
@@ -704,7 +704,7 @@ fn timed_send(
     bindings: &Rc<std::collections::HashMap<ns_syntax::Span, ns_runtime::Binding>>,
 ) -> Result<std::time::Duration, String> {
     let instance = interp
-        .instantiate(class.clone(), factory_args.to_vec(), bindings)
+        .instantiate(*class, factory_args.to_vec(), bindings)
         .map_err(signal_message)?;
     let start = std::time::Instant::now();
     let outcome = interp.send(instance, selector, entry_args.to_vec(), bindings, None);
@@ -727,7 +727,7 @@ fn bench_engine(
 ) -> Result<BenchStats, String> {
     let (mut interp, class) = bootstrap_with_engine(loaded, engine);
     let platform = interp.platform();
-    let factory_args = factory_args_for(interp.heap_ref(), &class, platform.clone())?;
+    let factory_args = factory_args_for(interp.heap_ref(), &class, platform)?;
     let entry_args_list = entry_args(send, platform)?;
     let selector = ns_runtime::Symbol::intern(send);
 
@@ -946,13 +946,14 @@ fn cmd_disasm(
     // resolver.s bindings; an artifact already carries compiled bodies, so
     // loading it is a decode and nothing is recompiled. Each arm reads
     // `root_mixin` out of its own `class` before that arm's interpreter (or
-    // `loaded.interp`) goes out of scope, rather than a fresh `Heap`
-    // afterwards: a `Heap` built after the interpreter that allocated
-    // `class` is gone would still read `class` correctly today, purely
-    // because `Heap` is a bare counter and every instance is
-    // interchangeable -- but a moving arena's fresh `Heap` starts out
-    // holding nothing, and the read would silently miss instead of finding
-    // `class`'s data.
+    // `loaded.interp`) goes out of scope, rather than through a fresh
+    // `Heap` afterwards. A `ClassRef` is an index into the arena of the
+    // `Heap` that allocated it and means nothing against any other one, so
+    // a `Heap` built after that interpreter is gone does not answer
+    // `class`'s data: in a debug build the origin guard panics at the read,
+    // and in a release build the index is in range and names whatever
+    // object that heap put there -- a different, perfectly valid object,
+    // disassembled without a word of complaint.
     let (root_mixin, module) = if looks_like_an_artifact(&raw) {
         match ns_runtime::image::load(&raw) {
             Ok(loaded) => {

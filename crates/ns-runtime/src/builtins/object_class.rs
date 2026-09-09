@@ -27,7 +27,7 @@ pub fn dispatch(
             let msg_selector = extract_dnu_selector(&interp.heap, &args[0]);
             Some(Err(NewspeakError {
                 selector: msg_selector,
-                receiver: receiver.clone(),
+                receiver,
                 message: format!(
                     "{} does not understand #{}",
                     describe(&receiver, interp),

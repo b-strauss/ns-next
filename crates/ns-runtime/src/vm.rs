@@ -34,8 +34,10 @@ use crate::types::*;
 /// while a straight-line instruction executes: `run_code` never yields
 /// between them, and the only reader in the tree, `image::encode_frame`,
 /// runs on a frame that reached it through one of those three. Keeping the
-/// store out of the straight-line arms takes a `RefCell` borrow and a write
-/// off the hot path for a value nothing observes there.
+/// store out of the straight-line arms takes a bounds-checked arena write
+/// off the hot path for a value nothing observes there. It used to take a
+/// `RefCell` borrow with it, which the arena removed, so what this saves is
+/// smaller than it was -- whether it still pays is a measurement.
 pub fn run_code(
     interp: &mut Interpreter,
     frame: &FrameRef,
@@ -88,8 +90,7 @@ pub fn run_code(
                 let receiver = read_local(&interp.heap, frame, *receiver_reg);
                 let args = collect(&interp.heap, frame, arg_regs);
                 interp.heap.set_frame_pc(frame, pc);
-                let result =
-                    interp.send(receiver, *selector, args, bindings, Some(frame.clone()))?;
+                let result = interp.send(receiver, *selector, args, bindings, Some(*frame))?;
                 write_local(&mut interp.heap, frame, *dst, result);
             }
             Instr::SendLexical {
@@ -125,7 +126,7 @@ pub fn run_code(
                 let closure = Rc::new(ClosureData {
                     params: (**params).clone(),
                     body: ClosureBody::Compiled(block.clone()),
-                    captured_frame: frame.clone(),
+                    captured_frame: *frame,
                     home: home_of(&interp.heap, frame),
                     bindings: bindings.clone(),
                 });

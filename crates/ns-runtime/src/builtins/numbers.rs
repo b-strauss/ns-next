@@ -44,7 +44,7 @@ fn type_mismatch(
 ) -> NewspeakError {
     NewspeakError {
         selector,
-        receiver: receiver.clone(),
+        receiver: *receiver,
         message: format!(
             "{selector} requires a numeric argument of the receiver's own type \
              (Milestone 1 has no Integer/Float coercion), got {}",

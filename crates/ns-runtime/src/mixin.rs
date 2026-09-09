@@ -224,10 +224,15 @@ pub struct MixinApplication {
 /// `image::decode::rebuild_applications` builds one link per class record.
 /// The default glue would release the chain recursively and overflow the
 /// stack on a long one, which aborts the process; this releases it in a
-/// loop instead. See `types.rs`'s "Iterative teardown" note, which does the
-/// same for the object and frame graphs.
+/// loop instead. Objects and frames need no such glue any more -- both are
+/// arena entries with nothing to unwind on drop -- which makes this the
+/// only hand-written iterative `Drop` left in the crate. It is not the only
+/// recursive graph: `Mixin`'s `nested` and `class_side` links are also
+/// `Rc` and also drop recursively, but their depth is bounded by the
+/// parser and `image::mixins::decode` refuses anything deeper, so a ceiling
+/// covers them (`image/mixins.rs`, `MAX_MIXIN_DEPTH`).
 ///
-/// No ceiling: every chain is still released in full. `Rc::try_unwrap`
+/// No ceiling here: every chain is still released in full. `Rc::try_unwrap`
 /// stops the loop at the first link something else still holds -- the
 /// interpreter's own `applications` cache, usually -- because releasing
 /// that link is not this drop's business.

@@ -318,11 +318,19 @@ possibly larger, change.
 
 The pattern surfaced three separate times while migrating object and frame
 access onto the heap seam (`docs/design/memory.md`, "The seam"):
-`compile_initializer` and `compile_module` were each building a throwaway
-`Heap::new()` internally to make the same hop, which works only because
-today's `Heap` is a bare counter and would silently break under the planned
-arena; `cmd_disasm` carried the identical shape a third time. Recorded here
-as a follow-up rather than undertaken now, because narrowing the three
+`compile_initializer`, `compile_module` and `cmd_disasm` each reached the mixin
+through a `Heap` that was not the one that allocated the class object. All three
+now reach the real one, because under the arena they must: a handle is an index
+meaningful only against its own heap, so a stand-in `Heap` reads the wrong object
+in a release build and trips the debug origin guard in a debug one. The two
+compiler entry points take a `&Heap` parameter; `cmd_disasm` has no `ClassRef`
+parameter and therefore none to take, so it reads through `interp.heap_ref()`
+inside the lifetime of the interpreter that built the class object.
+
+What remains is only the narrowing. Taking the mixin directly would drop the
+`&Heap` parameter from the two compiler entry points, and `cmd_disasm`'s
+different fix — stop building a class object at all — is still a larger change.
+Recorded here as a follow-up rather than undertaken now, because narrowing the
 signatures is a design change to this module's interface, not a migration.
 
 ## Decisions

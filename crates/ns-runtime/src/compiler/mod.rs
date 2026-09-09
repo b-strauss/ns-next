@@ -64,13 +64,13 @@ pub fn compile_method(
 /// because `ns-cli`'s `disasm` and this module's own tests address a class
 /// directly, without going through `compile_module`'s tree walk.
 ///
-/// Takes `heap` rather than building one: a throwaway `Heap` reads correctly
-/// only by accident of today's `Rc<RefCell<_>>` representation, where every
-/// instance is interchangeable because the only state `Heap` carries is an
-/// identity-hash counter this call never touches. Once `Heap` owns the
-/// arena, a freshly constructed one is an *empty* arena, and this lookup
-/// would silently miss instead of failing loudly -- exactly the failure
-/// mode the seam exists to prevent.
+/// Takes `heap` rather than building one. `Heap` owns real per-instance
+/// state -- both the frame and the object arenas -- so a freshly built
+/// `Heap` is not the interchangeable, counter-only value it used to be:
+/// `class` is an index into a specific `Heap.objects`. Reading it through
+/// any other `Heap` trips the debug-build origin guard; in a release build
+/// it either indexes out of range and panics, or silently names a
+/// different object entirely.
 pub fn compile_initializer(
     heap: &crate::Heap,
     class: &ClassRef,
@@ -188,7 +188,7 @@ fn compile_superclass_message(
 }
 
 /// Takes `heap` rather than building one; see `compile_initializer`'s doc
-/// comment for why a throwaway `Heap` is unsafe under the planned arena.
+/// comment for why a throwaway `Heap` reads the wrong object.
 pub fn compile_module(
     heap: &crate::Heap,
     root_class: &ClassRef,

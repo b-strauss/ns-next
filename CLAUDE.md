@@ -7,7 +7,8 @@ image format. Rust 1.98.0, edition 2021, three crates:
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`.
 - `crates/ns-runtime` — resolver, object model, dispatch, both execution engines
   (`interpreter/` and `compiler/` + `vm.rs`), core library (`builtins/`), image format
-  (`image/`).
+  (`image/`). Objects and activations live in arenas owned by one `Heap`
+  (`heap.rs`) and are addressed by 32-bit handles; nothing reclaims a slot yet.
 - `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
   `snapshot`, `load`, `bench`, `disasm`, `inspect`, `build`.
 
@@ -55,7 +56,19 @@ validate every id, tag, count and length before it indexes, allocates or slices,
 bound any recursion whose depth the input controls. `image::load` also runs two
 structural verification passes before installing the engine. See
 `docs/design/image-format.md`'s "Verification" section for the scope of what they
-do and do not guarantee.
+do and do not guarantee. One thing to keep in mind while decoding: the decoder
+allocates one placeholder object and activation per declared record before it can
+validate any of them, and the arena never reclaims a slot, so a rejected image
+holds its placeholders until the load finishes. That is a transient peak, not a
+leak — `image::load` owns its `Interpreter` in a local, so every `Err` path drops
+it and both arenas with it — but the peak is amplified against the bytes remaining
+at the graph section, and both `bounded_count` calls divide the *same* remainder,
+so one file maxes out both arenas rather than trading one against the other:
+about **17.4x in a release build** (an `Object` is 64 bytes against a 6-byte
+minimum record, a `Frame` 128 against 19) and about 21.8x in a debug build, where
+both structs are larger. `bounded_count` is what keeps this proportional to the
+input at all rather than to a `u32` — do not add a pre-allocation that is not
+bounded that way. `docs/design/memory.md` has the breakdown.
 
 That guarantee covers **decoding**. `ns-next load` on a stateless binary instantiates
 and sends the recorded entry with no flag at all, so loading one *runs its code* --
@@ -74,6 +87,20 @@ needs — images are disposable and `FORMAT_VERSION` is never bumped — because
 renumbering fails in the one way the untrusted-input guarantee does not cover: a stale
 artifact would decode into a *different, perfectly valid* program and run it, reporting
 nothing. Retiring numbers means those bytes hit an unknown tag and are refused.
+
+**A handle means nothing against a `Heap` that did not mint it.** An `ObjRef`, a
+`ClassRef` and a `FrameRef` are indices into one `Heap`'s arenas. Never build a
+`Heap::new()` to stand in for one that is out of scope, and never hold a handle
+across the death of the interpreter that allocated it: the index is in range in the
+other heap too, so the read answers a **different, perfectly valid object** rather
+than failing. Reach the real `Heap` instead: `compiler::compile_module` and
+`compile_initializer` take a `&Heap` parameter for exactly this reason, and
+`ns-cli`'s `cmd_disasm` — which builds its own class object and so has no
+parameter to take — reads through `interp.heap_ref()` while that interpreter is
+still alive, before it goes out of scope. A `debug_assertions`-only origin guard
+turns the mistake into a panic at
+the read, so a debug-build test run catches it; a release build does not, which is
+why this is an invariant and not a check to rely on.
 
 **Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an `EvalResult`.**
 `ObjRef` and `FrameRef` each carry a hand-written `Debug` that prints identity only, so
@@ -162,19 +189,9 @@ is hand-rolled on purpose.
 - Comments should explain the decision, not restate the mechanics. The reason a check
   exists — what it prevents — is the part a later reader cannot reconstruct.
 - **Object and frame access goes through `crates/ns-runtime/src/heap.rs`, not
-  directly through a handle.** The seam exists so that replacing the store
-  behind a handle — `Rc<RefCell<_>>` today, an arena next — is a change to
-  one file rather than to the 193 call sites (109 under `src`, 84 in the
-  integration tests) the workspace held before it.
-  `ObjRef` and `FrameRef`'s inner `Rc<RefCell<_>>` is `pub(crate)`, which the
-  compiler enforces only at the crate boundary: `ns-cli` and the
-  integration-test crates under `crates/ns-runtime/tests/` cannot reach it
-  at all. Inside `ns-runtime`'s own `src/`, `pub(crate)` is visible from
-  every module — `types.rs` and `heap.rs` share no private parent that would
-  narrow it further — so containment there is discipline, checked by the
-  grep gate (`grep -rn "\.borrow()\|\.borrow_mut()" crates --include=*.rs |
-  grep -v "src/heap.rs\|src/types.rs"` must be empty), not something the
-  compiler refuses on its own. If an accessor you need is missing, add it
-  there; never widen a field's visibility to reach past it. The accessors
-  copy out rather than lend out on purpose; see `docs/design/memory.md`,
-  "The seam".
+  directly through a handle.** `ObjRef`, `ClassRef` and `FrameRef` are defined
+  in `heap.rs` and their inner arena index is private to that module, so the
+  compiler refuses every read of one from anywhere else — there is no grep gate
+  to remember and no way to widen a field to reach past an accessor. If an
+  accessor you need is missing, add it there. The accessors copy out rather
+  than lend out on purpose; see `docs/design/memory.md`, "The seam".

@@ -1,16 +1,16 @@
 //! `Array` and `OrderedCollection` native methods.
 //!
-//! Design note (Milestone 1 simplification, per this task's brief):
-//! `OrderedCollection` needs a mutable, growable payload, but
-//! `ObjectData::Array(Vec<Value>)` (Task 3) is shared by both `Array` and
-//! `OrderedCollection` -- the spec's Core Library list groups them loosely
-//! together, and `Vec<Value>` already grows fine either way (mutated in
-//! place through the `RefCell`, which already supports this). So for
-//! Milestone 1, `OrderedCollection` is backed by the very same
-//! `ObjectData::Array` variant rather than a second growable-collection
-//! payload variant. A real `OrderedCollection` would grow independently of
-//! a literal array's fixed size; revisit if a later milestone needs the two
-//! to diverge (e.g. `Array` becoming genuinely fixed-size).
+//! Design note (Milestone 1 simplification): `OrderedCollection` needs a
+//! mutable, growable payload, but `ObjectData::Array(Vec<Value>)` is shared
+//! by both `Array` and `OrderedCollection` -- the spec's Core Library list
+//! groups them loosely together, and `Vec<Value>` already grows fine either
+//! way (`Heap::array_push` mutates it in place through `&mut self`, no
+//! separate growable representation needed). So for Milestone 1,
+//! `OrderedCollection` is backed by the very same `ObjectData::Array`
+//! variant rather than a second growable-collection payload variant. A real
+//! `OrderedCollection` would grow independently of a literal array's fixed
+//! size; revisit if a later milestone needs the two to diverge (e.g.
+//! `Array` becoming genuinely fixed-size).
 
 use crate::interpreter::{EvalResult, Signal};
 use crate::types::*;
@@ -19,7 +19,7 @@ use crate::{Heap, Interpreter, Symbol};
 fn out_of_range(receiver: &Value, selector: Symbol, index: i64, len: usize) -> NewspeakError {
     NewspeakError {
         selector,
-        receiver: receiver.clone(),
+        receiver: *receiver,
         message: format!("index {index} out of range: valid indices are 1..{len} (size {len})"),
     }
 }
@@ -32,7 +32,7 @@ fn not_an_integer(
 ) -> NewspeakError {
     NewspeakError {
         selector,
-        receiver: receiver.clone(),
+        receiver: *receiver,
         message: format!(
             "{selector} requires an Integer index, got {}",
             heap.describe_arg(got)
@@ -84,18 +84,18 @@ fn dispatch_common(
                 ))),
             })
         }
-        // Task 12 fix: `do:` invokes its block argument via `call_block`,
-        // which now forwards a `Signal::Return` (a non-local `^expr` inside
-        // the block, e.g. `coll do: [:each | ... ifTrue: [^x]]`) straight
-        // through instead of converting it into a `NewspeakError` -- so
-        // this whole function's return type must be able to carry `Signal`,
-        // not just `NewspeakError`, and this arm's `?` does exactly that.
+        // `do:` invokes its block argument via `call_block`, which forwards
+        // a `Signal::Return` (a non-local `^expr` inside the block, e.g.
+        // `coll do: [:each | ... ifTrue: [^x]]`) straight through instead of
+        // converting it into a `NewspeakError` -- so this whole function's
+        // return type must be able to carry `Signal`, not just
+        // `NewspeakError`, and this arm's `?` does exactly that.
         "do:" => {
             let items = interp.heap.array_elements(obj)?;
             let Some(block) = args.first().cloned() else {
                 return Some(Err(Signal::Error(NewspeakError {
                     selector,
-                    receiver: receiver.clone(),
+                    receiver,
                     message: "do: requires a block argument".to_string(),
                 })));
             };
@@ -104,7 +104,7 @@ fn dispatch_common(
                     return Some(Err(signal));
                 }
             }
-            Some(Ok(receiver.clone()))
+            Some(Ok(receiver))
         }
         _ => None,
     }
@@ -140,7 +140,7 @@ pub fn dispatch_array(
         }
         let value = args.get(1).cloned().unwrap_or(Value::Nil);
         interp.heap.array_set(obj, (index as usize) - 1, value);
-        return Some(Ok(receiver.clone()));
+        return Some(Ok(receiver));
     }
     dispatch_common(interp, receiver, selector, args, sender)
 }
@@ -160,7 +160,7 @@ pub fn dispatch_ordered_collection(
         // Matches the reference library's convention: `add:` returns the
         // argument, not the receiver.
         let value = args.first().cloned().unwrap_or(Value::Nil);
-        interp.heap.array_push(obj, value.clone());
+        interp.heap.array_push(obj, value);
         return Some(Ok(value));
     }
     dispatch_common(interp, receiver, selector, args, sender)

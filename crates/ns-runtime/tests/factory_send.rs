@@ -50,7 +50,7 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
 
     let add_result = expect_ok(
         interp.send(
-            receiver.clone(),
+            receiver,
             Symbol::intern("add:"),
             vec![Value::SmallInt(1)],
             &bindings,

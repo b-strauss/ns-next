@@ -270,7 +270,7 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
         "the setup must actually give the two applications different bases"
     );
 
-    let class_a = make_class(&mut interp, object_class.clone(), app_a.clone());
+    let class_a = make_class(&mut interp, object_class, app_a.clone());
     let class_b = make_class(&mut interp, object_class, app_b.clone());
 
     for bytecode in [false, true] {
@@ -288,11 +288,11 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
             // tree-walker is available to it.
             .expect("a source-built interpreter accepts either engine");
         let a = expect_ok(
-            interp.instantiate(class_a.clone(), vec![Value::SmallInt(11)], &bindings),
+            interp.instantiate(class_a, vec![Value::SmallInt(11)], &bindings),
             "instantiate a",
         );
         let b = expect_ok(
-            interp.instantiate(class_b.clone(), vec![Value::SmallInt(22)], &bindings),
+            interp.instantiate(class_b, vec![Value::SmallInt(22)], &bindings),
             "instantiate b",
         );
         assert_eq!(
