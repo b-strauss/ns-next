@@ -162,19 +162,9 @@ is hand-rolled on purpose.
 - Comments should explain the decision, not restate the mechanics. The reason a check
   exists — what it prevents — is the part a later reader cannot reconstruct.
 - **Object and frame access goes through `crates/ns-runtime/src/heap.rs`, not
-  directly through a handle.** The seam exists so that replacing the store
-  behind a handle — `Rc<RefCell<_>>` today, an arena next — is a change to
-  one file rather than to the 193 call sites (109 under `src`, 84 in the
-  integration tests) the workspace held before it.
-  `ObjRef` and `FrameRef`'s inner `Rc<RefCell<_>>` is `pub(crate)`, which the
-  compiler enforces only at the crate boundary: `ns-cli` and the
-  integration-test crates under `crates/ns-runtime/tests/` cannot reach it
-  at all. Inside `ns-runtime`'s own `src/`, `pub(crate)` is visible from
-  every module — `types.rs` and `heap.rs` share no private parent that would
-  narrow it further — so containment there is discipline, checked by the
-  grep gate (`grep -rn "\.borrow()\|\.borrow_mut()" crates --include=*.rs |
-  grep -v "src/heap.rs\|src/types.rs"` must be empty), not something the
-  compiler refuses on its own. If an accessor you need is missing, add it
-  there; never widen a field's visibility to reach past it. The accessors
-  copy out rather than lend out on purpose; see `docs/design/memory.md`,
-  "The seam".
+  directly through a handle.** `ObjRef`, `ClassRef` and `FrameRef` are defined
+  in `heap.rs` and their inner arena index is private to that module, so the
+  compiler refuses every read of one from anywhere else — there is no grep gate
+  to remember and no way to widen a field to reach past an accessor. If an
+  accessor you need is missing, add it there. The accessors copy out rather
+  than lend out on purpose; see `docs/design/memory.md`, "The seam".

@@ -14,63 +14,11 @@ use crate::Symbol;
 
 // ---------- Values and objects ----------
 
-/// An opaque handle to an object: an index into `Heap.objects`. The inner
-/// index is private to the crate, and only `types.rs` and `heap.rs` reach
-/// it -- that privacy is what made replacing `Rc<RefCell<Object>>` with
-/// this a change to those two files rather than to every caller. See
-/// `docs/design/memory.md`, "The seam".
-///
-/// A handle is meaningful only against the `Heap` that allocated it. The
-/// arena never reuses a slot -- there is no collector yet -- so two live
-/// objects never share an index.
-#[derive(Clone)]
-pub struct ObjRef {
-    pub(crate) index: u32,
-    /// The heap that allocated this handle. Debug builds only: it exists to
-    /// turn reading a handle through the wrong heap -- which answers a
-    /// different, valid object rather than failing -- into a panic at the
-    /// read. See `Heap::check_object_origin`.
-    #[cfg(debug_assertions)]
-    pub(crate) origin: u32,
-}
-
-impl ObjRef {
-    /// Object identity. Replaces `Rc::ptr_eq` at every call site, so that
-    /// identity has one spelling that survives the store changing under it.
-    pub fn same(&self, other: &ObjRef) -> bool {
-        self.index == other.index
-    }
-
-    /// An opaque, hashable key unique to this handle, for code that needs
-    /// `ObjRef` as a `HashMap`/`HashSet` key rather than a comparison --
-    /// `identity_hash` cannot serve that role, because two placeholder
-    /// objects may legitimately share hash 0
-    /// (`Heap::alloc_placeholder_object`,
-    /// `Heap::alloc_self_referential_class`), which would fold two distinct
-    /// objects into one table entry. Crate-internal: every current caller
-    /// (`image::encode::GraphTable`'s object-id map,
-    /// `image::decode::rebuild_applications`'s superclass-position map,
-    /// `interpreter::nested::in_progress_key`) lives inside `ns-runtime`.
-    pub(crate) fn identity_key(&self) -> usize {
-        self.index as usize
-    }
-}
-
-/// Prints the arena index and nothing else. Under `Rc` this impl was
-/// hand-written to stop `Debug` recursing through the bootstrap `Object`
-/// class, which is its own `.class`; an index has nothing to descend into,
-/// so the recursion hazard is gone by construction. It still renders Rust
-/// internals, which is why `CLAUDE.md`'s "Never `{:?}` a `Value`" rule
-/// stands: `Heap::describe` is what a Newspeak-facing message needs.
-impl std::fmt::Debug for ObjRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ObjRef(#{})", self.index)
-    }
-}
-
-/// A class is an `ObjRef` whose `data` is `ObjectData::Class(_)`. Not
-/// enforced by the type system in Milestone 1 (no metaclasses yet).
-pub type ClassRef = ObjRef;
+/// The handle types live in `heap.rs`, whose `Heap` is the only thing that
+/// can interpret one. They are re-exported here because this module is
+/// where the object model reads as a whole, and because `lib.rs`'s
+/// `pub use types::*` is how the rest of the workspace names them.
+pub use crate::heap::{ClassRef, FrameRef, ObjRef};
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -237,58 +185,6 @@ pub enum SourceOrigin {
 }
 
 // ---------- Activation records ----------
-
-/// An opaque handle to an activation: an index into `Heap.frames`. The
-/// inner index is private to the crate, and only `types.rs` and `heap.rs`
-/// reach it -- that privacy is what made replacing `Rc<RefCell<Frame>>`
-/// with this a change to those two files rather than to every caller.
-/// See `docs/design/memory.md`, "The seam".
-///
-/// A handle is meaningful only against the `Heap` that allocated it. The
-/// arena never reuses a slot -- there is no collector yet -- so two live
-/// activations never share an index, which is what `Signal::Return`'s
-/// target check depends on.
-#[derive(Clone)]
-pub struct FrameRef {
-    pub(crate) index: u32,
-    /// The heap that allocated this handle. Debug builds only: it exists to
-    /// turn reading a handle through the wrong heap -- which answers a
-    /// different, valid object rather than failing -- into a panic at the
-    /// read. See `Heap::check_frame_origin`.
-    #[cfg(debug_assertions)]
-    pub(crate) origin: u32,
-}
-
-impl FrameRef {
-    /// Activation identity. Replaces `Rc::ptr_eq` at every call site, so
-    /// that identity has one spelling that survives the store changing
-    /// under it -- `invoke_method`'s `Signal::Return` catch and
-    /// `raise_return`'s target check both depend on this rather than on
-    /// the representation directly.
-    pub fn same(&self, other: &FrameRef) -> bool {
-        self.index == other.index
-    }
-
-    /// An opaque, hashable key unique to this handle, for code that needs
-    /// `FrameRef` as a `HashMap` key rather than a comparison --
-    /// `image::encode::GraphTable`'s frame-id map. Crate-internal: its
-    /// only current caller lives inside `ns-runtime`.
-    pub(crate) fn identity_key(&self) -> usize {
-        self.index as usize
-    }
-}
-
-/// Prints the arena index and nothing else. Under `Rc` this impl was
-/// hand-written to stop `Debug` walking the sender chain (a closure's
-/// `home` can itself be captured, so that walk had no acyclic guarantee
-/// to lean on); an index has nothing to descend into at all, so the
-/// hazard is gone by construction rather than by discipline. It also can
-/// no longer panic, which is why the `try_borrow` dance is gone.
-impl std::fmt::Debug for FrameRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FrameRef(#{})", self.index)
-    }
-}
 
 #[derive(Debug, Clone)]
 pub enum FrameKind {
