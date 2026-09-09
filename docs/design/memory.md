@@ -184,6 +184,32 @@ allocated frames.
   handle's encoding a question that milestone will ask. Nothing in Milestone 4
   needs the answer; it needs only to leave room for one.
 
+### Known rough edges in the seam
+
+Carried deliberately rather than fixed, because the arena rewrite reshapes this
+file and several of them stop existing when it does. Recorded so that rewrite
+starts from a list rather than from rediscovery.
+
+- **The accessor names grew by accretion.** `class_of_obj` reads an *object*
+  while `class_application` and its neighbours read a *class* — the same prefix
+  for opposite directions. `array_at`/`array_len` and
+  `instance_field`/`instance_field_count` are parallel operations under
+  divergent names. Most frame accessors carry a `frame_` prefix; `receiver`,
+  `local`, `set_local`, `grow_temps` and `mark_uncontinuable` do not.
+- **The `heap` parameter sits first in some signatures and last in others**,
+  across `image/`, `compiler/` and `interpreter/`.
+- **Copy-out costs that only the arena removes.** `builtins/text.rs`'s string
+  dispatch clones the payload on every send where the old code borrowed it, and
+  `object_snapshot`/`frame_snapshot` clone each payload twice per encoded
+  record. Neither is on a measured path, but both are the price of the copy-out
+  decision and both disappear once a handle indexes an arena instead of owning
+  an `Rc`.
+- **The seam is compiler-enforced only across the crate boundary**, as the
+  section above says. The grep gate that covers the inside is an instruction in
+  `CLAUDE.md`, not a check anything runs. A test that greps the tree would make
+  it mechanical for the price of ten minutes, and is the cheaper half of the
+  shared-parent-module follow-up.
+
 ## Decisions
 
 - **Identity hashes come from a counter, not an address**, so identity survives
