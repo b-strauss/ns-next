@@ -15,6 +15,11 @@ git submodule update --init prior-art/newspeak    # just one
 
 None is needed to build `ns-next`, run its tests, or pass either corpus gate.
 
+`docs/references/PROVENANCE.md` is the companion to this file: it covers the
+papers the design argues from, and lists the four submodules here that a
+document under `docs/design/` actually cites, with the specific files in each
+that carry design weight.
+
 ## What each one is for
 
 | Submodule | Upstream | Why it is here |

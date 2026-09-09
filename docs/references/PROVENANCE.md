@@ -52,7 +52,13 @@ their publishers grant.
 - **`modularity-meets-inheritance.pdf`** — the mixin-composition theory Newspeak's class
   model is built on. Background today; load-bearing once nested classes and mixins land.
 
-## Not vendored, but cited by the design documents
+## Sources cited by the design documents but not vendored here
+
+Nothing below is vendored — no code or text from any of it is checked into this
+repository. They divide by whether they are nevertheless reachable from the
+working tree.
+
+### Reachable only by following the link
 
 - **Robert Nystrom, *Crafting Interpreters*** — <https://craftinginterpreters.com/>. The
   implementation-technique reference, and the only one here that is not about Newspeak.
@@ -68,8 +74,27 @@ their publishers grant.
 - Bracha's blog *Room 101*, in particular
   [An Image Problem](https://gbracha.blogspot.com/2009/10/image-problem.html) and
   [Serialization Killer](https://gbracha.blogspot.com/2010/02/serialization-killer.html).
-- The Newspeak implementation at <https://github.com/newspeaklanguage/newspeak>.
-- **Primordial Soup** — <https://github.com/rmacnak/primordialsoup>. Ryan Macnak's
+### In the tree, as git submodules under `prior-art/`
+
+Each is pinned to one commit and none is built, tested or linked — a plain clone
+does not even fetch them (`git submodule update --init <name>`, by name: one of
+them is ~255 MB). What each is for, the commit it is pinned at and its license
+are in `prior-art/PROVENANCE.md`, which also explains why the canonical Newspeak
+implementation appears in this repository twice and why neither copy may be
+deleted. The file paths cited below are therefore real paths in the working
+tree once the submodule is initialized, not places to go looking upstream.
+
+Four of the six are listed here, because this file is scoped to what the design
+documents actually cite. `prior-art/somns/` and `prior-art/newspeak-benchmarks/`
+are not cited by any document under `docs/design/` today and so are absent from
+this list rather than omitted from it; `prior-art/PROVENANCE.md` covers all six.
+
+- **The canonical Newspeak implementation** — `prior-art/newspeak/`, from
+  <https://github.com/newspeaklanguage/newspeak>. The reference for what the
+  language does where the draft specification above is silent or ambiguous, and
+  the tree the `corpus/` gate material was flattened out of at an earlier commit.
+- **Primordial Soup** — `prior-art/primordialsoup/`, from
+  <https://github.com/rmacnak/primordialsoup>. Ryan Macnak's
   Newspeak VM, running on Android, Fuchsia, Linux, macOS, Windows and the web. This is
   the reference *implementation* of everything the image-format work has to be measured
   against, in the way the papers above are the reference for semantics, and it is cited
@@ -96,5 +121,17 @@ their publishers grant.
     argument. `CompilerApp.ns` also shows packaging itself, including the `keepSource:`
     switch.
 
-  Linked rather than vendored: it is an actively developed source tree under its own
-  license, and pinning a copy here would rot without telling anyone.
+- **Nova** — `prior-art/nova/`, from <https://github.com/trynova/nova>. A JavaScript
+  engine in Rust, and the one entry here that is not about Newspeak at all. It is the
+  model `docs/design/memory.md` names for the arena of typed handles and for the
+  `GcScope`/`NoGcScope` root discipline, where holding an unrooted handle across a
+  collection safepoint is a compile error rather than corruption found later. Rust is
+  the whole reason it is the comparison rather than V8: the borrow checker is available
+  as an enforcement mechanism, and a C++ engine's conventions do not carry over to a
+  solution built on one. MPL-2.0, the most restrictive license of the six.
+- **The OpenSmalltalk VM** — `prior-art/opensmalltalk-vm/`, from
+  <https://github.com/OpenSmalltalk/opensmalltalk-vm>. Cog and Spur, the Smalltalk VM
+  lineage `docs/design/execution.md` names for activations living on a stack and
+  reified into first-class contexts only when something asks for one. The design lives
+  in the Smalltalk-side sources and their comments; most of the tree's bulk is
+  generated C and platform build directories.
