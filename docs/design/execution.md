@@ -143,8 +143,12 @@ a block invoked after its home has returned gets `cannotReturn` — is preserved
 without a signal round-trip on the common path.
 
 **Never `.unwrap()`, `.expect()` or `{:?}` an `EvalResult`.** `Signal`
-deliberately has no `Debug`: it holds a frame cycle. Tests unwrap through a local
-`expect_ok` helper.
+deliberately carries no `Debug` impl of its own -- every field it holds
+could support one today, but leaving `Signal` without one means
+`EvalResult` (`Result<Value, Signal>`) has none either, and
+`Result::unwrap`/`expect` require `E: Debug`. Calling either, or writing
+`{:?}` on an `EvalResult`, is therefore a compile error, not a lapse a
+reviewer has to catch. Tests unwrap through a local `expect_ok` helper.
 
 ## Measurements
 
@@ -192,13 +196,13 @@ Two caveats. `U - N` is an incremental difference, not a profiler attribution:
 the native path pays a `match selector.as_str()` string comparison chain the
 user path does not. And these are medians of a whole-program benchmark.
 
-### A 12% regression, found and recovered
+### A 13% regression, found and recovered
 
 Routing every `Object`/`Frame` access through `Heap` (`docs/design/memory.md`,
 "The seam") was designed to cost nothing: `--release` inlines an accessor
 call away, and each one does the same borrow-clone-drop the call site did
 before. Migrating `interpreter/eval.rs` broke that measurably: `bench_loop.ns`
-went from 20.07 ms to 22.77 ms, about 12%.
+went from 20.07 ms to 22.77 ms, about 13% (13.45%).
 
 The cause was `dispatch_lexical_send`'s head, which every implicit-receiver
 send runs. Before the migration it took one `RefCell` borrow and read both

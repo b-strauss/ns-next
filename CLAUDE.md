@@ -165,9 +165,15 @@ is hand-rolled on purpose.
   directly through a handle.** The seam exists so that replacing the store
   behind a handle — `Rc<RefCell<_>>` today, an arena next — is a change to
   one file rather than to the 276 call sites the workspace held before it.
-  `ObjRef` and `FrameRef` are opaque newtypes whose inner `Rc<RefCell<_>>` is
-  crate-private to `types.rs`/`heap.rs`, so this rule enforces itself: a
-  `.borrow()` written anywhere else does not compile. If an accessor you need
-  is missing, add it there; never widen a field's visibility to reach past
-  it. The accessors copy out rather than lend out on purpose; see
-  `docs/design/memory.md`, "The seam".
+  `ObjRef` and `FrameRef`'s inner `Rc<RefCell<_>>` is `pub(crate)`, which the
+  compiler enforces only at the crate boundary: `ns-cli` and the
+  integration-test crates under `crates/ns-runtime/tests/` cannot reach it
+  at all. Inside `ns-runtime`'s own `src/`, `pub(crate)` is visible from
+  every module — `types.rs` and `heap.rs` share no private parent that would
+  narrow it further — so containment there is discipline, checked by the
+  grep gate (`grep -rn "\.borrow()\|\.borrow_mut()" crates --include=*.rs |
+  grep -v "src/heap.rs\|src/types.rs"` must be empty), not something the
+  compiler refuses on its own. If an accessor you need is missing, add it
+  there; never widen a field's visibility to reach past it. The accessors
+  copy out rather than lend out on purpose; see `docs/design/memory.md`,
+  "The seam".

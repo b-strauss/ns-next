@@ -29,8 +29,10 @@ and identity has to be stable across a snapshot. See [memory.md](memory.md).
 its defining frame for closure semantics and its home activation for non-local
 return.
 
-**Never `{:?}` a `Value`.** The bootstrap `Object` class is its own `.class`, so
-`Debug` on a `Value::Obj` recurses forever.
+**Never `{:?}` a `Value`.** `ObjRef`'s hand-written `Debug` prints identity
+only, so this no longer recurses -- but it renders Rust internals such as
+`ObjRef(#42)`, useless in a message meant for a Newspeak programmer.
+`Heap::describe` answers "the String \"foo\"" instead.
 
 ## Three layers, not one
 

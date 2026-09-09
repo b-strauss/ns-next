@@ -55,12 +55,28 @@ accessors take `&mut self` even though the present `Rc<RefCell<_>>` store
 does not require it, so that the arena is a change of implementation rather
 than a second pass over every caller.
 
-The seam is enforced by the type system, not by discipline: `ObjRef` and
-`FrameRef` are opaque newtypes whose inner `Rc<RefCell<_>>` is
-crate-private, reachable only from `types.rs` and `heap.rs`. A `.borrow()`
-written anywhere else in the workspace does not compile, so the migration
-that built this seam is proven by the compiler rather than asserted by a
-reviewer re-reading every call site.
+The seam's containment is partly enforced by the type system and partly by
+discipline. `ObjRef`'s and `FrameRef`'s inner `Rc<RefCell<_>>` is
+`pub(crate)`, so the crate boundary is real: `ns-cli` and the
+integration-test crates under `crates/ns-runtime/tests/` cannot reach it at
+all, and the compiler refuses any attempt. But `types.rs` and `heap.rs` are
+both plain top-level modules of `ns-runtime` (`lib.rs`'s `pub mod types` and
+`pub mod heap`), sharing no private parent, so `pub(crate)` is the narrowest
+visibility available — every other module in the crate, `vm.rs`,
+`interpreter/`, `image/` included, can also write `.0.borrow()` and have it
+compile. Containment within `src/` is therefore the grep gate this
+migration ran at every step, not a compiler guarantee: nothing stops a new
+call site inside the crate from reaching around the seam except someone
+checking.
+
+**Follow-up, not done now:** nesting `types` and `heap` under a shared
+private parent module would let the field be `pub(in crate::that_parent)`
+rather than `pub(crate)`, closing this gap for real — every module outside
+the parent would then fail to compile rather than merely being asked not
+to. Not done in this plan: it ripples through every `crate::types::` import
+path in the crate, and the arena rewrite restructures this area anyway, so
+whoever plans that rewrite should decide this deliberately rather than
+inherit an unexamined gap.
 
 Where a site needs several fields of one object or frame at once, a batched
 accessor answers them from a single borrow rather than the caller taking

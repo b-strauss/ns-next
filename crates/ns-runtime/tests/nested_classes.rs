@@ -49,9 +49,9 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     }
 }
 
-/// Reads a `Value` known to be a `Str` object. `Value` has no usable
-/// `Debug` (the bootstrap `Object` class is its own class, so a derived
-/// `Debug` on a class-object-carrying `Value` recurses), so a class-side
+/// Reads a `Value` known to be a `Str` object. `Value` has no `PartialEq`,
+/// and its `Debug` -- though no longer recursive -- prints only Rust
+/// internals (`ObjRef(#42)`, not the string's contents), so a class-side
 /// send's result is compared through this rather than `assert_eq!` on the
 /// `Value` itself.
 fn string_contents(heap: &Heap, value: &Value) -> String {

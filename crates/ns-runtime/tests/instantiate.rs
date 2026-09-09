@@ -26,10 +26,10 @@ fn load(
     (interp, class, resolved)
 }
 
-/// `Signal` carries no `Debug` impl (it holds a `FrameRef` cycle-shaped for
-/// non-local return, not meant for printing), so `Result::expect` isn't
-/// usable on an `EvalResult` directly -- unwrap by hand, with a message
-/// naming which `Signal` variant leaked instead.
+/// `Signal` carries no `Debug` impl of its own, so `EvalResult`
+/// (`Result<Value, Signal>`) has none either and `Result::expect` isn't
+/// usable on it directly -- unwrap by hand, with a message naming which
+/// `Signal` variant leaked instead.
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     match result {
         Ok(v) => v,

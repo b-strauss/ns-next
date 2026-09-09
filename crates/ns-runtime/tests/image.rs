@@ -1566,9 +1566,8 @@ impl GraphFixture {
     }
 
     /// The `DecodeError` a hand-crafted graph section must produce. Never
-    /// `{:?}`s the success value: a decoded `Value` can be a class object,
-    /// and the bootstrap `Object` class is its own `.class`, so `Debug`
-    /// would recurse forever.
+    /// `{:?}`s the success value: `DecodedGraph` has no `Debug` impl, so a
+    /// manual match, as below, is the only way to reach the error.
     fn decode_err(&mut self, bytes: &[u8]) -> decode::DecodeError {
         match self.decode(bytes) {
             Ok(_) => panic!("expected a decode error, got a decoded graph"),
@@ -2319,10 +2318,10 @@ fn load_refuses_a_version_mismatch() {
     assert!(err.contains("version"), "{err}");
 }
 
-/// `image::load`'s error message. Never `expect_err`: that would `Debug`
-/// the `Ok` side, and a `LoadedImage`'s roots can hold a class object --
-/// the bootstrap `Object` class is its own `.class`, so `Debug` recurses
-/// forever. `LoadedImage` deliberately does not derive it.
+/// `image::load`'s error message. Never `expect_err`: that would require
+/// `Debug` on the `Ok` side, and `LoadedImage` has none -- it carries an
+/// `Interpreter`, and `Interpreter`'s own `Engine` field has no `Debug`
+/// impl, so neither type can derive one.
 fn load_err(bytes: &[u8]) -> String {
     match image::load(bytes) {
         Ok(_) => panic!("expected a load error, got a loaded image"),
@@ -2410,8 +2409,8 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
     )
     .expect("snapshot");
     for cut in 0..bytes.len() {
-        // Never `{:?}` the `Ok` side: a `LoadedImage`'s roots can hold a
-        // class object, whose `Debug` recurses forever.
+        // Never `{:?}` the `Ok` side: `LoadedImage` has no `Debug` impl at
+        // all (its `Interpreter` field's `Engine` does not derive one).
         assert!(
             image::load(&bytes[..cut]).is_err(),
             "a truncated image must never load"
@@ -5693,10 +5692,9 @@ fn a_stateless_artifact_without_an_entry_is_refused() {
     bytes.truncate(entry_start);
     bytes.push(0);
 
-    // Not `.expect_err`: `LoadedImage` carries an `Interpreter`, which has no
-    // `Debug` impl for the same reason `Value` does not (the bootstrap
-    // `Object` class is its own `.class`, so a derived `Debug` would
-    // recurse forever) -- `expect_err` requires `T: Debug` on the `Ok` side.
+    // Not `.expect_err`: `LoadedImage` carries an `Interpreter`, and
+    // `Interpreter`'s `Engine` field has no `Debug` impl, so neither type
+    // can derive one -- `expect_err` requires `T: Debug` on the `Ok` side.
     let err = match image::load(&bytes) {
         Ok(_) => panic!("a binary must carry an entry"),
         Err(e) => e,
@@ -5736,9 +5734,9 @@ fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
         // symbol table, a truncated entry field, ...) and the point of this
         // sweep is that every one of those is a decode error rather than a
         // panic, not that they share one message. Never `{:?}` the `Ok`
-        // side either: a `LoadedImage` carries an `Interpreter`, whose
-        // bootstrap `Object` class is its own `.class`, so a derived
-        // `Debug` would recurse forever.
+        // side either: `LoadedImage` carries an `Interpreter`, whose
+        // `Engine` field has no `Debug` impl, so neither type can derive
+        // one.
         assert!(
             image::load(&binary[..cut]).is_err(),
             "a binary truncated to {cut} bytes must be refused, not panic"

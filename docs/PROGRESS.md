@@ -15,12 +15,18 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-M4 is next. It is one milestone because its pieces are one change: the object
-representation, the activation representation and the root discipline each
-constrain the other two, and building any of them on the present model means
-building it twice. Each piece is designed in the document for its own aspect,
-under a `Planned:` heading; those documents are the authority, and this is only
-the map to them.
+M4 is under way. Its pieces are one change: the object representation, the
+activation representation and the root discipline each constrain the other
+two, and building any of them on the present model means building it twice.
+Each piece is designed in the document for its own aspect, under a
+`Planned:` heading; those documents are the authority, and this is only the
+map to them.
+
+The heap seam is done — every object and frame access already routes
+through `Heap` (`crates/ns-runtime/src/heap.rs`), and `ObjRef`/`FrameRef`
+are opaque newtypes (see "M4 — The heap seam" below). That was groundwork,
+not step 1 below: step 1 is what replaces the store those accessors reach
+into.
 
 The order below is the order the work goes in, and it is not the order the
 milestone was originally sketched in. What settled it is a measurement rather
@@ -154,15 +160,18 @@ The first piece of M4's representation change, done ahead of the arena
 itself: every read and write of an `Object` or a `Frame` across the workspace
 now goes through one `Heap` (`crates/ns-runtime/src/heap.rs`), replacing the
 276 call sites that used to reach `Rc<RefCell<_>>` directly. `ObjRef` and
-`FrameRef` are now opaque newtypes with a crate-private inner field, so the
-seam is proven by the compiler rather than asserted: a `.borrow()` written
-outside `heap.rs`/`types.rs` does not compile. Each handle also gained a
-hand-written, non-recursive `Debug` that prints identity only.
+`FrameRef` are now opaque newtypes with a `pub(crate)` inner field: the
+crate boundary is compiler-enforced (`ns-cli` and the integration-test
+crates under `crates/ns-runtime/tests/` cannot reach it at all), while
+containment inside `ns-runtime`'s own `src/` is the grep gate this
+migration ran throughout, since `pub(crate)` is visible from every module
+in the crate. Each handle also gained a hand-written, non-recursive `Debug`
+that prints identity only.
 
 It did not come free. Migrating `interpreter/eval.rs` turned
 `dispatch_lexical_send`'s single borrow yielding both the receiver and the
 current class into two separate accessor calls, and at roughly 250,000
-lexical sends per benchmark run that measured as a real 12% regression —
+lexical sends per benchmark run that measured as a real 13% regression —
 `bench_loop.ns` from 20.07 ms to 22.77 ms. A batched accessor
 (`receiver_and_current_class`) recovered it in full. The companion result —
 the identical extra-borrow shape in `dispatch::walk`'s per-inheritance-level

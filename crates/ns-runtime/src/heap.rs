@@ -264,11 +264,12 @@ impl Heap {
 
     /// Renders a value for a user-facing error message.
     ///
-    /// Never `Debug`-format a `Value` instead: `Object`'s bootstrap class is
-    /// its own `.class`, so `Debug` on a `Value::Obj` recurses until the
-    /// stack gives out. Every caller of this is building the message of a
-    /// `NewspeakError`, which reaches stderr, so that recursion turns a
-    /// reportable program error into a process abort.
+    /// Never `Debug`-format a `Value` instead: `ObjRef`'s hand-written
+    /// `Debug` no longer recurses, but it prints Rust internals such as
+    /// `ObjRef(#42)`, which tells a Newspeak programmer nothing. Every
+    /// caller of this is building the message of a `NewspeakError`, which
+    /// reaches stderr, and that message needs to name what the value *is*
+    /// -- "the String \"foo\"", not its Rust representation.
     pub fn describe(&self, value: &Value) -> String {
         match value {
             Value::Nil => "nil".to_string(),
@@ -424,7 +425,7 @@ impl Heap {
     /// send -- five times per `bench_loop.ns` iteration -- and fetching them
     /// through `receiver` then `frame_current_class` took two separate
     /// borrows where one already carries both fields; that doubling was the
-    /// whole of a measured 12% regression (see `docs/design/execution.md`'s
+    /// whole of a measured 13% regression (see `docs/design/execution.md`'s
     /// measurements section).
     pub fn receiver_and_current_class(&self, frame: &FrameRef) -> (Value, Option<ClassRef>) {
         let borrowed = frame.0.borrow();
