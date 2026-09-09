@@ -78,8 +78,8 @@ pub enum Value {
 #[derive(Debug, Clone)]
 pub struct Object {
     pub class: ClassRef,
-    /// Monotonic, assigned at allocation -- never derived from the `Rc`
-    /// pointer address (liveness spec's stable-identity constraint).
+    /// Monotonic, assigned at allocation -- never derived from the arena
+    /// index (liveness spec's stable-identity constraint).
     pub identity_hash: u32,
     pub data: ObjectData,
 }
@@ -127,7 +127,9 @@ pub struct ClassData {
     /// chain. `outer` and `super` need it; lookup does not.
     pub superclass: Option<ClassRef>,
     /// `None` for a user-defined class. `Some(kind)` marks one of the
-    /// Milestone 1 core-library classes -- see Tasks 10-12.
+    /// core-library classes `builtins/` implements natively -- the same
+    /// `BuiltinClass` `dispatch::Lookup::Native` carries once lookup
+    /// resolves a send to one.
     pub builtin: Option<BuiltinClass>,
     /// The metaclass built from this class's mixin's `class_side`, created
     /// on first use and cached here (`Interpreter::metaclass_of`) so a

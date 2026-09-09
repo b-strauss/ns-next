@@ -533,7 +533,7 @@ impl Interpreter {
                     // Keyed by mixin, not by class object (§6.2: every
                     // application of a mixin shares its code) -- so the
                     // lookup goes through the class's application, not its
-                    // own `Rc` identity. The application itself is kept
+                    // own arena index. The application itself is kept
                     // (not just its mixin) because its `own_slot_base` is
                     // what makes the shared code correct for *this* level.
                     let application = self.heap.class_application(class).expect(

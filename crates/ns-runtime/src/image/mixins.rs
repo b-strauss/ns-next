@@ -232,7 +232,7 @@ fn access_from_tag(tag: u8) -> Result<AccessModifier, DecodeError> {
 pub(crate) type MixinIds = HashMap<usize, u32>;
 
 /// Writes the mixin table and returns the `mixin_key` -> row id map the
-/// object graph addresses a class object's mixin by (Task 13).
+/// object graph addresses a class object's mixin by.
 pub fn encode(
     w: &mut Writer,
     heap: &Heap,

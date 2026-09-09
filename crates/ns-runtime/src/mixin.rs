@@ -224,8 +224,9 @@ pub struct MixinApplication {
 /// `image::decode::rebuild_applications` builds one link per class record.
 /// The default glue would release the chain recursively and overflow the
 /// stack on a long one, which aborts the process; this releases it in a
-/// loop instead. See `types.rs`'s "Iterative teardown" note, which does the
-/// same for the object and frame graphs.
+/// loop instead. Objects and frames need no such glue any more -- both are
+/// arena entries with nothing to unwind on drop -- which makes this chain
+/// the only reference-counted one left in the crate.
 ///
 /// No ceiling: every chain is still released in full. `Rc::try_unwrap`
 /// stops the loop at the first link something else still holds -- the

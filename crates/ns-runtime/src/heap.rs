@@ -78,9 +78,9 @@ impl Heap {
     /// Saturating, not wrapping and not panicking: identity hashes are not
     /// required to be unique (`dispatch.rs`'s placeholder class objects
     /// already share hash 0, and `hash` is the only thing that reads one --
-    /// object identity is `Rc` identity, never the hash), so a world that
-    /// exhausts the counter is better served by handing out a shared
-    /// `u32::MAX` than by aborting the process. Reachable in *one*
+    /// object identity is the arena index (`ObjRef::same`), never the hash),
+    /// so a world that exhausts the counter is better served by handing out
+    /// a shared `u32::MAX` than by aborting the process. Reachable in *one*
     /// allocation once `image::load` may set the counter from a file:
     /// `advance_identity_hash_past` puts it wherever the image's maximum
     /// says, so the `saturating_add(1)` below is on an image-controlled
@@ -159,7 +159,11 @@ impl Heap {
         handle
     }
 
-    /// The one place an object enters the arena. The ceiling is the
+    /// Where `alloc_object` and `alloc_placeholder_object` enter an object
+    /// into the arena; `alloc_self_referential_class` pushes directly
+    /// instead, because it needs the index before the object exists to name
+    /// itself as its own `class`, but it enforces the same ceiling by
+    /// calling `next_object_index` itself. The ceiling is the
     /// representation's, not an implementation limit: a handle is 32 bits
     /// by design (`docs/design/memory.md`), so a heap holding more than
     /// `u32::MAX` objects cannot be addressed at all, and failing loudly at
@@ -732,6 +736,10 @@ mod tests {
     #[test]
     fn a_self_referential_class_is_its_own_class() {
         let mut heap = Heap::new();
+        // A filler object first, so `class` does not land at index 0 -- an
+        // implementation that always answered `ObjRef { index: 0 }` would
+        // otherwise still pass this test.
+        heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
         let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
         assert!(heap.class_of_obj(&class).same(&class));
     }
@@ -800,6 +808,9 @@ mod tests {
     #[test]
     fn an_object_handle_survives_the_arena_growing_under_it() {
         let mut heap = Heap::new();
+        // A filler object first, so neither `class` nor `first` lands at
+        // index 0 -- see `a_self_referential_class_is_its_own_class`.
+        heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
         let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
         let first = heap.alloc_object(class.clone(), ObjectData::Str("first".to_string()));
         for _ in 0..1000 {
@@ -810,5 +821,53 @@ mod tests {
 
         let twin = heap.alloc_object(class, ObjectData::Str("first".to_string()));
         assert!(!first.same(&twin));
+    }
+
+    /// A minimal class object real enough for `describe` to read a mixin
+    /// name off it. Mirrors `types.rs`'s own `dummy_class` test helper,
+    /// duplicated rather than shared because that one is private to
+    /// `types.rs`'s test module.
+    fn named_class(heap: &mut Heap, name: &str) -> ClassRef {
+        let application = std::rc::Rc::new(crate::mixin::MixinApplication {
+            mixin: std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
+            superclass: None,
+            slot_index: std::collections::HashMap::new(),
+            nested_slot: std::collections::HashMap::new(),
+            num_slots: 0,
+            own_slot_base: 0,
+        });
+        heap.alloc_self_referential_class(ObjectData::Class(ClassData {
+            application,
+            enclosing: None,
+            declaring_class: None,
+            superclass: None,
+            builtin: None,
+            metaclass: None,
+        }))
+    }
+
+    /// `describe`'s `ObjectData::Instance` arm is the one non-mechanical
+    /// rewrite the arena conversion made: a nested read through a re-bound
+    /// `class` intermediate rather than a single chained borrow. Nothing
+    /// else in the workspace asserts its output, so pin it directly.
+    #[test]
+    fn describe_names_an_instance_by_its_class_mixin_name() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Foo");
+        let instance = heap.alloc_object(class, ObjectData::Instance(vec![]));
+        assert_eq!(heap.describe(&Value::Obj(instance)), "an instance of Foo");
+    }
+
+    /// The fallback arm of that same match: `class` names an `ObjRef` whose
+    /// own `data` is not `ObjectData::Class`, the shape a class reference
+    /// decoded from an untrusted image can be in before verification runs.
+    /// `describe` must still answer something rather than panic.
+    #[test]
+    fn describe_falls_back_to_an_object_for_a_class_reference_that_is_not_a_class() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Foo");
+        let not_a_class = heap.alloc_object(class, ObjectData::Str("not a class".to_string()));
+        let instance = heap.alloc_object(not_a_class, ObjectData::Instance(vec![]));
+        assert_eq!(heap.describe(&Value::Obj(instance)), "an object");
     }
 }

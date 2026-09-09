@@ -98,8 +98,8 @@ pub struct Interpreter {
     /// exactly what a later milestone's inline caches guard on. It would
     /// also grow `applications` without bound.
     empty_class_sides: HashMap<usize, Rc<crate::mixin::Mixin>>,
-    /// The (receiver address, declaration identity) pairs whose nested class
-    /// object is being created right now -- see
+    /// The (receiver arena index, declaration identity) pairs whose nested
+    /// class object is being created right now -- see
     /// `nested::cyclic_definition_error`. A stack, not a set: it is empty
     /// on every path that is not inside a superclass clause, and a clause
     /// nests only as deep as a program actually chains class creations, so

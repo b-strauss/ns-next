@@ -1819,10 +1819,10 @@ fn rebuild_applications(
     objects: &[ObjRef],
     pending: Vec<PendingClass>,
 ) -> Result<(), DecodeError> {
-    // Class-object address -> position in `pending`, for the "is my
+    // Class-object arena index -> position in `pending`, for the "is my
     // superclass still waiting for its own application?" question each step
-    // asks. Keyed by address because a superclass arrives as an `Rc`, not
-    // as the id it was written with.
+    // asks. Keyed by index because a superclass arrives as a `ClassRef`
+    // handle, not as the id it was written with.
     let mut position: HashMap<usize, usize> = HashMap::with_capacity(pending.len());
     for (i, p) in pending.iter().enumerate() {
         position.insert(objects[p.object].identity_key(), i);
