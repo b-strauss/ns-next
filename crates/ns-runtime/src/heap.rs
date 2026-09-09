@@ -13,7 +13,6 @@
 use crate::types::*;
 use crate::Symbol;
 
-#[derive(Debug)]
 pub struct Heap {
     /// Monotonic, assigned at allocation, never derived from an address, so
     /// identity survives both a moving collector and a snapshot
@@ -28,6 +27,23 @@ pub struct Heap {
     frames: Vec<Frame>,
 }
 
+/// Prints the counter and the arena's length, never a frame's contents. A
+/// derived `Debug` would walk every activation ever allocated, and a
+/// `ClosureBody::Ast(Rc<CodeBody>)` inside one of them would print a whole
+/// AST -- the same hazard `CLAUDE.md`'s "never `{:?}` a `Value`" names for
+/// an object, now reachable through the heap itself rather than through
+/// one handle. Nothing prints a `Heap` today, so this is latent, but a
+/// derive would have turned a future `{:?}` on a `Heap` -- or on anything
+/// that embeds one -- into an unbounded print of every activation's data.
+impl std::fmt::Debug for Heap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Heap")
+            .field("next_identity_hash", &self.next_identity_hash)
+            .field("frames.len()", &self.frames.len())
+            .finish()
+    }
+}
+
 // `Default` is kept only so clippy's `new_without_default` stays quiet; see
 // `Heap::new`'s doc comment below for why building one on the spot is not
 // generally safe.
@@ -39,17 +55,20 @@ impl Default for Heap {
 
 impl Heap {
     /// A `Heap` built on the spot -- rather than the one `Interpreter` owns
-    /// -- is inert only while `Heap` holds nothing but a counter. Under the
-    /// planned arena a fresh `Heap` is an *empty* arena: a lookup through it
-    /// finds nothing and answers `None`/`false` rather than failing loudly,
-    /// because every accessor here is already shaped to report absence
-    /// rather than panic (see the class-accessor and `array_set`-family
-    /// comments above). This exact mistake was made three times while
-    /// building the seam -- `compile_initializer`, `compile_module` and
-    /// `cmd_disasm` each read a class object through a throwaway `Heap::new()`
-    /// -- see `docs/design/compiler.md`'s "Follow-up: entry points that
-    /// reach a class object only to find its mixin" for the fix each one
-    /// still needs.
+    /// -- is an empty frame arena: every frame accessor indexes directly
+    /// into `self.frames`, so a `FrameRef` minted by a different `Heap`
+    /// either falls out of range and panics, or -- should the two arenas
+    /// happen to share a length -- silently names a different activation,
+    /// with no error at all. Objects are unaffected at this commit: `ObjRef`
+    /// is still `Rc<RefCell<_>>`, so a class object read through a
+    /// throwaway `Heap` still reads correctly no matter which `Heap` reads
+    /// it, because a class's data lives on its own `Rc`, not in an arena
+    /// slot. That asymmetry is exactly why `compile_initializer`,
+    /// `compile_module` and `cmd_disasm` already take a real `&Heap`
+    /// parameter instead of building one on the spot: not because today's
+    /// object read needs it, but because the object side moves onto the
+    /// same arena next, and each of those call sites already reads through
+    /// the heap that will then matter.
     pub fn new() -> Heap {
         Heap {
             next_identity_hash: 1,
@@ -525,10 +544,10 @@ impl Heap {
     ///
     /// Under the arena the two reads are two slice indexes rather than two
     /// `RefCell` borrows, so the cost this batching removed is smaller than
-    /// it was. It is kept because the site is the hottest in the workspace --
-    /// five times per `bench_loop.ns` iteration -- and because the batched
-    /// shape is what step 3's register-stack accessors want anyway; whether
-    /// it still pays is a measurement, not an assumption.
+    /// it was. It is kept because this is still the hottest call count in
+    /// the workspace, and because the batched shape is what step 3's
+    /// register-stack accessors want anyway; whether it still pays is a
+    /// measurement, not an assumption.
     pub fn receiver_and_current_class(&self, frame: &FrameRef) -> (Value, Option<ClassRef>) {
         let f = &self.frames[frame.index as usize];
         (f.receiver.clone(), f.current_class.clone())
@@ -634,7 +653,7 @@ impl Heap {
     }
 
     /// `pc`, and how many of a frame's registers are `args` versus `temps`,
-    /// in the one borrow all three live behind.
+    /// read together through one slice index rather than three.
     /// `image::decode::verify_graph` checks all three against the shape of
     /// the compiled body it reconciles every decoded frame against.
     pub fn frame_register_shape(&self, frame: &FrameRef) -> (usize, usize, usize) {
@@ -642,11 +661,11 @@ impl Heap {
         (f.pc, f.args.len(), f.temps.len())
     }
 
-    /// The whole of `frame`'s contents, in the one borrow they all live
-    /// behind. `image::encode::encode_frame` writes a whole frame record
-    /// and `GraphTable::visit_frame` walks a whole frame's references;
-    /// both need every field. Not for a hot path, for the same reason as
-    /// `object_snapshot`.
+    /// The whole of `frame`'s contents, read through one slice index
+    /// rather than several. `image::encode::encode_frame` writes a whole
+    /// frame record and `GraphTable::visit_frame` walks a whole frame's
+    /// references; both need every field. Not for a hot path, for the same
+    /// reason as `object_snapshot`.
     pub fn frame_snapshot(&self, frame: &FrameRef) -> Frame {
         self.frames[frame.index as usize].clone()
     }
@@ -776,6 +795,21 @@ mod tests {
         }
     }
 
+    /// Like `top_level_frame`, but with a distinct value in each of `pc`,
+    /// `args.len()` and `temps.len()`. `frame_register_shape` returns those
+    /// three as a same-typed tuple, so a frame built from all-zero or
+    /// otherwise equal fields cannot catch the tuple's positions being
+    /// silently transposed -- exactly the silent-wrong-output risk this
+    /// conversion carries.
+    fn shaped_frame(pc: usize, arg_count: usize, temp_count: usize) -> Frame {
+        Frame {
+            args: vec![Value::Nil; arg_count],
+            temps: vec![Value::Nil; temp_count],
+            pc,
+            ..top_level_frame()
+        }
+    }
+
     /// A frame is addressed by its position in the arena, so a handle must
     /// stay valid across the reallocation that growing the arena performs.
     /// Under `Rc` this was free; under an arena it is the property the
@@ -783,12 +817,12 @@ mod tests {
     #[test]
     fn a_frame_handle_survives_the_arena_growing_under_it() {
         let mut heap = Heap::new();
-        let first = heap.alloc_frame(top_level_frame());
+        let first = heap.alloc_frame(shaped_frame(3, 2, 1));
         for _ in 0..1000 {
             heap.alloc_frame(top_level_frame());
         }
         assert!(matches!(heap.receiver(&first), Value::Nil));
-        assert_eq!(heap.frame_register_shape(&first), (0, 0, 0));
+        assert_eq!(heap.frame_register_shape(&first), (3, 2, 1));
     }
 
     /// Activation identity is what `Signal::Return`'s target check and
