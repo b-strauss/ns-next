@@ -836,4 +836,22 @@ mod tests {
         assert!(!a.same(&b));
         assert!(a.same(&a.clone()));
     }
+
+    /// The object counterpart of the frame test above: a handle must stay
+    /// valid across the reallocation that growing the arena performs, and
+    /// two objects with identical contents must never be the same object.
+    #[test]
+    fn an_object_handle_survives_the_arena_growing_under_it() {
+        let mut heap = Heap::new();
+        let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let first = heap.alloc_object(class.clone(), ObjectData::Str("first".to_string()));
+        for _ in 0..1000 {
+            heap.alloc_object(class.clone(), ObjectData::Str("filler".to_string()));
+        }
+        assert_eq!(heap.str_value(&first).as_deref(), Some("first"));
+        assert!(heap.class_of_obj(&first).same(&class));
+
+        let twin = heap.alloc_object(class, ObjectData::Str("first".to_string()));
+        assert!(!first.same(&twin));
+    }
 }
