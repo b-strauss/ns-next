@@ -33,23 +33,37 @@ life of the process. That is a deliberate interim cost, and step 4 below, the
 collector, is what ends it.
 
 The order below is the order the remaining work goes in, and it is not the order
-the milestone was originally sketched in. What settled it is a measurement rather
-than a preference: on a release build a user-method send cost ~165 ns, of which
-~68 ns — about 41% — was spent building the activation, and none of that is
-touched by an inline cache. The decomposition is in
-[execution.md](design/execution.md)'s measurements section. The arena took part
-of that activation cost; step 2 takes the rest.
+the milestone was originally sketched in. Two things settled it, neither of them
+a preference.
 
-1. **A compiler-checked root discipline** — [memory.md](design/memory.md). Nova's
-   `GcScope`/`NoGcScope`, where holding an unrooted handle across a collection
-   safepoint is a type error rather than corruption found later under collection
-   pressure. Free at run time; the ergonomic cost is accepted deliberately.
-2. **Activations on a stack, reified on demand** —
+The first is a measurement. On a release build a user-method send cost ~165 ns,
+of which ~68 ns — about 41% — was spent building the activation, and none of
+that is touched by an inline cache. The decomposition is in
+[execution.md](design/execution.md)'s measurements section. The arena took part
+of that activation cost; step 1 takes the rest.
+
+The second is that the root discipline is defined *over* the activation stack,
+so it wants the stack to exist first. With the arena in place and roots checked,
+the collector's root set is the bootstrap plus the activation stack — "a
+contiguous, precisely typed array rather than a pointer-chased chain of
+individually allocated frames", as [memory.md](design/memory.md) puts it.
+Establishing the discipline against today's frame arena would mean establishing
+it against a representation step 1 then replaces, and threading lifetimes
+through `Interpreter::send`, `run_code` and `Signal::Return` twice. The
+discipline also costs nothing at run time and pays off only with the collector,
+so nothing is lost by it going second.
+
+1. **Activations on a stack, reified on demand** —
    [execution.md](design/execution.md). Cog's model. What the arena left behind:
    `Frame.args` and `Frame.temps` are still a `Vec` allocation apiece per
    activation, and every activation is reified whether or not anything looks at
    it. The trampoline falls out of this rather than driving it, and it absorbs
-   `Block value` on the way.
+   `Block value` on the way. It also bounds what the arena currently leaves
+   unbounded, since a popped stack entry's storage is reused.
+2. **A compiler-checked root discipline** — [memory.md](design/memory.md). Nova's
+   `GcScope`/`NoGcScope`, where holding an unrooted handle across a collection
+   safepoint is a type error rather than corruption found later under collection
+   pressure. Free at run time; the ergonomic cost is accepted deliberately.
 3. **Inline caches** — [dispatch.md](design/dispatch.md). The call-site slots are
    already emitted and inert, so no bytecode format break. A cache must guard on
    the **mixin application**, not on the class object; the obvious key is the
