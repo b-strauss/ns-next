@@ -2,7 +2,6 @@
 //! spec's Class Instantiation section for the six numbered steps this
 //! transcribes.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -368,7 +367,7 @@ impl Interpreter {
         if !class_has_initializer_code(&self.heap, class) {
             return Ok(());
         }
-        let frame = Rc::new(RefCell::new(Frame {
+        let frame = self.heap.alloc_frame(Frame {
             receiver: instance.clone(),
             args: factory_args,
             temps: vec![],
@@ -390,7 +389,7 @@ impl Interpreter {
                 .heap
                 .class_application(class)
                 .map_or(0, |a| a.own_slot_base),
-        }));
+        });
 
         // Steps 4-5: this class's own slot clauses (declaration order), then
         // its own initExprs -- engine hook 3.

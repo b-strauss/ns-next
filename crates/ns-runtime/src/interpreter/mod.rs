@@ -7,7 +7,6 @@ pub mod eval;
 pub mod instantiate;
 pub(crate) mod nested;
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -541,7 +540,7 @@ impl Interpreter {
             Some(code) => (code.num_registers - code.num_args) as usize,
             None => method.decl.as_ref().map_or(0, |d| d.body.temps.len()),
         };
-        let frame = Rc::new(RefCell::new(Frame {
+        let frame = self.heap.alloc_frame(Frame {
             receiver,
             args,
             temps: vec![Value::Nil; temp_count],
@@ -559,7 +558,7 @@ impl Interpreter {
             kind: FrameKind::Method(method.clone()),
             uncontinuable: false,
             slot_base: 0, // a method body never contains InitSlot
-        }));
+        });
         let result = match (&compiled, &method.decl) {
             (Some(code), _) => crate::vm::run_code(self, &frame, code, &bindings),
             (None, Some(decl)) => self.run_statements(&decl.body.stmts, &frame, &bindings),
@@ -574,7 +573,7 @@ impl Interpreter {
         self.heap.mark_uncontinuable(&frame);
         match result {
             Ok(value) => Ok(value),
-            Err(Signal::Return(target, value)) if Rc::ptr_eq(&target, &frame) => Ok(value),
+            Err(Signal::Return(target, value)) if target.same(&frame) => Ok(value),
             Err(other) => Err(other),
         }
     }

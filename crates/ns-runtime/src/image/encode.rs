@@ -690,7 +690,7 @@ impl GraphTable {
     }
 
     fn visit_frame(&mut self, heap: &Heap, frame: &FrameRef, stack: &mut Vec<Pending>) {
-        let key = Rc::as_ptr(frame) as usize;
+        let key = frame.identity_key();
         if self.frame_ids.contains_key(&key) {
             return;
         }
@@ -746,7 +746,7 @@ impl GraphTable {
     pub fn frame_id(&self, frame: &FrameRef) -> u32 {
         *self
             .frame_ids
-            .get(&(Rc::as_ptr(frame) as usize))
+            .get(&frame.identity_key())
             .expect("frame was visited by build()")
     }
 

@@ -1,7 +1,6 @@
 //! Canonical decoding, the inverse of `encode.rs`. A malformed byte stream
 //! is a `DecodeError`, never a panic.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -1997,7 +1996,7 @@ pub fn decode_graph_section(
         })
         .collect();
     let frames: Vec<FrameRef> = (0..frame_count)
-        .map(|_| Rc::new(RefCell::new(placeholder_frame())))
+        .map(|_| ctx.interp.heap.alloc_frame(placeholder_frame()))
         .collect();
     let tables = Tables {
         objects: &objects,

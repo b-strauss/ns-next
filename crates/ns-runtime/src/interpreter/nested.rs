@@ -323,7 +323,7 @@ pub(super) fn run_clause_body(
     let temp_count = compiled
         .as_ref()
         .map_or(0, |code| (code.num_registers - code.num_args) as usize);
-    let frame = Rc::new(std::cell::RefCell::new(Frame {
+    let frame = interp.heap.alloc_frame(Frame {
         receiver: receiver.clone(),
         args,
         temps: vec![Value::Nil; temp_count],
@@ -341,7 +341,7 @@ pub(super) fn run_clause_body(
         kind,
         uncontinuable: false,
         slot_base: 0, // no clause body ever contains InitSlot
-    }));
+    });
     let result = match (&compiled, expr) {
         (Some(code), _) => crate::vm::run_code(interp, &frame, code, bindings),
         (None, Some(expr)) => crate::interpreter::eval::eval_expr(interp, expr, &frame, bindings),
@@ -357,7 +357,7 @@ pub(super) fn run_clause_body(
     interp.heap.mark_uncontinuable(&frame);
     match result {
         Ok(value) => Ok(value),
-        Err(Signal::Return(target, value)) if Rc::ptr_eq(&target, &frame) => Ok(value),
+        Err(Signal::Return(target, value)) if target.same(&frame) => Ok(value),
         Err(other) => Err(other),
     }
 }

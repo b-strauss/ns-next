@@ -1,7 +1,6 @@
 //! Expression-level evaluation: literals, sends (ordinary, `LexicalSend`,
 //! `SuperSend`), cascades, blocks, assignment.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -640,7 +639,7 @@ pub fn invoke_closure(
         ClosureBody::Ast(body) => body.temps.len(),
         ClosureBody::Compiled(code) => (code.num_registers - code.num_args) as usize,
     };
-    let frame = Rc::new(RefCell::new(Frame {
+    let frame = interp.heap.alloc_frame(Frame {
         receiver,
         args,
         temps: vec![Value::Nil; temp_count],
@@ -658,7 +657,7 @@ pub fn invoke_closure(
         kind: FrameKind::Closure(closure.clone()),
         uncontinuable: false,
         slot_base: 0, // a closure body never contains InitSlot
-    }));
+    });
     match &closure.body {
         ClosureBody::Compiled(code) => crate::vm::run_code(interp, &frame, code, bindings),
         ClosureBody::Ast(body) => {

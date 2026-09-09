@@ -2,7 +2,6 @@
 //! scalars, the mixin table, the code table, the object and frame tables,
 //! whole-image `snapshot`/`load`, and the two verification passes.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -1321,7 +1320,7 @@ fn a_closure_and_its_paused_frame_chain_round_trip() {
     };
     assert_eq!(**code, *original_code);
     assert!(
-        Rc::ptr_eq(&c.captured_frame, &c.home),
+        c.captured_frame.same(&c.home),
         "captured_frame and home were the same frame"
     );
     let home = heap.frame_snapshot(&c.home);
@@ -1349,7 +1348,7 @@ fn a_closure_and_its_paused_frame_chain_round_trip() {
         .same(&class));
     let sender = home.sender.as_ref().expect("`mk` was sent from `outer`");
     assert!(
-        !Rc::ptr_eq(sender, &c.home),
+        !sender.same(&c.home),
         "the chain is two distinct frames, not one frame pointing at itself"
     );
     let sender_kind = heap.frame_kind(sender);
@@ -2039,7 +2038,7 @@ fn a_closure_capturing_a_block_activation_round_trips() {
         .closure_data(obj(&decoded[0]))
         .expect("expected the inner closure");
     assert!(
-        !Rc::ptr_eq(&inner.captured_frame, &inner.home),
+        !inner.captured_frame.same(&inner.home),
         "the inner closure was captured by the block activation, not by `mk`"
     );
     let captured = heap.frame_snapshot(&inner.captured_frame);
@@ -2049,13 +2048,11 @@ fn a_closure_capturing_a_block_activation_round_trips() {
     assert!(matches!(&outer.body, ClosureBody::Compiled(_)));
     assert!(matches!(captured.args.first(), Some(Value::SmallInt(5))));
     assert!(
-        Rc::ptr_eq(
-            captured
-                .home
-                .as_ref()
-                .expect("a block activation has a home"),
-            &inner.home
-        ),
+        captured
+            .home
+            .as_ref()
+            .expect("a block activation has a home")
+            .same(&inner.home),
         "both closures share `mk`'s activation as their home"
     );
     let home_kind = heap.frame_kind(&inner.home);
@@ -5172,7 +5169,7 @@ fn a_world_holding_a_tree_walker_activation_is_refused_when_written() {
     // in the runtime builds one under `Engine::Bytecode`; it is written by
     // hand here because the encoder's refusal is what stops it from ever
     // reaching an image.
-    let frame: ns_runtime::FrameRef = Rc::new(RefCell::new(ns_runtime::Frame {
+    let frame: ns_runtime::FrameRef = interp.heap_mut().alloc_frame(ns_runtime::Frame {
         receiver: Value::Nil,
         args: vec![],
         temps: vec![Value::Nil; foo.num_registers as usize],
@@ -5184,7 +5181,7 @@ fn a_world_holding_a_tree_walker_activation_is_refused_when_written() {
         kind: FrameKind::TopLevel,
         uncontinuable: false,
         slot_base: 0,
-    }));
+    });
     let block_class = interp.builtin_class(BuiltinClass::Block);
     let closure = Value::Obj(interp.heap_mut().alloc_object(
         block_class,

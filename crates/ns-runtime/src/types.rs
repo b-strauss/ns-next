@@ -229,7 +229,54 @@ pub enum SourceOrigin {
 
 // ---------- Activation records ----------
 
-pub type FrameRef = Rc<RefCell<Frame>>;
+/// An opaque handle to an activation record, the frame counterpart to
+/// `ObjRef`. The inner `Rc` is private for the same reason: only `types.rs`
+/// and `heap.rs` reach it, so replacing the store behind it is a change to
+/// those two files rather than to every caller. See `docs/design/memory.md`,
+/// "The seam".
+#[derive(Clone)]
+pub struct FrameRef(pub(crate) Rc<RefCell<Frame>>);
+
+impl FrameRef {
+    /// Activation identity. Replaces `Rc::ptr_eq` at every call site, so
+    /// that identity has one spelling that survives the store changing
+    /// under it -- `invoke_method`'s `Signal::Return` catch and
+    /// `raise_return`'s target check both depend on this rather than on
+    /// `Rc` comparison directly.
+    pub fn same(&self, other: &FrameRef) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// An opaque, hashable key unique to this handle for as long as it (or
+    /// a clone of it) stays alive, mirroring `ObjRef::identity_key` for the
+    /// same reason: `image::encode::GraphTable`'s frame-id map needs
+    /// `FrameRef` as a `HashMap` key, not a comparison. Crate-internal:
+    /// its only current caller lives inside `ns-runtime`.
+    pub(crate) fn identity_key(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
+    }
+}
+
+/// Prints `pc` and `pc_kind` only, never `sender`, `home` or `kind`: a
+/// closure's `captured_frame`/`home` are themselves `FrameRef`s
+/// (`ClosureData`), and `Frame.sender`/`home` chain activations together, so
+/// a `Debug` that visited any of them would walk the whole sender chain --
+/// and, since a closure's `home` can in turn be captured by a nested
+/// closure, that walk has no acyclic guarantee to lean on (see
+/// `CLAUDE.md`'s "Never `{:?}` a `Value`"). `pc`/`pc_kind` are plain data
+/// with nothing further to descend into, so printing them can never restart
+/// the same problem one field deeper. `try_borrow` rather than `borrow`,
+/// for the same reason as `ObjRef::fmt`: formatting must not itself panic
+/// while a caller elsewhere on the stack already holds this frame's
+/// `RefCell` mutably.
+impl std::fmt::Debug for FrameRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.try_borrow() {
+            Ok(frame) => write!(f, "FrameRef(pc={}, {:?})", frame.pc, frame.pc_kind),
+            Err(_) => write!(f, "FrameRef(<borrowed>)"),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum FrameKind {
@@ -372,7 +419,7 @@ fn push_obj(obj: ObjRef, work: &mut Vec<Dying>) {
 }
 
 fn push_frame(frame: FrameRef, work: &mut Vec<Dying>) {
-    if Rc::strong_count(&frame) == 1 {
+    if Rc::strong_count(&frame.0) == 1 {
         work.push(Dying::Frame(frame));
     }
 }
@@ -470,7 +517,7 @@ fn run_teardown(work: &mut Vec<Dying>) {
                 }
             }
             Dying::Frame(frame) => {
-                if let Ok(cell) = Rc::try_unwrap(frame) {
+                if let Ok(cell) = Rc::try_unwrap(frame.0) {
                     let mut inner = cell.into_inner();
                     drain_frame(&mut inner, work);
                 }

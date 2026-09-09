@@ -4,7 +4,6 @@
 //! (Task 5) uses, extended here to actually *run* method bodies rather than
 //! only look them up.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -187,7 +186,9 @@ fn method_frame() -> ns_runtime::FrameRef {
     let method = Rc::new(ns_runtime::mixin::MixinMethod::from_decl(Rc::new(
         module.root_class.instance_side.methods[0].clone(),
     )));
-    Rc::new(RefCell::new(Frame {
+    // No live interpreter here -- a fresh `Heap` is fine, since `alloc_frame`
+    // draws nothing from it (a frame carries no identity hash to allocate).
+    ns_runtime::Heap::new().alloc_frame(Frame {
         receiver: Value::Nil,
         args: vec![],
         temps: vec![],
@@ -199,7 +200,7 @@ fn method_frame() -> ns_runtime::FrameRef {
         kind: FrameKind::Method(method),
         uncontinuable: false,
         slot_base: 0,
-    }))
+    })
 }
 
 /// Gap 1 (Task 12 brief): sending a method whose body contains a bare
@@ -273,15 +274,15 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
 
     // This is exactly the check `Interpreter::invoke_method` performs to
     // convert a matching `Signal::Return` back into an ordinary value
-    // (`Err(Signal::Return(target, value)) if Rc::ptr_eq(&target, &frame)`)
+    // (`Err(Signal::Return(target, value)) if target.same(&frame)`)
     // -- reproduced here since `home` was hand-built rather than produced
     // by a live `invoke_method` call (which block dispatch would normally
     // supply starting Task 10).
     match result {
         Err(Signal::Return(target, Value::SmallInt(1))) => {
             assert!(
-                Rc::ptr_eq(&target, &home),
-                "a non-local return must target the block's home *method* activation, not the block's own -- invoke_method's Rc::ptr_eq catch depends on this"
+                target.same(&home),
+                "a non-local return must target the block's home *method* activation, not the block's own -- invoke_method's FrameRef::same catch depends on this"
             );
         }
         Ok(_) => {
@@ -321,7 +322,7 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
     // method having now returned.
     let first = eval::invoke_closure(&mut interp, &closure, vec![], &bindings, None);
     assert!(
-        matches!(first, Err(Signal::Return(ref target, Value::SmallInt(1))) if Rc::ptr_eq(target, &home))
+        matches!(first, Err(Signal::Return(ref target, Value::SmallInt(1))) if target.same(&home))
     );
     assert!(
         interp.heap_ref().frame_is_uncontinuable(&home),
