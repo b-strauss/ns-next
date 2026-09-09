@@ -1884,9 +1884,14 @@ fn rebuild_applications(
 
 /// Whether `class` is one of the two class objects a graph never creates:
 /// a builtin, or the module's root class. The mirror of
-/// `encode::is_class_tag`.
+/// `encode::is_class_tag`. The explicit `is_class` guard is redundant with
+/// `class.same(root_class)` today -- that can only be true when `class` is
+/// literally `root_class`, which is a class by construction -- but it keeps
+/// this answering `false` for a non-class object on its own terms rather
+/// than through that indirect argument, so it stays honest if either
+/// check's meaning shifts later.
 fn is_prebuilt_class(heap: &Heap, class: &ClassRef, root_class: &ClassRef) -> bool {
-    heap.class_builtin(class).is_some() || class.same(root_class)
+    heap.is_class(class) && (heap.class_builtin(class).is_some() || class.same(root_class))
 }
 
 /// Every field the format types as a class reference really names a class

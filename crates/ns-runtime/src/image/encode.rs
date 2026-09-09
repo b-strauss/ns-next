@@ -590,8 +590,10 @@ fn class_refs(data: &ClassData) -> impl Iterator<Item = ObjRef> + '_ {
 /// supplies, or the module's root class, which `load` rebuilds from the
 /// image's own source before the graph is decoded. Neither exists because
 /// the graph says so, so neither is a record. Every other class object is.
+/// The mirror of `decode::is_prebuilt_class`, including its explicit,
+/// today-redundant `is_class` guard -- see that function's doc comment.
 fn is_class_tag(heap: &Heap, obj: &ObjRef, root_class: &ClassRef) -> bool {
-    heap.class_builtin(obj).is_some() || obj.same(root_class)
+    heap.is_class(obj) && (heap.class_builtin(obj).is_some() || obj.same(root_class))
 }
 
 /// Every heap object (instances, strings, symbols, arrays, closures, and

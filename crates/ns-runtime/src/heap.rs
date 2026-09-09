@@ -21,6 +21,9 @@ pub struct Heap {
     next_identity_hash: u32,
 }
 
+// `Default` is kept only so clippy's `new_without_default` stays quiet; see
+// `Heap::new`'s doc comment below for why building one on the spot is not
+// generally safe.
 impl Default for Heap {
     fn default() -> Self {
         Heap::new()
@@ -28,14 +31,34 @@ impl Default for Heap {
 }
 
 impl Heap {
+    /// A `Heap` built on the spot -- rather than the one `Interpreter` owns
+    /// -- is inert only while `Heap` holds nothing but a counter. Under the
+    /// planned arena a fresh `Heap` is an *empty* arena: a lookup through it
+    /// finds nothing and answers `None`/`false` rather than failing loudly,
+    /// because every accessor here is already shaped to report absence
+    /// rather than panic (see the class-accessor and `array_set`-family
+    /// comments above). This exact mistake was made three times while
+    /// building the seam -- `compile_initializer`, `compile_module` and
+    /// `cmd_disasm` each read a class object through a throwaway `Heap::new()`
+    /// -- see `docs/design/compiler.md`'s "Follow-up: entry points that
+    /// reach a class object only to find its mixin" for the fix each one
+    /// still needs.
     pub fn new() -> Heap {
         Heap {
             next_identity_hash: 1,
         }
     }
 
-    /// Saturating rather than wrapping: an exhausted counter must not hand
-    /// out an id a live object already holds.
+    /// Saturating, not wrapping and not panicking: identity hashes are not
+    /// required to be unique (`dispatch.rs`'s placeholder class objects
+    /// already share hash 0, and `hash` is the only thing that reads one --
+    /// object identity is `Rc` identity, never the hash), so a world that
+    /// exhausts the counter is better served by handing out a shared
+    /// `u32::MAX` than by aborting the process. Reachable in *one*
+    /// allocation once `image::load` may set the counter from a file:
+    /// `advance_identity_hash_past` puts it wherever the image's maximum
+    /// says, so the `saturating_add(1)` below is on an image-controlled
+    /// path.
     pub fn alloc_identity_hash(&mut self) -> u32 {
         let h = self.next_identity_hash;
         self.next_identity_hash = self.next_identity_hash.saturating_add(1);
@@ -94,7 +117,24 @@ impl Heap {
     /// Allocates `frame`. The only constructor of a `FrameRef` in the
     /// workspace -- src or tests -- so that replacing what backs a handle
     /// only ever touches this file.
+    ///
+    /// `home_of` and `raise_return` read a return target off `Frame.home`
+    /// rather than matching on `Frame.kind`, which is correct only while the
+    /// two agree: `home` populated exactly for a `FrameKind::Closure`
+    /// activation. Every real constructor upholds that by construction, but
+    /// nothing in the type system ties the two fields together, so a new
+    /// constructor added later -- or a mismatched pair of literal fields at
+    /// an existing one -- would corrupt `^`'s return target silently rather
+    /// than fail loudly. Checked here, once, rather than at every
+    /// constructor. Not checked in `replace_frame`: the decoder fills a
+    /// placeholder through that path with fields read off the wire, and
+    /// nothing reactivates a decoded frame, so it need not satisfy this.
     pub fn alloc_frame(&mut self, frame: Frame) -> FrameRef {
+        debug_assert_eq!(
+            frame.home.is_some(),
+            matches!(frame.kind, FrameKind::Closure(_)),
+            "Frame.home must be populated exactly for a closure activation"
+        );
         FrameRef(std::rc::Rc::new(std::cell::RefCell::new(frame)))
     }
 
@@ -355,6 +395,19 @@ impl Heap {
         }
     }
 
+    /// A lookup level's builtin kind and superclass in one borrow, or `None`
+    /// when `class` is not a class object -- which is what ends a `walk` that
+    /// stepped onto one through `next_level`'s unverified class-object chain.
+    pub fn class_lookup_step(
+        &self,
+        class: &ClassRef,
+    ) -> Option<(Option<BuiltinClass>, Option<ClassRef>)> {
+        match &class.0.borrow().data {
+            ObjectData::Class(data) => Some((data.builtin, data.superclass.clone())),
+            _ => None,
+        }
+    }
+
     pub fn class_metaclass(&self, class: &ClassRef) -> Option<ClassRef> {
         match &class.0.borrow().data {
             ObjectData::Class(data) => data.metaclass.clone(),
@@ -362,10 +415,21 @@ impl Heap {
         }
     }
 
-    pub fn set_class_metaclass(&mut self, class: &ClassRef, metaclass: ClassRef) {
+    /// Answers whether the write happened, mirroring `array_set`,
+    /// `set_instance_field` and `set_class_superclass`/`set_class_application`
+    /// below. `Interpreter::metaclass_of` is the only caller, and it only
+    /// ever calls this on a level it just confirmed is a class object a few
+    /// lines above -- a wrong-shape `class` here would mean an uncached
+    /// metaclass, which is silent: every later class-side send would rebuild
+    /// instead of hitting the cache, and metaclass identity would stop being
+    /// stable, which is what inline caches are meant to key on. The caller
+    /// turns a `false` into an `unreachable!` rather than swallowing it.
+    pub fn set_class_metaclass(&mut self, class: &ClassRef, metaclass: ClassRef) -> bool {
         if let ObjectData::Class(data) = &mut class.0.borrow_mut().data {
             data.metaclass = Some(metaclass);
+            return true;
         }
+        false
     }
 
     /// Relinks `class`'s superclass pointer. Answers whether the write

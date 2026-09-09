@@ -159,7 +159,8 @@ Plan: [ns-next-heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md
 The first piece of M4's representation change, done ahead of the arena
 itself: every read and write of an `Object` or a `Frame` across the workspace
 now goes through one `Heap` (`crates/ns-runtime/src/heap.rs`), replacing the
-276 call sites that used to reach `Rc<RefCell<_>>` directly. `ObjRef` and
+193 call sites (109 under `src`, 84 in the integration tests) that used to
+reach `Rc<RefCell<_>>` directly. `ObjRef` and
 `FrameRef` are now opaque newtypes with a `pub(crate)` inner field: the
 crate boundary is compiler-enforced (`ns-cli` and the integration-test
 crates under `crates/ns-runtime/tests/` cannot reach it at all), while

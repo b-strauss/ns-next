@@ -165,9 +165,13 @@ Never judge performance from a debug build.
 ### What a send costs, and where it goes
 
 Milestone 4's design rests on a decomposition rather than on the aggregate.
-Three variants of `bench_loop.ns`, each with the body
-`[n < 50000] whileTrue: [<first statement>. n := n + 1]`, isolate the pieces,
-because each differs from the next by exactly one send:
+Three separate fixtures, shaped like `bench_loop.ns` but not it -- each with
+the body `[n < 50000] whileTrue: [<first statement>. n := n + 1]` -- isolate
+the pieces, because each differs from the next by exactly one send. Row
+one's `sum := sum + 1` reads a literal where `bench_loop.ns` itself reads
+the variable `n` (`sum := sum + n`), so its 19.02 ms is a separate
+measurement that happens to land close to `bench_loop.ns`'s own ~19.6 ms
+above, not the same run reported twice:
 
 | First statement | Method it calls | bytecode median | ns/iteration |
 |---|---|---|---|

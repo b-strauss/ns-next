@@ -164,7 +164,8 @@ is hand-rolled on purpose.
 - **Object and frame access goes through `crates/ns-runtime/src/heap.rs`, not
   directly through a handle.** The seam exists so that replacing the store
   behind a handle — `Rc<RefCell<_>>` today, an arena next — is a change to
-  one file rather than to the 276 call sites the workspace held before it.
+  one file rather than to the 193 call sites (109 under `src`, 84 in the
+  integration tests) the workspace held before it.
   `ObjRef` and `FrameRef`'s inner `Rc<RefCell<_>>` is `pub(crate)`, which the
   compiler enforces only at the crate boundary: `ns-cli` and the
   integration-test crates under `crates/ns-runtime/tests/` cannot reach it

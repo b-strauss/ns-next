@@ -186,8 +186,12 @@ fn method_frame() -> ns_runtime::FrameRef {
     let method = Rc::new(ns_runtime::mixin::MixinMethod::from_decl(Rc::new(
         module.root_class.instance_side.methods[0].clone(),
     )));
-    // No live interpreter here -- a fresh `Heap` is fine, since `alloc_frame`
-    // draws nothing from it (a frame carries no identity hash to allocate).
+    // No live interpreter here. `Heap` today holds only an identity-hash
+    // counter, so a freshly built one allocates `Frame` correctly no matter
+    // which heap (if any) built it. Once the arena lands, `alloc_frame` will
+    // allocate *into* the heap and the temporary below will drop before the
+    // returned handle leaves this function, so this fixture will need
+    // rewriting alongside it.
     ns_runtime::Heap::new().alloc_frame(Frame {
         receiver: Value::Nil,
         args: vec![],

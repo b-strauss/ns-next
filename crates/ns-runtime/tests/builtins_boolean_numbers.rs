@@ -271,6 +271,46 @@ fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
     }
 }
 
+/// Regression: `type_mismatch`'s message builds off `heap.describe_arg`,
+/// but every existing type-mismatch test above drives a `Value::Float`
+/// into it, which formats harmlessly either way. A `Value::Obj` there would
+/// recurse through `Object`'s self-referential bootstrap class until the
+/// stack gives out if this ever regressed to `{:?}`-formatting the
+/// argument directly, so this drives one in -- the same shape as
+/// `builtins_text.rs`'s `concatenating_a_string_with_an_object_is_an_error_not_a_stack_overflow`
+/// and `builtins_collections_block.rs`'s
+/// `array_at_with_an_object_index_is_an_error_not_a_stack_overflow`.
+#[test]
+fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow() {
+    let mut interp = Interpreter::bootstrap();
+    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
+
+    let arg = Value::Obj(interp.new_array(vec![]));
+
+    let result = interp.send(
+        Value::SmallInt(1),
+        Symbol::intern("+"),
+        vec![arg],
+        &bindings,
+        None,
+    );
+
+    match result {
+        Err(Signal::Error(e)) => {
+            assert!(
+                e.message.contains("coercion"),
+                "expected the message to name the missing Integer/Float coercion, got: {}",
+                e.message
+            );
+        }
+        Ok(v) => panic!(
+            "expected a NewspeakError for `1 + anArray`, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
+        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
+    }
+}
+
 /// Same finding, the comparison half: an ordering comparison against a
 /// type-mismatched argument used to answer a silent `false`.
 #[test]

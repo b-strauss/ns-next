@@ -141,11 +141,15 @@ fn walk(
 ) -> Lookup {
     let mut level = level_of(heap, class);
     while let Some((c, application)) = level {
-        // `c` came out of `level_of`, which already established it names a
-        // class, so both answer `Some` here; no separate non-class fallback
-        // is needed the way the old single combined borrow had one.
-        let builtin = heap.class_builtin(&c);
-        let superclass = heap.class_superclass(&c);
+        // `level_of` established `c` names a class only for the first
+        // iteration; every iteration after that reaches `c` through
+        // `next_level`'s unverified class-object chain (see its doc), so a
+        // hierarchy where that chain diverges from the application chain
+        // must end the search here rather than read stale `data` off a `c`
+        // that no longer names a class.
+        let Some((builtin, superclass)) = heap.class_lookup_step(&c) else {
+            return Lookup::NotFound;
+        };
         let next = next_level(superclass, &application);
         if let Some(method) = application.mixin.methods.get(&selector).cloned() {
             let access = method.access;

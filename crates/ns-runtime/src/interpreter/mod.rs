@@ -188,15 +188,8 @@ impl Interpreter {
             .clone()
     }
 
-    /// Saturating, not wrapping and not panicking: identity hashes are not
-    /// required to be unique (`dispatch.rs`'s placeholder class objects
-    /// already share hash 0, and `hash` is the only thing that reads one --
-    /// object identity is `Rc` identity, never the hash), so a world that
-    /// exhausts the counter is better served by handing out a shared
-    /// `u32::MAX` than by aborting the process. Reachable in *one*
-    /// allocation once `image::load` may set the counter from a file:
-    /// `advance_identity_hash_past` puts it wherever the image's maximum
-    /// says, so the `+= 1` here is on an image-controlled path.
+    /// A thin delegate; see `Heap::alloc_identity_hash`'s doc comment for why
+    /// this saturates instead of wrapping or panicking.
     pub fn alloc_identity_hash(&mut self) -> u32 {
         self.heap.alloc_identity_hash()
     }
@@ -207,10 +200,10 @@ impl Interpreter {
     /// `max < u32::MAX` is the caller's guarantee, and an enforced one:
     /// `image::decode` refuses an image carrying `u32::MAX` outright
     /// (`DecodeError::IdentityHashExhausted`), because there is no counter
-    /// value past it. That refusal is what keeps `max + 1` here in range;
-    /// `alloc_identity_hash`'s own saturation is what keeps the *next*
-    /// allocation in range when the image's maximum is one below the
-    /// ceiling.
+    /// value past it. That refusal is what keeps `Heap::advance_identity_hash_past`'s
+    /// `max.saturating_add(1)` in range; `alloc_identity_hash`'s own
+    /// saturation is what keeps the *next* allocation in range when the
+    /// image's maximum is one below the ceiling.
     pub(crate) fn advance_identity_hash_past(&mut self, max: u32) {
         self.heap.advance_identity_hash_past(max);
     }
@@ -749,7 +742,9 @@ impl Interpreter {
             // starting a new, empty one.
             let metaclass =
                 self.new_class_object(application, enclosing, declaring_class, super_metaclass);
-            self.heap.set_class_metaclass(level, metaclass.clone());
+            if !self.heap.set_class_metaclass(level, metaclass.clone()) {
+                unreachable!("only class objects are pushed onto the chain");
+            }
             super_metaclass = Some(metaclass);
         }
         // The last level built is `chain[0]`, which is `class` itself; an

@@ -42,10 +42,12 @@ iteratively, because an image controls both depths.
 
 ### The seam
 
-`crates/ns-runtime/src/heap.rs` is the single place that knows what a handle
-is. Every read and write of an `Object` or a `Frame` goes through a `Heap`
+`crates/ns-runtime/src/heap.rs` and `crates/ns-runtime/src/types.rs` are the
+only two places that know what a handle is. Every read and write of an
+`Object` or a `Frame` goes through a `Heap`
 accessor, so replacing the store behind them touches that file rather than
-the 276 call sites the workspace held before the seam existed.
+the 193 call sites (109 under `src`, 84 in the integration tests) the
+workspace held before the seam existed.
 
 The accessors copy out rather than lend out. That follows what the call
 sites already did — borrow, clone one field, drop the borrow — and it is
