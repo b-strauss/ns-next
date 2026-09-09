@@ -1,7 +1,8 @@
 # Object model — values, objects, mixins, classes
 
 > **Status:** built.
-> **Code:** `crates/ns-runtime/src/types.rs`, `mixin.rs`,
+> **Code:** `crates/ns-runtime/src/types.rs` (the handle types themselves),
+> `heap.rs` (every read and write of one), `mixin.rs`,
 > `interpreter/instantiate.rs`, `interpreter/nested.rs`.
 
 ## Values and objects

@@ -54,6 +54,14 @@ crates/
   ns-cli/       the `ns-next` binary
 ```
 
+Inside `ns-runtime`, one file cuts across every other: `heap.rs`. Every read
+and write of an object or an activation goes through the `Heap` it defines,
+and `ObjRef`, `ClassRef` and `FrameRef` are opaque handles rather than
+`Rc<RefCell<_>>` aliases. That seam exists so the store behind a handle can be
+replaced — an arena is what replaces it — by changing one file rather than
+every caller. Start at [memory.md](memory.md) for what it guarantees and what
+it does not.
+
 `ns-syntax` does not depend on `ns-runtime`. Nothing under `crates/ns-syntax`
 should change for runtime work.
 

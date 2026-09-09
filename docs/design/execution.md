@@ -1,8 +1,9 @@
 # Execution — activations, both engines, the VM
 
 > **Status:** built.
-> **Code:** `crates/ns-runtime/src/types.rs` (`Frame`), `vm.rs`, `interpreter/`
-> (the shared orchestration and the three engine hooks).
+> **Code:** `crates/ns-runtime/src/types.rs` (`Frame` and the `FrameRef`
+> handle), `heap.rs` (every read and write of an activation), `vm.rs`,
+> `interpreter/` (the shared orchestration and the three engine hooks).
 
 This is the consumer side. What produces the bytecode — the instruction set,
 lowering, register allocation, inlining — is [compiler.md](compiler.md).
