@@ -447,22 +447,16 @@ fn class_mixin_key(heap: &Heap, class: &ClassRef) -> usize {
 /// decodes both back. The two travel together everywhere: the mixin table
 /// is what says which compiled body belongs to which declaration.
 fn round_trip_code_table(
+    heap: &Heap,
     module: &CompiledModule,
     class: &ClassRef,
 ) -> (decode::DecodedCodeTable, mixins::Decoded, encode::CodeIds) {
-    // `heap` is inert here: `Heap` today holds only an identity-hash
-    // counter, so a freshly built one encodes a code and mixin table exactly
-    // like the interpreter's own would -- neither is asked for anything but
-    // compiled code and mixin data, which this fixture never touches. Once
-    // the arena lands, encoding will need a real `Heap` to run against, so
-    // this fixture will need rewriting alongside it.
-    let heap = Heap::default();
     let mut w = encode::Writer::new();
     let mut symbols = symbols::Builder::new();
-    let ids = encode::encode_code_table(&mut w, &heap, module, class, &mut symbols)
+    let ids = encode::encode_code_table(&mut w, heap, module, class, &mut symbols)
         .expect("encode code table");
     let mut mixin_w = encode::Writer::new();
-    mixins::encode(&mut mixin_w, &heap, class, module, &mut symbols, &ids)
+    mixins::encode(&mut mixin_w, heap, class, module, &mut symbols, &ids)
         .expect("encode mixin table");
     let bytes = w.into_bytes();
     let mixin_bytes = mixin_w.into_bytes();
@@ -485,7 +479,7 @@ fn every_instr_variant_round_trips() {
         class_mixin_key(interp.heap_ref(), &class),
         synthetic.clone(),
     );
-    let (table, decoded_mixins, ids) = round_trip_code_table(&module, &class);
+    let (table, decoded_mixins, ids) = round_trip_code_table(interp.heap_ref(), &module, &class);
     let root = &decoded_mixins.code[0];
     let decoded = &table.codes[root.initializer.expect("initializer id") as usize];
     assert_eq!(**decoded, *synthetic);
@@ -499,7 +493,7 @@ fn every_instr_variant_round_trips() {
 fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents() {
     let (interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    let (table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let (table, decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), &module, &class);
     let root = &decoded_mixins.code[0];
     assert_eq!(root.methods.len(), 3);
     assert_eq!(
@@ -542,7 +536,7 @@ fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents()
 fn a_decoded_code_table_builds_the_module_from_the_mixin_table_alone() {
     let (interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    let (table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let (table, decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), &module, &class);
     let built = decode::build_module(&table, &decoded_mixins, &bindings).expect("build");
     let root = decoded_mixins.root().expect("a root row");
     assert_eq!(built.methods.len(), root.methods.len());
@@ -963,7 +957,7 @@ fn a_literal_array_within_the_nesting_limit_still_decodes() {
 fn every_decoded_method_has_a_body_in_the_built_module() {
     let (interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    let (table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let (table, decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), &module, &class);
     let built = decode::build_module(&table, &decoded_mixins, &bindings).expect("build");
     for mixin in &decoded_mixins.mixins {
         for (selector, decl) in &mixin.methods {
@@ -1062,7 +1056,7 @@ fn the_deepest_literal_array_the_parser_accepts_survives_a_round_trip() {
         levels,
         "the compiler lowered the whole nest"
     );
-    let (table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let (table, decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), &module, &class);
     let (_, id) = decoded_mixins.code[0]
         .methods
         .iter()
@@ -2460,7 +2454,7 @@ fn a_real_modules_decoded_code_table_verifies() {
     // passes the structural pass unchanged.
     let (interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    let (table, _decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let (table, _decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), &module, &class);
     decode::verify_code_table(&table).expect("compiler-emitted code is structurally sound");
 }
 
@@ -2858,7 +2852,8 @@ fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_at_install() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo: a = ( ^a )\n) : ()";
     let (interp, class, bindings) = load(src);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    let (mut table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let (mut table, decoded_mixins, _ids) =
+        round_trip_code_table(interp.heap_ref(), &module, &class);
     let id = decoded_mixins.code[0].methods[0].1 as usize;
     let mut body = (*table.codes[id]).clone();
     body.num_args = 2;
@@ -2879,7 +2874,8 @@ fn a_method_root_naming_a_block_body_is_refused_at_install() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( ^1 )\n) : ()";
     let (interp, class, bindings) = load(src);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    let (mut table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let (mut table, decoded_mixins, _ids) =
+        round_trip_code_table(interp.heap_ref(), &module, &class);
     let id = decoded_mixins.code[0].methods[0].1 as usize;
     let mut body = (*table.codes[id]).clone();
     body.kind = CodeKind::Block;
@@ -3223,7 +3219,8 @@ fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_at_install
     // after a load abort the process.
     let (interp, class, bindings) = load(NEEDS_INITIALIZER);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    let (table, mut decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let (table, mut decoded_mixins, _ids) =
+        round_trip_code_table(interp.heap_ref(), &module, &class);
     assert!(
         decoded_mixins.code[0].initializer.is_some(),
         "the fixture's class really does compile an initializer"
@@ -3427,7 +3424,7 @@ fn a_snapshotted_nested_mixins_method_and_initializer_survive_a_load() {
     // hand-built class object anyway (no accessor exists yet).
     let (interp, class, bindings) = load(NESTED_MODULE);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    let (table, decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let (table, decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), &module, &class);
     let installed = decode::build_module(&table, &decoded_mixins, &bindings).expect("install");
 
     // The *decoded* nested mixin, not the live one: the built module is
@@ -4042,7 +4039,8 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
 fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_refused() {
     let (interp, class, bindings) = load(NESTED_SUPERCLASS_ARGS);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    let (table, mut decoded_mixins, _ids) = round_trip_code_table(&module, &class);
+    let (table, mut decoded_mixins, _ids) =
+        round_trip_code_table(interp.heap_ref(), &module, &class);
     let with_message = decoded_mixins
         .code
         .iter()

@@ -20,10 +20,10 @@ use ns_runtime::{
 /// real bootstrapped class hierarchy, so there is no other object to point
 /// at. None of these tests ever read a class object's own `.class` field,
 /// so any non-panicking placeholder is sufficient; a self-referential one
-/// is the simplest to build. The unsafe construction itself lives in
-/// `ns_runtime::heap::bootstrap_self_referential_object`.
-fn dummy_class() -> ns_runtime::ClassRef {
-    ns_runtime::heap::bootstrap_self_referential_object(ObjectData::Instance(vec![]))
+/// is the simplest to build. The construction itself lives in
+/// `Heap::alloc_self_referential_class`.
+fn dummy_class(heap: &mut ns_runtime::Heap) -> ns_runtime::ClassRef {
+    heap.alloc_self_referential_class(ObjectData::Instance(vec![]))
 }
 
 /// Parses `src` (a full one-class module) and returns the class's own
@@ -70,8 +70,9 @@ fn class_with_methods(
         let method = ns_runtime::mixin::MixinMethod::from_decl(m);
         map.insert(method.selector, Rc::new(method));
     }
+    let class_of_class = dummy_class(interp.heap_mut());
     interp.heap_mut().alloc_placeholder_object(
-        dummy_class(),
+        class_of_class,
         ObjectData::Class(ClassData {
             // A root application, built directly rather than through
             // `Interpreter::apply_mixin`: these classes are never linked
@@ -180,19 +181,13 @@ fn parse_block_body(src: &str) -> ns_syntax::ast::CodeBody {
 /// the non-local-return tests below, since block-invocation-selector native
 /// dispatch (`value`) does not exist until Task 10 and so cannot be reached
 /// through `Interpreter::send`.
-fn method_frame() -> ns_runtime::FrameRef {
+fn method_frame(heap: &mut ns_runtime::Heap) -> ns_runtime::FrameRef {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^0 )\n) : ()";
     let module = ns_syntax::parse(src).expect("parse");
     let method = Rc::new(ns_runtime::mixin::MixinMethod::from_decl(Rc::new(
         module.root_class.instance_side.methods[0].clone(),
     )));
-    // No live interpreter here. `Heap` today holds only an identity-hash
-    // counter, so a freshly built one allocates `Frame` correctly no matter
-    // which heap (if any) built it. Once the arena lands, `alloc_frame` will
-    // allocate *into* the heap and the temporary below will drop before the
-    // returned handle leaves this function, so this fixture will need
-    // rewriting alongside it.
-    ns_runtime::Heap::new().alloc_frame(Frame {
+    heap.alloc_frame(Frame {
         receiver: Value::Nil,
         args: vec![],
         temps: vec![],
@@ -259,7 +254,8 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
     // `[ ^1 ] value`, conceptually invoked from inside a method: the
     // block's `home` is the enclosing method's own activation, not the
     // block's own (freshly built, by `invoke_closure`) activation.
-    let home = method_frame();
+    let mut interp = Interpreter::new();
+    let home = method_frame(interp.heap_mut());
     let block_body = parse_block_body(
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public withBlock = ( [ ^1 ] )\n) : ()",
     );
@@ -272,7 +268,6 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
         bindings: bindings.clone(),
     });
 
-    let mut interp = Interpreter::new();
     // No sender: this closure is invoked directly, not from a live send.
     let result = eval::invoke_closure(&mut interp, &closure, vec![], &bindings, None);
 
@@ -306,7 +301,8 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
 
 #[test]
 fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_not_a_panic() {
-    let home = method_frame();
+    let mut interp = Interpreter::new();
+    let home = method_frame(interp.heap_mut());
     let block_body = parse_block_body(
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public withBlock = ( [ ^1 ] )\n) : ()",
     );
@@ -318,8 +314,6 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
         home: home.clone(),
         bindings: bindings.clone(),
     });
-
-    let mut interp = Interpreter::new();
 
     // First invocation succeeds and (as `raise_return` does on every
     // successful return) marks `home` `uncontinuable` -- modeling the home

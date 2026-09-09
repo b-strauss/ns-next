@@ -584,12 +584,12 @@ mod tests {
     /// construct other values in these tests. A real bootstrap (a later
     /// task) wires every builtin class's `.class` up properly; this helper
     /// only needs the type shapes to compile and hold together, and no test
-    /// in this file ever reads through the self-reference. The unsafe
-    /// construction itself lives in `heap::bootstrap_self_referential_object`
-    /// -- see its doc comment for why `Object.class` being non-optional
-    /// forces this out of safe Rust.
-    fn dummy_class() -> ClassRef {
-        crate::heap::bootstrap_self_referential_object(ObjectData::Class(ClassData {
+    /// in this file ever reads through the self-reference. The construction
+    /// itself lives in `Heap::alloc_self_referential_class` -- see its doc
+    /// comment for why `Object.class` being non-optional forces this out of
+    /// safe Rust.
+    fn dummy_class(heap: &mut crate::Heap) -> ClassRef {
+        heap.alloc_self_referential_class(ObjectData::Class(ClassData {
             application: empty_application("Object"),
             enclosing: None,
             declaring_class: None,
@@ -601,20 +601,15 @@ mod tests {
 
     #[test]
     fn class_data_is_reachable_through_object_data() {
-        let class = dummy_class();
-        // `heap` is inert here: `Heap` today holds only an identity-hash
-        // counter, so a freshly built one reads `class` correctly no matter
-        // which heap (if any) built it. Once the arena lands, `dummy_class`
-        // will need to allocate through a real `Heap` for this to keep
-        // meaning anything, so this test will need rewriting alongside it.
-        let heap = crate::Heap::new();
+        let mut heap = crate::Heap::new();
+        let class = dummy_class(&mut heap);
         assert!(heap.is_class(&class));
     }
 
     #[test]
     fn value_clone_shares_object_identity() {
-        let class = dummy_class();
         let mut heap = crate::Heap::new();
+        let class = dummy_class(&mut heap);
         let instance = heap.alloc_object(class, ObjectData::Instance(vec![]));
         let a = Value::Obj(instance.clone());
         let b = a.clone();

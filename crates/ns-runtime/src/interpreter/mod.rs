@@ -1000,7 +1000,8 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
     // builtins -- to link an application chain parallel to the class-object
     // chain, which `dispatch::next_level` steps in lockstep.
     let object_application = interp.apply_mixin(&builtin_mixin(BuiltinClass::Object), None);
-    let class_of_class = build_self_referential_object_class(object_application.clone());
+    let class_of_class =
+        build_self_referential_object_class(&mut interp.heap, object_application.clone());
     let mut map = HashMap::new();
     for kind in kinds {
         let (superclass, application) = if kind == BuiltinClass::Object {
@@ -1039,14 +1040,15 @@ fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
 
 /// Builds the single, genuinely self-referential `Object`-tagged class
 /// object every `BuiltinClass` shares as its own `.class` (see this task's
-/// design note on the bootstrap's identity problem). The unsafe
-/// construction itself lives in `heap::bootstrap_self_referential_object` --
-/// see its doc comment for why `Object.class` being non-optional forces
-/// this out of safe Rust.
+/// design note on the bootstrap's identity problem). The construction
+/// itself lives in `Heap::alloc_self_referential_class` -- see its doc
+/// comment for why `Object.class` being non-optional forces this out of
+/// safe Rust.
 fn build_self_referential_object_class(
+    heap: &mut Heap,
     application: Rc<crate::mixin::MixinApplication>,
 ) -> ClassRef {
-    crate::heap::bootstrap_self_referential_object(ObjectData::Class(ClassData {
+    heap.alloc_self_referential_class(ObjectData::Class(ClassData {
         application,
         enclosing: None,
         declaring_class: None,

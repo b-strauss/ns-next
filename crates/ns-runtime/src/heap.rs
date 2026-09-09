@@ -98,12 +98,32 @@ impl Heap {
     /// hash per placeholder would burn through the counter for objects
     /// nothing keeps. `dispatch.rs`'s and `tests/interpreter.rs`'s
     /// hand-built class fixtures use it for the same reason `dummy_class`
-    /// does in `heap::bootstrap_self_referential_object` below: they are
-    /// never linked into a real hierarchy, so which hash they carry does
-    /// not matter, and 0 is the value every other such placeholder already
-    /// shares (`alloc_identity_hash`'s own doc comment).
+    /// does via `alloc_self_referential_class` below: they are never linked
+    /// into a real hierarchy, so which hash they carry does not matter, and
+    /// 0 is the value every other such placeholder already shares
+    /// (`alloc_identity_hash`'s own doc comment).
     pub fn alloc_placeholder_object(&mut self, class: ClassRef, data: ObjectData) -> ObjRef {
         new_object_handle(class, 0, data)
+    }
+
+    /// Allocates a class object that is genuinely its own `.class` — the shape
+    /// every one of the crate's four bootstraps needs
+    /// (`Interpreter::bootstrap`'s `build_self_referential_object_class` in
+    /// production; the `dummy_class` helpers in `dispatch.rs`, `types.rs`
+    /// and `tests/interpreter.rs`, each satisfying `Object.class`'s
+    /// non-optional type without wiring up a whole hierarchy).
+    ///
+    /// Takes `&mut self` although today's body ignores it, for the same
+    /// reason every accessor here already does: under the arena the object
+    /// has to be allocated *into* a heap, and a caller that reached this
+    /// through a throwaway `Heap` would silently read a different heap's
+    /// slot afterwards.
+    ///
+    /// Identity hash fixed at 0, like `alloc_placeholder_object`: none of
+    /// the four callers links this object into a real hierarchy a hash
+    /// could distinguish it within.
+    pub fn alloc_self_referential_class(&mut self, data: ObjectData) -> ObjRef {
+        bootstrap_self_referential_object(data)
     }
 
     // ---------- Frame construction ----------
@@ -658,20 +678,14 @@ fn new_object_handle(class: ClassRef, identity_hash: u32, data: ObjectData) -> O
 /// four callers link this object into a real hierarchy a hash could ever
 /// distinguish it within.
 ///
-/// The four call sites above (`Interpreter::bootstrap`'s
-/// `build_self_referential_object_class`, and the `dummy_class` test
-/// helpers in `dispatch.rs`, `types.rs` and `tests/interpreter.rs`) are the
-/// only legitimate callers. Nothing here restricts `data` to
-/// `ObjectData::Class`, and nothing stops a fifth call site from minting
-/// its own: calling this from anywhere else silently produces a second
-/// live, genuinely self-referential object sharing identity hash 0 with
-/// every placeholder `alloc_placeholder_object` has ever built. Once that
-/// object becomes reachable from anything real, it collides with those
-/// placeholders on the one axis (`Rc` identity aside) code elsewhere uses
-/// to reason about hash-0 objects being throwaway and never observed
-/// outside their own construction -- with nothing raising an error to say
-/// so.
-pub fn bootstrap_self_referential_object(data: ObjectData) -> ObjRef {
+/// Private to this module: `Heap::alloc_self_referential_class` is the only
+/// caller, so a fifth call site cannot mint a second live self-referential
+/// object outside a heap. That mattered even before the arena — such an
+/// object shares identity hash 0 with every placeholder
+/// `alloc_placeholder_object` has ever built, and code elsewhere reasons
+/// about hash-0 objects being throwaway and never observed outside their
+/// own construction.
+fn bootstrap_self_referential_object(data: ObjectData) -> ObjRef {
     let uninit: std::rc::Rc<std::mem::MaybeUninit<std::cell::RefCell<Object>>> =
         std::rc::Rc::new_uninit();
     let raw_mut =
@@ -719,5 +733,12 @@ mod tests {
         // allocated ones would then collide.
         heap.advance_identity_hash_past(3);
         assert_eq!(heap.alloc_identity_hash(), 12);
+    }
+
+    #[test]
+    fn a_self_referential_class_is_its_own_class() {
+        let mut heap = Heap::new();
+        let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        assert!(heap.class_of_obj(&class).same(&class));
     }
 }
