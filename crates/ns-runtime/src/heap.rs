@@ -12,6 +12,17 @@
 use crate::types::*;
 use crate::Symbol;
 
+/// Hands every `Heap` a distinct id, so a handle can name the heap that
+/// allocated it. Debug builds only -- the id and the field on each handle
+/// both compile out of a release build, where a handle is exactly its
+/// 32-bit index.
+#[cfg(debug_assertions)]
+fn next_heap_id() -> u32 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 pub struct Heap {
     /// Monotonic, assigned at allocation, never derived from an address, so
     /// identity survives both a moving collector and a snapshot
@@ -27,6 +38,12 @@ pub struct Heap {
     /// Every object, addressed by an `ObjRef`'s index. Nothing is ever
     /// removed, for the same reason as `frames`.
     objects: Vec<Object>,
+    /// This heap's distinct id, stamped onto every handle it mints. Debug
+    /// builds only; see `next_heap_id`. No accessor exists for it: nothing
+    /// outside a `cfg`-guarded position may name a field that does not
+    /// exist in a release build.
+    #[cfg(debug_assertions)]
+    heap_id: u32,
 }
 
 /// Prints the counter and both arenas' lengths, never their contents. A
@@ -61,17 +78,25 @@ impl Heap {
     /// A `Heap` built on the spot -- rather than the one `Interpreter` owns
     /// -- is an empty arena: every object and frame accessor indexes
     /// directly into `self.objects`/`self.frames`, so an `ObjRef` or
-    /// `FrameRef` minted by a different `Heap` either falls out of range
-    /// and panics, or -- should the two arenas happen to share a length --
-    /// silently names a different object or activation, with no error at
-    /// all. That is why `compile_initializer`, `compile_module` and
-    /// `cmd_disasm` take a real `&Heap` parameter instead of building one on
-    /// the spot.
+    /// `FrameRef` minted by a different `Heap` either falls out of range and
+    /// panics, or -- should the two arenas happen to share a length --
+    /// names a different object or activation. In a debug build the second
+    /// case is refused, not silent: every handle carries the id of the heap
+    /// that minted it, and every accessor checks it against `self.heap_id`
+    /// before indexing, so reading through the wrong heap panics at the read
+    /// rather than answering. That check compiles out of a release build --
+    /// there the second case is exactly as silent as it sounds, which is why
+    /// `compile_initializer`, `compile_module` and `cmd_disasm` take a real
+    /// `&Heap` parameter instead of building one on the spot, and why
+    /// running the test suite in debug is what catches the mistake if it
+    /// recurs.
     pub fn new() -> Heap {
         Heap {
             next_identity_hash: 1,
             frames: Vec::new(),
             objects: Vec::new(),
+            #[cfg(debug_assertions)]
+            heap_id: next_heap_id(),
         }
     }
 
@@ -150,7 +175,7 @@ impl Heap {
     /// could distinguish it within.
     pub fn alloc_self_referential_class(&mut self, data: ObjectData) -> ObjRef {
         let index = self.next_object_index();
-        let handle = ObjRef { index };
+        let handle = self.object_handle(index);
         self.objects.push(Object {
             class: handle.clone(),
             identity_hash: 0,
@@ -171,11 +196,31 @@ impl Heap {
     fn push_object(&mut self, object: Object) -> ObjRef {
         let index = self.next_object_index();
         self.objects.push(object);
-        ObjRef { index }
+        self.object_handle(index)
     }
 
     fn next_object_index(&self) -> u32 {
         u32::try_from(self.objects.len()).expect("more than u32::MAX objects allocated in one heap")
+    }
+
+    /// The one place an `ObjRef` is built, so the `cfg` on `origin` appears
+    /// once rather than at every allocation. A struct-expression field may
+    /// carry a `cfg` attribute, which is what makes the release build see a
+    /// plain 4-byte handle.
+    fn object_handle(&self, index: u32) -> ObjRef {
+        ObjRef {
+            index,
+            #[cfg(debug_assertions)]
+            origin: self.heap_id,
+        }
+    }
+
+    fn frame_handle(&self, index: u32) -> FrameRef {
+        FrameRef {
+            index,
+            #[cfg(debug_assertions)]
+            origin: self.heap_id,
+        }
     }
 
     // ---------- Frame construction ----------
@@ -210,7 +255,44 @@ impl Heap {
         let index = u32::try_from(self.frames.len())
             .expect("more than u32::MAX activations allocated in one heap");
         self.frames.push(frame);
-        FrameRef { index }
+        self.frame_handle(index)
+    }
+
+    // ---------- Handle-origin checks ----------
+    //
+    // Called as the first line of every accessor below that takes a handle:
+    // an index from another heap is in range and names a different, valid
+    // object or activation, so without this the read would just answer the
+    // wrong thing. `describe` checks the object it was handed and does not
+    // re-check the class it reaches through, which by construction came out
+    // of the same heap.
+
+    /// Refuses a handle that another heap allocated. Compiles to nothing in
+    /// a release build: the origin field does not exist there, so this is a
+    /// no-op the optimizer removes entirely. The message names the two ids
+    /// because the useful question when this fires is *which* extra heap
+    /// got built -- usually a `Heap::new()` standing in for one that is out
+    /// of scope.
+    #[inline]
+    fn check_object_origin(&self, obj: &ObjRef) {
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            obj.origin, self.heap_id,
+            "handle belongs to a different heap (handle from heap {}, read through heap {})",
+            obj.origin, self.heap_id
+        );
+        let _ = obj;
+    }
+
+    #[inline]
+    fn check_frame_origin(&self, frame: &FrameRef) {
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            frame.origin, self.heap_id,
+            "handle belongs to a different heap (handle from heap {}, read through heap {})",
+            frame.origin, self.heap_id
+        );
+        let _ = frame;
     }
 
     // ---------- Object accessors ----------
@@ -220,6 +302,7 @@ impl Heap {
     // discipline `docs/design/memory.md` describes for the frame arena.
 
     pub fn identity_hash(&self, obj: &ObjRef) -> u32 {
+        self.check_object_origin(obj);
         self.objects[obj.index as usize].identity_hash
     }
 
@@ -237,18 +320,22 @@ impl Heap {
     /// `become:`'s stability guarantee then silently breaks, with nothing
     /// anywhere raising an error to say so.
     pub fn set_identity_hash(&mut self, obj: &ObjRef, hash: u32) {
+        self.check_object_origin(obj);
         self.objects[obj.index as usize].identity_hash = hash;
     }
 
     pub fn class_of_obj(&self, obj: &ObjRef) -> ClassRef {
+        self.check_object_origin(obj);
         self.objects[obj.index as usize].class.clone()
     }
 
     pub fn is_class(&self, obj: &ObjRef) -> bool {
+        self.check_object_origin(obj);
         matches!(self.objects[obj.index as usize].data, ObjectData::Class(_))
     }
 
     pub fn array_len(&self, obj: &ObjRef) -> Option<usize> {
+        self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Array(items) => Some(items.len()),
             _ => None,
@@ -262,6 +349,7 @@ impl Heap {
     /// their own (see `platform.rs`'s module doc), so the dispatcher needs
     /// the count itself, not any one field's value.
     pub fn instance_field_count(&self, obj: &ObjRef) -> Option<usize> {
+        self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Instance(fields) => Some(fields.len()),
             _ => None,
@@ -269,6 +357,7 @@ impl Heap {
     }
 
     pub fn array_elements(&self, obj: &ObjRef) -> Option<Vec<Value>> {
+        self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Array(items) => Some(items.clone()),
             _ => None,
@@ -276,6 +365,7 @@ impl Heap {
     }
 
     pub fn array_at(&self, obj: &ObjRef, index: usize) -> Option<Value> {
+        self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Array(items) => items.get(index).cloned(),
             _ => None,
@@ -287,6 +377,7 @@ impl Heap {
     /// here have already produced their own Newspeak error for it -- so
     /// this reports rather than panics.
     pub fn array_set(&mut self, obj: &ObjRef, index: usize, value: Value) -> bool {
+        self.check_object_origin(obj);
         if let ObjectData::Array(items) = &mut self.objects[obj.index as usize].data {
             if index < items.len() {
                 items[index] = value;
@@ -297,6 +388,7 @@ impl Heap {
     }
 
     pub fn array_push(&mut self, obj: &ObjRef, value: Value) -> bool {
+        self.check_object_origin(obj);
         if let ObjectData::Array(items) = &mut self.objects[obj.index as usize].data {
             items.push(value);
             return true;
@@ -308,6 +400,7 @@ impl Heap {
     /// `ObjectData::Instance` or `index` is out of range -- the same
     /// total-rather-than-panicking shape as the array accessors above.
     pub fn instance_field(&self, obj: &ObjRef, index: usize) -> Option<Value> {
+        self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Instance(fields) => fields.get(index).cloned(),
             _ => None,
@@ -316,6 +409,7 @@ impl Heap {
 
     /// Answers whether the write happened, mirroring `array_set`.
     pub fn set_instance_field(&mut self, obj: &ObjRef, index: usize, value: Value) -> bool {
+        self.check_object_origin(obj);
         if let ObjectData::Instance(fields) = &mut self.objects[obj.index as usize].data {
             if index < fields.len() {
                 fields[index] = value;
@@ -326,6 +420,7 @@ impl Heap {
     }
 
     pub fn str_value(&self, obj: &ObjRef) -> Option<String> {
+        self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Str(s) => Some(s.clone()),
             _ => None,
@@ -333,6 +428,7 @@ impl Heap {
     }
 
     pub fn sym_value(&self, obj: &ObjRef) -> Option<Symbol> {
+        self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Sym(s) => Some(*s),
             _ => None,
@@ -340,6 +436,7 @@ impl Heap {
     }
 
     pub fn closure_data(&self, obj: &ObjRef) -> Option<ClosureData> {
+        self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Closure(c) => Some(c.clone()),
             _ => None,
@@ -356,6 +453,7 @@ impl Heap {
     /// or `Instance`, acceptable here because the encoder visits every
     /// object exactly once regardless.
     pub fn object_snapshot(&self, obj: &ObjRef) -> Object {
+        self.check_object_origin(obj);
         self.objects[obj.index as usize].clone()
     }
 
@@ -371,6 +469,7 @@ impl Heap {
     /// error, and no way for verification to notice, because verification
     /// has already finished.
     pub fn replace_object(&mut self, obj: &ObjRef, filled: Object) {
+        self.check_object_origin(obj);
         self.objects[obj.index as usize] = filled;
     }
 
@@ -388,30 +487,33 @@ impl Heap {
             Value::Bool(b) => b.to_string(),
             Value::SmallInt(n) => n.to_string(),
             Value::Float(f) => f.to_string(),
-            Value::Obj(obj) => match &self.objects[obj.index as usize].data {
-                ObjectData::Str(s) => format!("the String {s:?}"),
-                ObjectData::Sym(s) => format!("the Symbol #{s}"),
-                ObjectData::Array(items) => format!("an Array of {}", items.len()),
-                ObjectData::Closure(_) => "a Block".to_string(),
-                ObjectData::Class(data) => {
-                    format!("the class {}", data.application.mixin.name)
-                }
-                ObjectData::Instance(_) => {
-                    let class = &self.objects[obj.index as usize].class;
-                    match &self.objects[class.index as usize].data {
-                        ObjectData::Class(data) => {
-                            format!("an instance of {}", data.application.mixin.name)
+            Value::Obj(obj) => {
+                self.check_object_origin(obj);
+                match &self.objects[obj.index as usize].data {
+                    ObjectData::Str(s) => format!("the String {s:?}"),
+                    ObjectData::Sym(s) => format!("the Symbol #{s}"),
+                    ObjectData::Array(items) => format!("an Array of {}", items.len()),
+                    ObjectData::Closure(_) => "a Block".to_string(),
+                    ObjectData::Class(data) => {
+                        format!("the class {}", data.application.mixin.name)
+                    }
+                    ObjectData::Instance(_) => {
+                        let class = &self.objects[obj.index as usize].class;
+                        match &self.objects[class.index as usize].data {
+                            ObjectData::Class(data) => {
+                                format!("an instance of {}", data.application.mixin.name)
+                            }
+                            // `types.rs`'s `ClassRef` doc: every `Object::class`
+                            // is an `ObjRef` whose own `data` is
+                            // `ObjectData::Class`, by convention rather than by
+                            // the type system. This arm exists only so the match
+                            // is total, not because a conforming object can
+                            // reach it.
+                            _ => "an object".to_string(),
                         }
-                        // `types.rs`'s `ClassRef` doc: every `Object::class`
-                        // is an `ObjRef` whose own `data` is
-                        // `ObjectData::Class`, by convention rather than by
-                        // the type system. This arm exists only so the match
-                        // is total, not because a conforming object can
-                        // reach it.
-                        _ => "an object".to_string(),
                     }
                 }
-            },
+            }
         }
     }
 
@@ -437,6 +539,7 @@ impl Heap {
         &self,
         class: &ClassRef,
     ) -> Option<std::rc::Rc<crate::mixin::MixinApplication>> {
+        self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => Some(data.application.clone()),
             _ => None,
@@ -444,6 +547,7 @@ impl Heap {
     }
 
     pub fn class_enclosing(&self, class: &ClassRef) -> Option<ObjRef> {
+        self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.enclosing.clone(),
             _ => None,
@@ -451,6 +555,7 @@ impl Heap {
     }
 
     pub fn class_declaring(&self, class: &ClassRef) -> Option<ClassRef> {
+        self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.declaring_class.clone(),
             _ => None,
@@ -458,6 +563,7 @@ impl Heap {
     }
 
     pub fn class_superclass(&self, class: &ClassRef) -> Option<ClassRef> {
+        self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.superclass.clone(),
             _ => None,
@@ -465,6 +571,7 @@ impl Heap {
     }
 
     pub fn class_builtin(&self, class: &ClassRef) -> Option<BuiltinClass> {
+        self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.builtin,
             _ => None,
@@ -478,6 +585,7 @@ impl Heap {
         &self,
         class: &ClassRef,
     ) -> Option<(Option<BuiltinClass>, Option<ClassRef>)> {
+        self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => Some((data.builtin, data.superclass.clone())),
             _ => None,
@@ -485,6 +593,7 @@ impl Heap {
     }
 
     pub fn class_metaclass(&self, class: &ClassRef) -> Option<ClassRef> {
+        self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.metaclass.clone(),
             _ => None,
@@ -501,6 +610,7 @@ impl Heap {
     /// stable, which is what inline caches are meant to key on. The caller
     /// turns a `false` into an `unreachable!` rather than swallowing it.
     pub fn set_class_metaclass(&mut self, class: &ClassRef, metaclass: ClassRef) -> bool {
+        self.check_object_origin(class);
         if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
             data.metaclass = Some(metaclass);
             return true;
@@ -518,6 +628,7 @@ impl Heap {
     /// subclass to an already-loaded sibling *user-defined* class has to
     /// happen by hand on the class-object chain `super`/`instantiate` walk.
     pub fn set_class_superclass(&mut self, class: &ClassRef, superclass: ClassRef) -> bool {
+        self.check_object_origin(class);
         if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
             data.superclass = Some(superclass);
             return true;
@@ -536,6 +647,7 @@ impl Heap {
         class: &ClassRef,
         application: std::rc::Rc<crate::mixin::MixinApplication>,
     ) -> bool {
+        self.check_object_origin(class);
         if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
             data.application = application;
             return true;
@@ -557,6 +669,7 @@ impl Heap {
     // for the task that adds their first one.
 
     pub fn receiver(&self, frame: &FrameRef) -> Value {
+        self.check_frame_origin(frame);
         self.frames[frame.index as usize].receiver.clone()
     }
 
@@ -575,11 +688,13 @@ impl Heap {
     /// register-stack accessors want anyway; whether it still pays is a
     /// measurement, not an assumption.
     pub fn receiver_and_current_class(&self, frame: &FrameRef) -> (Value, Option<ClassRef>) {
+        self.check_frame_origin(frame);
         let f = &self.frames[frame.index as usize];
         (f.receiver.clone(), f.current_class.clone())
     }
 
     pub fn local(&self, frame: &FrameRef, index: u16) -> Value {
+        self.check_frame_origin(frame);
         let f = &self.frames[frame.index as usize];
         let i = index as usize;
         if i < f.args.len() {
@@ -590,6 +705,7 @@ impl Heap {
     }
 
     pub fn set_local(&mut self, frame: &FrameRef, index: u16, value: Value) {
+        self.check_frame_origin(frame);
         let f = &mut self.frames[frame.index as usize];
         let i = index as usize;
         if i < f.args.len() {
@@ -601,6 +717,7 @@ impl Heap {
     }
 
     pub fn frame_current_class(&self, frame: &FrameRef) -> Option<ClassRef> {
+        self.check_frame_origin(frame);
         self.frames[frame.index as usize].current_class.clone()
     }
 
@@ -610,6 +727,7 @@ impl Heap {
     /// sets this from that level's own `MixinApplication.own_slot_base`, so
     /// there is nothing to save and restore between levels.
     pub fn frame_slot_base(&self, frame: &FrameRef) -> usize {
+        self.check_frame_origin(frame);
         self.frames[frame.index as usize].slot_base
     }
 
@@ -618,6 +736,7 @@ impl Heap {
     /// more registers than the frame was built with, and by
     /// edit-and-continue later (`docs/design/liveness-and-reflection.md`).
     pub fn grow_temps(&mut self, frame: &FrameRef, needed: usize) {
+        self.check_frame_origin(frame);
         let f = &mut self.frames[frame.index as usize];
         if f.temps.len() < needed {
             f.temps.resize(needed, Value::Nil);
@@ -625,10 +744,12 @@ impl Heap {
     }
 
     pub fn set_frame_pc(&mut self, frame: &FrameRef, pc: usize) {
+        self.check_frame_origin(frame);
         self.frames[frame.index as usize].pc = pc;
     }
 
     pub fn frame_home(&self, frame: &FrameRef) -> Option<FrameRef> {
+        self.check_frame_origin(frame);
         self.frames[frame.index as usize].home.clone()
     }
 
@@ -638,12 +759,14 @@ impl Heap {
     /// activation that invoked it, to check `sender` was actually recorded rather
     /// than left `None` (the Final-review finding I6 defect this guards against).
     pub fn frame_sender(&self, frame: &FrameRef) -> Option<FrameRef> {
+        self.check_frame_origin(frame);
         self.frames[frame.index as usize].sender.clone()
     }
 
     /// The frame a closure activation captured, or `None` for any other
     /// kind. `eval::frame_at_depth` walks this.
     pub fn frame_captured(&self, frame: &FrameRef) -> Option<FrameRef> {
+        self.check_frame_origin(frame);
         match &self.frames[frame.index as usize].kind {
             FrameKind::Closure(closure) => Some(closure.captured_frame.clone()),
             _ => None,
@@ -651,10 +774,12 @@ impl Heap {
     }
 
     pub fn frame_is_uncontinuable(&self, frame: &FrameRef) -> bool {
+        self.check_frame_origin(frame);
         self.frames[frame.index as usize].uncontinuable
     }
 
     pub fn mark_uncontinuable(&mut self, frame: &FrameRef) {
+        self.check_frame_origin(frame);
         self.frames[frame.index as usize].uncontinuable = true;
     }
 
@@ -664,6 +789,7 @@ impl Heap {
     /// (spec §3.5), the last statement's value for every other body this
     /// loop runs.
     pub fn frame_is_method(&self, frame: &FrameRef) -> bool {
+        self.check_frame_origin(frame);
         matches!(self.frames[frame.index as usize].kind, FrameKind::Method(_))
     }
 
@@ -675,6 +801,7 @@ impl Heap {
     /// a class for (`frame_body`), and once to check that a class-carrying
     /// kind's class is itself a class reference (`check_class_references`).
     pub fn frame_kind(&self, frame: &FrameRef) -> FrameKind {
+        self.check_frame_origin(frame);
         self.frames[frame.index as usize].kind.clone()
     }
 
@@ -683,6 +810,7 @@ impl Heap {
     /// `image::decode::verify_graph` checks all three against the shape of
     /// the compiled body it reconciles every decoded frame against.
     pub fn frame_register_shape(&self, frame: &FrameRef) -> (usize, usize, usize) {
+        self.check_frame_origin(frame);
         let f = &self.frames[frame.index as usize];
         (f.pc, f.args.len(), f.temps.len())
     }
@@ -693,6 +821,7 @@ impl Heap {
     /// references; both need every field. Not for a hot path, for the same
     /// reason as `object_snapshot`.
     pub fn frame_snapshot(&self, frame: &FrameRef) -> Frame {
+        self.check_frame_origin(frame);
         self.frames[frame.index as usize].clone()
     }
 
@@ -706,6 +835,7 @@ impl Heap {
     /// an unverified one: no error, and no way for `verify_graph` to
     /// notice, because it has already finished.
     pub fn replace_frame(&mut self, frame: &FrameRef, filled: Frame) {
+        self.check_frame_origin(frame);
         self.frames[frame.index as usize] = filled;
     }
 }
@@ -713,6 +843,28 @@ impl Heap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reading a handle through a heap that did not allocate it is the one
+    /// failure the arena introduces and the one it cannot answer correctly:
+    /// the index names a different, perfectly valid object. Debug builds
+    /// must refuse it rather than answer.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "handle belongs to a different heap")]
+    fn reading_a_handle_through_a_foreign_heap_panics() {
+        let mut origin = Heap::new();
+        let class = origin.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let obj = origin.alloc_object(class, ObjectData::Str("mine".to_string()));
+
+        let mut other = Heap::new();
+        let other_class = other.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        other.alloc_object(other_class.clone(), ObjectData::Str("theirs".to_string()));
+        other.alloc_object(other_class, ObjectData::Str("theirs".to_string()));
+
+        // In range for `other` -- which is exactly why this is silent
+        // without the guard.
+        let _ = other.str_value(&obj);
+    }
 
     #[test]
     fn identity_hashes_are_monotonic_and_start_at_one() {

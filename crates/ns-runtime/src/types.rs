@@ -26,6 +26,12 @@ use crate::Symbol;
 #[derive(Clone)]
 pub struct ObjRef {
     pub(crate) index: u32,
+    /// The heap that allocated this handle. Debug builds only: it exists to
+    /// turn reading a handle through the wrong heap -- which answers a
+    /// different, valid object rather than failing -- into a panic at the
+    /// read. See `Heap::check_object_origin`.
+    #[cfg(debug_assertions)]
+    pub(crate) origin: u32,
 }
 
 impl ObjRef {
@@ -245,6 +251,12 @@ pub enum SourceOrigin {
 #[derive(Clone)]
 pub struct FrameRef {
     pub(crate) index: u32,
+    /// The heap that allocated this handle. Debug builds only: it exists to
+    /// turn reading a handle through the wrong heap -- which answers a
+    /// different, valid object rather than failing -- into a panic at the
+    /// read. See `Heap::check_frame_origin`.
+    #[cfg(debug_assertions)]
+    pub(crate) origin: u32,
 }
 
 impl FrameRef {
