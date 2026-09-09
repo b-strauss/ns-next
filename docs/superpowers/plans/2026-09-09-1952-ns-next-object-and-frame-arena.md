@@ -351,7 +351,9 @@ self-contained on objects, which Task 3 then deletes whole.
 - Test: `crates/ns-runtime/src/heap.rs`'s `mod tests`
 
 **Interfaces:**
-- Consumes: `Heap::alloc_self_referential_class` from Task 1.
+- Consumes: nothing from Task 1 directly — Task 1's `alloc_self_referential_class`
+  is what Task 3 builds on. This task only needs Task 1's guarantee that no
+  fixture holds a handle from a heap that is out of scope.
 - Produces: `FrameRef { pub(crate) index: u32 }` — a named field rather than a
   tuple field, because Task 4 adds a second one — and `Heap.frames: Vec<Frame>`.
   Every public `Heap` frame-accessor signature is **unchanged**.
@@ -584,10 +586,18 @@ In `crates/ns-runtime/src/types.rs`'s `// ---------- Iterative teardown --------
 section, a `FrameRef` no longer owns anything: it is an index, and the arena
 outlives every handle into it. Delete `push_frame`, `drain_frame`,
 `impl Drop for Frame`, and `Dying`'s `Frame` variant, together with
-`run_teardown`'s arm for it. `push_closure` keeps its object work and loses its
-frame work. Update the section's opening doc comment to say it now covers
-objects only, and why: frames moved into the arena, which has no reference
-chain to unwind.
+`run_teardown`'s arm for it.
+
+Delete `push_closure` as well, and replace its call in `drain_object_data`
+with `ObjectData::Closure(_) => {}`. Its whole body is two `push_frame`
+calls — a `ClosureData` owns `captured_frame` and `home` and no object
+reference at all — so once frames are arena entries there is nothing left
+for it to do. `Dying` collapses to its `Obj` variant; if the resulting enum
+reads better as a plain `Vec<ObjRef>` worklist, make it one, and say in the
+doc comment that objects are now the only thing a teardown can reach.
+
+Update the section's opening doc comment to say it now covers objects only,
+and why: frames moved into the arena, which has no reference chain to unwind.
 
 - [ ] **Step 8: Build, test, and run both gates**
 
@@ -855,10 +865,15 @@ caller of these.
 Also update `Heap::new`'s doc comment: the paragraph warning that a fresh
 `Heap` "is an *empty* arena" under the *planned* arena now describes the built
 one, and the three entry points it names were fixed before this landed. Say
-what is true: a `Heap` built on the spot is an empty arena, every handle from
-another heap either indexes out of range and panics or names a different
-object entirely, and Task 4's debug guard is what turns the second case into
-the first.
+only what is true at this commit — a `Heap` built on the spot is an empty
+arena, and a handle from another heap either indexes out of range and panics
+or names a different object entirely. Do not mention a guard here: none
+exists yet, and the next task is the one that amends this comment to name it.
+
+**No source comment anywhere in this branch may cite a plan task number.**
+Task numbers are execution bookkeeping and mean nothing to a later reader of
+the code; comments name what the code does and why, and point at
+`docs/design/` for the argument.
 
 - [ ] **Step 7: Delete the teardown section**
 
@@ -1084,6 +1099,12 @@ class accessor, and `self.check_frame_origin(frame)` as the first line of every
 frame accessor — the same 47 methods Tasks 2 and 3 converted. `describe` checks
 the object it was handed; it need not re-check the class it reaches through,
 which by construction came out of the same heap.
+
+Then amend `Heap::new`'s doc comment, which the previous task left saying that
+a handle from another heap "names a different object entirely": in a debug
+build it no longer can, because this guard refuses the read. Say both halves —
+refused in debug, silently wrong in release — since that is what makes running
+the test suite the thing that catches the mistake.
 
 - [ ] **Step 5: Run the test to confirm it passes**
 
