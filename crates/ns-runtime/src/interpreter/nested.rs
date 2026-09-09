@@ -26,6 +26,7 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
+use crate::heap::Heap;
 use crate::mixin::{mixin_key, Mixin};
 use crate::types::*;
 use crate::Symbol;
@@ -120,7 +121,7 @@ pub(crate) fn nested_class(
     // `instantiate` fills every slot, hidden ones included, with `Nil`, and
     // a materialized class object is never `Nil`, so no separate occupancy
     // flag is needed.
-    if let Some(cached) = read_cache_slot(receiver, index) {
+    if let Some(cached) = read_cache_slot(&interp.heap, receiver, index) {
         return Ok(cached);
     }
     // Step 2: the superclass clause, evaluated in the receiver's context
@@ -137,7 +138,7 @@ pub(crate) fn nested_class(
     let Value::Obj(superclass) = superclass else {
         return Err(not_a_class_error(nested.name, superclass));
     };
-    let Some(super_application) = crate::dispatch::class_application(&superclass) else {
+    let Some(super_application) = interp.heap.class_application(&superclass) else {
         return Err(not_a_class_error(nested.name, Value::Obj(superclass)));
     };
     // Step 3: the application cache decides whether this behaviour already
@@ -166,7 +167,12 @@ pub(crate) fn nested_class(
         Some(superclass),
     );
     // Step 5: cache before returning, so step 1 hits from now on.
-    crate::interpreter::eval::store_instance_field(receiver, index, Value::Obj(class.clone()));
+    crate::interpreter::eval::store_instance_field(
+        &mut interp.heap,
+        receiver,
+        index,
+        Value::Obj(class.clone()),
+    );
     Ok(Value::Obj(class))
 }
 
@@ -183,15 +189,14 @@ pub(crate) fn nested_class(
 /// inherited `class N` it shadows cache into different slots.
 fn cache_slot(interp: &Interpreter, receiver: &Value, nested: &Rc<Mixin>) -> Option<usize> {
     let class = interp.class_of(receiver);
-    let index = crate::dispatch::class_application(&class)?
+    let index = interp
+        .heap
+        .class_application(&class)?
         .nested_slot
         .get(&mixin_key(nested))
         .copied()?;
     match receiver {
-        Value::Obj(obj) => match &obj.borrow().data {
-            ObjectData::Instance(fields) if index < fields.len() => Some(index),
-            _ => None,
-        },
+        Value::Obj(obj) => interp.heap.instance_field(obj, index).map(|_| index),
         _ => None,
     }
 }
@@ -208,7 +213,7 @@ fn cache_slot(interp: &Interpreter, receiver: &Value, nested: &Rc<Mixin>) -> Opt
 /// not a cycle, and a name key would report the legal shape as one.
 fn in_progress_key(receiver: &Value, nested: &Rc<Mixin>) -> (usize, usize) {
     let address = match receiver {
-        Value::Obj(obj) => Rc::as_ptr(obj) as *const () as usize,
+        Value::Obj(obj) => obj.identity_key(),
         // `cache_slot` has already established that `receiver` is an object;
         // 0 is an address no live `Rc` has, so a non-object receiver simply
         // never collides with a real entry.
@@ -217,17 +222,13 @@ fn in_progress_key(receiver: &Value, nested: &Rc<Mixin>) -> (usize, usize) {
     (address, mixin_key(nested))
 }
 
-fn read_cache_slot(receiver: &Value, index: usize) -> Option<Value> {
+fn read_cache_slot(heap: &Heap, receiver: &Value, index: usize) -> Option<Value> {
     let Value::Obj(obj) = receiver else {
         return None;
     };
-    let borrowed = obj.borrow();
-    let ObjectData::Instance(fields) = &borrowed.data else {
-        return None;
-    };
-    match fields.get(index) {
+    match heap.instance_field(obj, index) {
         Some(Value::Nil) | None => None,
-        Some(value) => Some(value.clone()),
+        Some(value) => Some(value),
     }
 }
 
@@ -322,7 +323,7 @@ pub(super) fn run_clause_body(
     let temp_count = compiled
         .as_ref()
         .map_or(0, |code| (code.num_registers - code.num_args) as usize);
-    let frame = Rc::new(std::cell::RefCell::new(Frame {
+    let frame = interp.heap.alloc_frame(Frame {
         receiver: receiver.clone(),
         args,
         temps: vec![Value::Nil; temp_count],
@@ -340,7 +341,7 @@ pub(super) fn run_clause_body(
         kind,
         uncontinuable: false,
         slot_base: 0, // no clause body ever contains InitSlot
-    }));
+    });
     let result = match (&compiled, expr) {
         (Some(code), _) => crate::vm::run_code(interp, &frame, code, bindings),
         (None, Some(expr)) => crate::interpreter::eval::eval_expr(interp, expr, &frame, bindings),
@@ -353,10 +354,10 @@ pub(super) fn run_clause_body(
              of a mixin decoded from an image"
         ),
     };
-    frame.borrow_mut().uncontinuable = true;
+    interp.heap.mark_uncontinuable(&frame);
     match result {
         Ok(value) => Ok(value),
-        Err(Signal::Return(target, value)) if Rc::ptr_eq(&target, &frame) => Ok(value),
+        Err(Signal::Return(target, value)) if target.same(&frame) => Ok(value),
         Err(other) => Err(other),
     }
 }

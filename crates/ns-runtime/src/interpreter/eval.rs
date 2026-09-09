@@ -1,7 +1,6 @@
 //! Expression-level evaluation: literals, sends (ordinary, `LexicalSend`,
 //! `SuperSend`), cascades, blocks, assignment.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -9,6 +8,7 @@ use ns_syntax::ast::{self, Expr};
 use ns_syntax::Span;
 
 use crate::dispatch::{self, Lookup};
+use crate::heap::Heap;
 use crate::types::*;
 use crate::Symbol;
 
@@ -44,11 +44,13 @@ fn eval_ident(
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     if id.name == "self" {
-        return Ok(frame.borrow().receiver.clone());
+        return Ok(interp.heap.receiver(frame));
     }
     match bindings.get(&id.span) {
-        Some(Binding::Local(i)) => Ok(read_local(frame, *i)),
-        Some(Binding::OuterLocal { depth, index }) => Ok(read_outer_local(frame, *depth, *index)),
+        Some(Binding::Local(i)) => Ok(read_local(&interp.heap, frame, *i)),
+        Some(Binding::OuterLocal { depth, index }) => {
+            Ok(read_outer_local(&interp.heap, frame, *depth, *index))
+        }
         Some(Binding::LexicalSend { depth }) => dispatch_lexical_send(
             interp,
             frame,
@@ -70,7 +72,7 @@ fn eval_ident(
             if let Some(kind) = super::instantiate::builtin_kind_from_name(&id.name) {
                 return Ok(Value::Obj(interp.builtin_class(kind)));
             }
-            let receiver = frame.borrow().receiver.clone();
+            let receiver = interp.heap.receiver(frame);
             Err(unresolved_identifier_error(&id.name, receiver))
         }
     }
@@ -103,34 +105,20 @@ pub(crate) fn malformed_int_error(message: String) -> Signal {
     })
 }
 
-pub(crate) fn read_local(frame: &FrameRef, index: u16) -> Value {
-    let borrowed = frame.borrow();
-    let i = index as usize;
-    if i < borrowed.args.len() {
-        borrowed.args[i].clone()
-    } else {
-        borrowed.temps[i - borrowed.args.len()].clone()
-    }
+pub(crate) fn read_local(heap: &Heap, frame: &FrameRef, index: u16) -> Value {
+    heap.local(frame, index)
 }
 
-pub(crate) fn write_local(frame: &FrameRef, index: u16, value: Value) {
-    let mut borrowed = frame.borrow_mut();
-    let i = index as usize;
-    if i < borrowed.args.len() {
-        borrowed.args[i] = value;
-    } else {
-        let temp_index = i - borrowed.args.len();
-        borrowed.temps[temp_index] = value;
-    }
+pub(crate) fn write_local(heap: &mut Heap, frame: &FrameRef, index: u16, value: Value) {
+    heap.set_local(frame, index, value);
 }
 
-pub(crate) fn frame_at_depth(frame: &FrameRef, depth: u16) -> FrameRef {
+pub(crate) fn frame_at_depth(heap: &Heap, frame: &FrameRef, depth: u16) -> FrameRef {
     let mut current = frame.clone();
     for _ in 0..depth {
-        let next = match &current.borrow().kind {
-            FrameKind::Closure(closure) => closure.captured_frame.clone(),
-            _ => current.clone(),
-        };
+        let next = heap
+            .frame_captured(&current)
+            .unwrap_or_else(|| current.clone());
         current = next;
     }
     current
@@ -140,18 +128,15 @@ pub(crate) fn frame_at_depth(frame: &FrameRef, depth: u16) -> FrameRef {
 /// initializer activation is its own home; a closure activation's home is
 /// its own `home`. Shared by the tree-walker's `eval_block_literal` and
 /// the VM's `MakeClosure`.
-pub(crate) fn home_of(frame: &FrameRef) -> FrameRef {
-    match &frame.borrow().kind {
-        FrameKind::Method(_)
-        | FrameKind::TopLevel
-        | FrameKind::Initializer(_)
-        // A clause activation is its own return target for the same reason
-        // an initializer one is: it is a class declaration's code running
-        // on an object, with no enclosing method to return through.
-        | FrameKind::SuperclassClause(_)
-        | FrameKind::SuperclassMessage(_) => frame.clone(),
-        FrameKind::Closure(closure) => closure.home.clone(),
-    }
+///
+/// `Frame.home` is `None` for exactly the non-closure kinds (a method,
+/// top-level, initializer, or superclass-clause/message activation is its
+/// own return target -- a clause activation is one for the same reason an
+/// initializer is: it is a class declaration's code running on an object,
+/// with no enclosing method to return through), so the fallback below
+/// covers all of them without naming `FrameKind` here.
+pub(crate) fn home_of(heap: &Heap, frame: &FrameRef) -> FrameRef {
+    heap.frame_home(frame).unwrap_or_else(|| frame.clone())
 }
 
 /// Writes `value` into instance field `index` on `instance`'s
@@ -161,22 +146,19 @@ pub(crate) fn home_of(frame: &FrameRef) -> FrameRef {
 /// tree-walker's per-slot-initializer write) and `vm::run_code`'s
 /// `Instr::InitSlot` arm (the bytecode engine's equivalent), instead of the
 /// same four-line downcast-bounds-check-assign shape living in both places.
-pub(crate) fn store_instance_field(instance: &Value, index: usize, value: Value) {
+pub(crate) fn store_instance_field(heap: &mut Heap, instance: &Value, index: usize, value: Value) {
     if let Value::Obj(obj) = instance {
-        if let ObjectData::Instance(fields) = &mut obj.borrow_mut().data {
-            if index < fields.len() {
-                fields[index] = value;
-            }
-        }
+        heap.set_instance_field(obj, index, value);
     }
 }
 
-fn read_outer_local(frame: &FrameRef, depth: u16, index: u16) -> Value {
-    read_local(&frame_at_depth(frame, depth), index)
+fn read_outer_local(heap: &Heap, frame: &FrameRef, depth: u16, index: u16) -> Value {
+    read_local(heap, &frame_at_depth(heap, frame, depth), index)
 }
 
-fn write_outer_local(frame: &FrameRef, depth: u16, index: u16, value: Value) {
-    write_local(&frame_at_depth(frame, depth), index, value);
+fn write_outer_local(heap: &mut Heap, frame: &FrameRef, depth: u16, index: u16, value: Value) {
+    let target = frame_at_depth(heap, frame, depth);
+    write_local(heap, &target, index, value);
 }
 
 /// Evaluates an `ast::Literal::Int`'s source text, which the lexer hands
@@ -349,8 +331,8 @@ fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
 ///
 /// One definition because `dispatch_lexical_send` asks it of two classes --
 /// a class object's metaclass and then the receiver's own class.
-fn lexical_lookup(class: &ClassRef, selector: Symbol) -> Lookup {
-    match dispatch::lookup_defined_for(class, selector) {
+fn lexical_lookup(heap: &crate::heap::Heap, class: &ClassRef, selector: Symbol) -> Lookup {
+    match dispatch::lookup_defined_for(heap, class, selector) {
         Lookup::Method(method, defining_class) if method.access == ast::AccessModifier::Private => {
             Lookup::Method(method, defining_class)
         }
@@ -359,7 +341,7 @@ fn lexical_lookup(class: &ClassRef, selector: Symbol) -> Lookup {
         {
             Lookup::NestedClass(mixin, declaring_class)
         }
-        _ => dispatch::lookup_protected(class, selector),
+        _ => dispatch::lookup_protected(heap, class, selector),
     }
 }
 
@@ -379,11 +361,9 @@ pub(crate) fn dispatch_lexical_send(
     // The lexical depth counts levels out from the class that *defines* this
     // method, so the walk needs this activation's `current_class`, not the
     // receiver's own class -- see `dispatch::kth_enclosing_object`.
-    let (self_value, defining_class) = {
-        let borrowed = frame.borrow();
-        (borrowed.receiver.clone(), borrowed.current_class.clone())
-    };
-    let o = dispatch::kth_enclosing_object(&self_value, defining_class.as_ref(), depth);
+    let (self_value, defining_class) = interp.heap.receiver_and_current_class(frame);
+    let o =
+        dispatch::kth_enclosing_object(&interp.heap, &self_value, defining_class.as_ref(), depth);
     let class = interp.class_of(&o);
     // Slot access fix (Task 7 "must fix before committing" #2): a
     // `LexicalSend` to a user-defined class's own slot must resolve here,
@@ -394,20 +374,14 @@ pub(crate) fn dispatch_lexical_send(
     // access-controlled by the slot's own declared modifier (see the task's
     // design note) -- revisit if a fixture needs it.
     if let Some((name, is_setter)) = slot_selector_shape(selector) {
-        if let Some(index) = dispatch::lookup_slot(&class, name) {
+        if let Some(index) = dispatch::lookup_slot(&interp.heap, &class, name) {
             if let Value::Obj(obj) = &o {
                 if is_setter {
                     let value = args.first().cloned().unwrap_or(Value::Nil);
-                    if let ObjectData::Instance(fields) = &mut obj.borrow_mut().data {
-                        if index < fields.len() {
-                            fields[index] = value;
-                        }
-                    }
+                    interp.heap.set_instance_field(obj, index, value);
                     return Ok(o);
-                } else if let ObjectData::Instance(fields) = &obj.borrow().data {
-                    if index < fields.len() {
-                        return Ok(fields[index].clone());
-                    }
+                } else if let Some(value) = interp.heap.instance_field(obj, index) {
+                    return Ok(value);
                 }
             }
         }
@@ -422,9 +396,7 @@ pub(crate) fn dispatch_lexical_send(
     // `private` members are unreachable, and any selector `Object` answers
     // natively silently wins over the class side's own declaration.
     let metaclass = match &o {
-        Value::Obj(obj) if matches!(obj.borrow().data, ObjectData::Class(_)) => {
-            interp.metaclass_of(obj)
-        }
+        Value::Obj(obj) if interp.heap.is_class(obj) => interp.metaclass_of(obj),
         _ => None,
     };
     // A metaclass that does not declare the selector falls through to the
@@ -434,9 +406,9 @@ pub(crate) fn dispatch_lexical_send(
     // below and means the same thing either way.
     let lookup = metaclass
         .as_ref()
-        .map(|metaclass| lexical_lookup(metaclass, selector))
+        .map(|metaclass| lexical_lookup(&interp.heap, metaclass, selector))
         .filter(|found| matches!(found, Lookup::Method(..) | Lookup::NestedClass(..)))
-        .unwrap_or_else(|| lexical_lookup(&class, selector));
+        .unwrap_or_else(|| lexical_lookup(&interp.heap, &class, selector));
     match lookup {
         Lookup::Method(method, defining_class) => interp.invoke_method(
             o,
@@ -478,31 +450,25 @@ pub(crate) fn dispatch_super_send(
     args: Vec<Value>,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let Some(current_class) = frame.borrow().current_class.clone() else {
+    let Some(current_class) = interp.heap.frame_current_class(frame) else {
         return Err(Signal::Error(NewspeakError {
             selector,
-            receiver: frame.borrow().receiver.clone(),
+            receiver: interp.heap.receiver(frame),
             message:
                 "super send with no enclosing current_class (used outside a method activation)"
                     .to_string(),
         }));
     };
-    let superclass = {
-        let borrowed = current_class.borrow();
-        match &borrowed.data {
-            ObjectData::Class(data) => data.superclass.clone(),
-            _ => None,
-        }
-    };
+    let superclass = interp.heap.class_superclass(&current_class);
     let Some(superclass) = superclass else {
         return Err(Signal::Error(NewspeakError {
             selector,
-            receiver: frame.borrow().receiver.clone(),
+            receiver: interp.heap.receiver(frame),
             message: "super send with no superclass (current class is Object or Top)".to_string(),
         }));
     };
-    let self_value = frame.borrow().receiver.clone();
-    match dispatch::lookup_defined_for(&superclass, selector) {
+    let self_value = interp.heap.receiver(frame);
+    match dispatch::lookup_defined_for(&interp.heap, &superclass, selector) {
         Lookup::Method(method, defining_class) => interp.invoke_method(
             self_value,
             method,
@@ -583,9 +549,9 @@ fn eval_assign(
 ) -> EvalResult {
     let v = eval_expr(interp, value, frame, bindings)?;
     match bindings.get(&target.span) {
-        Some(Binding::Local(i)) => write_local(frame, *i, v.clone()),
+        Some(Binding::Local(i)) => write_local(&mut interp.heap, frame, *i, v.clone()),
         Some(Binding::OuterLocal { depth, index }) => {
-            write_outer_local(frame, *depth, *index, v.clone())
+            write_outer_local(&mut interp.heap, frame, *depth, *index, v.clone())
         }
         Some(Binding::LexicalSend { depth }) => {
             let setter = Symbol::intern(&format!("{}:", target.name));
@@ -594,7 +560,7 @@ fn eval_assign(
         _ => {
             return Err(Signal::Error(NewspeakError {
                 selector: Symbol::intern(&target.name),
-                receiver: frame.borrow().receiver.clone(),
+                receiver: interp.heap.receiver(frame),
                 message: format!("internal: unresolved setter target `{}`", target.name),
             }))
         }
@@ -608,7 +574,7 @@ fn eval_block_literal(
     frame: &FrameRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let home = home_of(frame);
+    let home = home_of(&interp.heap, frame);
     let closure = Rc::new(ClosureData {
         params: block
             .params
@@ -653,7 +619,7 @@ pub fn invoke_closure(
     // would silently misaddress temps instead of erroring. Never panic on
     // this Newspeak-program-input path.
     if args.len() != closure.params.len() {
-        let receiver = closure.captured_frame.borrow().receiver.clone();
+        let receiver = interp.heap.receiver(&closure.captured_frame);
         return Err(Signal::Error(NewspeakError {
             selector: Symbol::intern("value"),
             receiver,
@@ -664,8 +630,8 @@ pub fn invoke_closure(
             ),
         }));
     }
-    let receiver = closure.captured_frame.borrow().receiver.clone();
-    let current_class = closure.captured_frame.borrow().current_class.clone();
+    let receiver = interp.heap.receiver(&closure.captured_frame);
+    let current_class = interp.heap.frame_current_class(&closure.captured_frame);
     // Hook 2 (spec: "`vm.rs` and the engine hook"): the frame is built the
     // same way for both engines; only the body's evaluation differs, and
     // which engine that is was decided when the closure was created.
@@ -673,7 +639,7 @@ pub fn invoke_closure(
         ClosureBody::Ast(body) => body.temps.len(),
         ClosureBody::Compiled(code) => (code.num_registers - code.num_args) as usize,
     };
-    let frame = Rc::new(RefCell::new(Frame {
+    let frame = interp.heap.alloc_frame(Frame {
         receiver,
         args,
         temps: vec![Value::Nil; temp_count],
@@ -691,13 +657,13 @@ pub fn invoke_closure(
         kind: FrameKind::Closure(closure.clone()),
         uncontinuable: false,
         slot_base: 0, // a closure body never contains InitSlot
-    }));
+    });
     match &closure.body {
         ClosureBody::Compiled(code) => crate::vm::run_code(interp, &frame, code, bindings),
         ClosureBody::Ast(body) => {
             let mut last = Value::Nil;
             for (i, stmt) in body.stmts.iter().enumerate() {
-                frame.borrow_mut().pc = i;
+                interp.heap.set_frame_pc(&frame, i);
                 match stmt {
                     ast::Stmt::Expr(e) => last = eval_expr(interp, e, &frame, bindings)?,
                     ast::Stmt::Return(e) => {

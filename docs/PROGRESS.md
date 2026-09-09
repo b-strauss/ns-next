@@ -10,36 +10,62 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Inline caches, moving GC, trampolined sends | Not started | — | — |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | — |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
 
-M4 is next, and its three pieces are one milestone because they need each other.
-Each is designed in the document for its own aspect, under a `Planned:` heading;
-those documents are the authority, and this is only the map to them.
+M4 is under way. Its pieces are one change: the object representation, the
+activation representation and the root discipline each constrain the other
+two, and building any of them on the present model means building it twice.
+Each piece is designed in the document for its own aspect, under a
+`Planned:` heading; those documents are the authority, and this is only the
+map to them.
 
-- **Trampolined sends** — [execution.md](design/execution.md). `run_code` recurses
-  through the Rust call stack, so a Newspeak activation chain exists twice: reified
-  on the heap and implicitly on the native stack. Only the first can be serialized,
-  only the second can be resumed. Replacing the recursion with an explicit frame
-  stack is what the other two need, which is why it goes first.
-- **A moving collector** — [memory.md](design/memory.md). `become:` and instance
-  migration rule out a conservative non-moving design. The reified frame chain is
-  the VM's root set; the tree-walker gets a `HandleScope`-style handle layer for the
-  intermediates it holds in Rust locals, because it is kept rather than retired.
-- **Inline caches** — [dispatch.md](design/dispatch.md). The call-site slots are
-  already emitted and inert, so wiring them up needs no bytecode format break. A
-  cache must guard on the **mixin application**, not on the class object; the
-  obvious key is the wrong one and would never hit.
+The heap seam is done — every object and frame access already routes
+through `Heap` (`crates/ns-runtime/src/heap.rs`), and `ObjRef`/`FrameRef`
+are opaque newtypes (see "M4 — The heap seam" below). That was groundwork,
+not step 1 below: step 1 is what replaces the store those accessors reach
+into.
+
+The order below is the order the work goes in, and it is not the order the
+milestone was originally sketched in. What settled it is a measurement rather
+than a preference: on a release build, a user-method send costs ~165 ns, of which
+~68 ns — about 41% — is spent building the activation, and none of that is
+touched by an inline cache. The decomposition is in
+[execution.md](design/execution.md)'s measurements section.
+
+1. **An arena of typed handles** — [memory.md](design/memory.md) and
+   [object-model.md](design/object-model.md). `Rc<RefCell<_>>` goes, for objects
+   and for activations together. This is where the measured cost actually sits:
+   three allocations per activation, reference-count traffic, and a `RefCell`
+   borrow on every register access.
+2. **A compiler-checked root discipline** — [memory.md](design/memory.md). Nova's
+   `GcScope`/`NoGcScope`, where holding an unrooted handle across a collection
+   safepoint is a type error rather than corruption found later under collection
+   pressure. Free at run time; the ergonomic cost is accepted deliberately.
+3. **Activations on a stack, reified on demand** —
+   [execution.md](design/execution.md). Cog's model. The trampoline falls out of
+   this rather than driving it, and it absorbs `Block value` on the way.
+4. **Inline caches** — [dispatch.md](design/dispatch.md). The call-site slots are
+   already emitted and inert, so no bytecode format break. A cache must guard on
+   the **mixin application**, not on the class object; the obvious key is the
+   wrong one and would never hit.
+5. **A moving collector** — [memory.md](design/memory.md). `become:` and instance
+   migration rule out a conservative non-moving design, and pinning whatever a
+   conservative stack scan finds was considered and rejected for the same reason.
+
+Deferred past the milestone on purpose: moving `do:` out of Rust and into
+Newspeak. It is required eventually, because a Rust native that calls back into
+Newspeak is a permanent barrier to optimization
+([core-library.md](design/core-library.md)), but doing it before steps 1–4 makes
+the numbers worse and after them costs nothing. M4 owes it only that the rewrite
+not deepen the investment in Rust callbacks.
 
 What M4 unlocks beyond speed is recorded where it applies: suspending a running
-computation and serializing it ([image-format.md](design/image-format.md)) waits on
-the trampoline, and so does the debugger
-([liveness-and-reflection.md](design/liveness-and-reflection.md)).
-
-Before starting, `ns-next bench` on a release build gives the before-number: every
-send today is still a full lookup.
+computation and serializing it ([image-format.md](design/image-format.md)) waits
+on the activation stack, and so do the debugger and `become:`-based class
+mutation ([liveness-and-reflection.md](design/liveness-and-reflection.md)).
 
 ## M1 — Frontend (2026-09-01)
 
@@ -125,6 +151,40 @@ now also run a third way, built and loaded — **ran 6, failed 0, skipped
 205**, with `parse-corpus` unchanged at **210/0/1/0**; and mutation and
 truncation tests cover the new header flag, the entry field, and the
 trailing-byte check.
+
+## M4 — The heap seam (2026-09-09)
+
+Plan: [ns-next-heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md).
+
+The first piece of M4's representation change, done ahead of the arena
+itself: every read and write of an `Object` or a `Frame` across the workspace
+now goes through one `Heap` (`crates/ns-runtime/src/heap.rs`), replacing the
+193 call sites (109 under `src`, 84 in the integration tests) that used to
+reach `Rc<RefCell<_>>` directly. `ObjRef` and
+`FrameRef` are now opaque newtypes with a `pub(crate)` inner field: the
+crate boundary is compiler-enforced (`ns-cli` and the integration-test
+crates under `crates/ns-runtime/tests/` cannot reach it at all), while
+containment inside `ns-runtime`'s own `src/` is the grep gate this
+migration ran throughout, since `pub(crate)` is visible from every module
+in the crate. Each handle also gained a hand-written, non-recursive `Debug`
+that prints identity only.
+
+It did not come free. Migrating `interpreter/eval.rs` turned
+`dispatch_lexical_send`'s single borrow yielding both the receiver and the
+current class into two separate accessor calls, and at roughly 250,000
+lexical sends per benchmark run that measured as a real 13% regression —
+`bench_loop.ns` from 20.07 ms to 22.77 ms. A batched accessor
+(`receiver_and_current_class`) recovered it in full. The companion result —
+the identical extra-borrow shape in `dispatch::walk`'s per-inheritance-level
+lookup cost nothing measurable — is what turned the incident into a lesson
+rather than a scare: the cost is executions per run, not borrows being
+expensive. See [execution.md](design/execution.md)'s measurements section.
+
+Confirmed by measurement, not assumption: three fresh release-build runs of
+`bench_loop.ns` after the full migration gave bytecode medians of 19.71,
+19.59 and 19.72 ms, against the pre-plan session baseline of 19.91 ms (min
+19.80, max 20.07) — within noise, so the seam costs nothing once the one
+regression it introduced was found and fixed.
 
 ## Notes
 

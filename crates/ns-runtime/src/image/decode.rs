@@ -1,7 +1,6 @@
 //! Canonical decoding, the inverse of `encode.rs`. A malformed byte stream
 //! is a `DecodeError`, never a panic.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -11,7 +10,7 @@ use ns_syntax::Span;
 use crate::bytecode::{
     method_key, CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal,
 };
-use crate::dispatch::class_application;
+use crate::heap::Heap;
 use crate::interpreter::instantiate;
 use crate::mixin::mixin_key;
 use crate::types::{
@@ -1598,7 +1597,11 @@ fn method_decl(
     selector: Symbol,
 ) -> Result<Rc<crate::mixin::MixinMethod>, DecodeError> {
     let class = current_class.unwrap_or(ctx.root_class);
-    let found = class_application(class).and_then(|a| a.mixin.methods.get(&selector).cloned());
+    let found = ctx
+        .interp
+        .heap
+        .class_application(class)
+        .and_then(|a| a.mixin.methods.get(&selector).cloned());
     found.ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
 }
 
@@ -1742,7 +1745,9 @@ pub fn build_root_class(
     superclass: Option<ClassRef>,
 ) -> Result<ClassRef, DecodeError> {
     let root_mixin = mixins.root().cloned().ok_or(DecodeError::NotAClass)?;
-    let super_application = superclass.as_ref().and_then(class_application);
+    let super_application = superclass
+        .as_ref()
+        .and_then(|superclass| interp.heap.class_application(superclass));
     let application = interp.apply_mixin(&root_mixin, super_application.as_ref());
     Ok(interp.new_class_object(application, None, None, superclass))
 }
@@ -1820,7 +1825,7 @@ fn rebuild_applications(
     // as the id it was written with.
     let mut position: HashMap<usize, usize> = HashMap::with_capacity(pending.len());
     for (i, p) in pending.iter().enumerate() {
-        position.insert(Rc::as_ptr(&objects[p.object]) as usize, i);
+        position.insert(objects[p.object].identity_key(), i);
     }
     let mut done = vec![false; pending.len()];
     let mut on_chain = vec![false; pending.len()];
@@ -1836,9 +1841,12 @@ fn rebuild_applications(
             }
             on_chain[current] = true;
             chain.push(current);
-            let superclass = class_superclass(&objects[pending[current].object]);
+            let superclass = ctx
+                .interp
+                .heap
+                .class_superclass(&objects[pending[current].object]);
             let Some(superclass) = superclass else { break };
-            let Some(&next) = position.get(&(Rc::as_ptr(&superclass) as usize)) else {
+            let Some(&next) = position.get(&superclass.identity_key()) else {
                 break;
             };
             if done[next] {
@@ -1851,18 +1859,20 @@ fn rebuild_applications(
         // application in hand.
         for &i in chain.iter().rev() {
             let object = &objects[pending[i].object];
-            let super_application = match class_superclass(object) {
-                Some(superclass) => {
-                    Some(class_application(&superclass).ok_or(DecodeError::NotAClassReference)?)
-                }
+            let super_application = match ctx.interp.heap.class_superclass(object) {
+                Some(superclass) => Some(
+                    ctx.interp
+                        .heap
+                        .class_application(&superclass)
+                        .ok_or(DecodeError::NotAClassReference)?,
+                ),
                 None => None,
             };
             let application = ctx
                 .interp
                 .apply_mixin(&pending[i].mixin, super_application.as_ref());
-            match &mut object.borrow_mut().data {
-                ObjectData::Class(data) => data.application = application,
-                _ => unreachable!("this object was filled in as a class record"),
+            if !ctx.interp.heap.set_class_application(object, application) {
+                unreachable!("this object was filled in as a class record");
             }
             done[i] = true;
             on_chain[i] = false;
@@ -1872,25 +1882,16 @@ fn rebuild_applications(
     Ok(())
 }
 
-fn class_superclass(class: &ObjRef) -> Option<ClassRef> {
-    match &class.borrow().data {
-        ObjectData::Class(data) => data.superclass.clone(),
-        _ => None,
-    }
-}
-
-fn is_class_object(obj: &ObjRef) -> bool {
-    matches!(obj.borrow().data, ObjectData::Class(_))
-}
-
 /// Whether `class` is one of the two class objects a graph never creates:
 /// a builtin, or the module's root class. The mirror of
-/// `encode::is_class_tag`.
-fn is_prebuilt_class(class: &ClassRef, root_class: &ClassRef) -> bool {
-    match &class.borrow().data {
-        ObjectData::Class(data) => data.builtin.is_some() || Rc::ptr_eq(class, root_class),
-        _ => false,
-    }
+/// `encode::is_class_tag`. The explicit `is_class` guard is redundant with
+/// `class.same(root_class)` today -- that can only be true when `class` is
+/// literally `root_class`, which is a class by construction -- but it keeps
+/// this answering `false` for a non-class object on its own terms rather
+/// than through that indirect argument, so it stays honest if either
+/// check's meaning shifts later.
+fn is_prebuilt_class(heap: &Heap, class: &ClassRef, root_class: &ClassRef) -> bool {
+    heap.is_class(class) && (heap.class_builtin(class).is_some() || class.same(root_class))
 }
 
 /// Every field the format types as a class reference really names a class
@@ -1915,36 +1916,40 @@ fn is_prebuilt_class(class: &ClassRef, root_class: &ClassRef) -> bool {
 /// the field's glue runs after `drop` returns): bounding the chain at one
 /// link is what keeps a crafted image from cascading through it.
 fn check_class_references(
+    heap: &Heap,
     objects: &[ObjRef],
     frames: &[FrameRef],
     root_class: &ClassRef,
 ) -> Result<(), DecodeError> {
     for object in objects {
-        let borrowed = object.borrow();
-        if !is_class_object(&borrowed.class) {
+        let class = heap.class_of_obj(object);
+        if !heap.is_class(&class) {
             return Err(DecodeError::NotAClassReference);
         }
-        if let ObjectData::Class(data) = &borrowed.data {
-            if !is_prebuilt_class(&borrowed.class, root_class) {
+        if heap.is_class(object) {
+            if !is_prebuilt_class(heap, &class, root_class) {
                 return Err(DecodeError::ClassOfAClassIsARecord);
             }
-            for class in data.superclass.iter().chain(data.declaring_class.iter()) {
-                if !is_class_object(class) {
+            let superclass = heap.class_superclass(object);
+            let declaring_class = heap.class_declaring(object);
+            for class in superclass.iter().chain(declaring_class.iter()) {
+                if !heap.is_class(class) {
                     return Err(DecodeError::NotAClassReference);
                 }
             }
         }
     }
     for frame in frames {
-        let borrowed = frame.borrow();
-        let kind_class = match &borrowed.kind {
+        let current_class = heap.frame_current_class(frame);
+        let kind = heap.frame_kind(frame);
+        let kind_class = match &kind {
             FrameKind::Initializer(c)
             | FrameKind::SuperclassClause(c)
             | FrameKind::SuperclassMessage(c) => Some(c),
             FrameKind::Method(_) | FrameKind::Closure(_) | FrameKind::TopLevel => None,
         };
-        for class in borrowed.current_class.iter().chain(kind_class) {
-            if !is_class_object(class) {
+        for class in current_class.iter().chain(kind_class) {
+            if !heap.is_class(class) {
                 return Err(DecodeError::NotAClassReference);
             }
         }
@@ -1982,19 +1987,21 @@ pub fn decode_graph_section(
     // object and `placeholder_frame`, and for the same reason: nothing may
     // observe a half-built record, and a `None` here would need an
     // `Option` on `ClassData` that no live class object could ever be.
-    let placeholder_application =
-        class_application(&placeholder_class).ok_or(DecodeError::NotAClass)?;
+    let placeholder_application = ctx
+        .interp
+        .heap
+        .class_application(&placeholder_class)
+        .ok_or(DecodeError::NotAClass)?;
     let objects: Vec<ObjRef> = (0..object_count)
         .map(|_| {
-            Rc::new(RefCell::new(Object {
-                class: placeholder_class.clone(),
-                identity_hash: 0,
-                data: ObjectData::Instance(Vec::new()),
-            }))
+            ctx.interp.heap.alloc_placeholder_object(
+                placeholder_class.clone(),
+                ObjectData::Instance(Vec::new()),
+            )
         })
         .collect();
     let frames: Vec<FrameRef> = (0..frame_count)
-        .map(|_| Rc::new(RefCell::new(placeholder_frame())))
+        .map(|_| ctx.interp.heap.alloc_frame(placeholder_frame()))
         .collect();
     let tables = Tables {
         objects: &objects,
@@ -2033,18 +2040,21 @@ pub fn decode_graph_section(
                 })
             }
         };
-        *obj.borrow_mut() = Object {
-            class,
-            identity_hash,
-            data,
-        };
+        ctx.interp.heap.replace_object(
+            obj,
+            Object {
+                class,
+                identity_hash,
+                data,
+            },
+        );
     }
     rebuild_applications(ctx, &objects, pending_classes)?;
     for frame in &frames {
         let decoded = decode_frame(r, ctx, &tables, symbols)?;
-        *frame.borrow_mut() = decoded;
+        ctx.interp.heap.replace_frame(frame, decoded);
     }
-    check_class_references(&objects, &frames, ctx.root_class)?;
+    check_class_references(&ctx.interp.heap, &objects, &frames, ctx.root_class)?;
     let roots = decode_values(r, ctx, &tables)?;
     Ok(DecodedGraph {
         roots,
@@ -2135,18 +2145,18 @@ fn decode_class_record(
 /// Neither can be entered -- nothing re-activates a decoded frame, and no
 /// closure may be captured by one (`verify_closure` refuses that) -- so
 /// there is nothing to reconcile.
-fn frame_body(frame: &Frame, module: &CompiledModule) -> Option<Rc<CompiledCode>> {
+fn frame_body(heap: &Heap, frame: &FrameRef, module: &CompiledModule) -> Option<Rc<CompiledCode>> {
     /// The mixin whose code table a class-carrying frame kind names. `None`
     /// only if the decoded value is not a class object -- `decode_class_tag`
     /// never produces one, but returning `None` keeps a future change to it
     /// from turning an untrusted image into a panic here.
-    fn frame_mixin(class: &crate::types::ClassRef) -> Option<Rc<crate::mixin::Mixin>> {
-        class_application(class).map(|a| a.mixin.clone())
+    fn frame_mixin(heap: &Heap, class: &crate::types::ClassRef) -> Option<Rc<crate::mixin::Mixin>> {
+        heap.class_application(class).map(|a| a.mixin.clone())
     }
-    match &frame.kind {
+    match &heap.frame_kind(frame) {
         FrameKind::Method(decl) => module.methods.get(&method_key(decl)).cloned(),
         FrameKind::Initializer(class) => {
-            frame_mixin(class).and_then(|m| module.initializers.get(&mixin_key(&m)).cloned())
+            frame_mixin(heap, class).and_then(|m| module.initializers.get(&mixin_key(&m)).cloned())
         }
         // Each clause activation resolves against the table its own body
         // lives in. They share `Initializer`'s frame shape -- a class's code
@@ -2154,12 +2164,10 @@ fn frame_body(frame: &Frame, module: &CompiledModule) -> Option<Rc<CompiledCode>
         // as initializers would reconcile a frame against a body that never
         // ran in it: a legitimate image refused, and a crafted one checked
         // against the wrong register file.
-        FrameKind::SuperclassClause(class) => {
-            frame_mixin(class).and_then(|m| module.superclass_clauses.get(&mixin_key(&m)).cloned())
-        }
-        FrameKind::SuperclassMessage(class) => {
-            frame_mixin(class).and_then(|m| module.superclass_messages.get(&mixin_key(&m)).cloned())
-        }
+        FrameKind::SuperclassClause(class) => frame_mixin(heap, class)
+            .and_then(|m| module.superclass_clauses.get(&mixin_key(&m)).cloned()),
+        FrameKind::SuperclassMessage(class) => frame_mixin(heap, class)
+            .and_then(|m| module.superclass_messages.get(&mixin_key(&m)).cloned()),
         FrameKind::Closure(closure) => match &closure.body {
             ClosureBody::Compiled(code) => Some(code.clone()),
             // Unreachable from the wire: the format has no representation
@@ -2194,6 +2202,7 @@ pub fn verify_graph(
     graph: &DecodedGraph,
     table: &DecodedCodeTable,
     module: &CompiledModule,
+    heap: &Heap,
 ) -> Result<(), DecodeError> {
     // Recomputed rather than threaded through from `verify_code_table`:
     // one more linear pass over the code table at load time, in exchange
@@ -2201,39 +2210,38 @@ pub fn verify_graph(
     let parents = lexical_parents(table)?;
     let index_of = code_index(table);
     for frame in &graph.frames {
-        let borrowed = frame.borrow();
-        let Some(code) = frame_body(&borrowed, module) else {
+        let Some(code) = frame_body(heap, frame, module) else {
             continue;
         };
+        let (pc, num_args, num_temps) = heap.frame_register_shape(frame);
         // `vm::run_code` stores the index of the instruction it is
         // executing, and a body with no instructions is already refused
         // (`UnterminatedBody`), so every genuine activation -- including one
         // that has not run a single instruction yet -- satisfies this.
-        if borrowed.pc >= code.instrs.len() {
+        if pc >= code.instrs.len() {
             return Err(DecodeError::PcOutOfRange {
-                pc: borrowed.pc,
+                pc,
                 instrs: code.instrs.len(),
             });
         }
-        if borrowed.args.len() != code.num_args as usize
-            || borrowed.args.len() + borrowed.temps.len() < code.num_registers as usize
+        if num_args != code.num_args as usize || num_args + num_temps < code.num_registers as usize
         {
             return Err(DecodeError::FrameRegisterFile {
-                args: borrowed.args.len(),
-                locals: borrowed.temps.len(),
+                args: num_args,
+                locals: num_temps,
                 num_args: code.num_args,
                 num_registers: code.num_registers,
             });
         }
     }
     for object in &graph.objects {
-        if let ObjectData::Closure(closure) = &object.borrow().data {
-            verify_closure(closure, table, &parents, &index_of, module)?;
+        if let Some(closure) = heap.closure_data(object) {
+            verify_closure(&closure, table, &parents, &index_of, module, heap)?;
         }
     }
     for frame in &graph.frames {
-        if let FrameKind::Closure(closure) = &frame.borrow().kind {
-            verify_closure(closure, table, &parents, &index_of, module)?;
+        if let FrameKind::Closure(closure) = &heap.frame_kind(frame) {
+            verify_closure(closure, table, &parents, &index_of, module, heap)?;
         }
     }
     Ok(())
@@ -2245,6 +2253,7 @@ fn verify_closure(
     parents: &[Option<usize>],
     index_of: &HashMap<usize, usize>,
     module: &CompiledModule,
+    heap: &Heap,
 ) -> Result<(), DecodeError> {
     let ClosureBody::Compiled(code) = &closure.body else {
         // As in `frame_body`: the format cannot express an AST body.
@@ -2261,7 +2270,7 @@ fn verify_closure(
     // bound the real chain need not respect. Refusing keeps the two walks
     // in step.
     let parent = parents[id].ok_or(DecodeError::CapturedFrameMismatch)?;
-    let running = frame_body(&closure.captured_frame.borrow(), module)
+    let running = frame_body(heap, &closure.captured_frame, module)
         .ok_or(DecodeError::CapturedFrameMismatch)?;
     if !Rc::ptr_eq(&running, &table.codes[parent]) {
         return Err(DecodeError::CapturedFrameMismatch);

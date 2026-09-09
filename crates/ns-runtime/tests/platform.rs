@@ -28,7 +28,7 @@ fn platform_is_memoized_across_calls() {
     let a = interp.platform();
     let b = interp.platform();
     match (a, b) {
-        (Value::Obj(a), Value::Obj(b)) => assert!(Rc::ptr_eq(&a, &b)),
+        (Value::Obj(a), Value::Obj(b)) => assert!(a.same(&b)),
         _ => panic!("expected Value::Obj"),
     }
 }
@@ -64,7 +64,7 @@ fn platform_transcript_show_and_new_line_round_trip() {
     // `show:` returns the receiver (the runtime spec's `Transcript`-style
     // convention, matching `platform.rs`'s doc comment).
     match (&after_show, &transcript) {
-        (Value::Obj(a), Value::Obj(b)) => assert!(Rc::ptr_eq(a, b)),
+        (Value::Obj(a), Value::Obj(b)) => assert!(a.same(b)),
         _ => panic!("expected Value::Obj"),
     }
 
@@ -98,8 +98,11 @@ fn platform_class_accessors_return_the_matching_builtin_class() {
         "platform OrderedCollection",
     );
     match got {
-        Value::Obj(obj) => assert!(Rc::ptr_eq(&obj, &expected)),
-        other => panic!("expected Value::Obj, got {other:?}"),
+        Value::Obj(obj) => assert!(obj.same(&expected)),
+        other => panic!(
+            "expected Value::Obj, got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -129,7 +132,7 @@ fn platform_collections_answers_list_with_the_ordered_collection_class() {
         "platform collections List",
     );
     match got {
-        Value::Obj(obj) => assert!(Rc::ptr_eq(&obj, &expected)),
+        Value::Obj(obj) => assert!(obj.same(&expected)),
         _ => panic!("expected a class object"),
     }
 }

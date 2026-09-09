@@ -7,7 +7,6 @@ pub mod eval;
 pub mod instantiate;
 pub(crate) mod nested;
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -16,6 +15,7 @@ use ns_syntax::Span;
 
 use crate::bytecode::{method_key, CompiledModule};
 use crate::dispatch::{self, Lookup};
+use crate::heap::Heap;
 use crate::types::*;
 use crate::Symbol;
 
@@ -78,7 +78,7 @@ impl std::fmt::Display for EngineUnavailable {
 }
 
 pub struct Interpreter {
-    next_identity_hash: u32,
+    pub(crate) heap: Heap,
     builtin_classes: Option<HashMap<BuiltinClass, ClassRef>>,
     platform_singleton: Option<Value>,
     engine: Engine,
@@ -121,7 +121,7 @@ impl Default for Interpreter {
 impl Interpreter {
     pub fn new() -> Interpreter {
         Interpreter {
-            next_identity_hash: 1,
+            heap: Heap::new(),
             builtin_classes: None,
             platform_singleton: None,
             engine: Engine::TreeWalk,
@@ -134,7 +134,7 @@ impl Interpreter {
 
     pub fn bootstrap() -> Interpreter {
         let mut interp = Interpreter {
-            next_identity_hash: 1,
+            heap: Heap::new(),
             builtin_classes: None,
             platform_singleton: None,
             engine: Engine::TreeWalk,
@@ -188,19 +188,10 @@ impl Interpreter {
             .clone()
     }
 
-    /// Saturating, not wrapping and not panicking: identity hashes are not
-    /// required to be unique (`dispatch.rs`'s placeholder class objects
-    /// already share hash 0, and `hash` is the only thing that reads one --
-    /// object identity is `Rc` identity, never the hash), so a world that
-    /// exhausts the counter is better served by handing out a shared
-    /// `u32::MAX` than by aborting the process. Reachable in *one*
-    /// allocation once `image::load` may set the counter from a file:
-    /// `advance_identity_hash_past` puts it wherever the image's maximum
-    /// says, so the `+= 1` here is on an image-controlled path.
+    /// A thin delegate; see `Heap::alloc_identity_hash`'s doc comment for why
+    /// this saturates instead of wrapping or panicking.
     pub fn alloc_identity_hash(&mut self) -> u32 {
-        let h = self.next_identity_hash;
-        self.next_identity_hash = self.next_identity_hash.saturating_add(1);
-        h
+        self.heap.alloc_identity_hash()
     }
 
     /// After `image::load`: never hand out an identity hash a loaded object
@@ -209,14 +200,24 @@ impl Interpreter {
     /// `max < u32::MAX` is the caller's guarantee, and an enforced one:
     /// `image::decode` refuses an image carrying `u32::MAX` outright
     /// (`DecodeError::IdentityHashExhausted`), because there is no counter
-    /// value past it. That refusal is what keeps `max + 1` here in range;
-    /// `alloc_identity_hash`'s own saturation is what keeps the *next*
-    /// allocation in range when the image's maximum is one below the
-    /// ceiling.
+    /// value past it. That refusal is what keeps `Heap::advance_identity_hash_past`'s
+    /// `max.saturating_add(1)` in range; `alloc_identity_hash`'s own
+    /// saturation is what keeps the *next* allocation in range when the
+    /// image's maximum is one below the ceiling.
     pub(crate) fn advance_identity_hash_past(&mut self, max: u32) {
-        if self.next_identity_hash <= max {
-            self.next_identity_hash = max + 1;
-        }
+        self.heap.advance_identity_hash_past(max);
+    }
+
+    /// The heap, for reading. Public so integration tests can exercise the
+    /// seam directly; the field itself stays `pub(crate)` so no caller
+    /// outside the crate can hold one across a call back into the
+    /// interpreter.
+    pub fn heap_ref(&self) -> &Heap {
+        &self.heap
+    }
+
+    pub fn heap_mut(&mut self) -> &mut Heap {
+        &mut self.heap
     }
 
     /// An ordinary (explicit-receiver) send: `newspeak-spec.pdf` §5.5.
@@ -251,10 +252,10 @@ impl Interpreter {
         // second `doesNotUnderstand:` path, only a second class to try
         // `lookup_public` against first.
         if let Value::Obj(obj) = &receiver {
-            let is_class = matches!(obj.borrow().data, ObjectData::Class(_));
+            let is_class = self.heap.is_class(obj);
             if is_class {
                 if let Some(metaclass) = self.metaclass_of(obj) {
-                    match dispatch::lookup_public(&metaclass, selector) {
+                    match dispatch::lookup_public(&self.heap, &metaclass, selector) {
                         Lookup::Method(method, defining_class) => {
                             return self.invoke_method(
                                 receiver,
@@ -285,7 +286,7 @@ impl Interpreter {
             }
         }
         let class = self.class_of(&receiver);
-        match dispatch::lookup_public(&class, selector) {
+        match dispatch::lookup_public(&self.heap, &class, selector) {
             Lookup::Method(method, defining_class) => self.invoke_method(
                 receiver,
                 method,
@@ -403,7 +404,7 @@ impl Interpreter {
         // `{selector. args}` rather than a real MessageMirror object
         // (mirrors are a later milestone's Non-Goal). Callers relying on a
         // real `MessageMirror` API are out of scope.
-        match dispatch::lookup_defined_for(&class, dnu_selector) {
+        match dispatch::lookup_defined_for(&self.heap, &class, dnu_selector) {
             Lookup::Method(method, defining_class) => {
                 let selector_value = self.new_symbol(selector);
                 let args_value = Value::Obj(self.new_array(args));
@@ -532,7 +533,7 @@ impl Interpreter {
             Some(code) => (code.num_registers - code.num_args) as usize,
             None => method.decl.as_ref().map_or(0, |d| d.body.temps.len()),
         };
-        let frame = Rc::new(RefCell::new(Frame {
+        let frame = self.heap.alloc_frame(Frame {
             receiver,
             args,
             temps: vec![Value::Nil; temp_count],
@@ -550,7 +551,7 @@ impl Interpreter {
             kind: FrameKind::Method(method.clone()),
             uncontinuable: false,
             slot_base: 0, // a method body never contains InitSlot
-        }));
+        });
         let result = match (&compiled, &method.decl) {
             (Some(code), _) => crate::vm::run_code(self, &frame, code, &bindings),
             (None, Some(decl)) => self.run_statements(&decl.body.stmts, &frame, &bindings),
@@ -562,10 +563,10 @@ impl Interpreter {
                  decoded from an image"
             ),
         };
-        frame.borrow_mut().uncontinuable = true;
+        self.heap.mark_uncontinuable(&frame);
         match result {
             Ok(value) => Ok(value),
-            Err(Signal::Return(target, value)) if Rc::ptr_eq(&target, &frame) => Ok(value),
+            Err(Signal::Return(target, value)) if target.same(&frame) => Ok(value),
             Err(other) => Err(other),
         }
     }
@@ -578,7 +579,7 @@ impl Interpreter {
     ) -> EvalResult {
         let mut last = Value::Nil;
         for (i, stmt) in stmts.iter().enumerate() {
-            frame.borrow_mut().pc = i;
+            self.heap.set_frame_pc(frame, i);
             match stmt {
                 ast::Stmt::Expr(e) => {
                     last = eval::eval_expr(self, e, frame, bindings)?;
@@ -594,22 +595,22 @@ impl Interpreter {
         // invocation handles the closure case directly and never calls
         // `run_statements` through this method-shaped path for a closure
         // body's implicit-return value; see Task 6 Step 2.
-        match &frame.borrow().kind {
-            FrameKind::Method(_) => Ok(frame.borrow().receiver.clone()),
-            _ => Ok(last),
+        if self.heap.frame_is_method(frame) {
+            Ok(self.heap.receiver(frame))
+        } else {
+            Ok(last)
         }
     }
 
-    fn raise_return(&self, frame: &FrameRef, value: Value) -> Signal {
-        let target = match &frame.borrow().kind {
-            FrameKind::Method(_)
-            | FrameKind::TopLevel
-            | FrameKind::Initializer(_)
-            | FrameKind::SuperclassClause(_)
-            | FrameKind::SuperclassMessage(_) => frame.clone(),
-            FrameKind::Closure(closure) => closure.home.clone(),
-        };
-        if target.borrow().uncontinuable {
+    fn raise_return(&mut self, frame: &FrameRef, value: Value) -> Signal {
+        // `Frame.home` is populated exactly when `kind` is
+        // `FrameKind::Closure` (`eval::invoke_closure` sets it to that
+        // closure's own `home` at construction, and nothing else ever sets
+        // it), so reading it here reaches the same target the per-kind
+        // match used to: the closure's enclosing method/initializer for a
+        // block activation, or the activation itself for every other kind.
+        let target = self.heap.frame_home(frame).unwrap_or_else(|| frame.clone());
+        if self.heap.frame_is_uncontinuable(&target) {
             return Signal::Error(NewspeakError {
                 selector: Symbol::intern("^"),
                 receiver: value,
@@ -617,17 +618,17 @@ impl Interpreter {
                     .to_string(),
             });
         }
-        target.borrow_mut().uncontinuable = true;
+        self.heap.mark_uncontinuable(&target);
         Signal::Return(target, value)
     }
 
-    pub(crate) fn raise_return_pub(&self, frame: &FrameRef, value: Value) -> Signal {
+    pub(crate) fn raise_return_pub(&mut self, frame: &FrameRef, value: Value) -> Signal {
         self.raise_return(frame, value)
     }
 
     pub fn class_of(&self, value: &Value) -> ClassRef {
         match value {
-            Value::Obj(obj) => obj.borrow().class.clone(),
+            Value::Obj(obj) => self.heap.class_of_obj(obj),
             // Nil/Bool/SmallInt/Float classes are wired up by the bootstrap
             // (Task 11) into interpreter-held globals; Task 7-10 read them
             // via `Interpreter::builtin_class(kind)` (added in Task 7).
@@ -688,15 +689,13 @@ impl Interpreter {
         let mut super_metaclass: Option<ClassRef> = None;
         let mut level = class.clone();
         loop {
-            let (cached, superclass) = {
-                let borrowed = level.borrow();
-                match &borrowed.data {
-                    ObjectData::Class(data) => (data.metaclass.clone(), data.superclass.clone()),
-                    // Not a class object: it has no metaclass, and nothing
-                    // below it can inherit one through this level.
-                    _ => break,
-                }
-            };
+            // Not a class object: it has no metaclass, and nothing below it
+            // can inherit one through this level.
+            if !self.heap.is_class(&level) {
+                break;
+            }
+            let cached = self.heap.class_metaclass(&level);
+            let superclass = self.heap.class_superclass(&level);
             if cached.is_some() {
                 super_metaclass = cached;
                 break;
@@ -706,17 +705,13 @@ impl Interpreter {
             level = superclass;
         }
         for level in chain.iter().rev() {
-            let (own_mixin, enclosing, declaring_class) = {
-                let borrowed = level.borrow();
-                match &borrowed.data {
-                    ObjectData::Class(data) => (
-                        data.application.mixin.clone(),
-                        data.enclosing.clone(),
-                        data.declaring_class.clone(),
-                    ),
-                    _ => unreachable!("only class objects are pushed onto the chain"),
-                }
-            };
+            let own_application = self
+                .heap
+                .class_application(level)
+                .expect("only class objects are pushed onto the chain");
+            let own_mixin = own_application.mixin.clone();
+            let enclosing = self.heap.class_enclosing(level);
+            let declaring_class = self.heap.class_declaring(level);
             let class_side = own_mixin.class_side.clone();
             let class_side_mixin = match class_side {
                 Some(mixin) => mixin,
@@ -736,7 +731,7 @@ impl Interpreter {
             };
             let super_application = super_metaclass
                 .as_ref()
-                .and_then(dispatch::class_application);
+                .and_then(|metaclass| self.heap.class_application(metaclass));
             let application = self.apply_mixin(&class_side_mixin, super_application.as_ref());
             // §6.3.1: a class side is written inside the same class
             // declaration its instance side is, and `resolver::resolve_class`
@@ -747,9 +742,8 @@ impl Interpreter {
             // starting a new, empty one.
             let metaclass =
                 self.new_class_object(application, enclosing, declaring_class, super_metaclass);
-            match &mut level.borrow_mut().data {
-                ObjectData::Class(data) => data.metaclass = Some(metaclass.clone()),
-                _ => unreachable!("checked above"),
+            if !self.heap.set_class_metaclass(level, metaclass.clone()) {
+                unreachable!("only class objects are pushed onto the chain");
             }
             super_metaclass = Some(metaclass);
         }
@@ -773,12 +767,7 @@ impl Interpreter {
     }
 
     fn new_instance_object(&mut self, class: ClassRef, data: ObjectData) -> ObjRef {
-        let identity_hash = self.alloc_identity_hash();
-        Rc::new(RefCell::new(Object {
-            class,
-            identity_hash,
-            data,
-        }))
+        self.heap.alloc_object(class, data)
     }
 
     pub fn new_array(&mut self, elements: Vec<Value>) -> ObjRef {
@@ -871,11 +860,9 @@ impl Interpreter {
         superclass: Option<ClassRef>,
     ) -> ClassRef {
         let class = self.builtin_class(BuiltinClass::Object);
-        let identity_hash = self.alloc_identity_hash();
-        Rc::new(RefCell::new(Object {
+        self.heap.alloc_object(
             class,
-            identity_hash,
-            data: ObjectData::Class(ClassData {
+            ObjectData::Class(ClassData {
                 application,
                 enclosing,
                 declaring_class,
@@ -883,7 +870,7 @@ impl Interpreter {
                 builtin: None,
                 metaclass: None,
             }),
-        }))
+        )
     }
 
     pub fn apply_mixin(
@@ -983,14 +970,14 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
     // original draft did) -- `BuiltinClass::Object` and `crate::types::Object`
     // (the object-model struct, brought into scope by `use crate::types::*;`
     // above) share the bare name `Object`. A glob-import of the enum's
-    // variants shadows the struct, so `Object { class: ..., .. }` below
-    // would silently try to build a `BuiltinClass::Object` unit variant
-    // with named fields instead of a `types::Object` struct literal -- a
-    // compile error the type checker catches, but only because the fields
-    // don't match; a differently-shaped `Object` struct could have made
-    // this shadow compile into the wrong construction entirely. Referring
-    // to every variant through its `BuiltinClass::` qualifier avoids the
-    // collision.
+    // variants shadows the struct, so any bare `Object { .. }` literal
+    // elsewhere in this function would silently try to build a
+    // `BuiltinClass::Object` unit variant with named fields instead of a
+    // `types::Object` struct literal -- a compile error the type checker
+    // catches, but only because the fields don't match; a differently-shaped
+    // `Object` struct could have made this shadow compile into the wrong
+    // construction entirely. Referring to every variant through its
+    // `BuiltinClass::` qualifier avoids the collision.
     let kinds = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
@@ -1024,10 +1011,9 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
                 interp.apply_mixin(&builtin_mixin(kind), Some(&object_application)),
             )
         };
-        let obj = Rc::new(RefCell::new(Object {
-            class: class_of_class.clone(),
-            identity_hash: interp.alloc_identity_hash(),
-            data: ObjectData::Class(ClassData {
+        let obj = interp.heap.alloc_object(
+            class_of_class.clone(),
+            ObjectData::Class(ClassData {
                 application,
                 enclosing: None,
                 declaring_class: None,
@@ -1035,7 +1021,7 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
                 builtin: Some(kind),
                 metaclass: None,
             }),
-        }));
+        );
         map.insert(kind, obj);
     }
     map.insert(BuiltinClass::Object, class_of_class);
@@ -1053,50 +1039,19 @@ fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
 
 /// Builds the single, genuinely self-referential `Object`-tagged class
 /// object every `BuiltinClass` shares as its own `.class` (see this task's
-/// design note on the bootstrap's identity problem). `Object.class` is
-/// non-optional (no `Option`/`Weak`), so this cannot be built via
-/// `Rc::new_cyclic` in one safe step: `new_cyclic`'s closure only ever
-/// gets a `Weak` that fails to upgrade until construction finishes, and
-/// using `unreachable!()` as a throwaway placeholder panics immediately on
-/// evaluation (eager, not lazy) rather than compiling to something inert.
-/// Instead: allocate the memory uninitialized, mint a second strong `Rc`
-/// handle to the SAME allocation (its count balanced via
-/// `Rc::increment_strong_count` before `Rc::from_raw`), write the real
-/// value using that handle as `class`, then `assume_init`. This is the
-/// same technique already reviewed and approved for `types.rs`'s
-/// `dummy_class` test helper (Task 3) and reused correctly in
-/// `dispatch.rs`'s test helper (Task 5) -- here it builds a real,
-/// production bootstrap object, not a test fixture.
+/// design note on the bootstrap's identity problem). The unsafe
+/// construction itself lives in `heap::bootstrap_self_referential_object` --
+/// see its doc comment for why `Object.class` being non-optional forces
+/// this out of safe Rust.
 fn build_self_referential_object_class(
     application: Rc<crate::mixin::MixinApplication>,
 ) -> ClassRef {
-    let uninit: Rc<std::mem::MaybeUninit<RefCell<Object>>> = Rc::new_uninit();
-    let raw_mut = Rc::as_ptr(&uninit) as *mut std::mem::MaybeUninit<RefCell<Object>>;
-    let data_ptr = raw_mut as *const RefCell<Object>;
-    // SAFETY: `data_ptr` points at the allocation `uninit` owns; we bump
-    // its strong count by one before minting a second `Rc` handle to it
-    // via `from_raw`, so the two handles (`uninit`, and the `class` field
-    // written below) share a correctly balanced count. `MaybeUninit<T>` is
-    // guaranteed to have the same layout as `T`, so the pointer cast is
-    // sound; neither handle is dereferenced before the `write` below
-    // completes.
-    unsafe { Rc::increment_strong_count(data_ptr) };
-    let self_ref: ClassRef = unsafe { Rc::from_raw(data_ptr) };
-    unsafe {
-        (*raw_mut).write(RefCell::new(Object {
-            class: self_ref,
-            identity_hash: 0,
-            data: ObjectData::Class(ClassData {
-                application,
-                enclosing: None,
-                declaring_class: None,
-                superclass: None,
-                builtin: Some(BuiltinClass::Object),
-                metaclass: None,
-            }),
-        }));
-    }
-    // SAFETY: the write above just initialized the payload; `uninit` is
-    // the allocation's original handle, now fully initialized.
-    unsafe { uninit.assume_init() }
+    crate::heap::bootstrap_self_referential_object(ObjectData::Class(ClassData {
+        application,
+        enclosing: None,
+        declaring_class: None,
+        superclass: None,
+        builtin: Some(BuiltinClass::Object),
+        metaclass: None,
+    }))
 }

@@ -61,8 +61,9 @@ That guarantee covers **decoding**. `ns-next load` on a stateless binary instant
 and sends the recorded entry with no flag at all, so loading one *runs its code* --
 with the same exposure as running the equivalent source, including that recursion
 depth is bounded only by the native stack until the VM is trampolined (see
-`docs/design/execution.md`, "Planned: trampolined sends"). A mutated binary that
-decodes cleanly can still abort while executing, and that is not a decoder defect.
+`docs/design/execution.md`, "Planned: activations on a stack, reified on
+demand"). A mutated binary that decodes cleanly can still abort while executing,
+and that is not a decoder defect.
 
 **A wire tag is assigned once and never renumbered or reused.** Every instruction,
 literal and graph-section tag is declared in `crates/ns-runtime/src/image/opcodes.rs`
@@ -75,9 +76,14 @@ artifact would decode into a *different, perfectly valid* program and run it, re
 nothing. Retiring numbers means those bytes hit an unknown tag and are refused.
 
 **Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an `EvalResult`.**
-The bootstrap `Object` class is its own `.class`, so `Debug` on a `Value::Obj` recurses
-forever, and `Signal` deliberately has no `Debug` (it holds a `FrameRef` cycle). Tests
-unwrap through a local `expect_ok` helper — copy the one in a neighbouring test file.
+`ObjRef` and `FrameRef` each carry a hand-written `Debug` that prints identity only, so
+`Debug` on a `Value::Obj` no longer recurses — but it still renders Rust internals such
+as `ObjRef(#42)`, which is useless in a Newspeak-facing message where `Heap::describe`
+answers "the String \"foo\"". `Signal` deliberately has no `Debug` impl of its own, which
+means `EvalResult` (`Result<Value, Signal>`) has none either: `Result::unwrap`/`expect`
+require `E: Debug`, so calling either — or writing `{:?}` on an `EvalResult` — is a
+compile error, not a lapse a reviewer has to catch by hand. Tests unwrap through a local
+`expect_ok` helper — copy the one in a neighbouring test file.
 
 **A class object is per enclosing instance; behaviour is the `MixinApplication`, shared.**
 `ClassData` carries identity and an `enclosing` object; method lookup, slots and layout
@@ -155,3 +161,20 @@ is hand-rolled on purpose.
   are execution records — left as written once complete.
 - Comments should explain the decision, not restate the mechanics. The reason a check
   exists — what it prevents — is the part a later reader cannot reconstruct.
+- **Object and frame access goes through `crates/ns-runtime/src/heap.rs`, not
+  directly through a handle.** The seam exists so that replacing the store
+  behind a handle — `Rc<RefCell<_>>` today, an arena next — is a change to
+  one file rather than to the 193 call sites (109 under `src`, 84 in the
+  integration tests) the workspace held before it.
+  `ObjRef` and `FrameRef`'s inner `Rc<RefCell<_>>` is `pub(crate)`, which the
+  compiler enforces only at the crate boundary: `ns-cli` and the
+  integration-test crates under `crates/ns-runtime/tests/` cannot reach it
+  at all. Inside `ns-runtime`'s own `src/`, `pub(crate)` is visible from
+  every module — `types.rs` and `heap.rs` share no private parent that would
+  narrow it further — so containment there is discipline, checked by the
+  grep gate (`grep -rn "\.borrow()\|\.borrow_mut()" crates --include=*.rs |
+  grep -v "src/heap.rs\|src/types.rs"` must be empty), not something the
+  compiler refuses on its own. If an accessor you need is missing, add it
+  there; never widen a field's visibility to reach past it. The accessors
+  copy out rather than lend out on purpose; see `docs/design/memory.md`,
+  "The seam".

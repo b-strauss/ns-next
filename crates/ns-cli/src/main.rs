@@ -267,7 +267,11 @@ fn bootstrap_with_engine(
     let mut interp = ns_runtime::Interpreter::bootstrap();
     let class = interp.load_module(&loaded.resolved);
     if engine == EngineArg::Bytecode {
-        let compiled = ns_runtime::compiler::compile_module(&class, &loaded.resolved.bindings);
+        let compiled = ns_runtime::compiler::compile_module(
+            interp.heap_ref(),
+            &class,
+            &loaded.resolved.bindings,
+        );
         interp
             .set_engine(ns_runtime::Engine::Bytecode(compiled))
             // Only `Engine::TreeWalk` on a loaded world is ever refused,
@@ -311,13 +315,13 @@ fn report_entry_send(result: Result<ns_runtime::Value, ns_runtime::Signal>) -> E
 /// refused here, before a guessed argument could reach `instantiate` and
 /// fail for a reason this message never mentions.
 fn factory_args_for(
+    heap: &ns_runtime::Heap,
     class: &ns_runtime::ClassRef,
     platform: ns_runtime::Value,
 ) -> Result<Vec<ns_runtime::Value>, String> {
-    let factory = match &class.borrow().data {
-        ns_runtime::ObjectData::Class(data) => data.application.mixin.factory,
-        _ => None,
-    };
+    let factory = heap
+        .class_application(class)
+        .and_then(|app| app.mixin.factory);
     match factory {
         // No declared factory (a builtin root, in principle) or a unary
         // one: a unary selector takes no arguments by definition, so there
@@ -337,7 +341,7 @@ fn factory_args_for(
             "cannot instantiate `{}`: its primary factory `{}` takes {} argument(s), and \
              this CLI only knows how to send a zero-argument factory or a one-argument \
              `usingPlatform:`",
-            class_name(class),
+            class_name(heap, class),
             factory.selector,
             factory.num_args
         )),
@@ -350,11 +354,10 @@ fn factory_args_for(
 /// stateless binary, from `image::load`'s rebuilt root class -- so the
 /// fallback is unreachable in practice and exists only to keep this a total
 /// function.
-fn class_name(class: &ns_runtime::ClassRef) -> String {
-    match &class.borrow().data {
-        ns_runtime::ObjectData::Class(data) => data.application.mixin.name.to_string(),
-        _ => "<non-class>".to_string(),
-    }
+fn class_name(heap: &ns_runtime::Heap, class: &ns_runtime::ClassRef) -> String {
+    heap.class_application(class)
+        .map(|app| app.mixin.name.to_string())
+        .unwrap_or_else(|| "<non-class>".to_string())
 }
 
 /// How many arguments `selector` takes, read off its spelling.
@@ -420,7 +423,7 @@ fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
     let bindings = loaded.resolved.bindings.clone();
     let (mut interp, class) = bootstrap_with_engine(&loaded, engine);
     let platform = interp.platform();
-    let factory_args = match factory_args_for(&class, platform.clone()) {
+    let factory_args = match factory_args_for(interp.heap_ref(), &class, platform.clone()) {
         Ok(args) => args,
         Err(msg) => {
             eprintln!("error: {msg}");
@@ -455,7 +458,7 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
     let bindings = loaded.resolved.bindings.clone();
     let (mut interp, class) = bootstrap_with_engine(&loaded, EngineArg::Bytecode);
     let platform = interp.platform();
-    let factory_args = match factory_args_for(&class, platform.clone()) {
+    let factory_args = match factory_args_for(interp.heap_ref(), &class, platform.clone()) {
         Ok(args) => args,
         Err(msg) => {
             eprintln!("error: {msg}");
@@ -490,6 +493,7 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
         .compiled_module()
         .expect("bootstrap_with_engine installed the bytecode engine");
     let bytes = match ns_runtime::image::snapshot(
+        interp.heap_ref(),
         debug_source.then_some(loaded.source.as_str()),
         &loaded.origin,
         &class,
@@ -590,7 +594,7 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
         // concern -- nothing in the runtime needs to know it was invoked
         // from a terminal.
         let platform = interp.platform();
-        let factory_args = match factory_args_for(&root_class, platform) {
+        let factory_args = match factory_args_for(interp.heap_ref(), &root_class, platform) {
             Ok(args) => args,
             Err(msg) => {
                 eprintln!("error: {msg}");
@@ -723,7 +727,7 @@ fn bench_engine(
 ) -> Result<BenchStats, String> {
     let (mut interp, class) = bootstrap_with_engine(loaded, engine);
     let platform = interp.platform();
-    let factory_args = factory_args_for(&class, platform.clone())?;
+    let factory_args = factory_args_for(interp.heap_ref(), &class, platform.clone())?;
     let entry_args_list = entry_args(send, platform)?;
     let selector = ns_runtime::Symbol::intern(send);
 
@@ -901,11 +905,24 @@ fn looks_like_an_artifact(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && &bytes[0..4] == ns_runtime::image::encode::MAGIC
 }
 
+/// The mixin behind a class object, or the message for the one case where
+/// there is none. Shared by both of `cmd_disasm`'s branches so each can
+/// read it from its own `class` while that class's interpreter is still
+/// alive, rather than through a `Heap` built after the fact.
+fn root_mixin_of(
+    heap: &ns_runtime::Heap,
+    class: &ns_runtime::ClassRef,
+) -> Result<Rc<ns_runtime::Mixin>, String> {
+    heap.class_application(class)
+        .map(|app| app.mixin.clone())
+        .ok_or_else(|| "internal: loaded module did not produce a class object".to_string())
+}
+
 /// `ns-next disasm`: for a `.ns` file, bootstrap and compile the *whole*
 /// mixin tree (`compiler::compile_module`, exactly as the bytecode engine
 /// would); for a serialized artifact, decode it directly and reuse its own
 /// code table instead of recompiling anything. Either way, the result is a
-/// `(class, module)` pair from which a `--class` path can address any
+/// `(root_mixin, module)` pair from which a `--class` path can address any
 /// mixin's code, then look up exactly one method or the target mixin's
 /// initializer and print its bytecode listing. The source path never
 /// instantiates and never installs the bytecode engine -- compile only; the
@@ -927,10 +944,16 @@ fn cmd_disasm(
 
     // Two ways to reach the same pair. Compiling from source needs the
     // resolver.s bindings; an artifact already carries compiled bodies, so
-    // loading it is a decode and nothing is recompiled. Both hand back owning
-    // values, so whichever interpreter was built along the way is dropped at
-    // the end of its arm.
-    let (class, module) = if looks_like_an_artifact(&raw) {
+    // loading it is a decode and nothing is recompiled. Each arm reads
+    // `root_mixin` out of its own `class` before that arm's interpreter (or
+    // `loaded.interp`) goes out of scope, rather than a fresh `Heap`
+    // afterwards: a `Heap` built after the interpreter that allocated
+    // `class` is gone would still read `class` correctly today, purely
+    // because `Heap` is a bare counter and every instance is
+    // interchangeable -- but a moving arena's fresh `Heap` starts out
+    // holding nothing, and the read would silently miss instead of finding
+    // `class`'s data.
+    let (root_mixin, module) = if looks_like_an_artifact(&raw) {
         match ns_runtime::image::load(&raw) {
             Ok(loaded) => {
                 let module = loaded
@@ -938,7 +961,14 @@ fn cmd_disasm(
                     .compiled_module()
                     .expect("load installed the bytecode engine")
                     .clone();
-                (loaded.root_class.clone(), module)
+                let root_mixin = match root_mixin_of(loaded.interp.heap_ref(), &loaded.root_class) {
+                    Ok(m) => m,
+                    Err(msg) => {
+                        eprintln!("error: {msg}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+                (root_mixin, module)
             }
             Err(e) => {
                 eprintln!("error: {}: {e}", file.display());
@@ -951,16 +981,16 @@ fn cmd_disasm(
             Err(code) => return code,
         };
         let bindings = loaded.resolved.bindings.clone();
-        let (_interp, class) = bootstrap_with_engine(&loaded, EngineArg::TreeWalk);
-        let module = ns_runtime::compiler::compile_module(&class, &bindings);
-        (class, module)
-    };
-    let root_mixin = match &class.borrow().data {
-        ns_runtime::ObjectData::Class(data) => data.application.mixin.clone(),
-        _ => {
-            eprintln!("error: internal: loaded module did not produce a class object");
-            return ExitCode::FAILURE;
-        }
+        let (interp, class) = bootstrap_with_engine(&loaded, EngineArg::TreeWalk);
+        let module = ns_runtime::compiler::compile_module(interp.heap_ref(), &class, &bindings);
+        let root_mixin = match root_mixin_of(interp.heap_ref(), &class) {
+            Ok(m) => m,
+            Err(msg) => {
+                eprintln!("error: {msg}");
+                return ExitCode::FAILURE;
+            }
+        };
+        (root_mixin, module)
     };
     let mixin = match resolve_mixin_path(&root_mixin, class_path) {
         Ok(m) => m,
@@ -1079,12 +1109,13 @@ fn cmd_inspect(artifact: &Path, full: bool) -> ExitCode {
 /// from that table, silently breaking the guarantee above instead of
 /// refusing the build. No test catches that today: every fixture here
 /// inherits directly from `Object`.
-fn root_class_answers(class: &ns_runtime::ClassRef, selector: &str) -> bool {
+fn root_class_answers(
+    heap: &ns_runtime::Heap,
+    class: &ns_runtime::ClassRef,
+    selector: &str,
+) -> bool {
     let sym = ns_runtime::Symbol::intern(selector);
-    let mut app = match &class.borrow().data {
-        ns_runtime::ObjectData::Class(data) => Some(data.application.clone()),
-        _ => None,
-    };
+    let mut app = heap.class_application(class);
     while let Some(a) = app {
         if a.mixin.methods.contains_key(&sym) {
             return true;
@@ -1108,7 +1139,9 @@ fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -
 
     let entry = match entry {
         Some(e) => e.to_string(),
-        None if root_class_answers(&class, "main:args:") => "main:args:".to_string(),
+        None if root_class_answers(interp.heap_ref(), &class, "main:args:") => {
+            "main:args:".to_string()
+        }
         None => {
             eprintln!(
                 "error: {} declares no `main:args:`; pass --entry with the selector to send",
@@ -1122,7 +1155,7 @@ fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -
         eprintln!("error: cannot use `{entry}` as an entry point: {msg}");
         return ExitCode::FAILURE;
     }
-    if !root_class_answers(&class, &entry) {
+    if !root_class_answers(interp.heap_ref(), &class, &entry) {
         eprintln!(
             "error: the root class of {} does not answer `{entry}`",
             file.display()
@@ -1134,6 +1167,7 @@ fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -
         .compiled_module()
         .expect("bootstrap_with_engine installed the bytecode engine");
     let bytes = match ns_runtime::image::build(
+        interp.heap_ref(),
         debug_source.then_some(loaded.source.as_str()),
         &loaded.origin,
         &class,

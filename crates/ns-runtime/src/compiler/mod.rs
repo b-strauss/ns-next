@@ -16,7 +16,7 @@ use ns_syntax::Span;
 
 use crate::bytecode::{method_key, CodeKind, CompiledCode, CompiledModule};
 use crate::mixin::{mixin_key, Mixin};
-use crate::types::{Binding, ClassRef, ObjectData};
+use crate::types::{Binding, ClassRef};
 
 use lower::Lowerer;
 
@@ -63,16 +63,22 @@ pub fn compile_method(
 /// `compile_mixin_initializer`; kept as a `ClassRef`-taking entry point
 /// because `ns-cli`'s `disasm` and this module's own tests address a class
 /// directly, without going through `compile_module`'s tree walk.
+///
+/// Takes `heap` rather than building one: a throwaway `Heap` reads correctly
+/// only by accident of today's `Rc<RefCell<_>>` representation, where every
+/// instance is interchangeable because the only state `Heap` carries is an
+/// identity-hash counter this call never touches. Once `Heap` owns the
+/// arena, a freshly constructed one is an *empty* arena, and this lookup
+/// would silently miss instead of failing loudly -- exactly the failure
+/// mode the seam exists to prevent.
 pub fn compile_initializer(
+    heap: &crate::Heap,
     class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> CompiledCode {
-    let mixin = {
-        let borrowed = class.borrow();
-        let ObjectData::Class(data) = &borrowed.data else {
-            panic!("internal: compile_initializer called on a non-class object");
-        };
-        data.application.mixin.clone()
+    let mixin = match heap.class_application(class) {
+        Some(app) => app.mixin.clone(),
+        None => panic!("internal: compile_initializer called on a non-class object"),
     };
     compile_mixin_initializer(&mixin, bindings)
 }
@@ -181,16 +187,16 @@ fn compile_superclass_message(
     Some(lowerer.finish(clause.span))
 }
 
+/// Takes `heap` rather than building one; see `compile_initializer`'s doc
+/// comment for why a throwaway `Heap` is unsafe under the planned arena.
 pub fn compile_module(
+    heap: &crate::Heap,
     root_class: &ClassRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> CompiledModule {
-    let root_mixin = {
-        let borrowed = root_class.borrow();
-        match &borrowed.data {
-            ObjectData::Class(data) => data.application.mixin.clone(),
-            _ => panic!("internal: compile_module called on a non-class object"),
-        }
+    let root_mixin = match heap.class_application(root_class) {
+        Some(app) => app.mixin.clone(),
+        None => panic!("internal: compile_module called on a non-class object"),
     };
     let mut module = CompiledModule {
         methods: HashMap::new(),

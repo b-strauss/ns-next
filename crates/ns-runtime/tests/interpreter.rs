@@ -4,14 +4,13 @@
 //! (Task 5) uses, extended here to actually *run* method bodies rather than
 //! only look them up.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use ns_runtime::interpreter::eval;
 use ns_runtime::{
     Binding, ClassData, ClosureData, Frame, FrameKind, Interpreter, Mixin, MixinApplication,
-    NewspeakError, Object, ObjectData, Signal, Symbol, Value,
+    NewspeakError, ObjectData, Signal, Symbol, Value,
 };
 
 /// A placeholder `ClassRef` whose own `.class` field points back to itself.
@@ -21,38 +20,10 @@ use ns_runtime::{
 /// real bootstrapped class hierarchy, so there is no other object to point
 /// at. None of these tests ever read a class object's own `.class` field,
 /// so any non-panicking placeholder is sufficient; a self-referential one
-/// is the simplest to build.
-///
-/// Safe Rust cannot construct a strong `Rc<RefCell<T>>` that already holds
-/// a strong `Rc` to itself in one expression. This uses the same
-/// allocate-uninitialized-then-write technique as `types.rs`'s and
-/// `dispatch.rs`'s own test helpers (Tasks 3, 5): mint a second strong
-/// handle to the same not-yet-initialized allocation (balancing the strong
-/// count via `Rc::increment_strong_count` before calling `Rc::from_raw`),
-/// write the real value using that handle as `class`, then `assume_init`.
+/// is the simplest to build. The unsafe construction itself lives in
+/// `ns_runtime::heap::bootstrap_self_referential_object`.
 fn dummy_class() -> ns_runtime::ClassRef {
-    let uninit: Rc<std::mem::MaybeUninit<RefCell<Object>>> = Rc::new_uninit();
-    let raw_mut = Rc::as_ptr(&uninit) as *mut std::mem::MaybeUninit<RefCell<Object>>;
-    let data_ptr = raw_mut as *const RefCell<Object>;
-    // SAFETY: `data_ptr` points at the allocation `uninit` owns; we bump
-    // its strong count by one before minting a second `Rc` handle to it via
-    // `from_raw`, so the two handles (`uninit`, and the `class` field
-    // written below) share a correctly balanced count. `MaybeUninit<T>` is
-    // guaranteed to have the same layout as `T`, so the pointer cast is
-    // sound; we never dereference through either handle before the `write`
-    // below completes.
-    unsafe { Rc::increment_strong_count(data_ptr) };
-    let self_ref: ns_runtime::ClassRef = unsafe { Rc::from_raw(data_ptr) };
-    unsafe {
-        (*raw_mut).write(RefCell::new(Object {
-            class: self_ref,
-            identity_hash: 0,
-            data: ObjectData::Instance(vec![]),
-        }));
-    }
-    // SAFETY: the write above just initialized the payload; `uninit` is
-    // the allocation's original handle, now fully initialized.
-    unsafe { uninit.assume_init() }
+    ns_runtime::heap::bootstrap_self_referential_object(ObjectData::Instance(vec![]))
 }
 
 /// Parses `src` (a full one-class module) and returns the class's own
@@ -86,8 +57,11 @@ fn parse_methods(
 
 /// Builds a `ClassRef` whose `methods` map holds every method in `methods`,
 /// keyed by its own selector name (works for the unary selectors these
-/// tests use).
+/// tests use). Allocated through `interp`'s own heap even though it is
+/// never linked into a real hierarchy, so every handle in these tests comes
+/// from the one seam production code goes through.
 fn class_with_methods(
+    interp: &mut Interpreter,
     name: &str,
     methods: Vec<Rc<ns_syntax::ast::MethodDecl>>,
 ) -> ns_runtime::ClassRef {
@@ -96,10 +70,9 @@ fn class_with_methods(
         let method = ns_runtime::mixin::MixinMethod::from_decl(m);
         map.insert(method.selector, Rc::new(method));
     }
-    Rc::new(RefCell::new(Object {
-        class: dummy_class(),
-        identity_hash: 0,
-        data: ObjectData::Class(ClassData {
+    interp.heap_mut().alloc_placeholder_object(
+        dummy_class(),
+        ObjectData::Class(ClassData {
             // A root application, built directly rather than through
             // `Interpreter::apply_mixin`: these classes are never linked
             // into a real hierarchy, so there is no superclass application
@@ -121,25 +94,23 @@ fn class_with_methods(
             builtin: None,
             metaclass: None,
         }),
-    }))
+    )
 }
 
-fn instance_of(class: ns_runtime::ClassRef) -> ns_runtime::ObjRef {
-    Rc::new(RefCell::new(Object {
-        class,
-        identity_hash: 1,
-        data: ObjectData::Instance(vec![]),
-    }))
+fn instance_of(interp: &mut Interpreter, class: ns_runtime::ClassRef) -> ns_runtime::ObjRef {
+    interp
+        .heap_mut()
+        .alloc_object(class, ObjectData::Instance(vec![]))
 }
 
 #[test]
 fn method_with_no_explicit_return_returns_self() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public bar = ( 1. 2 )\n) : ()";
     let (methods, bindings) = parse_methods(src);
-    let class = class_with_methods("Foo", methods);
-    let instance = instance_of(class);
-
     let mut interp = Interpreter::new();
+    let class = class_with_methods(&mut interp, "Foo", methods);
+    let instance = instance_of(&mut interp, class);
+
     let result = interp.send(
         Value::Obj(instance.clone()),
         Symbol::intern("bar"),
@@ -150,10 +121,13 @@ fn method_with_no_explicit_return_returns_self() {
 
     match result {
         Ok(Value::Obj(obj)) => assert!(
-            Rc::ptr_eq(&obj, &instance),
+            obj.same(&instance),
             "a method with no explicit return must yield the receiver (self), not the last expression's value"
         ),
-        Ok(other) => panic!("expected Value::Obj(self), got {other:?}"),
+        Ok(other) => panic!(
+            "expected Value::Obj(self), got {}",
+            interp.heap_ref().describe(&other)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return -- `send` should never see one escape `invoke_method`"),
         Err(Signal::Error(e)) => panic!("unexpected Signal::Error: {}", e.message),
     }
@@ -163,10 +137,10 @@ fn method_with_no_explicit_return_returns_self() {
 fn method_with_explicit_return_returns_the_returned_value() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public answer = ( ^42 )\n) : ()";
     let (methods, bindings) = parse_methods(src);
-    let class = class_with_methods("Foo", methods);
-    let instance = instance_of(class);
-
     let mut interp = Interpreter::new();
+    let class = class_with_methods(&mut interp, "Foo", methods);
+    let instance = instance_of(&mut interp, class);
+
     let result = interp.send(
         Value::Obj(instance),
         Symbol::intern("answer"),
@@ -178,7 +152,8 @@ fn method_with_explicit_return_returns_the_returned_value() {
     match result {
         Ok(v) => assert!(
             matches!(v, Value::SmallInt(42)),
-            "expected Value::SmallInt(42), got {v:?}"
+            "expected Value::SmallInt(42), got {}",
+            interp.heap_ref().describe(&v)
         ),
         Err(Signal::Return(..)) => panic!(
             "unexpected Signal::Return -- `send` should never see one escape `invoke_method`"
@@ -211,7 +186,13 @@ fn method_frame() -> ns_runtime::FrameRef {
     let method = Rc::new(ns_runtime::mixin::MixinMethod::from_decl(Rc::new(
         module.root_class.instance_side.methods[0].clone(),
     )));
-    Rc::new(RefCell::new(Frame {
+    // No live interpreter here. `Heap` today holds only an identity-hash
+    // counter, so a freshly built one allocates `Frame` correctly no matter
+    // which heap (if any) built it. Once the arena lands, `alloc_frame` will
+    // allocate *into* the heap and the temporary below will drop before the
+    // returned handle leaves this function, so this fixture will need
+    // rewriting alongside it.
+    ns_runtime::Heap::new().alloc_frame(Frame {
         receiver: Value::Nil,
         args: vec![],
         temps: vec![],
@@ -223,7 +204,7 @@ fn method_frame() -> ns_runtime::FrameRef {
         kind: FrameKind::Method(method),
         uncontinuable: false,
         slot_base: 0,
-    }))
+    })
 }
 
 /// Gap 1 (Task 12 brief): sending a method whose body contains a bare
@@ -238,10 +219,10 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
     let src =
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public bar = ( ^OrderedCollection new )\n) : ()";
     let (methods, bindings) = parse_methods(src);
-    let class = class_with_methods("Foo", methods);
-    let instance = instance_of(class);
-
     let mut interp = Interpreter::bootstrap();
+    let class = class_with_methods(&mut interp, "Foo", methods);
+    let instance = instance_of(&mut interp, class);
+
     let result = interp.send(
         Value::Obj(instance),
         Symbol::intern("bar"),
@@ -252,13 +233,17 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
 
     match result {
         Ok(Value::Obj(obj)) => {
+            let elements = interp.heap_ref().array_elements(&obj);
             assert!(
-                matches!(&obj.borrow().data, ObjectData::Array(elems) if elems.is_empty()),
-                "expected a fresh, empty OrderedCollection instance, got {:?}",
-                obj.borrow().data
+                matches!(&elements, Some(elems) if elems.is_empty()),
+                "expected a fresh, empty OrderedCollection instance, got {}",
+                interp.heap_ref().describe(&Value::Obj(obj.clone()))
             );
         }
-        Ok(other) => panic!("expected Value::Obj(<OrderedCollection instance>), got {other:?}"),
+        Ok(other) => panic!(
+            "expected Value::Obj(<OrderedCollection instance>), got {}",
+            interp.heap_ref().describe(&other)
+        ),
         Err(Signal::Return(..)) => panic!(
             "unexpected Signal::Return -- `send` should never see one escape `invoke_method`"
         ),
@@ -293,22 +278,25 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
 
     // This is exactly the check `Interpreter::invoke_method` performs to
     // convert a matching `Signal::Return` back into an ordinary value
-    // (`Err(Signal::Return(target, value)) if Rc::ptr_eq(&target, &frame)`)
+    // (`Err(Signal::Return(target, value)) if target.same(&frame)`)
     // -- reproduced here since `home` was hand-built rather than produced
     // by a live `invoke_method` call (which block dispatch would normally
     // supply starting Task 10).
     match result {
         Err(Signal::Return(target, Value::SmallInt(1))) => {
             assert!(
-                Rc::ptr_eq(&target, &home),
-                "a non-local return must target the block's home *method* activation, not the block's own -- invoke_method's Rc::ptr_eq catch depends on this"
+                target.same(&home),
+                "a non-local return must target the block's home *method* activation, not the block's own -- invoke_method's FrameRef::same catch depends on this"
             );
         }
         Ok(_) => {
             panic!("expected the block's `^1` to raise a non-local return, not return normally")
         }
         Err(Signal::Return(_, other)) => {
-            panic!("expected Signal::Return(_, SmallInt(1)), got value {other:?}")
+            panic!(
+                "expected Signal::Return(_, SmallInt(1)), got value {}",
+                interp.heap_ref().describe(&other)
+            )
         }
         Err(Signal::Error(e)) => {
             panic!("expected Signal::Return, got Signal::Error: {}", e.message)
@@ -338,10 +326,10 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
     // method having now returned.
     let first = eval::invoke_closure(&mut interp, &closure, vec![], &bindings, None);
     assert!(
-        matches!(first, Err(Signal::Return(ref target, Value::SmallInt(1))) if Rc::ptr_eq(target, &home))
+        matches!(first, Err(Signal::Return(ref target, Value::SmallInt(1))) if target.same(&home))
     );
     assert!(
-        home.borrow().uncontinuable,
+        interp.heap_ref().frame_is_uncontinuable(&home),
         "a successful non-local return must mark its target uncontinuable"
     );
 
@@ -421,7 +409,10 @@ fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() 
                 || message.to_lowercase().contains("cannot return"),
             "expected a cannotReturn-shaped error message, got: {message}"
         ),
-        Ok(v) => panic!("expected a cannotReturn NewspeakError, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a cannotReturn NewspeakError, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!(
             "a non-local return into an already-returned home method escaped `send` as a raw \
              Signal::Return -- the home frame was never marked uncontinuable"

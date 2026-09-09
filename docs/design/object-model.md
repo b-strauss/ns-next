@@ -1,7 +1,8 @@
 # Object model — values, objects, mixins, classes
 
 > **Status:** built.
-> **Code:** `crates/ns-runtime/src/types.rs`, `mixin.rs`,
+> **Code:** `crates/ns-runtime/src/types.rs` (the handle types themselves),
+> `heap.rs` (every read and write of one), `mixin.rs`,
 > `interpreter/instantiate.rs`, `interpreter/nested.rs`.
 
 ## Values and objects
@@ -29,8 +30,10 @@ and identity has to be stable across a snapshot. See [memory.md](memory.md).
 its defining frame for closure semantics and its home activation for non-local
 return.
 
-**Never `{:?}` a `Value`.** The bootstrap `Object` class is its own `.class`, so
-`Debug` on a `Value::Obj` recurses forever.
+**Never `{:?}` a `Value`.** `ObjRef`'s hand-written `Debug` prints identity
+only, so this no longer recurses -- but it renders Rust internals such as
+`ObjRef(#42)`, useless in a message meant for a Newspeak programmer.
+`Heap::describe` answers "the String \"foo\"" instead.
 
 ## Three layers, not one
 
@@ -244,9 +247,27 @@ and cheap to carry.
 ## Planned: arena allocation and handles
 
 `Rc<RefCell<Object>>` is the Milestone 1 model and still in place. Replacing it
-with an arena and handles is what a moving collector requires, and it is designed
-in [memory.md](memory.md), which also covers what the change costs the
-tree-walking engine.
+with an arena of typed handles is the largest item in Milestone 4, and it is
+designed in [memory.md](memory.md) together with the root discipline that goes
+with it and what the change costs the tree-walking engine.
+
+Two consequences belong here rather than there, because they are about this
+document's subject.
+
+**An activation is an object too.** `Frame` moves into the same change: instead
+of one `Rc<RefCell<Frame>>` per activation, activations become entries in a stack
+and are reified into frame objects on demand. That is designed in
+[execution.md](execution.md), and it is not a separable second project — frame
+storage would otherwise be built twice, once on `Rc` and once on the arena.
+
+**`become:` becomes expressible.** Adding or removing an instance slot on a class
+with live instances requires allocating new-shape instances, copying fields and
+swapping identity, which the layout model already anticipates: the class owns the
+layout and access resolves through the current one. What is missing today is a
+representation in which identity can be swapped at all. Object forwarding in a
+moving collector supplies it, so the MirrorBuilder in
+[liveness-and-reflection.md](liveness-and-reflection.md) stops being blocked on
+the representation.
 
 ## Decisions
 

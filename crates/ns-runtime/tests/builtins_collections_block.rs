@@ -3,12 +3,9 @@
 //! (`crate::builtins::block`), wired through `crate::builtins::dispatch_native`
 //! via `Interpreter::send` -- same pattern as `tests/builtins_boolean_numbers.rs`.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
-use ns_runtime::{
-    BuiltinClass, Interpreter, Object, ObjectData, ResolvedModule, Signal, Symbol, Value,
-};
+use ns_runtime::{BuiltinClass, Interpreter, ObjectData, ResolvedModule, Signal, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both --
@@ -34,10 +31,17 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     }
 }
 
-fn expect_error(result: Result<Value, Signal>, what: &str) -> ns_runtime::NewspeakError {
+fn expect_error(
+    heap: &ns_runtime::Heap,
+    result: Result<Value, Signal>,
+    what: &str,
+) -> ns_runtime::NewspeakError {
     match result {
         Err(Signal::Error(e)) => e,
-        Ok(v) => panic!("{what}: expected a NewspeakError, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "{what}: expected a NewspeakError, got Ok({})",
+            heap.describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
     }
 }
@@ -53,12 +57,11 @@ fn expect_error(result: Result<Value, Signal>, what: &str) -> ns_runtime::Newspe
 /// internally, is sufficient to exercise `dispatch_ordered_collection`.
 fn new_ordered_collection(interp: &mut Interpreter) -> Value {
     let class = interp.builtin_class(BuiltinClass::OrderedCollection);
-    let identity_hash = interp.alloc_identity_hash();
-    Value::Obj(Rc::new(RefCell::new(Object {
-        class,
-        identity_hash,
-        data: ObjectData::Array(vec![]),
-    })))
+    Value::Obj(
+        interp
+            .heap_mut()
+            .alloc_object(class, ObjectData::Array(vec![])),
+    )
 }
 
 #[test]
@@ -79,7 +82,10 @@ fn array_at_returns_the_one_based_element() {
     );
     match expect_ok(result, "{1. 2. 3} at: 2") {
         Value::SmallInt(2) => {}
-        other => panic!("expected Value::SmallInt(2), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(2), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -99,7 +105,7 @@ fn array_at_out_of_range_is_a_newspeak_error_not_a_panic() {
         &resolved.bindings,
         None,
     );
-    let err = expect_error(result, "{1. 2. 3} at: 5");
+    let err = expect_error(interp.heap_ref(), result, "{1. 2. 3} at: 5");
     assert!(
         err.message.to_lowercase().contains("range"),
         "expected an out-of-range-shaped error message, got: {}",
@@ -124,7 +130,10 @@ fn array_at_put_writes_and_returns_the_receiver() {
     );
     match expect_ok(result, "at:put: then at:") {
         Value::SmallInt(99) => {}
-        other => panic!("expected Value::SmallInt(99), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(99), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -149,7 +158,10 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
     );
     match expect_ok(result, "{1. 2. 3} do: [:x | sum := sum + x]") {
         Value::SmallInt(6) => {}
-        other => panic!("expected Value::SmallInt(6), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(6), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -177,7 +189,10 @@ fn ordered_collection_add_and_size_through_a_real_cascade() {
     );
     match expect_ok(result, "OrderedCollection new add: 1; add: 2; size") {
         Value::SmallInt(2) => {}
-        other => panic!("expected Value::SmallInt(2), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(2), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -195,7 +210,10 @@ fn ordered_collection_add_returns_the_argument_not_the_receiver() {
     );
     match expect_ok(result, "OrderedCollection add: 42") {
         Value::SmallInt(42) => {}
-        other => panic!("expected Value::SmallInt(42) (the argument), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(42) (the argument), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -211,10 +229,39 @@ fn ordered_collection_at_out_of_range_is_a_newspeak_error_not_a_panic() {
         &bindings,
         None,
     );
-    let err = expect_error(result, "OrderedCollection (empty) at: 1");
+    let err = expect_error(interp.heap_ref(), result, "OrderedCollection (empty) at: 1");
     assert!(
         err.message.to_lowercase().contains("range"),
         "expected an out-of-range-shaped error message, got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
+    // Regression: `not_an_integer`'s message used to `{:?}`-format the
+    // argument. A `Value::Obj` there recurses through `Object`'s
+    // self-referential bootstrap class until the stack gives out, so the
+    // process aborted instead of reporting. Every existing `at:` test here
+    // passed a `SmallInt` index, which formats harmlessly, which is why the
+    // defect survived.
+    let mut interp = Interpreter::bootstrap();
+    let bindings = Rc::new(std::collections::HashMap::new());
+    let receiver = Value::Obj(interp.new_array(vec![Value::SmallInt(1)]));
+    let index = Value::Obj(interp.new_string("not an integer".to_string()));
+
+    let result = interp.send(
+        receiver,
+        Symbol::intern("at:"),
+        vec![index],
+        &bindings,
+        None,
+    );
+
+    let err = expect_error(interp.heap_ref(), result, "{1} at: 'not an integer'");
+    assert!(
+        err.message.contains("requires an Integer index"),
+        "unexpected message: {}",
         err.message
     );
 }
@@ -236,7 +283,10 @@ fn block_value_invokes_a_zero_arg_closure() {
     );
     match expect_ok(result, "[42] value") {
         Value::SmallInt(42) => {}
-        other => panic!("expected Value::SmallInt(42), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(42), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -257,7 +307,10 @@ fn block_value_colon_passes_the_argument_positionally() {
     );
     match expect_ok(result, "[:x | x + 1] value: 41") {
         Value::SmallInt(42) => {}
-        other => panic!("expected Value::SmallInt(42), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(42), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -278,7 +331,10 @@ fn block_num_args_reports_the_declared_parameter_count() {
     );
     match expect_ok(result, "[:x :y | x + y] numArgs") {
         Value::SmallInt(2) => {}
-        other => panic!("expected Value::SmallInt(2), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(2), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -301,7 +357,11 @@ fn block_called_with_too_few_arguments_is_a_newspeak_error_not_a_panic() {
         &resolved.bindings,
         None,
     );
-    let err = expect_error(result, "[:x | x] value (0 args, 1 param)");
+    let err = expect_error(
+        interp.heap_ref(),
+        result,
+        "[:x | x] value (0 args, 1 param)",
+    );
     assert!(
         err.message.to_lowercase().contains("argument"),
         "expected an argument-count-shaped error message, got: {}",
@@ -326,7 +386,7 @@ fn block_called_with_too_many_arguments_is_a_newspeak_error_not_a_panic() {
         &resolved.bindings,
         None,
     );
-    let err = expect_error(result, "[42] value: 1 (1 arg, 0 params)");
+    let err = expect_error(interp.heap_ref(), result, "[42] value: 1 (1 arg, 0 params)");
     assert!(
         err.message.to_lowercase().contains("argument"),
         "expected an argument-count-shaped error message, got: {}",
@@ -367,28 +427,37 @@ fn an_invoked_blocks_frame_records_its_sender() {
     );
 
     let Value::Obj(obj) = &result else {
-        panic!("expected the inner block literal as a Value::Obj, got {result:?}");
+        panic!(
+            "expected the inner block literal as a Value::Obj, got {}",
+            interp.heap_ref().describe(&result)
+        );
     };
-    let outer_block_frame = match &obj.borrow().data {
-        ObjectData::Closure(c) => c.captured_frame.clone(),
-        other => panic!("expected ObjectData::Closure, got {other:?}"),
-    };
+    let outer_block_frame = interp
+        .heap_ref()
+        .closure_data(obj)
+        .unwrap_or_else(|| panic!("expected ObjectData::Closure"))
+        .captured_frame;
 
-    let borrowed = outer_block_frame.borrow();
-    let sender = borrowed
-        .sender
-        .as_ref()
+    let sender = interp
+        .heap_ref()
+        .frame_sender(&outer_block_frame)
         .expect("an invoked block's frame must record the activation that invoked it");
-    let sender = sender.borrow();
     assert!(
-        matches!(sender.kind, ns_runtime::FrameKind::Method(_)),
+        matches!(
+            interp.heap_ref().frame_kind(&sender),
+            ns_runtime::FrameKind::Method(_)
+        ),
         "the block's sender must be `m`'s own method activation"
     );
-    match (&sender.receiver, &receiver) {
+    match (interp.heap_ref().receiver(&sender), &receiver) {
         (Value::Obj(a), Value::Obj(b)) => assert!(
-            Rc::ptr_eq(a, b),
+            a.same(b),
             "the sender frame's receiver must be the instance `m` was sent to"
         ),
-        other => panic!("expected two Value::Obj receivers, got {other:?}"),
+        (s, r) => panic!(
+            "expected two Value::Obj receivers, got {} and {}",
+            interp.heap_ref().describe(&s),
+            interp.heap_ref().describe(r)
+        ),
     }
 }

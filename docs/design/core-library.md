@@ -60,18 +60,66 @@ bignum. Arbitrary-precision integers are not built.
 This is observable to any program that overflows, which is why it is a recorded
 deviation rather than an implementation detail.
 
-## Planned
+## Planned: the leaf/callback split
 
-Nothing is designed beyond "widen when a whitelisted module demands it". The
-shape of a real collections library, of arbitrary-precision integers, and of the
-mirror-based reflection protocol the platform would hand out are all open; the
-last of those is sketched in
-[liveness-and-reflection.md](liveness-and-reflection.md).
+The shape of a real collections library, of arbitrary-precision integers, and of
+the mirror-based reflection protocol the platform would hand out are all open;
+the last of those is sketched in
+[liveness-and-reflection.md](liveness-and-reflection.md). Beyond that, "widen
+when a whitelisted module demands it" still governs what gets added.
+
+What is decided is *where a builtin may live*, and it is a constraint on future
+work rather than a wish. Everything in this runtime must stay optimizable,
+builtins included: a builtin must eventually be able to become native code. A
+Rust native that calls back into Newspeak cannot. Written as a Rust loop that
+re-enters the interpreter, `do:` can never have its block inlined into the loop,
+never be type-specialized, and never be compiled as a unit — not because the JIT
+is immature, but because no compiler optimizes through an opaque Rust function
+body. That is a permanent ceiling on the methods that are hottest in real code.
+
+Both reference implementations avoid this rather than accept it. V8 writes the
+builtins that involve control flow or call user code in Torque/CodeStubAssembler,
+a form its own compiler understands and can call without crossing a C++ boundary,
+and keeps plain C++ runtime functions only for the slow paths it is content to
+leave opaque. Cog writes `do:` in Smalltalk and keeps only irreducible leaf
+operations as primitives.
+
+**The rule: a native that calls back into Newspeak must not stay a Rust native.**
+A native that is a leaf computation should stay one, and should get an inlined
+fast path instead. Today ten selectors call back, through
+`builtins::call_block`, and they have three different destinations:
+
+| Selector | Destination |
+|---|---|
+| `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler, with the native kept as the guarded fallback — already how it works for the literal-block case |
+| `whileTrue:`, `whileFalse:` | The same, and already done |
+| `value`, `value:`, … | Absorbed by the trampoline: activating a closure is what the activation stack does. See [execution.md](execution.md) |
+| `do:` | Written in Newspeak |
+
+So exactly one of today's methods actually moves to Newspeak. Everything else in
+`builtins/` — `size`, `at:`, `class`, `hash`, `printString`, the arithmetic, the
+comparisons, `asString`, `asSymbol` — is a leaf and stays Rust permanently.
+
+**The ordering matters and is the opposite of the obvious one.** `do:` in
+Newspeak costs an activation for `do:` itself plus real sends for the loop
+mechanism, on top of the block activation per element it already pays. Against
+the ~165 ns per activation and ~97 ns per native send measured in
+[execution.md](execution.md), that is a regression today and free once the
+activation stack and inline caches exist. So the move happens *after* those, not
+before. What Milestone 4 owes this section is only that it not deepen the
+investment in Rust callbacks while it is rewriting the code around them.
+
+A related item, same cause: native dispatch selects with `match
+selector.as_str()`, a string-comparison chain on the hot path that accounts for
+part of the measured 97 ns and is not a shape a compiler can specialize either.
 
 ## Decisions
 
-- **Native Rust rather than Newspeak source**, for artifact size and for the
-  trust boundary.
+- **Leaf primitives are native Rust; anything that calls back into Newspeak is
+  not**, because a Rust callback is a permanent barrier to optimization. This
+  narrows the earlier "native Rust rather than Newspeak source" decision rather
+  than reversing it: the reasons for that decision — artifact size and the trust
+  boundary — apply to leaves, which are almost all of the library.
 - **The platform grows only against a whitelisted module**, so every capability
   has a test that would notice it breaking.
 - **`i64` with an error on overflow**, rather than silent wraparound or a bignum

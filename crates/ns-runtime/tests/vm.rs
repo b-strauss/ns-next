@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::{
-    compiler, Binding, ClassRef, ClosureBody, Engine, Interpreter, NewspeakError, ObjectData,
-    Signal, SourceOrigin, Symbol, Value,
+    compiler, Binding, ClassRef, ClosureBody, Engine, Heap, Interpreter, NewspeakError, Signal,
+    SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
@@ -30,7 +30,7 @@ fn load(src: &str) -> (Interpreter, ClassRef, Bindings) {
 /// Loads `src` and switches the interpreter to the bytecode engine.
 fn setup(src: &str) -> (Interpreter, ClassRef, Bindings) {
     let (mut interp, class, bindings) = load(src);
-    let compiled = compiler::compile_module(&class, &bindings);
+    let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
     interp
         .set_engine(Engine::Bytecode(compiled))
         .expect("a source-built interpreter accepts the bytecode engine");
@@ -72,14 +72,12 @@ fn send(
     interp.send(receiver, Symbol::intern(selector), args, bindings, None)
 }
 
-fn string_of(v: &Value) -> String {
+fn string_of(heap: &Heap, v: &Value) -> String {
     let Value::Obj(obj) = v else {
         panic!("expected a string object")
     };
-    match &obj.borrow().data {
-        ObjectData::Str(s) => s.clone(),
-        _ => panic!("expected ObjectData::Str"),
-    }
+    heap.str_value(obj)
+        .unwrap_or_else(|| panic!("expected ObjectData::Str"))
 }
 
 fn int_of(v: &Value) -> i64 {
@@ -114,9 +112,10 @@ fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
         let Value::Obj(obj) = &block else {
             panic!("expected a closure object")
         };
-        let ObjectData::Closure(closure) = &obj.borrow().data else {
-            panic!("expected a closure")
-        };
+        let closure = interp
+            .heap_ref()
+            .closure_data(obj)
+            .unwrap_or_else(|| panic!("expected a closure"));
         assert!(
             matches!(closure.body, ClosureBody::Compiled(_)),
             "a closure created by the bytecode engine must carry compiled code"
@@ -188,7 +187,7 @@ fn a_super_send_falls_through_to_objects_native_print_string() {
     let (mut interp, class, bindings) = setup(src);
     let instance = new_instance(&mut interp, &class, &bindings);
     let result = expect_ok(send(&mut interp, instance, "foo", vec![], &bindings), "foo");
-    assert_eq!(string_of(&result), "an Object");
+    assert_eq!(string_of(interp.heap_ref(), &result), "an Object");
 }
 
 #[test]
@@ -209,7 +208,7 @@ fn a_non_local_return_from_a_natively_invoked_block_unwinds_to_the_bytecode_fram
         send(&mut interp, instance, "main", vec![], &bindings),
         "main",
     );
-    assert_eq!(string_of(&result), "foundnot found");
+    assert_eq!(string_of(interp.heap_ref(), &result), "foundnot found");
 }
 
 #[test]
@@ -253,7 +252,7 @@ fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks()
         ),
         "foo:",
     );
-    assert_eq!(string_of(&yes), "yes");
+    assert_eq!(string_of(interp.heap_ref(), &yes), "yes");
     let no = expect_ok(
         send(
             &mut interp,
@@ -264,7 +263,7 @@ fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks()
         ),
         "foo:",
     );
-    assert_eq!(string_of(&no), "no");
+    assert_eq!(string_of(interp.heap_ref(), &no), "no");
 }
 
 #[test]
@@ -309,9 +308,10 @@ fn a_dynamic_array_literal_evaluates_its_elements_under_bytecode() {
     let Value::Obj(obj) = &result else {
         panic!("expected an array object")
     };
-    let ObjectData::Array(elements) = &obj.borrow().data else {
-        panic!("expected ObjectData::Array")
-    };
+    let elements = interp
+        .heap_ref()
+        .array_elements(obj)
+        .unwrap_or_else(|| panic!("expected ObjectData::Array"));
     assert_eq!(
         elements.iter().map(int_of).collect::<Vec<_>>(),
         vec![1, 2, 3]
@@ -327,7 +327,7 @@ fn a_method_that_falls_off_its_end_implicitly_returns_self() {
         send(&mut interp, instance.clone(), "foo", vec![], &bindings),
         "foo",
     );
-    assert!(matches!((&result, &instance), (Value::Obj(a), Value::Obj(b)) if Rc::ptr_eq(a, b)));
+    assert!(matches!((&result, &instance), (Value::Obj(a), Value::Obj(b)) if a.same(b)));
 }
 
 #[test]
@@ -342,9 +342,10 @@ fn the_tree_walk_engine_is_still_the_default() {
         "makeBlock",
     );
     let Value::Obj(obj) = &block else { panic!() };
-    let ObjectData::Closure(closure) = &obj.borrow().data else {
-        panic!()
-    };
+    let closure = interp
+        .heap_ref()
+        .closure_data(obj)
+        .unwrap_or_else(|| panic!());
     assert!(matches!(closure.body, ClosureBody::Ast(_)));
 }
 
@@ -369,7 +370,7 @@ fn a_correctly_sent_method_reads_its_temporary_as_nil_under_both_engines() {
             send(&mut interp, instance, "probe", vec![], &bindings),
             "probe",
         );
-        assert_eq!(string_of(&result), "nil-ok");
+        assert_eq!(string_of(interp.heap_ref(), &result), "nil-ok");
     }
 }
 

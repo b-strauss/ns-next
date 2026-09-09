@@ -2,7 +2,7 @@
 //! (`newspeak-spec.pdf` §5.5).
 
 use crate::types::*;
-use crate::{Interpreter, Symbol};
+use crate::{Heap, Interpreter, Symbol};
 
 pub fn dispatch(
     interp: &mut Interpreter,
@@ -14,7 +14,9 @@ pub fn dispatch(
         "class" => Some(Ok(Value::Obj(interp.class_of(&receiver)))),
         "==" => Some(Ok(Value::Bool(identical(&receiver, &args[0])))),
         "=" => Some(Ok(Value::Bool(identical(&receiver, &args[0])))), // Object's default: identity
-        "hash" => Some(Ok(Value::SmallInt(identity_hash_of(&receiver) as i64))),
+        "hash" => Some(Ok(Value::SmallInt(
+            identity_hash_of(&interp.heap, &receiver) as i64,
+        ))),
         "printString" => Some(Ok(Value::Obj(interp.new_string("an Object".to_string())))),
         "doesNotUnderstand:" => {
             // Object's default doesNotUnderstand: (spec §5.5): must be
@@ -22,7 +24,7 @@ pub fn dispatch(
             // NewspeakError. Milestone 1 has no exception-class hierarchy
             // (Non-Goal); this produces the NewspeakError value directly
             // rather than a catchable Newspeak object.
-            let msg_selector = extract_dnu_selector(&args[0]);
+            let msg_selector = extract_dnu_selector(&interp.heap, &args[0]);
             Some(Err(NewspeakError {
                 selector: msg_selector,
                 receiver: receiver.clone(),
@@ -43,14 +45,14 @@ fn identical(a: &Value, b: &Value) -> bool {
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::SmallInt(x), Value::SmallInt(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => x.to_bits() == y.to_bits(),
-        (Value::Obj(x), Value::Obj(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::Obj(x), Value::Obj(y)) => x.same(y),
         _ => false,
     }
 }
 
-fn identity_hash_of(value: &Value) -> u32 {
+fn identity_hash_of(heap: &Heap, value: &Value) -> u32 {
     match value {
-        Value::Obj(obj) => obj.borrow().identity_hash,
+        Value::Obj(obj) => heap.identity_hash(obj),
         _ => 0, // primitives are values; Milestone 1 does not give them a
                 // distinct identity hash (revisit if a fixture needs one)
     }
@@ -60,15 +62,13 @@ fn describe(_value: &Value, _interp: &Interpreter) -> String {
     "an object".to_string() // Task 9's printString work supersedes this for real classes
 }
 
-fn extract_dnu_selector(message_mirror_shaped_array: &Value) -> Symbol {
+fn extract_dnu_selector(heap: &Heap, message_mirror_shaped_array: &Value) -> Symbol {
     // Matches `Interpreter::does_not_understand`'s `{selector. args}` array
     // shape from Task 6.
     if let Value::Obj(obj) = message_mirror_shaped_array {
-        if let ObjectData::Array(elements) = &obj.borrow().data {
-            if let Some(Value::Obj(sym_obj)) = elements.first() {
-                if let ObjectData::Sym(s) = &sym_obj.borrow().data {
-                    return *s;
-                }
+        if let Some(Value::Obj(sym_obj)) = heap.array_at(obj, 0) {
+            if let Some(s) = heap.sym_value(&sym_obj) {
+                return s;
             }
         }
     }

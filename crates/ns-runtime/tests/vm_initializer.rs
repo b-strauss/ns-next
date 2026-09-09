@@ -1,14 +1,13 @@
 //! Hook 3: instance initializers (slot initializers + initExprs) under the
 //! bytecode engine, compared against the tree-walker.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::{
     compiler, Binding, BuiltinClass, ClassData, ClassRef, ClosureBody, Engine, FrameKind,
-    Interpreter, Mixin, MixinApplication, Object, ObjectData, Signal, SourceOrigin, Symbol, Value,
+    Interpreter, Mixin, MixinApplication, ObjectData, Signal, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
@@ -26,7 +25,7 @@ fn load(src: &str, bytecode: bool) -> (Interpreter, ClassRef, Bindings) {
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
     if bytecode {
-        let compiled = compiler::compile_module(&class, &bindings);
+        let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
         interp
             .set_engine(Engine::Bytecode(compiled))
             .expect("a source-built interpreter accepts the bytecode engine");
@@ -93,16 +92,22 @@ fn both_engines_produce_identical_instance_state() {
 #[test]
 fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initializer_frame() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n  | blk = [ 3 ]. |\n) (\n  public blk2 = ( ^blk )\n) : ()";
-    let v = instantiate_and_get(src, true, vec![], "blk2");
+    let (mut interp, class, bindings) = load(src, true);
+    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
+    let v = expect_ok(
+        interp.send(instance, Symbol::intern("blk2"), vec![], &bindings, None),
+        "blk2",
+    );
     let Value::Obj(obj) = &v else {
         panic!("expected a closure object")
     };
-    let ObjectData::Closure(closure) = &obj.borrow().data else {
-        panic!("expected a closure")
-    };
+    let closure = interp
+        .heap_ref()
+        .closure_data(obj)
+        .unwrap_or_else(|| panic!("expected a closure"));
     assert!(matches!(closure.body, ClosureBody::Compiled(_)));
     assert!(matches!(
-        closure.home.borrow().kind,
+        interp.heap_ref().frame_kind(&closure.home),
         FrameKind::Initializer(_)
     ));
 }
@@ -170,11 +175,9 @@ fn make_class(
     class_of_class: ClassRef,
     application: Rc<MixinApplication>,
 ) -> ClassRef {
-    let identity_hash = interp.alloc_identity_hash();
-    Rc::new(RefCell::new(Object {
-        class: class_of_class,
-        identity_hash,
-        data: ObjectData::Class(ClassData {
+    interp.heap_mut().alloc_object(
+        class_of_class,
+        ObjectData::Class(ClassData {
             application,
             enclosing: None,
             declaring_class: None,
@@ -187,23 +190,20 @@ fn make_class(
             builtin: None,
             metaclass: None,
         }),
-    }))
+    )
 }
 
 /// The `SmallInt` held at `instance`'s field `index` -- `Value` has no
 /// `PartialEq`, so this reads through the one variant the test needs
 /// instead of comparing `Value`s directly.
-fn field_at(instance: &Value, index: usize) -> i64 {
+fn field_at(heap: &ns_runtime::Heap, instance: &Value, index: usize) -> i64 {
     let Value::Obj(obj) = instance else {
         panic!("expected an instance")
     };
-    let borrowed = obj.borrow();
-    let ObjectData::Instance(fields) = &borrowed.data else {
-        panic!("expected an Instance payload")
-    };
-    match &fields[index] {
-        Value::SmallInt(n) => *n,
-        _ => panic!("expected field {index} to hold a SmallInt"),
+    match heap.instance_field(obj, index) {
+        Some(Value::SmallInt(n)) => n,
+        Some(_) => panic!("expected field {index} to hold a SmallInt"),
+        None => panic!("expected an Instance payload"),
     }
 }
 
@@ -276,7 +276,11 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     for bytecode in [false, true] {
         interp
             .set_engine(if bytecode {
-                Engine::Bytecode(compiler::compile_module(&class_a, &bindings))
+                Engine::Bytecode(compiler::compile_module(
+                    interp.heap_ref(),
+                    &class_a,
+                    &bindings,
+                ))
             } else {
                 Engine::TreeWalk
             })
@@ -292,12 +296,12 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
             "instantiate b",
         );
         assert_eq!(
-            field_at(&a, app_a.own_slot_base),
+            field_at(interp.heap_ref(), &a, app_a.own_slot_base),
             11,
             "bytecode={bytecode}: a's own slot must land at its own application's absolute offset"
         );
         assert_eq!(
-            field_at(&b, app_b.own_slot_base),
+            field_at(interp.heap_ref(), &b, app_b.own_slot_base),
             22,
             "bytecode={bytecode}: b's own slot must land at its own application's absolute offset"
         );
@@ -346,7 +350,7 @@ class Levels = Object new () (
         // level's own argument is the one its own clause computed.
         for (index, expected) in [(0, 3), (1, 10), (2, 2), (3, 20), (4, 3), (5, 30)] {
             assert_eq!(
-                field_at(&leaf, index),
+                field_at(interp.heap_ref(), &leaf, index),
                 expected,
                 "bytecode={bytecode}: field {index} holds the wrong level's value"
             );

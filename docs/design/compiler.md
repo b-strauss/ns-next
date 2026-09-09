@@ -297,6 +297,34 @@ These are the first pieces of the VM's own introspection tooling, the equivalent
 of `d8`; the rest, inline-cache transition traces and deoptimization reasons,
 arrives with the mechanisms it would observe.
 
+## Follow-up: entry points that reach a class object only to find its mixin
+
+`compile_module`, `compile_initializer` and `image::encode_code_table` each
+take a `ClassRef` parameter, and each one's first move is to walk from it to
+the `Mixin` that backs it — "Keyed by mixin" above is this repository's own
+invariant, and none of these three addresses code any other way. Reaching a
+class object's `mixin` is a read only `heap.rs` may perform, so each of the
+three also needs a `&Heap` parameter purely to make that one hop.
+
+Taking the mixin directly instead of the class object would remove the need
+for a `Heap` at these three call sites — there is nothing else on the class
+object any of them reads. `ns-cli`'s `cmd_disasm` has the identical shape
+but not the identical fix: it takes no `ClassRef` parameter to narrow, since
+it builds a class object itself (from source, or from a loaded artifact)
+and reaches the mixin through its own `root_mixin_of` helper, needing a
+`Heap` for the same reason. Its fix is not "take a `Mixin` instead of a
+`ClassRef`" but "stop building a class object at all" — a different, and
+possibly larger, change.
+
+The pattern surfaced three separate times while migrating object and frame
+access onto the heap seam (`docs/design/memory.md`, "The seam"):
+`compile_initializer` and `compile_module` were each building a throwaway
+`Heap::new()` internally to make the same hop, which works only because
+today's `Heap` is a bare counter and would silently break under the planned
+arena; `cmd_disasm` carried the identical shape a third time. Recorded here
+as a follow-up rather than undertaken now, because narrowing the three
+signatures is a design change to this module's interface, not a migration.
+
 ## Decisions
 
 - **`Instr` is a Rust enum, not packed bytes.** Revisit only on profiling

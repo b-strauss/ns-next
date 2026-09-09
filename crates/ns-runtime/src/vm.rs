@@ -13,6 +13,7 @@ use std::rc::Rc;
 use ns_syntax::Span;
 
 use crate::bytecode::{CompiledCode, Instr, Literal};
+use crate::heap::Heap;
 use crate::interpreter::eval::{
     dispatch_lexical_send, dispatch_super_send, frame_at_depth, home_of, malformed_int_error,
     parse_int_literal, read_local, store_instance_field, unresolved_identifier_error, write_local,
@@ -46,31 +47,33 @@ pub fn run_code(
         match &code.instrs[pc] {
             Instr::LoadLiteral { dst, literal } => {
                 let v = make_value(interp, frame, literal)?;
-                write_local(frame, *dst, v);
+                write_local(&mut interp.heap, frame, *dst, v);
             }
             Instr::LoadSelf { dst } => {
-                let v = frame.borrow().receiver.clone();
-                write_local(frame, *dst, v);
+                let v = interp.heap.receiver(frame);
+                write_local(&mut interp.heap, frame, *dst, v);
             }
             Instr::LoadBuiltinClass { dst, kind } => {
                 let v = Value::Obj(interp.builtin_class(*kind));
-                write_local(frame, *dst, v);
+                write_local(&mut interp.heap, frame, *dst, v);
             }
             Instr::Move { dst, src } => {
-                let v = read_local(frame, *src);
-                write_local(frame, *dst, v);
+                let v = read_local(&interp.heap, frame, *src);
+                write_local(&mut interp.heap, frame, *dst, v);
             }
             Instr::StoreLocal { src, slot } => {
-                let v = read_local(frame, *src);
-                write_local(frame, *slot, v);
+                let v = read_local(&interp.heap, frame, *src);
+                write_local(&mut interp.heap, frame, *slot, v);
             }
             Instr::LoadOuterLocal { dst, depth, index } => {
-                let v = read_local(&frame_at_depth(frame, *depth), *index);
-                write_local(frame, *dst, v);
+                let target = frame_at_depth(&interp.heap, frame, *depth);
+                let v = read_local(&interp.heap, &target, *index);
+                write_local(&mut interp.heap, frame, *dst, v);
             }
             Instr::StoreOuterLocal { src, depth, index } => {
-                let v = read_local(frame, *src);
-                write_local(&frame_at_depth(frame, *depth), *index, v);
+                let v = read_local(&interp.heap, frame, *src);
+                let target = frame_at_depth(&interp.heap, frame, *depth);
+                write_local(&mut interp.heap, &target, *index, v);
             }
             Instr::SendPublic {
                 selector,
@@ -82,12 +85,12 @@ pub fn run_code(
                 // wired up to read or write it yet.
                 ..
             } => {
-                let receiver = read_local(frame, *receiver_reg);
-                let args = collect(frame, arg_regs);
-                frame.borrow_mut().pc = pc;
+                let receiver = read_local(&interp.heap, frame, *receiver_reg);
+                let args = collect(&interp.heap, frame, arg_regs);
+                interp.heap.set_frame_pc(frame, pc);
                 let result =
                     interp.send(receiver, *selector, args, bindings, Some(frame.clone()))?;
-                write_local(frame, *dst, result);
+                write_local(&mut interp.heap, frame, *dst, result);
             }
             Instr::SendLexical {
                 depth,
@@ -96,11 +99,11 @@ pub fn run_code(
                 dst,
                 ..
             } => {
-                let args = collect(frame, arg_regs);
-                frame.borrow_mut().pc = pc;
+                let args = collect(&interp.heap, frame, arg_regs);
+                interp.heap.set_frame_pc(frame, pc);
                 let result =
                     dispatch_lexical_send(interp, frame, *depth, *selector, args, bindings)?;
-                write_local(frame, *dst, result);
+                write_local(&mut interp.heap, frame, *dst, result);
             }
             Instr::SendSuper {
                 selector,
@@ -108,31 +111,31 @@ pub fn run_code(
                 dst,
                 ..
             } => {
-                let args = collect(frame, arg_regs);
-                frame.borrow_mut().pc = pc;
+                let args = collect(&interp.heap, frame, arg_regs);
+                interp.heap.set_frame_pc(frame, pc);
                 let result = dispatch_super_send(interp, frame, *selector, args, bindings)?;
-                write_local(frame, *dst, result);
+                write_local(&mut interp.heap, frame, *dst, result);
             }
             Instr::MakeClosure {
                 dst,
                 params,
                 code: block,
             } => {
-                frame.borrow_mut().pc = pc;
+                interp.heap.set_frame_pc(frame, pc);
                 let closure = Rc::new(ClosureData {
                     params: (**params).clone(),
                     body: ClosureBody::Compiled(block.clone()),
                     captured_frame: frame.clone(),
-                    home: home_of(frame),
+                    home: home_of(&interp.heap, frame),
                     bindings: bindings.clone(),
                 });
                 let v = Value::Obj(interp.new_closure(closure));
-                write_local(frame, *dst, v);
+                write_local(&mut interp.heap, frame, *dst, v);
             }
             Instr::MakeArray { dst, elem_regs } => {
-                let values = collect(frame, elem_regs);
+                let values = collect(&interp.heap, frame, elem_regs);
                 let v = Value::Obj(interp.new_array(values));
-                write_local(frame, *dst, v);
+                write_local(&mut interp.heap, frame, *dst, v);
             }
             Instr::InitSlot { src, own_index } => {
                 // Shares `store_instance_field` with
@@ -145,17 +148,17 @@ pub fn run_code(
                 // frame, from that level's own
                 // `MixinApplication.own_slot_base` -- is what turns it into
                 // this instance's actual absolute field index.
-                let v = read_local(frame, *src);
-                let receiver = frame.borrow().receiver.clone();
-                let base = frame.borrow().slot_base;
-                store_instance_field(&receiver, base + *own_index as usize, v);
+                let v = read_local(&interp.heap, frame, *src);
+                let receiver = interp.heap.receiver(frame);
+                let base = interp.heap.frame_slot_base(frame);
+                store_instance_field(&mut interp.heap, &receiver, base + *own_index as usize, v);
             }
             Instr::Return { reg } | Instr::ImplicitReturn { reg } => {
-                return Ok(read_local(frame, *reg));
+                return Ok(read_local(&interp.heap, frame, *reg));
             }
             Instr::NonLocalReturn { reg } => {
-                let v = read_local(frame, *reg);
-                frame.borrow_mut().pc = pc;
+                let v = read_local(&interp.heap, frame, *reg);
+                interp.heap.set_frame_pc(frame, pc);
                 return Err(interp.raise_return_pub(frame, v));
             }
             Instr::Jump { target } => {
@@ -163,19 +166,19 @@ pub fn run_code(
                 continue;
             }
             Instr::JumpIfNotBoolean { reg, target } => {
-                if !matches!(read_local(frame, *reg), Value::Bool(_)) {
+                if !matches!(read_local(&interp.heap, frame, *reg), Value::Bool(_)) {
                     pc = *target as usize;
                     continue;
                 }
             }
             Instr::BranchIfFalse { reg, target } => {
-                if matches!(read_local(frame, *reg), Value::Bool(false)) {
+                if matches!(read_local(&interp.heap, frame, *reg), Value::Bool(false)) {
                     pc = *target as usize;
                     continue;
                 }
             }
             Instr::BranchIfTrue { reg, target } => {
-                if matches!(read_local(frame, *reg), Value::Bool(true)) {
+                if matches!(read_local(&interp.heap, frame, *reg), Value::Bool(true)) {
                     pc = *target as usize;
                     continue;
                 }
@@ -189,8 +192,8 @@ pub fn run_code(
     }
 }
 
-fn collect(frame: &FrameRef, regs: &[u16]) -> Vec<Value> {
-    regs.iter().map(|r| read_local(frame, *r)).collect()
+fn collect(heap: &Heap, frame: &FrameRef, regs: &[u16]) -> Vec<Value> {
+    regs.iter().map(|r| read_local(heap, frame, *r)).collect()
 }
 
 /// Materializes a literal exactly as `eval::eval_literal` does -- including
@@ -218,7 +221,7 @@ fn make_value(interp: &mut Interpreter, frame: &FrameRef, literal: &Literal) -> 
             Err(message) => return Err(malformed_int_error(message)),
         },
         Literal::UnresolvedIdent(name) => {
-            let receiver = frame.borrow().receiver.clone();
+            let receiver = interp.heap.receiver(frame);
             return Err(unresolved_identifier_error(name, receiver));
         }
     })

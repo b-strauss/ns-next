@@ -1,8 +1,9 @@
 # Execution — activations, both engines, the VM
 
 > **Status:** built.
-> **Code:** `crates/ns-runtime/src/types.rs` (`Frame`), `vm.rs`, `interpreter/`
-> (the shared orchestration and the three engine hooks).
+> **Code:** `crates/ns-runtime/src/types.rs` (`Frame` and the `FrameRef`
+> handle), `heap.rs` (every read and write of an activation), `vm.rs`,
+> `interpreter/` (the shared orchestration and the three engine hooks).
 
 This is the consumer side. What produces the bytecode — the instruction set,
 lowering, register allocation, inlining — is [compiler.md](compiler.md).
@@ -143,38 +144,160 @@ a block invoked after its home has returned gets `cannotReturn` — is preserved
 without a signal round-trip on the common path.
 
 **Never `.unwrap()`, `.expect()` or `{:?}` an `EvalResult`.** `Signal`
-deliberately has no `Debug`: it holds a frame cycle. Tests unwrap through a local
-`expect_ok` helper.
+deliberately carries no `Debug` impl of its own -- every field it holds
+could support one today, but leaving `Signal` without one means
+`EvalResult` (`Result<Value, Signal>`) has none either, and
+`Result::unwrap`/`expect` require `E: Debug`. Calling either, or writing
+`{:?}` on an `EvalResult`, is therefore a compile error, not a lapse a
+reviewer has to catch. Tests unwrap through a local `expect_ok` helper.
 
 ## Measurements
 
 `ns-next bench` times the entry send alone — parsing, resolving, bootstrapping and
-compiling excluded — over `bench_loop.ns`, a 50,000-iteration `whileTrue:` loop,
-on a release build. Bytecode median ~19.6 ms against tree-walk ~37.4 ms.
+compiling excluded — over a 50,000-iteration `whileTrue:` loop, on a release
+build. Over `bench_loop.ns`: bytecode median ~19.6 ms against tree-walk ~37.4 ms.
 
 That ratio is **not** a pure dispatch comparison: the compiler inlines
 `whileTrue:`, so the bytecode engine does not pay the loop-control overhead the
-tree-walker does. The bytecode median alone is the before-number for inline
-caches, since every send today is still a full lookup.
+tree-walker does.
 
 Never judge performance from a debug build.
 
-## Planned: trampolined sends
+### What a send costs, and where it goes
 
-Nested sends recurse through the Rust call stack: `run_code` → `interp.send` →
-hook → `run_code`. The Newspeak activation chain therefore exists twice — reified
-on the heap and implicitly on the Rust stack. Only the first can be serialized;
-only the second can be resumed.
+Milestone 4's design rests on a decomposition rather than on the aggregate.
+Three separate fixtures, shaped like `bench_loop.ns` but not it -- each with
+the body `[n < 50000] whileTrue: [<first statement>. n := n + 1]` -- isolate
+the pieces, because each differs from the next by exactly one send. Row
+one's `sum := sum + 1` reads a literal where `bench_loop.ns` itself reads
+the variable `n` (`sum := sum + n`), so its 19.02 ms is a separate
+measurement that happens to land close to `bench_loop.ns`'s own ~19.6 ms
+above, not the same run reported twice:
 
-Replacing the recursion with an explicit frame stack in `run_code`, where a send
-pushes instead of recursing, is required by three separate things: the moving
-collector wants to scan roots without searching the Rust stack, the debugger wants
-stepping and a suspendable activation, and actor scheduling wants activations it
-can leave lying around. It is also what would make snapshotting a running
-computation possible; see [image-format.md](image-format.md).
+| First statement | Method it calls | bytecode median | ns/iteration |
+|---|---|---|---|
+| `sum := sum + 1` | — | 19.02 ms | 380.5 |
+| `sum := self tick: sum` | `public tick: x = (^x)` | 22.44 ms | 448.7 |
+| `sum := self tick: sum` | `public tick: x = (^x + 1)` | 27.28 ms | 545.7 |
 
-The alternative — keep recursing and unwind through a signal — is not viable,
-because native frames that call back into Newspeak would be lost.
+Rows one and three each pay three native sends per iteration; row two pays two,
+because its method body has no `+`. So the third minus the second is exactly one
+native `+` send: **~97 ns**. The third minus the first is exactly one
+user-method send, both paying three native sends: **~165 ns**. The second minus
+the first is then predicted to be their difference, 68 ns, and measures 68.2 —
+the decomposition is self-consistent rather than fitted.
+
+So **building an activation costs about 68 ns, roughly 41% of a user-method
+send**, and it is a fixed cost: a two-argument send measures the same as a
+one-argument one. What is in it is the current representation, not the work:
+three heap allocations (the `Rc<RefCell<Frame>>` block, `temps`, and the `args`
+vector `collect` builds), reference-count traffic on `sender`, `method`,
+`bindings` and the defining class, and a `HashMap` lookup per invocation just to
+find the compiled body. On top of that, every register read and write in
+`run_code` takes a `RefCell` borrow, which is spread across the straight-line
+instructions of all three rows rather than isolated in any one of them.
+
+Two caveats. `U - N` is an incremental difference, not a profiler attribution:
+the native path pays a `match selector.as_str()` string comparison chain the
+user path does not. And these are medians of a whole-program benchmark.
+
+### A 13% regression, found and recovered
+
+Routing every `Object`/`Frame` access through `Heap` (`docs/design/memory.md`,
+"The seam") was designed to cost nothing: `--release` inlines an accessor
+call away, and each one does the same borrow-clone-drop the call site did
+before. Migrating `interpreter/eval.rs` broke that measurably: `bench_loop.ns`
+went from 20.07 ms to 22.77 ms, about 13% (13.45%).
+
+The cause was `dispatch_lexical_send`'s head, which every implicit-receiver
+send runs. Before the migration it took one `RefCell` borrow and read both
+the receiver and the current class out of it; the migration replaced that
+with two separate accessor calls, each its own borrow. `bench_loop.ns` sends
+roughly 250,000 lexical sends per run, so the extra borrow pair cost on the
+order of 10 ns each — enough, at that call count, to account for the whole
+regression. A batched accessor, `receiver_and_current_class`, restores the
+single-borrow shape and recovered the cost in full.
+
+The companion result is what makes the number legible rather than alarming:
+the identical pattern — one extra `RefCell` borrow per call — also appeared
+in `dispatch::walk`, on the per-inheritance-level path method lookup walks,
+and cost nothing measurable there. The difference is not that one borrow is
+expensive and the other cheap; it is executions per benchmark run. A lexical
+send runs 250,000 times in this benchmark, an inheritance level far fewer.
+The lesson generalizes to the arena migration ahead: a per-access cost is
+only worth chasing where the access count is large, and the way to tell
+which sites those are is to measure, not to guess from the shape of the code.
+
+## Planned: activations on a stack, reified on demand
+
+Today every activation is an individually heap-allocated `Rc<RefCell<Frame>>`,
+whether or not anything ever looks at it. The measurements above price that at
+about 41% of a send. The plan is the model Cog uses for Smalltalk: activations
+live as entries in a stack, cheap to push and pop, and are **reified into
+first-class frame objects only when something needs one** — a debugger, a mirror,
+`thisContext`, the image encoder, a closure that captures its activation, or a
+non-local return target.
+
+Pushing then costs an index bump rather than three allocations; the caller's
+argument registers *are* the callee's argument window, so `collect`'s vector
+disappears; `sender` is the entry below rather than a counted reference; and
+because the stack is owned rather than shared, a register access is a slice index
+with no borrow flag — which removes a cost from every instruction, not only from
+sends.
+
+**The trampoline falls out of this rather than driving it.** An explicit
+activation stack is what a trampolined `run_code` needs anyway, so replacing the
+Rust-stack recursion — `run_code` → `interp.send` → hook → `run_code` — with a
+loop that pushes is the same change viewed from the other side. Getting there
+requires splitting `Interpreter::send` so that it *decides* without *executing*:
+lookup, `doesNotUnderstand:`, native dispatch and the nested-class accessor stay
+in `interpreter/`, shared by both engines and unchanged in what they produce, but
+they return a description of what to activate instead of activating it. That
+keeps the shared-orchestration rule intact — what moves into the loop is the act
+of running a body, never the decision of which body.
+
+Two things the trampoline settles on its own:
+
+- **`Block value` stops being a callback.** It is a native today that calls
+  `invoke_closure`, which re-enters `run_code`. Once the loop owns the stack,
+  activating a closure is what the loop already does, so the Rust frame in the
+  middle disappears without anything being rewritten in Newspeak.
+- **Recursion depth becomes a checkable limit and an ordinary Newspeak error**
+  instead of a native stack overflow that aborts the process. That closes the
+  exposure [image-format.md](image-format.md) records against a loaded artifact.
+
+`Signal::Return` needs re-implementing against the stack: it propagates through
+Rust `?` today until the `invoke_method` that owns `home` catches it, and becomes
+an unwind of the activation stack to the target entry. The semantics are
+unchanged and both engines must still agree on them, so this is the part of the
+change the differential harness has to be trusted hardest on.
+
+### What stays recursive, and why that is not a hole
+
+The natives that call back into Newspeak — `builtins::call_block`'s callers —
+keep their Rust frames for now. That is a barrier for a future JIT rather than a
+correctness problem, and it is addressed by moving them out of Rust rather than
+by trampolining around them; see [core-library.md](core-library.md). Their
+Rust-held values are covered by the scope discipline in
+[memory.md](memory.md), the same way the tree-walker's are.
+
+### How this meets the liveness requirements
+
+Reification is not a compromise against
+[liveness-and-reflection.md](liveness-and-reflection.md); it is that document's
+own unifying principle applied one level down. The interpreter level is the
+source of truth and a JIT is an accelerator that must be able to deoptimize to
+it. A stack zone is an accelerator over the reified activation model, and
+reification is its deoptimization.
+
+That resolves the one requirement that looks like a conflict. Edit-and-continue
+must be able to add a local to a method while an activation of it is live, and
+`Frame.temps` is a growable `Vec` precisely for that — which a flat register
+stack cannot offer for an entry in the middle. The answer is that editing a
+method reifies its affected activations first, and a reified frame has exactly
+today's flexibility. The document already accepts that entering the debugger
+forces the frames it touches out of their fast representation; this is the same
+step, one level below the JIT.
 
 ## Planned: JIT tiers
 
@@ -188,8 +311,12 @@ binds it is that no native code may ever enter an image.
   disagree.
 - **`vm.rs` holds no dispatch logic.** Every observable error comes from shared
   code, which is what makes the differential harness meaningful rather than
-  approximate.
+  approximate. Splitting `send` into a decision and an activation preserves this:
+  the decision does not move.
 - **A closure runs with the engine that created it**, enforced by the type of its
   body rather than by a run-time flag.
 - **`pc` is stored only at observable points**, not at every instruction — a
   deliberate hot-path trade the debugger milestone may have to revisit.
+- **Activations are stack entries, reified on demand**, because the present
+  always-reified model costs about 41% of a send for a structure most activations
+  never expose.

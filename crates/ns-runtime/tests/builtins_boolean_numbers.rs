@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_runtime::{Interpreter, Signal, Symbol, Value};
+use ns_runtime::{Heap, Interpreter, Signal, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both --
@@ -37,13 +37,12 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     }
 }
 
-fn as_string(value: &Value) -> String {
+fn as_string(heap: &Heap, value: &Value) -> String {
     match value {
-        Value::Obj(obj) => match &obj.borrow().data {
-            ns_runtime::ObjectData::Str(s) => s.clone(),
-            other => panic!("expected ObjectData::Str, got {other:?}"),
-        },
-        other => panic!("expected Value::Obj, got {other:?}"),
+        Value::Obj(obj) => heap
+            .str_value(obj)
+            .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
+        other => panic!("expected Value::Obj, got {}", heap.describe(other)),
     }
 }
 
@@ -62,7 +61,10 @@ fn integer_addition_via_direct_send_evaluates_correctly() {
 
     match expect_ok(result, "3 + 4") {
         Value::SmallInt(7) => {}
-        other => panic!("expected Value::SmallInt(7), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(7), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -87,7 +89,10 @@ fn integer_addition_overflow_is_a_newspeak_error_not_a_panic() {
                 e.message
             );
         }
-        Ok(v) => panic!("expected a NewspeakError for i64::MAX + 1, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a NewspeakError for i64::MAX + 1, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
 }
@@ -112,7 +117,10 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
 
     match expect_ok(result, "true ifTrue:ifFalse:") {
         Value::SmallInt(1) => {}
-        other => panic!("expected Value::SmallInt(1), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(1), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -145,7 +153,10 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
 
     match expect_ok(result, "true ifTrue: [ x ] ifFalse: [ 0 ]") {
         Value::SmallInt(5) => {}
-        other => panic!("expected Value::SmallInt(5), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(5), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -181,7 +192,7 @@ fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
     );
 
     assert_eq!(
-        as_string(&expect_ok(result, "true and: [^'escaped']. ^'fell through'")),
+        as_string(interp.heap_ref(), &expect_ok(result, "true and: [^'escaped']. ^'fell through'")),
         "escaped",
         "the block's non-local return must unwind `m`'s own activation directly, not be swallowed into `false` and fall through to the second statement"
     );
@@ -212,10 +223,10 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
     );
 
     assert_eq!(
-        as_string(&expect_ok(
-            result,
-            "false and: [...]. true or: [...]. ^'correct'"
-        )),
+        as_string(
+            interp.heap_ref(),
+            &expect_ok(result, "false and: [...]. true or: [...]. ^'correct'")
+        ),
         "correct",
         "false and: [...] and true or: [...] must never invoke their block argument at all"
     );
@@ -252,7 +263,50 @@ fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
                 e.message
             );
         }
-        Ok(v) => panic!("expected a NewspeakError for `1 + 1.5`, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a NewspeakError for `1 + 1.5`, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
+        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
+    }
+}
+
+/// Regression: `type_mismatch`'s message builds off `heap.describe_arg`,
+/// but every existing type-mismatch test above drives a `Value::Float`
+/// into it, which formats harmlessly either way. A `Value::Obj` there would
+/// recurse through `Object`'s self-referential bootstrap class until the
+/// stack gives out if this ever regressed to `{:?}`-formatting the
+/// argument directly, so this drives one in -- the same shape as
+/// `builtins_text.rs`'s `concatenating_a_string_with_an_object_is_an_error_not_a_stack_overflow`
+/// and `builtins_collections_block.rs`'s
+/// `array_at_with_an_object_index_is_an_error_not_a_stack_overflow`.
+#[test]
+fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow() {
+    let mut interp = Interpreter::bootstrap();
+    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
+
+    let arg = Value::Obj(interp.new_array(vec![]));
+
+    let result = interp.send(
+        Value::SmallInt(1),
+        Symbol::intern("+"),
+        vec![arg],
+        &bindings,
+        None,
+    );
+
+    match result {
+        Err(Signal::Error(e)) => {
+            assert!(
+                e.message.contains("coercion"),
+                "expected the message to name the missing Integer/Float coercion, got: {}",
+                e.message
+            );
+        }
+        Ok(v) => panic!(
+            "expected a NewspeakError for `1 + anArray`, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
 }
@@ -277,7 +331,10 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
         Ok(Value::Bool(false)) => {
             panic!("`1 < 1.5` silently answered false instead of reporting the type mismatch")
         }
-        Ok(v) => panic!("expected a NewspeakError, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a NewspeakError, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
 }
@@ -300,7 +357,10 @@ fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
 
     match expect_ok(result, "1 = 1.0") {
         Value::Bool(false) => {}
-        other => panic!("expected Value::Bool(false), got {other:?}"),
+        other => panic!(
+            "expected Value::Bool(false), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -321,7 +381,10 @@ fn float_arithmetic_still_widens_an_integer_argument() {
 
     match expect_ok(result, "1.5 + 1") {
         Value::Float(f) => assert!((f - 2.5).abs() < f64::EPSILON, "expected 2.5, got {f}"),
-        other => panic!("expected Value::Float(2.5), got {other:?}"),
+        other => panic!(
+            "expected Value::Float(2.5), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -346,7 +409,10 @@ fn a_real_integer_overflow_is_still_reported_as_an_overflow() {
             "expected an overflow-shaped message, got: {}",
             e.message
         ),
-        Ok(v) => panic!("expected a NewspeakError, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a NewspeakError, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
 }
@@ -371,6 +437,9 @@ fn a_radix_integer_literal_evaluates() {
     );
     match expect_ok(result, "^16r1F") {
         Value::SmallInt(31) => {}
-        other => panic!("expected Value::SmallInt(31), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(31), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }

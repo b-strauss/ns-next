@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_runtime::{BuiltinClass, Interpreter, ObjectData, Signal, Symbol, Value};
+use ns_runtime::{BuiltinClass, Interpreter, Signal, Symbol, Value};
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     match result {
@@ -37,10 +37,14 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     let receiver = expect_ok(result, "OrderedCollection new");
 
     let Value::Obj(obj) = &receiver else {
-        panic!("expected Value::Obj, got {receiver:?}");
+        panic!(
+            "expected Value::Obj, got {}",
+            interp.heap_ref().describe(&receiver)
+        );
     };
+    let elements = interp.heap_ref().array_elements(obj);
     assert!(
-        matches!(&obj.borrow().data, ObjectData::Array(items) if items.is_empty()),
+        matches!(&elements, Some(items) if items.is_empty()),
         "expected an empty ObjectData::Array payload"
     );
 
@@ -56,7 +60,10 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     );
     match add_result {
         Value::SmallInt(1) => {}
-        other => panic!("expected add: to return its argument, got {other:?}"),
+        other => panic!(
+            "expected add: to return its argument, got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 
     let size_result = expect_ok(
@@ -65,7 +72,10 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     );
     match size_result {
         Value::SmallInt(1) => {}
-        other => panic!("expected Value::SmallInt(1), got {other:?}"),
+        other => panic!(
+            "expected Value::SmallInt(1), got {}",
+            interp.heap_ref().describe(&other)
+        ),
     }
 }
 
@@ -93,7 +103,10 @@ fn array_new_via_ordinary_send_does_not_understand_add() {
         Err(Signal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("add:"));
         }
-        Ok(v) => panic!("expected doesNotUnderstand: add:, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected doesNotUnderstand: add:, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("expected doesNotUnderstand: add:, got Signal::Return"),
     }
 }
@@ -157,7 +170,11 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
 
     match (via_send_bar, via_instantiate_bar) {
         (Value::SmallInt(a), Value::SmallInt(b)) => assert_eq!(a, b),
-        (a, b) => panic!("expected two equal Value::SmallInt, got {a:?} and {b:?}"),
+        (a, b) => panic!(
+            "expected two equal Value::SmallInt, got {} and {}",
+            interp_a.heap_ref().describe(&a),
+            interp_b.heap_ref().describe(&b)
+        ),
     }
 }
 
@@ -182,7 +199,10 @@ fn a_class_object_receiving_a_non_factory_selector_falls_through_to_ordinary_dis
         Err(Signal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("thisSelectorDoesNotExist"));
         }
-        Ok(v) => panic!("expected doesNotUnderstand:, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected doesNotUnderstand:, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("expected doesNotUnderstand:, got Signal::Return"),
     }
 }

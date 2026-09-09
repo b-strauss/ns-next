@@ -118,21 +118,20 @@ fn load(
 fn a_class_object_carries_identity_and_its_application_carries_layout() {
     let src = "Newspeak3\n'Test'\nclass Point new = Object new (| x. y. |) ()\n";
     let (interp, class, _resolved) = load(src);
-    let borrowed = class.borrow();
-    let ns_runtime::ObjectData::Class(data) = &borrowed.data else {
-        panic!("load_module must produce a class object");
-    };
-    assert_eq!(data.application.num_slots, 2);
+    let application = interp
+        .heap_ref()
+        .class_application(&class)
+        .unwrap_or_else(|| panic!("load_module must produce a class object"));
+    assert_eq!(application.num_slots, 2);
     assert!(
-        data.enclosing.is_none(),
+        interp.heap_ref().class_enclosing(&class).is_none(),
         "a module's enclosing object is nil"
     );
     assert_eq!(
-        data.application.slot_index[&Symbol::intern("y")],
+        application.slot_index[&Symbol::intern("y")],
         1,
         "layout lives on the application, not on the class object"
     );
-    let _ = interp;
 }
 
 const NESTED_SRC: &str = "\
@@ -150,12 +149,12 @@ class Outer usingPlatform: p = Object new () (
 
 #[test]
 fn the_mixin_tree_contains_nested_and_class_side_declarations() {
-    let (_interp, class, _resolved) = load(NESTED_SRC);
-    let borrowed = class.borrow();
-    let ns_runtime::ObjectData::Class(data) = &borrowed.data else {
-        panic!("expected a class object");
-    };
-    let mixin = &data.application.mixin;
+    let (interp, class, _resolved) = load(NESTED_SRC);
+    let application = interp
+        .heap_ref()
+        .class_application(&class)
+        .unwrap_or_else(|| panic!("expected a class object"));
+    let mixin = &application.mixin;
     assert_eq!(mixin.nested.len(), 1, "Inner must be in the mixin tree");
     assert_eq!(mixin.nested[0].name, Symbol::intern("Inner"));
     assert!(
@@ -166,12 +165,11 @@ fn the_mixin_tree_contains_nested_and_class_side_declarations() {
 
 #[test]
 fn a_nested_declaration_reserves_a_hidden_cache_slot() {
-    let (_interp, class, _resolved) = load(NESTED_SRC);
-    let borrowed = class.borrow();
-    let ns_runtime::ObjectData::Class(data) = &borrowed.data else {
-        panic!("expected a class object");
-    };
-    let app = &data.application;
+    let (interp, class, _resolved) = load(NESTED_SRC);
+    let app = interp
+        .heap_ref()
+        .class_application(&class)
+        .unwrap_or_else(|| panic!("expected a class object"));
     assert_eq!(app.num_slots, 1, "Outer declares no slots but nests Inner");
     let inner = &app.mixin.nested[0];
     assert_eq!(inner.name, Symbol::intern("Inner"));

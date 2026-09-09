@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_runtime::{Interpreter, Signal, Symbol, Value};
+use ns_runtime::{Heap, Interpreter, Signal, Symbol, Value};
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     match result {
@@ -15,13 +15,12 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     }
 }
 
-fn as_string(value: &Value) -> String {
+fn as_string(heap: &Heap, value: &Value) -> String {
     match value {
-        Value::Obj(obj) => match &obj.borrow().data {
-            ns_runtime::ObjectData::Str(s) => s.clone(),
-            other => panic!("expected ObjectData::Str, got {other:?}"),
-        },
-        other => panic!("expected Value::Obj, got {other:?}"),
+        Value::Obj(obj) => heap
+            .str_value(obj)
+            .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
+        other => panic!("expected Value::Obj, got {}", heap.describe(other)),
     }
 }
 
@@ -36,7 +35,7 @@ fn string_concatenation_joins_two_strings() {
     let result = interp.send(a, Symbol::intern(","), vec![b], &bindings, None);
 
     let joined = expect_ok(result, "'foo' , 'bar'");
-    assert_eq!(as_string(&joined), "foobar");
+    assert_eq!(as_string(interp.heap_ref(), &joined), "foobar");
 }
 
 #[test]
@@ -56,7 +55,39 @@ fn string_concatenation_with_a_non_string_argument_is_a_newspeak_error_not_a_pan
 
     match result {
         Err(Signal::Error(_)) => {}
-        Ok(v) => panic!("expected a NewspeakError for 'foo' , 42, got Ok({v:?})"),
+        Ok(v) => panic!(
+            "expected a NewspeakError for 'foo' , 42, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
+        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
+    }
+}
+
+#[test]
+fn concatenating_a_string_with_an_object_is_an_error_not_a_stack_overflow() {
+    // Regression: this message used to `{:?}`-format the argument. A
+    // `Value::Obj` there recurses through `Object`'s self-referential
+    // bootstrap class until the stack gives out, so the process aborted
+    // instead of reporting. Every existing test here passed a `SmallInt`,
+    // which formats harmlessly, which is why the defect survived.
+    let mut interp = Interpreter::bootstrap();
+    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
+
+    let a = Value::Obj(interp.new_string("foo".to_string()));
+    let arg = Value::Obj(interp.new_array(vec![]));
+
+    let result = interp.send(a, Symbol::intern(","), vec![arg], &bindings, None);
+
+    match result {
+        Err(Signal::Error(e)) => assert!(
+            e.message.contains("requires a String argument"),
+            "unexpected message: {}",
+            e.message
+        ),
+        Ok(v) => panic!(
+            "expected a NewspeakError for 'foo' , anArray, got Ok({})",
+            interp.heap_ref().describe(&v)
+        ),
         Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
     }
 }
@@ -97,7 +128,7 @@ fn string_print_string_quotes_and_doubles_embedded_quotes() {
 
     // Mirrors `ns_syntax::lexer::Lexer::lex_string`'s own escaping rule: an
     // embedded `'` is written as two consecutive `'` characters.
-    assert_eq!(as_string(&result), "'it''s'");
+    assert_eq!(as_string(interp.heap_ref(), &result), "'it''s'");
 }
 
 #[test]
@@ -111,18 +142,24 @@ fn symbol_round_trips_through_as_string_and_as_symbol() {
         interp.send(sym, Symbol::intern("asString"), vec![], &bindings, None),
         "#foo:bar: asString",
     );
-    assert_eq!(as_string(&as_str), "foo:bar:");
+    assert_eq!(as_string(interp.heap_ref(), &as_str), "foo:bar:");
 
     let back_to_symbol = expect_ok(
         interp.send(as_str, Symbol::intern("asSymbol"), vec![], &bindings, None),
         "'foo:bar:' asSymbol",
     );
-    match back_to_symbol {
-        Value::Obj(obj) => match &obj.borrow().data {
-            ns_runtime::ObjectData::Sym(s) => assert_eq!(*s, Symbol::intern("foo:bar:")),
-            other => panic!("expected ObjectData::Sym, got {other:?}"),
+    match &back_to_symbol {
+        Value::Obj(obj) => match interp.heap_ref().sym_value(obj) {
+            Some(s) => assert_eq!(s, Symbol::intern("foo:bar:")),
+            None => panic!(
+                "expected ObjectData::Sym, got {}",
+                interp.heap_ref().describe(&back_to_symbol)
+            ),
         },
-        other => panic!("expected Value::Obj, got {other:?}"),
+        other => panic!(
+            "expected Value::Obj, got {}",
+            interp.heap_ref().describe(other)
+        ),
     }
 }
 
