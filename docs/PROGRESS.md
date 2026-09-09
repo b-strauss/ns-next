@@ -10,7 +10,7 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | Not started | — | — |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | — |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
@@ -145,6 +145,36 @@ now also run a third way, built and loaded — **ran 6, failed 0, skipped
 205**, with `parse-corpus` unchanged at **210/0/1/0**; and mutation and
 truncation tests cover the new header flag, the entry field, and the
 trailing-byte check.
+
+## M4 — The heap seam (2026-09-09)
+
+Plan: [ns-next-heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md).
+
+The first piece of M4's representation change, done ahead of the arena
+itself: every read and write of an `Object` or a `Frame` across the workspace
+now goes through one `Heap` (`crates/ns-runtime/src/heap.rs`), replacing the
+276 call sites that used to reach `Rc<RefCell<_>>` directly. `ObjRef` and
+`FrameRef` are now opaque newtypes with a crate-private inner field, so the
+seam is proven by the compiler rather than asserted: a `.borrow()` written
+outside `heap.rs`/`types.rs` does not compile. Each handle also gained a
+hand-written, non-recursive `Debug` that prints identity only.
+
+It did not come free. Migrating `interpreter/eval.rs` turned
+`dispatch_lexical_send`'s single borrow yielding both the receiver and the
+current class into two separate accessor calls, and at roughly 250,000
+lexical sends per benchmark run that measured as a real 12% regression —
+`bench_loop.ns` from 20.07 ms to 22.77 ms. A batched accessor
+(`receiver_and_current_class`) recovered it in full. The companion result —
+the identical extra-borrow shape in `dispatch::walk`'s per-inheritance-level
+lookup cost nothing measurable — is what turned the incident into a lesson
+rather than a scare: the cost is executions per run, not borrows being
+expensive. See [execution.md](design/execution.md)'s measurements section.
+
+Confirmed by measurement, not assumption: three fresh release-build runs of
+`bench_loop.ns` after the full migration gave bytecode medians of 19.71,
+19.59 and 19.72 ms, against the pre-plan session baseline of 19.91 ms (min
+19.80, max 20.07) — within noise, so the seam costs nothing once the one
+regression it introduced was found and fixed.
 
 ## Notes
 

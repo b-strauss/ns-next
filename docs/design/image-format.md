@@ -406,6 +406,20 @@ zone to contexts before taking a snapshot. `frame.pc` being stored only at sends
 `MakeClosure` and `NonLocalReturn` is *not* an obstacle: those are exactly the
 safepoints, and a suspension could only happen at a send boundary.
 
+Whoever builds this must first close a decoder gap that today is inert only
+because nothing reactivates a decoded frame. `decode::verify_graph` checks a
+frame's `pc` and register-file size against the compiled body it reconciles
+each frame against, but it never cross-checks `home` against `kind`: a
+crafted image can pair a method-kind frame (`home` meaningful only for
+`FrameKind::Closure`) with a non-nil `home`. Nothing observes the
+mismatch today, because the tree-walker and VM only ever run a frame built
+by `invoke_closure`, never one loaded from an image. Trampolined sends,
+suspend-and-resume and live debugging are exactly what would start running
+a decoded frame — at which point this dormant assumption becomes
+load-bearing, and whoever wires up re-entry has to decide, deliberately,
+whether `verify_graph` gains the cross-check or the re-entry path treats a
+mismatched `home` as its own untrusted-input case.
+
 ## How upstream compares
 
 Recorded because the difference is a deliberate choice, not an accident. Sources

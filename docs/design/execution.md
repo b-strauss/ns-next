@@ -192,6 +192,33 @@ Two caveats. `U - N` is an incremental difference, not a profiler attribution:
 the native path pays a `match selector.as_str()` string comparison chain the
 user path does not. And these are medians of a whole-program benchmark.
 
+### A 12% regression, found and recovered
+
+Routing every `Object`/`Frame` access through `Heap` (`docs/design/memory.md`,
+"The seam") was designed to cost nothing: `--release` inlines an accessor
+call away, and each one does the same borrow-clone-drop the call site did
+before. Migrating `interpreter/eval.rs` broke that measurably: `bench_loop.ns`
+went from 20.07 ms to 22.77 ms, about 12%.
+
+The cause was `dispatch_lexical_send`'s head, which every implicit-receiver
+send runs. Before the migration it took one `RefCell` borrow and read both
+the receiver and the current class out of it; the migration replaced that
+with two separate accessor calls, each its own borrow. `bench_loop.ns` sends
+roughly 250,000 lexical sends per run, so the extra borrow pair cost on the
+order of 10 ns each — enough, at that call count, to account for the whole
+regression. A batched accessor, `receiver_and_current_class`, restores the
+single-borrow shape and recovered the cost in full.
+
+The companion result is what makes the number legible rather than alarming:
+the identical pattern — one extra `RefCell` borrow per call — also appeared
+in `dispatch::walk`, on the per-inheritance-level path method lookup walks,
+and cost nothing measurable there. The difference is not that one borrow is
+expensive and the other cheap; it is executions per benchmark run. A lexical
+send runs 250,000 times in this benchmark, an inheritance level far fewer.
+The lesson generalizes to the arena migration ahead: a per-access cost is
+only worth chasing where the access count is large, and the way to tell
+which sites those are is to measure, not to guess from the shape of the code.
+
 ## Planned: activations on a stack, reified on demand
 
 Today every activation is an individually heap-allocated `Rc<RefCell<Frame>>`,

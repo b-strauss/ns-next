@@ -297,6 +297,28 @@ These are the first pieces of the VM's own introspection tooling, the equivalent
 of `d8`; the rest, inline-cache transition traces and deoptimization reasons,
 arrives with the mechanisms it would observe.
 
+## Follow-up: entry points that take a class object when they want its mixin
+
+`compile_module`, `compile_initializer`, `image::encode_code_table` and
+`ns-cli`'s `cmd_disasm` each take a `ClassRef` when the only thing each one
+does with it is reach the `Mixin` that backs it — "Keyed by mixin" above is
+this repository's own invariant, and none of these four sites addresses code
+any other way. Reaching a class object's `mixin` is a read only `heap.rs`
+may perform, so each of the four also needs a `&Heap` parameter purely to
+make that one hop.
+
+Taking the mixin directly instead of the class object would remove the need
+for a `Heap` at every one of these sites — there is nothing else on the
+class object any of them reads. The pattern surfaced three separate times
+while migrating object and frame access onto the heap seam
+(`docs/design/memory.md`, "The seam"): `compile_initializer` and
+`compile_module` were each building a throwaway `Heap::new()` internally to
+make the same hop, which works only because today's `Heap` is a bare counter
+and would silently break under the planned arena; `cmd_disasm` carried the
+identical shape a third time. Recorded here as a follow-up rather than
+undertaken now, because narrowing four public signatures is a design change
+to this module's interface, not a migration.
+
 ## Decisions
 
 - **`Instr` is a Rust enum, not packed bytes.** Revisit only on profiling

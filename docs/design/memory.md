@@ -1,10 +1,11 @@
 # Memory — object lifetime, identity, collection
 
 > **Status:** partial. Objects live in `Rc<RefCell<_>>` and reference cycles
-> leak; there is no collector. Identity, layout ownership and the iterative
-> teardown a collector-free heap needs are built.
+> leak; there is no collector. Identity, layout ownership, the seam that
+> routes every access through `Heap`, and the iterative teardown a
+> collector-free heap needs are built.
 > **Code:** `crates/ns-runtime/src/types.rs` (`Value`, `Object`, the `Drop`
-> implementations), `mixin.rs` (layout).
+> implementations), `heap.rs` (the seam), `mixin.rs` (layout).
 
 ## What exists
 
@@ -39,6 +40,38 @@ The same reasoning applies to traversal rather than teardown: the image encoder
 walks the graph over an explicit stack, and `metaclass_of` walks its chain
 iteratively, because an image controls both depths.
 
+### The seam
+
+`crates/ns-runtime/src/heap.rs` is the single place that knows what a handle
+is. Every read and write of an `Object` or a `Frame` goes through a `Heap`
+accessor, so replacing the store behind them touches that file rather than
+the 276 call sites the workspace held before the seam existed.
+
+The accessors copy out rather than lend out. That follows what the call
+sites already did — borrow, clone one field, drop the borrow — and it is
+what keeps the arena from needing a rooting discipline at every site that
+calls back into the interpreter while holding a reference. Mutating
+accessors take `&mut self` even though the present `Rc<RefCell<_>>` store
+does not require it, so that the arena is a change of implementation rather
+than a second pass over every caller.
+
+The seam is enforced by the type system, not by discipline: `ObjRef` and
+`FrameRef` are opaque newtypes whose inner `Rc<RefCell<_>>` is
+crate-private, reachable only from `types.rs` and `heap.rs`. A `.borrow()`
+written anywhere else in the workspace does not compile, so the migration
+that built this seam is proven by the compiler rather than asserted by a
+reviewer re-reading every call site.
+
+Where a site needs several fields of one object or frame at once, a batched
+accessor answers them from a single borrow rather than the caller taking
+several — `receiver_and_current_class`, `object_snapshot`,
+`frame_register_shape` and `frame_snapshot` are the present examples. This
+is not only style: `dispatch_lexical_send`'s head, on every
+implicit-receiver send, once took one borrow yielding both the receiver and
+the current class; splitting that into two separate accessor calls measured
+as a real cost, recovered by batching them back into one (see
+[execution.md](execution.md)'s measurements section).
+
 ## Planned: an arena, handles, and a real collector
 
 Replacing `Rc<RefCell<_>>` with an arena, a handle-shaped value representation and
@@ -53,23 +86,6 @@ class with live instances allocates new-shape instances, copies fields, and
 atomically swaps identity. That rules out a conservative non-moving collector,
 which makes `become:` hard. A copying or compacting collector can implement it,
 and MMTk supports object forwarding.
-
-### The seam
-
-> **Partial:** object access goes through it. Activation access and the opaque
-> handles are not migrated yet.
-
-`crates/ns-runtime/src/heap.rs` is the single place that knows what a handle
-is. Object reads and writes go through a `Heap` accessor, so replacing the
-store behind them touches that file rather than the 276 call sites the
-workspace held before the seam existed.
-
-The accessors copy out rather than lend out. That follows what the call sites
-already did — borrow, clone one field, drop the borrow — and it is what keeps
-the arena from needing a rooting discipline at every site that calls back into
-the interpreter while holding a reference. Mutating accessors take `&mut self`
-even where the present store does not require it, so that the arena is a
-change of implementation rather than a second pass over every caller.
 
 ### The representation: an arena of typed handles
 
