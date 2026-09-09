@@ -19,6 +19,13 @@ pub struct Heap {
     /// identity survives both a moving collector and a snapshot
     /// (`docs/design/memory.md`).
     next_identity_hash: u32,
+    /// Every activation, addressed by a `FrameRef`'s index. Nothing is ever
+    /// removed: reclaiming a slot needs a collector, which is Milestone 4's
+    /// step 5. Until then an activation is retained for the process's
+    /// lifetime -- the interim cost this milestone's ordering accepts, and
+    /// the one step 3 removes by construction when activations move onto a
+    /// stack.
+    frames: Vec<Frame>,
 }
 
 // `Default` is kept only so clippy's `new_without_default` stays quiet; see
@@ -46,6 +53,7 @@ impl Heap {
     pub fn new() -> Heap {
         Heap {
             next_identity_hash: 1,
+            frames: Vec::new(),
         }
     }
 
@@ -106,7 +114,7 @@ impl Heap {
         new_object_handle(class, 0, data)
     }
 
-    /// Allocates a class object that is genuinely its own `.class` — the shape
+    /// Allocates a class object that is genuinely its own `.class` -- the shape
     /// every one of the crate's four bootstraps needs
     /// (`Interpreter::bootstrap`'s `build_self_referential_object_class` in
     /// production; the `dummy_class` helpers in `dispatch.rs`, `types.rs`
@@ -155,7 +163,10 @@ impl Heap {
             matches!(frame.kind, FrameKind::Closure(_)),
             "Frame.home must be populated exactly for a closure activation"
         );
-        FrameRef(std::rc::Rc::new(std::cell::RefCell::new(frame)))
+        let index = u32::try_from(self.frames.len())
+            .expect("more than u32::MAX activations allocated in one heap");
+        self.frames.push(frame);
+        FrameRef { index }
     }
 
     // ---------- Object accessors ----------
@@ -501,7 +512,7 @@ impl Heap {
     // for the task that adds their first one.
 
     pub fn receiver(&self, frame: &FrameRef) -> Value {
-        frame.0.borrow().receiver.clone()
+        self.frames[frame.index as usize].receiver.clone()
     }
 
     /// The receiver and `current_class` together, in one borrow.
@@ -511,34 +522,41 @@ impl Heap {
     /// borrows where one already carries both fields; that doubling was the
     /// whole of a measured 13% regression (see `docs/design/execution.md`'s
     /// measurements section).
+    ///
+    /// Under the arena the two reads are two slice indexes rather than two
+    /// `RefCell` borrows, so the cost this batching removed is smaller than
+    /// it was. It is kept because the site is the hottest in the workspace --
+    /// five times per `bench_loop.ns` iteration -- and because the batched
+    /// shape is what step 3's register-stack accessors want anyway; whether
+    /// it still pays is a measurement, not an assumption.
     pub fn receiver_and_current_class(&self, frame: &FrameRef) -> (Value, Option<ClassRef>) {
-        let borrowed = frame.0.borrow();
-        (borrowed.receiver.clone(), borrowed.current_class.clone())
+        let f = &self.frames[frame.index as usize];
+        (f.receiver.clone(), f.current_class.clone())
     }
 
     pub fn local(&self, frame: &FrameRef, index: u16) -> Value {
-        let borrowed = frame.0.borrow();
+        let f = &self.frames[frame.index as usize];
         let i = index as usize;
-        if i < borrowed.args.len() {
-            borrowed.args[i].clone()
+        if i < f.args.len() {
+            f.args[i].clone()
         } else {
-            borrowed.temps[i - borrowed.args.len()].clone()
+            f.temps[i - f.args.len()].clone()
         }
     }
 
     pub fn set_local(&mut self, frame: &FrameRef, index: u16, value: Value) {
-        let mut borrowed = frame.0.borrow_mut();
+        let f = &mut self.frames[frame.index as usize];
         let i = index as usize;
-        if i < borrowed.args.len() {
-            borrowed.args[i] = value;
+        if i < f.args.len() {
+            f.args[i] = value;
         } else {
-            let temp_index = i - borrowed.args.len();
-            borrowed.temps[temp_index] = value;
+            let temp_index = i - f.args.len();
+            f.temps[temp_index] = value;
         }
     }
 
     pub fn frame_current_class(&self, frame: &FrameRef) -> Option<ClassRef> {
-        frame.0.borrow().current_class.clone()
+        self.frames[frame.index as usize].current_class.clone()
     }
 
     /// The absolute field index a compiled `InitSlot`'s mixin-relative
@@ -547,7 +565,7 @@ impl Heap {
     /// sets this from that level's own `MixinApplication.own_slot_base`, so
     /// there is nothing to save and restore between levels.
     pub fn frame_slot_base(&self, frame: &FrameRef) -> usize {
-        frame.0.borrow().slot_base
+        self.frames[frame.index as usize].slot_base
     }
 
     /// Grows an activation's register file, filling with nil. Needed by
@@ -555,18 +573,18 @@ impl Heap {
     /// more registers than the frame was built with, and by
     /// edit-and-continue later (`docs/design/liveness-and-reflection.md`).
     pub fn grow_temps(&mut self, frame: &FrameRef, needed: usize) {
-        let mut f = frame.0.borrow_mut();
+        let f = &mut self.frames[frame.index as usize];
         if f.temps.len() < needed {
             f.temps.resize(needed, Value::Nil);
         }
     }
 
     pub fn set_frame_pc(&mut self, frame: &FrameRef, pc: usize) {
-        frame.0.borrow_mut().pc = pc;
+        self.frames[frame.index as usize].pc = pc;
     }
 
     pub fn frame_home(&self, frame: &FrameRef) -> Option<FrameRef> {
-        frame.0.borrow().home.clone()
+        self.frames[frame.index as usize].home.clone()
     }
 
     /// The activation that invoked `frame`, `None` only for `FrameKind::TopLevel`.
@@ -575,24 +593,24 @@ impl Heap {
     /// activation that invoked it, to check `sender` was actually recorded rather
     /// than left `None` (the Final-review finding I6 defect this guards against).
     pub fn frame_sender(&self, frame: &FrameRef) -> Option<FrameRef> {
-        frame.0.borrow().sender.clone()
+        self.frames[frame.index as usize].sender.clone()
     }
 
     /// The frame a closure activation captured, or `None` for any other
     /// kind. `eval::frame_at_depth` walks this.
     pub fn frame_captured(&self, frame: &FrameRef) -> Option<FrameRef> {
-        match &frame.0.borrow().kind {
+        match &self.frames[frame.index as usize].kind {
             FrameKind::Closure(closure) => Some(closure.captured_frame.clone()),
             _ => None,
         }
     }
 
     pub fn frame_is_uncontinuable(&self, frame: &FrameRef) -> bool {
-        frame.0.borrow().uncontinuable
+        self.frames[frame.index as usize].uncontinuable
     }
 
     pub fn mark_uncontinuable(&mut self, frame: &FrameRef) {
-        frame.0.borrow_mut().uncontinuable = true;
+        self.frames[frame.index as usize].uncontinuable = true;
     }
 
     /// Whether `frame`'s kind is `FrameKind::Method` --
@@ -601,7 +619,7 @@ impl Heap {
     /// (spec §3.5), the last statement's value for every other body this
     /// loop runs.
     pub fn frame_is_method(&self, frame: &FrameRef) -> bool {
-        matches!(frame.0.borrow().kind, FrameKind::Method(_))
+        matches!(self.frames[frame.index as usize].kind, FrameKind::Method(_))
     }
 
     /// A copy of `frame`'s `kind`. Cloning is cheap -- every variant holds
@@ -612,7 +630,7 @@ impl Heap {
     /// a class for (`frame_body`), and once to check that a class-carrying
     /// kind's class is itself a class reference (`check_class_references`).
     pub fn frame_kind(&self, frame: &FrameRef) -> FrameKind {
-        frame.0.borrow().kind.clone()
+        self.frames[frame.index as usize].kind.clone()
     }
 
     /// `pc`, and how many of a frame's registers are `args` versus `temps`,
@@ -620,7 +638,7 @@ impl Heap {
     /// `image::decode::verify_graph` checks all three against the shape of
     /// the compiled body it reconciles every decoded frame against.
     pub fn frame_register_shape(&self, frame: &FrameRef) -> (usize, usize, usize) {
-        let f = frame.0.borrow();
+        let f = &self.frames[frame.index as usize];
         (f.pc, f.args.len(), f.temps.len())
     }
 
@@ -630,7 +648,7 @@ impl Heap {
     /// both need every field. Not for a hot path, for the same reason as
     /// `object_snapshot`.
     pub fn frame_snapshot(&self, frame: &FrameRef) -> Frame {
-        frame.0.borrow().clone()
+        self.frames[frame.index as usize].clone()
     }
 
     /// The frame equivalent of `replace_object`.
@@ -643,7 +661,7 @@ impl Heap {
     /// an unverified one: no error, and no way for `verify_graph` to
     /// notice, because it has already finished.
     pub fn replace_frame(&mut self, frame: &FrameRef, filled: Frame) {
-        *frame.0.borrow_mut() = filled;
+        self.frames[frame.index as usize] = filled;
     }
 }
 
@@ -680,7 +698,7 @@ fn new_object_handle(class: ClassRef, identity_hash: u32, data: ObjectData) -> O
 ///
 /// Private to this module: `Heap::alloc_self_referential_class` is the only
 /// caller, so a fifth call site cannot mint a second live self-referential
-/// object outside a heap. That mattered even before the arena — such an
+/// object outside a heap. That mattered even before the arena -- such an
 /// object shares identity hash 0 with every placeholder
 /// `alloc_placeholder_object` has ever built, and code elsewhere reasons
 /// about hash-0 objects being throwaway and never observed outside their

@@ -229,52 +229,49 @@ pub enum SourceOrigin {
 
 // ---------- Activation records ----------
 
-/// An opaque handle to an activation record, the frame counterpart to
-/// `ObjRef`. The inner `Rc` is private for the same reason: only `types.rs`
-/// and `heap.rs` reach it, so replacing the store behind it is a change to
-/// those two files rather than to every caller. See `docs/design/memory.md`,
-/// "The seam".
+/// An opaque handle to an activation: an index into `Heap.frames`. The
+/// inner index is private to the crate, and only `types.rs` and `heap.rs`
+/// reach it -- that privacy is what made replacing `Rc<RefCell<Frame>>`
+/// with this a change to those two files rather than to every caller.
+/// See `docs/design/memory.md`, "The seam".
+///
+/// A handle is meaningful only against the `Heap` that allocated it. The
+/// arena never reuses a slot -- there is no collector yet -- so two live
+/// activations never share an index, which is what `Signal::Return`'s
+/// target check depends on.
 #[derive(Clone)]
-pub struct FrameRef(pub(crate) Rc<RefCell<Frame>>);
+pub struct FrameRef {
+    pub(crate) index: u32,
+}
 
 impl FrameRef {
     /// Activation identity. Replaces `Rc::ptr_eq` at every call site, so
     /// that identity has one spelling that survives the store changing
     /// under it -- `invoke_method`'s `Signal::Return` catch and
     /// `raise_return`'s target check both depend on this rather than on
-    /// `Rc` comparison directly.
+    /// the representation directly.
     pub fn same(&self, other: &FrameRef) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
+        self.index == other.index
     }
 
-    /// An opaque, hashable key unique to this handle for as long as it (or
-    /// a clone of it) stays alive, mirroring `ObjRef::identity_key` for the
-    /// same reason: `image::encode::GraphTable`'s frame-id map needs
-    /// `FrameRef` as a `HashMap` key, not a comparison. Crate-internal:
-    /// its only current caller lives inside `ns-runtime`.
+    /// An opaque, hashable key unique to this handle, for code that needs
+    /// `FrameRef` as a `HashMap` key rather than a comparison --
+    /// `image::encode::GraphTable`'s frame-id map. Crate-internal: its
+    /// only current caller lives inside `ns-runtime`.
     pub(crate) fn identity_key(&self) -> usize {
-        Rc::as_ptr(&self.0) as usize
+        self.index as usize
     }
 }
 
-/// Prints `pc` and `pc_kind` only, never `sender`, `home` or `kind`: a
-/// closure's `captured_frame`/`home` are themselves `FrameRef`s
-/// (`ClosureData`), and `Frame.sender`/`home` chain activations together, so
-/// a `Debug` that visited any of them would walk the whole sender chain --
-/// and, since a closure's `home` can in turn be captured by a nested
-/// closure, that walk has no acyclic guarantee to lean on (see
-/// `CLAUDE.md`'s "Never `{:?}` a `Value`"). `pc`/`pc_kind` are plain data
-/// with nothing further to descend into, so printing them can never restart
-/// the same problem one field deeper. `try_borrow` rather than `borrow`,
-/// for the same reason as `ObjRef::fmt`: formatting must not itself panic
-/// while a caller elsewhere on the stack already holds this frame's
-/// `RefCell` mutably.
+/// Prints the arena index and nothing else. Under `Rc` this impl was
+/// hand-written to stop `Debug` walking the sender chain (a closure's
+/// `home` can itself be captured, so that walk had no acyclic guarantee
+/// to lean on); an index has nothing to descend into at all, so the
+/// hazard is gone by construction rather than by discipline. It also can
+/// no longer panic, which is why the `try_borrow` dance is gone.
 impl std::fmt::Debug for FrameRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0.try_borrow() {
-            Ok(frame) => write!(f, "FrameRef(pc={}, {:?})", frame.pc, frame.pc_kind),
-            Err(_) => write!(f, "FrameRef(<borrowed>)"),
-        }
+        write!(f, "FrameRef(#{})", self.index)
     }
 }
 
@@ -371,18 +368,22 @@ pub struct Frame {
 // `Rc`'s own drop glue is recursive: releasing the last handle to an object
 // drops its fields, which releases the last handle to the next object, and
 // so on. How deep that chain runs is the *program's* choice -- a Newspeak
-// program can chain a million instances or a million activations -- and,
-// once a world is decoded from an image, an attacker's: `image::decode`
-// builds the graph from untrusted bytes, at well under twenty bytes per
-// link. A few hundred thousand links overflow the stack, which aborts the
-// process rather than failing, and an abort is exactly what an image must
-// never be able to cause.
+// program can chain a million instances -- and, once a world is decoded
+// from an image, an attacker's: `image::decode` builds the graph from
+// untrusted bytes, at well under twenty bytes per link. A few hundred
+// thousand links overflow the stack, which aborts the process rather than
+// failing, and an abort is exactly what an image must never be able to
+// cause.
 //
-// So `Object`, `Frame` (here) and `MixinApplication` (`mixin.rs`) release
-// what they own through an explicit worklist instead of through the Rust
-// stack. No ceiling comes with it and none is wanted: every chain is still
-// released in full, however deep, because refusing a deep one would refuse
-// worlds this runtime builds happily from source.
+// So `Object` (here) and `MixinApplication` (`mixin.rs`) release what they
+// own through an explicit worklist instead of through the Rust stack. No
+// ceiling comes with it and none is wanted: every chain is still released
+// in full, however deep, because refusing a deep one would refuse worlds
+// this runtime builds happily from source.
+//
+// A frame is no longer part of this: it is an index into `Heap.frames`, and
+// the arena that owns the storage outlives every handle into it, so there
+// is no reference chain a frame's own teardown would ever need to unwind.
 //
 // The one reference that cannot join the worklist is `Object::class`: it is
 // not an `Option`, and `Drop::drop` receives `&mut self`, so there is no
@@ -394,14 +395,6 @@ pub struct Frame {
 // object the shared bootstrap `Object` placeholder. A `class` chain is
 // therefore at most one link long and costs a bounded number of frames.
 
-/// One entry of a teardown worklist. Objects and frames reference each
-/// other freely (a closure holds frames, a frame holds objects), so both
-/// live on the same list.
-enum Dying {
-    Obj(ObjRef),
-    Frame(FrameRef),
-}
-
 /// Hands `obj` to `work` if this is its last handle, and simply releases it
 /// otherwise.
 ///
@@ -412,40 +405,32 @@ enum Dying {
 /// dying object pointing at the same third object work out: the first
 /// handle sees a count of two and is released on the spot, the second sees
 /// one and is queued.
-fn push_obj(obj: ObjRef, work: &mut Vec<Dying>) {
+fn push_obj(obj: ObjRef, work: &mut Vec<ObjRef>) {
     if Rc::strong_count(&obj.0) == 1 {
-        work.push(Dying::Obj(obj));
+        work.push(obj);
     }
 }
 
-fn push_frame(frame: FrameRef, work: &mut Vec<Dying>) {
-    if Rc::strong_count(&frame.0) == 1 {
-        work.push(Dying::Frame(frame));
-    }
-}
-
-fn push_value(value: Value, work: &mut Vec<Dying>) {
+fn push_value(value: Value, work: &mut Vec<ObjRef>) {
     if let Value::Obj(obj) = value {
         push_obj(obj, work);
     }
 }
 
-fn push_closure(closure: ClosureData, work: &mut Vec<Dying>) {
-    push_frame(closure.captured_frame, work);
-    push_frame(closure.home, work);
-}
-
 /// Moves every reference an object's payload owns onto `work`. Takes the
 /// payload by value: `ObjectData` has an empty variant to leave behind
 /// (`Instance(vec![])`), so nothing here needs a stand-in.
-fn drain_object_data(data: ObjectData, work: &mut Vec<Dying>) {
+fn drain_object_data(data: ObjectData, work: &mut Vec<ObjRef>) {
     match data {
         ObjectData::Instance(fields) | ObjectData::Array(fields) => {
             for value in fields {
                 push_value(value, work);
             }
         }
-        ObjectData::Closure(closure) => push_closure(closure, work),
+        // A `ClosureData` owns its `captured_frame` and `home`, both
+        // `FrameRef`s into the arena rather than object references, so
+        // there is nothing here for the worklist to pick up.
+        ObjectData::Closure(_) => {}
         ObjectData::Class(class) => {
             // `application` is released through `MixinApplication`'s own
             // `Drop`, which unlinks its superclass list the same way.
@@ -469,59 +454,16 @@ fn take_object_data(obj: &mut Object) -> ObjectData {
     std::mem::replace(&mut obj.data, ObjectData::Instance(Vec::new()))
 }
 
-/// Moves every reference a frame owns onto `work`. Every field has a cheap
-/// empty form to leave behind, so a frame -- unlike an object -- gives up
-/// all of its references.
-fn drain_frame(frame: &mut Frame, work: &mut Vec<Dying>) {
-    push_value(std::mem::replace(&mut frame.receiver, Value::Nil), work);
-    for value in std::mem::take(&mut frame.args) {
-        push_value(value, work);
-    }
-    for value in std::mem::take(&mut frame.temps) {
-        push_value(value, work);
-    }
-    if let Some(sender) = frame.sender.take() {
-        push_frame(sender, work);
-    }
-    if let Some(home) = frame.home.take() {
-        push_frame(home, work);
-    }
-    if let Some(class) = frame.current_class.take() {
-        push_obj(class, work);
-    }
-    match std::mem::replace(&mut frame.kind, FrameKind::TopLevel) {
-        FrameKind::Closure(closure) => {
-            if let Ok(closure) = Rc::try_unwrap(closure) {
-                push_closure(closure, work);
-            }
-        }
-        FrameKind::Initializer(class)
-        | FrameKind::SuperclassClause(class)
-        | FrameKind::SuperclassMessage(class) => push_obj(class, work),
-        FrameKind::Method(_) | FrameKind::TopLevel => {}
-    }
-}
-
 /// Releases everything on `work`, and everything reachable from it, in a
 /// loop. Each entry was queued because its handle was the last one, so
 /// `Rc::try_unwrap` yields the value itself; emptying it there means its
 /// own `Drop` finds nothing left to descend into.
-fn run_teardown(work: &mut Vec<Dying>) {
-    while let Some(dying) = work.pop() {
-        match dying {
-            Dying::Obj(obj) => {
-                if let Ok(cell) = Rc::try_unwrap(obj.0) {
-                    let mut object = cell.into_inner();
-                    let data = take_object_data(&mut object);
-                    drain_object_data(data, work);
-                }
-            }
-            Dying::Frame(frame) => {
-                if let Ok(cell) = Rc::try_unwrap(frame.0) {
-                    let mut inner = cell.into_inner();
-                    drain_frame(&mut inner, work);
-                }
-            }
+fn run_teardown(work: &mut Vec<ObjRef>) {
+    while let Some(obj) = work.pop() {
+        if let Ok(cell) = Rc::try_unwrap(obj.0) {
+            let mut object = cell.into_inner();
+            let data = take_object_data(&mut object);
+            drain_object_data(data, work);
         }
     }
 }
@@ -531,14 +473,6 @@ impl Drop for Object {
         let mut work = Vec::new();
         let data = take_object_data(self);
         drain_object_data(data, &mut work);
-        run_teardown(&mut work);
-    }
-}
-
-impl Drop for Frame {
-    fn drop(&mut self) {
-        let mut work = Vec::new();
-        drain_frame(self, &mut work);
         run_teardown(&mut work);
     }
 }
