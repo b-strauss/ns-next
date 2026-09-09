@@ -1826,7 +1826,7 @@ fn rebuild_applications(
     // as the id it was written with.
     let mut position: HashMap<usize, usize> = HashMap::with_capacity(pending.len());
     for (i, p) in pending.iter().enumerate() {
-        position.insert(Rc::as_ptr(&objects[p.object]) as usize, i);
+        position.insert(objects[p.object].identity_key(), i);
     }
     let mut done = vec![false; pending.len()];
     let mut on_chain = vec![false; pending.len()];
@@ -1847,7 +1847,7 @@ fn rebuild_applications(
                 .heap
                 .class_superclass(&objects[pending[current].object]);
             let Some(superclass) = superclass else { break };
-            let Some(&next) = position.get(&(Rc::as_ptr(&superclass) as usize)) else {
+            let Some(&next) = position.get(&superclass.identity_key()) else {
                 break;
             };
             if done[next] {
@@ -1887,7 +1887,7 @@ fn rebuild_applications(
 /// a builtin, or the module's root class. The mirror of
 /// `encode::is_class_tag`.
 fn is_prebuilt_class(heap: &Heap, class: &ClassRef, root_class: &ClassRef) -> bool {
-    heap.class_builtin(class).is_some() || Rc::ptr_eq(class, root_class)
+    heap.class_builtin(class).is_some() || class.same(root_class)
 }
 
 /// Every field the format types as a class reference really names a class
@@ -1990,11 +1990,10 @@ pub fn decode_graph_section(
         .ok_or(DecodeError::NotAClass)?;
     let objects: Vec<ObjRef> = (0..object_count)
         .map(|_| {
-            Rc::new(RefCell::new(Object {
-                class: placeholder_class.clone(),
-                identity_hash: 0,
-                data: ObjectData::Instance(Vec::new()),
-            }))
+            ctx.interp.heap.alloc_placeholder_object(
+                placeholder_class.clone(),
+                ObjectData::Instance(Vec::new()),
+            )
         })
         .collect();
     let frames: Vec<FrameRef> = (0..frame_count)

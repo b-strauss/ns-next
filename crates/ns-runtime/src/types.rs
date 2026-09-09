@@ -15,9 +15,52 @@ use crate::Symbol;
 
 // ---------- Values and objects ----------
 
-pub type ObjRef = Rc<RefCell<Object>>;
-/// A class is an ordinary `ObjRef` whose `data` is `ObjectData::Class(_)`.
-/// Not enforced by the type system in Milestone 1 (no metaclasses yet).
+/// An opaque handle to an object. The inner `Rc` is private, and only
+/// `types.rs` and `heap.rs` can reach it: that privacy is what makes
+/// replacing the store behind it a change to those two files rather than
+/// to every caller. See `docs/design/memory.md`, "The seam".
+#[derive(Clone)]
+pub struct ObjRef(pub(crate) Rc<RefCell<Object>>);
+
+impl ObjRef {
+    /// Object identity. Replaces `Rc::ptr_eq` at every call site, so that
+    /// identity has one spelling that survives the store changing under it.
+    pub fn same(&self, other: &ObjRef) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// An opaque, hashable key unique to this handle, for a table keyed by
+    /// object identity rather than by `identity_hash`.
+    /// `image::encode::GraphTable` is the only caller: it dedupes objects
+    /// it has already assigned a table id to as it walks the graph, and
+    /// `identity_hash` cannot serve that key -- two placeholder objects may
+    /// legitimately share hash 0 (`Heap::alloc_placeholder_object`,
+    /// `heap::bootstrap_self_referential_object`), which would fold two
+    /// distinct objects into one table entry.
+    pub fn identity_key(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
+    }
+}
+
+/// Prints identity only, never `class` or `data`: the bootstrap `Object`
+/// class is its own `.class`, so a `Debug` that visited fields would
+/// recurse forever the first time anything derives `Debug` through an
+/// `ObjRef` (`Object`, `Value::Obj`, every `Option<ClassRef>` on
+/// `ClassData` -- see `CLAUDE.md`'s "Never `{:?}` a `Value`"). `try_borrow`
+/// rather than `borrow`: `Debug` can run while a caller elsewhere on the
+/// stack already holds the `RefCell` mutably (a panic message formatting a
+/// receiver mid-mutation, say), and formatting must not itself panic.
+impl std::fmt::Debug for ObjRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.try_borrow() {
+            Ok(obj) => write!(f, "ObjRef(#{})", obj.identity_hash),
+            Err(_) => write!(f, "ObjRef(<borrowed>)"),
+        }
+    }
+}
+
+/// A class is an `ObjRef` whose `data` is `ObjectData::Class(_)`. Not
+/// enforced by the type system in Milestone 1 (no metaclasses yet).
 pub type ClassRef = ObjRef;
 
 #[derive(Debug, Clone)]
@@ -321,7 +364,7 @@ enum Dying {
 /// handle sees a count of two and is released on the spot, the second sees
 /// one and is queued.
 fn push_obj(obj: ObjRef, work: &mut Vec<Dying>) {
-    if Rc::strong_count(&obj) == 1 {
+    if Rc::strong_count(&obj.0) == 1 {
         work.push(Dying::Obj(obj));
     }
 }
@@ -418,7 +461,7 @@ fn run_teardown(work: &mut Vec<Dying>) {
     while let Some(dying) = work.pop() {
         match dying {
             Dying::Obj(obj) => {
-                if let Ok(cell) = Rc::try_unwrap(obj) {
+                if let Ok(cell) = Rc::try_unwrap(obj.0) {
                     let mut object = cell.into_inner();
                     let data = take_object_data(&mut object);
                     drain_object_data(data, work);
@@ -474,20 +517,6 @@ pub struct NewspeakError {
 mod tests {
     use super::*;
 
-    /// Builds a minimal, genuinely self-referential class object sufficient
-    /// to construct other values in these tests. A real bootstrap (a later
-    /// task) wires every builtin class's `.class` up properly; this helper
-    /// only needs the type shapes to compile and hold together, and no test
-    /// in this file ever reads through the self-reference.
-    ///
-    /// `Object.class` is non-optional (no `Option`/`Weak`), so a genuinely
-    /// self-referential root cannot be built in one safe-Rust expression --
-    /// the very first `Object` needs a `class` value before any
-    /// `Rc<RefCell<Object>>` exists to supply one. We build the allocation
-    /// uninitialized, mint a second strong handle to the SAME allocation
-    /// (its count balanced via `Rc::increment_strong_count` before calling
-    /// `Rc::from_raw`), write the real value using that handle as `class`,
-    /// then `assume_init`.
     /// A root application with no code, no slots and no superclass. Built
     /// directly rather than through `Interpreter::apply_mixin` so this
     /// module's tests stay free of the interpreter.
@@ -502,36 +531,23 @@ mod tests {
         })
     }
 
+    /// A minimal, genuinely self-referential class object sufficient to
+    /// construct other values in these tests. A real bootstrap (a later
+    /// task) wires every builtin class's `.class` up properly; this helper
+    /// only needs the type shapes to compile and hold together, and no test
+    /// in this file ever reads through the self-reference. The unsafe
+    /// construction itself lives in `heap::bootstrap_self_referential_object`
+    /// -- see its doc comment for why `Object.class` being non-optional
+    /// forces this out of safe Rust.
     fn dummy_class() -> ClassRef {
-        let uninit: Rc<std::mem::MaybeUninit<RefCell<Object>>> = Rc::new_uninit();
-        let raw_mut = Rc::as_ptr(&uninit) as *mut std::mem::MaybeUninit<RefCell<Object>>;
-        let data_ptr = raw_mut as *const RefCell<Object>;
-        // SAFETY: `data_ptr` points at the allocation `uninit` owns; we
-        // bump its strong count by one before minting a second `Rc` handle
-        // to it via `from_raw`, so the two handles (`uninit`, and the
-        // `class` field written below) share a correctly balanced count.
-        // `MaybeUninit<T>` is guaranteed to have the same layout as `T`, so
-        // the pointer cast is sound; we never dereference through either
-        // handle before the `write` below completes.
-        unsafe { Rc::increment_strong_count(data_ptr) };
-        let self_ref: ClassRef = unsafe { Rc::from_raw(data_ptr) };
-        unsafe {
-            (*raw_mut).write(RefCell::new(Object {
-                class: self_ref,
-                identity_hash: 0,
-                data: ObjectData::Class(ClassData {
-                    application: empty_application("Object"),
-                    enclosing: None,
-                    declaring_class: None,
-                    superclass: None,
-                    builtin: Some(BuiltinClass::Object),
-                    metaclass: None,
-                }),
-            }));
-        }
-        // SAFETY: the write above just initialized the payload; `uninit`
-        // is the allocation's original handle, now fully initialized.
-        unsafe { uninit.assume_init() }
+        crate::heap::bootstrap_self_referential_object(ObjectData::Class(ClassData {
+            application: empty_application("Object"),
+            enclosing: None,
+            declaring_class: None,
+            superclass: None,
+            builtin: Some(BuiltinClass::Object),
+            metaclass: None,
+        }))
     }
 
     #[test]
@@ -549,15 +565,12 @@ mod tests {
     #[test]
     fn value_clone_shares_object_identity() {
         let class = dummy_class();
-        let instance = Rc::new(RefCell::new(Object {
-            class,
-            identity_hash: 1,
-            data: ObjectData::Instance(vec![]),
-        }));
+        let mut heap = crate::Heap::new();
+        let instance = heap.alloc_object(class, ObjectData::Instance(vec![]));
         let a = Value::Obj(instance.clone());
         let b = a.clone();
         match (a, b) {
-            (Value::Obj(x), Value::Obj(y)) => assert!(Rc::ptr_eq(&x, &y)),
+            (Value::Obj(x), Value::Obj(y)) => assert!(x.same(&y)),
             _ => panic!("expected Value::Obj"),
         }
     }

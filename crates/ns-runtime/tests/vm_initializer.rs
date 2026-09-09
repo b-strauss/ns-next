@@ -1,14 +1,13 @@
 //! Hook 3: instance initializers (slot initializers + initExprs) under the
 //! bytecode engine, compared against the tree-walker.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::{
     compiler, Binding, BuiltinClass, ClassData, ClassRef, ClosureBody, Engine, FrameKind,
-    Interpreter, Mixin, MixinApplication, Object, ObjectData, Signal, SourceOrigin, Symbol, Value,
+    Interpreter, Mixin, MixinApplication, ObjectData, Signal, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
@@ -176,11 +175,9 @@ fn make_class(
     class_of_class: ClassRef,
     application: Rc<MixinApplication>,
 ) -> ClassRef {
-    let identity_hash = interp.alloc_identity_hash();
-    Rc::new(RefCell::new(Object {
-        class: class_of_class,
-        identity_hash,
-        data: ObjectData::Class(ClassData {
+    interp.heap_mut().alloc_object(
+        class_of_class,
+        ObjectData::Class(ClassData {
             application,
             enclosing: None,
             declaring_class: None,
@@ -193,7 +190,7 @@ fn make_class(
             builtin: None,
             metaclass: None,
         }),
-    }))
+    )
 }
 
 /// The `SmallInt` held at `instance`'s field `index` -- `Value` has no

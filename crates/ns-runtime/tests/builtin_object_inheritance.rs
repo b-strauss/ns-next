@@ -53,7 +53,7 @@ fn a_builtin_receiver_inherits_objects_native_class() {
 
     match expect_ok(result, "3 class") {
         Value::Obj(obj) => assert!(
-            Rc::ptr_eq(&obj, &expected),
+            obj.same(&expected),
             "`3 class` must yield the Integer class object"
         ),
         other => panic!(

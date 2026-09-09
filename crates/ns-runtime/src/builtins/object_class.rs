@@ -45,7 +45,7 @@ fn identical(a: &Value, b: &Value) -> bool {
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::SmallInt(x), Value::SmallInt(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => x.to_bits() == y.to_bits(),
-        (Value::Obj(x), Value::Obj(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::Obj(x), Value::Obj(y)) => x.same(y),
         _ => false,
     }
 }

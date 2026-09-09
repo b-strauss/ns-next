@@ -773,12 +773,7 @@ impl Interpreter {
     }
 
     fn new_instance_object(&mut self, class: ClassRef, data: ObjectData) -> ObjRef {
-        let identity_hash = self.alloc_identity_hash();
-        Rc::new(RefCell::new(Object {
-            class,
-            identity_hash,
-            data,
-        }))
+        self.heap.alloc_object(class, data)
     }
 
     pub fn new_array(&mut self, elements: Vec<Value>) -> ObjRef {
@@ -871,11 +866,9 @@ impl Interpreter {
         superclass: Option<ClassRef>,
     ) -> ClassRef {
         let class = self.builtin_class(BuiltinClass::Object);
-        let identity_hash = self.alloc_identity_hash();
-        Rc::new(RefCell::new(Object {
+        self.heap.alloc_object(
             class,
-            identity_hash,
-            data: ObjectData::Class(ClassData {
+            ObjectData::Class(ClassData {
                 application,
                 enclosing,
                 declaring_class,
@@ -883,7 +876,7 @@ impl Interpreter {
                 builtin: None,
                 metaclass: None,
             }),
-        }))
+        )
     }
 
     pub fn apply_mixin(
@@ -983,14 +976,14 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
     // original draft did) -- `BuiltinClass::Object` and `crate::types::Object`
     // (the object-model struct, brought into scope by `use crate::types::*;`
     // above) share the bare name `Object`. A glob-import of the enum's
-    // variants shadows the struct, so `Object { class: ..., .. }` below
-    // would silently try to build a `BuiltinClass::Object` unit variant
-    // with named fields instead of a `types::Object` struct literal -- a
-    // compile error the type checker catches, but only because the fields
-    // don't match; a differently-shaped `Object` struct could have made
-    // this shadow compile into the wrong construction entirely. Referring
-    // to every variant through its `BuiltinClass::` qualifier avoids the
-    // collision.
+    // variants shadows the struct, so any bare `Object { .. }` literal
+    // elsewhere in this function would silently try to build a
+    // `BuiltinClass::Object` unit variant with named fields instead of a
+    // `types::Object` struct literal -- a compile error the type checker
+    // catches, but only because the fields don't match; a differently-shaped
+    // `Object` struct could have made this shadow compile into the wrong
+    // construction entirely. Referring to every variant through its
+    // `BuiltinClass::` qualifier avoids the collision.
     let kinds = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
@@ -1024,10 +1017,9 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
                 interp.apply_mixin(&builtin_mixin(kind), Some(&object_application)),
             )
         };
-        let obj = Rc::new(RefCell::new(Object {
-            class: class_of_class.clone(),
-            identity_hash: interp.alloc_identity_hash(),
-            data: ObjectData::Class(ClassData {
+        let obj = interp.heap.alloc_object(
+            class_of_class.clone(),
+            ObjectData::Class(ClassData {
                 application,
                 enclosing: None,
                 declaring_class: None,
@@ -1035,7 +1027,7 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
                 builtin: Some(kind),
                 metaclass: None,
             }),
-        }));
+        );
         map.insert(kind, obj);
     }
     map.insert(BuiltinClass::Object, class_of_class);
@@ -1053,50 +1045,19 @@ fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
 
 /// Builds the single, genuinely self-referential `Object`-tagged class
 /// object every `BuiltinClass` shares as its own `.class` (see this task's
-/// design note on the bootstrap's identity problem). `Object.class` is
-/// non-optional (no `Option`/`Weak`), so this cannot be built via
-/// `Rc::new_cyclic` in one safe step: `new_cyclic`'s closure only ever
-/// gets a `Weak` that fails to upgrade until construction finishes, and
-/// using `unreachable!()` as a throwaway placeholder panics immediately on
-/// evaluation (eager, not lazy) rather than compiling to something inert.
-/// Instead: allocate the memory uninitialized, mint a second strong `Rc`
-/// handle to the SAME allocation (its count balanced via
-/// `Rc::increment_strong_count` before `Rc::from_raw`), write the real
-/// value using that handle as `class`, then `assume_init`. This is the
-/// same technique already reviewed and approved for `types.rs`'s
-/// `dummy_class` test helper (Task 3) and reused correctly in
-/// `dispatch.rs`'s test helper (Task 5) -- here it builds a real,
-/// production bootstrap object, not a test fixture.
+/// design note on the bootstrap's identity problem). The unsafe
+/// construction itself lives in `heap::bootstrap_self_referential_object` --
+/// see its doc comment for why `Object.class` being non-optional forces
+/// this out of safe Rust.
 fn build_self_referential_object_class(
     application: Rc<crate::mixin::MixinApplication>,
 ) -> ClassRef {
-    let uninit: Rc<std::mem::MaybeUninit<RefCell<Object>>> = Rc::new_uninit();
-    let raw_mut = Rc::as_ptr(&uninit) as *mut std::mem::MaybeUninit<RefCell<Object>>;
-    let data_ptr = raw_mut as *const RefCell<Object>;
-    // SAFETY: `data_ptr` points at the allocation `uninit` owns; we bump
-    // its strong count by one before minting a second `Rc` handle to it
-    // via `from_raw`, so the two handles (`uninit`, and the `class` field
-    // written below) share a correctly balanced count. `MaybeUninit<T>` is
-    // guaranteed to have the same layout as `T`, so the pointer cast is
-    // sound; neither handle is dereferenced before the `write` below
-    // completes.
-    unsafe { Rc::increment_strong_count(data_ptr) };
-    let self_ref: ClassRef = unsafe { Rc::from_raw(data_ptr) };
-    unsafe {
-        (*raw_mut).write(RefCell::new(Object {
-            class: self_ref,
-            identity_hash: 0,
-            data: ObjectData::Class(ClassData {
-                application,
-                enclosing: None,
-                declaring_class: None,
-                superclass: None,
-                builtin: Some(BuiltinClass::Object),
-                metaclass: None,
-            }),
-        }));
-    }
-    // SAFETY: the write above just initialized the payload; `uninit` is
-    // the allocation's original handle, now fully initialized.
-    unsafe { uninit.assume_init() }
+    crate::heap::bootstrap_self_referential_object(ObjectData::Class(ClassData {
+        application,
+        enclosing: None,
+        declaring_class: None,
+        superclass: None,
+        builtin: Some(BuiltinClass::Object),
+        metaclass: None,
+    }))
 }

@@ -232,7 +232,6 @@ pub fn lookup_slot(heap: &Heap, class: &ClassRef, name: Symbol) -> Option<usize>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
     use std::collections::HashMap;
 
     /// A placeholder `ClassRef` whose own `.class` field points back to
@@ -244,44 +243,14 @@ mod tests {
     /// tests (nor `walk`/`lookup_*`) ever read a class object's own
     /// `.class` field -- `walk` only reads `.data` -- so any
     /// non-panicking placeholder is sufficient; a self-referential one
-    /// is the simplest to build.
-    ///
-    /// Safe Rust cannot construct a strong `Rc<RefCell<T>>` that already
-    /// holds a strong `Rc` to itself in one expression (the value must
-    /// exist before the `Rc` wrapping it can be cloned into its own
-    /// field). This uses the same allocate-uninitialized-then-write
-    /// technique as `types.rs`'s own `dummy_class` test helper: mint a
-    /// second strong handle to the same not-yet-initialized allocation
-    /// (balancing the strong count via `Rc::increment_strong_count`
-    /// before calling `Rc::from_raw`), write the real value using that
-    /// handle as `class`, then `assume_init`.
+    /// is the simplest to build. The unsafe construction itself lives in
+    /// `heap::bootstrap_self_referential_object`.
     fn dummy_class() -> ClassRef {
-        let uninit: Rc<std::mem::MaybeUninit<RefCell<Object>>> = Rc::new_uninit();
-        let raw_mut = Rc::as_ptr(&uninit) as *mut std::mem::MaybeUninit<RefCell<Object>>;
-        let data_ptr = raw_mut as *const RefCell<Object>;
-        // SAFETY: `data_ptr` points at the allocation `uninit` owns; we
-        // bump its strong count by one before minting a second `Rc`
-        // handle to it via `from_raw`, so the two handles (`uninit`, and
-        // the `class` field written below) share a correctly balanced
-        // count. `MaybeUninit<T>` is guaranteed to have the same layout
-        // as `T`, so the pointer cast is sound; we never dereference
-        // through either handle before the `write` below completes.
-        unsafe { Rc::increment_strong_count(data_ptr) };
-        let self_ref: ClassRef = unsafe { Rc::from_raw(data_ptr) };
-        unsafe {
-            (*raw_mut).write(RefCell::new(Object {
-                class: self_ref,
-                identity_hash: 0,
-                data: ObjectData::Instance(vec![]),
-            }));
-        }
-        // SAFETY: the write above just initialized the payload; `uninit`
-        // is the allocation's original handle, now fully initialized.
-        unsafe { uninit.assume_init() }
+        crate::heap::bootstrap_self_referential_object(ObjectData::Instance(vec![]))
     }
 
     fn class_with_method(
-        heap: &Heap,
+        heap: &mut Heap,
         name: &str,
         selector: &str,
         access: Option<ast::AccessModifier>,
@@ -318,10 +287,9 @@ mod tests {
             num_slots: 0,
             own_slot_base: 0,
         });
-        Rc::new(RefCell::new(Object {
-            class: dummy_class(),
-            identity_hash: 0,
-            data: ObjectData::Class(ClassData {
+        heap.alloc_placeholder_object(
+            dummy_class(),
+            ObjectData::Class(ClassData {
                 application,
                 enclosing: None,
                 declaring_class: None,
@@ -329,13 +297,19 @@ mod tests {
                 builtin: None,
                 metaclass: None,
             }),
-        }))
+        )
     }
 
     #[test]
     fn lookup_public_finds_a_public_method() {
-        let heap = Heap::new();
-        let class = class_with_method(&heap, "X", "foo", Some(ast::AccessModifier::Public), None);
+        let mut heap = Heap::new();
+        let class = class_with_method(
+            &mut heap,
+            "X",
+            "foo",
+            Some(ast::AccessModifier::Public),
+            None,
+        );
         assert!(matches!(
             lookup_public(&heap, &class, Symbol::intern("foo")),
             Lookup::Method(..)
@@ -344,16 +318,16 @@ mod tests {
 
     #[test]
     fn lookup_public_hard_stops_on_a_protected_declaration() {
-        let heap = Heap::new();
+        let mut heap = Heap::new();
         let base = class_with_method(
-            &heap,
+            &mut heap,
             "Base",
             "foo",
             Some(ast::AccessModifier::Public),
             None,
         );
         let derived = class_with_method(
-            &heap,
+            &mut heap,
             "Derived",
             "foo",
             Some(ast::AccessModifier::Protected),
@@ -367,16 +341,16 @@ mod tests {
 
     #[test]
     fn lookup_protected_skips_a_private_declaration_transparently() {
-        let heap = Heap::new();
+        let mut heap = Heap::new();
         let base = class_with_method(
-            &heap,
+            &mut heap,
             "Base",
             "foo",
             Some(ast::AccessModifier::Public),
             None,
         );
         let derived = class_with_method(
-            &heap,
+            &mut heap,
             "Derived",
             "foo",
             Some(ast::AccessModifier::Private),

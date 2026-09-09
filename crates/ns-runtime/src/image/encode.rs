@@ -563,7 +563,7 @@ fn encode_literal(w: &mut Writer, literal: &Literal, symbols: &mut symbols::Buil
 // ---------------------------------------------------------------------------
 
 fn is_same_object(a: &Value, b: &Value) -> bool {
-    matches!((a, b), (Value::Obj(x), Value::Obj(y)) if Rc::ptr_eq(x, y))
+    matches!((a, b), (Value::Obj(x), Value::Obj(y)) if x.same(y))
 }
 
 /// One entry of `GraphTable::build`'s explicit work stack: the traversal
@@ -591,7 +591,7 @@ fn class_refs(data: &ClassData) -> impl Iterator<Item = ObjRef> + '_ {
 /// image's own source before the graph is decoded. Neither exists because
 /// the graph says so, so neither is a record. Every other class object is.
 fn is_class_tag(heap: &Heap, obj: &ObjRef, root_class: &ClassRef) -> bool {
-    heap.class_builtin(obj).is_some() || Rc::ptr_eq(obj, root_class)
+    heap.class_builtin(obj).is_some() || obj.same(root_class)
 }
 
 /// Every heap object (instances, strings, symbols, arrays, closures, and
@@ -653,7 +653,7 @@ impl GraphTable {
         if is_same_object(v, platform) || is_class_tag(heap, obj, root_class) {
             return;
         }
-        let key = Rc::as_ptr(obj) as usize;
+        let key = obj.identity_key();
         if self.object_ids.contains_key(&key) {
             return;
         }
@@ -739,7 +739,7 @@ impl GraphTable {
     pub fn object_id(&self, obj: &ObjRef) -> u32 {
         *self
             .object_ids
-            .get(&(Rc::as_ptr(obj) as usize))
+            .get(&obj.identity_key())
             .expect("object was visited by build()")
     }
 
@@ -797,7 +797,7 @@ fn encode_class_tag(w: &mut Writer, class: &ClassRef, ctx: &EncodeContext) {
             w.write_u8(CLS_BUILTIN);
             w.write_u8(builtin_class_tag(kind));
         }
-        None if Rc::ptr_eq(class, ctx.root_class) => w.write_u8(CLS_USER_ROOT),
+        None if class.same(ctx.root_class) => w.write_u8(CLS_USER_ROOT),
         None => {
             w.write_u8(CLS_RECORD);
             w.write_u32(ctx.table.object_id(class));

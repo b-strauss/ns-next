@@ -16,7 +16,7 @@ use ns_runtime::mixin::mixin_key;
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
     compiler, Binding, BuiltinClass, ClassData, ClassRef, ClosureBody, Engine, FrameKind, Heap,
-    Interpreter, Mixin, MixinApplication, Object, ObjectData, Signal, SourceOrigin, Symbol, Value,
+    Interpreter, Mixin, MixinApplication, ObjectData, Signal, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
@@ -1197,11 +1197,11 @@ fn instances_and_arrays_round_trip_with_shared_identity_preserved() {
         .array_elements(obj(&decoded[0]))
         .expect("expected an array");
     assert!(
-        Rc::ptr_eq(obj(&elements[0]), obj(&elements[1])),
+        obj(&elements[0]).same(obj(&elements[1])),
         "shared identity preserved"
     );
     assert!(
-        !Rc::ptr_eq(obj(&original[0]), obj(&decoded[0])),
+        !obj(&original[0]).same(obj(&decoded[0])),
         "the decoded array is a new object"
     );
     assert!(matches!(
@@ -1239,18 +1239,15 @@ fn class_references_resolve_to_the_same_live_class_objects() {
             Value::Obj(class.clone()),
         ]
     });
-    assert!(Rc::ptr_eq(
-        obj(&decoded[0]),
-        &interp.builtin_class(BuiltinClass::Integer)
-    ));
-    assert!(Rc::ptr_eq(obj(&decoded[1]), &class));
+    assert!(obj(&decoded[0]).same(&interp.builtin_class(BuiltinClass::Integer)));
+    assert!(obj(&decoded[1]).same(&class));
 }
 
 #[test]
 fn the_platform_singleton_resolves_to_the_interpreters_own() {
     let (mut interp, _c, _o, decoded, _max) =
         round_trip_graph(EMPTY, |interp, _, _| vec![interp.platform()]);
-    assert!(Rc::ptr_eq(obj(&decoded[0]), obj(&interp.platform())));
+    assert!(obj(&decoded[0]).same(obj(&interp.platform())));
 }
 
 #[test]
@@ -1264,7 +1261,7 @@ fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
     });
     let heap = interp.heap_ref();
     let snapshot = heap.object_snapshot(obj(&decoded[0]));
-    assert!(Rc::ptr_eq(&snapshot.class, &class));
+    assert!(snapshot.class.same(&class));
     let ObjectData::Instance(fields) = &snapshot.data else {
         panic!("expected an instance")
     };
@@ -1344,13 +1341,12 @@ fn a_closure_and_its_paused_frame_chain_round_trip() {
         Rc::ptr_eq(decl, &methods[&Symbol::intern("mk")]),
         "re-resolved against the class's method map"
     );
-    assert!(Rc::ptr_eq(&heap.class_of_obj(obj(&home.receiver)), &class));
-    assert!(Rc::ptr_eq(
-        home.current_class
-            .as_ref()
-            .expect("a method frame has a current class"),
-        &class
-    ));
+    assert!(heap.class_of_obj(obj(&home.receiver)).same(&class));
+    assert!(home
+        .current_class
+        .as_ref()
+        .expect("a method frame has a current class")
+        .same(&class));
     let sender = home.sender.as_ref().expect("`mk` was sent from `outer`");
     assert!(
         !Rc::ptr_eq(sender, &c.home),
@@ -1381,7 +1377,7 @@ fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
     let FrameKind::Initializer(home_class) = &home_kind else {
         panic!("home is the initializer frame")
     };
-    assert!(Rc::ptr_eq(home_class, &class));
+    assert!(home_class.same(&class));
 }
 
 #[test]
@@ -1773,7 +1769,7 @@ fn two_class_records_with_the_same_mixin_and_superclass_share_one_application() 
         .heap_ref()
         .class_application(&graph.objects[1])
         .expect("a class object");
-    assert!(!Rc::ptr_eq(&graph.objects[0], &graph.objects[1]));
+    assert!(!graph.objects[0].same(&graph.objects[1]));
     assert!(Rc::ptr_eq(&a, &b), "one rebuilt application, shared");
 }
 
@@ -2246,10 +2242,11 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         loaded.interp.compiled_module().is_some(),
         "the bytecode engine is installed"
     );
-    assert!(Rc::ptr_eq(
-        &loaded.interp.heap_ref().class_of_obj(obj(&loaded.roots[0])),
-        &loaded.root_class
-    ));
+    assert!(loaded
+        .interp
+        .heap_ref()
+        .class_of_obj(obj(&loaded.roots[0]))
+        .same(&loaded.root_class));
     let bindings = loaded.empty_bindings.clone();
     let n = expect_ok(
         loaded.interp.send(
@@ -3404,11 +3401,9 @@ fn apply_and_wrap(
     superclass: Option<&Rc<MixinApplication>>,
 ) -> ClassRef {
     let application = interp.apply_mixin(mixin, superclass);
-    let identity_hash = interp.alloc_identity_hash();
-    Rc::new(RefCell::new(Object {
-        class: class_of_class,
-        identity_hash,
-        data: ObjectData::Class(ClassData {
+    interp.heap_mut().alloc_object(
+        class_of_class,
+        ObjectData::Class(ClassData {
             application,
             enclosing: None,
             declaring_class: None,
@@ -3416,7 +3411,7 @@ fn apply_and_wrap(
             builtin: None,
             metaclass: None,
         }),
-    }))
+    )
 }
 
 fn root_mixin_of(heap: &Heap, class: &ClassRef) -> Rc<Mixin> {
@@ -3811,7 +3806,7 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
         class_name(loaded.interp.heap_ref(), &root_class)
     );
     assert!(
-        !Rc::ptr_eq(&inner, &root_class),
+        !inner.same(&root_class),
         "the nested class must not decode as the module's root class"
     );
 }
@@ -3846,7 +3841,7 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
     let before_a = inner_of(&mut interp, &first);
     let before_b = inner_of(&mut interp, &second);
     assert!(
-        !Rc::ptr_eq(&before_a, &before_b),
+        !before_a.same(&before_b),
         "one class object per enclosing instance, before the snapshot"
     );
     assert!(
@@ -3873,28 +3868,22 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
     // Pinned rather than assumed: a load that dropped the cached slots
     // would still satisfy every assertion below.
     assert!(
-        Rc::ptr_eq(
-            &a,
-            obj(&cached_nested_class(
-                loaded.interp.heap_ref(),
-                &outers[0],
-                "Inner"
-            ))
-        ),
+        a.same(obj(&cached_nested_class(
+            loaded.interp.heap_ref(),
+            &outers[0],
+            "Inner"
+        ))),
         "the accessor answered out of the decoded cache slot"
     );
     assert!(
-        Rc::ptr_eq(
-            &b,
-            obj(&cached_nested_class(
-                loaded.interp.heap_ref(),
-                &outers[1],
-                "Inner"
-            ))
-        ),
+        b.same(obj(&cached_nested_class(
+            loaded.interp.heap_ref(),
+            &outers[1],
+            "Inner"
+        ))),
         "the accessor answered out of the decoded cache slot"
     );
-    assert!(!Rc::ptr_eq(&a, &b), "distinct class objects");
+    assert!(!a.same(&b), "distinct class objects");
     assert!(
         Rc::ptr_eq(
             &application_of(loaded.interp.heap_ref(), &a),
@@ -4672,11 +4661,10 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
     // refusal cannot be blamed on an off-by-one at the boundary.
     let mixin = deep_mixin_chain(deepest_parseable_nesting() + 4);
     let application = interp.apply_mixin(&mixin, None);
-    let identity_hash = interp.alloc_identity_hash();
-    let class: ClassRef = Rc::new(RefCell::new(Object {
-        class: interp.builtin_class(BuiltinClass::Object),
-        identity_hash,
-        data: ObjectData::Class(ClassData {
+    let object_class = interp.builtin_class(BuiltinClass::Object);
+    let class: ClassRef = interp.heap_mut().alloc_object(
+        object_class,
+        ObjectData::Class(ClassData {
             application,
             enclosing: None,
             declaring_class: None,
@@ -4684,7 +4672,7 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
             builtin: None,
             metaclass: None,
         }),
-    }));
+    );
     let module = CompiledModule {
         methods: HashMap::new(),
         initializers: HashMap::new(),
@@ -5197,18 +5185,17 @@ fn a_world_holding_a_tree_walker_activation_is_refused_when_written() {
         uncontinuable: false,
         slot_base: 0,
     }));
-    let identity_hash = interp.alloc_identity_hash();
-    let closure = Value::Obj(Rc::new(RefCell::new(Object {
-        class: interp.builtin_class(BuiltinClass::Block),
-        identity_hash,
-        data: ObjectData::Closure(ns_runtime::ClosureData {
+    let block_class = interp.builtin_class(BuiltinClass::Block);
+    let closure = Value::Obj(interp.heap_mut().alloc_object(
+        block_class,
+        ObjectData::Closure(ns_runtime::ClosureData {
             params: vec![],
             body: ClosureBody::Compiled(foo),
             captured_frame: frame.clone(),
             home: frame,
             bindings: bindings.clone(),
         }),
-    })));
+    ));
     let platform = interp.platform();
     let Err(err) = image::snapshot(
         interp.heap_ref(),

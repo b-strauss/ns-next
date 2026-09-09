@@ -327,7 +327,7 @@ fn a_method_that_falls_off_its_end_implicitly_returns_self() {
         send(&mut interp, instance.clone(), "foo", vec![], &bindings),
         "foo",
     );
-    assert!(matches!((&result, &instance), (Value::Obj(a), Value::Obj(b)) if Rc::ptr_eq(a, b)));
+    assert!(matches!((&result, &instance), (Value::Obj(a), Value::Obj(b)) if a.same(b)));
 }
 
 #[test]

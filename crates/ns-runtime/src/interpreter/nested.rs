@@ -213,7 +213,7 @@ fn cache_slot(interp: &Interpreter, receiver: &Value, nested: &Rc<Mixin>) -> Opt
 /// not a cycle, and a name key would report the legal shape as one.
 fn in_progress_key(receiver: &Value, nested: &Rc<Mixin>) -> (usize, usize) {
     let address = match receiver {
-        Value::Obj(obj) => Rc::as_ptr(obj) as *const () as usize,
+        Value::Obj(obj) => obj.identity_key(),
         // `cache_slot` has already established that `receiver` is an object;
         // 0 is an address no live `Rc` has, so a non-object receiver simply
         // never collides with a real entry.

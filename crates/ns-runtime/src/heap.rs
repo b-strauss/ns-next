@@ -51,6 +51,38 @@ impl Heap {
         }
     }
 
+    // ---------- Object construction ----------
+    //
+    // Every ordinary construction of an `ObjRef` in the workspace -- src or
+    // tests -- goes through one of the two methods below, so that replacing
+    // what backs a handle only ever touches this file. The unsafe
+    // self-referential bootstrap below them is the one exception the type
+    // system cannot avoid, kept here for the same reason.
+
+    /// Allocates `data` under `class`, with a fresh identity hash drawn from
+    /// the counter. The ordinary constructor -- everything that is a real,
+    /// observable object goes through this one.
+    pub fn alloc_object(&mut self, class: ClassRef, data: ObjectData) -> ObjRef {
+        let identity_hash = self.alloc_identity_hash();
+        new_object_handle(class, identity_hash, data)
+    }
+
+    /// Allocates `data` under `class` with identity hash fixed at 0,
+    /// bypassing the counter entirely -- for a record nothing may observe
+    /// as itself. `image::decode`'s two-pass graph section calls this for
+    /// the placeholder it is about to overwrite wholesale via
+    /// `replace_object` once the real record is read, so drawing a fresh
+    /// hash per placeholder would burn through the counter for objects
+    /// nothing keeps. `dispatch.rs`'s and `tests/interpreter.rs`'s
+    /// hand-built class fixtures use it for the same reason `dummy_class`
+    /// does in `heap::bootstrap_self_referential_object` below: they are
+    /// never linked into a real hierarchy, so which hash they carry does
+    /// not matter, and 0 is the value every other such placeholder already
+    /// shares (`alloc_identity_hash`'s own doc comment).
+    pub fn alloc_placeholder_object(&mut self, class: ClassRef, data: ObjectData) -> ObjRef {
+        new_object_handle(class, 0, data)
+    }
+
     // ---------- Object accessors ----------
     //
     // `&self` is unused while a handle is an `Rc`, because the data hangs
@@ -61,7 +93,7 @@ impl Heap {
     // `RefCell` behind the handle would make `&self` sufficient today.
 
     pub fn identity_hash(&self, obj: &ObjRef) -> u32 {
-        obj.borrow().identity_hash
+        obj.0.borrow().identity_hash
     }
 
     /// Overwrites `obj`'s identity hash. `tests/image.rs`'s
@@ -78,19 +110,19 @@ impl Heap {
     /// `become:`'s stability guarantee then silently breaks, with nothing
     /// anywhere raising an error to say so.
     pub fn set_identity_hash(&mut self, obj: &ObjRef, hash: u32) {
-        obj.borrow_mut().identity_hash = hash;
+        obj.0.borrow_mut().identity_hash = hash;
     }
 
     pub fn class_of_obj(&self, obj: &ObjRef) -> ClassRef {
-        obj.borrow().class.clone()
+        obj.0.borrow().class.clone()
     }
 
     pub fn is_class(&self, obj: &ObjRef) -> bool {
-        matches!(obj.borrow().data, ObjectData::Class(_))
+        matches!(obj.0.borrow().data, ObjectData::Class(_))
     }
 
     pub fn array_len(&self, obj: &ObjRef) -> Option<usize> {
-        match &obj.borrow().data {
+        match &obj.0.borrow().data {
             ObjectData::Array(items) => Some(items.len()),
             _ => None,
         }
@@ -103,21 +135,21 @@ impl Heap {
     /// their own (see `platform.rs`'s module doc), so the dispatcher needs
     /// the count itself, not any one field's value.
     pub fn instance_field_count(&self, obj: &ObjRef) -> Option<usize> {
-        match &obj.borrow().data {
+        match &obj.0.borrow().data {
             ObjectData::Instance(fields) => Some(fields.len()),
             _ => None,
         }
     }
 
     pub fn array_elements(&self, obj: &ObjRef) -> Option<Vec<Value>> {
-        match &obj.borrow().data {
+        match &obj.0.borrow().data {
             ObjectData::Array(items) => Some(items.clone()),
             _ => None,
         }
     }
 
     pub fn array_at(&self, obj: &ObjRef, index: usize) -> Option<Value> {
-        match &obj.borrow().data {
+        match &obj.0.borrow().data {
             ObjectData::Array(items) => items.get(index).cloned(),
             _ => None,
         }
@@ -128,7 +160,7 @@ impl Heap {
     /// here have already produced their own Newspeak error for it -- so
     /// this reports rather than panics.
     pub fn array_set(&mut self, obj: &ObjRef, index: usize, value: Value) -> bool {
-        if let ObjectData::Array(items) = &mut obj.borrow_mut().data {
+        if let ObjectData::Array(items) = &mut obj.0.borrow_mut().data {
             if index < items.len() {
                 items[index] = value;
                 return true;
@@ -138,7 +170,7 @@ impl Heap {
     }
 
     pub fn array_push(&mut self, obj: &ObjRef, value: Value) -> bool {
-        if let ObjectData::Array(items) = &mut obj.borrow_mut().data {
+        if let ObjectData::Array(items) = &mut obj.0.borrow_mut().data {
             items.push(value);
             return true;
         }
@@ -149,7 +181,7 @@ impl Heap {
     /// `ObjectData::Instance` or `index` is out of range -- the same
     /// total-rather-than-panicking shape as the array accessors above.
     pub fn instance_field(&self, obj: &ObjRef, index: usize) -> Option<Value> {
-        match &obj.borrow().data {
+        match &obj.0.borrow().data {
             ObjectData::Instance(fields) => fields.get(index).cloned(),
             _ => None,
         }
@@ -157,7 +189,7 @@ impl Heap {
 
     /// Answers whether the write happened, mirroring `array_set`.
     pub fn set_instance_field(&mut self, obj: &ObjRef, index: usize, value: Value) -> bool {
-        if let ObjectData::Instance(fields) = &mut obj.borrow_mut().data {
+        if let ObjectData::Instance(fields) = &mut obj.0.borrow_mut().data {
             if index < fields.len() {
                 fields[index] = value;
                 return true;
@@ -167,21 +199,21 @@ impl Heap {
     }
 
     pub fn str_value(&self, obj: &ObjRef) -> Option<String> {
-        match &obj.borrow().data {
+        match &obj.0.borrow().data {
             ObjectData::Str(s) => Some(s.clone()),
             _ => None,
         }
     }
 
     pub fn sym_value(&self, obj: &ObjRef) -> Option<Symbol> {
-        match &obj.borrow().data {
+        match &obj.0.borrow().data {
             ObjectData::Sym(s) => Some(*s),
             _ => None,
         }
     }
 
     pub fn closure_data(&self, obj: &ObjRef) -> Option<ClosureData> {
-        match &obj.borrow().data {
+        match &obj.0.borrow().data {
             ObjectData::Closure(c) => Some(c.clone()),
             _ => None,
         }
@@ -197,7 +229,7 @@ impl Heap {
     /// or `Instance`, acceptable here because the encoder visits every
     /// object exactly once regardless.
     pub fn object_snapshot(&self, obj: &ObjRef) -> Object {
-        obj.borrow().clone()
+        obj.0.borrow().clone()
     }
 
     /// Replaces the entirety of a placeholder object's contents in one
@@ -212,7 +244,7 @@ impl Heap {
     /// error, and no way for verification to notice, because verification
     /// has already finished.
     pub fn replace_object(&mut self, obj: &ObjRef, filled: Object) {
-        *obj.borrow_mut() = filled;
+        *obj.0.borrow_mut() = filled;
     }
 
     /// Renders a value for a user-facing error message.
@@ -228,7 +260,7 @@ impl Heap {
             Value::Bool(b) => b.to_string(),
             Value::SmallInt(n) => n.to_string(),
             Value::Float(f) => f.to_string(),
-            Value::Obj(obj) => match &obj.borrow().data {
+            Value::Obj(obj) => match &obj.0.borrow().data {
                 ObjectData::Str(s) => format!("the String {s:?}"),
                 ObjectData::Sym(s) => format!("the Symbol #{s}"),
                 ObjectData::Array(items) => format!("an Array of {}", items.len()),
@@ -236,7 +268,7 @@ impl Heap {
                 ObjectData::Class(data) => {
                     format!("the class {}", data.application.mixin.name)
                 }
-                ObjectData::Instance(_) => match &obj.borrow().class.borrow().data {
+                ObjectData::Instance(_) => match &obj.0.borrow().class.0.borrow().data {
                     ObjectData::Class(data) => {
                         format!("an instance of {}", data.application.mixin.name)
                     }
@@ -273,49 +305,49 @@ impl Heap {
         &self,
         class: &ClassRef,
     ) -> Option<std::rc::Rc<crate::mixin::MixinApplication>> {
-        match &class.borrow().data {
+        match &class.0.borrow().data {
             ObjectData::Class(data) => Some(data.application.clone()),
             _ => None,
         }
     }
 
     pub fn class_enclosing(&self, class: &ClassRef) -> Option<ObjRef> {
-        match &class.borrow().data {
+        match &class.0.borrow().data {
             ObjectData::Class(data) => data.enclosing.clone(),
             _ => None,
         }
     }
 
     pub fn class_declaring(&self, class: &ClassRef) -> Option<ClassRef> {
-        match &class.borrow().data {
+        match &class.0.borrow().data {
             ObjectData::Class(data) => data.declaring_class.clone(),
             _ => None,
         }
     }
 
     pub fn class_superclass(&self, class: &ClassRef) -> Option<ClassRef> {
-        match &class.borrow().data {
+        match &class.0.borrow().data {
             ObjectData::Class(data) => data.superclass.clone(),
             _ => None,
         }
     }
 
     pub fn class_builtin(&self, class: &ClassRef) -> Option<BuiltinClass> {
-        match &class.borrow().data {
+        match &class.0.borrow().data {
             ObjectData::Class(data) => data.builtin,
             _ => None,
         }
     }
 
     pub fn class_metaclass(&self, class: &ClassRef) -> Option<ClassRef> {
-        match &class.borrow().data {
+        match &class.0.borrow().data {
             ObjectData::Class(data) => data.metaclass.clone(),
             _ => None,
         }
     }
 
     pub fn set_class_metaclass(&mut self, class: &ClassRef, metaclass: ClassRef) {
-        if let ObjectData::Class(data) = &mut class.borrow_mut().data {
+        if let ObjectData::Class(data) = &mut class.0.borrow_mut().data {
             data.metaclass = Some(metaclass);
         }
     }
@@ -330,7 +362,7 @@ impl Heap {
     /// subclass to an already-loaded sibling *user-defined* class has to
     /// happen by hand on the class-object chain `super`/`instantiate` walk.
     pub fn set_class_superclass(&mut self, class: &ClassRef, superclass: ClassRef) -> bool {
-        if let ObjectData::Class(data) = &mut class.borrow_mut().data {
+        if let ObjectData::Class(data) = &mut class.0.borrow_mut().data {
             data.superclass = Some(superclass);
             return true;
         }
@@ -348,7 +380,7 @@ impl Heap {
         class: &ClassRef,
         application: std::rc::Rc<crate::mixin::MixinApplication>,
     ) -> bool {
-        if let ObjectData::Class(data) = &mut class.borrow_mut().data {
+        if let ObjectData::Class(data) = &mut class.0.borrow_mut().data {
             data.application = application;
             return true;
         }
@@ -512,6 +544,63 @@ impl Heap {
     pub fn replace_frame(&mut self, frame: &FrameRef, filled: Frame) {
         *frame.borrow_mut() = filled;
     }
+}
+
+/// The one place an `ObjRef`'s inner `Rc<RefCell<Object>>` is actually
+/// built. `alloc_object` and `alloc_placeholder_object` differ only in
+/// where the identity hash comes from; this is the shared tail both call.
+fn new_object_handle(class: ClassRef, identity_hash: u32, data: ObjectData) -> ObjRef {
+    ObjRef(std::rc::Rc::new(std::cell::RefCell::new(Object {
+        class,
+        identity_hash,
+        data,
+    })))
+}
+
+/// Builds a class object that is genuinely its own `.class` -- the shape
+/// every one of the crate's four bootstraps needs (`Interpreter::bootstrap`
+/// building the real `Object` class in production; `dispatch.rs`'s,
+/// `types.rs`'s and `tests/interpreter.rs`'s own test suites each building a
+/// throwaway one to satisfy `Object.class`'s non-optional type without
+/// wiring up a whole hierarchy). `Object.class` is non-optional (no
+/// `Option`/`Weak`), so this cannot be built via `Rc::new_cyclic` in one
+/// safe step: `new_cyclic`'s closure only ever gets a `Weak` that fails to
+/// upgrade until construction finishes, and using `unreachable!()` as a
+/// throwaway placeholder panics immediately on evaluation (eager, not
+/// lazy) rather than compiling to something inert. Instead: allocate the
+/// memory uninitialized, mint a second strong `Rc` handle to the SAME
+/// allocation (its count balanced via `Rc::increment_strong_count` before
+/// `Rc::from_raw`), write the real value using that handle as `class`,
+/// then `assume_init`.
+///
+/// Identity hash fixed at 0, like `alloc_placeholder_object`: none of the
+/// four callers link this object into a real hierarchy a hash could ever
+/// distinguish it within.
+pub fn bootstrap_self_referential_object(data: ObjectData) -> ObjRef {
+    let uninit: std::rc::Rc<std::mem::MaybeUninit<std::cell::RefCell<Object>>> =
+        std::rc::Rc::new_uninit();
+    let raw_mut =
+        std::rc::Rc::as_ptr(&uninit) as *mut std::mem::MaybeUninit<std::cell::RefCell<Object>>;
+    let data_ptr = raw_mut as *const std::cell::RefCell<Object>;
+    // SAFETY: `data_ptr` points at the allocation `uninit` owns; we bump
+    // its strong count by one before minting a second `Rc` handle to it
+    // via `from_raw`, so the two handles (`uninit`, and the `class` field
+    // written below) share a correctly balanced count. `MaybeUninit<T>` is
+    // guaranteed to have the same layout as `T`, so the pointer cast is
+    // sound; neither handle is dereferenced before the `write` below
+    // completes.
+    unsafe { std::rc::Rc::increment_strong_count(data_ptr) };
+    let self_ref = ObjRef(unsafe { std::rc::Rc::from_raw(data_ptr) });
+    unsafe {
+        (*raw_mut).write(std::cell::RefCell::new(Object {
+            class: self_ref,
+            identity_hash: 0,
+            data,
+        }));
+    }
+    // SAFETY: the write above just initialized the payload; `uninit` is
+    // the allocation's original handle, now fully initialized.
+    ObjRef(unsafe { uninit.assume_init() })
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ use std::rc::Rc;
 use ns_runtime::interpreter::eval;
 use ns_runtime::{
     Binding, ClassData, ClosureData, Frame, FrameKind, Interpreter, Mixin, MixinApplication,
-    NewspeakError, Object, ObjectData, Signal, Symbol, Value,
+    NewspeakError, ObjectData, Signal, Symbol, Value,
 };
 
 /// A placeholder `ClassRef` whose own `.class` field points back to itself.
@@ -21,38 +21,10 @@ use ns_runtime::{
 /// real bootstrapped class hierarchy, so there is no other object to point
 /// at. None of these tests ever read a class object's own `.class` field,
 /// so any non-panicking placeholder is sufficient; a self-referential one
-/// is the simplest to build.
-///
-/// Safe Rust cannot construct a strong `Rc<RefCell<T>>` that already holds
-/// a strong `Rc` to itself in one expression. This uses the same
-/// allocate-uninitialized-then-write technique as `types.rs`'s and
-/// `dispatch.rs`'s own test helpers (Tasks 3, 5): mint a second strong
-/// handle to the same not-yet-initialized allocation (balancing the strong
-/// count via `Rc::increment_strong_count` before calling `Rc::from_raw`),
-/// write the real value using that handle as `class`, then `assume_init`.
+/// is the simplest to build. The unsafe construction itself lives in
+/// `ns_runtime::heap::bootstrap_self_referential_object`.
 fn dummy_class() -> ns_runtime::ClassRef {
-    let uninit: Rc<std::mem::MaybeUninit<RefCell<Object>>> = Rc::new_uninit();
-    let raw_mut = Rc::as_ptr(&uninit) as *mut std::mem::MaybeUninit<RefCell<Object>>;
-    let data_ptr = raw_mut as *const RefCell<Object>;
-    // SAFETY: `data_ptr` points at the allocation `uninit` owns; we bump
-    // its strong count by one before minting a second `Rc` handle to it via
-    // `from_raw`, so the two handles (`uninit`, and the `class` field
-    // written below) share a correctly balanced count. `MaybeUninit<T>` is
-    // guaranteed to have the same layout as `T`, so the pointer cast is
-    // sound; we never dereference through either handle before the `write`
-    // below completes.
-    unsafe { Rc::increment_strong_count(data_ptr) };
-    let self_ref: ns_runtime::ClassRef = unsafe { Rc::from_raw(data_ptr) };
-    unsafe {
-        (*raw_mut).write(RefCell::new(Object {
-            class: self_ref,
-            identity_hash: 0,
-            data: ObjectData::Instance(vec![]),
-        }));
-    }
-    // SAFETY: the write above just initialized the payload; `uninit` is
-    // the allocation's original handle, now fully initialized.
-    unsafe { uninit.assume_init() }
+    ns_runtime::heap::bootstrap_self_referential_object(ObjectData::Instance(vec![]))
 }
 
 /// Parses `src` (a full one-class module) and returns the class's own
@@ -86,8 +58,11 @@ fn parse_methods(
 
 /// Builds a `ClassRef` whose `methods` map holds every method in `methods`,
 /// keyed by its own selector name (works for the unary selectors these
-/// tests use).
+/// tests use). Allocated through `interp`'s own heap even though it is
+/// never linked into a real hierarchy, so every handle in these tests comes
+/// from the one seam production code goes through.
 fn class_with_methods(
+    interp: &mut Interpreter,
     name: &str,
     methods: Vec<Rc<ns_syntax::ast::MethodDecl>>,
 ) -> ns_runtime::ClassRef {
@@ -96,10 +71,9 @@ fn class_with_methods(
         let method = ns_runtime::mixin::MixinMethod::from_decl(m);
         map.insert(method.selector, Rc::new(method));
     }
-    Rc::new(RefCell::new(Object {
-        class: dummy_class(),
-        identity_hash: 0,
-        data: ObjectData::Class(ClassData {
+    interp.heap_mut().alloc_placeholder_object(
+        dummy_class(),
+        ObjectData::Class(ClassData {
             // A root application, built directly rather than through
             // `Interpreter::apply_mixin`: these classes are never linked
             // into a real hierarchy, so there is no superclass application
@@ -121,25 +95,23 @@ fn class_with_methods(
             builtin: None,
             metaclass: None,
         }),
-    }))
+    )
 }
 
-fn instance_of(class: ns_runtime::ClassRef) -> ns_runtime::ObjRef {
-    Rc::new(RefCell::new(Object {
-        class,
-        identity_hash: 1,
-        data: ObjectData::Instance(vec![]),
-    }))
+fn instance_of(interp: &mut Interpreter, class: ns_runtime::ClassRef) -> ns_runtime::ObjRef {
+    interp
+        .heap_mut()
+        .alloc_object(class, ObjectData::Instance(vec![]))
 }
 
 #[test]
 fn method_with_no_explicit_return_returns_self() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public bar = ( 1. 2 )\n) : ()";
     let (methods, bindings) = parse_methods(src);
-    let class = class_with_methods("Foo", methods);
-    let instance = instance_of(class);
-
     let mut interp = Interpreter::new();
+    let class = class_with_methods(&mut interp, "Foo", methods);
+    let instance = instance_of(&mut interp, class);
+
     let result = interp.send(
         Value::Obj(instance.clone()),
         Symbol::intern("bar"),
@@ -150,7 +122,7 @@ fn method_with_no_explicit_return_returns_self() {
 
     match result {
         Ok(Value::Obj(obj)) => assert!(
-            Rc::ptr_eq(&obj, &instance),
+            obj.same(&instance),
             "a method with no explicit return must yield the receiver (self), not the last expression's value"
         ),
         Ok(other) => panic!(
@@ -166,10 +138,10 @@ fn method_with_no_explicit_return_returns_self() {
 fn method_with_explicit_return_returns_the_returned_value() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public answer = ( ^42 )\n) : ()";
     let (methods, bindings) = parse_methods(src);
-    let class = class_with_methods("Foo", methods);
-    let instance = instance_of(class);
-
     let mut interp = Interpreter::new();
+    let class = class_with_methods(&mut interp, "Foo", methods);
+    let instance = instance_of(&mut interp, class);
+
     let result = interp.send(
         Value::Obj(instance),
         Symbol::intern("answer"),
@@ -242,10 +214,10 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
     let src =
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public bar = ( ^OrderedCollection new )\n) : ()";
     let (methods, bindings) = parse_methods(src);
-    let class = class_with_methods("Foo", methods);
-    let instance = instance_of(class);
-
     let mut interp = Interpreter::bootstrap();
+    let class = class_with_methods(&mut interp, "Foo", methods);
+    let instance = instance_of(&mut interp, class);
+
     let result = interp.send(
         Value::Obj(instance),
         Symbol::intern("bar"),

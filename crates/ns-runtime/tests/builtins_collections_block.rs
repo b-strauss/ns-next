@@ -3,12 +3,9 @@
 //! (`crate::builtins::block`), wired through `crate::builtins::dispatch_native`
 //! via `Interpreter::send` -- same pattern as `tests/builtins_boolean_numbers.rs`.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
-use ns_runtime::{
-    BuiltinClass, Interpreter, Object, ObjectData, ResolvedModule, Signal, Symbol, Value,
-};
+use ns_runtime::{BuiltinClass, Interpreter, ObjectData, ResolvedModule, Signal, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both --
@@ -60,12 +57,11 @@ fn expect_error(
 /// internally, is sufficient to exercise `dispatch_ordered_collection`.
 fn new_ordered_collection(interp: &mut Interpreter) -> Value {
     let class = interp.builtin_class(BuiltinClass::OrderedCollection);
-    let identity_hash = interp.alloc_identity_hash();
-    Value::Obj(Rc::new(RefCell::new(Object {
-        class,
-        identity_hash,
-        data: ObjectData::Array(vec![]),
-    })))
+    Value::Obj(
+        interp
+            .heap_mut()
+            .alloc_object(class, ObjectData::Array(vec![])),
+    )
 }
 
 #[test]
@@ -455,7 +451,7 @@ fn an_invoked_blocks_frame_records_its_sender() {
     );
     match (interp.heap_ref().receiver(&sender), &receiver) {
         (Value::Obj(a), Value::Obj(b)) => assert!(
-            Rc::ptr_eq(&a, b),
+            a.same(b),
             "the sender frame's receiver must be the instance `m` was sent to"
         ),
         (s, r) => panic!(

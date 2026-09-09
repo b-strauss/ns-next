@@ -107,7 +107,7 @@ fn accessor_is_stable(bytecode: bool) {
     let (Value::Obj(a), Value::Obj(b)) = (&first, &second) else {
         panic!("a nested class access must yield a class object");
     };
-    assert!(Rc::ptr_eq(a, b), "spec 6: cached within r");
+    assert!(a.same(b), "spec 6: cached within r");
 }
 
 #[test]
@@ -142,7 +142,7 @@ fn distinct_per_receiver(bytecode: bool) {
     let (Value::Obj(a), Value::Obj(b)) = (&a, &b) else {
         panic!("class objects")
     };
-    assert!(!Rc::ptr_eq(a, b), "spec 6: a distinct class per instance");
+    assert!(!a.same(b), "spec 6: a distinct class per instance");
     let (Some(a_application), Some(b_application)) = (
         interp.heap_ref().class_application(a),
         interp.heap_ref().class_application(b),
@@ -190,7 +190,7 @@ fn enclosing_object_is_the_receiver(bytecode: bool) {
         .heap_ref()
         .class_enclosing(inner)
         .expect("spec 6: a nested class's one piece of state is its enclosing object");
-    assert!(Rc::ptr_eq(&enclosing, outer));
+    assert!(enclosing.same(outer));
 }
 
 #[test]
@@ -383,7 +383,7 @@ fn inherited_nested_declaration(bytecode: bool) {
             .class_enclosing(n_class)
             .expect("an enclosing object");
         assert!(
-            Rc::ptr_eq(&enclosing, derived_obj),
+            enclosing.same(derived_obj),
             "the enclosing object is the receiver, not the declaring level"
         );
     }
@@ -395,7 +395,7 @@ fn inherited_nested_declaration(bytecode: bool) {
     let Value::Obj(again) = &again else {
         panic!("class object")
     };
-    assert!(Rc::ptr_eq(n_class, again), "spec 6: cached within r");
+    assert!(n_class.same(again), "spec 6: cached within r");
     let instance = expect_ok(
         interp.instantiate(n_class.clone(), vec![], &bindings),
         "instantiate N",
@@ -699,7 +699,7 @@ fn an_inherited_class_side_shares_one_application(bytecode: bool) {
     let a = nested_class_object(&mut interp, one, "SpecialWidget", &bindings);
     let b = nested_class_object(&mut interp, two, "SpecialWidget", &bindings);
     assert!(
-        !Rc::ptr_eq(&a, &b),
+        !a.same(&b),
         "spec 6: one class object per enclosing instance"
     );
     assert!(
