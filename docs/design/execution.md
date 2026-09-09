@@ -249,12 +249,16 @@ re-measured.
 other — expected, since it allocates activations at a rate the bytecode engine
 does not reach for this loop and pays for them in ways the arena did not touch.
 Its maximum, however, got worse: ~117 ms in every after-run against ~38 ms
-before, on the same ten timed runs. That is the arena's `Vec` doubling, not
-dispatch. Nothing reclaims a slot, so the frame arena grows monotonically across
-the ten runs, and the copy at a doubling point has both buffers resident and
-shows up as one slow run. The cost is an interim one with a collector behind it;
-it is recorded in [memory.md](memory.md) with the peak-memory figures, because
-that is where the collector's design has to see it.
+before, on the same ten timed runs. The likeliest explanation is the arena's
+`Vec` doubling rather than anything about dispatch — nothing reclaims a slot, so
+the frame arena grows monotonically across the ten runs, and the copy at a
+doubling point has both buffers resident and would show up as exactly one slow
+run. That is an inference from the shape of the peak-memory curve in
+[memory.md](memory.md), not a measured cause; pre-sizing the arenas with
+`with_capacity` and re-running is the control that would settle it, and it has
+not been run. The cost is an interim one with a collector behind it, and it is
+recorded in [memory.md](memory.md) beside the peak-memory figures because that is
+where the collector's design has to see it.
 
 ### A 13% regression, found and recovered
 

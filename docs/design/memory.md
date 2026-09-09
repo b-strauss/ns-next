@@ -99,10 +99,20 @@ release build neither the field nor the check exists, and a handle is exactly it
 The room the actor milestone needs is still there. Actors are designed to get one
 heap each so that pauses stay local
 ([liveness-and-reflection.md](liveness-and-reflection.md)), which will ask how a
-handle encodes *which* heap. A handle is 32 bits, its field is private to
-`heap.rs`, and nothing outside that module can read its bits — so widening it to
-carry a heap tag is a change to one module, and the debug guard is already the
-place that knows a handle has an origin at all.
+handle encodes *which* heap. A handle is 32 bits and its field is private to
+`heap.rs`, so widening it to carry a heap tag is a change to one module — and the
+debug guard is already the place that knows a handle has an origin at all.
+
+One deliberate escape exists, and it is opaque rather than a hole.
+`identity_key()` is `pub(crate)` and returns the index as a `usize` for the three
+places that need a handle as a `HashMap`/`HashSet` key rather than a comparison:
+`image/encode.rs`, `image/decode.rs` and `interpreter/nested.rs`, seven call
+sites in all. Every one stores it, compares it, or looks it up; none does
+arithmetic on it, and none assumes it is an index into anything. So the property
+that matters survives — a handle's *encoding* is still `heap.rs`'s alone to
+change — but the narrower claim that nothing outside the module ever sees the
+bits is not true, and `identity_key` is where to look first if the encoding
+changes.
 
 ### Iterative teardown
 
@@ -116,11 +126,25 @@ The hand-written iterative `Drop` implementations they used to need are gone.
 
 **`MixinApplication` still owns a real chain** — `superclass:
 Option<Rc<MixinApplication>>` — and keeps its hand-written iterative `Drop`
-(`crates/ns-runtime/src/mixin.rs`). It is the only such chain left in the crate.
+(`crates/ns-runtime/src/mixin.rs`). It is the only *iterative* `Drop` left in
+the crate, which is not the same as the only recursive graph: `Mixin`'s
+`nested: Vec<Rc<Mixin>>` and `class_side: Option<Rc<Mixin>>` links drop
+recursively too.
 
-The alternative — a depth ceiling — was rejected, and stays rejected for the
-chain that remains. A ceiling excludes valid programs from working, and a
-Newspeak program can legitimately declare a deep inheritance chain.
+The alternative — a depth ceiling — stays rejected **for the application
+chain**, because that depth is genuinely unbounded: an application chain is as
+long as the class chain it mirrors, `image::decode::rebuild_applications` builds
+one link per class record, and a Newspeak program can legitimately declare a
+deep inheritance chain. Refusing one would exclude a program the runtime already
+runs from source.
+
+A ceiling is the right answer for the `Mixin` tree, and `image/mixins.rs` uses
+one (`MAX_MIXIN_DEPTH`). The difference is where the bound comes from: nesting
+depth is already bounded by `ns-syntax`'s parser, so the ceiling is derived from
+what the front end accepts rather than chosen, and it excludes nothing the
+runtime would otherwise run. That file names the three walks it protects, of
+which `Rc<Mixin>`'s own drop glue is one. A ceiling is rejected where it would
+refuse valid programs, not on principle.
 
 The same reasoning applies to traversal rather than teardown: the image encoder
 walks the graph over an explicit stack, and `metaclass_of` walks its chain
@@ -142,11 +166,13 @@ what keeps a rooting discipline from being needed at every site that calls
 back into the interpreter while holding a reference.
 
 **The seam is compiler-enforced.** `ObjRef`, `FrameRef` and the `ClassRef`
-alias are declared in `heap.rs` with a **private** inner field, so every
-attempt to read a handle's index from anywhere else — any other module of
-`ns-runtime` included — fails to compile. There is no grep gate to remember
-and no visibility to widen: an accessor that is missing has to be added in
-`heap.rs`, which is where the store is.
+alias are declared in `heap.rs` with a **private** inner field, so reading a
+handle's index from anywhere else — any other module of `ns-runtime`
+included — fails to compile. There is no grep gate to remember and no
+visibility to widen: an accessor that is missing has to be added in `heap.rs`,
+which is where the store is. The one way out is the `pub(crate)`
+`identity_key()` described above, which hands the index over as an opaque key
+and is used as one; it is a named exception rather than an unenforced boundary.
 
 Where a site needs several fields of one object or frame at once, a batched
 accessor answers them together rather than the caller taking several —
@@ -252,15 +278,36 @@ allocated frames.
   | `run --engine=tree-walk` | 1 | 4.6 MB | 25.4 MB |
   | `bench --iterations 10` | 22 | 4.6 MB | 340.7 MB |
 
-  The shape of that is what matters more than the figures. Retention is
-  proportional to every activation and object the process has *ever* created,
-  not to what is live: the bytecode engine inlines `whileTrue:` and so builds
-  almost no activations for this loop, while the tree-walker builds one per
-  iteration and keeps all of them. A long-running process is therefore
-  unbounded, and the arena's `Vec` doubling adds a second, visible cost — the
-  copy at a doubling point has both buffers resident, which is why the peak
-  above steps rather than climbs smoothly, and why the tree-walk median of ~37
-  ms sits under a maximum of ~117 ms in the same ten timed runs.
+  Conditions, because the metric is platform-specific and the numbers are
+  useless without them: Windows 11, release build, **peak working set**
+  (`PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize`) read after the process exits.
+  PowerShell's own `Process.PeakWorkingSet64` returns 0 once the process has
+  exited on this platform, so the figures come from `psapi!GetProcessMemoryInfo`
+  called on the still-open handle. On Linux the comparable metric is
+  `VmHWM`/`ru_maxrss`; expect different absolute numbers and the same shape.
+
+  The shape is what matters more than the figures. Retention is proportional to
+  every activation and object the process has *ever* created, not to what is
+  live: the bytecode engine inlines `whileTrue:` and so builds almost no
+  activations for this loop, while the tree-walker builds one per iteration and
+  keeps all of them. A long-running process is therefore unbounded.
+
+  Peak does not climb smoothly with the work done. Sweeping `bench
+  --iterations` on the post-arena binary:
+
+  | `--iterations` | 1 | 2 | 4 | 8 | 10 |
+  |---|---|---|---|---|---|
+  | Peak | 46.4 MB | 88.4 MB | 103.7 MB | 183.2 MB | 340.7 MB |
+
+  The step shape, and the tree-walk maximum of ~117 ms sitting over a ~37 ms
+  median in the same ten timed runs, are both **consistent with** the arena's
+  `Vec` doubling: the copy at a doubling point has the old and the new buffer
+  resident at once and stalls the run that triggers it. That is an inference
+  from the shape of the curve, not a measured cause — no control was run with
+  the arenas pre-sized via `with_capacity`, which is what would settle it. It is
+  recorded because a collector's design should know the interim has a latency
+  cost as well as a memory one, and because pre-sizing is the cheap experiment
+  that would confirm or kill the explanation.
 
   A corollary the collector's design should know about: a **failed** image
   decode retains its placeholders. `decode_graph_section` allocates
@@ -294,10 +341,12 @@ allocated frames.
 - **A moving collector, not a conservative one**, because `become:` and instance
   migration are requirements. Conservative scanning with pinning was considered
   and rejected on the same grounds.
-- **Iterative `Drop` rather than a depth ceiling** for `MixinApplication`, the
-  one owned chain left, because a ceiling would exclude valid programs and the
-  input controls the depth either way. Objects and activations no longer need
-  one: an arena entry holds indices, so there is nothing to unwind.
+- **Iterative `Drop` rather than a depth ceiling** for `MixinApplication`'s
+  chain, because that depth is bounded by nothing the front end enforces, so a
+  ceiling would exclude valid programs. Where a depth *is* independently
+  bounded — the `Mixin` declaration tree, capped by the parser — a ceiling is
+  the right answer and `image/mixins.rs` uses one. Objects and activations need
+  neither: an arena entry holds indices, so there is nothing to unwind.
 - **The tree-walker survives the collector.** Its Rust-held intermediates are
   covered by the scope discipline, not by retiring the engine.
 - **The root discipline is enforced by the type system**, not by convention, and

@@ -61,7 +61,8 @@ that file — so every read and write goes through a `Heap` accessor because the
 compiler refuses anything else. That seam exists so the store behind a handle
 can be replaced by changing one file rather than every caller; replacing
 `Rc<RefCell<_>>` with the arena is the evidence that it works, since no call
-site outside `heap.rs` and `types.rs` changed. Start at
+site outside `heap.rs` and `types.rs` changed for either the object or the
+activation conversion. Start at
 [memory.md](memory.md) for what it guarantees and what it does not — notably
 that nothing reclaims a slot yet.
 

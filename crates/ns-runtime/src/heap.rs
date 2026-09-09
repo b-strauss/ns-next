@@ -60,6 +60,12 @@ impl ObjRef {
     /// (`image::encode::GraphTable`'s object-id map,
     /// `image::decode::rebuild_applications`'s superclass-position map,
     /// `interpreter::nested::in_progress_key`) lives inside `ns-runtime`.
+    ///
+    /// This and `FrameRef::identity_key` are the only ways a handle's index
+    /// leaves this module, so anything that changes what a handle encodes --
+    /// widening it to carry a heap tag, say -- has to check these callers
+    /// even though the field itself is private. They all treat the result as
+    /// an opaque key, which is what keeps that a check rather than a rewrite.
     pub(crate) fn identity_key(&self) -> usize {
         self.index as usize
     }

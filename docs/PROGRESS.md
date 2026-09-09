@@ -17,9 +17,10 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 M4 is under way. Its pieces are one change: the object representation, the
 activation representation and the root discipline each constrain the other
-two, and building any of them on the present model means building it twice.
-Each piece is designed in the document for its own aspect; those documents
-are the authority, and this is only the map to them.
+two, which is why the object and activation representations were converted
+together rather than one at a time. Each piece is designed in the document for
+its own aspect; those documents are the authority, and this is only the map to
+them.
 
 **Two pieces are done.** The heap seam routes every object and activation
 access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
@@ -28,7 +29,8 @@ index into a `Vec` the `Heap` owns, with a private field so the compiler
 enforces the seam. That is worth ~15% of the benchmark and is described in
 [memory.md](design/memory.md); see "M4 — The heap seam" and "M4 — The object
 and frame arena" below. **Nothing reclaims a slot** — the arena grows for the
-life of the process, which is the interim cost step 4 below finally pays off.
+life of the process. That is a deliberate interim cost, and step 4 below, the
+collector, is what ends it.
 
 The order below is the order the remaining work goes in, and it is not the order
 the milestone was originally sketched in. What settled it is a measurement rather
@@ -210,7 +212,9 @@ What it deleted rather than moved:
   `run_teardown`, and `impl Drop` for both `Object` and `Frame`. An arena entry
   holds indices, so there is no reference chain to unwind.
   `mixin.rs`'s `impl Drop for MixinApplication` remains, and is now the only
-  such chain in the crate.
+  hand-written iterative `Drop` in the crate — not the only recursive graph:
+  `Mixin`'s `nested`/`class_side` links still drop recursively, bounded by
+  `image/mixins.rs`'s `MAX_MIXIN_DEPTH` rather than by iteration.
 - `bootstrap_self_referential_object`'s `Rc::new_uninit`/`Rc::from_raw`
   construction, the crate's only `unsafe`. An arena knows a slot's index before
   it fills the slot, so an object can name itself in safe Rust.
@@ -246,12 +250,14 @@ activation, and that is the next step's, not this one's. The tree-walker is
 unchanged within noise, as expected.
 
 The interim cost is real and is the number the collector will be judged against.
-Nothing reclaims a slot, so peak working set over `bench_loop.ns` went from
-4.6 MB to 25.4 MB for one tree-walk run, and from 4.6 MB to 340.7 MB for
+Nothing reclaims a slot, so Windows peak working set over `bench_loop.ns` went
+from 4.6 MB to 25.4 MB for one tree-walk run, and from 4.6 MB to 340.7 MB for
 `bench`'s twenty-two entry sends. Retention is proportional to every activation
-ever created, not to what is live, and `Vec` doubling adds a visible second cost:
-the tree-walk maximum in the same ten timed runs went from ~38 ms to ~117 ms,
-which is the copy at a doubling point. See [memory.md](design/memory.md), "What
+ever created, not to what is live. The tree-walk maximum in the same ten timed
+runs also went from ~38 ms to ~117 ms, which the arena's `Vec` doubling would
+explain — an inference from the shape of the growth curve rather than a measured
+cause. Both, with the conditions the figures were taken under and the control
+that would settle the attribution, are in [memory.md](design/memory.md), "What
 the collector owns".
 
 ## Notes
@@ -291,7 +297,7 @@ the arena.
 *Source comments citing plan task numbers.* `grep -rnE "Task[s]? [0-9]+[a-z]?"
 crates --include=*.rs` matches 65 lines across 25 files — 53 in `ns-runtime`
 (`src/dispatch.rs`, `src/mixin.rs`, `src/resolver/`, `src/interpreter/`,
-`src/builtins/`, and seven files under `tests/`) and 12 in `ns-syntax`
+`src/builtins/`, and nine files under `tests/`) and 12 in `ns-syntax`
 (`src/lexer.rs`, `src/token.rs`, `src/parser/`, `tests/corpus.rs`); `ns-cli`
 carries none. They cite the execution bookkeeping of Milestones 1–3 — "the Task
 10 refactor", "see Tasks 8-10", "Task 14b" — which a reader of the source cannot
@@ -303,8 +309,11 @@ step 3", `interpreter/nested.rs`'s numbered accessor steps), and a few comments
 say something real *through* the task reference, so the fix is to state what the
 comment means rather than to delete the sentence.
 
-*`.iter().cloned()` over a `Copy` element.*
-`crates/ns-runtime/src/image/encode.rs:671,702,703` iterate `Vec<Value>` with
-`.cloned()`, which reads as a deep copy now that `Value` is `Copy`; `.copied()`
-says what happens. No enabled lint flags it (`clippy::cloned_instead_of_copied`
-is pedantic and off).
+*`.iter().cloned()` over a `Copy` element.* `Value`, `ObjRef` and `FrameRef` are
+all `Copy` now, so an iterator chain that ends in `.cloned()` reads as a deep
+copy of something that is a register move; `.copied()` says what happens.
+`grep -n "\.cloned()" crates/ns-runtime/src/image/encode.rs` finds all six —
+lines 585 and 714 over `ObjRef`/`ClassRef`, 708 over `FrameRef`, and 671, 702
+and 703 over `Value`. No enabled lint flags any of them
+(`clippy::cloned_instead_of_copied` is pedantic and off), so the same grep is
+worth re-running elsewhere before calling the sweep done.

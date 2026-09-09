@@ -86,9 +86,12 @@ nothing. Retiring numbers means those bytes hit an unknown tag and are refused.
 `Heap::new()` to stand in for one that is out of scope, and never hold a handle
 across the death of the interpreter that allocated it: the index is in range in the
 other heap too, so the read answers a **different, perfectly valid object** rather
-than failing. Pass the real `&Heap` down instead — `compiler::compile_module`,
-`compile_initializer` and `ns-cli`'s `cmd_disasm` each carry one for exactly this
-reason. A `debug_assertions`-only origin guard turns the mistake into a panic at
+than failing. Reach the real `Heap` instead: `compiler::compile_module` and
+`compile_initializer` take a `&Heap` parameter for exactly this reason, and
+`ns-cli`'s `cmd_disasm` — which builds its own class object and so has no
+parameter to take — reads through `interp.heap_ref()` while that interpreter is
+still alive, before it goes out of scope. A `debug_assertions`-only origin guard
+turns the mistake into a panic at
 the read, so a debug-build test run catches it; a release build does not, which is
 why this is an invariant and not a check to rely on.
 
