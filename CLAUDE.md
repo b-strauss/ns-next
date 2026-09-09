@@ -56,12 +56,16 @@ validate every id, tag, count and length before it indexes, allocates or slices,
 bound any recursion whose depth the input controls. `image::load` also runs two
 structural verification passes before installing the engine. See
 `docs/design/image-format.md`'s "Verification" section for the scope of what they
-do and do not guarantee. Note what refusing an image does *not* undo: the decoder
+do and do not guarantee. One thing to keep in mind while decoding: the decoder
 allocates one placeholder object and activation per declared record before it can
 validate any of them, and the arena never reclaims a slot, so a rejected image
-still costs the `Heap` that memory for the rest of its life. `bounded_count` keeps
-that proportional to the file's size rather than to a `u32` — do not add a
-pre-allocation that is not bounded that way.
+holds its placeholders until the load finishes. That is a transient peak, not a
+leak — `image::load` owns its `Interpreter` in a local, so every `Err` path drops
+it and both arenas with it — but the peak is amplified against the file: an
+`Object` is 64 bytes against a 6-byte minimum record and a `Frame` is 128 against
+19, so roughly 10.7x and 6.7x. `bounded_count` is what keeps that proportional to
+the file's size rather than to a `u32` — do not add a pre-allocation that is not
+bounded that way.
 
 That guarantee covers **decoding**. `ns-next load` on a stateless binary instantiates
 and sends the recorded entry with no flag at all, so loading one *runs its code* --

@@ -1823,7 +1823,7 @@ fn rebuild_applications(
     // superclass still waiting for its own application?" question each step
     // asks. Keyed by index because a superclass arrives as a `ClassRef`
     // handle, not as the id it was written with.
-    let mut position: HashMap<usize, usize> = HashMap::with_capacity(pending.len());
+    let mut position: HashMap<u64, usize> = HashMap::with_capacity(pending.len());
     for (i, p) in pending.iter().enumerate() {
         position.insert(objects[p.object].identity_key(), i);
     }

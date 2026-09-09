@@ -105,7 +105,7 @@ pub struct Interpreter {
     /// nests only as deep as a program actually chains class creations, so
     /// a linear scan beats hashing and allocates nothing in the common
     /// case.
-    nested_in_progress: Vec<(usize, usize)>,
+    nested_in_progress: Vec<(u64, usize)>,
     /// Set by `image::load`: this world's declarations came off the wire,
     /// so they are mixins without `decl`s. See
     /// `EngineUnavailable::TreeWalkAfterLoad`.
@@ -1039,11 +1039,10 @@ fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
 }
 
 /// Builds the single, genuinely self-referential `Object`-tagged class
-/// object every `BuiltinClass` shares as its own `.class` (see this task's
-/// design note on the bootstrap's identity problem). The construction
-/// itself lives in `Heap::alloc_self_referential_class` -- see its doc
-/// comment for why `Object.class` being non-optional forces this out of
-/// safe Rust.
+/// object every `BuiltinClass` shares as its own `.class`, which is what
+/// lets `Object.class` stay non-optional. The construction itself lives in
+/// `Heap::alloc_self_referential_class`; under the arena it is ordinary
+/// safe Rust, because the slot's index is known before the slot is filled.
 fn build_self_referential_object_class(
     heap: &mut Heap,
     application: Rc<crate::mixin::MixinApplication>,

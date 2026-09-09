@@ -309,16 +309,29 @@ allocated frames.
   cost as well as a memory one, and because pre-sizing is the cheap experiment
   that would confirm or kill the explanation.
 
-  A corollary the collector's design should know about: a **failed** image
-  decode retains its placeholders. `decode_graph_section` allocates
-  `object_count` objects and `frame_count` activations up front, because a
-  record must be addressable before the records that reference it are read, and
-  only then validates each record. A rejected image therefore turns input bytes
-  into retained memory for the rest of that `Heap`'s life. `bounded_count`
-  keeps the amplification proportional to the file's size rather than to a
-  32-bit count, so this is a corollary of the accepted interim cost and not a
-  new decoder defect — but "the decode failed, so nothing was kept" is not true
-  and a collector must not assume it.
+  A corollary the collector's design should know about, stated carefully because
+  the careless version is wrong. A **failed** image decode holds its placeholders
+  until the load returns. `decode_graph_section` allocates `object_count` objects
+  and `frame_count` activations up front, because a record must be addressable
+  before the records that reference it are read, and only then validates each
+  record; nothing reclaims a slot, so a rejected image cannot give them back
+  part-way through.
+
+  It is not retained past that. `image::load` owns its `Interpreter` in a local,
+  so every `Err` path drops it and both arenas with it — the cost is a transient
+  peak during loading, not a leak for the process's life. What is worth recording
+  is the *amplification*: an `Object` is 64 bytes in a release build against a
+  6-byte `MIN_OBJECT_RECORD_BYTES`, and a `Frame` is 128 against 19, so a crafted
+  file turns into roughly 10.7x and 6.7x its own size in placeholders before the
+  first record is checked. `bounded_count` is what keeps that proportional to the
+  file at all rather than to a 32-bit count.
+
+  This is also *better* than the model it replaced, which is the part that makes
+  it an accepted cost rather than a regression. Under `Rc<RefCell<_>>` each
+  placeholder was its own heap allocation with the same lifetime, plus a
+  refcount and an allocator round trip per record; the arena makes the same
+  placeholders two contiguous `Vec` pushes. The collector's interest here is the
+  peak, not a lifetime bug.
 - **Whether an application cache entry must be weak.** Applications are shared and
   cached globally; nothing collects them today because nothing collects at all.
   The collector has to decide whether an application whose classes are all

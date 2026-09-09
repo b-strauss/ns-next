@@ -222,7 +222,7 @@ fn cache_slot(
 /// The declaration, not its name, for the same reason `cache_slot` uses it:
 /// `class N = super N (...)` is a subclass redeclaring what it inherits,
 /// not a cycle, and a name key would report the legal shape as one.
-fn in_progress_key(obj: &ObjRef, nested: &Rc<Mixin>) -> (usize, usize) {
+fn in_progress_key(obj: &ObjRef, nested: &Rc<Mixin>) -> (u64, usize) {
     (obj.identity_key(), mixin_key(nested))
 }
 

@@ -34,9 +34,12 @@ index-derived hash would break the moment a moving collector relocates the
 object or a `become:` swaps identities, and identity has to be stable across a
 snapshot. See [memory.md](memory.md).
 
-`ClosureData { params, captured_frame: FrameRef, body, home: ObjRef }` captures
-its defining frame for closure semantics and its home activation for non-local
-return.
+`ClosureData { params, captured_frame: FrameRef, body, home: FrameRef }`
+captures its defining frame for closure semantics and its home activation for
+non-local return. **`home` is a `FrameRef`, not an `ObjRef`** — it names the
+lexically enclosing *method* or initializer activation, which is what
+`raise_return` walks to. `types.rs` carries the same warning at the field,
+because the enclosing *object* is the tempting misreading and both are handles.
 
 **Never `{:?}` a `Value`.** `ObjRef`'s hand-written `Debug` prints its arena
 index only, so this cannot recurse -- but it renders Rust internals such as

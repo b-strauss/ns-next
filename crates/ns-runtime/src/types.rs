@@ -312,13 +312,13 @@ mod tests {
     }
 
     /// A minimal, genuinely self-referential class object sufficient to
-    /// construct other values in these tests. A real bootstrap (a later
-    /// task) wires every builtin class's `.class` up properly; this helper
-    /// only needs the type shapes to compile and hold together, and no test
-    /// in this file ever reads through the self-reference. The construction
-    /// itself lives in `Heap::alloc_self_referential_class` -- see its doc
-    /// comment for why `Object.class` being non-optional forces this out of
-    /// safe Rust.
+    /// construct other values in these tests. `Interpreter`'s real bootstrap
+    /// wires every builtin class's `.class` up properly; this helper only
+    /// needs the type shapes to compile and hold together, and no test in
+    /// this file ever reads through the self-reference. The construction
+    /// itself lives in `Heap::alloc_self_referential_class`, which is
+    /// ordinary safe Rust under the arena: the slot's index is known before
+    /// the slot is filled.
     fn dummy_class(heap: &mut crate::Heap) -> ClassRef {
         heap.alloc_self_referential_class(ObjectData::Class(ClassData {
             application: empty_application("Object"),

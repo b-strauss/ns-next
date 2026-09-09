@@ -200,7 +200,9 @@ Plan: [ns-next-object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next
 32-bit indices into them, declared in `crates/ns-runtime/src/heap.rs` with a
 **private** field — so the compiler, not a grep gate, refuses every read of a
 handle from anywhere else. The grep gate `CLAUDE.md` used to carry is removed.
-`ObjRef`, `FrameRef` and `Value` are now `Copy`. Thirteen commits.
+`ObjRef`, `FrameRef` and `Value` are now `Copy`. Converted in two steps —
+activations first, then objects — so that each landed against a green suite and
+a measurable benchmark rather than as one unreviewable change.
 
 The seam paid for itself exactly as designed: **no call site outside `heap.rs`
 and `types.rs` changed**, for the frame conversion or the object one.
@@ -310,10 +312,21 @@ say something real *through* the task reference, so the fix is to state what the
 comment means rather than to delete the sentence.
 
 *`.iter().cloned()` over a `Copy` element.* `Value`, `ObjRef` and `FrameRef` are
-all `Copy` now, so an iterator chain that ends in `.cloned()` reads as a deep
-copy of something that is a register move; `.copied()` says what happens.
-`grep -n "\.cloned()" crates/ns-runtime/src/image/encode.rs` finds all six —
-lines 585 and 714 over `ObjRef`/`ClassRef`, 708 over `FrameRef`, and 671, 702
-and 703 over `Value`. No enabled lint flags any of them
-(`clippy::cloned_instead_of_copied` is pedantic and off), so the same grep is
-worth re-running elsewhere before calling the sweep done.
+all `Copy` now, so an iterator chain ending in `.cloned()` reads as a deep copy
+of what is really a register move; `.copied()` says what happens.
+
+Recorded as a command rather than a list, deliberately. Grepping for `.cloned()`
+finds 41 sites under `src`, but most are correct — cloning an `Rc<Mixin>` or an
+`Rc<CompiledCode>` is a refcount bump and `.copied()` would not compile there —
+and telling the two apart needs the element's type, which grep cannot see. The
+exact set is what a pedantic lint already knows:
+
+```bash
+cargo clippy --workspace --all-targets -- -W clippy::cloned_instead_of_copied
+```
+
+That reports **30 sites: 18 under `src`, 12 under `tests`** — re-derive rather
+than trust the number, since it moves with the code. The lint is off by default
+(it is in `clippy::pedantic`), which is why the workspace is warning-free with it
+unmentioned. Whoever does the sweep should decide whether to enable it in
+`Cargo.toml` so the answer stops needing a note here at all.

@@ -46,7 +46,20 @@ pub struct ObjRef {
 impl ObjRef {
     /// Object identity. Replaces `Rc::ptr_eq` at every call site, so that
     /// identity has one spelling that survives the store changing under it.
+    ///
+    /// Guarded like an accessor, and for a sharper reason. Comparing two
+    /// handles from different heaps needs no `Heap` to go wrong, so nothing
+    /// else would catch it -- and the wrong answer here is a silent *yes*:
+    /// two unrelated objects that happen to share an index would be reported
+    /// identical. `check_object_origin` covers every read; this covers the
+    /// one operation that reads nothing.
     pub fn same(&self, other: &ObjRef) -> bool {
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            self.origin, other.origin,
+            "handle belongs to a different heap (comparing handle from heap {}, with handle from heap {})",
+            self.origin, other.origin
+        );
         self.index == other.index
     }
 
@@ -66,8 +79,20 @@ impl ObjRef {
     /// widening it to carry a heap tag, say -- has to check these callers
     /// even though the field itself is private. They all treat the result as
     /// an opaque key, which is what keeps that a check rather than a rewrite.
-    pub(crate) fn identity_key(&self) -> usize {
-        self.index as usize
+    ///
+    /// A debug build folds the origin heap into the key. `same` can assert
+    /// that two handles agree because it is handed both; this is handed one
+    /// and no `Heap`, so there is nothing here to compare and an assertion
+    /// is not expressible. Making the key *carry* the origin is the stronger
+    /// answer anyway: two handles from different heaps then cannot collide
+    /// in a caller's map, rather than colliding and being reported. The key
+    /// is documented opaque and never crosses a process boundary, so
+    /// differing between debug and release costs nothing.
+    pub(crate) fn identity_key(&self) -> u64 {
+        #[cfg(debug_assertions)]
+        return ((self.origin as u64) << 32) | self.index as u64;
+        #[cfg(not(debug_assertions))]
+        return self.index as u64;
     }
 }
 
@@ -114,7 +139,18 @@ impl FrameRef {
     /// under it -- `invoke_method`'s `Signal::Return` catch and
     /// `raise_return`'s target check both depend on this rather than on
     /// the representation directly.
+    ///
+    /// Guarded like an accessor: see `ObjRef::same`. Both call sites named
+    /// above decide where a non-local return lands, so a false *yes* here
+    /// would return to the wrong activation rather than merely answer
+    /// wrongly.
     pub fn same(&self, other: &FrameRef) -> bool {
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            self.origin, other.origin,
+            "handle belongs to a different heap (comparing handle from heap {}, with handle from heap {})",
+            self.origin, other.origin
+        );
         self.index == other.index
     }
 
@@ -122,8 +158,14 @@ impl FrameRef {
     /// `FrameRef` as a `HashMap` key rather than a comparison --
     /// `image::encode::GraphTable`'s frame-id map. Crate-internal: its
     /// only current caller lives inside `ns-runtime`.
-    pub(crate) fn identity_key(&self) -> usize {
-        self.index as usize
+    ///
+    /// A debug build folds the origin heap into the key, for the reason
+    /// `ObjRef::identity_key` gives.
+    pub(crate) fn identity_key(&self) -> u64 {
+        #[cfg(debug_assertions)]
+        return ((self.origin as u64) << 32) | self.index as u64;
+        #[cfg(not(debug_assertions))]
+        return self.index as u64;
     }
 }
 
@@ -964,6 +1006,27 @@ impl Heap {
 mod tests {
     use super::*;
 
+    /// The smallest activation the arena accepts: enough to get a
+    /// `FrameRef` back, with no field any test below reads. Gated like its
+    /// only caller -- the origin guard it feeds does not exist in a release
+    /// build, so neither does the test, so neither may this.
+    #[cfg(debug_assertions)]
+    fn bare_frame() -> Frame {
+        Frame {
+            receiver: Value::Nil,
+            args: Vec::new(),
+            temps: Vec::new(),
+            pc: 0,
+            pc_kind: PcKind::Bytecode,
+            sender: None,
+            home: None,
+            current_class: None,
+            kind: FrameKind::TopLevel,
+            uncontinuable: false,
+            slot_base: 0,
+        }
+    }
+
     /// Reading a handle through a heap that did not allocate it is the one
     /// failure the arena introduces and the one it cannot answer correctly:
     /// the index names a different, perfectly valid object. Debug builds
@@ -984,6 +1047,67 @@ mod tests {
         // In range for `other` -- which is exactly why this is silent
         // without the guard.
         let _ = other.str_value(&obj);
+    }
+
+    /// The sibling case, and the one an accessor guard cannot reach:
+    /// `same` is handed two handles and no `Heap`, so nothing else in the
+    /// crate would notice that they come from different arenas. Two
+    /// unrelated objects sharing an index would answer "identical" --
+    /// silently, and `ObjRef::same` *is* object identity. Pinned here so
+    /// the guarantee `CLAUDE.md` states is tested rather than asserted.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "handle belongs to a different heap")]
+    fn comparing_two_handles_from_different_heaps_panics() {
+        let mut origin = Heap::new();
+        let class = origin.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let mine = origin.alloc_object(class, ObjectData::Str("mine".to_string()));
+
+        let mut other = Heap::new();
+        let other_class = other.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let theirs = other.alloc_object(other_class, ObjectData::Str("theirs".to_string()));
+
+        // Both are the second object their own heap allocated, so both
+        // carry the same index: without the guard this answers `true`.
+        let _ = mine.same(&theirs);
+    }
+
+    /// The same hole on the activation side. `FrameRef::same` decides where
+    /// a non-local return lands (`invoke_method`'s catch, `raise_return`'s
+    /// target check), so a false "identical" would resume the wrong
+    /// activation rather than merely report the wrong answer.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "handle belongs to a different heap")]
+    fn comparing_two_frame_handles_from_different_heaps_panics() {
+        let mut origin = Heap::new();
+        let mine = origin.alloc_frame(bare_frame());
+
+        let mut other = Heap::new();
+        let theirs = other.alloc_frame(bare_frame());
+
+        let _ = mine.same(&theirs);
+    }
+
+    /// Two handles from different heaps must not collide as map keys
+    /// either. `identity_key` is handed one handle and no `Heap`, so it has
+    /// nothing to assert against -- it folds the origin in instead, which
+    /// makes the collision impossible rather than merely detected.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn identity_keys_from_different_heaps_do_not_collide() {
+        let mut origin = Heap::new();
+        let class = origin.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let mine = origin.alloc_object(class, ObjectData::Str("mine".to_string()));
+
+        let mut other = Heap::new();
+        let other_class = other.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let theirs = other.alloc_object(other_class, ObjectData::Str("theirs".to_string()));
+
+        assert_ne!(mine.identity_key(), theirs.identity_key());
+        // Still stable and equal for the same handle, which is the property
+        // every caller actually relies on.
+        assert_eq!(mine.identity_key(), mine.identity_key());
     }
 
     #[test]
