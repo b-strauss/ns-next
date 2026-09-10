@@ -29,8 +29,8 @@ index into a `Vec` the `Heap` owns, with a private field so the compiler
 enforces the seam. That is worth ~15% of the benchmark and is described in
 [memory.md](design/memory.md); see "M4 — The heap seam" and "M4 — The object
 and frame arena" below. **Nothing reclaims a slot** — the arena grows for the
-life of the process. That is a deliberate interim cost, and step 4 below, the
-collector, is what ends it.
+life of the process. That is a deliberate interim cost. Step 1 below bounds it
+for activations, and step 5, the collector, is what ends it.
 
 The order below is the order the remaining work goes in, and it is not the order
 the milestone was originally sketched in. Two things settled it, neither of them
@@ -54,12 +54,19 @@ discipline also costs nothing at run time and pays off only with the collector,
 so nothing is lost by it going second.
 
 1. **Activations on a stack, reified on demand** —
-   [execution.md](design/execution.md). Cog's model. What the arena left behind:
-   `Frame.args` and `Frame.temps` are still a `Vec` allocation apiece per
-   activation, and every activation is reified whether or not anything looks at
-   it. The trampoline falls out of this rather than driving it, and it absorbs
-   `Block value` on the way. It also bounds what the arena currently leaves
-   unbounded, since a popped stack entry's storage is reused.
+   [execution.md](design/execution.md). Cog's model, as Primordial Soup
+   implements it for Newspeak. What the arena left behind: `Frame.args` and
+   `Frame.temps` are still a `Vec` allocation apiece per activation, and every
+   activation is reified whether or not anything looks at it. Designed in full
+   and split in two, each landing green and measured on its own:
+   - **1a — the stack.** Activations become entries on one stack the `Heap`
+     owns, addressed by a new `ActivationRef`; a `Frame` is reified only when a
+     block is created, and divorced — its registers copied out — when its
+     activation returns. Both engines share it. Bounds what the arena currently
+     leaves unbounded, since an entry that was never reified leaves nothing.
+   - **1b — the trampoline.** `send` split into a decision and an activation,
+     arguments copied straight from the caller's registers, `Block value`
+     absorbed, recursion depth an ordinary Newspeak error.
 2. **A compiler-checked root discipline** — [memory.md](design/memory.md). Nova's
    `GcScope`/`NoGcScope`, where holding an unrooted handle across a collection
    safepoint is a type error rather than corruption found later under collection
@@ -68,7 +75,14 @@ so nothing is lost by it going second.
    already emitted and inert, so no bytecode format break. A cache must guard on
    the **mixin application**, not on the class object; the obvious key is the
    wrong one and would never hit.
-4. **A moving collector** — [memory.md](design/memory.md). `become:` and instance
+4. **Closure conversion** — [execution.md](design/execution.md). Blocks copy the
+   variables they only read and share a box for the ones they write, instead of
+   reaching them through their method's frame. That ends 1a's divorce copy and
+   makes a surviving block retain only what it captured, which is why it comes
+   directly before the collector. Every Smalltalk and Newspeak VM that moved to
+   stack frames made this change to do it; ns-next makes it second, because the
+   reification mechanism is needed with or without it.
+5. **A moving collector** — [memory.md](design/memory.md). `become:` and instance
    migration rule out a conservative non-moving design, and pinning whatever a
    conservative stack scan finds was considered and rejected for the same reason.
    This is what ends the arena's never-reclaim interim.

@@ -276,6 +276,13 @@ activation stack described in [execution.md](execution.md) — a contiguous,
 precisely typed array rather than a pointer-chased chain of individually
 allocated frames.
 
+Closure conversion ([execution.md](execution.md), "Planned: closure
+conversion") is scheduled directly before the collector for the collector's
+sake. Until it lands, a block that outlives its method keeps that method's
+whole reified frame alive — every register, including ones the block never
+reads — so the collector would retain more than the program can reach through
+its variables. After it, a surviving block holds exactly what it captured.
+
 ### Open: what the collector owns
 
 - **Neither arena reclaims a slot today**, and that is the interim cost the
