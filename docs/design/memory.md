@@ -61,11 +61,12 @@ section: the `Rc` box and its reference-count traffic on every frame link and
 every shared handle, and a `RefCell` borrow on every single register read and
 write. A register access is now a slice index into an owned `Vec`. Over
 `bench_loop.ns` on a release build that measured as **19.4–19.6 ms before,
-16.4–16.8 ms after** — about 15%. The rest of an activation's cost — a `Vec`
-apiece for its arguments and temporaries, and an arena entry for every
-activation whether or not anything looked at it — went with the activation
-stack; [execution.md](execution.md), "What the activation stack moved", has the
-figures.
+16.4–16.8 ms after** — about 15%. The rest of the cost of an activation nothing
+captures — a `Vec` apiece for its arguments and temporaries, and an arena entry
+— went with the activation stack. A captured activation still takes an arena
+entry for its reified frame, and two vectors when its divorce copies the
+registers out. [execution.md](execution.md), "What the activation stack moved",
+has the figures.
 
 `ObjRef`, `FrameRef`, `ActivationRef` and `Value` are `Copy`. A handle has no
 destructor and nothing to clone, which is why `Value` could become `Copy` at all,
@@ -180,12 +181,12 @@ workspace held before the seam existed. Replacing `Rc<RefCell<_>>` with the
 arena is the evidence that this works: **no call site outside `heap.rs` and
 `types.rs` changed** for either the frame conversion or the object one.
 
-The activation stack was a different kind of change, and on purpose. It
-introduced a second activation handle, so every signature that meant *the
-running activation* changed from `FrameRef` to `ActivationRef` — that type
-change is what makes storing a stack handle a compile error
-([execution.md](execution.md), "Representation"). The store behind each handle
-stayed `heap.rs`'s alone.
+What the seam hides is the store behind a handle, not the handle types. Those
+are part of every signature on purpose: a function that means *the running
+activation* takes an `ActivationRef`, and anything that stores one takes a
+`FrameRef`, which is what makes storing a stack handle a compile error
+([execution.md](execution.md), "Representation"). Changing a handle type is
+therefore a change to its callers; changing what stands behind one is not.
 
 The accessors copy out rather than lend out. That follows what the call
 sites already did — borrow, clone one field, drop the borrow — and it is
@@ -355,17 +356,21 @@ its variables. After it, a surviving block holds exactly what it captured.
   The step shape is **consistent with** the arena's `Vec` doubling: the copy at
   a doubling point has the old and the new buffer resident at once, and would
   stall the run that triggers it. The benchmark maxima, measured in the same
-  sitting as the last column above, support that for some sources and refute
-  it for the one it was first offered for. Where the stack removed the
-  retention, the bytecode engine's roughly doubled maxima went with it —
-  `bench_send.ns` 40.4–40.8 ms over a 23.5 ms median under the arena,
-  20.8–21.6 ms under the stack, and the same on row two of the send
-  decomposition ([execution.md](execution.md), "What the activation stack
-  moved") — and so did the tree-walker's on `bench_send.ns` and on row one. But
-  the tree-walker's maximum on `bench_loop.ns` stayed at 112–113 ms over a
-  ~32 ms median under a binary that retains nothing for it, 4.6 MB across all
-  twenty-two entry sends, and on row two at 113–115 ms over ~34 ms. Doubling is
-  not what causes those, and their cause is not known. Pre-sizing the arenas
+  sitting as the last column above, are consistent with that for some sources
+  and refute it for the one it was first offered for. On `bench_send.ns`, whose
+  retention the stack removed (324.9 MB to 4.6 MB above), the bytecode engine's
+  roughly doubled maxima went away — 40.4–40.8 ms over a 23.5 ms median under
+  the arena, 20.8–21.6 ms under the stack — and so did the tree-walker's. The
+  same happened on row two of the send decomposition under the bytecode engine
+  and on row one under the tree-walker ([execution.md](execution.md), "What the
+  activation stack moved"); their peak working set was not measured, so that
+  their retention went too is inferred from their shape, which creates no block
+  per iteration. But the tree-walker's maximum on `bench_loop.ns` stayed at
+  112–113 ms over a ~32 ms median under a binary that measurably retains nothing
+  for it — 4.6 MB across all twenty-two entry sends — so doubling is not what
+  causes that one. Row two under the tree-walker kept its maximum too, 113–115 ms
+  over ~34 ms; that doubling is not the cause there either is an inference by
+  the same shape argument. Neither cause is known. Pre-sizing the arenas
   with `with_capacity` is still the control that would settle the doubling
   explanation where it does fit; it has not been run. This is recorded because a
   collector's design should know the interim may have a latency cost as well as

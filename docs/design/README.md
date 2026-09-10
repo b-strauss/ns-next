@@ -64,9 +64,10 @@ refuses anything else. That seam exists so the store behind a handle can be
 replaced by changing one file rather than every caller; replacing
 `Rc<RefCell<_>>` with the arena is the evidence that it works, since no call
 site outside `heap.rs` and `types.rs` changed for either the object or the
-activation conversion. The two activation handles are deliberately distinct
-types: a closure, a frame and an image record take only a `FrameRef`, so storing
-an `ActivationRef` in anything that outlives its call is a compile error. Start
+frame conversion. The handle types are not hidden, on purpose: the two
+activation handles are distinct types in every signature — a closure, a frame
+and an image record take only a `FrameRef` — so storing an `ActivationRef` in
+anything that outlives its call is a compile error. Start
 at [memory.md](memory.md) for what the heap guarantees and what it does not —
 notably that nothing reclaims an arena slot yet — and at
 [execution.md](execution.md), "Activations", for the stack.

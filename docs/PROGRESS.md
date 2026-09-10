@@ -36,9 +36,9 @@ every object and every reified frame is kept for the life of the process. That
 is a deliberate interim cost. The activation stack bounded it for activations
 nothing captures, and step 5, the collector, is what ends it.
 
-The order below is the order the remaining work goes in, and it is not the order
-the milestone was originally sketched in. Two things settled it, neither of them
-a preference.
+The list below is M4's order of work — 1a done, everything from 1b on still
+ahead — and it is not the order the milestone was originally sketched in. Two
+things settled it, neither of them a preference.
 
 The first is a measurement. On a release build, before the arena, a
 user-method send cost ~165 ns, of which ~68 ns — about 41% — was spent building
@@ -324,12 +324,13 @@ What it deleted rather than moved:
 
 - The `sender` parameter of `Interpreter::send`, `invoke_method`,
   `invoke_closure`, `builtins::dispatch_native`, `builtins::call_block` and the
-  `builtins/` modules. It was removed rather than retyped to an `ActivationRef`,
-  as the design had said: its only use was to fill `Frame.sender`, and once a
+  `builtins/` modules. The design had it retyped to an `ActivationRef`; it was
+  removed instead, because its only use was to fill `Frame.sender`, and once a
   live activation's sender is the entry below it, nothing read it.
 - `FrameRef`'s `receiver_and_current_class`, `local`, `set_local`,
-  `frame_slot_base`, `frame_is_method` and `mark_uncontinuable`, replaced by
-  their `activation_*` counterparts; `receiver` and `grow_temps` became
+  `frame_slot_base` and `frame_is_method`, replaced by their `activation_*`
+  counterparts, and `mark_uncontinuable`, whose job is now part of
+  `pop_activation`'s divorce; `receiver` and `grow_temps` became
   `frame_receiver` and `frame_grow_temps`. Outside tests, `Heap::alloc_frame`
   has two callers left, `reify` and the image decoder.
 - An arena entry and two register vectors per activation. An activation that
@@ -395,9 +396,10 @@ and allocates one closure, and nothing reclaims an arena slot — but by less th
 half as much, since the block's own activation no longer takes an arena entry.
 
 What did **not** move: the bytecode engine's `bench_loop.ns`, whose inlined
-loop builds no activation; `bench_block.ns`'s time under either engine, since a
-block per iteration still costs a reified frame and a divorce copy; and what the
-design left for later — the argument vector `collect` builds for every send, the
+loop builds no activation; `bench_block.ns`'s time under either engine — the
+stack took the block's own activation out of the arena, and what offsets that
+saving has not been attributed, since no profile was taken; and what the design
+left for later — the argument vector `collect` builds for every send, the
 `HashMap` lookup per invocation that finds a compiled body, and recursion on the
 Rust stack with no depth limit. The first and the last are 1b's, the lookup the
 inline caches'. And the tree-walker's ~112 ms maximum on `bench_loop.ns`, which

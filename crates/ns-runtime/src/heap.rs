@@ -105,9 +105,9 @@ pub struct FrameRef {
 
 impl FrameRef {
     /// Frame identity. Guarded like an accessor: see `ObjRef::same`.
-    /// `Signal::Return` no longer compares frames -- it names its target by
-    /// `ActivationRef` -- so the callers left are the image round-trip tests
-    /// and the decoder's own identity checks.
+    /// `Signal::Return` names its target by `ActivationRef`, not by frame, so
+    /// nothing in the runtime compares frames: the callers are the image
+    /// round-trip tests (`tests/image.rs`) and this module's unit tests.
     pub fn same(&self, other: &FrameRef) -> bool {
         #[cfg(debug_assertions)]
         debug_assert_eq!(
@@ -137,7 +137,7 @@ impl std::fmt::Debug for FrameRef {
 /// popped -- the next activation at that depth reuses the index. That is
 /// why nothing stores one: `ClosureData`, `Frame` and every image record
 /// take a `FrameRef`, which `Heap::reify` answers for a live activation.
-/// See `docs/design/execution.md`, "Representation (1a)".
+/// See `docs/design/execution.md`, "Activations", "Representation".
 ///
 /// 4 bytes in a release build. A debug build adds the heap's id, like every
 /// handle, and a `generation` drawn at each push, so that reading through a
@@ -988,10 +988,12 @@ impl Heap {
         self.frames[frame.index as usize].frame.current_class
     }
 
-    /// Grows a *dead* frame's register file, filling with nil -- what
-    /// edit-and-continue will do after reifying a live activation
-    /// (`docs/design/liveness-and-reflection.md`). A live activation grows
-    /// through `grow_activation_temps`.
+    /// Grows a *dead* frame's register file, filling with nil. A married
+    /// frame's registers are its live entry's window, so it cannot grow here:
+    /// edit-and-continue has to reify and divorce a running activation first
+    /// (`docs/design/execution.md`, "How this meets the liveness
+    /// requirements"). The top live activation grows in place through
+    /// `grow_activation_temps`.
     pub fn frame_grow_temps(&mut self, frame: &FrameRef, needed: usize) {
         self.check_frame_origin(frame);
         debug_assert!(
@@ -1108,7 +1110,7 @@ impl Heap {
     // `reify` marries an arena `Frame` to an entry when something must hold
     // the activation past this call -- today, only a block being created --
     // and `pop_activation` divorces it again. See
-    // `docs/design/execution.md`, "Lifecycle (1a)".
+    // `docs/design/execution.md`, "Activations", "Lifecycle".
 
     /// Pushes an activation whose registers are `args` followed by
     /// `temp_count` nils.
@@ -1581,9 +1583,11 @@ mod tests {
         assert_eq!(heap.frame_register_shape(&first), (3, 2, 1));
     }
 
-    /// Activation identity is what `Signal::Return`'s target check and
-    /// `invoke_method`'s catch both rest on, so two live activations may
-    /// never compare equal however alike their contents are.
+    /// Frame identity is what the image round trip checks sharing by -- a
+    /// closure's `captured_frame` and `home` naming one frame or two -- so
+    /// two reified frames may never compare equal however alike their
+    /// contents are. (`Signal::Return` names its target by `ActivationRef`,
+    /// not by frame.)
     #[test]
     fn two_frames_are_never_the_same_activation() {
         let mut heap = Heap::new();

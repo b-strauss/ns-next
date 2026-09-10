@@ -115,8 +115,8 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
 #[test]
 fn a_return_inside_a_block_in_init_exprs_escapes_instantiate_under_both_engines() {
     // M1 gap, deliberately carried forward in both engines (spec: "Class
-    // instantiation"): the `Signal::Return` targets the initializer frame
-    // and nothing catches it.
+    // instantiation"): the `Signal::Return` targets the initializer
+    // activation, which is still running, and nothing catches it.
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n  | |\n  [ ^1 ] value.\n) (\n) : ()";
     for bytecode in [false, true] {
         let (mut interp, class, bindings) = load(src, bytecode);

@@ -296,13 +296,11 @@ the milestone that builds one; it is a deliberate trade, not an oversight.
 A closure's `home` is the reified frame of the method, initializer,
 superclass-clause or superclass-message activation that lexically encloses it.
 `Signal::Return` carries an `ActivationRef`, its target, and `raise_return` picks
-it: for a closure
-activation, its closure's `home` — the stack entry that frame is married to
-(`Heap::frame_activation`) while its activation is still running, and
+it: for a closure activation, its closure's `home` — the stack entry that frame is
+married to (`Heap::frame_activation`) while its activation is still running, and
 `cannotReturn` if it is dead, either divorced because the activation returned or
-built by the image decoder, which never marries a frame. For any other
-activation the target is the activation itself, which is the tree-walker's
-method-level `^`.
+built by the image decoder, which never marries a frame. For any other activation
+the target is the activation itself, which is the tree-walker's method-level `^`.
 
 That signal propagates out of `run_code` through every intervening Rust frame,
 native primitives included, until the shared `invoke_method` or
@@ -519,7 +517,10 @@ vector and row two's did not, so the arena binary's 3 − 2 carries that allocat
 and its 2 − 1 leaves it out. The stack allocates for neither. That attribution is
 an inference from the two bodies' register counts; no profile was taken. It also
 means the arena binary's 2 − 1 understated what an activation with temporaries
-cost, so 3 − 1 is the figure to compare.
+cost, so 3 − 1 is the figure to compare. The tree-walker has no such asymmetry:
+it sizes an activation's temporaries from the method's declared ones, and
+neither `tick:` declares any, so neither row allocated a temporaries vector in
+either binary. Its 3 − 2 did not move (74.3 → 76.6 ns).
 
 `bench_loop.ns` and row one did **not** move under the bytecode engine: the
 compiler inlines `whileTrue:`, so the loop builds no activation for the stack to

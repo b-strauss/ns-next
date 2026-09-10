@@ -93,17 +93,16 @@ nothing. Retiring numbers means those bytes hit an unknown tag and are refused.
 **A handle means nothing against a `Heap` that did not mint it.** An `ObjRef`, a
 `ClassRef`, a `FrameRef` and an `ActivationRef` are indices into one `Heap`'s arenas
 and activation stack. Never build a `Heap::new()` to stand in for one that is out of
-scope, and never hold a handle
-across the death of the interpreter that allocated it: the index is in range in the
-other heap too, so the read answers a **different, perfectly valid object** rather
-than failing. Reach the real `Heap` instead: `compiler::compile_module` and
-`compile_initializer` take a `&Heap` parameter for exactly this reason, and
-`ns-cli`'s `cmd_disasm` — which builds its own class object and so has no
-parameter to take — reads through `interp.heap_ref()` while that interpreter is
-still alive, before it goes out of scope. A `debug_assertions`-only origin guard
-turns the mistake into a panic at
-the read, so a debug-build test run catches it; a release build does not, which is
-why this is an invariant and not a check to rely on.
+scope, and never hold a handle across the death of the interpreter that allocated
+it: the index is in range in the other heap too, so the read answers a **different,
+perfectly valid object** rather than failing. Reach the real `Heap` instead:
+`compiler::compile_module` and `compile_initializer` take a `&Heap` parameter for
+exactly this reason, and `ns-cli`'s `cmd_disasm` — which builds its own class object
+and so has no parameter to take — reads through `interp.heap_ref()` while that
+interpreter is still alive, before it goes out of scope. A `debug_assertions`-only
+origin guard turns the mistake into a panic at the read, so a debug-build test run
+catches it; a release build does not, which is why this is an invariant and not a
+check to rely on.
 
 **A running activation is an `ActivationRef`; only a `FrameRef` is ever
 stored.** An `ActivationRef` indexes the `Heap`'s activation stack and is
@@ -200,19 +199,19 @@ the canonical Newspeak on Squeak, its cross-language benchmark suite, Ryan Macna
 Primordial Soup (a Newspeak VM in C++, with its own bytecode set, image format and
 collector) and Stefan Marr's SOMns (a Newspeak on Truffle/Graal). Two are there because
 the design documents name them as models for this runtime's own representation: `nova/`
-for the arena of typed handles, built, and the `GcScope`/`NoGcScope` root discipline
-still ahead (`memory.md`); `opensmalltalk-vm/` for Cog's activations on a stack,
-reified on demand, built, and its divorce of whole stack pages, which suspension and
-the debugger still need (`execution.md`).
+for the arena of typed handles, which ns-next now has, and the `GcScope`/`NoGcScope`
+root discipline, which is still ahead (`memory.md`); `opensmalltalk-vm/` for Cog's
+activations on a stack, reified on demand, which ns-next now has, and its divorce of
+whole stack pages, which suspension and the debugger still need (`execution.md`).
 
 When a question is "how should this work", read how a working system answered it and
-cite that, rather than reasoning from first principles alone. Nothing there is built,
-tested or linked, and no gate depends on it; a plain clone does not even fetch it
-(`git submodule update --init <name>` — by name, since `opensmalltalk-vm` alone is
-~255 MB). Copying code out of any of them is a licensing decision, not a technical one,
-and `nova` is MPL-2.0, the most restrictive of the six. See `prior-art/PROVENANCE.md`,
-which also explains why `newspeaklanguage/newspeak` appears both there and under
-`corpus/`, and why neither copy may be deleted.
+cite that, rather than reasoning from first principles alone. Nothing under
+`prior-art/` is compiled, tested or linked, and no gate depends on it; a plain clone
+does not even fetch it (`git submodule update --init <name>` — by name, since
+`opensmalltalk-vm` alone is ~255 MB). Copying code out of any of them is a licensing
+decision, not a technical one, and `nova` is MPL-2.0, the most restrictive of the six.
+See `prior-art/PROVENANCE.md`, which also explains why `newspeaklanguage/newspeak`
+appears both there and under `corpus/`, and why neither copy may be deleted.
 
 ## Conventions
 
@@ -232,6 +231,6 @@ which also explains why `newspeaklanguage/newspeak` appears both there and under
   `ClassRef`, `FrameRef` and `ActivationRef` are defined in `heap.rs` and their
   inner index is private to that module, so the compiler refuses every read of
   one from anywhere else — there is no grep gate to remember and no way to
-  widen a field to reach past an accessor. If an
-  accessor you need is missing, add it there. The accessors copy out rather
-  than lend out on purpose; see `docs/design/memory.md`, "The seam".
+  widen a field to reach past an accessor. If an accessor you need is missing,
+  add it there. The accessors copy out rather than lend out on purpose; see
+  `docs/design/memory.md`, "The seam".

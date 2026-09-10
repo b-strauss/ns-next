@@ -206,12 +206,14 @@ fixed cost the same milestone removes anyway, so the representation goes first
 and the caches land on the cheaper one.
 
 That representation change has happened. The arena replaced `Rc<RefCell<_>>`,
-worth about 15% of the benchmark ([memory.md](memory.md)), and the activation
-stack removed the two `Vec` allocations per activation and stopped reifying
-activations nothing captures: a user-method send fell from ~146 ns to ~91 ns against the
-arena ([execution.md](execution.md), "What the activation stack moved"). The
-per-call `HashMap` lookup is still there, and it is the caches' to remove. Each
-cache also carries a dependency key, per
+worth about 15% of the benchmark ([memory.md](memory.md)). The activation stack
+means an activation nothing captures allocates nothing: no arena entry and none
+of the two `Vec`s every activation used to take. A captured one still pays for
+its reified frame and, when it returns, two vectors for the divorce. Against the
+arena, a user-method send fell from ~146 ns to ~91 ns
+([execution.md](execution.md), "What the activation stack moved"). The per-call
+`HashMap` lookup is still there, and it is the caches' to remove. Each cache
+also carries a dependency key, per
 [liveness-and-reflection.md](liveness-and-reflection.md); the key is the
 application, for the same reason the guard is.
 

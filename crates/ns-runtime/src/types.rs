@@ -273,14 +273,15 @@ pub struct Frame {
     pub uncontinuable: bool,
     /// The absolute field index a compiled `InitSlot`'s mixin-relative
     /// `own_index` is offset by -- `MixinApplication.own_slot_base` for the
-    /// class level this activation initializes. Meaningful only for a
-    /// `FrameKind::Initializer` frame while `Engine::Bytecode` runs its
-    /// compiled body. There is one such frame per level of the superclass
-    /// chain (`Interpreter::run_initializer_level`), and every field of it
-    /// -- receiver aside -- describes that one level, this one included: it
-    /// is set once, where the frame is built, and never changes. Irrelevant
-    /// (left at 0) for every other frame kind: a method, block, clause, or
-    /// top-level body never contains `InitSlot`.
+    /// class level the activation initializes. The value `InitSlot` reads
+    /// while the body runs is the live activation's own `slot_base`
+    /// (`Heap::activation_slot_base`), one activation per initializing level
+    /// of the superclass chain (`Interpreter::run_initializer_level`); a
+    /// frame carries a copy only if that activation was reified. The image
+    /// does not record it -- a decoded frame has 0, since nothing re-activates
+    /// one. Set once, where the activation is pushed, and never changed.
+    /// Irrelevant (left at 0) for every other kind: a method, block, clause,
+    /// or top-level body never contains `InitSlot`.
     pub slot_base: usize,
 }
 

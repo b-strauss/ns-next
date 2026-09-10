@@ -32,8 +32,11 @@ use crate::types::*;
 /// statement from it on demand), and it is stored *only by the instructions
 /// that can hand the activation to an observer*: every `Send*` (a nested
 /// activation runs above this one), `MakeClosure` (it reifies this
-/// activation, and the frame it builds takes the `pc` stored just before),
-/// and `NonLocalReturn` (control leaves with a signal). Nothing can read
+/// activation, so the frame `reify` builds starts from the `pc` stored just
+/// before), and `NonLocalReturn` (control leaves with a signal). Each store
+/// goes to the stack entry and keeps the activation's `pc` current; a frame
+/// divorced when the activation returns records the last one stored, which
+/// is often a later send's rather than the `MakeClosure`'s. Nothing can read
 /// `pc` while a straight-line instruction executes, because `run_code` never
 /// yields between them.
 pub fn run_code(
@@ -118,8 +121,9 @@ pub fn run_code(
                 code: block,
             } => {
                 // Stored before reifying, so the frame `reify` builds
-                // carries this pc -- the point at which the activation
-                // escaped into the object graph.
+                // starts from this pc. The store keeps the activation's pc
+                // current; the frame records whichever pc was stored last
+                // when `pop_activation` divorces it.
                 interp.heap.set_activation_pc(act, pc);
                 let captured_frame = interp.heap.reify(act);
                 let home = home_of(&mut interp.heap, act);
