@@ -10,7 +10,7 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
@@ -64,6 +64,9 @@ so nothing is lost by it going second.
      block is created, and divorced — its registers copied out — when its
      activation returns. Both engines share it. Bounds what the arena currently
      leaves unbounded, since an entry that was never reified leaves nothing.
+     Planned in
+     [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md),
+     on branch `feature/m4-activation-stack`.
    - **1b — the trampoline.** `send` split into a decision and an activation,
      arguments copied straight from the caller's registers, `Block value`
      absorbed, recursion depth an ordinary Newspeak error.
