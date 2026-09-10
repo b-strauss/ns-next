@@ -56,7 +56,6 @@ while step 5 removes the object half.
 - Conventional commits (`feat:`, `fix:`, `perf:`, `test:`, `docs:`, `chore:`).
   Every commit ends with the trailer
   `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
-  Never add a `Claude-Session` URL line.
 - `cargo fmt --all` before every commit; `cargo clippy --workspace --all-targets`
   must be warning-free.
 - Both non-regression gates must hold at every commit:
