@@ -442,7 +442,7 @@ fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
         }
     };
     let selector = ns_runtime::Symbol::intern(send);
-    report_entry_send(interp.send(instance, selector, args, &bindings, None))
+    report_entry_send(interp.send(instance, selector, args, &bindings))
 }
 
 /// `ns-next snapshot`: `run`'s pipeline up to (and optionally including)
@@ -483,7 +483,6 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
             ns_runtime::Symbol::intern(selector),
             args,
             &bindings,
-            None,
         ) {
             Ok(result) => roots.push(result),
             Err(signal) => return report_entry_send(Err(signal)),
@@ -649,7 +648,6 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
         ns_runtime::Symbol::intern(selector),
         args,
         &bindings,
-        None,
     ))
 }
 
@@ -707,7 +705,7 @@ fn timed_send(
         .instantiate(*class, factory_args.to_vec(), bindings)
         .map_err(signal_message)?;
     let start = std::time::Instant::now();
-    let outcome = interp.send(instance, selector, entry_args.to_vec(), bindings, None);
+    let outcome = interp.send(instance, selector, entry_args.to_vec(), bindings);
     let elapsed = start.elapsed();
     outcome.map(|_| elapsed).map_err(signal_message)
 }

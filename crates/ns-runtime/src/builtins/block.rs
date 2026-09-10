@@ -13,7 +13,6 @@ pub fn dispatch(
     receiver: Value,
     selector: Symbol,
     args: &[Value],
-    sender: Option<&FrameRef>,
 ) -> Option<EvalResult> {
     let Value::Obj(obj) = &receiver else {
         return None;
@@ -21,7 +20,7 @@ pub fn dispatch(
     let closure = interp.heap.closure_data(obj)?;
     match selector.as_str() {
         "value" | "value:" | "value:value:" | "value:value:value:" => {
-            Some(super::call_block(interp, &receiver, args.to_vec(), sender))
+            Some(super::call_block(interp, &receiver, args.to_vec()))
         }
         "numArgs" => Some(Ok(Value::SmallInt(closure.params.len() as i64))),
         "whileTrue:" => Some(run_while(
@@ -29,7 +28,6 @@ pub fn dispatch(
             &receiver,
             &closure.bindings,
             &args[0],
-            sender,
             true,
         )),
         "whileFalse:" => Some(run_while(
@@ -37,7 +35,6 @@ pub fn dispatch(
             &receiver,
             &closure.bindings,
             &args[0],
-            sender,
             false,
         )),
         _ => None,
@@ -57,24 +54,15 @@ fn run_while(
     cond: &Value,
     bindings: &Rc<HashMap<Span, Binding>>,
     body: &Value,
-    sender: Option<&FrameRef>,
     expect: bool,
 ) -> EvalResult {
     loop {
-        match super::call_block(interp, cond, vec![], sender)? {
+        match super::call_block(interp, cond, vec![])? {
             Value::Bool(b) if b == expect => {
-                super::call_block(interp, body, vec![], sender)?;
+                super::call_block(interp, body, vec![])?;
             }
             Value::Bool(_) => return Ok(Value::Nil),
-            other => {
-                return interp.send(
-                    other,
-                    Symbol::intern("mustBeBoolean"),
-                    vec![],
-                    bindings,
-                    sender.copied(),
-                )
-            }
+            other => return interp.send(other, Symbol::intern("mustBeBoolean"), vec![], bindings),
         }
     }
 }

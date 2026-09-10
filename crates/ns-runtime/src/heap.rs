@@ -1,7 +1,13 @@
-//! The heap seam. Every read and write of an `Object` or a `Frame` goes
+//! The heap seam. Every read and write of an `Object` or an activation goes
 //! through `Heap`, so that replacing what sits behind a handle changes this
-//! file rather than its call sites. The store behind the accessors is an
-//! arena of typed handles for both; see `docs/design/memory.md`.
+//! file rather than its call sites. Objects and reified frames live in
+//! arenas of typed handles (`ObjRef`, `FrameRef`); see
+//! `docs/design/memory.md`. A running activation lives on the activation
+//! stack, also owned here, and is named by an `ActivationRef` that nothing
+//! may store; a frame exists for it only once `reify` creates one. The
+//! accessor prefix says which handle an accessor takes: `activation_*` a
+//! live stack entry, `frame_*` a reified frame. See
+//! `docs/design/execution.md`, "Activations".
 //!
 //! The accessors copy out rather than lend out. That is not a stylistic
 //! choice: almost every call site borrows, clones one field and drops the
@@ -80,16 +86,18 @@ impl std::fmt::Debug for ObjRef {
 /// enforced by the type system in Milestone 1 (no metaclasses yet).
 pub type ClassRef = ObjRef;
 
-/// An opaque handle to an activation: an index into `Heap.frames`. The
-/// inner index is private to this module, and only `heap.rs` reaches it --
-/// that privacy is what made replacing `Rc<RefCell<Frame>>` with this a
-/// change to one file rather than to every caller. See
-/// `docs/design/memory.md`, "The seam".
+/// An opaque handle to a *reified* activation: an index into `Heap.frames`.
+/// The inner index is private to this module. See `docs/design/memory.md`,
+/// "The seam".
+///
+/// A running activation is named by an `ActivationRef` instead; a `FrameRef`
+/// exists for one only once something must hold it past the current call
+/// (`Heap::reify`). This is the only activation handle anything may store --
+/// in a closure, in another frame, in an image.
 ///
 /// A handle is meaningful only against the `Heap` that allocated it. The
-/// arena never reuses a slot -- there is no collector yet -- so two live
-/// activations never share an index, which is what `Signal::Return`'s
-/// target check depends on.
+/// arena never reuses a slot -- there is no collector yet -- so two frames
+/// never share an index.
 #[derive(Clone, Copy)]
 pub struct FrameRef {
     index: u32,
@@ -102,22 +110,10 @@ pub struct FrameRef {
 }
 
 impl FrameRef {
-    /// Activation identity. Replaces `Rc::ptr_eq` at every call site, so
-    /// that identity has one spelling that survives the store changing
-    /// under it.
-    ///
-    /// Its two call sites both ask the same question -- "is this returning
-    /// signal aimed at *my* activation?" -- and both answer it by catching
-    /// `Signal::Return(target, _)` when `target.same(&frame)`:
-    /// `Interpreter::invoke_method` (`interpreter/mod.rs`) for a method or
-    /// initializer body, and `interpreter::nested`'s superclass-clause
-    /// activation (`nested.rs`). `raise_return` picks the target rather than
-    /// comparing one, through `frame_home` and `frame_is_uncontinuable`, so
-    /// it is not a caller.
-    ///
-    /// Guarded like an accessor: see `ObjRef::same`. A false *yes* at either
-    /// site swallows a non-local return meant for an outer activation, which
-    /// is a wrong answer that looks like ordinary control flow.
+    /// Frame identity. Guarded like an accessor: see `ObjRef::same`.
+    /// `Signal::Return` names its target by `ActivationRef`, not by frame, so
+    /// nothing in the runtime compares frames: the callers are the image
+    /// round-trip tests (`tests/image.rs`) and this module's unit tests.
     pub fn same(&self, other: &FrameRef) -> bool {
         #[cfg(debug_assertions)]
         debug_assert_eq!(
@@ -141,20 +137,123 @@ impl std::fmt::Debug for FrameRef {
     }
 }
 
+/// An opaque handle to a *live* activation: an entry on the `Heap`'s
+/// activation stack. Where a `FrameRef` names a reified activation that may
+/// be stored anywhere, an `ActivationRef` is valid only until its entry is
+/// popped -- the next activation at that depth reuses the index. That is
+/// why nothing stores one: `ClosureData`, `Frame` and every image record
+/// take a `FrameRef`, which `Heap::reify` answers for a live activation.
+/// See `docs/design/execution.md`, "Activations", "Representation".
+///
+/// 4 bytes in a release build. A debug build adds the heap's id, like every
+/// handle, and a `generation` drawn at each push, so that reading through a
+/// handle whose entry was popped panics instead of answering for whichever
+/// activation reuses the index.
+#[derive(Clone, Copy)]
+pub struct ActivationRef {
+    index: u32,
+    #[cfg(debug_assertions)]
+    origin: u32,
+    #[cfg(debug_assertions)]
+    generation: u32,
+}
+
+impl ActivationRef {
+    /// Activation identity: `invoke_method` and `run_clause_body` catch a
+    /// `Signal::Return` by it. Two handles at the same index are the same
+    /// activation because a return only ever unwinds downward -- nothing is
+    /// pushed while a `Signal::Return` propagates, so the target's index
+    /// cannot have been reused by the time a catcher compares it. A debug
+    /// build checks that rather than assuming it.
+    pub fn same(&self, other: &ActivationRef) -> bool {
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(
+                self.origin, other.origin,
+                "handle belongs to a different heap (comparing handle from heap {}, with handle from heap {})",
+                self.origin, other.origin
+            );
+            debug_assert!(
+                self.index != other.index || self.generation == other.generation,
+                "stale activation handle: compared against a later activation at the same depth"
+            );
+        }
+        self.index == other.index
+    }
+}
+
+/// Prints the stack index and nothing else, for the reason `FrameRef`'s does.
+impl std::fmt::Debug for ActivationRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ActivationRef(#{})", self.index)
+    }
+}
+
+/// Everything a new activation is apart from its registers, which
+/// `Heap::push_activation` takes separately.
+pub struct ActivationHeader {
+    pub receiver: Value,
+    /// `None` only for `FrameKind::TopLevel` (`newspeak-spec.pdf` §3.6).
+    pub current_class: Option<ClassRef>,
+    pub kind: FrameKind,
+    pub pc_kind: PcKind,
+    /// See `Frame::slot_base`.
+    pub slot_base: usize,
+}
+
+/// One live activation. Its registers are `values[base..]` up to the next
+/// entry's `base` (or the end of `values`, for the top entry): the
+/// arguments first, then the temporaries.
+struct StackEntry {
+    receiver: Value,
+    current_class: Option<ClassRef>,
+    kind: FrameKind,
+    base: u32,
+    num_args: u32,
+    pc: usize,
+    pc_kind: PcKind,
+    slot_base: usize,
+    /// The frame `Heap::reify` created for this activation, married to it
+    /// until the entry is popped.
+    reified: Option<FrameRef>,
+    #[cfg(debug_assertions)]
+    generation: u32,
+}
+
+/// Every live activation, innermost last. Both vectors keep their capacity
+/// across pops, so once they have grown to the program's depth a push
+/// allocates nothing.
+#[derive(Default)]
+struct ActivationStack {
+    values: Vec<Value>,
+    entries: Vec<StackEntry>,
+    #[cfg(debug_assertions)]
+    next_generation: u32,
+}
+
+/// A reified activation and, while that activation is still running, the
+/// stack entry it is married to. While `live` is set, the frame's own
+/// `args`/`temps` are empty and its registers are the entry's.
+struct FrameSlot {
+    frame: Frame,
+    live: Option<u32>,
+}
+
 pub struct Heap {
     /// Monotonic, assigned at allocation, never derived from an address, so
     /// identity survives both a moving collector and a snapshot
     /// (`docs/design/memory.md`).
     next_identity_hash: u32,
-    /// Every activation, addressed by a `FrameRef`'s index. Nothing is ever
-    /// removed: reclaiming a slot needs a collector, and there is none. Until
-    /// then an activation is retained for the process's lifetime -- the
-    /// interim cost the milestone's ordering accepts, and the one the
-    /// activation stack removes by construction, since a stack entry is
-    /// popped. Both steps are enumerated in `docs/PROGRESS.md`, "Where the
-    /// next session starts"; what the retention measured is in
-    /// `docs/design/memory.md`, "What the collector owns".
-    frames: Vec<Frame>,
+    /// Every *reified* activation, addressed by a `FrameRef`'s index: one
+    /// `Heap::reify` created because a block captured it, or one the image
+    /// decoder rebuilt. Nothing is ever removed: reclaiming a slot needs a
+    /// collector. An activation that is never reified never reaches this
+    /// arena at all.
+    frames: Vec<FrameSlot>,
+    /// Every live activation. A stack entry is popped when its activation
+    /// returns, so -- unlike `frames` and `objects` -- this is bounded by
+    /// the deepest the program has been, not by everything it has run.
+    stack: ActivationStack,
     /// Every object, addressed by an `ObjRef`'s index. Nothing is ever
     /// removed, for the same reason as `frames`.
     objects: Vec<Object>,
@@ -180,6 +279,7 @@ impl std::fmt::Debug for Heap {
         f.debug_struct("Heap")
             .field("next_identity_hash", &self.next_identity_hash)
             .field("frames.len()", &self.frames.len())
+            .field("activations", &self.stack.entries.len())
             .field("objects.len()", &self.objects.len())
             .finish()
     }
@@ -214,6 +314,7 @@ impl Heap {
         Heap {
             next_identity_hash: 1,
             frames: Vec::new(),
+            stack: ActivationStack::default(),
             objects: Vec::new(),
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
@@ -352,20 +453,22 @@ impl Heap {
     // second pass overwrites wholesale via `replace_frame`.
 
     /// Allocates `frame`. The only constructor of a `FrameRef` in the
-    /// workspace -- src or tests -- so that replacing what backs a handle
-    /// only ever touches this file.
+    /// workspace -- `reify`, the image decoder and tests all come through
+    /// here -- so that replacing what backs a handle only ever touches this
+    /// file.
     ///
-    /// `home_of` and `raise_return` read a return target off `Frame.home`
-    /// rather than matching on `Frame.kind`, which is correct only while the
-    /// two agree: `home` populated exactly for a `FrameKind::Closure`
-    /// activation. Every real constructor upholds that by construction, but
-    /// nothing in the type system ties the two fields together, so a new
-    /// constructor added later -- or a mismatched pair of literal fields at
-    /// an existing one -- would corrupt `^`'s return target silently rather
-    /// than fail loudly. Checked here, once, rather than at every
-    /// constructor. Not checked in `replace_frame`: the decoder fills a
-    /// placeholder through that path with fields read off the wire, and
-    /// nothing reactivates a decoded frame, so it need not satisfy this.
+    /// `Frame.home` restates what `Frame.kind` already carries for a closure
+    /// frame -- its closure's `home` -- and the image records both, so the
+    /// two must agree: `home` populated exactly for a `FrameKind::Closure`
+    /// activation. `reify` upholds that by building `home` from the entry's
+    /// `kind`, but nothing in the type system ties the two fields together,
+    /// so a new constructor added later -- or a mismatched pair of literal
+    /// fields at an existing one -- would record a return target that
+    /// disagrees with the frame's own closure silently rather than fail
+    /// loudly. Checked here, once, rather than at every constructor. Not
+    /// checked in `replace_frame`: the decoder fills a placeholder through
+    /// that path with fields read off the wire, and nothing reactivates a
+    /// decoded frame, so it need not satisfy this.
     pub fn alloc_frame(&mut self, frame: Frame) -> FrameRef {
         debug_assert_eq!(
             frame.home.is_some(),
@@ -374,7 +477,7 @@ impl Heap {
         );
         let index = u32::try_from(self.frames.len())
             .expect("more than u32::MAX activations allocated in one heap");
-        self.frames.push(frame);
+        self.frames.push(FrameSlot { frame, live: None });
         self.frame_handle(index)
     }
 
@@ -413,6 +516,60 @@ impl Heap {
             frame.origin, self.heap_id
         );
         let _ = frame;
+    }
+
+    /// `check_frame_origin` for a live activation, plus the check only a
+    /// stack handle needs: that its entry is still the one it was minted
+    /// for. Compiles to nothing in a release build.
+    #[inline]
+    fn check_activation(&self, act: &ActivationRef) {
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(
+                act.origin, self.heap_id,
+                "handle belongs to a different heap (handle from heap {}, read through heap {})",
+                act.origin, self.heap_id
+            );
+            let live = self
+                .stack
+                .entries
+                .get(act.index as usize)
+                .map(|entry| entry.generation);
+            assert_eq!(
+                live,
+                Some(act.generation),
+                "stale activation handle: its activation has returned"
+            );
+        }
+        let _ = act;
+    }
+
+    /// The handle for live entry `index`, minted with that entry's own
+    /// generation. The one place an `ActivationRef` is built.
+    fn activation_handle(&self, index: u32) -> ActivationRef {
+        ActivationRef {
+            index,
+            #[cfg(debug_assertions)]
+            origin: self.heap_id,
+            #[cfg(debug_assertions)]
+            generation: self.stack.entries[index as usize].generation,
+        }
+    }
+
+    /// Where register `index` of live entry `entry` sits in `values`. The
+    /// window check is what stops an out-of-range index from silently reading
+    /// the neighbouring activation's register, which is in bounds of
+    /// `values` and so would not panic on its own.
+    fn register_slot(&self, entry: u32, index: u16) -> usize {
+        let entries = &self.stack.entries;
+        let slot = entries[entry as usize].base as usize + index as usize;
+        debug_assert!(
+            slot < entries
+                .get(entry as usize + 1)
+                .map_or(self.stack.values.len(), |next| next.base as usize),
+            "register {index} is outside its activation's register window"
+        );
+        slot
     }
 
     // ---------- Object accessors ----------
@@ -802,18 +959,24 @@ impl Heap {
         false
     }
 
-    // ---------- Activation accessors ----------
+    // ---------- Frame accessors ----------
     //
-    // `local`/`set_local` carry the register-file addressing that
-    // `eval::read_local` used to own: arguments occupy the first
-    // `args.len()` indices and declared temporaries follow, and the
-    // boundary comes from how many arguments the activation was *given*.
-    // A wrong-arity activation is refused in `invoke_method` before it can
-    // reach here, so this addressing is total.
+    // A `FrameRef` names a *reified* activation. Its receiver, class and
+    // kind are fixed when it is created, so they read the same whether or
+    // not the frame is still married to a live stack entry. Its pc and
+    // registers are not: while it is married they live on the activation
+    // stack, so the accessors that read or write the frame's own copy
+    // assert it is dead. `frame_local`/`frame_set_local` (with the
+    // activation stack, below) follow the marriage instead.
     //
     // Only the accessors a caller actually needs are added here;
     // `frame_arg_count` and `frame_pc` have no caller yet, so they are
-    // not here.
+    // not here. Three have only test callers: `set_frame_pc`,
+    // `frame_sender` and `frame_is_uncontinuable` read or write fields the
+    // image format records per frame, and the image and interpreter tests
+    // build and check frame records through them. Nothing in the runtime
+    // decides anything by those fields -- whether a frame is live is
+    // `frame_activation`, never `frame_is_uncontinuable`.
 
     /// An opaque, hashable key unique to `frame`, for code that needs a
     /// `FrameRef` as a `HashMap` key rather than a comparison --
@@ -824,143 +987,95 @@ impl Heap {
         frame.index as usize
     }
 
-    pub fn receiver(&self, frame: &FrameRef) -> Value {
+    /// A reified frame's receiver. Fixed when the frame is created, so it
+    /// needs no redirect while the frame is married.
+    pub fn frame_receiver(&self, frame: &FrameRef) -> Value {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].receiver
-    }
-
-    /// The receiver and `current_class` together, in one borrow.
-    /// `dispatch_lexical_send`'s head needs both on every implicit-receiver
-    /// send -- five times per `bench_loop.ns` iteration -- and fetching them
-    /// through `receiver` then `frame_current_class` took two separate
-    /// borrows where one already carries both fields; that doubling was the
-    /// whole of a measured 13% regression (see `docs/design/execution.md`'s
-    /// measurements section).
-    ///
-    /// Under the arena the two reads are two slice indexes rather than two
-    /// `RefCell` borrows, so the cost this batching removed is smaller than
-    /// it was. It is kept because this is still the hottest call count in
-    /// the workspace, and because the batched shape is what the activation
-    /// stack's register accessors want anyway (`docs/PROGRESS.md`, "Where
-    /// the next session starts", enumerates that step; it is designed in
-    /// `docs/design/execution.md`); whether it still pays is a measurement,
-    /// not an assumption.
-    pub fn receiver_and_current_class(&self, frame: &FrameRef) -> (Value, Option<ClassRef>) {
-        self.check_frame_origin(frame);
-        let f = &self.frames[frame.index as usize];
-        (f.receiver, f.current_class)
-    }
-
-    pub fn local(&self, frame: &FrameRef, index: u16) -> Value {
-        self.check_frame_origin(frame);
-        let f = &self.frames[frame.index as usize];
-        let i = index as usize;
-        if i < f.args.len() {
-            f.args[i]
-        } else {
-            f.temps[i - f.args.len()]
-        }
-    }
-
-    pub fn set_local(&mut self, frame: &FrameRef, index: u16, value: Value) {
-        self.check_frame_origin(frame);
-        let f = &mut self.frames[frame.index as usize];
-        let i = index as usize;
-        if i < f.args.len() {
-            f.args[i] = value;
-        } else {
-            let temp_index = i - f.args.len();
-            f.temps[temp_index] = value;
-        }
+        self.frames[frame.index as usize].frame.receiver
     }
 
     pub fn frame_current_class(&self, frame: &FrameRef) -> Option<ClassRef> {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].current_class
+        self.frames[frame.index as usize].frame.current_class
     }
 
-    /// The absolute field index a compiled `InitSlot`'s mixin-relative
-    /// `own_index` is offset by. Fixed for the frame's whole life --
-    /// `interpreter::instantiate` builds one frame per inheritance level and
-    /// sets this from that level's own `MixinApplication.own_slot_base`, so
-    /// there is nothing to save and restore between levels.
-    pub fn frame_slot_base(&self, frame: &FrameRef) -> usize {
+    /// Grows a *dead* frame's register file, filling with nil. A married
+    /// frame's registers are its live entry's window, so it cannot grow here:
+    /// edit-and-continue has to reify and divorce a running activation first
+    /// (`docs/design/execution.md`, "How this meets the liveness
+    /// requirements"). The top live activation grows in place through
+    /// `grow_activation_temps`.
+    pub fn frame_grow_temps(&mut self, frame: &FrameRef, needed: usize) {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].slot_base
-    }
-
-    /// Grows an activation's register file, filling with nil. Needed by
-    /// the initializer path, where a level's compiled body may declare
-    /// more registers than the frame was built with, and by
-    /// edit-and-continue later (`docs/design/liveness-and-reflection.md`).
-    pub fn grow_temps(&mut self, frame: &FrameRef, needed: usize) {
-        self.check_frame_origin(frame);
-        let f = &mut self.frames[frame.index as usize];
+        debug_assert!(
+            self.frames[frame.index as usize].live.is_none(),
+            "a married frame's registers live on the activation stack; grow them through its activation"
+        );
+        let f = &mut self.frames[frame.index as usize].frame;
         if f.temps.len() < needed {
             f.temps.resize(needed, Value::Nil);
         }
     }
 
+    /// Test and format level: the image tests use it to give a dead frame a
+    /// synthetic paused `pc` before a snapshot. The runtime stores a running
+    /// activation's `pc` on its stack entry (`set_activation_pc`), and the
+    /// divorce copies it here.
     pub fn set_frame_pc(&mut self, frame: &FrameRef, pc: usize) {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].pc = pc;
+        debug_assert!(
+            self.frames[frame.index as usize].live.is_none(),
+            "a married frame's pc and registers live on the activation stack; \
+             read or write them only once its activation has returned"
+        );
+        self.frames[frame.index as usize].frame.pc = pc;
     }
 
     pub fn frame_home(&self, frame: &FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].home
+        self.frames[frame.index as usize].frame.home
     }
 
-    /// The activation that invoked `frame`, `None` only for `FrameKind::TopLevel`.
-    /// `tests/builtins_collections_block.rs`'s sender-threading regression test is
-    /// the first caller: it walks a captured closure's frame back to the method
-    /// activation that invoked it, to check `sender` was actually recorded rather
-    /// than left `None`, which would cut the chain at every block boundary.
+    /// A reified frame's recorded sender. `None` for every frame the runtime
+    /// reifies -- a live activation's sender is the stack entry below it, and
+    /// a returned activation has none -- so it can be set only on a frame the
+    /// image decoder rebuilt from a record that carries one. Test and format
+    /// level: only tests read it.
     pub fn frame_sender(&self, frame: &FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].sender
+        self.frames[frame.index as usize].frame.sender
     }
 
     /// The frame a closure activation captured, or `None` for any other
     /// kind. `eval::frame_at_depth` walks this.
     pub fn frame_captured(&self, frame: &FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
-        match &self.frames[frame.index as usize].kind {
+        match &self.frames[frame.index as usize].frame.kind {
             FrameKind::Closure(closure) => Some(closure.captured_frame),
             _ => None,
         }
     }
 
+    /// The frame's recorded `uncontinuable` flag. Test and format level:
+    /// true for every frame the divorce left behind, but on a decoded frame
+    /// it answers whatever the file said. It is not liveness --
+    /// `raise_return` treats every decoded frame as dead, because it
+    /// decides by `frame_activation`, and a decoded frame is never married.
     pub fn frame_is_uncontinuable(&self, frame: &FrameRef) -> bool {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].uncontinuable
-    }
-
-    pub fn mark_uncontinuable(&mut self, frame: &FrameRef) {
-        self.check_frame_origin(frame);
-        self.frames[frame.index as usize].uncontinuable = true;
-    }
-
-    /// Whether `frame`'s kind is `FrameKind::Method` --
-    /// `Interpreter::run_statements` needs this to decide what an implicit
-    /// (non-`^`) fall-off-the-end return value is: `self` for a method body
-    /// (spec §3.5), the last statement's value for every other body this
-    /// loop runs.
-    pub fn frame_is_method(&self, frame: &FrameRef) -> bool {
-        self.check_frame_origin(frame);
-        matches!(self.frames[frame.index as usize].kind, FrameKind::Method(_))
+        self.frames[frame.index as usize].frame.uncontinuable
     }
 
     /// A copy of `frame`'s `kind`. Cloning is cheap -- every variant holds
     /// at most an `Rc` -- and `image::decode` is the only caller that needs
     /// to match on the *whole* kind rather than one variant's payload
-    /// (`frame_captured`, `frame_is_method`): once to resolve which of
-    /// `Initializer`/`SuperclassClause`/`SuperclassMessage` a frame carries
-    /// a class for (`frame_body`), and once to check that a class-carrying
-    /// kind's class is itself a class reference (`check_class_references`).
+    /// (`frame_captured`): once to resolve which of `Initializer`/
+    /// `SuperclassClause`/`SuperclassMessage` a frame carries a class for
+    /// (`frame_body`), and once to check that a class-carrying kind's class
+    /// is itself a class reference (`check_class_references`).
     pub fn frame_kind(&self, frame: &FrameRef) -> FrameKind {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].kind.clone()
+        self.frames[frame.index as usize].frame.kind.clone()
     }
 
     /// `pc`, and how many of a frame's registers are `args` versus `temps`,
@@ -969,7 +1084,12 @@ impl Heap {
     /// the compiled body it reconciles every decoded frame against.
     pub fn frame_register_shape(&self, frame: &FrameRef) -> (usize, usize, usize) {
         self.check_frame_origin(frame);
-        let f = &self.frames[frame.index as usize];
+        debug_assert!(
+            self.frames[frame.index as usize].live.is_none(),
+            "a married frame's pc and registers live on the activation stack; \
+             read or write them only once its activation has returned"
+        );
+        let f = &self.frames[frame.index as usize].frame;
         (f.pc, f.args.len(), f.temps.len())
     }
 
@@ -978,9 +1098,18 @@ impl Heap {
     /// frame record and `GraphTable::visit_frame` walks a whole frame's
     /// references; both need every field. Not for a hot path, for the same
     /// reason as `object_snapshot`.
+    ///
+    /// Only for a dead frame, which is also the encoder's precondition: it
+    /// only ever runs between sends, when nothing is live, and
+    /// `image::snapshot` refuses to start otherwise.
     pub fn frame_snapshot(&self, frame: &FrameRef) -> Frame {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].clone()
+        debug_assert!(
+            self.frames[frame.index as usize].live.is_none(),
+            "a married frame's pc and registers live on the activation stack; \
+             read or write them only once its activation has returned"
+        );
+        self.frames[frame.index as usize].frame.clone()
     }
 
     /// The frame equivalent of `replace_object`.
@@ -994,7 +1123,271 @@ impl Heap {
     /// notice, because it has already finished.
     pub fn replace_frame(&mut self, frame: &FrameRef, filled: Frame) {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize] = filled;
+        self.frames[frame.index as usize].frame = filled;
+    }
+
+    // ---------- The activation stack ----------
+    //
+    // A live activation is a `StackEntry` plus its window of `values`.
+    // `reify` marries an arena `Frame` to an entry when something must hold
+    // the activation past this call -- today, only a block being created --
+    // and `pop_activation` divorces it again. See
+    // `docs/design/execution.md`, "Activations", "Lifecycle".
+
+    /// Pushes an activation whose registers are `args` followed by
+    /// `temp_count` nils.
+    pub fn push_activation(
+        &mut self,
+        header: ActivationHeader,
+        args: &[Value],
+        temp_count: usize,
+    ) -> ActivationRef {
+        let base = u32::try_from(self.stack.values.len())
+            .expect("more than u32::MAX registers live at once in one heap");
+        let num_args =
+            u32::try_from(args.len()).expect("more than u32::MAX arguments to one activation");
+        let index = u32::try_from(self.stack.entries.len())
+            .expect("more than u32::MAX live activations in one heap");
+        self.stack.values.extend_from_slice(args);
+        let end = self.stack.values.len() + temp_count;
+        self.stack.values.resize(end, Value::Nil);
+        #[cfg(debug_assertions)]
+        let generation = {
+            self.stack.next_generation = self.stack.next_generation.wrapping_add(1);
+            self.stack.next_generation
+        };
+        self.stack.entries.push(StackEntry {
+            receiver: header.receiver,
+            current_class: header.current_class,
+            kind: header.kind,
+            base,
+            num_args,
+            pc: 0,
+            pc_kind: header.pc_kind,
+            slot_base: header.slot_base,
+            reified: None,
+            #[cfg(debug_assertions)]
+            generation,
+        });
+        self.activation_handle(index)
+    }
+
+    /// Pops the top activation. If it was reified, its frame is divorced:
+    /// the registers move into the frame, which is dead from then on --
+    /// uncontinuable, and with no sender, as a returned Smalltalk context
+    /// has none.
+    pub fn pop_activation(&mut self, act: &ActivationRef) {
+        self.check_activation(act);
+        debug_assert_eq!(
+            act.index as usize + 1,
+            self.stack.entries.len(),
+            "only the top activation can be popped"
+        );
+        let entry = self
+            .stack
+            .entries
+            .pop()
+            .expect("an activation handle names a live entry");
+        let base = entry.base as usize;
+        if let Some(frame) = entry.reified {
+            let registers = &self.stack.values[base..];
+            let split = entry.num_args as usize;
+            let slot = &mut self.frames[frame.index as usize];
+            slot.frame.args = registers[..split].to_vec();
+            slot.frame.temps = registers[split..].to_vec();
+            slot.frame.pc = entry.pc;
+            slot.frame.sender = None;
+            slot.frame.uncontinuable = true;
+            slot.live = None;
+        }
+        self.stack.values.truncate(base);
+    }
+
+    /// The arena frame for a live activation, created married to it on the
+    /// first call and answered again on every later one.
+    pub fn reify(&mut self, act: &ActivationRef) -> FrameRef {
+        self.check_activation(act);
+        let i = act.index as usize;
+        if let Some(frame) = self.stack.entries[i].reified {
+            return frame;
+        }
+        let entry = &self.stack.entries[i];
+        let frame = Frame {
+            receiver: entry.receiver,
+            args: Vec::new(),
+            temps: Vec::new(),
+            pc: entry.pc,
+            pc_kind: entry.pc_kind,
+            sender: None,
+            home: match &entry.kind {
+                FrameKind::Closure(closure) => Some(closure.home),
+                _ => None,
+            },
+            current_class: entry.current_class,
+            kind: entry.kind.clone(),
+            uncontinuable: false,
+            slot_base: entry.slot_base,
+        };
+        let handle = self.alloc_frame(frame);
+        self.frames[handle.index as usize].live = Some(act.index);
+        self.stack.entries[i].reified = Some(handle);
+        handle
+    }
+
+    /// How many activations are live. `Interpreter::send` and
+    /// `Interpreter::instantiate` assert that they leave it where they
+    /// found it.
+    pub fn activation_depth(&self) -> usize {
+        self.stack.entries.len()
+    }
+
+    pub fn activation_local(&self, act: &ActivationRef, index: u16) -> Value {
+        self.check_activation(act);
+        self.stack.values[self.register_slot(act.index, index)]
+    }
+
+    pub fn activation_set_local(&mut self, act: &ActivationRef, index: u16, value: Value) {
+        self.check_activation(act);
+        let slot = self.register_slot(act.index, index);
+        self.stack.values[slot] = value;
+    }
+
+    pub fn activation_receiver(&self, act: &ActivationRef) -> Value {
+        self.check_activation(act);
+        self.stack.entries[act.index as usize].receiver
+    }
+
+    /// The receiver and `current_class` together. `dispatch_lexical_send`'s
+    /// head needs both on every implicit-receiver send; fetching them
+    /// separately was once a measured 13% regression (see
+    /// `docs/design/execution.md`'s measurements section).
+    pub fn activation_receiver_and_current_class(
+        &self,
+        act: &ActivationRef,
+    ) -> (Value, Option<ClassRef>) {
+        self.check_activation(act);
+        let entry = &self.stack.entries[act.index as usize];
+        (entry.receiver, entry.current_class)
+    }
+
+    pub fn activation_current_class(&self, act: &ActivationRef) -> Option<ClassRef> {
+        self.check_activation(act);
+        self.stack.entries[act.index as usize].current_class
+    }
+
+    /// See `Frame::slot_base`.
+    pub fn activation_slot_base(&self, act: &ActivationRef) -> usize {
+        self.check_activation(act);
+        self.stack.entries[act.index as usize].slot_base
+    }
+
+    pub fn set_activation_pc(&mut self, act: &ActivationRef, pc: usize) {
+        self.check_activation(act);
+        self.stack.entries[act.index as usize].pc = pc;
+    }
+
+    /// A closure activation's return target -- its closure's `home` -- and
+    /// `None` for every other kind, which is its own return target.
+    pub fn activation_home(&self, act: &ActivationRef) -> Option<FrameRef> {
+        self.check_activation(act);
+        match &self.stack.entries[act.index as usize].kind {
+            FrameKind::Closure(closure) => Some(closure.home),
+            _ => None,
+        }
+    }
+
+    /// The frame a closure activation's closure captured, or `None` for any
+    /// other kind. The first hop of `eval::frame_at_depth`.
+    pub fn activation_captured(&self, act: &ActivationRef) -> Option<FrameRef> {
+        self.check_activation(act);
+        match &self.stack.entries[act.index as usize].kind {
+            FrameKind::Closure(closure) => Some(closure.captured_frame),
+            _ => None,
+        }
+    }
+
+    /// Whether the activation runs a method body -- `run_statements` needs
+    /// it to decide what falling off the end returns: `self` for a method
+    /// (spec §3.5), the last statement's value for anything else.
+    pub fn activation_is_method(&self, act: &ActivationRef) -> bool {
+        self.check_activation(act);
+        matches!(
+            self.stack.entries[act.index as usize].kind,
+            FrameKind::Method(_)
+        )
+    }
+
+    /// Grows the top activation's temporaries to `needed`, filling with
+    /// nil. The initializer path builds its activation before it knows the
+    /// compiled body's register count. Only the top entry can grow: any
+    /// other's window ends where the next one's begins.
+    pub fn grow_activation_temps(&mut self, act: &ActivationRef, needed: usize) {
+        self.check_activation(act);
+        debug_assert_eq!(
+            act.index as usize + 1,
+            self.stack.entries.len(),
+            "only the top activation's register file can grow"
+        );
+        let entry = &self.stack.entries[act.index as usize];
+        let end = entry.base as usize + entry.num_args as usize + needed;
+        if self.stack.values.len() < end {
+            self.stack.values.resize(end, Value::Nil);
+        }
+    }
+
+    /// A register of a reified frame: the live stack slot while its
+    /// activation runs, the frame's own copy after it has returned. This is
+    /// the path a block takes to its method's variables, and the only
+    /// register access that branches.
+    pub fn frame_local(&self, frame: &FrameRef, index: u16) -> Value {
+        self.check_frame_origin(frame);
+        let slot = &self.frames[frame.index as usize];
+        match slot.live {
+            Some(entry) => self.stack.values[self.register_slot(entry, index)],
+            None => {
+                let f = &slot.frame;
+                let i = index as usize;
+                if i < f.args.len() {
+                    f.args[i]
+                } else {
+                    f.temps[i - f.args.len()]
+                }
+            }
+        }
+    }
+
+    pub fn frame_set_local(&mut self, frame: &FrameRef, index: u16, value: Value) {
+        self.check_frame_origin(frame);
+        // Copied out first, so neither arm below holds a borrow of `frames`
+        // while it writes.
+        let live = self.frames[frame.index as usize].live;
+        match live {
+            Some(entry) => {
+                let slot = self.register_slot(entry, index);
+                self.stack.values[slot] = value;
+            }
+            None => {
+                let f = &mut self.frames[frame.index as usize].frame;
+                let i = index as usize;
+                if i < f.args.len() {
+                    f.args[i] = value;
+                } else {
+                    let temp_index = i - f.args.len();
+                    f.temps[temp_index] = value;
+                }
+            }
+        }
+    }
+
+    /// The live activation `frame` is married to, or `None` once that
+    /// activation has returned -- and for every frame the image decoder
+    /// built, since none of those ever ran here. `raise_return` uses it to
+    /// tell a live home from a dead one.
+    pub fn frame_activation(&self, frame: &FrameRef) -> Option<ActivationRef> {
+        self.check_frame_origin(frame);
+        self.frames[frame.index as usize]
+            .live
+            .map(|entry| self.activation_handle(entry))
     }
 }
 
@@ -1068,10 +1461,12 @@ mod tests {
         let _ = mine.same(&theirs);
     }
 
-    /// The same hole on the activation side. `FrameRef::same` decides where
-    /// a non-local return lands (`invoke_method`'s catch, `raise_return`'s
-    /// target check), so a false "identical" would resume the wrong
-    /// activation rather than merely report the wrong answer.
+    /// The same hole for reified frames. `FrameRef::same` is what the image
+    /// round-trip tests check sharing by -- a closure's `captured_frame` and
+    /// `home` naming one frame or two -- so a false "identical" would let a
+    /// round trip that split one frame into two pass. (A non-local return
+    /// names its target by `ActivationRef`; see
+    /// `comparing_two_activation_handles_from_different_heaps_panics`.)
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "handle belongs to a different heap")]
@@ -1208,13 +1603,15 @@ mod tests {
         for _ in 0..1000 {
             heap.alloc_frame(top_level_frame());
         }
-        assert!(matches!(heap.receiver(&first), Value::Nil));
+        assert!(matches!(heap.frame_receiver(&first), Value::Nil));
         assert_eq!(heap.frame_register_shape(&first), (3, 2, 1));
     }
 
-    /// Activation identity is what `Signal::Return`'s target check and
-    /// `invoke_method`'s catch both rest on, so two live activations may
-    /// never compare equal however alike their contents are.
+    /// Frame identity is what the image round trip checks sharing by -- a
+    /// closure's `captured_frame` and `home` naming one frame or two -- so
+    /// two reified frames may never compare equal however alike their
+    /// contents are. (`Signal::Return` names its target by `ActivationRef`,
+    /// not by frame.)
     #[test]
     fn two_frames_are_never_the_same_activation() {
         let mut heap = Heap::new();
@@ -1291,5 +1688,277 @@ mod tests {
         let not_a_class = heap.alloc_object(class, ObjectData::Str("not a class".to_string()));
         let instance = heap.alloc_object(not_a_class, ObjectData::Instance(vec![]));
         assert_eq!(heap.describe(&Value::Obj(instance)), "an object");
+    }
+
+    /// The header every activation-stack test below pushes: nothing in it is
+    /// read back except where a test sets it on purpose.
+    fn header() -> ActivationHeader {
+        ActivationHeader {
+            receiver: Value::Nil,
+            current_class: None,
+            kind: FrameKind::TopLevel,
+            pc_kind: PcKind::Bytecode,
+            slot_base: 0,
+        }
+    }
+
+    #[test]
+    fn an_activation_addresses_its_arguments_before_its_temporaries() {
+        let mut heap = Heap::new();
+        let act = heap.push_activation(header(), &[Value::SmallInt(1), Value::SmallInt(2)], 2);
+        assert!(matches!(heap.activation_local(&act, 0), Value::SmallInt(1)));
+        assert!(matches!(heap.activation_local(&act, 1), Value::SmallInt(2)));
+        assert!(matches!(heap.activation_local(&act, 2), Value::Nil));
+        heap.activation_set_local(&act, 3, Value::SmallInt(9));
+        assert!(matches!(heap.activation_local(&act, 3), Value::SmallInt(9)));
+        heap.pop_activation(&act);
+    }
+
+    /// Two live activations share one `values` vector; neither may see the
+    /// other's registers, whichever is written first.
+    #[test]
+    fn nested_activations_keep_separate_register_windows() {
+        let mut heap = Heap::new();
+        let outer = heap.push_activation(header(), &[Value::SmallInt(1)], 1);
+        let inner = heap.push_activation(header(), &[Value::SmallInt(2)], 1);
+        heap.activation_set_local(&inner, 1, Value::SmallInt(20));
+        heap.activation_set_local(&outer, 1, Value::SmallInt(10));
+        assert!(matches!(
+            heap.activation_local(&outer, 0),
+            Value::SmallInt(1)
+        ));
+        assert!(matches!(
+            heap.activation_local(&outer, 1),
+            Value::SmallInt(10)
+        ));
+        assert!(matches!(
+            heap.activation_local(&inner, 0),
+            Value::SmallInt(2)
+        ));
+        assert!(matches!(
+            heap.activation_local(&inner, 1),
+            Value::SmallInt(20)
+        ));
+        assert_eq!(heap.activation_depth(), 2);
+        heap.pop_activation(&inner);
+        heap.pop_activation(&outer);
+        assert_eq!(heap.activation_depth(), 0);
+    }
+
+    /// The property the whole step exists for: an activation nothing
+    /// reified is gone once it is popped. The arena used to keep every one.
+    #[test]
+    fn an_activation_that_is_never_reified_leaves_nothing_behind() {
+        let mut heap = Heap::new();
+        for _ in 0..1000 {
+            let act = heap.push_activation(header(), &[Value::SmallInt(1)], 3);
+            heap.pop_activation(&act);
+        }
+        assert_eq!(heap.frames.len(), 0);
+        assert_eq!(heap.stack.values.len(), 0);
+        assert_eq!(heap.activation_depth(), 0);
+    }
+
+    #[test]
+    fn reifying_an_activation_twice_answers_the_same_frame() {
+        let mut heap = Heap::new();
+        let act = heap.push_activation(header(), &[], 1);
+        let first = heap.reify(&act);
+        let second = heap.reify(&act);
+        assert!(first.same(&second));
+        assert_eq!(heap.frames.len(), 1);
+        heap.pop_activation(&act);
+    }
+
+    /// While its activation runs, a reified frame is a view of the live
+    /// registers, in both directions: a block writing its method's variable
+    /// through the frame must be seen by the method, and vice versa.
+    #[test]
+    fn a_married_frame_reads_and_writes_the_live_registers() {
+        let mut heap = Heap::new();
+        let act = heap.push_activation(header(), &[Value::SmallInt(1)], 1);
+        let frame = heap.reify(&act);
+        heap.activation_set_local(&act, 1, Value::SmallInt(5));
+        assert!(matches!(heap.frame_local(&frame, 1), Value::SmallInt(5)));
+        heap.frame_set_local(&frame, 1, Value::SmallInt(7));
+        assert!(matches!(heap.activation_local(&act, 1), Value::SmallInt(7)));
+        assert!(heap
+            .frame_activation(&frame)
+            .is_some_and(|live| live.same(&act)));
+        heap.pop_activation(&act);
+    }
+
+    /// Popping a reified activation hands its registers to the frame, which
+    /// a surviving block goes on reading and writing; the frame is dead from
+    /// then on, and a dead activation has no sender.
+    #[test]
+    fn popping_a_reified_activation_divorces_its_frame() {
+        let mut heap = Heap::new();
+        let act = heap.push_activation(header(), &[Value::SmallInt(1)], 1);
+        heap.set_activation_pc(&act, 4);
+        let frame = heap.reify(&act);
+        // Written after reification: it must survive the divorce.
+        heap.activation_set_local(&act, 1, Value::SmallInt(3));
+        heap.pop_activation(&act);
+
+        assert!(heap.frame_activation(&frame).is_none());
+        assert!(matches!(heap.frame_local(&frame, 0), Value::SmallInt(1)));
+        assert!(matches!(heap.frame_local(&frame, 1), Value::SmallInt(3)));
+        assert_eq!(heap.frame_register_shape(&frame), (4, 1, 1));
+        assert!(heap.frame_is_uncontinuable(&frame));
+        assert!(heap.frame_sender(&frame).is_none());
+        heap.frame_set_local(&frame, 1, Value::SmallInt(8));
+        assert!(matches!(heap.frame_local(&frame, 1), Value::SmallInt(8)));
+    }
+
+    /// The next activation at the same depth reuses the stack slots. A
+    /// divorced frame owns its own copy, so that reuse cannot reach it.
+    #[test]
+    fn a_divorced_frame_is_untouched_by_the_next_activation_at_its_depth() {
+        let mut heap = Heap::new();
+        let first = heap.push_activation(header(), &[], 2);
+        heap.activation_set_local(&first, 1, Value::SmallInt(3));
+        let frame = heap.reify(&first);
+        heap.pop_activation(&first);
+
+        let second = heap.push_activation(header(), &[], 2);
+        heap.activation_set_local(&second, 1, Value::SmallInt(99));
+        assert!(matches!(heap.frame_local(&frame, 1), Value::SmallInt(3)));
+        heap.pop_activation(&second);
+    }
+
+    /// An `ActivationRef` kept past its pop names whatever activation reuses
+    /// the index next -- a different, valid activation, so the read would
+    /// silently answer the wrong thing. Debug builds refuse it.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "stale activation handle")]
+    fn reading_through_a_popped_activation_handle_panics() {
+        let mut heap = Heap::new();
+        let first = heap.push_activation(header(), &[], 1);
+        heap.pop_activation(&first);
+        let _second = heap.push_activation(header(), &[], 1);
+        let _ = heap.activation_local(&first, 0);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "handle belongs to a different heap")]
+    fn reading_an_activation_handle_through_a_foreign_heap_panics() {
+        let mut origin = Heap::new();
+        let mine = origin.push_activation(header(), &[], 1);
+        let mut other = Heap::new();
+        let _theirs = other.push_activation(header(), &[], 1);
+        let _ = other.activation_local(&mine, 0);
+    }
+
+    /// `ActivationRef::same` is how `invoke_method` and `run_clause_body`
+    /// decide that a `Signal::Return` is theirs, and it is handed two handles
+    /// and no `Heap`, so no accessor guard can reach it. Both handles below
+    /// are the first entry of their own heap's stack, so they share an index
+    /// and a release build answers "identical".
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "handle belongs to a different heap (comparing handle from heap")]
+    fn comparing_two_activation_handles_from_different_heaps_panics() {
+        let mut origin = Heap::new();
+        let mine = origin.push_activation(header(), &[], 1);
+        let mut other = Heap::new();
+        let theirs = other.push_activation(header(), &[], 1);
+        let _ = mine.same(&theirs);
+    }
+
+    /// The comparison `same`'s doc comment argues cannot happen: a catcher
+    /// holding a handle whose entry was popped, compared against the
+    /// activation that reused its index. A release build answers
+    /// "identical", which would land a return in the wrong activation; a
+    /// debug build must refuse the comparison instead of trusting that
+    /// argument.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(
+        expected = "stale activation handle: compared against a later activation at the same depth"
+    )]
+    fn comparing_a_popped_activation_handle_with_its_successor_panics() {
+        let mut heap = Heap::new();
+        let first = heap.push_activation(header(), &[], 1);
+        heap.pop_activation(&first);
+        let second = heap.push_activation(header(), &[], 1);
+        let _ = first.same(&second);
+    }
+
+    /// Popping below the top would truncate the registers of every
+    /// activation above it while their handles still look valid.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "only the top activation")]
+    fn popping_an_activation_that_is_not_on_top_panics() {
+        let mut heap = Heap::new();
+        let outer = heap.push_activation(header(), &[], 1);
+        let _inner = heap.push_activation(header(), &[], 1);
+        heap.pop_activation(&outer);
+    }
+
+    /// Every test above pushes `FrameKind::TopLevel`, which is `None` on
+    /// both `activation_home` and `activation_captured` by construction --
+    /// closure creation is the only reason either exists. `raise_return`
+    /// picks a non-local return's target off `activation_home`, and the
+    /// outer-local walk (`eval::frame_at_depth`) starts every hop off
+    /// `activation_captured`/`frame_captured`, so a closure activation that
+    /// answered `None` for either would silently misroute a `^` or a
+    /// captured-variable read rather than fail loudly. This also exercises
+    /// `alloc_frame`'s debug assertion that `Frame.home` is populated
+    /// exactly for a `FrameKind::Closure` activation, since `reify` builds
+    /// that frame from a closure entry's `kind` here for the first time in
+    /// this test module.
+    #[test]
+    fn a_closure_activations_home_and_captured_frame_are_its_closures() {
+        let mut heap = Heap::new();
+        let method_act = heap.push_activation(header(), &[], 0);
+        let home_frame = heap.reify(&method_act);
+
+        let closure_data = ClosureData {
+            params: vec![],
+            body: ClosureBody::Compiled(std::rc::Rc::new(crate::bytecode::CompiledCode {
+                kind: crate::bytecode::CodeKind::Block,
+                instrs: vec![crate::bytecode::Instr::ImplicitReturn { reg: 0 }],
+                num_args: 0,
+                num_registers: 1,
+                statement_pc: vec![],
+                call_sites: vec![],
+                source: ns_syntax::Span::new(0, 0),
+            })),
+            captured_frame: home_frame,
+            home: home_frame,
+            bindings: std::rc::Rc::new(std::collections::HashMap::new()),
+        };
+        let closure_act = heap.push_activation(
+            ActivationHeader {
+                receiver: Value::Nil,
+                current_class: None,
+                kind: FrameKind::Closure(std::rc::Rc::new(closure_data)),
+                pc_kind: PcKind::Bytecode,
+                slot_base: 0,
+            },
+            &[],
+            0,
+        );
+
+        assert!(heap.activation_home(&method_act).is_none());
+        assert!(heap.activation_captured(&method_act).is_none());
+        assert!(heap
+            .activation_home(&closure_act)
+            .is_some_and(|h| h.same(&home_frame)));
+        assert!(heap
+            .activation_captured(&closure_act)
+            .is_some_and(|c| c.same(&home_frame)));
+
+        let closure_frame = heap.reify(&closure_act);
+        assert!(heap
+            .frame_home(&closure_frame)
+            .is_some_and(|h| h.same(&home_frame)));
+
+        heap.pop_activation(&closure_act);
+        heap.pop_activation(&method_act);
     }
 }

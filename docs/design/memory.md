@@ -1,12 +1,14 @@
 # Memory — object lifetime, identity, collection
 
-> **Status:** partial. Objects and activations live in arenas owned by one
-> `Heap`, addressed by 32-bit handles; identity, layout ownership and the
-> seam that routes every access through `Heap` are built. Nothing reclaims
-> a slot: there is no collector, and no root discipline for one to use.
-> **Code:** `crates/ns-runtime/src/heap.rs` (the arenas, the handle types,
-> every accessor), `types.rs` (`Value`, `Object`, `Frame`), `mixin.rs`
-> (layout, and the one remaining iterative `Drop`).
+> **Status:** partial. Objects live in an arena owned by one `Heap`,
+> addressed by 32-bit handles; activations live on an activation stack in
+> the same `Heap` and reach the frame arena only when a block captures one.
+> Identity, layout ownership and the seam that routes every access through
+> `Heap` are built. Nothing reclaims an arena slot: there is no collector,
+> and no root discipline for one to use.
+> **Code:** `crates/ns-runtime/src/heap.rs` (the arenas, the activation
+> stack, the handle types, every accessor), `types.rs` (`Value`, `Object`,
+> `Frame`), `mixin.rs` (layout, and the one remaining iterative `Drop`).
 
 ## What exists
 
@@ -21,14 +23,19 @@ address. This is required by identity-keyed collections, by image roots, and by
 `become:`; an address-derived hash would break the moment an object moved or an
 identity was swapped.
 
-**Objects and activations live in arenas, not in `Rc<RefCell<_>>`.** One
-`Heap` owns `objects: Vec<Object>` and `frames: Vec<Frame>`; an `ObjRef` or a
-`FrameRef` is a 32-bit index into one of them. The representation is described
-below. Nothing reclaims a slot: a cycle is no longer the special case that
-leaks, because *everything* is retained, deliberately, until a collector
-exists. That is not a problem the image format inherits: the format is defined
-against the *logical* value model rather than against this representation, so
-replacing it again would not break images.
+**Objects live in an arena and activations on a stack, not in
+`Rc<RefCell<_>>`.** One `Heap` owns `objects: Vec<Object>`, the activation
+stack every running activation lives on, and `frames` — the arena of *reified*
+activations, the ones a block captured or the image decoder rebuilt. An
+`ObjRef` or a `FrameRef` is a 32-bit index into an arena, an `ActivationRef`
+into the stack. The representation is described below, and the stack in
+[execution.md](execution.md), "Activations". Nothing reclaims an arena slot: a
+cycle is no longer the special case that leaks, because everything in an arena
+is retained, deliberately, until a collector exists. The stack is the exception:
+an entry is popped when its activation returns, and one that was never reified
+leaves nothing behind. That is not a problem the image format inherits: the
+format is defined against the *logical* value model rather than against this
+representation, so replacing it again would not break images.
 
 ### The representation: an arena of typed handles
 
@@ -40,10 +47,12 @@ enforcement mechanism and a C++ engine's conventions are not.
 
 ```rust
 Value  = Nil | Bool(bool) | SmallInt(i64) | Float(f64) | Obj(ObjRef)   // Copy
-ObjRef   { index: u32 }   // private to heap.rs; 4 bytes in a release build
-FrameRef { index: u32 }   // likewise; ClassRef is an alias for ObjRef
+ObjRef        { index: u32 }   // private to heap.rs; 4 bytes in a release build
+FrameRef      { index: u32 }   // likewise; ClassRef is an alias for ObjRef
+ActivationRef { index: u32 }   // likewise, into the activation stack
 
-Heap { objects: Vec<Object>, frames: Vec<Frame>, next_identity_hash: u32 }
+Heap { objects: Vec<Object>, frames: Vec<FrameSlot>, stack: ActivationStack,
+       next_identity_hash: u32 }
 ```
 
 What that removed is not an abstract elegance but part of the measured cost of
@@ -52,15 +61,16 @@ section: the `Rc` box and its reference-count traffic on every frame link and
 every shared handle, and a `RefCell` borrow on every single register read and
 write. A register access is now a slice index into an owned `Vec`. Over
 `bench_loop.ns` on a release build that measured as **19.4–19.6 ms before,
-16.4–16.8 ms after** — about 15%. What it did *not* remove is the rest:
-`Frame.args` and `Frame.temps` are still a `Vec` allocation apiece per
-activation, and those belong to the activation stack
-([execution.md](execution.md), "Planned: activations on a stack, reified on
-demand").
+16.4–16.8 ms after** — about 15%. The rest of the cost of an activation nothing
+captures — a `Vec` apiece for its arguments and temporaries, and an arena entry
+— went with the activation stack. A captured activation still takes an arena
+entry for its reified frame, and two vectors when its divorce copies the
+registers out. [execution.md](execution.md), "What the activation stack moved",
+has the figures.
 
-`ObjRef`, `FrameRef` and `Value` are `Copy`. A handle has no destructor and
-nothing to clone, which is why `Value` could become `Copy` at all, and it is
-what makes an arena entry cheap to hand around.
+`ObjRef`, `FrameRef`, `ActivationRef` and `Value` are `Copy`. A handle has no
+destructor and nothing to clone, which is why `Value` could become `Copy` at all,
+and it is what makes an arena entry cheap to hand around.
 
 Three properties follow from an index that did not follow from a pointer.
 
@@ -92,9 +102,11 @@ introduces, and it is silent — an index minted by another heap is in range and
 names a different, perfectly valid object, so the read answers the wrong thing
 rather than failing. A `debug_assertions`-only guard makes that explicit rather
 than conventional: each `Heap` carries a distinct id, each handle records the id
-of the heap that minted it, and all 46 accessor sites assert the two match. In a
-release build neither the field nor the check exists, and a handle is exactly its
-32-bit index.
+of the heap that minted it, and every accessor that takes a handle asserts the two
+match — 58 sites in `heap.rs`, 13 of them through an `ActivationRef`, whose check
+also compares a generation, because a stack index is reused as soon as its entry
+is popped. In a release build neither the fields nor the checks exist, and a
+handle is exactly its 32-bit index.
 
 The room the actor milestone needs is still there. Actors are designed to get one
 heap each so that pauses stay local
@@ -129,8 +141,9 @@ a sufficiently deep one aborts the process. Since an image is untrusted input an
 its graph depth is attacker-controlled, that is not acceptable.
 
 Under the arena, objects and activations have no such graph: an `Object` holds
-handles, a handle holds an index, and dropping the `Heap` drops two flat `Vec`s.
-The hand-written iterative `Drop` implementations they used to need are gone.
+handles, a handle holds an index, and dropping the `Heap` drops flat `Vec`s — the
+two arenas and the activation stack's two vectors. The hand-written iterative
+`Drop` implementations they used to need are gone.
 
 **`MixinApplication` still owns a real chain** — `superclass:
 Option<Rc<MixinApplication>>` — and keeps its hand-written iterative `Drop`
@@ -161,21 +174,28 @@ iteratively, because an image controls both depths.
 ### The seam
 
 `crates/ns-runtime/src/heap.rs` is the only place that knows what a handle is.
-Every read and write of an `Object` or a `Frame` goes through a `Heap`
-accessor, so replacing the store behind them touches that file rather than
-the 193 call sites (109 under `src`, 84 in the integration tests) the
+Every read and write of an `Object`, a `Frame` or a running activation goes
+through a `Heap` accessor, so replacing the store behind them touches that file
+rather than the 193 call sites (109 under `src`, 84 in the integration tests) the
 workspace held before the seam existed. Replacing `Rc<RefCell<_>>` with the
 arena is the evidence that this works: **no call site outside `heap.rs` and
 `types.rs` changed** for either the frame conversion or the object one.
+
+What the seam hides is the store behind a handle, not the handle types. Those
+are part of every signature on purpose: a function that means *the running
+activation* takes an `ActivationRef`, and anything that stores one takes a
+`FrameRef`, which is what makes storing a stack handle a compile error
+([execution.md](execution.md), "Representation"). Changing a handle type is
+therefore a change to its callers; changing what stands behind one is not.
 
 The accessors copy out rather than lend out. That follows what the call
 sites already did — borrow, clone one field, drop the borrow — and it is
 what keeps a rooting discipline from being needed at every site that calls
 back into the interpreter while holding a reference.
 
-**The seam is compiler-enforced.** `ObjRef`, `FrameRef` and the `ClassRef`
-alias are declared in `heap.rs` with a **private** inner field, so reading a
-handle's index from anywhere else — any other module of `ns-runtime`
+**The seam is compiler-enforced.** `ObjRef`, `FrameRef`, `ActivationRef` and the
+`ClassRef` alias are declared in `heap.rs` with a **private** inner field, so
+reading a handle's index from anywhere else — any other module of `ns-runtime`
 included — fails to compile. There is no grep gate to remember and no
 visibility to widen: an accessor that is missing has to be added in `heap.rs`,
 which is where the store is. The one way out is the pair of
@@ -184,17 +204,17 @@ as an opaque key and are used as one — a named exception rather than an
 unenforced boundary, and one the origin guard still covers, since they are
 accessors on `Heap` like any other.
 
-Where a site needs several fields of one object or frame at once, a batched
-accessor answers them together rather than the caller taking several —
-`receiver_and_current_class`, `object_snapshot`, `frame_register_shape` and
-`frame_snapshot` are the present examples. This is not only style:
-`dispatch_lexical_send`'s head, on every implicit-receiver send, once took one
-`RefCell` borrow yielding both the receiver and the current class; splitting that
-into two separate accessor calls measured as a real cost, recovered by batching
-them back into one (see [execution.md](execution.md)'s measurements section).
-Under the arena those are two slice indexes rather than two borrows, so the cost
-batching removes is smaller than it was; whether it still pays is a measurement
-nobody has taken.
+Where a site needs several fields of one object, frame or activation at once, a
+batched accessor answers them together rather than the caller taking several —
+`activation_receiver_and_current_class`, `object_snapshot`,
+`frame_register_shape` and `frame_snapshot` are the present examples. This is
+not only style: `dispatch_lexical_send`'s head, on every implicit-receiver send,
+once took one `RefCell` borrow yielding both the receiver and the current class;
+splitting that into two separate accessor calls measured as a real cost,
+recovered by batching them back into one (see [execution.md](execution.md)'s
+measurements section). On the activation stack those are two field reads of one
+entry rather than two borrows, so the cost batching removes is smaller than it
+was; whether it still pays is a measurement nobody has taken.
 
 ### Known rough edges in the seam
 
@@ -205,8 +225,11 @@ file next starts from a list rather than from rediscovery.
   while `class_application` and its neighbours read a *class* — the same prefix
   for opposite directions. `array_at`/`array_len` and
   `instance_field`/`instance_field_count` are parallel operations under
-  divergent names. Most frame accessors carry a `frame_` prefix; `receiver`,
-  `local`, `set_local`, `grow_temps` and `mark_uncontinuable` do not.
+  divergent names. The activation side is uniform: an accessor through a
+  `FrameRef` is `frame_*` and one through an `ActivationRef` is
+  `activation_*`. The exceptions are verbs that put the noun second — `set_frame_pc`,
+  `set_activation_pc`, `grow_activation_temps`, `replace_frame` — and the stack
+  operations themselves, `push_activation`, `pop_activation` and `reify`.
 - **The `heap` parameter sits first in some signatures and last in others**,
   across `image/`, `compiler/` and `interpreter/`.
 - **Copy-out costs, and the accessor that could now avoid them.**
@@ -223,8 +246,8 @@ file next starts from a list rather than from rediscovery.
 
 ## Planned: checked roots and a collector
 
-The arena is built. Two pieces of the representation change are not: the root
-discipline, and the collector that needs it.
+The arena and the activation stack are built. Two pieces of the representation
+change are not: the root discipline, and the collector that needs it.
 
 **The collector has to move objects.** `become:`-style identity swap and object
 forwarding are requirements, not conveniences: adding an instance variable to a
@@ -272,21 +295,34 @@ signal about how much of the difficulty is hidden.
 
 With the arena in place and roots checked, the collector's own root set is two
 things: the bootstrap, standing in for upstream's object store, and the
-activation stack described in [execution.md](execution.md) — a contiguous,
-precisely typed array rather than a pointer-chased chain of individually
-allocated frames.
+activation stack ([execution.md](execution.md), "Activations") — a contiguous,
+precisely typed pair of arrays rather than a pointer-chased chain of
+individually allocated frames. A reified frame is not a root of its own: it is
+reached through the closure that captured it, or through the live entry it is
+married to.
+
+Closure conversion ([execution.md](execution.md), "Planned: closure
+conversion") is scheduled directly before the collector for the collector's
+sake. Until it lands, a block that outlives its method keeps that method's
+whole reified frame alive — every register, including ones the block never
+reads — so the collector would retain more than the program can reach through
+its variables. After it, a surviving block holds exactly what it captured.
 
 ### Open: what the collector owns
 
 - **Neither arena reclaims a slot today**, and that is the interim cost the
   milestone's ordering accepts. It is measurable. Peak working set on a release
-  build over `bench_loop.ns`, before the arena and after:
+  build, before the arena, after it, and after the activation stack; the last two
+  columns were measured against each other in one sitting on 2026-09-10, and the
+  arena figures reproduced exactly the ones taken when the arena landed:
 
-  | Command | Entry sends | Before | After |
-  |---|---|---|---|
-  | `run --engine=bytecode` | 1 | 4.6 MB | 4.6 MB |
-  | `run --engine=tree-walk` | 1 | 4.6 MB | 25.4 MB |
-  | `bench --iterations 10` | 22 | 4.6 MB | 340.7 MB |
+  | Command | Entry sends | Before the arena | After the arena | After the activation stack |
+  |---|---|---|---|---|
+  | `run --engine=bytecode`, `bench_loop.ns` | 1 | 4.6 MB | 4.6 MB | 4.6 MB |
+  | `run --engine=tree-walk`, `bench_loop.ns` | 1 | 4.6 MB | 25.4 MB | 4.6 MB |
+  | `bench --iterations 10`, `bench_loop.ns` | 22 | 4.6 MB | 340.7 MB | 4.6 MB |
+  | `bench --iterations 10`, `bench_send.ns` | 22 | — | 324.9 MB | 4.6 MB |
+  | `bench --iterations 10`, `bench_block.ns` | 22 | — | 966.9 MB | 446.0 MB |
 
   Conditions, because the metric is platform-specific and the numbers are
   useless without them: Windows 11, release build, **peak working set**
@@ -296,33 +332,72 @@ allocated frames.
   called on the still-open handle. On Linux the comparable metric is
   `VmHWM`/`ru_maxrss`; expect different absolute numbers and the same shape.
 
-  The shape is what matters more than the figures. Retention is proportional to
-  every activation and object the process has *ever* created, not to what is
-  live: the bytecode engine inlines `whileTrue:` and so builds almost no
-  activations for this loop, while the tree-walker builds one per iteration and
-  keeps all of them. A long-running process is therefore unbounded.
+  The shape is what matters more than the figures. An activation that nothing
+  reified leaves nothing behind, so a program that creates no block per
+  iteration now runs in the same 4.6 MB however many activations it builds —
+  `bench_loop.ns` and `bench_send.ns` under either engine, whose blocks are
+  created once, before the loop starts. Which blocks a program creates depends
+  on the engine, though: **the tree-walker creates — and so reifies the
+  activation for — every block literal it evaluates, including the
+  `ifTrue:`/`and:`/`whileTrue:` arguments the VM inlines.** A method that holds
+  one therefore retains a frame and a closure per call under the tree-walker
+  alone. Measured on 2026-09-11 under the conditions above, with a scratch
+  program making 300,000 calls of `clip: x = ( x < 0 ifTrue: [^0]. ^x + 1 )`:
+  136.8 MB under the tree-walker, 4.6 MB under the VM, and 4.5 MB under the
+  tree-walker once `clip:` is reduced to `^x + 1`. A tree-walker closure also
+  keeps a copy of its block's syntax tree, because `eval_block_literal` clones
+  the block's body into every closure it creates. So the tree-walker retains
+  more per block than the VM does even where both create the same blocks, in
+  proportion to the block's size: `run` over `bench_block.ns` peaks at 20.2 MB
+  under the VM and 40.3 MB under the tree-walker. Lengthening that block's
+  body to twelve more `+ 0` sends takes the tree-walker to 168.9 MB and leaves
+  the VM at 20.2 MB.
+
+  **What is still unbounded is everything in an arena: every reified frame and
+  every object the process has ever created**, not what is live.
+  `bench_block.ns` shows it: every iteration creates a block, so under either
+  engine every iteration reifies one frame and allocates one closure, and
+  nothing gives either back. Its peak roughly halved, because the block's own
+  activation no longer takes an arena entry, but it still grows with the work
+  done. A long-running process that creates blocks is therefore unbounded until
+  the collector exists, and closure conversion (above) is what shrinks each
+  reified frame's share.
 
   Peak does not climb smoothly with the work done. Sweeping `bench
-  --iterations` on the post-arena binary:
+  --iterations` over `bench_loop.ns` on the arena binary, before the activation
+  stack, when every activation took an arena entry:
 
   | `--iterations` | 1 | 2 | 4 | 8 | 10 |
   |---|---|---|---|---|---|
   | Peak | 46.4 MB | 88.4 MB | 103.7 MB | 183.2 MB | 340.7 MB |
 
-  The step shape, and the tree-walk maximum of ~117 ms sitting over a ~37 ms
-  median in the same ten timed runs, are both **consistent with** the arena's
-  `Vec` doubling: the copy at a doubling point has the old and the new buffer
-  resident at once and stalls the run that triggers it. That is an inference
-  from the shape of the curve, not a measured cause — no control was run with
-  the arenas pre-sized via `with_capacity`, which is what would settle it. It is
-  recorded because a collector's design should know the interim has a latency
-  cost as well as a memory one, and because pre-sizing is the cheap experiment
-  that would confirm or kill the explanation.
+  The step shape is **consistent with** the arena's `Vec` doubling: the copy at
+  a doubling point has the old and the new buffer resident at once, and would
+  stall the run that triggers it. The benchmark maxima, measured in the same
+  sitting as the last column above, are consistent with that for some sources
+  and refute it for the one it was first offered for. On `bench_send.ns`, whose
+  retention the stack removed (324.9 MB to 4.6 MB above), the bytecode engine's
+  roughly doubled maxima went away — 40.4–40.8 ms over a 23.5 ms median under
+  the arena, 20.8–21.6 ms under the stack — and so did the tree-walker's. The
+  same happened on row two of the send decomposition under the bytecode engine
+  and on row one under the tree-walker ([execution.md](execution.md), "What the
+  activation stack moved"); their peak working set was not measured, so that
+  their retention went too is inferred from their shape, which creates no block
+  per iteration. But the tree-walker's maximum on `bench_loop.ns` stayed at
+  112–113 ms over a ~32 ms median under a binary that measurably retains nothing
+  for it — 4.6 MB across all twenty-two entry sends — so doubling is not what
+  causes that one. Row two under the tree-walker kept its maximum too, 113–115 ms
+  over ~34 ms; that doubling is not the cause there either is an inference by
+  the same shape argument. Neither cause is known. Pre-sizing the arenas
+  with `with_capacity` is still the control that would settle the doubling
+  explanation where it does fit; it has not been run. This is recorded because a
+  collector's design should know the interim may have a latency cost as well as
+  a memory one.
 
   A corollary the collector's design should know about, stated carefully because
   the careless version is wrong. A **failed** image decode holds its placeholders
   until the load returns. `decode_graph_section` allocates `object_count` objects
-  and `frame_count` activations up front, because a record must be addressable
+  and `frame_count` reified frames up front, because a record must be addressable
   before the records that reference it are read, and only then validates each
   record; nothing reclaims a slot, so a rejected image cannot give them back
   part-way through.
@@ -338,11 +413,14 @@ allocated frames.
   than trading one against the other. Against the bytes remaining at the graph
   section, not against the whole file:
 
-  | | `Object` | `Frame` | Combined |
+  | | `Object` | Frame-arena entry | Combined |
   |---|---|---|---|
   | Record minimum | 6 B | 19 B | — |
-  | Release size | 64 B → 10.7x | 128 B → 6.7x | **~17.4x** |
-  | Debug size | 88 B → 14.7x | 136 B → 7.2x | ~21.8x |
+  | Release size | 64 B → 10.7x | 136 B → 7.2x | **~17.8x** |
+  | Debug size | 88 B → 14.7x | 144 B → 7.6x | ~22.2x |
+
+  A frame-arena entry is a `FrameSlot`: the `Frame` (128 B in a release build,
+  136 B in a debug one) and the `live` marriage field beside it, 8 bytes more.
 
   `bounded_count` is what keeps this proportional to the input at all rather
   than to a 32-bit count — without it a crafted `u32::MAX` would allocate
@@ -373,7 +451,11 @@ allocated frames.
   leaving it to convention. It exists because the failure it catches is silent:
   a handle from another heap is in range and names a valid object, so the read
   succeeds with the wrong answer. It costs nothing in a release build, where the
-  origin field does not exist.
+  origin field does not exist. An `ActivationRef` adds a generation to the same
+  guard, for the same reason: a stack index is reused once its entry is popped.
+- **Activations live on a stack, not in the arena**, so that what nothing
+  captures is not retained. Only a reified frame reaches the arena, and it is
+  the one activation form anything may store.
 - **A moving collector, not a conservative one**, because `become:` and instance
   migration are requirements. Conservative scanning with pinning was considered
   and rejected on the same grounds.

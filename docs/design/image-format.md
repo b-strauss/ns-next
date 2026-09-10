@@ -32,7 +32,7 @@ That guarantee is about **decoding**. `load` on a stateless binary instantiates
 and sends the recorded entry with no flag at all, so starting one executes its
 code with the same exposure as running the equivalent source -- recursion depth
 bounded only by the native stack until the VM is trampolined; see
-[execution.md](execution.md), "Planned: activations on a stack, reified on demand".
+[execution.md](execution.md), "Planned: the trampoline".
 
 ## Two artifacts
 
@@ -197,11 +197,22 @@ never collide with loaded ones.
 
 ## How frames actually get into an image
 
-Only through reachability. A closure stored in a slot holds its defining
-activation through `captured_frame`/`home`, and once a frame is in the table its
-`sender` chain follows. A snapshot is taken at a **quiesced** point — after
-instantiation, optionally after an entry send, with the Rust call stack already
-unwound — so the table never holds a suspended computation.
+Only through a closure. A running activation lives on the activation stack and
+is not in the object graph at all; a frame exists for it only once a block
+captured it ([execution.md](execution.md), "Activations"). So a frame enters the
+table only as a closure's `captured_frame` or `home`, or as the `captured_frame`
+or `home` of a frame already in it. A snapshot is taken at a **quiesced** point —
+after instantiation, optionally after an entry send, with the Rust call stack
+already unwound and the activation stack empty; `image::snapshot` refuses to
+encode otherwise — so every frame in it is dead:
+divorced when its activation returned, or decoded from an earlier image and never
+run. A frame the runtime reified carries its own registers and has no sender, so
+a closure brings in the frames it names and nothing of the call chain that
+created them, and the table never holds a suspended computation.
+
+The format still records a `sender` per frame, and the decoder restores one if a
+record carries it; only such a decoded frame can carry one into a later
+snapshot.
 
 The mechanism exists because the liveness design requires a running world,
 including an open debugger session, to round-trip. What is missing to actually
@@ -391,18 +402,20 @@ the new flag, the entry field and the trailing-byte check
 ## Planned: suspend and resume
 
 An image cannot be taken mid-execution, and the obstacle is control flow rather
-than format. `Frame` is heap-allocated, chained and fully encoded, but sends
-recurse through the Rust call stack, so the activation chain exists twice —
-reified on the heap and implicitly on the Rust stack. Only the first can be
-serialized; only the second can be resumed. There is no yield path out of
-`run_code` and no re-entry point that would continue a decoded frame at its `pc`.
+than format. A reified `Frame` is fully encoded, and every running activation is
+an entry on the explicit activation stack ([execution.md](execution.md),
+"Activations"), but sends still recurse through the Rust call stack, so the chain
+of running activations exists twice — on the activation stack and implicitly on
+the Rust stack. Only the first can be serialized, by reifying it; only the
+second can be resumed. There is no yield path out of `run_code` and no re-entry
+point that would continue a decoded frame at its `pc`.
 
-The fix is the explicit activation stack described in
-[execution.md](execution.md), which Milestone 4 builds for the cost of the
-present representation rather than for this. Suspending then means reifying the
-whole stack, which is the same operation a debugger performs on the frames it
-touches — and the same operation upstream performs, since Cog flushes its stack
-zone to contexts before taking a snapshot. `frame.pc` being stored only at sends,
+The fix is the trampoline ([execution.md](execution.md), "Planned: the
+trampoline"), which makes the activation stack the only copy. Suspending then
+means reifying and divorcing the whole stack, which is the same operation a
+debugger performs on the frames it touches — and the same operation upstream
+performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)
+before taking a snapshot. An activation's `pc` being stored only at sends,
 `MakeClosure` and `NonLocalReturn` is *not* an obstacle: those are exactly the
 safepoints, and a suspension could only happen at a send boundary.
 
@@ -413,7 +426,10 @@ each frame against, but it never cross-checks `home` against `kind`: a
 crafted image can pair a method-kind frame (`home` meaningful only for
 `FrameKind::Closure`) with a non-nil `home`. Nothing observes the
 mismatch today, because the tree-walker and VM never run a frame loaded
-from an image -- only ever one of the four `alloc_frame` builds itself.
+from an image -- only ever an activation one of the four push sites built.
+A decoded home is only ever consulted as a return target, and a decoded
+frame is never married to a live activation, so a `^` into one is
+`cannotReturn` whatever its record says.
 Trampolined sends,
 suspend-and-resume and live debugging are exactly what would start running
 a decoded frame — at which point this dormant assumption becomes

@@ -66,7 +66,7 @@ fn send(
     args: Vec<Value>,
     bindings: &Bindings,
 ) -> Result<Value, Signal> {
-    interp.send(receiver, Symbol::intern(selector), args, bindings, None)
+    interp.send(receiver, Symbol::intern(selector), args, bindings)
 }
 
 fn string_of(heap: &Heap, v: &Value) -> String {

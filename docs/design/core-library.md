@@ -102,16 +102,22 @@ comparisons, `asString`, `asSymbol` — is a leaf and stays Rust permanently.
 
 **The ordering matters and is the opposite of the obvious one.** `do:` in
 Newspeak costs an activation for `do:` itself plus real sends for the loop
-mechanism, on top of the block activation per element it already pays. Against
-the ~165 ns per activation and ~97 ns per native send measured in
-[execution.md](execution.md), that is a regression today and free once the
-activation stack and inline caches exist. So the move happens *after* those, not
-before. What Milestone 4 owes this section is only that it not deepen the
-investment in Rust callbacks while it is rewriting the code around them.
+mechanism, on top of the block activation per element it already pays. On the
+activation stack a user-method send costs ~91 ns under the bytecode engine,
+against ~146 ns on the arena binary measured in the same sitting
+([execution.md](execution.md), "What the activation stack moved"), and the
+per-call lookup the inline caches remove is still in it. A regression today, so
+the move happens *after* the caches, not before. What Milestone 4 owes this
+section is only that it not deepen the investment in Rust callbacks while it is
+rewriting the code around them.
 
 A related item, same cause: native dispatch selects with `match
-selector.as_str()`, a string-comparison chain on the hot path that accounts for
-part of the measured 97 ns and is not a shape a compiler can specialize either.
+selector.as_str()`, a string-comparison chain on the hot path that is not a
+shape a compiler can specialize either. It is part of what one native `+` costs
+on the activation stack, ~53 ns: `bench_send.ns` minus the send decomposition's
+row two. The arena binary's figure for the same difference, ~84 ns, also carries
+a temporaries allocation, so it overstates the native send
+([execution.md](execution.md), "What the activation stack moved").
 
 ## Decisions
 

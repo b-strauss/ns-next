@@ -91,11 +91,11 @@ fn accessor_is_stable(bytecode: bool) {
         "instantiate Outer",
     );
     let first = expect_ok(
-        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
         "first Inner",
     );
     let second = expect_ok(
-        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
         "second Inner",
     );
     let (Value::Obj(a), Value::Obj(b)) = (&first, &second) else {
@@ -126,11 +126,11 @@ fn distinct_per_receiver(bytecode: bool) {
         "instantiate second Outer",
     );
     let a = expect_ok(
-        interp.send(one, Symbol::intern("innerClass"), vec![], &bindings, None),
+        interp.send(one, Symbol::intern("innerClass"), vec![], &bindings),
         "first",
     );
     let b = expect_ok(
-        interp.send(two, Symbol::intern("innerClass"), vec![], &bindings, None),
+        interp.send(two, Symbol::intern("innerClass"), vec![], &bindings),
         "second",
     );
     let (Value::Obj(a), Value::Obj(b)) = (&a, &b) else {
@@ -168,7 +168,7 @@ fn enclosing_object_is_the_receiver(bytecode: bool) {
         "instantiate Outer",
     );
     let inner = expect_ok(
-        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
         "Inner",
     );
     let (Value::Obj(inner), Value::Obj(outer)) = (&inner, &outer) else {
@@ -199,11 +199,11 @@ fn instantiating_the_nested_class(bytecode: bool) {
         "instantiate Outer",
     );
     let instance = expect_ok(
-        interp.send(outer, Symbol::intern("makeInner"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("makeInner"), vec![], &bindings),
         "makeInner",
     );
     let value = expect_ok(
-        interp.send(instance, Symbol::intern("value"), vec![], &bindings, None),
+        interp.send(instance, Symbol::intern("value"), vec![], &bindings),
         "value",
     );
     let Value::SmallInt(value) = value else {
@@ -242,7 +242,7 @@ fn non_class_superclass_clause(bytecode: bool) {
         "instantiate Outer",
     );
     let message = expect_error(
-        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
         "innerClass",
     );
     assert!(
@@ -285,7 +285,7 @@ fn protected_nested_access(bytecode: bool) {
     );
     // Lexically, from inside Outer: reachable, and it really is a class.
     let value = expect_ok(
-        interp.send(outer, Symbol::intern("reach"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("reach"), vec![], &bindings),
         "reach",
     );
     let Value::SmallInt(value) = value else {
@@ -294,7 +294,7 @@ fn protected_nested_access(bytecode: bool) {
     assert_eq!(value, 7);
     // From outside, as an ordinary send: not reachable.
     let message = expect_error(
-        interp.send(outer, Symbol::intern("Hidden"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("Hidden"), vec![], &bindings),
         "Hidden",
     );
     assert!(
@@ -341,13 +341,13 @@ fn inherited_nested_declaration(bytecode: bool) {
         "instantiate M",
     );
     let derived = expect_ok(
-        interp.send(m, Symbol::intern("makeDerived"), vec![], &bindings, None),
+        interp.send(m, Symbol::intern("makeDerived"), vec![], &bindings),
         "makeDerived",
     );
     // `N` is declared on Base, reached here through Derived's chain -- and
     // its hidden cache slot is the inherited entry in Derived's layout.
     let n_class = expect_ok(
-        interp.send(derived, Symbol::intern("N"), vec![], &bindings, None),
+        interp.send(derived, Symbol::intern("N"), vec![], &bindings),
         "N",
     );
     let (Value::Obj(n_class), Value::Obj(derived_obj)) = (&n_class, &derived) else {
@@ -365,7 +365,7 @@ fn inherited_nested_declaration(bytecode: bool) {
     }
     // Still cached per receiver across the inherited path.
     let again = expect_ok(
-        interp.send(derived, Symbol::intern("N"), vec![], &bindings, None),
+        interp.send(derived, Symbol::intern("N"), vec![], &bindings),
         "N again",
     );
     let Value::Obj(again) = &again else {
@@ -377,7 +377,7 @@ fn inherited_nested_declaration(bytecode: bool) {
         "instantiate N",
     );
     let tag = expect_ok(
-        interp.send(instance, Symbol::intern("tag"), vec![], &bindings, None),
+        interp.send(instance, Symbol::intern("tag"), vec![], &bindings),
         "tag",
     );
     let Value::SmallInt(tag) = tag else {
@@ -425,7 +425,7 @@ fn a_super_prefixed_clause_behaves_identically_under_both_engines() {
             "instantiate Outer",
         );
         outcomes.push(
-            match interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None) {
+            match interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings) {
                 Ok(Value::Obj(_)) => "a class object".to_string(),
                 Ok(_) => "a non-object value".to_string(),
                 Err(Signal::Return(..)) => "Signal::Return".to_string(),
@@ -460,7 +460,7 @@ fn cyclic_definition(bytecode: bool) {
         "instantiate Outer",
     );
     let message = expect_error(
-        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
         "innerClass",
     );
     assert_eq!(
@@ -471,7 +471,7 @@ fn cyclic_definition(bytecode: bool) {
     // The guard is scoped to the evaluation, not latched: a second access
     // must raise the same error rather than a different one (or succeed).
     let again = expect_error(
-        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
         "innerClass again",
     );
     assert_eq!(message, again);
@@ -506,7 +506,6 @@ fn class_side_dispatch(bytecode: bool) {
             Symbol::intern("describe"),
             vec![],
             &bindings,
-            None,
         ),
         "class-side send",
     );
@@ -538,7 +537,6 @@ fn class_side_miss_is_ordinary_dnu(bytecode: bool) {
             Symbol::intern("noSuchClassSideMethod"),
             vec![],
             &bindings,
-            None,
         ),
         "class-side miss",
     );
@@ -585,13 +583,7 @@ fn class_side_is_inherited(bytecode: bool) {
         "instantiate Outer",
     );
     let special_widget = expect_ok(
-        interp.send(
-            outer,
-            Symbol::intern("SpecialWidget"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(outer, Symbol::intern("SpecialWidget"), vec![], &bindings),
         "SpecialWidget accessor",
     );
     let described = expect_ok(
@@ -600,7 +592,6 @@ fn class_side_is_inherited(bytecode: bool) {
             Symbol::intern("describe"),
             vec![],
             &bindings,
-            None,
         ),
         "inherited class-side send",
     );
@@ -628,7 +619,7 @@ fn nested_class_object(
     bindings: &Bindings,
 ) -> ns_runtime::ClassRef {
     let value = expect_ok(
-        interp.send(enclosing, Symbol::intern(name), vec![], bindings, None),
+        interp.send(enclosing, Symbol::intern(name), vec![], bindings),
         name,
     );
     match value {
@@ -715,13 +706,7 @@ fn class_side_override_shadows_the_inherited_method(bytecode: bool) {
         "instantiate Outer",
     );
     let overriding_widget = expect_ok(
-        interp.send(
-            outer,
-            Symbol::intern("OverridingWidget"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(outer, Symbol::intern("OverridingWidget"), vec![], &bindings),
         "OverridingWidget accessor",
     );
     let described = expect_ok(
@@ -730,7 +715,6 @@ fn class_side_override_shadows_the_inherited_method(bytecode: bool) {
             Symbol::intern("describe"),
             vec![],
             &bindings,
-            None,
         ),
         "overriding class-side send",
     );
@@ -780,7 +764,7 @@ fn nested_super_and_outer(bytecode: bool) {
         "instantiate Outer",
     );
     let described = expect_ok(
-        interp.send(outer, Symbol::intern("run"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("run"), vec![], &bindings),
         "run",
     );
     assert_eq!(
@@ -832,7 +816,7 @@ fn super_chain_progresses_past_an_inherited_middle_level(bytecode: bool) {
         "instantiate Outer",
     );
     let described = expect_ok(
-        interp.send(outer, Symbol::intern("run"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("run"), vec![], &bindings),
         "run",
     );
     assert_eq!(string_contents(interp.heap_ref(), &described), "grand/mid");
@@ -880,7 +864,7 @@ fn outer_resolves_from_the_defining_level(bytecode: bool) {
         "instantiate Outer",
     );
     let described = expect_ok(
-        interp.send(outer, Symbol::intern("run"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("run"), vec![], &bindings),
         "run",
     );
     assert_eq!(string_contents(interp.heap_ref(), &described), "top");
@@ -928,7 +912,7 @@ fn a_two_level_outer_resolves_from_the_defining_level(bytecode: bool) {
         "instantiate Outer",
     );
     let described = expect_ok(
-        interp.send(outer, Symbol::intern("run"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("run"), vec![], &bindings),
         "run",
     );
     assert_eq!(string_contents(interp.heap_ref(), &described), "top");
@@ -979,12 +963,12 @@ fn class_side_outer_reaches_the_enclosing_object(bytecode: bool) {
         "instantiate Outer",
     );
     let shallow = expect_ok(
-        interp.send(outer, Symbol::intern("shallow"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("shallow"), vec![], &bindings),
         "shallow",
     );
     assert_eq!(string_contents(interp.heap_ref(), &shallow), "top");
     let deep = expect_ok(
-        interp.send(outer, Symbol::intern("deep"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("deep"), vec![], &bindings),
         "deep",
     );
     assert_eq!(string_contents(interp.heap_ref(), &deep), "top");

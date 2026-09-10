@@ -142,6 +142,18 @@ pub fn snapshot(
     platform: &Value,
     roots: &[Value],
 ) -> Result<Vec<u8>, String> {
+    // A frame married to a running activation keeps its registers and `pc`
+    // on the activation stack, and the format has no record for the stack,
+    // so encoding one would write a frame with empty registers and succeed.
+    // `Heap::frame_snapshot` debug-asserts against that per frame; this is
+    // the check a release build keeps.
+    if heap.activation_depth() != 0 {
+        return Err(
+            "image encoding cannot snapshot a world mid-execution: a snapshot is \
+             taken only between sends, when no activation is running"
+                .to_string(),
+        );
+    }
     let mut d = encode_describing(root_class, module, heap)?;
     // The graph section is encoded into its own buffer, against the same
     // `symbols` builder the describing sections used, before `write_describing`

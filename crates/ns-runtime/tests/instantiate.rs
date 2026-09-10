@@ -51,13 +51,7 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
         "instantiate",
     );
 
-    let result = interp.send(
-        receiver,
-        Symbol::intern("bar"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("bar"), vec![], &resolved.bindings);
 
     match result {
         Ok(Value::SmallInt(42)) => {}
@@ -149,7 +143,6 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
         Symbol::intern("getB"),
         vec![],
         &sub_resolved.bindings,
-        None,
     );
 
     match result {
@@ -185,13 +178,7 @@ fn a_factory_parameter_is_visible_in_a_slot_initializer() {
         "instantiate",
     );
 
-    let result = interp.send(
-        receiver,
-        Symbol::intern("getT"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("getT"), vec![], &resolved.bindings);
 
     match result {
         Ok(Value::SmallInt(99)) => {}
@@ -221,19 +208,12 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
             Symbol::intern("usingPlatform:"),
             vec![Value::SmallInt(99)],
             &resolved.bindings,
-            None,
         ),
         "M usingPlatform: 99",
     );
 
     let result = expect_ok(
-        interp.send(
-            receiver,
-            Symbol::intern("getT"),
-            vec![],
-            &resolved.bindings,
-            None,
-        ),
+        interp.send(receiver, Symbol::intern("getT"), vec![], &resolved.bindings),
         "getT",
     );
 
@@ -270,13 +250,7 @@ fn a_factory_parameter_is_visible_in_an_init_expr() {
         "instantiate",
     );
 
-    let result = interp.send(
-        receiver,
-        Symbol::intern("getT"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("getT"), vec![], &resolved.bindings);
 
     match result {
         Ok(Value::SmallInt(7)) => {}
@@ -337,7 +311,6 @@ fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
         Symbol::intern("thisSelectorDoesNotExist"),
         vec![],
         &resolved.bindings,
-        None,
     );
 
     match result {
@@ -388,28 +361,15 @@ class SuperclassArgs = Object new () (
             Symbol::intern("Derived"),
             vec![],
             &resolved.bindings,
-            None,
         ),
         "Derived",
     );
     let instance = expect_ok(
-        interp.send(
-            derived,
-            Symbol::intern("new"),
-            vec![],
-            &resolved.bindings,
-            None,
-        ),
+        interp.send(derived, Symbol::intern("new"), vec![], &resolved.bindings),
         "Derived new",
     );
     let stored = expect_ok(
-        interp.send(
-            instance,
-            Symbol::intern("base"),
-            vec![],
-            &resolved.bindings,
-            None,
-        ),
+        interp.send(instance, Symbol::intern("base"), vec![], &resolved.bindings),
         "base",
     );
     assert!(

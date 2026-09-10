@@ -1,0 +1,16 @@
+Newspeak3
+'Test'
+class BenchBlock usingPlatform: platform = Object new (
+	| n ::= 0. sum ::= 0. |
+) (
+	bump: x = (
+		| acc |
+		acc := x.
+		[:y | acc := acc + y] value: 1.
+		^acc
+	)
+	public main: p args: a = (
+		[n < 50000] whileTrue: [sum := self bump: sum. n := n + 1].
+		p transcript show: sum printString; newLine
+	)
+) : ()

@@ -19,7 +19,7 @@ pub mod symbol;
 pub mod types;
 pub mod vm;
 
-pub use heap::{ClassRef, FrameRef, Heap, ObjRef};
+pub use heap::{ActivationHeader, ActivationRef, ClassRef, FrameRef, Heap, ObjRef};
 pub use interpreter::{Engine, EngineUnavailable, Interpreter, Signal};
 pub use mixin::{Mixin, MixinApplication};
 pub use resolver::resolve;

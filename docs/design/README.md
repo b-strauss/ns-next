@@ -33,11 +33,11 @@ that cannot name its code is describing an intention, and should say so.
 | Aspect | Document | Status | Planned next |
 |---|---|---|---|
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
-| Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | stack activations, then `become:` |
+| Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | inline-cache slots wired up |
-| Activations, both engines, the VM loop | [execution.md](execution.md) | Built | activations on a stack, JIT tiers |
-| Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena is built, nothing reclaims | checked roots, a collector |
+| Activations, both engines, the VM loop | [execution.md](execution.md) | Built | the trampoline, closure conversion, JIT tiers |
+| Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena and the activation stack are built, nothing reclaims an arena slot | checked roots, a collector |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | Partial | the leaf/callback split |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
@@ -55,16 +55,22 @@ crates/
 ```
 
 Inside `ns-runtime`, one file cuts across every other: `heap.rs`. It owns the
-two arenas an object and an activation live in, and `ObjRef`, `ClassRef` and
-`FrameRef` are opaque 32-bit handles into them whose inner index is private to
-that file — so every read and write goes through a `Heap` accessor because the
-compiler refuses anything else. That seam exists so the store behind a handle
-can be replaced by changing one file rather than every caller; replacing
+object arena, the activation stack every running activation lives on, and the
+frame arena an activation reaches only when a block captures it. `ObjRef`,
+`ClassRef` and `FrameRef` are opaque 32-bit handles into the arenas, and
+`ActivationRef` into the stack; each one's inner index is private to that file,
+so every read and write goes through a `Heap` accessor because the compiler
+refuses anything else. That seam exists so the store behind a handle can be
+replaced by changing one file rather than every caller; replacing
 `Rc<RefCell<_>>` with the arena is the evidence that it works, since no call
 site outside `heap.rs` and `types.rs` changed for either the object or the
-activation conversion. Start at
-[memory.md](memory.md) for what it guarantees and what it does not — notably
-that nothing reclaims a slot yet.
+frame conversion. The handle types are not hidden, on purpose: the two
+activation handles are distinct types in every signature — a closure, a frame
+and an image record take only a `FrameRef` — so storing an `ActivationRef` in
+anything that outlives its call is a compile error. Start
+at [memory.md](memory.md) for what the heap guarantees and what it does not —
+notably that nothing reclaims an arena slot yet — and at
+[execution.md](execution.md), "Activations", for the stack.
 
 `ns-syntax` does not depend on `ns-runtime`. Nothing under `crates/ns-syntax`
 should change for runtime work.
@@ -126,8 +132,9 @@ rather than an oversight.
 - **`CLAUDE.md`** — the invariants that are easy to break, each of which has
   already produced a real defect. Load-bearing for anyone working in the
   repository; the reasoning behind each one is in these documents.
-- **`docs/PROGRESS.md`** — milestone chronology: what was completed and when.
-  These documents describe the design; that one records the schedule.
+- **`docs/PROGRESS.md`** — milestone chronology: what was completed and when,
+  and, under "Where the next session starts", what comes next and in which
+  order. These documents describe the design; that one records the schedule.
 - **`docs/superpowers/plans/`** — implementation plans, dated. A plan is an
   execution record of finished work and is legitimately historical, so it is not
   a living document and is left as written.

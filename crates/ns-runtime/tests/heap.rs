@@ -166,7 +166,6 @@ fn register_addressing_puts_arguments_before_temporaries() {
             Symbol::intern("usingPlatform:"),
             vec![platform],
             &resolved.bindings,
-            None,
         ),
         "instantiate",
     );
@@ -176,7 +175,6 @@ fn register_addressing_puts_arguments_before_temporaries() {
             Symbol::intern("run:"),
             vec![Value::SmallInt(41)],
             &resolved.bindings,
-            None,
         ),
         "run:",
     );

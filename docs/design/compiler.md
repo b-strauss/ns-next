@@ -99,7 +99,8 @@ CompiledCode {
 ```
 
 A method body, a block body and an instance initializer all compile to the same
-shape; `kind` tags which. `Frame.temps` is sized to `num_registers - num_args`.
+shape; `kind` tags which. An activation of it is pushed with
+`num_registers - num_args` temporaries.
 
 `CompiledModule` holds `methods`, `initializers`, `superclass_clauses` and
 `superclass_messages` — the last two because a nested class's superclass clause is
@@ -117,8 +118,8 @@ same body per enclosing instance, since a class object is per-instance.
 **`InitSlot`'s `own_index` is therefore mixin-relative.** An absolute field index
 baked into shared code would be wrong the moment a second application inserts
 different inherited slots ahead of it. The VM resolves `own_index` against the
-executing `Frame.slot_base` — the application's `own_slot_base` for that level —
-at run time.
+executing activation's `slot_base` — the application's `own_slot_base` for that
+level — at run time.
 
 The tree-walker has no compiled `InitSlot` to share, so it resolves the same slot
 by name instead of by index. A bug here shows up as the two engines disagreeing,
@@ -130,8 +131,9 @@ them along with every other cache keyed to the class. See
 
 ## Registers
 
-Each `Frame` carries `args ++ temps` as one unified register space addressed by a
-single `u16`: index `< num_args` is `args[index]`, index `>= num_args` is
+Each activation carries `args ++ temps` as one unified register space addressed
+by a single `u16`: on the activation stack it is one window of registers, and in
+a divorced `Frame` index `< num_args` is `args[index]`, index `>= num_args` is
 `temps[index - num_args]`. That is exactly the args-then-temps split the
 resolver's `Binding::Local` already used, so the compiler needs no separate
 renumbering, and a block's `OuterLocal` indices are untouched by the scratch

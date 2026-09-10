@@ -8,7 +8,7 @@ use ns_syntax::ast::{self, Expr};
 use ns_syntax::Span;
 
 use crate::dispatch::{self, Lookup};
-use crate::heap::Heap;
+use crate::heap::{ActivationHeader, ActivationRef, Heap};
 use crate::types::*;
 use crate::Symbol;
 
@@ -17,20 +17,20 @@ use super::{EvalResult, Interpreter, Signal};
 pub fn eval_expr(
     interp: &mut Interpreter,
     expr: &Expr,
-    frame: &FrameRef,
+    act: &ActivationRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     match expr {
-        Expr::Ident(id) => eval_ident(interp, id, frame, bindings),
+        Expr::Ident(id) => eval_ident(interp, id, act, bindings),
         Expr::Literal(lit) => eval_literal(interp, lit),
-        Expr::Send(send) => eval_send(interp, send, frame, bindings),
-        Expr::Cascade(cascade) => eval_cascade(interp, cascade, frame, bindings),
-        Expr::Assign { target, value, .. } => eval_assign(interp, target, value, frame, bindings),
-        Expr::Block(block) => eval_block_literal(interp, block, frame, bindings),
+        Expr::Send(send) => eval_send(interp, send, act, bindings),
+        Expr::Cascade(cascade) => eval_cascade(interp, cascade, act, bindings),
+        Expr::Assign { target, value, .. } => eval_assign(interp, target, value, act, bindings),
+        Expr::Block(block) => eval_block_literal(interp, block, act, bindings),
         Expr::DynamicArray { elements, .. } => {
             let mut values = Vec::with_capacity(elements.len());
             for e in elements {
-                values.push(eval_expr(interp, e, frame, bindings)?);
+                values.push(eval_expr(interp, e, act, bindings)?);
             }
             Ok(Value::Obj(interp.new_array(values)))
         }
@@ -40,20 +40,20 @@ pub fn eval_expr(
 fn eval_ident(
     interp: &mut Interpreter,
     id: &ast::Ident,
-    frame: &FrameRef,
+    act: &ActivationRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     if id.name == "self" {
-        return Ok(interp.heap.receiver(frame));
+        return Ok(interp.heap.activation_receiver(act));
     }
     match bindings.get(&id.span) {
-        Some(Binding::Local(i)) => Ok(read_local(&interp.heap, frame, *i)),
+        Some(Binding::Local(i)) => Ok(read_local(&interp.heap, act, *i)),
         Some(Binding::OuterLocal { depth, index }) => {
-            Ok(read_outer_local(&interp.heap, frame, *depth, *index))
+            Ok(read_outer_local(&interp.heap, act, *depth, *index))
         }
         Some(Binding::LexicalSend { depth }) => dispatch_lexical_send(
             interp,
-            frame,
+            act,
             *depth,
             Symbol::intern(&id.name),
             vec![],
@@ -71,7 +71,7 @@ fn eval_ident(
             if let Some(kind) = super::instantiate::builtin_kind_from_name(&id.name) {
                 return Ok(Value::Obj(interp.builtin_class(kind)));
             }
-            let receiver = interp.heap.receiver(frame);
+            let receiver = interp.heap.activation_receiver(act);
             Err(unresolved_identifier_error(&id.name, receiver))
         }
     }
@@ -104,36 +104,73 @@ pub(crate) fn malformed_int_error(message: String) -> Signal {
     })
 }
 
-pub(crate) fn read_local(heap: &Heap, frame: &FrameRef, index: u16) -> Value {
-    heap.local(frame, index)
+pub(crate) fn read_local(heap: &Heap, act: &ActivationRef, index: u16) -> Value {
+    heap.activation_local(act, index)
 }
 
-pub(crate) fn write_local(heap: &mut Heap, frame: &FrameRef, index: u16, value: Value) {
-    heap.set_local(frame, index, value);
+pub(crate) fn write_local(heap: &mut Heap, act: &ActivationRef, index: u16, value: Value) {
+    heap.activation_set_local(act, index, value);
 }
 
-pub(crate) fn frame_at_depth(heap: &Heap, frame: &FrameRef, depth: u16) -> FrameRef {
-    let mut current = *frame;
-    for _ in 0..depth {
-        let next = heap.frame_captured(&current).unwrap_or(current);
-        current = next;
+/// Where a `Binding::OuterLocal` lives: in the running activation itself,
+/// or in a frame some closure captured.
+enum OuterFrame {
+    Own(ActivationRef),
+    Captured(FrameRef),
+}
+
+/// The activation `depth` hops out along the `captured_frame` chain. The
+/// first hop leaves the running activation for its closure's captured frame;
+/// the rest follow frames. It stops hopping at a non-closure activation, so a
+/// depth past the lexical nesting lands on the outermost body rather than
+/// running off the chain -- `image::decode::enclosing_body` is the static
+/// counterpart and relies on exactly this, for an image whose `depth` it
+/// verified against the lexical nesting rather than the chain.
+fn frame_at_depth(heap: &Heap, act: &ActivationRef, depth: u16) -> OuterFrame {
+    if depth == 0 {
+        return OuterFrame::Own(*act);
     }
-    current
+    let Some(mut frame) = heap.activation_captured(act) else {
+        return OuterFrame::Own(*act);
+    };
+    for _ in 1..depth {
+        frame = heap.frame_captured(&frame).unwrap_or(frame);
+    }
+    OuterFrame::Captured(frame)
 }
 
-/// The `home` a closure created in `frame` gets: a method, top-level, or
-/// initializer activation is its own home; a closure activation's home is
-/// its own `home`. Shared by the tree-walker's `eval_block_literal` and
-/// the VM's `MakeClosure`.
-///
-/// `Frame.home` is `None` for exactly the non-closure kinds (a method,
-/// top-level, initializer, or superclass-clause/message activation is its
-/// own return target -- a clause activation is one for the same reason an
-/// initializer is: it is a class declaration's code running on an object,
-/// with no enclosing method to return through), so the fallback below
-/// covers all of them without naming `FrameKind` here.
-pub(crate) fn home_of(heap: &Heap, frame: &FrameRef) -> FrameRef {
-    heap.frame_home(frame).unwrap_or(*frame)
+/// Shared by the tree-walker's `eval_ident` and the VM's `LoadOuterLocal`.
+pub(crate) fn read_outer_local(heap: &Heap, act: &ActivationRef, depth: u16, index: u16) -> Value {
+    match frame_at_depth(heap, act, depth) {
+        OuterFrame::Own(own) => heap.activation_local(&own, index),
+        OuterFrame::Captured(frame) => heap.frame_local(&frame, index),
+    }
+}
+
+/// Shared by the tree-walker's `eval_assign` and the VM's `StoreOuterLocal`.
+pub(crate) fn write_outer_local(
+    heap: &mut Heap,
+    act: &ActivationRef,
+    depth: u16,
+    index: u16,
+    value: Value,
+) {
+    match frame_at_depth(heap, act, depth) {
+        OuterFrame::Own(own) => heap.activation_set_local(&own, index, value),
+        OuterFrame::Captured(frame) => heap.frame_set_local(&frame, index, value),
+    }
+}
+
+/// The `home` a closure created in `act` gets: a closure activation passes
+/// its own closure's `home` on; any other activation -- method, initializer,
+/// superclass clause or message -- is its own return target, so it is
+/// reified and is its own home. Shared by the tree-walker's
+/// `eval_block_literal` and the VM's `MakeClosure`.
+pub(crate) fn home_of(heap: &mut Heap, act: &ActivationRef) -> FrameRef {
+    match heap.activation_home(act) {
+        Some(home) => home,
+        None => heap.reify(act),
+    }
 }
 
 /// Writes `value` into instance field `index` on `instance`'s
@@ -147,15 +184,6 @@ pub(crate) fn store_instance_field(heap: &mut Heap, instance: &Value, index: usi
     if let Value::Obj(obj) = instance {
         heap.set_instance_field(obj, index, value);
     }
-}
-
-fn read_outer_local(heap: &Heap, frame: &FrameRef, depth: u16, index: u16) -> Value {
-    read_local(heap, &frame_at_depth(heap, frame, depth), index)
-}
-
-fn write_outer_local(heap: &mut Heap, frame: &FrameRef, depth: u16, index: u16, value: Value) {
-    let target = frame_at_depth(heap, frame, depth);
-    write_local(heap, &target, index, value);
 }
 
 /// Evaluates an `ast::Literal::Int`'s source text, which the lexer hands
@@ -242,19 +270,19 @@ fn eval_literal(interp: &mut Interpreter, lit: &ast::Literal) -> EvalResult {
 fn eval_send(
     interp: &mut Interpreter,
     send: &ast::Send,
-    frame: &FrameRef,
+    act: &ActivationRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     match bindings.get(&send.span) {
         Some(Binding::SuperSend) => {
-            let args = eval_args(interp, &send.message, frame, bindings)?;
-            dispatch_super_send(interp, frame, selector_of(&send.message), args, bindings)
+            let args = eval_args(interp, &send.message, act, bindings)?;
+            dispatch_super_send(interp, act, selector_of(&send.message), args, bindings)
         }
         Some(Binding::LexicalSend { depth }) => {
-            let args = eval_args(interp, &send.message, frame, bindings)?;
+            let args = eval_args(interp, &send.message, act, bindings)?;
             dispatch_lexical_send(
                 interp,
-                frame,
+                act,
                 *depth,
                 selector_of(&send.message),
                 args,
@@ -262,15 +290,9 @@ fn eval_send(
             )
         }
         _ => {
-            let receiver = eval_expr(interp, &send.receiver, frame, bindings)?;
-            let args = eval_args(interp, &send.message, frame, bindings)?;
-            interp.send(
-                receiver,
-                selector_of(&send.message),
-                args,
-                bindings,
-                Some(*frame),
-            )
+            let receiver = eval_expr(interp, &send.receiver, act, bindings)?;
+            let args = eval_args(interp, &send.message, act, bindings)?;
+            interp.send(receiver, selector_of(&send.message), args, bindings)
         }
     }
 }
@@ -278,12 +300,12 @@ fn eval_send(
 fn eval_args(
     interp: &mut Interpreter,
     message: &ast::MessageSend,
-    frame: &FrameRef,
+    act: &ActivationRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> Result<Vec<Value>, Signal> {
     let mut values = Vec::with_capacity(message.args.len());
     for a in &message.args {
-        values.push(eval_expr(interp, a, frame, bindings)?);
+        values.push(eval_expr(interp, a, act, bindings)?);
     }
     Ok(values)
 }
@@ -349,7 +371,7 @@ fn lexical_lookup(heap: &crate::heap::Heap, class: &ClassRef, selector: Symbol) 
 /// class -- or, when `o` is a class object, on its metaclass first (§6.3).
 pub(crate) fn dispatch_lexical_send(
     interp: &mut Interpreter,
-    frame: &FrameRef,
+    act: &ActivationRef,
     depth: u16,
     selector: Symbol,
     args: Vec<Value>,
@@ -358,7 +380,7 @@ pub(crate) fn dispatch_lexical_send(
     // The lexical depth counts levels out from the class that *defines* this
     // method, so the walk needs this activation's `current_class`, not the
     // receiver's own class -- see `dispatch::kth_enclosing_object`.
-    let (self_value, defining_class) = interp.heap.receiver_and_current_class(frame);
+    let (self_value, defining_class) = interp.heap.activation_receiver_and_current_class(act);
     let o =
         dispatch::kth_enclosing_object(&interp.heap, &self_value, defining_class.as_ref(), depth);
     let class = interp.class_of(&o);
@@ -406,24 +428,19 @@ pub(crate) fn dispatch_lexical_send(
         .filter(|found| matches!(found, Lookup::Method(..) | Lookup::NestedClass(..)))
         .unwrap_or_else(|| lexical_lookup(&interp.heap, &class, selector));
     match lookup {
-        Lookup::Method(method, defining_class) => interp.invoke_method(
-            o,
-            method,
-            defining_class,
-            args,
-            bindings.clone(),
-            Some(*frame),
-        ),
+        Lookup::Method(method, defining_class) => {
+            interp.invoke_method(o, method, defining_class, args, bindings.clone())
+        }
         Lookup::NestedClass(mixin, declaring_class) => {
             crate::interpreter::nested::nested_class(interp, &o, &mixin, &declaring_class, bindings)
         }
         Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(interp, kind, o, selector, &args, Some(frame)) {
+            match crate::builtins::dispatch_native(interp, kind, o, selector, &args) {
                 Some(result) => result,
-                None => interp.send(o, selector, args, bindings, Some(*frame)),
+                None => interp.send(o, selector, args, bindings),
             }
         }
-        Lookup::NotFound => interp.send(o, selector, args, bindings, Some(*frame)),
+        Lookup::NotFound => interp.send(o, selector, args, bindings),
     }
 }
 
@@ -434,15 +451,15 @@ pub(crate) fn dispatch_lexical_send(
 /// already carries that.
 pub(crate) fn dispatch_super_send(
     interp: &mut Interpreter,
-    frame: &FrameRef,
+    act: &ActivationRef,
     selector: Symbol,
     args: Vec<Value>,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let Some(current_class) = interp.heap.frame_current_class(frame) else {
+    let Some(current_class) = interp.heap.activation_current_class(act) else {
         return Err(Signal::Error(NewspeakError {
             selector,
-            receiver: interp.heap.receiver(frame),
+            receiver: interp.heap.activation_receiver(act),
             message:
                 "super send with no enclosing current_class (used outside a method activation)"
                     .to_string(),
@@ -452,20 +469,15 @@ pub(crate) fn dispatch_super_send(
     let Some(superclass) = superclass else {
         return Err(Signal::Error(NewspeakError {
             selector,
-            receiver: interp.heap.receiver(frame),
+            receiver: interp.heap.activation_receiver(act),
             message: "super send with no superclass (current class is Object or Top)".to_string(),
         }));
     };
-    let self_value = interp.heap.receiver(frame);
+    let self_value = interp.heap.activation_receiver(act);
     match dispatch::lookup_defined_for(&interp.heap, &superclass, selector) {
-        Lookup::Method(method, defining_class) => interp.invoke_method(
-            self_value,
-            method,
-            defining_class,
-            args,
-            bindings.clone(),
-            Some(*frame),
-        ),
+        Lookup::Method(method, defining_class) => {
+            interp.invoke_method(self_value, method, defining_class, args, bindings.clone())
+        }
         // `super N` for a nested class the superclass declares. The
         // receiver stays `self` (§5.10), which is also the enclosing object
         // the accessor caches against -- so `super N` and `N` name the same
@@ -481,40 +493,27 @@ pub(crate) fn dispatch_super_send(
             bindings,
         ),
         Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(
-                interp,
-                kind,
-                self_value,
-                selector,
-                &args,
-                Some(frame),
-            ) {
+            match crate::builtins::dispatch_native(interp, kind, self_value, selector, &args) {
                 Some(result) => result,
-                None => interp.send(self_value, selector, args, bindings, Some(*frame)),
+                None => interp.send(self_value, selector, args, bindings),
             }
         }
-        Lookup::NotFound => interp.send(self_value, selector, args, bindings, Some(*frame)),
+        Lookup::NotFound => interp.send(self_value, selector, args, bindings),
     }
 }
 
 fn eval_cascade(
     interp: &mut Interpreter,
     cascade: &ast::Cascade,
-    frame: &FrameRef,
+    act: &ActivationRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let receiver = eval_expr(interp, &cascade.receiver, frame, bindings)?;
-    let first_args = eval_args(interp, &cascade.first, frame, bindings)?;
-    let mut result = interp.send(
-        receiver,
-        selector_of(&cascade.first),
-        first_args,
-        bindings,
-        Some(*frame),
-    )?;
+    let receiver = eval_expr(interp, &cascade.receiver, act, bindings)?;
+    let first_args = eval_args(interp, &cascade.first, act, bindings)?;
+    let mut result = interp.send(receiver, selector_of(&cascade.first), first_args, bindings)?;
     for m in &cascade.rest {
-        let args = eval_args(interp, m, frame, bindings)?;
-        result = interp.send(receiver, selector_of(m), args, bindings, Some(*frame))?;
+        let args = eval_args(interp, m, act, bindings)?;
+        result = interp.send(receiver, selector_of(m), args, bindings)?;
     }
     Ok(result)
 }
@@ -527,23 +526,23 @@ fn eval_assign(
     interp: &mut Interpreter,
     target: &ast::Ident,
     value: &Expr,
-    frame: &FrameRef,
+    act: &ActivationRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let v = eval_expr(interp, value, frame, bindings)?;
+    let v = eval_expr(interp, value, act, bindings)?;
     match bindings.get(&target.span) {
-        Some(Binding::Local(i)) => write_local(&mut interp.heap, frame, *i, v),
+        Some(Binding::Local(i)) => write_local(&mut interp.heap, act, *i, v),
         Some(Binding::OuterLocal { depth, index }) => {
-            write_outer_local(&mut interp.heap, frame, *depth, *index, v)
+            write_outer_local(&mut interp.heap, act, *depth, *index, v)
         }
         Some(Binding::LexicalSend { depth }) => {
             let setter = Symbol::intern(&format!("{}:", target.name));
-            dispatch_lexical_send(interp, frame, *depth, setter, vec![v], bindings)?;
+            dispatch_lexical_send(interp, act, *depth, setter, vec![v], bindings)?;
         }
         _ => {
             return Err(Signal::Error(NewspeakError {
                 selector: Symbol::intern(&target.name),
-                receiver: interp.heap.receiver(frame),
+                receiver: interp.heap.activation_receiver(act),
                 message: format!("internal: unresolved setter target `{}`", target.name),
             }))
         }
@@ -554,10 +553,14 @@ fn eval_assign(
 fn eval_block_literal(
     interp: &mut Interpreter,
     block: &ast::BlockExpr,
-    frame: &FrameRef,
+    act: &ActivationRef,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let home = home_of(&interp.heap, frame);
+    // A block reaches its method's variables through the activation it was
+    // created in, and returns through its home, so both must outlive this
+    // call: reifying is what makes them storable.
+    let captured_frame = interp.heap.reify(act);
+    let home = home_of(&mut interp.heap, act);
     let closure = Rc::new(ClosureData {
         params: block
             .params
@@ -565,7 +568,7 @@ fn eval_block_literal(
             .map(|p| Symbol::intern(&p.name))
             .collect(),
         body: ClosureBody::Ast(Rc::new(block.body.clone())),
-        captured_frame: *frame,
+        captured_frame,
         home,
         bindings: bindings.clone(),
     });
@@ -577,32 +580,23 @@ fn eval_block_literal(
 /// selectors are Milestone 1 *native* methods on `BuiltinClass::Block`, not
 /// user-overridable Newspeak methods.
 ///
-/// `sender` is the activation performing the invocation, threaded here from
-/// the send that reached the block-invoking native primitive.
-/// It becomes the new closure activation's own `Frame.sender`, exactly as
-/// `Interpreter::invoke_method` does for a method activation, so the
-/// liveness spec's reified call chain (`Frame.sender`) stays walkable across
-/// a block invocation boundary instead of being cut by an unconditional
-/// `None`. `None` is still legitimate for an invocation with no enclosing
-/// activation at all (a direct entry-point call).
+/// The invoking activation is not passed: a live activation's sender is the
+/// one below it on the activation stack.
 pub fn invoke_closure(
     interp: &mut Interpreter,
     closure: &Rc<ClosureData>,
     args: Vec<Value>,
     bindings: &Rc<HashMap<Span, Binding>>,
-    sender: Option<FrameRef>,
 ) -> EvalResult {
-    // Reject a wrong argument count as a NewspeakError up
-    // front, before it can reach `read_local`. Without this guard, a call
-    // with too few args can panic outright -- `read_local`'s
-    // `i < borrowed.args.len()` check falls through to
-    // `temps[i - borrowed.args.len()]`, which is out of bounds whenever the
-    // missing args would have covered a param index that has no
-    // correspondingly-allocated temp slot -- and a call with too many args
-    // would silently misaddress temps instead of erroring. Never panic on
-    // this Newspeak-program-input path.
+    // Reject a wrong argument count as a NewspeakError up front, before it
+    // can reach `read_local`. The register window is laid out from the
+    // arguments actually given, so without this guard a call with too few
+    // args leaves the body addressing registers past the end of its window
+    // -- a panic -- and a call with too many args would silently misaddress
+    // temps instead of erroring. Never panic on this Newspeak-program-input
+    // path.
     if args.len() != closure.params.len() {
-        let receiver = interp.heap.receiver(&closure.captured_frame);
+        let receiver = interp.heap.frame_receiver(&closure.captured_frame);
         return Err(Signal::Error(NewspeakError {
             selector: Symbol::intern("value"),
             receiver,
@@ -613,51 +607,62 @@ pub fn invoke_closure(
             ),
         }));
     }
-    let receiver = interp.heap.receiver(&closure.captured_frame);
+    let receiver = interp.heap.frame_receiver(&closure.captured_frame);
     let current_class = interp.heap.frame_current_class(&closure.captured_frame);
-    // Hook 2 (spec: "`vm.rs` and the engine hook"): the frame is built the
-    // same way for both engines; only the body's evaluation differs, and
+    // Hook 2 (spec: "`vm.rs` and the engine hook"): the activation is built
+    // the same way for both engines; only the body's evaluation differs, and
     // which engine that is was decided when the closure was created.
     let temp_count = match &closure.body {
         ClosureBody::Ast(body) => body.temps.len(),
         ClosureBody::Compiled(code) => (code.num_registers - code.num_args) as usize,
     };
-    let frame = interp.heap.alloc_frame(Frame {
-        receiver,
-        args,
-        temps: vec![Value::Nil; temp_count],
-        pc: 0,
-        // Decided by the closure's own body, not by the interpreter's
-        // current engine: a closure always runs with the engine that
-        // created it (`ClosureBody`'s doc comment).
-        pc_kind: match &closure.body {
-            ClosureBody::Ast(_) => PcKind::TreeWalk,
-            ClosureBody::Compiled(_) => PcKind::Bytecode,
+    let act = interp.heap.push_activation(
+        ActivationHeader {
+            receiver,
+            current_class,
+            kind: FrameKind::Closure(closure.clone()),
+            // Decided by the closure's own body, not by the interpreter's
+            // current engine: a closure always runs with the engine that
+            // created it (`ClosureBody`'s doc comment).
+            pc_kind: match &closure.body {
+                ClosureBody::Ast(_) => PcKind::TreeWalk,
+                ClosureBody::Compiled(_) => PcKind::Bytecode,
+            },
+            slot_base: 0, // a closure body never contains InitSlot
         },
-        sender,
-        home: Some(closure.home),
-        current_class,
-        kind: FrameKind::Closure(closure.clone()),
-        uncontinuable: false,
-        slot_base: 0, // a closure body never contains InitSlot
-    });
-    match &closure.body {
-        ClosureBody::Compiled(code) => crate::vm::run_code(interp, &frame, code, bindings),
-        ClosureBody::Ast(body) => {
-            let mut last = Value::Nil;
-            for (i, stmt) in body.stmts.iter().enumerate() {
-                interp.heap.set_frame_pc(&frame, i);
-                match stmt {
-                    ast::Stmt::Expr(e) => last = eval_expr(interp, e, &frame, bindings)?,
-                    ast::Stmt::Return(e) => {
-                        let value = eval_expr(interp, e, &frame, bindings)?;
-                        return Err(super::Interpreter::raise_return_pub(interp, &frame, value));
-                    }
-                }
+        &args,
+        temp_count,
+    );
+    let result = match &closure.body {
+        ClosureBody::Compiled(code) => crate::vm::run_code(interp, &act, code, bindings),
+        ClosureBody::Ast(body) => run_block_body(interp, body, &act, bindings),
+    };
+    // Popped on every path out, like `invoke_method`'s. A closure
+    // activation catches no return: its `^` targets its home.
+    interp.heap.pop_activation(&act);
+    result
+}
+
+/// The tree-walker's block body: the statements in order, the last one's
+/// value as the result, and a `^` raised toward the block's home.
+fn run_block_body(
+    interp: &mut Interpreter,
+    body: &ast::CodeBody,
+    act: &ActivationRef,
+    bindings: &Rc<HashMap<Span, Binding>>,
+) -> EvalResult {
+    let mut last = Value::Nil;
+    for (i, stmt) in body.stmts.iter().enumerate() {
+        interp.heap.set_activation_pc(act, i);
+        match stmt {
+            ast::Stmt::Expr(e) => last = eval_expr(interp, e, act, bindings)?,
+            ast::Stmt::Return(e) => {
+                let value = eval_expr(interp, e, act, bindings)?;
+                return Err(interp.raise_return_pub(act, value));
             }
-            Ok(last)
         }
     }
+    Ok(last)
 }
 
 #[cfg(test)]

@@ -31,7 +31,7 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     let class_value = Value::Obj(interp.builtin_class(BuiltinClass::OrderedCollection));
     let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
-    let result = interp.send(class_value, Symbol::intern("new"), vec![], &bindings, None);
+    let result = interp.send(class_value, Symbol::intern("new"), vec![], &bindings);
     let receiver = expect_ok(result, "OrderedCollection new");
 
     let Value::Obj(obj) = &receiver else {
@@ -52,7 +52,6 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
             Symbol::intern("add:"),
             vec![Value::SmallInt(1)],
             &bindings,
-            None,
         ),
         "OrderedCollection new add: 1",
     );
@@ -65,7 +64,7 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     }
 
     let size_result = expect_ok(
-        interp.send(receiver, Symbol::intern("size"), vec![], &bindings, None),
+        interp.send(receiver, Symbol::intern("size"), vec![], &bindings),
         "OrderedCollection new (after add:) size",
     );
     match size_result {
@@ -87,7 +86,7 @@ fn array_new_via_ordinary_send_does_not_understand_add() {
     let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let receiver = expect_ok(
-        interp.send(class_value, Symbol::intern("new"), vec![], &bindings, None),
+        interp.send(class_value, Symbol::intern("new"), vec![], &bindings),
         "Array new",
     );
 
@@ -96,7 +95,6 @@ fn array_new_via_ordinary_send_does_not_understand_add() {
         Symbol::intern("add:"),
         vec![Value::SmallInt(1)],
         &bindings,
-        None,
     ) {
         Err(Signal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("add:"));
@@ -133,18 +131,11 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
             Symbol::intern("new"),
             vec![],
             &resolved.bindings,
-            None,
         ),
         "Foo new (via send)",
     );
     let via_send_bar = expect_ok(
-        interp_a.send(
-            via_send,
-            Symbol::intern("bar"),
-            vec![],
-            &resolved.bindings,
-            None,
-        ),
+        interp_a.send(via_send, Symbol::intern("bar"), vec![], &resolved.bindings),
         "Foo new bar (via send)",
     );
 
@@ -161,7 +152,6 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
             Symbol::intern("bar"),
             vec![],
             &resolved.bindings,
-            None,
         ),
         "instantiate(Foo) bar",
     );
@@ -192,7 +182,6 @@ fn a_class_object_receiving_a_non_factory_selector_falls_through_to_ordinary_dis
         Symbol::intern("thisSelectorDoesNotExist"),
         vec![],
         &bindings,
-        None,
     ) {
         Err(Signal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("thisSelectorDoesNotExist"));

@@ -86,9 +86,10 @@ because `InitSlot` is layout-dependent.
    count, new statement→PC table. For every affected context, the active one and
    any pending frames running the same method, grow `temps` if slots were added,
    set the new ones to nil, and remap the PC through the statement→PC table.
-   Growing an activation requires it to be reified first, because activations
-   otherwise live as entries in a stack where an entry in the middle cannot grow
-   ([execution.md](execution.md)). That is the same move as forcing a frame out
+   Growing an activation requires taking it off the stack into its reified
+   frame first, because a running activation is an entry in a stack where an
+   entry in the middle cannot grow ([execution.md](execution.md), "How this
+   meets the liveness requirements"). That is the same move as forcing a frame out
    of JIT-optimized form before debugging it, one level down, so the requirement
    is met by the existing principle rather than in tension with it.
    **Resume only at statement boundaries**, which is what keeps PC remapping
@@ -100,16 +101,18 @@ because `InitSlot` is layout-dependent.
    forces interpretation with a per-statement callback.
 
 Two things already in place serve this and are not to be regressed: the
-statement→PC table on every `CompiledCode`, and the reified frame chain. Two
-things block it. An activation cannot be suspended at all until `run_code` stops
-recursing through the Rust stack, which Milestone 4 addresses as a consequence of
-moving activations onto an explicit stack — see [execution.md](execution.md) —
-and `frame.pc` is currently stored only at observable points, which the debugger
+statement→PC table on every `CompiledCode`, and a chain of running activations
+walkable independently of the Rust stack — the activation stack. Two things
+block it. An activation cannot be suspended at all until `run_code` stops
+recursing through the Rust stack, which the trampoline addresses
+([execution.md](execution.md), "Planned: the trampoline"), and an activation's
+`pc` is currently stored only at observable points, which the debugger
 milestone may need to revisit.
 
-Note that the reified frame stops being the *default* representation and becomes
-the one a debugger asks for. Nothing here loses a capability by that: every
-operation in this section already begins by reifying the chain it works on.
+The reified frame is not the *default* representation of an activation; it is
+the one a block, and later a debugger, asks for. Nothing here loses a capability
+by that: every operation in this section already begins by reifying the chain it
+works on.
 
 ## Mirrors and MirrorBuilder
 
