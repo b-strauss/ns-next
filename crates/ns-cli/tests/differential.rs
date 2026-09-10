@@ -109,8 +109,8 @@ fn every_tests_fixtures_ns_file_behaves_identically_under_both_engines() {
     // being run under both engines, and a slack floor lets one disappear in
     // silence. Raise it in the same commit that adds a fixture.
     assert!(
-        checked >= 18,
-        "expected every one of the 18 tests-fixtures/*.ns fixtures to run \
+        checked >= 19,
+        "expected every one of the 19 tests-fixtures/*.ns fixtures to run \
          under both engines, checked {checked} -- raise this floor when \
          adding a fixture, never lower it to match what was found"
     );
