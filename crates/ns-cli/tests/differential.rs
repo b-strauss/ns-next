@@ -109,8 +109,8 @@ fn every_tests_fixtures_ns_file_behaves_identically_under_both_engines() {
     // being run under both engines, and a slack floor lets one disappear in
     // silence. Raise it in the same commit that adds a fixture.
     assert!(
-        checked >= 21,
-        "expected every one of the 21 tests-fixtures/*.ns fixtures to run \
+        checked >= 22,
+        "expected every one of the 22 tests-fixtures/*.ns fixtures to run \
          under both engines, checked {checked} -- raise this floor when \
          adding a fixture, never lower it to match what was found"
     );
@@ -160,6 +160,39 @@ fn a_return_from_a_block_whose_initializer_has_finished_is_cannot_return() {
         outcome.stderr
     );
     assert!(!outcome.stdout.contains("unreachable"));
+}
+
+/// The method-home counterpart of the test above: a method stores a block
+/// holding `^` in a slot and returns normally, and a later send invokes the
+/// block. Its home's frame was divorced when `stash` returned, so the `^`
+/// is `cannotReturn`, even though the block's own activation now occupies
+/// the stack index `stash`'s did.
+#[test]
+fn a_return_from_a_stored_block_whose_method_has_returned_is_cannot_return() {
+    let outcome = assert_engines_agree_on_source(
+        "stored_block_return",
+        "Newspeak3\n'Test'\nclass StoredBlockReturn usingPlatform: platform = Object new (\n\
+         \t| blk ::= nil. |\n) (\n\
+         \tstash = (\n\
+         \t\tblk := [^'too late'].\n\
+         \t\t^'stashed'\n\
+         \t)\n\
+         \tpublic main: p args: a = (\n\
+         \t\tp transcript show: self stash; newLine.\n\
+         \t\tblk value.\n\
+         \t\tp transcript show: 'unreachable'; newLine\n\
+         \t)\n) : ()\n",
+    );
+    assert!(!outcome.ok, "a dead home must be an error");
+    assert_eq!(
+        outcome.stdout, "stashed\n",
+        "`stash` returns normally before the block runs"
+    );
+    assert!(
+        outcome.stderr.contains("cannotReturn"),
+        "expected cannotReturn, got: {}",
+        outcome.stderr
+    );
 }
 
 #[test]

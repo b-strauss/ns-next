@@ -48,8 +48,8 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
     // being discovered loses its expected-stdout check silently, so the
     // floor tracks the actual count.
     assert!(
-        checked >= 21,
-        "expected every one of the 21 tests-fixtures/*.ns fixtures to be \
+        checked >= 22,
+        "expected every one of the 22 tests-fixtures/*.ns fixtures to be \
          compared against its .expected file, checked {checked} -- raise \
          this floor when adding a fixture, never lower it"
     );

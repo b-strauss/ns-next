@@ -1,0 +1,50 @@
+Newspeak3
+'Test'
+class NonlocalReturnDepth usingPlatform: platform = Object new (
+) (
+	m = (
+		self deeper: [^1].
+		^2
+	)
+	deeper: b = (
+		^self run: b
+	)
+	run: b = (
+		b value.
+		^3
+	)
+	recur: n with: b = (
+		n = 0 ifTrue: [b value. ^'recur fell through'].
+		^self recur: n - 1 with: b
+	)
+	outermost = (
+		self recur: 5 with: [^42].
+		^0
+	)
+	selfRecur: n with: b = (
+		| blk |
+		n = 0 ifTrue: [b value. ^'level 0 fell through'].
+		blk := n = 3 ifTrue: [[^'returned from level 3']] ifFalse: [b].
+		^(self selfRecur: n - 1 with: blk), ' ', n printString
+	)
+	intercept: b = (
+		| coll |
+		coll := OrderedCollection new.
+		coll add: 1; add: 2; add: 3.
+		coll do: [:e | e = 2 ifTrue: [b value. ^'intercepted by its own block']].
+		^'intercepted normally'
+	)
+	throughInterceptor = (
+		| r |
+		r := self intercept: [^'home got it'].
+		^'home fell through with ', r
+	)
+	public main: p args: a = (
+		p transcript show: self m printString; newLine.
+		p transcript show: self outermost printString; newLine.
+		p transcript show: (self selfRecur: 5 with: nil); newLine.
+		p transcript show: self throughInterceptor; newLine.
+		p transcript show: (self deeper: [7]) printString; newLine.
+		p transcript show: self m printString; newLine
+	)
+) : ()
