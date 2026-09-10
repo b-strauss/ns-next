@@ -1891,4 +1891,67 @@ mod tests {
         let _inner = heap.push_activation(header(), &[], 1);
         heap.pop_activation(&outer);
     }
+
+    /// Every test above pushes `FrameKind::TopLevel`, which is `None` on
+    /// both `activation_home` and `activation_captured` by construction --
+    /// closure creation is the only reason either exists. `raise_return`
+    /// picks a non-local return's target off `activation_home`, and the
+    /// outer-local walk (`eval::frame_at_depth`) starts every hop off
+    /// `activation_captured`/`frame_captured`, so a closure activation that
+    /// answered `None` for either would silently misroute a `^` or a
+    /// captured-variable read rather than fail loudly. This also exercises
+    /// `alloc_frame`'s debug assertion that `Frame.home` is populated
+    /// exactly for a `FrameKind::Closure` activation, since `reify` builds
+    /// that frame from a closure entry's `kind` here for the first time in
+    /// this test module.
+    #[test]
+    fn a_closure_activations_home_and_captured_frame_are_its_closures() {
+        let mut heap = Heap::new();
+        let method_act = heap.push_activation(header(), &[], 0);
+        let home_frame = heap.reify(&method_act);
+
+        let closure_data = ClosureData {
+            params: vec![],
+            body: ClosureBody::Compiled(std::rc::Rc::new(crate::bytecode::CompiledCode {
+                kind: crate::bytecode::CodeKind::Block,
+                instrs: vec![crate::bytecode::Instr::ImplicitReturn { reg: 0 }],
+                num_args: 0,
+                num_registers: 1,
+                statement_pc: vec![],
+                call_sites: vec![],
+                source: ns_syntax::Span::new(0, 0),
+            })),
+            captured_frame: home_frame,
+            home: home_frame,
+            bindings: std::rc::Rc::new(std::collections::HashMap::new()),
+        };
+        let closure_act = heap.push_activation(
+            ActivationHeader {
+                receiver: Value::Nil,
+                current_class: None,
+                kind: FrameKind::Closure(std::rc::Rc::new(closure_data)),
+                pc_kind: PcKind::Bytecode,
+                slot_base: 0,
+            },
+            &[],
+            0,
+        );
+
+        assert!(heap.activation_home(&method_act).is_none());
+        assert!(heap.activation_captured(&method_act).is_none());
+        assert!(heap
+            .activation_home(&closure_act)
+            .is_some_and(|h| h.same(&home_frame)));
+        assert!(heap
+            .activation_captured(&closure_act)
+            .is_some_and(|c| c.same(&home_frame)));
+
+        let closure_frame = heap.reify(&closure_act);
+        assert!(heap
+            .frame_home(&closure_frame)
+            .is_some_and(|h| h.same(&home_frame)));
+
+        heap.pop_activation(&closure_act);
+        heap.pop_activation(&method_act);
+    }
 }
