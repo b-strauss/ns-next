@@ -203,7 +203,8 @@ captured it ([execution.md](execution.md), "Activations"). So a frame enters the
 table only as a closure's `captured_frame` or `home`, or as the `captured_frame`
 or `home` of a frame already in it. A snapshot is taken at a **quiesced** point —
 after instantiation, optionally after an entry send, with the Rust call stack
-already unwound and the activation stack empty — so every frame in it is dead:
+already unwound and the activation stack empty; `image::snapshot` refuses to
+encode otherwise — so every frame in it is dead:
 divorced when its activation returned, or decoded from an earlier image and never
 run. A frame the runtime reified carries its own registers and has no sender, so
 a closure brings in the frames it names and nothing of the call chain that

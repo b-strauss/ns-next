@@ -1079,7 +1079,8 @@ impl Heap {
     /// reason as `object_snapshot`.
     ///
     /// Only for a dead frame, which is also the encoder's precondition: it
-    /// only ever runs between sends, when nothing is live.
+    /// only ever runs between sends, when nothing is live, and
+    /// `image::snapshot` refuses to start otherwise.
     pub fn frame_snapshot(&self, frame: &FrameRef) -> Frame {
         self.check_frame_origin(frame);
         debug_assert!(

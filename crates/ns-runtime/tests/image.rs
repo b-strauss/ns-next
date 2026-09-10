@@ -5103,6 +5103,47 @@ fn a_world_holding_a_tree_walker_activation_is_refused_when_written() {
     assert!(err.contains("tree-walker activation"), "{err}");
 }
 
+/// A snapshot is taken between sends, when no activation is running. A
+/// frame married to a live activation keeps its registers on the stack, not
+/// in the frame the encoder reads, so a mid-execution snapshot would write
+/// that frame with empty registers and report nothing. The encoder's
+/// `frame_snapshot` debug-asserts against it; this pins the refusal a
+/// release build also makes.
+#[test]
+fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
+    let (mut interp, class, bindings) = load(TRIVIAL_MODULE);
+    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(module))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let platform = interp.platform();
+    let running = interp.heap_mut().push_activation(
+        ns_runtime::ActivationHeader {
+            receiver: Value::Nil,
+            current_class: None,
+            kind: FrameKind::TopLevel,
+            pc_kind: ns_runtime::PcKind::Bytecode,
+            slot_base: 0,
+        },
+        &[],
+        0,
+    );
+    let result = image::snapshot(
+        interp.heap_ref(),
+        None,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        &[],
+    );
+    interp.heap_mut().pop_activation(&running);
+    let Err(err) = result else {
+        panic!("a snapshot with an activation still running must be refused")
+    };
+    assert!(err.contains("no activation is running"), "{err}");
+}
+
 /// A module written so that every *interesting* kind of source text is
 /// present and distinctive: a comment, an initializer expression, a slot
 /// clause, several method bodies, and a nested class. Each line the leak
