@@ -238,7 +238,6 @@ impl Interpreter {
         selector: Symbol,
         args: Vec<Value>,
         bindings: &Rc<HashMap<Span, Binding>>,
-        sender: Option<FrameRef>,
     ) -> EvalResult {
         if let Some(result) = self.try_factory_send(&receiver, selector, &args, bindings) {
             return result;
@@ -263,7 +262,6 @@ impl Interpreter {
                                 defining_class,
                                 args,
                                 bindings.clone(),
-                                sender,
                             );
                         }
                         Lookup::NestedClass(mixin, declaring_class) => {
@@ -276,9 +274,8 @@ impl Interpreter {
                             );
                         }
                         Lookup::Native(kind) => {
-                            return self.dispatch_native_or_dnu(
-                                kind, receiver, selector, args, bindings, sender,
-                            );
+                            return self
+                                .dispatch_native_or_dnu(kind, receiver, selector, args, bindings);
                         }
                         Lookup::NotFound => {}
                     }
@@ -287,14 +284,9 @@ impl Interpreter {
         }
         let class = self.class_of(&receiver);
         match dispatch::lookup_public(&self.heap, &class, selector) {
-            Lookup::Method(method, defining_class) => self.invoke_method(
-                receiver,
-                method,
-                defining_class,
-                args,
-                bindings.clone(),
-                sender,
-            ),
+            Lookup::Method(method, defining_class) => {
+                self.invoke_method(receiver, method, defining_class, args, bindings.clone())
+            }
             // §6: the implicit accessor a nested declaration defines is
             // reached exactly like any other member, and it ignores `args`
             // -- the accessor is unary, so a send that supplied arguments
@@ -303,11 +295,9 @@ impl Interpreter {
                 nested::nested_class(self, &receiver, &mixin, &declaring_class, bindings)
             }
             Lookup::Native(kind) => {
-                self.dispatch_native_or_dnu(kind, receiver, selector, args, bindings, sender)
+                self.dispatch_native_or_dnu(kind, receiver, selector, args, bindings)
             }
-            Lookup::NotFound => {
-                self.does_not_understand(receiver, selector, args, bindings, sender)
-            }
+            Lookup::NotFound => self.does_not_understand(receiver, selector, args, bindings),
         }
     }
 
@@ -337,24 +327,16 @@ impl Interpreter {
         receiver: &Value,
         selector: Symbol,
         args: &[Value],
-        sender: Option<&FrameRef>,
     ) -> Option<EvalResult> {
         if let Some(result) =
-            crate::builtins::dispatch_native(self, kind, *receiver, selector, args, sender)
+            crate::builtins::dispatch_native(self, kind, *receiver, selector, args)
         {
             return Some(result);
         }
         if kind == BuiltinClass::Object {
             return None;
         }
-        crate::builtins::dispatch_native(
-            self,
-            BuiltinClass::Object,
-            *receiver,
-            selector,
-            args,
-            sender,
-        )
+        crate::builtins::dispatch_native(self, BuiltinClass::Object, *receiver, selector, args)
     }
 
     fn dispatch_native_or_dnu(
@@ -364,17 +346,10 @@ impl Interpreter {
         selector: Symbol,
         args: Vec<Value>,
         bindings: &Rc<HashMap<Span, Binding>>,
-        sender: Option<FrameRef>,
     ) -> EvalResult {
-        match self.dispatch_native_inheriting_object(
-            kind,
-            &receiver,
-            selector,
-            &args,
-            sender.as_ref(),
-        ) {
+        match self.dispatch_native_inheriting_object(kind, &receiver, selector, &args) {
             Some(result) => result,
-            None => self.does_not_understand(receiver, selector, args, bindings, sender),
+            None => self.does_not_understand(receiver, selector, args, bindings),
         }
     }
 
@@ -395,7 +370,6 @@ impl Interpreter {
         selector: Symbol,
         args: Vec<Value>,
         bindings: &Rc<HashMap<Span, Binding>>,
-        sender: Option<FrameRef>,
     ) -> EvalResult {
         let class = self.class_of(&receiver);
         let dnu_selector = Symbol::intern("doesNotUnderstand:");
@@ -414,7 +388,6 @@ impl Interpreter {
                     defining_class,
                     vec![message_arg],
                     bindings.clone(),
-                    sender,
                 )
             }
             Lookup::Native(kind) => {
@@ -433,7 +406,6 @@ impl Interpreter {
                     &receiver,
                     dnu_selector,
                     &[message_arg],
-                    sender.as_ref(),
                 ) {
                     Some(result) => result,
                     None => Err(Signal::Error(NewspeakError {
@@ -478,7 +450,6 @@ impl Interpreter {
         defining_class: ClassRef,
         args: Vec<Value>,
         bindings: Rc<HashMap<Span, Binding>>,
-        sender: Option<FrameRef>,
     ) -> EvalResult {
         // A frame's locals are addressed as one run of registers -- the
         // arguments first, the declared temporaries after them -- and
@@ -544,7 +515,8 @@ impl Interpreter {
                 Some(_) => PcKind::Bytecode,
                 None => PcKind::TreeWalk,
             },
-            sender,
+            // A live activation's sender is structural (the activation stack, from M4 step 1a on); a stored one is never read.
+            sender: None,
             home: None,
             current_class: Some(defining_class),
             kind: FrameKind::Method(method.clone()),

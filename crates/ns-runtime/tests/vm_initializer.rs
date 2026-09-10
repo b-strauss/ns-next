@@ -57,7 +57,7 @@ fn instantiate_and_get(src: &str, bytecode: bool, factory_args: Vec<Value>, gett
         "instantiate",
     );
     expect_ok(
-        interp.send(instance, Symbol::intern(getter), vec![], &bindings, None),
+        interp.send(instance, Symbol::intern(getter), vec![], &bindings),
         getter,
     )
 }
@@ -95,7 +95,7 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
     let (mut interp, class, bindings) = load(src, true);
     let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     let v = expect_ok(
-        interp.send(instance, Symbol::intern("blk2"), vec![], &bindings, None),
+        interp.send(instance, Symbol::intern("blk2"), vec![], &bindings),
         "blk2",
     );
     let Value::Obj(obj) = &v else {
@@ -339,11 +339,11 @@ class Levels = Object new () (
             "instantiate Levels",
         );
         let leaf_class = expect_ok(
-            interp.send(module, Symbol::intern("Leaf"), vec![], &bindings, None),
+            interp.send(module, Symbol::intern("Leaf"), vec![], &bindings),
             "Leaf",
         );
         let leaf = expect_ok(
-            interp.send(leaf_class, Symbol::intern("new"), vec![], &bindings, None),
+            interp.send(leaf_class, Symbol::intern("new"), vec![], &bindings),
             "Leaf new",
         );
         // `Middle withMiddle: 2` -> `Base withBase: 2 + 1`, so the deepest

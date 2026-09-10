@@ -48,7 +48,6 @@ fn a_builtin_receiver_inherits_objects_native_class() {
         Symbol::intern("class"),
         vec![],
         &bindings,
-        None,
     );
 
     match expect_ok(result, "3 class") {
@@ -71,13 +70,7 @@ fn builtins_without_their_own_print_string_inherit_objects_default() {
     let mut interp = Interpreter::bootstrap();
     let bindings = empty_bindings();
 
-    let nil_result = interp.send(
-        Value::Nil,
-        Symbol::intern("printString"),
-        vec![],
-        &bindings,
-        None,
-    );
+    let nil_result = interp.send(Value::Nil, Symbol::intern("printString"), vec![], &bindings);
     assert_eq!(
         as_string(interp.heap_ref(), &expect_ok(nil_result, "nil printString")),
         "an Object"
@@ -89,11 +82,10 @@ fn builtins_without_their_own_print_string_inherit_objects_default() {
             Symbol::intern("new"),
             vec![],
             &bindings,
-            None,
         ),
         "OrderedCollection new",
     );
-    let coll_result = interp.send(coll, Symbol::intern("printString"), vec![], &bindings, None);
+    let coll_result = interp.send(coll, Symbol::intern("printString"), vec![], &bindings);
     assert_eq!(
         as_string(
             interp.heap_ref(),
@@ -115,7 +107,6 @@ fn a_builtin_receiver_inherits_objects_identity_and_hash() {
         Symbol::intern("=="),
         vec![Value::SmallInt(3)],
         &bindings,
-        None,
     );
     assert!(matches!(expect_ok(same, "3 == 3"), Value::Bool(true)));
 
@@ -124,7 +115,6 @@ fn a_builtin_receiver_inherits_objects_identity_and_hash() {
         Symbol::intern("hash"),
         vec![],
         &bindings,
-        None,
     );
     assert!(
         matches!(expect_ok(hash, "3 hash"), Value::SmallInt(_)),
@@ -148,7 +138,6 @@ fn an_unknown_selector_on_a_builtin_runs_objects_real_does_not_understand() {
         Symbol::intern("frobnicate"),
         vec![],
         &bindings,
-        None,
     );
 
     match result {
@@ -175,13 +164,7 @@ fn an_unknown_selector_on_a_string_runs_objects_real_does_not_understand() {
     let bindings = empty_bindings();
     let receiver = Value::Obj(interp.new_string("hi".to_string()));
 
-    let result = interp.send(
-        receiver,
-        Symbol::intern("frobnicate"),
-        vec![],
-        &bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("frobnicate"), vec![], &bindings);
 
     match result {
         Err(Signal::Error(e)) => {
@@ -211,7 +194,6 @@ fn a_builtins_own_implementation_still_wins_over_objects() {
         Symbol::intern("printString"),
         vec![],
         &bindings,
-        None,
     );
     assert_eq!(
         as_string(interp.heap_ref(), &expect_ok(printed, "7 printString")),

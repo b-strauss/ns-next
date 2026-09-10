@@ -40,25 +40,13 @@ fn platform_transcript_show_and_new_line_round_trip() {
     let bindings = empty_bindings();
 
     let transcript = expect_ok(
-        interp.send(
-            platform,
-            Symbol::intern("transcript"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(platform, Symbol::intern("transcript"), vec![], &bindings),
         "platform transcript",
     );
 
     let s = Value::Obj(interp.new_string("hi".to_string()));
     let after_show = expect_ok(
-        interp.send(
-            transcript,
-            Symbol::intern("show:"),
-            vec![s],
-            &bindings,
-            None,
-        ),
+        interp.send(transcript, Symbol::intern("show:"), vec![s], &bindings),
         "transcript show: 'hi'",
     );
     // `show:` returns the receiver (the runtime spec's `Transcript`-style
@@ -69,13 +57,7 @@ fn platform_transcript_show_and_new_line_round_trip() {
     }
 
     expect_ok(
-        interp.send(
-            transcript,
-            Symbol::intern("newLine"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(transcript, Symbol::intern("newLine"), vec![], &bindings),
         "transcript newLine",
     );
 }
@@ -93,7 +75,6 @@ fn platform_class_accessors_return_the_matching_builtin_class() {
             Symbol::intern("OrderedCollection"),
             vec![],
             &bindings,
-            None,
         ),
         "platform OrderedCollection",
     );
@@ -118,17 +99,11 @@ fn platform_collections_answers_list_with_the_ordered_collection_class() {
     let bindings = empty_bindings();
 
     let collections = expect_ok(
-        interp.send(
-            platform,
-            Symbol::intern("collections"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(platform, Symbol::intern("collections"), vec![], &bindings),
         "platform collections",
     );
     let got = expect_ok(
-        interp.send(collections, Symbol::intern("List"), vec![], &bindings, None),
+        interp.send(collections, Symbol::intern("List"), vec![], &bindings),
         "platform collections List",
     );
     match got {
@@ -148,16 +123,10 @@ fn platform_collections_does_not_invent_a_map() {
     let bindings = empty_bindings();
 
     let collections = expect_ok(
-        interp.send(
-            platform,
-            Symbol::intern("collections"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(platform, Symbol::intern("collections"), vec![], &bindings),
         "platform collections",
     );
-    match interp.send(collections, Symbol::intern("Map"), vec![], &bindings, None) {
+    match interp.send(collections, Symbol::intern("Map"), vec![], &bindings) {
         Err(Signal::Error(e)) => assert!(
             e.message.contains("does not understand"),
             "message was: {}",
@@ -178,22 +147,10 @@ fn the_collections_namespace_is_not_a_transcript() {
     let bindings = empty_bindings();
 
     let collections = expect_ok(
-        interp.send(
-            platform,
-            Symbol::intern("collections"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        interp.send(platform, Symbol::intern("collections"), vec![], &bindings),
         "platform collections",
     );
-    match interp.send(
-        collections,
-        Symbol::intern("newLine"),
-        vec![],
-        &bindings,
-        None,
-    ) {
+    match interp.send(collections, Symbol::intern("newLine"), vec![], &bindings) {
         Err(Signal::Error(e)) => assert!(
             e.message.contains("does not understand"),
             "message was: {}",

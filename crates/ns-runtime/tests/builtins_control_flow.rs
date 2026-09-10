@@ -27,7 +27,7 @@ fn run_method(src: &str, selector: &str) -> (Interpreter, Result<Value, Signal>)
         Ok(v) => v,
         Err(_) => panic!("instantiate failed"),
     };
-    let result = interp.send(instance, Symbol::intern(selector), vec![], &bindings, None);
+    let result = interp.send(instance, Symbol::intern(selector), vec![], &bindings);
     (interp, result)
 }
 

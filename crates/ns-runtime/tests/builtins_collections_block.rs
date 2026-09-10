@@ -73,13 +73,7 @@ fn array_at_returns_the_one_based_element() {
         interp.instantiate(class, vec![], &resolved.bindings),
         "instantiate",
     );
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
     match expect_ok(result, "{1. 2. 3} at: 2") {
         Value::SmallInt(2) => {}
         other => panic!(
@@ -98,13 +92,7 @@ fn array_at_out_of_range_is_a_newspeak_error_not_a_panic() {
         interp.instantiate(class, vec![], &resolved.bindings),
         "instantiate",
     );
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
     let err = expect_error(interp.heap_ref(), result, "{1. 2. 3} at: 5");
     assert!(
         err.message.to_lowercase().contains("range"),
@@ -121,13 +109,7 @@ fn array_at_put_writes_and_returns_the_receiver() {
         interp.instantiate(class, vec![], &resolved.bindings),
         "instantiate",
     );
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
     match expect_ok(result, "at:put: then at:") {
         Value::SmallInt(99) => {}
         other => panic!(
@@ -147,13 +129,7 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
         interp.instantiate(class, vec![], &resolved.bindings),
         "instantiate",
     );
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
     match expect_ok(result, "{1. 2. 3} do: [:x | sum := sum + x]") {
         Value::SmallInt(6) => {}
         other => panic!(
@@ -178,13 +154,7 @@ fn ordered_collection_add_and_size_through_a_real_cascade() {
         "instantiate",
     );
     let oc = new_ordered_collection(&mut interp);
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m:"),
-        vec![oc],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m:"), vec![oc], &resolved.bindings);
     match expect_ok(result, "OrderedCollection new add: 1; add: 2; size") {
         Value::SmallInt(2) => {}
         other => panic!(
@@ -204,7 +174,6 @@ fn ordered_collection_add_returns_the_argument_not_the_receiver() {
         Symbol::intern("add:"),
         vec![Value::SmallInt(42)],
         &bindings,
-        None,
     );
     match expect_ok(result, "OrderedCollection add: 42") {
         Value::SmallInt(42) => {}
@@ -225,7 +194,6 @@ fn ordered_collection_at_out_of_range_is_a_newspeak_error_not_a_panic() {
         Symbol::intern("at:"),
         vec![Value::SmallInt(1)],
         &bindings,
-        None,
     );
     let err = expect_error(interp.heap_ref(), result, "OrderedCollection (empty) at: 1");
     assert!(
@@ -248,13 +216,7 @@ fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
     let receiver = Value::Obj(interp.new_array(vec![Value::SmallInt(1)]));
     let index = Value::Obj(interp.new_string("not an integer".to_string()));
 
-    let result = interp.send(
-        receiver,
-        Symbol::intern("at:"),
-        vec![index],
-        &bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("at:"), vec![index], &bindings);
 
     let err = expect_error(interp.heap_ref(), result, "{1} at: 'not an integer'");
     assert!(
@@ -272,13 +234,7 @@ fn block_value_invokes_a_zero_arg_closure() {
         interp.instantiate(class, vec![], &resolved.bindings),
         "instantiate",
     );
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
     match expect_ok(result, "[42] value") {
         Value::SmallInt(42) => {}
         other => panic!(
@@ -296,13 +252,7 @@ fn block_value_colon_passes_the_argument_positionally() {
         interp.instantiate(class, vec![], &resolved.bindings),
         "instantiate",
     );
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
     match expect_ok(result, "[:x | x + 1] value: 41") {
         Value::SmallInt(42) => {}
         other => panic!(
@@ -320,13 +270,7 @@ fn block_num_args_reports_the_declared_parameter_count() {
         interp.instantiate(class, vec![], &resolved.bindings),
         "instantiate",
     );
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
     match expect_ok(result, "[:x :y | x + y] numArgs") {
         Value::SmallInt(2) => {}
         other => panic!(
@@ -347,13 +291,7 @@ fn block_called_with_too_few_arguments_is_a_newspeak_error_not_a_panic() {
         interp.instantiate(class, vec![], &resolved.bindings),
         "instantiate",
     );
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
     let err = expect_error(
         interp.heap_ref(),
         result,
@@ -376,85 +314,11 @@ fn block_called_with_too_many_arguments_is_a_newspeak_error_not_a_panic() {
         interp.instantiate(class, vec![], &resolved.bindings),
         "instantiate",
     );
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
     let err = expect_error(interp.heap_ref(), result, "[42] value: 1 (1 arg, 0 params)");
     assert!(
         err.message.to_lowercase().contains("argument"),
         "expected an argument-count-shaped error message, got: {}",
         err.message
     );
-}
-
-/// A closure `Frame`'s `sender` must be the activation that invoked it. An
-/// unconditional `sender: None` would cut the liveness spec's reified call
-/// chain (`Frame.sender`) at every block invocation boundary, so the caller
-/// is threaded through `dispatch_native` -> `block::dispatch` ->
-/// `call_block` -> `invoke_closure`.
-///
-/// Observing a closure activation's own frame from outside needs a handle
-/// on it: `[ [1] ] value` gives one, because evaluating the *inner* block
-/// literal captures the outer block's activation as the inner closure's
-/// `captured_frame`. So `m`'s result is a closure whose `captured_frame` is
-/// exactly the frame `invoke_closure` built for `[ [1] ]` -- and that
-/// frame's `sender` must be `m`'s own live method activation, not `None`.
-#[test]
-fn an_invoked_blocks_frame_records_its_sender() {
-    let src =
-        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^[ [1] ] value )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-    let result = expect_ok(
-        interp.send(
-            receiver,
-            Symbol::intern("m"),
-            vec![],
-            &resolved.bindings,
-            None,
-        ),
-        "[ [1] ] value",
-    );
-
-    let Value::Obj(obj) = &result else {
-        panic!(
-            "expected the inner block literal as a Value::Obj, got {}",
-            interp.heap_ref().describe(&result)
-        );
-    };
-    let outer_block_frame = interp
-        .heap_ref()
-        .closure_data(obj)
-        .unwrap_or_else(|| panic!("expected ObjectData::Closure"))
-        .captured_frame;
-
-    let sender = interp
-        .heap_ref()
-        .frame_sender(&outer_block_frame)
-        .expect("an invoked block's frame must record the activation that invoked it");
-    assert!(
-        matches!(
-            interp.heap_ref().frame_kind(&sender),
-            ns_runtime::FrameKind::Method(_)
-        ),
-        "the block's sender must be `m`'s own method activation"
-    );
-    match (interp.heap_ref().receiver(&sender), &receiver) {
-        (Value::Obj(a), Value::Obj(b)) => assert!(
-            a.same(b),
-            "the sender frame's receiver must be the instance `m` was sent to"
-        ),
-        (s, r) => panic!(
-            "expected two Value::Obj receivers, got {} and {}",
-            interp.heap_ref().describe(&s),
-            interp.heap_ref().describe(r)
-        ),
-    }
 }

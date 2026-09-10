@@ -264,13 +264,7 @@ fn eval_send(
         _ => {
             let receiver = eval_expr(interp, &send.receiver, frame, bindings)?;
             let args = eval_args(interp, &send.message, frame, bindings)?;
-            interp.send(
-                receiver,
-                selector_of(&send.message),
-                args,
-                bindings,
-                Some(*frame),
-            )
+            interp.send(receiver, selector_of(&send.message), args, bindings)
         }
     }
 }
@@ -406,24 +400,19 @@ pub(crate) fn dispatch_lexical_send(
         .filter(|found| matches!(found, Lookup::Method(..) | Lookup::NestedClass(..)))
         .unwrap_or_else(|| lexical_lookup(&interp.heap, &class, selector));
     match lookup {
-        Lookup::Method(method, defining_class) => interp.invoke_method(
-            o,
-            method,
-            defining_class,
-            args,
-            bindings.clone(),
-            Some(*frame),
-        ),
+        Lookup::Method(method, defining_class) => {
+            interp.invoke_method(o, method, defining_class, args, bindings.clone())
+        }
         Lookup::NestedClass(mixin, declaring_class) => {
             crate::interpreter::nested::nested_class(interp, &o, &mixin, &declaring_class, bindings)
         }
         Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(interp, kind, o, selector, &args, Some(frame)) {
+            match crate::builtins::dispatch_native(interp, kind, o, selector, &args) {
                 Some(result) => result,
-                None => interp.send(o, selector, args, bindings, Some(*frame)),
+                None => interp.send(o, selector, args, bindings),
             }
         }
-        Lookup::NotFound => interp.send(o, selector, args, bindings, Some(*frame)),
+        Lookup::NotFound => interp.send(o, selector, args, bindings),
     }
 }
 
@@ -458,14 +447,9 @@ pub(crate) fn dispatch_super_send(
     };
     let self_value = interp.heap.receiver(frame);
     match dispatch::lookup_defined_for(&interp.heap, &superclass, selector) {
-        Lookup::Method(method, defining_class) => interp.invoke_method(
-            self_value,
-            method,
-            defining_class,
-            args,
-            bindings.clone(),
-            Some(*frame),
-        ),
+        Lookup::Method(method, defining_class) => {
+            interp.invoke_method(self_value, method, defining_class, args, bindings.clone())
+        }
         // `super N` for a nested class the superclass declares. The
         // receiver stays `self` (§5.10), which is also the enclosing object
         // the accessor caches against -- so `super N` and `N` name the same
@@ -481,19 +465,12 @@ pub(crate) fn dispatch_super_send(
             bindings,
         ),
         Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(
-                interp,
-                kind,
-                self_value,
-                selector,
-                &args,
-                Some(frame),
-            ) {
+            match crate::builtins::dispatch_native(interp, kind, self_value, selector, &args) {
                 Some(result) => result,
-                None => interp.send(self_value, selector, args, bindings, Some(*frame)),
+                None => interp.send(self_value, selector, args, bindings),
             }
         }
-        Lookup::NotFound => interp.send(self_value, selector, args, bindings, Some(*frame)),
+        Lookup::NotFound => interp.send(self_value, selector, args, bindings),
     }
 }
 
@@ -505,16 +482,10 @@ fn eval_cascade(
 ) -> EvalResult {
     let receiver = eval_expr(interp, &cascade.receiver, frame, bindings)?;
     let first_args = eval_args(interp, &cascade.first, frame, bindings)?;
-    let mut result = interp.send(
-        receiver,
-        selector_of(&cascade.first),
-        first_args,
-        bindings,
-        Some(*frame),
-    )?;
+    let mut result = interp.send(receiver, selector_of(&cascade.first), first_args, bindings)?;
     for m in &cascade.rest {
         let args = eval_args(interp, m, frame, bindings)?;
-        result = interp.send(receiver, selector_of(m), args, bindings, Some(*frame))?;
+        result = interp.send(receiver, selector_of(m), args, bindings)?;
     }
     Ok(result)
 }
@@ -577,20 +548,13 @@ fn eval_block_literal(
 /// selectors are Milestone 1 *native* methods on `BuiltinClass::Block`, not
 /// user-overridable Newspeak methods.
 ///
-/// `sender` is the activation performing the invocation, threaded here from
-/// the send that reached the block-invoking native primitive.
-/// It becomes the new closure activation's own `Frame.sender`, exactly as
-/// `Interpreter::invoke_method` does for a method activation, so the
-/// liveness spec's reified call chain (`Frame.sender`) stays walkable across
-/// a block invocation boundary instead of being cut by an unconditional
-/// `None`. `None` is still legitimate for an invocation with no enclosing
-/// activation at all (a direct entry-point call).
+/// The invoking activation is not passed: a live activation's sender is the
+/// one below it on the activation stack.
 pub fn invoke_closure(
     interp: &mut Interpreter,
     closure: &Rc<ClosureData>,
     args: Vec<Value>,
     bindings: &Rc<HashMap<Span, Binding>>,
-    sender: Option<FrameRef>,
 ) -> EvalResult {
     // Reject a wrong argument count as a NewspeakError up
     // front, before it can reach `read_local`. Without this guard, a call
@@ -634,7 +598,8 @@ pub fn invoke_closure(
             ClosureBody::Ast(_) => PcKind::TreeWalk,
             ClosureBody::Compiled(_) => PcKind::Bytecode,
         },
-        sender,
+        // A live activation's sender is structural (the activation stack, from M4 step 1a on); a stored one is never read.
+        sender: None,
         home: Some(closure.home),
         current_class,
         kind: FrameKind::Closure(closure.clone()),

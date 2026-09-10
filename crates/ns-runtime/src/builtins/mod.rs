@@ -38,25 +38,19 @@ use crate::{platform, Interpreter, Symbol};
 /// wrapped into `EvalResult` right here at the single point where every arm
 /// of this function's own `match` must agree on one type.
 ///
-/// `sender` is the activation this native dispatch is running on behalf of
-/// -- the frame the send came from. Only the block-invoking arms below need
-/// it (it becomes the invoked closure activation's own `Frame.sender`, so
-/// the liveness spec's reified call chain stays walkable across a block
-/// invocation boundary); the rest ignore it.
 pub fn dispatch_native(
     interp: &mut Interpreter,
     kind: BuiltinClass,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
-    sender: Option<&FrameRef>,
 ) -> Option<EvalResult> {
     match kind {
         BuiltinClass::Object => {
             object_class::dispatch(interp, receiver, selector, args).map(wrap_error)
         }
         BuiltinClass::Boolean | BuiltinClass::True | BuiltinClass::False => {
-            boolean::dispatch(interp, receiver, selector, args, sender)
+            boolean::dispatch(interp, receiver, selector, args)
         }
         BuiltinClass::Integer => {
             numbers::dispatch_integer(interp, receiver, selector, args).map(wrap_error)
@@ -73,13 +67,11 @@ pub fn dispatch_native(
         BuiltinClass::Character => {
             text::dispatch_character(interp, receiver, selector, args).map(wrap_error)
         }
-        BuiltinClass::Array => {
-            collections::dispatch_array(interp, receiver, selector, args, sender)
-        }
+        BuiltinClass::Array => collections::dispatch_array(interp, receiver, selector, args),
         BuiltinClass::OrderedCollection => {
-            collections::dispatch_ordered_collection(interp, receiver, selector, args, sender)
+            collections::dispatch_ordered_collection(interp, receiver, selector, args)
         }
-        BuiltinClass::Block => block::dispatch(interp, receiver, selector, args, sender),
+        BuiltinClass::Block => block::dispatch(interp, receiver, selector, args),
         BuiltinClass::Platform => {
             platform::dispatch(interp, receiver, selector, args).map(wrap_error)
         }
@@ -128,16 +120,7 @@ fn wrap_error(result: Result<Value, NewspeakError>) -> EvalResult {
 /// native primitive frames the signal passes through on its way up -- so
 /// nothing here needs to re-implement it.
 ///
-/// `sender` -- the activation invoking the block -- is forwarded to
-/// `invoke_closure`, so the closure activation's `Frame.sender` is the real
-/// caller. The liveness spec's reified call chain has to stay walkable
-/// across every block invocation boundary.
-pub(super) fn call_block(
-    interp: &mut Interpreter,
-    block: &Value,
-    args: Vec<Value>,
-    sender: Option<&FrameRef>,
-) -> EvalResult {
+pub(super) fn call_block(interp: &mut Interpreter, block: &Value, args: Vec<Value>) -> EvalResult {
     match block {
         Value::Obj(obj) => {
             let closure_data = interp.heap.closure_data(obj);
@@ -145,13 +128,7 @@ pub(super) fn call_block(
                 Some(closure_data) => {
                     let closure = std::rc::Rc::new(closure_data);
                     let bindings = closure.bindings.clone();
-                    crate::interpreter::eval::invoke_closure(
-                        interp,
-                        &closure,
-                        args,
-                        &bindings,
-                        sender.copied(),
-                    )
+                    crate::interpreter::eval::invoke_closure(interp, &closure, args, &bindings)
                 }
                 None => Ok(*block),
             }

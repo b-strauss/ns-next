@@ -9,7 +9,6 @@ pub fn dispatch(
     receiver: Value,
     selector: Symbol,
     args: &[Value],
-    sender: Option<&FrameRef>,
 ) -> Option<EvalResult> {
     let Value::Bool(b) = receiver else {
         return None;
@@ -19,21 +18,19 @@ pub fn dispatch(
             interp,
             if b { &args[0] } else { &args[1] },
             vec![],
-            sender,
         )),
         "ifFalse:ifTrue:" => Some(super::call_block(
             interp,
             if b { &args[1] } else { &args[0] },
             vec![],
-            sender,
         )),
         "ifTrue:" => Some(if b {
-            super::call_block(interp, &args[0], vec![], sender)
+            super::call_block(interp, &args[0], vec![])
         } else {
             Ok(Value::Nil)
         }),
         "ifFalse:" => Some(if !b {
-            super::call_block(interp, &args[0], vec![], sender)
+            super::call_block(interp, &args[0], vec![])
         } else {
             Ok(Value::Nil)
         }),
@@ -50,14 +47,14 @@ pub fn dispatch(
         // short-circuit behavior as before (`false and: [...]`/
         // `true or: [...]` never invoke the block at all).
         "&" | "and:" => Some(if b {
-            truthy_arg(interp, &args[0], sender).map(Value::Bool)
+            truthy_arg(interp, &args[0]).map(Value::Bool)
         } else {
             Ok(Value::Bool(false))
         }),
         "|" | "or:" => Some(if b {
             Ok(Value::Bool(true))
         } else {
-            truthy_arg(interp, &args[0], sender).map(Value::Bool)
+            truthy_arg(interp, &args[0]).map(Value::Bool)
         }),
         "printString" => Some(Ok(Value::Obj(
             interp.new_string(if b { "true" } else { "false" }.to_string()),
@@ -79,12 +76,8 @@ pub fn dispatch(
 /// that is `Ok` but not exactly `Value::Bool(true)` (a non-Boolean value, or
 /// `Value::Bool(false)`) still maps to plain `Ok(false)`, matching the
 /// pre-fix behavior for that case exactly -- only the `Err` case changed.
-fn truthy_arg(
-    interp: &mut Interpreter,
-    value: &Value,
-    sender: Option<&FrameRef>,
-) -> Result<bool, Signal> {
-    match super::call_block(interp, value, vec![], sender)? {
+fn truthy_arg(interp: &mut Interpreter, value: &Value) -> Result<bool, Signal> {
+    match super::call_block(interp, value, vec![])? {
         Value::Bool(true) => Ok(true),
         _ => Ok(false),
     }

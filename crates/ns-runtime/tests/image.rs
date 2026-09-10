@@ -1266,13 +1266,13 @@ fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
 }
 
 #[test]
-fn a_closure_and_its_paused_frame_chain_round_trip() {
+fn a_closure_and_its_paused_home_frame_round_trip() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  mk = ( ^[ 1 ] )\n  public outer = ( ^mk )\n) : ()";
     let (interp, class, original, decoded, _max) =
         round_trip_graph(src, |interp, class, bindings| {
             let instance = expect_ok(interp.instantiate(*class, vec![], bindings), "instantiate");
             let closure = expect_ok(
-                interp.send(instance, Symbol::intern("outer"), vec![], bindings, None),
+                interp.send(instance, Symbol::intern("outer"), vec![], bindings),
                 "outer",
             );
             // Synthetic "paused" state: edit the home frame's pc and grow its
@@ -1337,16 +1337,11 @@ fn a_closure_and_its_paused_frame_chain_round_trip() {
         .as_ref()
         .expect("a method frame has a current class")
         .same(&class));
-    let sender = home.sender.as_ref().expect("`mk` was sent from `outer`");
     assert!(
-        !sender.same(&c.home),
-        "the chain is two distinct frames, not one frame pointing at itself"
+        home.sender.is_none(),
+        "a returned activation has no sender -- Smalltalk's rule, and what keeps \
+         a surviving block from retaining its method's whole call chain"
     );
-    let sender_kind = heap.frame_kind(sender);
-    let FrameKind::Method(outer) = &sender_kind else {
-        panic!("the sender is a method frame")
-    };
-    assert!(Rc::ptr_eq(outer, &methods[&Symbol::intern("outer")]));
 }
 
 #[test]
@@ -1376,7 +1371,7 @@ fn a_tree_walker_closure_is_a_snapshot_error_not_a_silent_omission() {
     let (mut interp, class, bindings) = load(src); // tree-walk engine
     let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     let closure = expect_ok(
-        interp.send(instance, Symbol::intern("mk"), vec![], &bindings, None),
+        interp.send(instance, Symbol::intern("mk"), vec![], &bindings),
         "mk",
     );
     let platform = interp.platform();
@@ -2013,7 +2008,7 @@ fn a_closure_capturing_a_block_activation_round_trips() {
     let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class, bindings| {
         let instance = expect_ok(interp.instantiate(*class, vec![], bindings), "instantiate");
         vec![expect_ok(
-            interp.send(instance, Symbol::intern("mk"), vec![], bindings, None),
+            interp.send(instance, Symbol::intern("mk"), vec![], bindings),
             "mk",
         )]
     });
@@ -2193,7 +2188,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         .expect("a source-built interpreter accepts the bytecode engine");
     let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     expect_ok(
-        interp.send(instance, Symbol::intern("bump"), vec![], &bindings, None),
+        interp.send(instance, Symbol::intern("bump"), vec![], &bindings),
         "bump",
     );
     let platform = interp.platform();
@@ -2221,13 +2216,9 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         .same(&loaded.root_class));
     let bindings = loaded.empty_bindings.clone();
     let n = expect_ok(
-        loaded.interp.send(
-            loaded.roots[0],
-            Symbol::intern("bump"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        loaded
+            .interp
+            .send(loaded.roots[0], Symbol::intern("bump"), vec![], &bindings),
         "bump",
     );
     assert!(
@@ -3057,7 +3048,7 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
         .expect("a source-built interpreter accepts the bytecode engine");
     let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     expect_ok(
-        interp.send(instance, Symbol::intern("keep"), vec![], &bindings, None),
+        interp.send(instance, Symbol::intern("keep"), vec![], &bindings),
         "keep",
     );
     let platform = interp.platform();
@@ -3074,19 +3065,15 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
     let mut loaded = image::load(&bytes).expect("load");
     let bindings = loaded.empty_bindings.clone();
     let held = expect_ok(
-        loaded.interp.send(
-            loaded.roots[0],
-            Symbol::intern("keep"),
-            vec![],
-            &bindings,
-            None,
-        ),
+        loaded
+            .interp
+            .send(loaded.roots[0], Symbol::intern("keep"), vec![], &bindings),
         "keep",
     );
     let value = expect_ok(
         loaded
             .interp
-            .send(held, Symbol::intern("value"), vec![], &bindings, None),
+            .send(held, Symbol::intern("value"), vec![], &bindings),
         "value",
     );
     assert!(
@@ -3111,7 +3098,7 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
         .expect("a source-built interpreter accepts the bytecode engine");
     let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     expect_ok(
-        interp.send(instance, Symbol::intern("keep"), vec![], &bindings, None),
+        interp.send(instance, Symbol::intern("keep"), vec![], &bindings),
         "keep",
     );
     let platform = interp.platform();
@@ -3148,7 +3135,7 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
     let value = expect_ok(
         loaded
             .interp
-            .send(held, Symbol::intern("value"), vec![], &bindings, None),
+            .send(held, Symbol::intern("value"), vec![], &bindings),
         "value",
     );
     assert!(
@@ -3461,7 +3448,6 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
             Symbol::intern("value"),
             vec![],
             &loaded.empty_bindings,
-            None,
         ),
         "send value",
     );
@@ -3512,7 +3498,6 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
             Symbol::intern("Inner"),
             vec![],
             &loaded.empty_bindings,
-            None,
         ),
         "Inner",
     );
@@ -3531,7 +3516,6 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
             Symbol::intern("value"),
             vec![],
             &loaded.empty_bindings,
-            None,
         ),
         "send value",
     );
@@ -3618,7 +3602,7 @@ fn send_to(loaded: &mut image::LoadedImage, receiver: Value, selector: &str) -> 
     expect_ok(
         loaded
             .interp
-            .send(receiver, Symbol::intern(selector), vec![], &bindings, None),
+            .send(receiver, Symbol::intern(selector), vec![], &bindings),
         selector,
     )
 }
@@ -3641,7 +3625,7 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     // class object is an ordinary record in the object table.
     let (mut interp, class, bindings, platform, outer) = instantiated_world(NESTED_MODULE);
     let inner_class = expect_ok(
-        interp.send(outer, Symbol::intern("Inner"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("Inner"), vec![], &bindings),
         "Inner",
     );
     let Value::Obj(inner_class) = inner_class else {
@@ -3716,7 +3700,7 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
     // with no field count to contradict it, rather than a decode error.
     let (mut interp, class, bindings, platform, outer) = instantiated_world(NESTED_MODULE);
     let _ = expect_ok(
-        interp.send(outer, Symbol::intern("Inner"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("Inner"), vec![], &bindings),
         "Inner",
     );
     let bytes = snapshot_world(
@@ -3759,7 +3743,7 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
         "a second Outer",
     );
     let inner_of = |interp: &mut Interpreter, outer: &Value| match expect_ok(
-        interp.send(*outer, Symbol::intern("Inner"), vec![], &bindings, None),
+        interp.send(*outer, Symbol::intern("Inner"), vec![], &bindings),
         "Inner",
     ) {
         Value::Obj(class) => class,
@@ -3843,7 +3827,7 @@ class Outer usingPlatform: p = Object new () (
 fn outer_still_resolves_through_a_declaration_chain_that_came_from_an_image() {
     let (mut interp, class, bindings, platform, outer) = instantiated_world(DEEP_OUTER_MODULE);
     let deep = expect_ok(
-        interp.send(outer, Symbol::intern("makeDeep"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("makeDeep"), vec![], &bindings),
         "makeDeep",
     );
     let bytes = snapshot_world(
@@ -3924,7 +3908,6 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
             Symbol::intern("Derived"),
             vec![],
             &loaded.empty_bindings,
-            None,
         ),
         "Derived",
     );
@@ -3943,7 +3926,6 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
             Symbol::intern("value"),
             vec![],
             &loaded.empty_bindings,
-            None,
         ),
         "send value",
     );
@@ -4024,7 +4006,7 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
         "instantiate Args",
     );
     let derived = expect_ok(
-        interp.send(outer, Symbol::intern("Derived"), vec![], &bindings, None),
+        interp.send(outer, Symbol::intern("Derived"), vec![], &bindings),
         "Derived",
     );
     let Value::Obj(derived) = derived else {
@@ -4216,7 +4198,7 @@ fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywh
     let result = expect_ok(
         loaded
             .interp
-            .send(instance, Symbol::intern("a"), vec![], &bindings, None),
+            .send(instance, Symbol::intern("a"), vec![], &bindings),
         "a",
     );
     assert!(matches!(result, Value::SmallInt(42)));
@@ -4453,7 +4435,6 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
             Symbol::intern("Derived"),
             vec![],
             &loaded.empty_bindings,
-            None,
         ),
         "Derived",
     );
@@ -4472,7 +4453,6 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
             Symbol::intern("value"),
             vec![],
             &loaded.empty_bindings,
-            None,
         ),
         "value",
     );
@@ -4741,7 +4721,7 @@ fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
     // ordinary Newspeak error. That it ends at all is the point.
     let answered = loaded
         .interp
-        .send(head, Symbol::intern("noSuchThing"), vec![], &bindings, None)
+        .send(head, Symbol::intern("noSuchThing"), vec![], &bindings)
         .is_ok();
     assert!(!answered, "no class on the chain declares `noSuchThing`");
 }
@@ -4842,7 +4822,7 @@ fn snapshot_module(src: &str, source: Option<&str>, extra_send: Option<&str>) ->
     let mut roots = vec![instance];
     if let Some(selector) = extra_send {
         roots.push(expect_ok(
-            interp.send(instance, Symbol::intern(selector), vec![], &bindings, None),
+            interp.send(instance, Symbol::intern(selector), vec![], &bindings),
             selector,
         ));
     }
@@ -4878,7 +4858,6 @@ fn a_source_free_image_still_runs() {
             Symbol::intern("answer"),
             vec![],
             &loaded.empty_bindings,
-            None,
         ),
         "answer",
     );
@@ -4926,7 +4905,6 @@ fn the_debug_variant_still_carries_source() {
             Symbol::intern("answer"),
             vec![],
             &loaded.empty_bindings,
-            None,
         ),
         "answer",
     );
@@ -5034,7 +5012,6 @@ fn the_tree_walking_engine_is_refused_after_a_load() {
             Symbol::intern("answer"),
             vec![],
             &loaded.empty_bindings,
-            None,
         ),
         "answer",
     );

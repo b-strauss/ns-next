@@ -117,7 +117,6 @@ fn method_with_no_explicit_return_returns_self() {
         Symbol::intern("bar"),
         vec![],
         &bindings,
-        None,
     );
 
     match result {
@@ -147,7 +146,6 @@ fn method_with_explicit_return_returns_the_returned_value() {
         Symbol::intern("answer"),
         vec![],
         &bindings,
-        None,
     );
 
     match result {
@@ -223,7 +221,6 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
         Symbol::intern("bar"),
         vec![],
         &bindings,
-        None,
     );
 
     match result {
@@ -268,8 +265,7 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
         bindings: bindings.clone(),
     });
 
-    // No sender: this closure is invoked directly, not from a live send.
-    let result = eval::invoke_closure(&mut interp, &closure, vec![], &bindings, None);
+    let result = eval::invoke_closure(&mut interp, &closure, vec![], &bindings);
 
     // This is exactly the check `Interpreter::invoke_method` performs to
     // convert a matching `Signal::Return` back into an ordinary value
@@ -318,7 +314,7 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
     // First invocation succeeds and (as `raise_return` does on every
     // successful return) marks `home` `uncontinuable` -- modeling the home
     // method having now returned.
-    let first = eval::invoke_closure(&mut interp, &closure, vec![], &bindings, None);
+    let first = eval::invoke_closure(&mut interp, &closure, vec![], &bindings);
     assert!(
         matches!(first, Err(Signal::Return(ref target, Value::SmallInt(1))) if target.same(&home))
     );
@@ -330,7 +326,7 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
     // Second invocation of the same (now-escaped) block: its home has
     // already returned, so this must be the spec's `cannotReturn` case --
     // a `NewspeakError`, not another `Signal::Return`, and not a panic.
-    let second = eval::invoke_closure(&mut interp, &closure, vec![], &bindings, None);
+    let second = eval::invoke_closure(&mut interp, &closure, vec![], &bindings);
     match second {
         Err(Signal::Error(NewspeakError { message, .. })) => {
             assert!(
@@ -381,7 +377,7 @@ fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() 
     };
 
     // `capture` returns normally -- no `^` anywhere in its body.
-    match interp.send(receiver, Symbol::intern("capture"), vec![], &bindings, None) {
+    match interp.send(receiver, Symbol::intern("capture"), vec![], &bindings) {
         Ok(_) => {}
         Err(Signal::Error(e)) => panic!("capture: unexpected Signal::Error: {}", e.message),
         Err(Signal::Return(..)) => panic!("capture: unexpected Signal::Return"),
@@ -390,7 +386,7 @@ fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() 
     // The captured block's home activation is now dead: `^1` inside it must
     // be the spec's `cannotReturn` case, a `NewspeakError` -- never a
     // `Signal::Return` leaking out of `send`, and never a panic.
-    match interp.send(receiver, Symbol::intern("runIt"), vec![], &bindings, None) {
+    match interp.send(receiver, Symbol::intern("runIt"), vec![], &bindings) {
         Err(Signal::Error(NewspeakError { message, .. })) => assert!(
             message.to_lowercase().contains("cannotreturn")
                 || message.to_lowercase().contains("cannot return"),

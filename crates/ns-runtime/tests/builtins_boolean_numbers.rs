@@ -56,7 +56,6 @@ fn integer_addition_via_direct_send_evaluates_correctly() {
         Symbol::intern("+"),
         vec![Value::SmallInt(4)],
         &bindings,
-        None,
     );
 
     match expect_ok(result, "3 + 4") {
@@ -78,7 +77,6 @@ fn integer_addition_overflow_is_a_newspeak_error_not_a_panic() {
         Symbol::intern("+"),
         vec![Value::SmallInt(1)],
         &bindings,
-        None,
     );
 
     match result {
@@ -107,13 +105,7 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
         "instantiate",
     );
 
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
 
     match expect_ok(result, "true ifTrue:ifFalse:") {
         Value::SmallInt(1) => {}
@@ -143,13 +135,7 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
         "instantiate",
     );
 
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
 
     match expect_ok(result, "true ifTrue: [ x ] ifFalse: [ 0 ]") {
         Value::SmallInt(5) => {}
@@ -183,13 +169,7 @@ fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
         "instantiate",
     );
 
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
 
     assert_eq!(
         as_string(interp.heap_ref(), &expect_ok(result, "true and: [^'escaped']. ^'fell through'")),
@@ -214,13 +194,7 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
         "instantiate",
     );
 
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
 
     assert_eq!(
         as_string(
@@ -247,7 +221,6 @@ fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
         Symbol::intern("+"),
         vec![Value::Float(1.5)],
         &bindings,
-        None,
     );
 
     match result {
@@ -292,7 +265,6 @@ fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow()
         Symbol::intern("+"),
         vec![arg],
         &bindings,
-        None,
     );
 
     match result {
@@ -323,7 +295,6 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
         Symbol::intern("<"),
         vec![Value::Float(1.5)],
         &bindings,
-        None,
     );
 
     match result {
@@ -352,7 +323,6 @@ fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
         Symbol::intern("="),
         vec![Value::Float(1.0)],
         &bindings,
-        None,
     );
 
     match expect_ok(result, "1 = 1.0") {
@@ -376,7 +346,6 @@ fn float_arithmetic_still_widens_an_integer_argument() {
         Symbol::intern("+"),
         vec![Value::SmallInt(1)],
         &bindings,
-        None,
     );
 
     match expect_ok(result, "1.5 + 1") {
@@ -400,7 +369,6 @@ fn a_real_integer_overflow_is_still_reported_as_an_overflow() {
         Symbol::intern("*"),
         vec![Value::SmallInt(2)],
         &bindings,
-        None,
     );
 
     match result {
@@ -427,13 +395,7 @@ fn a_radix_integer_literal_evaluates() {
         interp.instantiate(class, vec![], &resolved.bindings),
         "instantiate",
     );
-    let result = interp.send(
-        receiver,
-        Symbol::intern("m"),
-        vec![],
-        &resolved.bindings,
-        None,
-    );
+    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
     match expect_ok(result, "^16r1F") {
         Value::SmallInt(31) => {}
         other => panic!(
