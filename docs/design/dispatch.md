@@ -205,11 +205,13 @@ Wiring caches up first would optimize the half of a send that sits on top of a
 fixed cost the same milestone removes anyway, so the representation goes first
 and the caches land on the cheaper one.
 
-Half of that has happened. The arena is built: objects and activations live in
-`Heap`-owned arenas rather than `Rc<RefCell<_>>`, worth about 15% of the
-benchmark ([memory.md](memory.md)). The activation stack is not, so two `Vec`
-allocations per activation and the per-call `HashMap` lookup are both still
-there, and caches still wait on it. Each cache also carries a dependency key, per
+That representation change has happened. The arena replaced `Rc<RefCell<_>>`,
+worth about 15% of the benchmark ([memory.md](memory.md)), and the activation
+stack removed the two `Vec` allocations per activation and stopped reifying
+activations nothing captures: a user-method send fell from ~146 ns to ~91 ns against the
+arena ([execution.md](execution.md), "What the activation stack moved"). The
+per-call `HashMap` lookup is still there, and it is the caches' to remove. Each
+cache also carries a dependency key, per
 [liveness-and-reflection.md](liveness-and-reflection.md); the key is the
 application, for the same reason the guard is.
 

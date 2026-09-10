@@ -266,17 +266,13 @@ collector that are still to come are designed in [memory.md](memory.md).
 Two consequences belong here rather than there, because they are about this
 document's subject.
 
-**An activation is an object too**, and half of that is done. A `Frame` is an
-entry in the same `Heap`, in its own arena, addressed by a `FrameRef` with the
-same privacy — so an activation and an object are stored the same way, and
-neither costs an `Rc` box or a `RefCell` borrow. What has *not* happened is the
-other half: an activation is still individually allocated and always reified,
-rather than a stack entry turned into a first-class frame object only when
-something looks at one. That is designed in [execution.md](execution.md),
-"Planned: activations on a stack, reified on demand", and it is where the rest of
-an activation's cost — `args` and `temps`, a `Vec` allocation apiece — goes. The
-two were not separable in the other direction: frame storage would otherwise have
-been built twice, once on `Rc` and once on the arena.
+**An activation is an object too, when something needs it to be.** A running
+activation is an entry on the `Heap`'s activation stack, and it becomes a
+first-class `Frame` — an entry in the same `Heap`'s frame arena, addressed by a
+`FrameRef` with the same privacy as an `ObjRef` — only when a block captures it.
+So an activation nothing captures costs no allocation and leaves nothing behind,
+and one that is captured is stored the way an object is. See
+[execution.md](execution.md), "Activations".
 
 **Planned: `become:` becomes expressible**, once there is a collector. Adding or
 removing an instance slot on a class with live instances requires allocating

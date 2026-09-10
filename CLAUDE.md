@@ -7,14 +7,16 @@ image format. Rust 1.98.0, edition 2021, three crates:
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`.
 - `crates/ns-runtime` — resolver, object model, dispatch, both execution engines
   (`interpreter/` and `compiler/` + `vm.rs`), core library (`builtins/`), image format
-  (`image/`). Objects and activations live in arenas owned by one `Heap`
-  (`heap.rs`) and are addressed by 32-bit handles; nothing reclaims a slot yet.
+  (`image/`). Objects live in an arena owned by one `Heap` (`heap.rs`) and are
+  addressed by 32-bit handles; activations live on an activation stack in the
+  same `Heap` and are reified into the frame arena only when a block captures
+  one. Nothing reclaims an arena slot yet.
 - `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
   `snapshot`, `load`, `bench`, `disasm`, `inspect`, `build`.
 
 Read `docs/design/README.md` first — it maps the living design documents and says
 how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology
-beside it.
+beside it; its "Where the next session starts" names the next piece of work.
 
 ## Invariants that are easy to break
 
@@ -57,26 +59,26 @@ bound any recursion whose depth the input controls. `image::load` also runs two
 structural verification passes before installing the engine. See
 `docs/design/image-format.md`'s "Verification" section for the scope of what they
 do and do not guarantee. One thing to keep in mind while decoding: the decoder
-allocates one placeholder object and activation per declared record before it can
-validate any of them, and the arena never reclaims a slot, so a rejected image
+allocates one placeholder object and reified frame per declared record before it
+can validate any of them, and the arena never reclaims a slot, so a rejected image
 holds its placeholders until the load finishes. That is a transient peak, not a
 leak — `image::load` owns its `Interpreter` in a local, so every `Err` path drops
 it and both arenas with it — but the peak is amplified against the bytes remaining
 at the graph section, and both `bounded_count` calls divide the *same* remainder,
 so one file maxes out both arenas rather than trading one against the other:
-about **17.4x in a release build** (an `Object` is 64 bytes against a 6-byte
-minimum record, a `Frame` 128 against 19) and about 21.8x in a debug build, where
-both structs are larger. `bounded_count` is what keeps this proportional to the
-input at all rather than to a `u32` — do not add a pre-allocation that is not
+about **17.8x in a release build** (an `Object` is 64 bytes against a 6-byte
+minimum record, a frame-arena entry 136 against 19) and about 22.2x in a debug
+build, where both are larger. `bounded_count` is what keeps this proportional to
+the input at all rather than to a `u32` — do not add a pre-allocation that is not
 bounded that way. `docs/design/memory.md` has the breakdown.
 
 That guarantee covers **decoding**. `ns-next load` on a stateless binary instantiates
 and sends the recorded entry with no flag at all, so loading one *runs its code* --
 with the same exposure as running the equivalent source, including that recursion
 depth is bounded only by the native stack until the VM is trampolined (see
-`docs/design/execution.md`, "Planned: activations on a stack, reified on
-demand"). A mutated binary that decodes cleanly can still abort while executing,
-and that is not a decoder defect.
+`docs/design/execution.md`, "Planned: the trampoline"). A mutated binary that
+decodes cleanly can still abort while executing, and that is not a decoder
+defect.
 
 **A wire tag is assigned once and never renumbered or reused.** Every instruction,
 literal and graph-section tag is declared in `crates/ns-runtime/src/image/opcodes.rs`
@@ -89,8 +91,9 @@ artifact would decode into a *different, perfectly valid* program and run it, re
 nothing. Retiring numbers means those bytes hit an unknown tag and are refused.
 
 **A handle means nothing against a `Heap` that did not mint it.** An `ObjRef`, a
-`ClassRef` and a `FrameRef` are indices into one `Heap`'s arenas. Never build a
-`Heap::new()` to stand in for one that is out of scope, and never hold a handle
+`ClassRef`, a `FrameRef` and an `ActivationRef` are indices into one `Heap`'s arenas
+and activation stack. Never build a `Heap::new()` to stand in for one that is out of
+scope, and never hold a handle
 across the death of the interpreter that allocated it: the index is in range in the
 other heap too, so the read answers a **different, perfectly valid object** rather
 than failing. Reach the real `Heap` instead: `compiler::compile_module` and
@@ -102,15 +105,30 @@ turns the mistake into a panic at
 the read, so a debug-build test run catches it; a release build does not, which is
 why this is an invariant and not a check to rely on.
 
+**A running activation is an `ActivationRef`; only a `FrameRef` is ever
+stored.** An `ActivationRef` indexes the `Heap`'s activation stack and is
+valid only until its entry is popped -- the next activation at that depth
+reuses the index, so a handle kept past its pop reads a different, perfectly
+valid activation. `ClosureData`, `Frame` and every image record take a
+`FrameRef` (get one with `Heap::reify`), so storing an `ActivationRef` is a
+compile error; a `debug_assertions`-only generation check turns a stale
+read into a panic. Every site that pushes an activation pops it on every
+exit, error paths included -- `Interpreter::send` and `instantiate`
+debug-assert that the stack is balanced. A reified frame is married to its
+live entry and divorced on pop, which copies its registers out, because a
+block reads its method's variables by reference
+(`docs/design/execution.md`, "Activations").
+
 **Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an `EvalResult`.**
-`ObjRef` and `FrameRef` each carry a hand-written `Debug` that prints identity only, so
-`Debug` on a `Value::Obj` no longer recurses — but it still renders Rust internals such
-as `ObjRef(#42)`, which is useless in a Newspeak-facing message where `Heap::describe`
-answers "the String \"foo\"". `Signal` deliberately has no `Debug` impl of its own, which
-means `EvalResult` (`Result<Value, Signal>`) has none either: `Result::unwrap`/`expect`
-require `E: Debug`, so calling either — or writing `{:?}` on an `EvalResult` — is a
-compile error, not a lapse a reviewer has to catch by hand. Tests unwrap through a local
-`expect_ok` helper — copy the one in a neighbouring test file.
+`ObjRef`, `FrameRef` and `ActivationRef` each carry a hand-written `Debug` that prints
+identity only, so `Debug` on a `Value::Obj` no longer recurses — but it still renders
+Rust internals such as `ObjRef(#42)`, which is useless in a Newspeak-facing message
+where `Heap::describe` answers "the String \"foo\"". `Signal` deliberately has no
+`Debug` impl of its own, which means `EvalResult` (`Result<Value, Signal>`) has none
+either: `Result::unwrap`/`expect` require `E: Debug`, so calling either — or writing
+`{:?}` on an `EvalResult` — is a compile error, not a lapse a reviewer has to catch by
+hand. Tests unwrap through a local `expect_ok` helper — copy the one in a neighbouring
+test file.
 
 **A class object is per enclosing instance; behaviour is the `MixinApplication`, shared.**
 `ClassData` carries identity and an `enclosing` object; method lookup, slots and layout
@@ -124,17 +142,18 @@ and every call site megamorphic since no two instances would ever share behaviou
 One mixin backs every application of it, so code is compiled once per mixin and reused
 across every application; an absolute field index baked into that shared code would be
 wrong the moment a second application inserts different inherited slots ahead of it. The
-VM resolves `own_index` against the executing `Frame.slot_base`
+VM resolves `own_index` against the executing activation's `slot_base`
 (`MixinApplication.own_slot_base` for that level) at run time. The tree-walker must
 resolve the same slot by name instead of by index — it has no compiled `InitSlot` to
 share — so a bug here shows up as the two engines disagreeing, not as a single wrong
 answer.
 
 **`outer` walks the *lexical* declaration chain, never the receiver's dynamic class.**
-`Frame.current_class` seeds it and `ClassData::declaring_class` continues it level by
-level. A method or nested-class accessor inherited across a nesting boundary runs with
-the class that lexically declares it, not the receiver's own class — using the receiver's
-class instead silently resolves `outer` to the wrong enclosing object.
+The running activation's `current_class` seeds it and `ClassData::declaring_class`
+continues it level by level. A method or nested-class accessor inherited across a
+nesting boundary runs with the class that lexically declares it, not the receiver's own
+class — using the receiver's class instead silently resolves `outer` to the wrong
+enclosing object.
 
 **The tree-walking engine cannot run from a loaded image.** `image::load` decodes mixins
 and class objects, never AST-carrying bindings, so there is no source for the
@@ -180,9 +199,11 @@ six reference implementations as submodules. Four answer "what does Newspeak do 
 the canonical Newspeak on Squeak, its cross-language benchmark suite, Ryan Macnak's
 Primordial Soup (a Newspeak VM in C++, with its own bytecode set, image format and
 collector) and Stefan Marr's SOMns (a Newspeak on Truffle/Graal). Two are there because
-the design documents name them as models for work that is still ahead: `nova/` for the
-arena of typed handles and the `GcScope`/`NoGcScope` root discipline (`memory.md`), and
-`opensmalltalk-vm/` for Cog's activations-on-a-stack, reified on demand (`execution.md`).
+the design documents name them as models for this runtime's own representation: `nova/`
+for the arena of typed handles, built, and the `GcScope`/`NoGcScope` root discipline
+still ahead (`memory.md`); `opensmalltalk-vm/` for Cog's activations on a stack,
+reified on demand, built, and its divorce of whole stack pages, which suspension and
+the debugger still need (`execution.md`).
 
 When a question is "how should this work", read how a working system answered it and
 cite that, rather than reasoning from first principles alone. Nothing there is built,
@@ -206,10 +227,11 @@ which also explains why `newspeaklanguage/newspeak` appears both there and under
   are execution records — left as written once complete.
 - Comments should explain the decision, not restate the mechanics. The reason a check
   exists — what it prevents — is the part a later reader cannot reconstruct.
-- **Object and frame access goes through `crates/ns-runtime/src/heap.rs`, not
-  directly through a handle.** `ObjRef`, `ClassRef` and `FrameRef` are defined
-  in `heap.rs` and their inner arena index is private to that module, so the
-  compiler refuses every read of one from anywhere else — there is no grep gate
-  to remember and no way to widen a field to reach past an accessor. If an
+- **Object, frame and activation access goes through
+  `crates/ns-runtime/src/heap.rs`, not directly through a handle.** `ObjRef`,
+  `ClassRef`, `FrameRef` and `ActivationRef` are defined in `heap.rs` and their
+  inner index is private to that module, so the compiler refuses every read of
+  one from anywhere else — there is no grep gate to remember and no way to
+  widen a field to reach past an accessor. If an
   accessor you need is missing, add it there. The accessors copy out rather
   than lend out on purpose; see `docs/design/memory.md`, "The seam".

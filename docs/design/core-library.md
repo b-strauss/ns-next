@@ -103,11 +103,13 @@ comparisons, `asString`, `asSymbol` — is a leaf and stays Rust permanently.
 **The ordering matters and is the opposite of the obvious one.** `do:` in
 Newspeak costs an activation for `do:` itself plus real sends for the loop
 mechanism, on top of the block activation per element it already pays. Against
-the ~165 ns per activation and ~97 ns per native send measured in
-[execution.md](execution.md), that is a regression today and free once the
-activation stack and inline caches exist. So the move happens *after* those, not
-before. What Milestone 4 owes this section is only that it not deepen the
-investment in Rust callbacks while it is rewriting the code around them.
+the ~165 ns per user-method send and ~97 ns per native send measured in
+[execution.md](execution.md) before the arena, that was a clear regression. The
+activation stack has since brought a user-method send to ~91 ns, but the
+per-call lookup the inline caches remove is still in it, so the move still
+happens *after* those, not before. What Milestone 4 owes this section is only
+that it not deepen the investment in Rust callbacks while it is rewriting the
+code around them.
 
 A related item, same cause: native dispatch selects with `match
 selector.as_str()`, a string-comparison chain on the hot path that accounts for

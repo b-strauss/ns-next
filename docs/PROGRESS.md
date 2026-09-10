@@ -15,61 +15,65 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-M4 is under way. Its pieces are one change: the object representation, the
-activation representation and the root discipline each constrain the other
-two, which is why the object and activation representations were converted
-together rather than one at a time. Each piece is designed in the document for
-its own aspect; those documents are the authority, and this is only the map to
-them.
+M4 is under way, and **the next piece is 1b, the trampoline** — designed in
+[execution.md](design/execution.md), "Planned: the trampoline". Its pieces are
+one change: the object representation, the activation representation and the
+root discipline each constrain the other two, which is why the object and
+activation representations were converted together rather than one at a time.
+Each piece is designed in the document for its own aspect; those documents are
+the authority, and this is only the map to them.
 
-**Two pieces are done.** The heap seam routes every object and activation
+**Three pieces are done.** The heap seam routes every object and activation
 access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
-it replaced `Rc<RefCell<_>>`: an `ObjRef` or a `FrameRef` is now a 32-bit
-index into a `Vec` the `Heap` owns, with a private field so the compiler
-enforces the seam. That is worth ~15% of the benchmark and is described in
+it replaced `Rc<RefCell<_>>`: an `ObjRef` or a `FrameRef` is a 32-bit index
+into a `Vec` the `Heap` owns, with a private field so the compiler enforces the
+seam. That is worth ~15% of the benchmark and is described in
 [memory.md](design/memory.md); see "M4 — The heap seam" and "M4 — The object
-and frame arena" below. **Nothing reclaims a slot** — the arena grows for the
-life of the process. That is a deliberate interim cost. Step 1 below bounds it
-for activations, and step 5, the collector, is what ends it.
+and frame arena" below. Then activations moved onto a stack the `Heap` owns
+(step 1a below), reified into the frame arena only when a block captures one;
+see "M4 — The activation stack" below. **Nothing reclaims an arena slot** —
+every object and every reified frame is kept for the life of the process. That
+is a deliberate interim cost. The activation stack bounded it for activations
+nothing captures, and step 5, the collector, is what ends it.
 
 The order below is the order the remaining work goes in, and it is not the order
 the milestone was originally sketched in. Two things settled it, neither of them
 a preference.
 
-The first is a measurement. On a release build a user-method send cost ~165 ns,
-of which ~68 ns — about 41% — was spent building the activation, and none of
-that is touched by an inline cache. The decomposition is in
-[execution.md](design/execution.md)'s measurements section. The arena took part
-of that activation cost; step 1 takes the rest.
+The first is a measurement. On a release build, before the arena, a
+user-method send cost ~165 ns, of which ~68 ns — about 41% — was spent building
+the activation, and none of that is touched by an inline cache. The
+decomposition is in [execution.md](design/execution.md)'s measurements section.
+The arena took part of that activation cost and the activation stack more of
+it: measured against the arena in one sitting, a user-method send went from
+~146 ns to ~91 ns, and what it costs beyond a native send from ~62 ns to ~37 ns.
 
 The second is that the root discipline is defined *over* the activation stack,
-so it wants the stack to exist first. With the arena in place and roots checked,
-the collector's root set is the bootstrap plus the activation stack — "a
-contiguous, precisely typed array rather than a pointer-chased chain of
-individually allocated frames", as [memory.md](design/memory.md) puts it.
-Establishing the discipline against today's frame arena would mean establishing
-it against a representation step 1 then replaces, and threading lifetimes
-through `Interpreter::send`, `run_code` and `Signal::Return` twice. The
-discipline also costs nothing at run time and pays off only with the collector,
+so it wanted the stack to exist first. With the arena in place and roots
+checked, the collector's root set is the bootstrap plus the activation stack —
+"a contiguous, precisely typed pair of arrays rather than a pointer-chased chain
+of individually allocated frames", as [memory.md](design/memory.md) puts it.
+Establishing the discipline against the frame arena would have meant
+establishing it against a representation step 1 then replaced, and threading
+lifetimes through `Interpreter::send`, `run_code` and `Signal::Return` twice.
+The discipline costs nothing at run time and pays off only with the collector,
 so nothing is lost by it going second.
 
 1. **Activations on a stack, reified on demand** —
    [execution.md](design/execution.md). Cog's model, as Primordial Soup
-   implements it for Newspeak. What the arena left behind: `Frame.args` and
-   `Frame.temps` are still a `Vec` allocation apiece per activation, and every
-   activation is reified whether or not anything looks at it. Designed in full
-   and split in two, each landing green and measured on its own:
-   - **1a — the stack.** Activations become entries on one stack the `Heap`
-     owns, addressed by a new `ActivationRef`; a `Frame` is reified only when a
+   implements it for Newspeak. Split in two, each landing green and measured on
+   its own:
+   - **1a — the stack. Done.** Activations are entries on one stack the `Heap`
+     owns, addressed by an `ActivationRef`; a `Frame` is reified only when a
      block is created, and divorced — its registers copied out — when its
-     activation returns. Both engines share it. Bounds what the arena currently
-     leaves unbounded, since an entry that was never reified leaves nothing.
-     Planned in
-     [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md),
-     on branch `feature/m4-activation-stack`.
-   - **1b — the trampoline.** `send` split into a decision and an activation,
-     arguments copied straight from the caller's registers, `Block value`
-     absorbed, recursion depth an ordinary Newspeak error.
+     activation returns. Both engines share it. A user-method send under the
+     bytecode engine fell from ~146 ns to ~91 ns, and an activation nothing
+     captures leaves nothing behind; see "M4 — The activation stack" below.
+   - **1b — the trampoline. Next.** `send` split into a decision and an
+     activation, arguments copied straight from the caller's registers,
+     `Block value` absorbed, recursion depth an ordinary Newspeak error.
+     Designed in [execution.md](design/execution.md), "Planned: the
+     trampoline", which also lists what 1a left for it; no plan is written yet.
 2. **A compiler-checked root discipline** — [memory.md](design/memory.md). Nova's
    `GcScope`/`NoGcScope`, where holding an unrooted handle across a collection
    safepoint is a type error rather than corruption found later under collection
@@ -99,8 +103,9 @@ rewrite not deepen the investment in Rust callbacks.
 
 What M4 unlocks beyond speed is recorded where it applies: suspending a running
 computation and serializing it ([image-format.md](design/image-format.md)) waits
-on the activation stack, and so do the debugger and `become:`-based class
-mutation ([liveness-and-reflection.md](design/liveness-and-reflection.md)).
+on the trampoline, and so does the debugger; `become:`-based class mutation
+waits on the collector
+([liveness-and-reflection.md](design/liveness-and-reflection.md)).
 
 ## M1 — Frontend (2026-09-01)
 
@@ -292,6 +297,114 @@ explain — an inference from the shape of the growth curve rather than a measur
 cause. Both, with the conditions the figures were taken under and the control
 that would settle the attribution, are in [memory.md](design/memory.md), "What
 the collector owns".
+
+## M4 — The activation stack (2026-09-10)
+
+Plan: [ns-next-activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md).
+
+Step 1a of M4. Every Newspeak activation runs on one activation stack the `Heap`
+owns — `ActivationStack` in `crates/ns-runtime/src/heap.rs`, one contiguous
+`Vec<Value>` of registers and one `Vec<StackEntry>` — addressed by a new handle,
+`ActivationRef`, which is 4 bytes in a release build. A `Frame` exists only when
+a block is created: `Heap::reify` builds one *married* to its stack entry, so a
+block reads its method's variables through the live stack slot, and
+`Heap::pop_activation` *divorces* it when the activation returns, copying the
+registers out, because ns-next's blocks read those variables by reference. The
+frame arena holds `FrameSlot`s — a `Frame` plus the entry it is married to,
+private to `heap.rs`. The four sites that build an activation (`invoke_method`,
+`invoke_closure`, `run_initializer_level`, `run_clause_body`) push and pop under
+both engines, and `Interpreter::send` and `instantiate` debug-assert that they
+leave the stack balanced. Every function that means *the running activation*
+takes an `ActivationRef`; closures, frames and image records take only a
+`FrameRef`, so storing a stack handle is a compile error. Accessors are
+`activation_*` for a live activation and `frame_*` for a reified frame. The
+design is in [execution.md](design/execution.md), "Activations".
+
+What it deleted rather than moved:
+
+- The `sender` parameter of `Interpreter::send`, `invoke_method`,
+  `invoke_closure`, `builtins::dispatch_native`, `builtins::call_block` and the
+  `builtins/` modules. It was removed rather than retyped to an `ActivationRef`,
+  as the design had said: its only use was to fill `Frame.sender`, and once a
+  live activation's sender is the entry below it, nothing read it.
+- `FrameRef`'s `receiver_and_current_class`, `local`, `set_local`,
+  `frame_slot_base`, `frame_is_method` and `mark_uncontinuable`, replaced by
+  their `activation_*` counterparts; `receiver` and `grow_temps` became
+  `frame_receiver` and `frame_grow_temps`. Outside tests, `Heap::alloc_frame`
+  has two callers left, `reify` and the image decoder.
+- An arena entry and two register vectors per activation. An activation that
+  nothing captures allocates nothing once the stack has grown to the program's
+  depth, and leaves nothing behind when it returns.
+
+Two observable changes, both identical under both engines:
+
+1. A frame whose activation has returned has no sender — Smalltalk's rule, and
+   Cog's and Primordial Soup's — so a snapshot no longer carries its closures'
+   callers.
+2. A block created during initialization whose `^` runs after initialization has
+   finished raises `cannotReturn`, as `newspeak-spec.pdf` §7.2 requires,
+   instead of escaping as "internal: non-local return escaped the entry send". A
+   `^` into an initializer that is still running still escapes.
+
+`tests-fixtures/closure_variables.ns` landed ahead of the change as its guard —
+blocks sharing, and outliving, their method's variables, under both engines —
+and `bench_send.ns` and `bench_block.ns` after it. 604 tests pass, with one
+ignored; `parse-corpus` stays at **210/0/1/0** and `run-corpus` at
+**6/0/205**.
+
+Measured before and after in one sitting on a release build, the "before" built
+from the branch's merge-base — the arena — in a throwaway worktree: three rounds
+of `ns-next bench` over five sources, alternating the two binaries within each
+round. Rows one and two of the send decomposition are scratch sources that
+differ from `bench_send.ns` by one statement each. Medians in ms, rounds 1–3:
+
+| Source | Bytecode, before | Bytecode, after | Tree-walk, before | Tree-walk, after |
+|---|---|---|---|---|
+| `bench_loop.ns` | 16.27, 16.50, 16.43 | 16.07, 16.22, 16.57 | 37.83, 37.12, 38.29 | 31.85, 32.24, 32.53 |
+| `bench_send.ns` | 23.49, 23.46, 23.58 | 20.68, 20.51, 20.51 | 40.64, 40.96, 41.14 | 37.41, 37.51, 37.49 |
+| `bench_block.ns` | 38.83, 38.99, 39.16 | 38.46, 40.84, 39.24 | 75.16, 74.81, 75.74 | 75.32, 74.98, 74.74 |
+| send row one | 16.16, 16.18, 16.24 | 15.97, 15.98, 16.26 | 34.85, 35.52, 34.63 | 31.87, 32.14, 32.14 |
+| send row two | 19.18, 20.07, 19.28 | 17.84, 17.83, 17.90 | 37.00, 37.24, 38.29 | 33.64, 34.02, 33.67 |
+
+**A user-method send under the bytecode engine fell from ~146 ns to ~91 ns,
+about 38%** (`bench_send.ns` minus row one, per iteration, from the middle
+medians), and what it costs beyond a native send from ~62 ns to ~37 ns.
+`bench_send.ns` itself went from 23.5 ms to 20.5 ms. **The tree-walker's
+`bench_loop.ns` fell about 15%**, from 37.8 ms to 32.2 ms, because it does not
+inline `whileTrue:` and each iteration's two block activations are now pushes
+rather than arena entries. The table with ns per iteration, the re-taken
+decomposition and one caveat it turned up — under the arena, row two's method
+had no temporaries and so skipped an allocation row three paid — are in
+[execution.md](design/execution.md), "What the activation stack moved".
+
+Peak working set, Windows 11, release build, read through
+`psapi!GetProcessMemoryInfo` on the still-open process handle:
+
+| Command | Before | After |
+|---|---|---|
+| `run --engine=bytecode`, `bench_loop.ns` | 4.6 MB | 4.6 MB |
+| `run --engine=tree-walk`, `bench_loop.ns` | 25.4 MB | 4.6 MB |
+| `bench --iterations 10`, `bench_loop.ns` | 340.7 MB | 4.6 MB |
+| `bench --iterations 10`, `bench_send.ns` | 324.9 MB | 4.6 MB |
+| `bench --iterations 10`, `bench_block.ns` | 966.9 MB | 446.0 MB |
+
+The tree-walk and `bench` figures fell all the way to the 4.6 MB baseline, as the
+design predicted: an activation nothing reified leaves nothing behind.
+`bench_block.ns` still grows, as expected — every iteration reifies one frame
+and allocates one closure, and nothing reclaims an arena slot — but by less than
+half as much, since the block's own activation no longer takes an arena entry.
+
+What did **not** move: the bytecode engine's `bench_loop.ns`, whose inlined
+loop builds no activation; `bench_block.ns`'s time under either engine, since a
+block per iteration still costs a reified frame and a divorce copy; and what the
+design left for later — the argument vector `collect` builds for every send, the
+`HashMap` lookup per invocation that finds a compiled body, and recursion on the
+Rust stack with no depth limit. The first and the last are 1b's, the lookup the
+inline caches'. And the tree-walker's ~112 ms maximum on `bench_loop.ns`, which
+the arena's `Vec` doubling was thought to explain, survived under a binary that
+retains nothing for that benchmark, so that explanation does not hold for it;
+[memory.md](design/memory.md), "What the collector owns", records what the
+maxima do and do not show.
 
 ## Notes
 
