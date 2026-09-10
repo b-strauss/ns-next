@@ -1,7 +1,13 @@
-//! The heap seam. Every read and write of an `Object` or a `Frame` goes
+//! The heap seam. Every read and write of an `Object` or an activation goes
 //! through `Heap`, so that replacing what sits behind a handle changes this
-//! file rather than its call sites. The store behind the accessors is an
-//! arena of typed handles for both; see `docs/design/memory.md`.
+//! file rather than its call sites. Objects and reified frames live in
+//! arenas of typed handles (`ObjRef`, `FrameRef`); see
+//! `docs/design/memory.md`. A running activation lives on the activation
+//! stack, also owned here, and is named by an `ActivationRef` that nothing
+//! may store; a frame exists for it only once `reify` creates one. The
+//! accessor prefix says which handle an accessor takes: `activation_*` a
+//! live stack entry, `frame_*` a reified frame. See
+//! `docs/design/execution.md`, "Activations".
 //!
 //! The accessors copy out rather than lend out. That is not a stylistic
 //! choice: almost every call site borrows, clones one field and drops the
@@ -965,7 +971,12 @@ impl Heap {
     //
     // Only the accessors a caller actually needs are added here;
     // `frame_arg_count` and `frame_pc` have no caller yet, so they are
-    // not here.
+    // not here. Three have only test callers: `set_frame_pc`,
+    // `frame_sender` and `frame_is_uncontinuable` read or write fields the
+    // image format records per frame, and the image and interpreter tests
+    // build and check frame records through them. Nothing in the runtime
+    // decides anything by those fields -- whether a frame is live is
+    // `frame_activation`, never `frame_is_uncontinuable`.
 
     /// An opaque, hashable key unique to `frame`, for code that needs a
     /// `FrameRef` as a `HashMap` key rather than a comparison --
@@ -1006,6 +1017,10 @@ impl Heap {
         }
     }
 
+    /// Test and format level: the image tests use it to give a dead frame a
+    /// synthetic paused `pc` before a snapshot. The runtime stores a running
+    /// activation's `pc` on its stack entry (`set_activation_pc`), and the
+    /// divorce copies it here.
     pub fn set_frame_pc(&mut self, frame: &FrameRef, pc: usize) {
         self.check_frame_origin(frame);
         debug_assert!(
@@ -1024,7 +1039,8 @@ impl Heap {
     /// A reified frame's recorded sender. `None` for every frame the runtime
     /// reifies -- a live activation's sender is the stack entry below it, and
     /// a returned activation has none -- so it can be set only on a frame the
-    /// image decoder rebuilt from a record that carries one.
+    /// image decoder rebuilt from a record that carries one. Test and format
+    /// level: only tests read it.
     pub fn frame_sender(&self, frame: &FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.sender
@@ -1040,6 +1056,11 @@ impl Heap {
         }
     }
 
+    /// The frame's recorded `uncontinuable` flag. Test and format level:
+    /// true for every frame the divorce left behind, but on a decoded frame
+    /// it answers whatever the file said. It is not liveness --
+    /// `raise_return` treats every decoded frame as dead, because it
+    /// decides by `frame_activation`, and a decoded frame is never married.
     pub fn frame_is_uncontinuable(&self, frame: &FrameRef) -> bool {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.uncontinuable
@@ -1440,10 +1461,12 @@ mod tests {
         let _ = mine.same(&theirs);
     }
 
-    /// The same hole on the activation side. `FrameRef::same` decides where
-    /// a non-local return lands (`invoke_method`'s catch, `raise_return`'s
-    /// target check), so a false "identical" would resume the wrong
-    /// activation rather than merely report the wrong answer.
+    /// The same hole for reified frames. `FrameRef::same` is what the image
+    /// round-trip tests check sharing by -- a closure's `captured_frame` and
+    /// `home` naming one frame or two -- so a false "identical" would let a
+    /// round trip that split one frame into two pass. (A non-local return
+    /// names its target by `ActivationRef`; see
+    /// `comparing_two_activation_handles_from_different_heaps_panics`.)
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "handle belongs to a different heap")]

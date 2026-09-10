@@ -102,14 +102,26 @@ pub struct ActivationRef {
   capacity across pops, so once they have grown to the program's depth a push
   allocates nothing. Four sites push: `invoke_method`, `invoke_closure`,
   `run_initializer_level` and `nested::run_clause_body`. They are shared
-  orchestration, so both engines push onto the same stack and the tree-walker's
-  storage is bounded the same way as the VM's.
+  orchestration, so both engines push onto the same stack, and under either an
+  activation nothing reifies leaves nothing behind. What gets reified differs:
+  the tree-walker evaluates every block literal, including the
+  `ifTrue:`/`and:`/`whileTrue:` arguments the compiler inlines, and
+  `eval_block_literal` reifies the running activation for each one. So a method
+  whose body holds such an argument leaves a reified frame and a closure behind
+  per call under the tree-walker and nothing under the VM: 300,000 calls of
+  `clip: x = ( x < 0 ifTrue: [^0]. ^x + 1 )` peak at 136.8 MB under the
+  tree-walker against 4.6 MB under the VM (release build, peak working set,
+  conditions in [memory.md](memory.md), "Open: what the collector owns"). The
+  tree-walker's storage is bounded like the VM's only for code that creates the
+  same blocks under both.
 - **Register access through an `ActivationRef`** is `values[entries[i].base +
-  r]`, with no branch. A debug build also checks that the register lies inside
-  the entry's own window: the neighbouring activation's register is in bounds of
-  `values`, so reading it would not otherwise fail. An entry's `base` is fixed for
-  its whole life and everything is addressed by index, so `values` reallocating
-  as it grows moves nothing anyone holds.
+  r]`, with no branch on the handle's kind or on an args/temps split; a release
+  build still bounds-checks both slice indexes. A debug build also checks that
+  the register lies inside the entry's own window: the neighbouring
+  activation's register is in bounds of `values`, so reading it would not
+  otherwise fail. An entry's `base` is fixed for its whole life and everything
+  is addressed by index, so `values` reallocating as it grows moves nothing
+  anyone holds.
 - **Two handle types, not one tagged handle.** `ActivationRef` names a live
   stack entry; `FrameRef` names a reified frame in the arena and is the only
   activation handle anything *stores*: `ClosureData.captured_frame` and `home`,
@@ -191,7 +203,8 @@ outlives a call — a closure, another frame, an image record — holds a `Frame
   nothing read it. No native takes an activation handle at all.
 - The three engine hooks receive the `ActivationRef` the shared orchestration
   pushed, and differ only in the body they run.
-- The image encoder only ever runs between sends, when nothing is live, and
+- The image encoder only ever runs between sends, when nothing is live:
+  `image::snapshot` refuses to start while any activation is on the stack, and
   `Heap::frame_snapshot` debug-asserts that no encoded frame is married. The
   decoder builds frames that are never married. The format knows nothing of the
   stack: a frame record describes a reified frame, and nothing else is

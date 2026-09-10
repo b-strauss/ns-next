@@ -36,6 +36,19 @@ every object and every reified frame is kept for the life of the process. That
 is a deliberate interim cost. The activation stack bounded it for activations
 nothing captures, and step 5, the collector, is what ends it.
 
+**Before 1b fixes its baseline, know that the tree-walker retains more than the
+VM.** It evaluates every block literal, including the `ifTrue:`/`and:`/
+`whileTrue:` arguments the compiler inlines, and reifies the running activation
+for each one; every closure it creates also carries its own copy of the block's
+syntax tree. So its storage is not bounded like the VM's: 300,000 calls of a
+method holding `ifTrue: [^0]` peak at 136.8 MB under the tree-walker against
+4.6 MB under the VM ([memory.md](design/memory.md), "Open: what the collector
+owns"). That does not explain why `bench_block.ns`'s time did not move under the
+tree-walker, though: its loop creates no control-flow block per iteration, so
+both engines reify one frame per iteration there, and its time did not move
+under the VM either. What offsets the stack's saving on that source is not
+known; profile it under both engines before 1b takes its numbers.
+
 The list below is M4's order of work — 1a done, everything from 1b on still
 ahead — and it is not the order the milestone was originally sketched in. Two
 things settled it, neither of them a preference.

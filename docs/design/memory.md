@@ -334,16 +334,34 @@ its variables. After it, a surviving block holds exactly what it captured.
 
   The shape is what matters more than the figures. An activation that nothing
   reified leaves nothing behind, so a program that creates no block per
-  iteration — the tree-walker's `bench_loop.ns`, `bench_send.ns` under either
-  engine — now runs in the same 4.6 MB however many activations it builds.
+  iteration now runs in the same 4.6 MB however many activations it builds —
+  `bench_loop.ns` and `bench_send.ns` under either engine, whose blocks are
+  created once, before the loop starts. Which blocks a program creates depends
+  on the engine, though: **the tree-walker creates — and so reifies the
+  activation for — every block literal it evaluates, including the
+  `ifTrue:`/`and:`/`whileTrue:` arguments the VM inlines.** A method that holds
+  one therefore retains a frame and a closure per call under the tree-walker
+  alone. Measured on 2026-09-11 under the conditions above, with a scratch
+  program making 300,000 calls of `clip: x = ( x < 0 ifTrue: [^0]. ^x + 1 )`:
+  136.8 MB under the tree-walker, 4.6 MB under the VM, and 4.5 MB under the
+  tree-walker once `clip:` is reduced to `^x + 1`. A tree-walker closure also
+  keeps a copy of its block's syntax tree, because `eval_block_literal` clones
+  the block's body into every closure it creates. So the tree-walker retains
+  more per block than the VM does even where both create the same blocks, in
+  proportion to the block's size: `run` over `bench_block.ns` peaks at 20.2 MB
+  under the VM and 40.3 MB under the tree-walker. Lengthening that block's
+  body to twelve more `+ 0` sends takes the tree-walker to 168.9 MB and leaves
+  the VM at 20.2 MB.
+
   **What is still unbounded is everything in an arena: every reified frame and
   every object the process has ever created**, not what is live.
-  `bench_block.ns` shows it: every iteration creates a block, so every iteration
-  reifies one frame and allocates one closure, and nothing gives either back.
-  Its peak roughly halved, because the block's own activation no longer takes an
-  arena entry, but it still grows with the work done. A long-running process
-  that creates blocks is therefore unbounded until the collector exists, and
-  closure conversion (above) is what shrinks each reified frame's share.
+  `bench_block.ns` shows it: every iteration creates a block, so under either
+  engine every iteration reifies one frame and allocates one closure, and
+  nothing gives either back. Its peak roughly halved, because the block's own
+  activation no longer takes an arena entry, but it still grows with the work
+  done. A long-running process that creates blocks is therefore unbounded until
+  the collector exists, and closure conversion (above) is what shrinks each
+  reified frame's share.
 
   Peak does not climb smoothly with the work done. Sweeping `bench
   --iterations` over `bench_loop.ns` on the arena binary, before the activation

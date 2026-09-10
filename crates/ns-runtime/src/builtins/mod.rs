@@ -37,7 +37,6 @@ use crate::{platform, Interpreter, Symbol};
 /// a block and keep their original `Result<Value, NewspeakError>` signature,
 /// wrapped into `EvalResult` right here at the single point where every arm
 /// of this function's own `match` must agree on one type.
-///
 pub fn dispatch_native(
     interp: &mut Interpreter,
     kind: BuiltinClass,
@@ -119,7 +118,6 @@ fn wrap_error(result: Result<Value, NewspeakError>) -> EvalResult {
 /// (`interpreter/mod.rs`), and that check runs regardless of how many
 /// native primitive frames the signal passes through on its way up -- so
 /// nothing here needs to re-implement it.
-///
 pub(super) fn call_block(interp: &mut Interpreter, block: &Value, args: Vec<Value>) -> EvalResult {
     match block {
         Value::Obj(obj) => {
