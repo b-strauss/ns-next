@@ -1283,8 +1283,8 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
                     .closure_data(obj(&closure))
                     .expect("expected a closure");
                 let (_, args_len, temps_len) = interp.heap_ref().frame_register_shape(&c.home);
-                interp.heap_mut().grow_temps(&c.home, temps_len + 1);
-                interp.heap_mut().set_local(
+                interp.heap_mut().frame_grow_temps(&c.home, temps_len + 1);
+                interp.heap_mut().frame_set_local(
                     &c.home,
                     (args_len + temps_len) as u16,
                     Value::SmallInt(9),

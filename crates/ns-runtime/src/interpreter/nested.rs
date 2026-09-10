@@ -26,7 +26,7 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
-use crate::heap::Heap;
+use crate::heap::{ActivationHeader, Heap};
 use crate::mixin::{mixin_key, Mixin};
 use crate::types::*;
 use crate::Symbol;
@@ -327,28 +327,26 @@ pub(super) fn run_clause_body(
     let temp_count = compiled
         .as_ref()
         .map_or(0, |code| (code.num_registers - code.num_args) as usize);
-    let frame = interp.heap.alloc_frame(Frame {
-        receiver: *receiver,
-        args,
-        temps: vec![Value::Nil; temp_count],
-        pc: 0,
-        // The same choice `compiled` makes below: a clause body runs
-        // compiled when the module carries one and is tree-walked from its
-        // own AST otherwise.
-        pc_kind: match &compiled {
-            Some(_) => PcKind::Bytecode,
-            None => PcKind::TreeWalk,
+    let act = interp.heap.push_activation(
+        ActivationHeader {
+            receiver: *receiver,
+            current_class: Some(*current_class),
+            kind,
+            // The same choice `compiled` makes below: a clause body runs
+            // compiled when the module carries one and is tree-walked from
+            // its own AST otherwise.
+            pc_kind: match &compiled {
+                Some(_) => PcKind::Bytecode,
+                None => PcKind::TreeWalk,
+            },
+            slot_base: 0, // no clause body ever contains InitSlot
         },
-        sender: None,
-        home: None,
-        current_class: Some(*current_class),
-        kind,
-        uncontinuable: false,
-        slot_base: 0, // no clause body ever contains InitSlot
-    });
+        &args,
+        temp_count,
+    );
     let result = match (&compiled, expr) {
-        (Some(code), _) => crate::vm::run_code(interp, &frame, code, bindings),
-        (None, Some(expr)) => crate::interpreter::eval::eval_expr(interp, expr, &frame, bindings),
+        (Some(code), _) => crate::vm::run_code(interp, &act, code, bindings),
+        (None, Some(expr)) => crate::interpreter::eval::eval_expr(interp, expr, &act, bindings),
         // The tree-walker evaluates the clause's own AST, and a mixin
         // decoded from an image carries none. Unreachable rather than
         // merely unlikely: `image::load` installs `Engine::Bytecode`, so a
@@ -358,10 +356,10 @@ pub(super) fn run_clause_body(
              of a mixin decoded from an image"
         ),
     };
-    interp.heap.mark_uncontinuable(&frame);
+    interp.heap.pop_activation(&act);
     match result {
         Ok(value) => Ok(value),
-        Err(Signal::Return(target, value)) if target.same(&frame) => Ok(value),
+        Err(Signal::Return(target, value)) if target.same(&act) => Ok(value),
         Err(other) => Err(other),
     }
 }

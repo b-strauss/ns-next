@@ -235,6 +235,11 @@ pub enum PcKind {
     Bytecode,
 }
 
+/// A *reified* activation: one a block captured, or one the image decoder
+/// rebuilt. A running activation lives on the `Heap`'s activation stack and
+/// becomes a `Frame` only when `Heap::reify` is asked for one; while it runs,
+/// the frame is married to its stack entry and its registers live there.
+/// See `docs/design/execution.md`, "Activations".
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub receiver: Value,
@@ -248,6 +253,9 @@ pub struct Frame {
     /// same place, so the two fields are decided together.
     pub pc: usize,
     pub pc_kind: PcKind,
+    /// `None` for every frame the runtime reifies: a live activation's
+    /// sender is the stack entry below it, and a returned activation has
+    /// none. Kept for the image format, which records one per frame.
     pub sender: Option<FrameRef>,
     /// Set only for `FrameKind::Closure` -- the enclosing method or
     /// initializer activation.
@@ -256,10 +264,12 @@ pub struct Frame {
     /// top-level activation's current class is `nil`).
     pub current_class: Option<ClassRef>,
     pub kind: FrameKind,
-    /// Set once a `^` return statement has run in this activation or one
-    /// whose continuation chains through it (`newspeak-spec.pdf` §3.6,
-    /// §7.2). A further attempt to return through an uncontinuable
-    /// activation is a `cannotReturn` error.
+    /// Set once this frame's activation has returned (`Heap::pop_activation`
+    /// divorces it). A `^` whose home is such a frame is a `cannotReturn`
+    /// error (`newspeak-spec.pdf` §3.6, §7.2). `raise_return` decides by
+    /// `Heap::frame_activation`, which also covers a decoded frame, dead by
+    /// construction whatever this flag says; the flag itself is what an image
+    /// records.
     pub uncontinuable: bool,
     /// The absolute field index a compiled `InitSlot`'s mixin-relative
     /// `own_index` is offset by -- `MixinApplication.own_slot_base` for the

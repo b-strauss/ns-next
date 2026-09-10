@@ -80,16 +80,18 @@ impl std::fmt::Debug for ObjRef {
 /// enforced by the type system in Milestone 1 (no metaclasses yet).
 pub type ClassRef = ObjRef;
 
-/// An opaque handle to an activation: an index into `Heap.frames`. The
-/// inner index is private to this module, and only `heap.rs` reaches it --
-/// that privacy is what made replacing `Rc<RefCell<Frame>>` with this a
-/// change to one file rather than to every caller. See
-/// `docs/design/memory.md`, "The seam".
+/// An opaque handle to a *reified* activation: an index into `Heap.frames`.
+/// The inner index is private to this module. See `docs/design/memory.md`,
+/// "The seam".
+///
+/// A running activation is named by an `ActivationRef` instead; a `FrameRef`
+/// exists for one only once something must hold it past the current call
+/// (`Heap::reify`). This is the only activation handle anything may store --
+/// in a closure, in another frame, in an image.
 ///
 /// A handle is meaningful only against the `Heap` that allocated it. The
-/// arena never reuses a slot -- there is no collector yet -- so two live
-/// activations never share an index, which is what `Signal::Return`'s
-/// target check depends on.
+/// arena never reuses a slot -- there is no collector yet -- so two frames
+/// never share an index.
 #[derive(Clone, Copy)]
 pub struct FrameRef {
     index: u32,
@@ -102,22 +104,10 @@ pub struct FrameRef {
 }
 
 impl FrameRef {
-    /// Activation identity. Replaces `Rc::ptr_eq` at every call site, so
-    /// that identity has one spelling that survives the store changing
-    /// under it.
-    ///
-    /// Its two call sites both ask the same question -- "is this returning
-    /// signal aimed at *my* activation?" -- and both answer it by catching
-    /// `Signal::Return(target, _)` when `target.same(&frame)`:
-    /// `Interpreter::invoke_method` (`interpreter/mod.rs`) for a method or
-    /// initializer body, and `interpreter::nested`'s superclass-clause
-    /// activation (`nested.rs`). `raise_return` picks the target rather than
-    /// comparing one, through `frame_home` and `frame_is_uncontinuable`, so
-    /// it is not a caller.
-    ///
-    /// Guarded like an accessor: see `ObjRef::same`. A false *yes* at either
-    /// site swallows a non-local return meant for an outer activation, which
-    /// is a wrong answer that looks like ordinary control flow.
+    /// Frame identity. Guarded like an accessor: see `ObjRef::same`.
+    /// `Signal::Return` no longer compares frames -- it names its target by
+    /// `ActivationRef` -- so the callers left are the image round-trip tests
+    /// and the decoder's own identity checks.
     pub fn same(&self, other: &FrameRef) -> bool {
         #[cfg(debug_assertions)]
         debug_assert_eq!(
@@ -457,20 +447,22 @@ impl Heap {
     // second pass overwrites wholesale via `replace_frame`.
 
     /// Allocates `frame`. The only constructor of a `FrameRef` in the
-    /// workspace -- src or tests -- so that replacing what backs a handle
-    /// only ever touches this file.
+    /// workspace -- `reify`, the image decoder and tests all come through
+    /// here -- so that replacing what backs a handle only ever touches this
+    /// file.
     ///
-    /// `home_of` and `raise_return` read a return target off `Frame.home`
-    /// rather than matching on `Frame.kind`, which is correct only while the
-    /// two agree: `home` populated exactly for a `FrameKind::Closure`
-    /// activation. Every real constructor upholds that by construction, but
-    /// nothing in the type system ties the two fields together, so a new
-    /// constructor added later -- or a mismatched pair of literal fields at
-    /// an existing one -- would corrupt `^`'s return target silently rather
-    /// than fail loudly. Checked here, once, rather than at every
-    /// constructor. Not checked in `replace_frame`: the decoder fills a
-    /// placeholder through that path with fields read off the wire, and
-    /// nothing reactivates a decoded frame, so it need not satisfy this.
+    /// `Frame.home` restates what `Frame.kind` already carries for a closure
+    /// frame -- its closure's `home` -- and the image records both, so the
+    /// two must agree: `home` populated exactly for a `FrameKind::Closure`
+    /// activation. `reify` upholds that by building `home` from the entry's
+    /// `kind`, but nothing in the type system ties the two fields together,
+    /// so a new constructor added later -- or a mismatched pair of literal
+    /// fields at an existing one -- would record a return target that
+    /// disagrees with the frame's own closure silently rather than fail
+    /// loudly. Checked here, once, rather than at every constructor. Not
+    /// checked in `replace_frame`: the decoder fills a placeholder through
+    /// that path with fields read off the wire, and nothing reactivates a
+    /// decoded frame, so it need not satisfy this.
     pub fn alloc_frame(&mut self, frame: Frame) -> FrameRef {
         debug_assert_eq!(
             frame.home.is_some(),
@@ -961,14 +953,15 @@ impl Heap {
         false
     }
 
-    // ---------- Activation accessors ----------
+    // ---------- Frame accessors ----------
     //
-    // `local`/`set_local` carry the register-file addressing that
-    // `eval::read_local` used to own: arguments occupy the first
-    // `args.len()` indices and declared temporaries follow, and the
-    // boundary comes from how many arguments the activation was *given*.
-    // A wrong-arity activation is refused in `invoke_method` before it can
-    // reach here, so this addressing is total.
+    // A `FrameRef` names a *reified* activation. Its receiver, class and
+    // kind are fixed when it is created, so they read the same whether or
+    // not the frame is still married to a live stack entry. Its pc and
+    // registers are not: while it is married they live on the activation
+    // stack, so the accessors that read or write the frame's own copy
+    // assert it is dead. `frame_local`/`frame_set_local` (with the
+    // activation stack, below) follow the marriage instead.
     //
     // Only the accessors a caller actually needs are added here;
     // `frame_arg_count` and `frame_pc` have no caller yet, so they are
@@ -983,54 +976,11 @@ impl Heap {
         frame.index as usize
     }
 
-    pub fn receiver(&self, frame: &FrameRef) -> Value {
+    /// A reified frame's receiver. Fixed when the frame is created, so it
+    /// needs no redirect while the frame is married.
+    pub fn frame_receiver(&self, frame: &FrameRef) -> Value {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.receiver
-    }
-
-    /// The receiver and `current_class` together, in one borrow.
-    /// `dispatch_lexical_send`'s head needs both on every implicit-receiver
-    /// send -- five times per `bench_loop.ns` iteration -- and fetching them
-    /// through `receiver` then `frame_current_class` took two separate
-    /// borrows where one already carries both fields; that doubling was the
-    /// whole of a measured 13% regression (see `docs/design/execution.md`'s
-    /// measurements section).
-    ///
-    /// Under the arena the two reads are two slice indexes rather than two
-    /// `RefCell` borrows, so the cost this batching removed is smaller than
-    /// it was. It is kept because this is still the hottest call count in
-    /// the workspace, and because the batched shape is what the activation
-    /// stack's register accessors want anyway (`docs/PROGRESS.md`, "Where
-    /// the next session starts", enumerates that step; it is designed in
-    /// `docs/design/execution.md`); whether it still pays is a measurement,
-    /// not an assumption.
-    pub fn receiver_and_current_class(&self, frame: &FrameRef) -> (Value, Option<ClassRef>) {
-        self.check_frame_origin(frame);
-        let f = &self.frames[frame.index as usize].frame;
-        (f.receiver, f.current_class)
-    }
-
-    pub fn local(&self, frame: &FrameRef, index: u16) -> Value {
-        self.check_frame_origin(frame);
-        let f = &self.frames[frame.index as usize].frame;
-        let i = index as usize;
-        if i < f.args.len() {
-            f.args[i]
-        } else {
-            f.temps[i - f.args.len()]
-        }
-    }
-
-    pub fn set_local(&mut self, frame: &FrameRef, index: u16, value: Value) {
-        self.check_frame_origin(frame);
-        let f = &mut self.frames[frame.index as usize].frame;
-        let i = index as usize;
-        if i < f.args.len() {
-            f.args[i] = value;
-        } else {
-            let temp_index = i - f.args.len();
-            f.temps[temp_index] = value;
-        }
     }
 
     pub fn frame_current_class(&self, frame: &FrameRef) -> Option<ClassRef> {
@@ -1038,22 +988,16 @@ impl Heap {
         self.frames[frame.index as usize].frame.current_class
     }
 
-    /// The absolute field index a compiled `InitSlot`'s mixin-relative
-    /// `own_index` is offset by. Fixed for the frame's whole life --
-    /// `interpreter::instantiate` builds one frame per inheritance level and
-    /// sets this from that level's own `MixinApplication.own_slot_base`, so
-    /// there is nothing to save and restore between levels.
-    pub fn frame_slot_base(&self, frame: &FrameRef) -> usize {
+    /// Grows a *dead* frame's register file, filling with nil -- what
+    /// edit-and-continue will do after reifying a live activation
+    /// (`docs/design/liveness-and-reflection.md`). A live activation grows
+    /// through `grow_activation_temps`.
+    pub fn frame_grow_temps(&mut self, frame: &FrameRef, needed: usize) {
         self.check_frame_origin(frame);
-        self.frames[frame.index as usize].frame.slot_base
-    }
-
-    /// Grows an activation's register file, filling with nil. Needed by
-    /// the initializer path, where a level's compiled body may declare
-    /// more registers than the frame was built with, and by
-    /// edit-and-continue later (`docs/design/liveness-and-reflection.md`).
-    pub fn grow_temps(&mut self, frame: &FrameRef, needed: usize) {
-        self.check_frame_origin(frame);
+        debug_assert!(
+            self.frames[frame.index as usize].live.is_none(),
+            "a married frame's registers live on the activation stack; grow them through its activation"
+        );
         let f = &mut self.frames[frame.index as usize].frame;
         if f.temps.len() < needed {
             f.temps.resize(needed, Value::Nil);
@@ -1062,6 +1006,11 @@ impl Heap {
 
     pub fn set_frame_pc(&mut self, frame: &FrameRef, pc: usize) {
         self.check_frame_origin(frame);
+        debug_assert!(
+            self.frames[frame.index as usize].live.is_none(),
+            "a married frame's pc and registers live on the activation stack; \
+             read or write them only once its activation has returned"
+        );
         self.frames[frame.index as usize].frame.pc = pc;
     }
 
@@ -1070,11 +1019,10 @@ impl Heap {
         self.frames[frame.index as usize].frame.home
     }
 
-    /// The activation that invoked `frame`, `None` only for `FrameKind::TopLevel`.
-    /// `tests/builtins_collections_block.rs`'s sender-threading regression test is
-    /// the first caller: it walks a captured closure's frame back to the method
-    /// activation that invoked it, to check `sender` was actually recorded rather
-    /// than left `None`, which would cut the chain at every block boundary.
+    /// A reified frame's recorded sender. `None` for every frame the runtime
+    /// reifies -- a live activation's sender is the stack entry below it, and
+    /// a returned activation has none -- so it can be set only on a frame the
+    /// image decoder rebuilt from a record that carries one.
     pub fn frame_sender(&self, frame: &FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.sender
@@ -1095,31 +1043,13 @@ impl Heap {
         self.frames[frame.index as usize].frame.uncontinuable
     }
 
-    pub fn mark_uncontinuable(&mut self, frame: &FrameRef) {
-        self.check_frame_origin(frame);
-        self.frames[frame.index as usize].frame.uncontinuable = true;
-    }
-
-    /// Whether `frame`'s kind is `FrameKind::Method` --
-    /// `Interpreter::run_statements` needs this to decide what an implicit
-    /// (non-`^`) fall-off-the-end return value is: `self` for a method body
-    /// (spec §3.5), the last statement's value for every other body this
-    /// loop runs.
-    pub fn frame_is_method(&self, frame: &FrameRef) -> bool {
-        self.check_frame_origin(frame);
-        matches!(
-            self.frames[frame.index as usize].frame.kind,
-            FrameKind::Method(_)
-        )
-    }
-
     /// A copy of `frame`'s `kind`. Cloning is cheap -- every variant holds
     /// at most an `Rc` -- and `image::decode` is the only caller that needs
     /// to match on the *whole* kind rather than one variant's payload
-    /// (`frame_captured`, `frame_is_method`): once to resolve which of
-    /// `Initializer`/`SuperclassClause`/`SuperclassMessage` a frame carries
-    /// a class for (`frame_body`), and once to check that a class-carrying
-    /// kind's class is itself a class reference (`check_class_references`).
+    /// (`frame_captured`): once to resolve which of `Initializer`/
+    /// `SuperclassClause`/`SuperclassMessage` a frame carries a class for
+    /// (`frame_body`), and once to check that a class-carrying kind's class
+    /// is itself a class reference (`check_class_references`).
     pub fn frame_kind(&self, frame: &FrameRef) -> FrameKind {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.kind.clone()
@@ -1131,6 +1061,11 @@ impl Heap {
     /// the compiled body it reconciles every decoded frame against.
     pub fn frame_register_shape(&self, frame: &FrameRef) -> (usize, usize, usize) {
         self.check_frame_origin(frame);
+        debug_assert!(
+            self.frames[frame.index as usize].live.is_none(),
+            "a married frame's pc and registers live on the activation stack; \
+             read or write them only once its activation has returned"
+        );
         let f = &self.frames[frame.index as usize].frame;
         (f.pc, f.args.len(), f.temps.len())
     }
@@ -1140,8 +1075,16 @@ impl Heap {
     /// frame record and `GraphTable::visit_frame` walks a whole frame's
     /// references; both need every field. Not for a hot path, for the same
     /// reason as `object_snapshot`.
+    ///
+    /// Only for a dead frame, which is also the encoder's precondition: it
+    /// only ever runs between sends, when nothing is live.
     pub fn frame_snapshot(&self, frame: &FrameRef) -> Frame {
         self.check_frame_origin(frame);
+        debug_assert!(
+            self.frames[frame.index as usize].live.is_none(),
+            "a married frame's pc and registers live on the activation stack; \
+             read or write them only once its activation has returned"
+        );
         self.frames[frame.index as usize].frame.clone()
     }
 
@@ -1267,8 +1210,9 @@ impl Heap {
         handle
     }
 
-    /// How many activations are live. `Interpreter::send` asserts that a
-    /// send leaves it where it found it.
+    /// How many activations are live. `Interpreter::send` and
+    /// `Interpreter::instantiate` assert that they leave it where they
+    /// found it.
     pub fn activation_depth(&self) -> usize {
         self.stack.entries.len()
     }
@@ -1633,7 +1577,7 @@ mod tests {
         for _ in 0..1000 {
             heap.alloc_frame(top_level_frame());
         }
-        assert!(matches!(heap.receiver(&first), Value::Nil));
+        assert!(matches!(heap.frame_receiver(&first), Value::Nil));
         assert_eq!(heap.frame_register_shape(&first), (3, 2, 1));
     }
 

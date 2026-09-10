@@ -8,7 +8,7 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
-use crate::heap::Heap;
+use crate::heap::{ActivationHeader, ActivationRef, Heap};
 use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
 use crate::types::*;
 use crate::Symbol;
@@ -242,9 +242,28 @@ impl Interpreter {
     }
 
     /// The six numbered steps in the runtime spec's Class Instantiation
+    /// section; see `instantiate_unchecked`. Like `send`, it leaves the
+    /// activation stack as it found it.
+    pub fn instantiate(
+        &mut self,
+        class: ClassRef,
+        factory_args: Vec<Value>,
+        bindings: &Rc<HashMap<Span, Binding>>,
+    ) -> EvalResult {
+        let depth = self.heap.activation_depth();
+        let result = self.instantiate_unchecked(class, factory_args, bindings);
+        debug_assert_eq!(
+            self.heap.activation_depth(),
+            depth,
+            "instantiation must leave the activation stack as it found it"
+        );
+        result
+    }
+
+    /// The six numbered steps in the runtime spec's Class Instantiation
     /// section. Steps 2-5 are `run_initializer_level`, once per level of the
     /// superclass chain.
-    pub fn instantiate(
+    fn instantiate_unchecked(
         &mut self,
         class: ClassRef,
         factory_args: Vec<Value>,
@@ -291,14 +310,14 @@ impl Interpreter {
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Result<(), Signal> {
         // Regression fix (re-review finding A): reject a factory-arity
-        // mismatch as a NewspeakError before building this level's `Frame`
+        // mismatch as a NewspeakError before pushing this level's activation
         // or running any slot initializer / initExpr. A slot initializer or
         // initExpr may reference a factory parameter as `Binding::Local(i)`,
         // resolved against this class's *declared* factory pattern -- but
-        // the `Frame` built below starts with `temps: vec![]`, so if fewer
-        // arguments were supplied than the pattern declares, `eval.rs`'s
-        // `read_local`/`write_local` index straight past the end of both
-        // `args` and `temps` and Rust panics with "index out of bounds".
+        // the activation pushed below starts with no temporaries, so if
+        // fewer arguments were supplied than the pattern declares, `eval.rs`'s
+        // `read_local`/`write_local` index straight past the end of its
+        // register window and Rust panics.
         //
         // Checked at *every* level, not just the outermost. A level's
         // arguments now come from its subclass's clause message, whose
@@ -351,38 +370,39 @@ impl Interpreter {
         // class, and its `slot_base` -- the absolute index a compiled
         // `InitSlot`'s mixin-relative `own_index` is offset by. `slot_base`
         // is set here, with the rest of the level's identity, and never
-        // changes: with a frame per level there is nothing to save and
-        // restore, and no window in which a frame describes another level.
+        // changes: with an activation per level there is nothing to save
+        // and restore, and no window in which one describes another level.
         if !class_has_initializer_code(&self.heap, class) {
             return Ok(());
         }
-        let frame = self.heap.alloc_frame(Frame {
-            receiver: *instance,
-            args: factory_args,
-            temps: vec![],
-            pc: 0,
-            // `run_own_initializer` below picks the body off the same
-            // engine, and this frame is built only when that level has
-            // initializer code to run -- so under `Engine::Bytecode` it
-            // always ends up executing a `CompiledCode`.
-            pc_kind: match &self.engine {
-                Engine::TreeWalk => PcKind::TreeWalk,
-                Engine::Bytecode(_) => PcKind::Bytecode,
+        let act = self.heap.push_activation(
+            ActivationHeader {
+                receiver: *instance,
+                current_class: Some(*class),
+                kind: FrameKind::Initializer(*class),
+                // `run_own_initializer` below picks the body off the same
+                // engine, and this activation is built only when that level
+                // has initializer code to run -- so under `Engine::Bytecode`
+                // it always ends up executing a `CompiledCode`.
+                pc_kind: match &self.engine {
+                    Engine::TreeWalk => PcKind::TreeWalk,
+                    Engine::Bytecode(_) => PcKind::Bytecode,
+                },
+                slot_base: self
+                    .heap
+                    .class_application(class)
+                    .map_or(0, |a| a.own_slot_base),
             },
-            sender: None,
-            home: None,
-            current_class: Some(*class),
-            kind: FrameKind::Initializer(*class),
-            uncontinuable: false,
-            slot_base: self
-                .heap
-                .class_application(class)
-                .map_or(0, |a| a.own_slot_base),
-        });
+            &factory_args,
+            0,
+        );
 
         // Steps 4-5: this class's own slot clauses (declaration order), then
-        // its own initExprs -- engine hook 3.
-        self.run_own_initializer(class, instance, &frame, bindings)
+        // its own initExprs -- engine hook 3. Popped on every path out, like
+        // every activation.
+        let result = self.run_own_initializer(class, instance, &act, bindings);
+        self.heap.pop_activation(&act);
+        result
     }
 
     /// Step 3's first half: `newspeak-spec.pdf` §6.2's "the superclass
@@ -479,31 +499,31 @@ impl Interpreter {
     /// Engine hook 3 (M2 spec, "`vm.rs` and the engine hook"): Class
     /// Instantiation steps 4-5 for one level of the chain -- this class's
     /// own slot initializers, then its own `initExprs`, on that level's own
-    /// initializer frame. The tree-walker runs `run_own_slots` +
+    /// initializer activation. The tree-walker runs `run_own_slots` +
     /// `run_own_init_exprs`; the bytecode engine runs the class's compiled
     /// initializer (`compiler::compile_initializer`) after growing the
-    /// frame's register file to fit it. Both engines run the same steps in
-    /// the same order on the same frame.
+    /// activation's register file to fit it. Both engines run the same
+    /// steps in the same order on the same activation.
     ///
     /// Review finding (round 1): `InitSlot`'s `own_index` is relative to the
     /// mixin's own slots, not an absolute field index -- the compiled body
     /// is shared by every application of the mixin (`compile_module` keys
     /// by `mixin_key`), so it cannot bake in any one application's offset.
-    /// `frame.slot_base` is what turns `own_index` into an absolute index at
-    /// run time: the same per-application value `run_own_slots`'s
-    /// tree-walking sibling reads through `slot_index`, fetched once instead
-    /// of per slot. Its one writer is `run_initializer_level`, which builds
-    /// one frame per level and sets that frame's base from that level's own
-    /// `MixinApplication.own_slot_base` -- so a frame's base is fixed for
-    /// its whole life and cannot be observed describing another level. The
-    /// assertion below states that invariant where this function depends on
-    /// it, in place of the save/restore a single frame shared by the whole
-    /// chain used to need.
+    /// The activation's `slot_base` is what turns `own_index` into an
+    /// absolute index at run time: the same per-application value
+    /// `run_own_slots`'s tree-walking sibling reads through `slot_index`,
+    /// fetched once instead of per slot. Its one writer is
+    /// `run_initializer_level`, which pushes one activation per level and
+    /// sets its base from that level's own `MixinApplication.own_slot_base`
+    /// -- so an activation's base is fixed for its whole life and cannot be
+    /// observed describing another level. The assertion below states that
+    /// invariant where this function depends on it, in place of the
+    /// save/restore a single frame shared by the whole chain used to need.
     fn run_own_initializer(
         &mut self,
         class: &ClassRef,
         instance: &Value,
-        frame: &FrameRef,
+        act: &ActivationRef,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Result<(), Signal> {
         let compiled = match &self.engine {
@@ -511,8 +531,8 @@ impl Interpreter {
             Engine::Bytecode(module) => {
                 // Every BuiltinClass, and any class with nothing to run:
                 // a no-op under both engines. `run_initializer_level` does
-                // not even build a frame for such a level; this repeats the
-                // test because `compile_module` emits no initializer for
+                // not even push an activation for such a level; this repeats
+                // the test because `compile_module` emits no initializer for
                 // such a mixin, so the lookup below would have nothing to
                 // find if some other caller ever arrived here.
                 if !class_has_initializer_code(&self.heap, class) {
@@ -541,18 +561,18 @@ impl Interpreter {
         };
         match compiled {
             None => {
-                self.run_own_slots(class, instance, frame, bindings)?;
-                self.run_own_init_exprs(class, frame, bindings)
+                self.run_own_slots(class, instance, act, bindings)?;
+                self.run_own_init_exprs(class, act, bindings)
             }
             Some((code, own_slot_base)) => {
                 debug_assert_eq!(
-                    self.heap.frame_slot_base(frame),
+                    self.heap.activation_slot_base(act),
                     own_slot_base,
-                    "an initializer frame must be built for the level it runs"
+                    "an initializer activation must be built for the level it runs"
                 );
                 let needed = (code.num_registers - code.num_args) as usize;
-                self.heap.grow_temps(frame, needed);
-                crate::vm::run_code(self, frame, &code, bindings).map(|_| ())
+                self.heap.grow_activation_temps(act, needed);
+                crate::vm::run_code(self, act, &code, bindings).map(|_| ())
             }
         }
     }
@@ -561,7 +581,7 @@ impl Interpreter {
         &mut self,
         class: &ClassRef,
         instance: &Value,
-        frame: &FrameRef,
+        act: &ActivationRef,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Result<(), Signal> {
         // The application itself, not copies of the slot list and the merged
@@ -588,7 +608,7 @@ impl Interpreter {
             .filter_map(|s| s.decl.as_ref())
         {
             if let Some(init) = &slot.init {
-                let value = crate::interpreter::eval::eval_expr(self, init, frame, bindings)?;
+                let value = crate::interpreter::eval::eval_expr(self, init, act, bindings)?;
                 let name = Symbol::intern(&slot.name.name);
                 // Absolute index (superclass slots offset, per the
                 // `slot_index` fix above) -- never the slot's local,
@@ -629,7 +649,7 @@ impl Interpreter {
     fn run_own_init_exprs(
         &mut self,
         class: &ClassRef,
-        frame: &FrameRef,
+        act: &ActivationRef,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Result<(), Signal> {
         // The mixin, not a deep copy of the statements it holds: the AST is
@@ -642,7 +662,7 @@ impl Interpreter {
         for stmt in &application.mixin.init_exprs {
             match stmt {
                 ast::Stmt::Expr(e) | ast::Stmt::Return(e) => {
-                    crate::interpreter::eval::eval_expr(self, e, frame, bindings)?;
+                    crate::interpreter::eval::eval_expr(self, e, act, bindings)?;
                 }
             }
         }

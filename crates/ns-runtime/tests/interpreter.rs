@@ -1,7 +1,7 @@
 //! Interpreter core tests: expression evaluation, ordinary sends, and
-//! non-local return, built over hand-assembled `ClassData`/`Object`/`Frame`
-//! values -- the same construction pattern `dispatch.rs`'s own test module
-//! uses, extended here to actually *run* method bodies rather than
+//! non-local return, built over hand-assembled `ClassData`/`Object` values
+//! and activations -- the same construction pattern `dispatch.rs`'s own test
+//! module uses, extended here to actually *run* method bodies rather than
 //! only look them up.
 
 use std::collections::HashMap;
@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use ns_runtime::interpreter::eval;
 use ns_runtime::{
-    Binding, ClassData, ClosureData, Frame, FrameKind, Interpreter, Mixin, MixinApplication,
+    Binding, ClassData, ClosureData, FrameKind, Interpreter, Mixin, MixinApplication,
     NewspeakError, ObjectData, Signal, Symbol, Value,
 };
 
@@ -174,30 +174,30 @@ fn parse_block_body(src: &str) -> ns_syntax::ast::CodeBody {
     block.body.clone()
 }
 
-/// Builds a `Frame` shaped exactly like the one `Interpreter::invoke_method`
-/// would build for a trivial no-arg method -- used as a block's `home` in
-/// the non-local-return tests below, since block-invocation-selector native
-/// dispatch (`value`) could not be reached through `Interpreter::send` when
-/// these tests were written.
-fn method_frame(heap: &mut ns_runtime::Heap) -> ns_runtime::FrameRef {
+/// A live method activation, reified the way `MakeClosure` and
+/// `eval_block_literal` reify one: the block's `home` in the non-local
+/// return tests below. The caller pops it.
+fn live_method_activation(
+    heap: &mut ns_runtime::Heap,
+) -> (ns_runtime::ActivationRef, ns_runtime::FrameRef) {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^0 )\n) : ()";
     let module = ns_syntax::parse(src).expect("parse");
     let method = Rc::new(ns_runtime::mixin::MixinMethod::from_decl(Rc::new(
         module.root_class.instance_side.methods[0].clone(),
     )));
-    heap.alloc_frame(Frame {
-        receiver: Value::Nil,
-        args: vec![],
-        temps: vec![],
-        pc: 0,
-        pc_kind: ns_runtime::PcKind::TreeWalk,
-        sender: None,
-        home: None,
-        current_class: None,
-        kind: FrameKind::Method(method),
-        uncontinuable: false,
-        slot_base: 0,
-    })
+    let act = heap.push_activation(
+        ns_runtime::ActivationHeader {
+            receiver: Value::Nil,
+            current_class: None,
+            kind: FrameKind::Method(method),
+            pc_kind: ns_runtime::PcKind::TreeWalk,
+            slot_base: 0,
+        },
+        &[],
+        0,
+    );
+    let frame = heap.reify(&act);
+    (act, frame)
 }
 
 /// Sending a method whose body contains a bare
@@ -248,11 +248,10 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
 
 #[test]
 fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
-    // `[ ^1 ] value`, conceptually invoked from inside a method: the
-    // block's `home` is the enclosing method's own activation, not the
-    // block's own (freshly built, by `invoke_closure`) activation.
+    // `[ ^1 ] value`, invoked while its home method is still running: the
+    // return targets the home *activation*, not the block's own.
     let mut interp = Interpreter::new();
-    let home = method_frame(interp.heap_mut());
+    let (home, home_frame) = live_method_activation(interp.heap_mut());
     let block_body = parse_block_body(
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public withBlock = ( [ ^1 ] )\n) : ()",
     );
@@ -260,45 +259,43 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
     let closure = Rc::new(ClosureData {
         params: vec![],
         body: ns_runtime::ClosureBody::Ast(Rc::new(block_body)),
-        captured_frame: home,
-        home,
+        captured_frame: home_frame,
+        home: home_frame,
         bindings: bindings.clone(),
     });
 
     let result = eval::invoke_closure(&mut interp, &closure, vec![], &bindings);
 
-    // This is exactly the check `Interpreter::invoke_method` performs to
-    // convert a matching `Signal::Return` back into an ordinary value
-    // (`Err(Signal::Return(target, value)) if target.same(&frame)`)
-    // -- reproduced here since `home` was hand-built rather than produced
-    // by a live `invoke_method` call, which block dispatch would normally
-    // supply.
+    // Exactly the check `Interpreter::invoke_method` performs to turn a
+    // matching `Signal::Return` back into an ordinary value.
     match result {
-        Err(Signal::Return(target, Value::SmallInt(1))) => {
-            assert!(
-                target.same(&home),
-                "a non-local return must target the block's home *method* activation, not the block's own -- invoke_method's FrameRef::same catch depends on this"
-            );
-        }
+        Err(Signal::Return(target, Value::SmallInt(1))) => assert!(
+            target.same(&home),
+            "a non-local return must target the block's home method activation, not the block's own"
+        ),
         Ok(_) => {
             panic!("expected the block's `^1` to raise a non-local return, not return normally")
         }
-        Err(Signal::Return(_, other)) => {
-            panic!(
-                "expected Signal::Return(_, SmallInt(1)), got value {}",
-                interp.heap_ref().describe(&other)
-            )
-        }
+        Err(Signal::Return(_, other)) => panic!(
+            "expected Signal::Return(_, SmallInt(1)), got value {}",
+            interp.heap_ref().describe(&other)
+        ),
         Err(Signal::Error(e)) => {
             panic!("expected Signal::Return, got Signal::Error: {}", e.message)
         }
     }
+    assert_eq!(
+        interp.heap_ref().activation_depth(),
+        1,
+        "the block's own activation must be popped on the way out"
+    );
+    interp.heap_mut().pop_activation(&home);
 }
 
 #[test]
 fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_not_a_panic() {
     let mut interp = Interpreter::new();
-    let home = method_frame(interp.heap_mut());
+    let (home, home_frame) = live_method_activation(interp.heap_mut());
     let block_body = parse_block_body(
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public withBlock = ( [ ^1 ] )\n) : ()",
     );
@@ -306,36 +303,35 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
     let closure = Rc::new(ClosureData {
         params: vec![],
         body: ns_runtime::ClosureBody::Ast(Rc::new(block_body)),
-        captured_frame: home,
-        home,
+        captured_frame: home_frame,
+        home: home_frame,
         bindings: bindings.clone(),
     });
 
-    // First invocation succeeds and (as `raise_return` does on every
-    // successful return) marks `home` `uncontinuable` -- modeling the home
-    // method having now returned.
+    // While the home runs, the return reaches it.
     let first = eval::invoke_closure(&mut interp, &closure, vec![], &bindings);
     assert!(
         matches!(first, Err(Signal::Return(ref target, Value::SmallInt(1))) if target.same(&home))
     );
+
+    // The home method returns: its frame is divorced and dead.
+    interp.heap_mut().pop_activation(&home);
     assert!(
-        interp.heap_ref().frame_is_uncontinuable(&home),
-        "a successful non-local return must mark its target uncontinuable"
+        interp.heap_ref().frame_is_uncontinuable(&home_frame),
+        "a returned activation's frame must be uncontinuable"
     );
 
-    // Second invocation of the same (now-escaped) block: its home has
-    // already returned, so this must be the spec's `cannotReturn` case --
-    // a `NewspeakError`, not another `Signal::Return`, and not a panic.
+    // Invoking the same block again is the spec's `cannotReturn` case -- a
+    // `NewspeakError`, not another `Signal::Return`, and not a panic.
     let second = eval::invoke_closure(&mut interp, &closure, vec![], &bindings);
     match second {
-        Err(Signal::Error(NewspeakError { message, .. })) => {
-            assert!(
-                message.to_lowercase().contains("cannotreturn") || message.to_lowercase().contains("cannot return"),
-                "expected a cannotReturn-shaped error message, got: {message}"
-            );
-        }
+        Err(Signal::Error(NewspeakError { message, .. })) => assert!(
+            message.to_lowercase().contains("cannotreturn")
+                || message.to_lowercase().contains("cannot return"),
+            "expected a cannotReturn-shaped error message, got: {message}"
+        ),
         other => panic!(
-            "expected Err(Signal::Error(_)) for a re-return through an already-returned home, got a non-matching result ({})",
+            "expected Err(Signal::Error(_)) for a return through an already-returned home, got {}",
             match &other {
                 Ok(_) => "Ok(_)",
                 Err(Signal::Return(..)) => "Err(Signal::Return(_))",
@@ -345,14 +341,13 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
     }
 }
 
-/// `Frame.uncontinuable` must be set when a method returns *normally*, not
-/// only when `Interpreter::raise_return` handles an explicit `^`. A frame
-/// left continuable after its Rust-level `invoke_method` call returned has
-/// no live catcher, so a block captured during it and invoked afterwards
-/// raises a `Signal::Return` that escapes all the way out of the entry send
-/// and surfaces as the interpreter-invariant-shaped "internal: non-local
-/// return escaped the entry send" rather than the spec's `cannotReturn`
-/// case.
+/// A method's activation must be dead once it returns *normally*, not only
+/// after an explicit `^`. A home left live after its Rust-level
+/// `invoke_method` call returned has no catcher, so a block captured during
+/// it and invoked afterwards raises a `Signal::Return` that escapes all the
+/// way out of the entry send and surfaces as the interpreter-invariant-shaped
+/// "internal: non-local return escaped the entry send" rather than the
+/// spec's `cannotReturn` case.
 ///
 /// `capture` here has no explicit `^` at all: it stores `[^1]` into a slot
 /// and falls off the end (returning self). `runIt`, a *later, separate*
@@ -398,7 +393,7 @@ fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() 
         ),
         Err(Signal::Return(..)) => panic!(
             "a non-local return into an already-returned home method escaped `send` as a raw \
-             Signal::Return -- the home frame was never marked uncontinuable"
+             Signal::Return -- the home frame was never divorced from its activation"
         ),
     }
 }

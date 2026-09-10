@@ -13,34 +13,32 @@ use std::rc::Rc;
 use ns_syntax::Span;
 
 use crate::bytecode::{CompiledCode, Instr, Literal};
-use crate::heap::Heap;
+use crate::heap::{ActivationRef, Heap};
 use crate::interpreter::eval::{
-    dispatch_lexical_send, dispatch_super_send, frame_at_depth, home_of, malformed_int_error,
-    parse_int_literal, read_local, store_instance_field, unresolved_identifier_error, write_local,
+    dispatch_lexical_send, dispatch_super_send, home_of, malformed_int_error, parse_int_literal,
+    read_local, read_outer_local, store_instance_field, unresolved_identifier_error, write_local,
+    write_outer_local,
 };
 use crate::interpreter::{EvalResult, Interpreter};
 use crate::types::*;
 
-/// Runs `code` on `frame` until a terminating instruction. `frame` was built
-/// by the shared orchestration (`invoke_method`, `invoke_closure`, or
-/// `instantiate`) with `temps` sized to `code.num_registers - code.num_args`.
+/// Runs `code` on the live activation `act` until a terminating
+/// instruction. `act` was pushed by the shared orchestration
+/// (`invoke_method`, `invoke_closure`, `instantiate` or
+/// `nested::run_clause_body`) with registers for `code.num_registers`, and
+/// that same orchestration pops it.
 ///
-/// `frame.pc` is the safepoint view (`statement_pc` recovers the statement
-/// from it on demand), and it is stored *only by the instructions that can
-/// hand `frame` to an observer*: every `Send*` (a nested activation runs
-/// with this frame as its sender), `MakeClosure` (the frame escapes into the
-/// object graph, where `image::encode_frame` can serialize it), and
-/// `NonLocalReturn` (control leaves with a signal). Nothing can read `pc`
-/// while a straight-line instruction executes: `run_code` never yields
-/// between them, and the only reader in the tree, `image::encode_frame`,
-/// runs on a frame that reached it through one of those three. Keeping the
-/// store out of the straight-line arms takes a bounds-checked arena write
-/// off the hot path for a value nothing observes there. It used to take a
-/// `RefCell` borrow with it, which the arena removed, so what this saves is
-/// smaller than it was -- whether it still pays is a measurement.
+/// The activation's `pc` is the safepoint view (`statement_pc` recovers the
+/// statement from it on demand), and it is stored *only by the instructions
+/// that can hand the activation to an observer*: every `Send*` (a nested
+/// activation runs above this one), `MakeClosure` (it reifies this
+/// activation, and the frame it builds takes the `pc` stored just before),
+/// and `NonLocalReturn` (control leaves with a signal). Nothing can read
+/// `pc` while a straight-line instruction executes, because `run_code` never
+/// yields between them.
 pub fn run_code(
     interp: &mut Interpreter,
-    frame: &FrameRef,
+    act: &ActivationRef,
     code: &Rc<CompiledCode>,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
@@ -48,34 +46,32 @@ pub fn run_code(
     loop {
         match &code.instrs[pc] {
             Instr::LoadLiteral { dst, literal } => {
-                let v = make_value(interp, frame, literal)?;
-                write_local(&mut interp.heap, frame, *dst, v);
+                let v = make_value(interp, act, literal)?;
+                write_local(&mut interp.heap, act, *dst, v);
             }
             Instr::LoadSelf { dst } => {
-                let v = interp.heap.receiver(frame);
-                write_local(&mut interp.heap, frame, *dst, v);
+                let v = interp.heap.activation_receiver(act);
+                write_local(&mut interp.heap, act, *dst, v);
             }
             Instr::LoadBuiltinClass { dst, kind } => {
                 let v = Value::Obj(interp.builtin_class(*kind));
-                write_local(&mut interp.heap, frame, *dst, v);
+                write_local(&mut interp.heap, act, *dst, v);
             }
             Instr::Move { dst, src } => {
-                let v = read_local(&interp.heap, frame, *src);
-                write_local(&mut interp.heap, frame, *dst, v);
+                let v = read_local(&interp.heap, act, *src);
+                write_local(&mut interp.heap, act, *dst, v);
             }
             Instr::StoreLocal { src, slot } => {
-                let v = read_local(&interp.heap, frame, *src);
-                write_local(&mut interp.heap, frame, *slot, v);
+                let v = read_local(&interp.heap, act, *src);
+                write_local(&mut interp.heap, act, *slot, v);
             }
             Instr::LoadOuterLocal { dst, depth, index } => {
-                let target = frame_at_depth(&interp.heap, frame, *depth);
-                let v = read_local(&interp.heap, &target, *index);
-                write_local(&mut interp.heap, frame, *dst, v);
+                let v = read_outer_local(&interp.heap, act, *depth, *index);
+                write_local(&mut interp.heap, act, *dst, v);
             }
             Instr::StoreOuterLocal { src, depth, index } => {
-                let v = read_local(&interp.heap, frame, *src);
-                let target = frame_at_depth(&interp.heap, frame, *depth);
-                write_local(&mut interp.heap, &target, *index, v);
+                let v = read_local(&interp.heap, act, *src);
+                write_outer_local(&mut interp.heap, act, *depth, *index, v);
             }
             Instr::SendPublic {
                 selector,
@@ -87,11 +83,11 @@ pub fn run_code(
                 // wired up to read or write it yet.
                 ..
             } => {
-                let receiver = read_local(&interp.heap, frame, *receiver_reg);
-                let args = collect(&interp.heap, frame, arg_regs);
-                interp.heap.set_frame_pc(frame, pc);
+                let receiver = read_local(&interp.heap, act, *receiver_reg);
+                let args = collect(&interp.heap, act, arg_regs);
+                interp.heap.set_activation_pc(act, pc);
                 let result = interp.send(receiver, *selector, args, bindings)?;
-                write_local(&mut interp.heap, frame, *dst, result);
+                write_local(&mut interp.heap, act, *dst, result);
             }
             Instr::SendLexical {
                 depth,
@@ -100,11 +96,10 @@ pub fn run_code(
                 dst,
                 ..
             } => {
-                let args = collect(&interp.heap, frame, arg_regs);
-                interp.heap.set_frame_pc(frame, pc);
-                let result =
-                    dispatch_lexical_send(interp, frame, *depth, *selector, args, bindings)?;
-                write_local(&mut interp.heap, frame, *dst, result);
+                let args = collect(&interp.heap, act, arg_regs);
+                interp.heap.set_activation_pc(act, pc);
+                let result = dispatch_lexical_send(interp, act, *depth, *selector, args, bindings)?;
+                write_local(&mut interp.heap, act, *dst, result);
             }
             Instr::SendSuper {
                 selector,
@@ -112,31 +107,36 @@ pub fn run_code(
                 dst,
                 ..
             } => {
-                let args = collect(&interp.heap, frame, arg_regs);
-                interp.heap.set_frame_pc(frame, pc);
-                let result = dispatch_super_send(interp, frame, *selector, args, bindings)?;
-                write_local(&mut interp.heap, frame, *dst, result);
+                let args = collect(&interp.heap, act, arg_regs);
+                interp.heap.set_activation_pc(act, pc);
+                let result = dispatch_super_send(interp, act, *selector, args, bindings)?;
+                write_local(&mut interp.heap, act, *dst, result);
             }
             Instr::MakeClosure {
                 dst,
                 params,
                 code: block,
             } => {
-                interp.heap.set_frame_pc(frame, pc);
+                // Stored before reifying, so the frame `reify` builds
+                // carries this pc -- the point at which the activation
+                // escaped into the object graph.
+                interp.heap.set_activation_pc(act, pc);
+                let captured_frame = interp.heap.reify(act);
+                let home = home_of(&mut interp.heap, act);
                 let closure = Rc::new(ClosureData {
                     params: (**params).clone(),
                     body: ClosureBody::Compiled(block.clone()),
-                    captured_frame: *frame,
-                    home: home_of(&interp.heap, frame),
+                    captured_frame,
+                    home,
                     bindings: bindings.clone(),
                 });
                 let v = Value::Obj(interp.new_closure(closure));
-                write_local(&mut interp.heap, frame, *dst, v);
+                write_local(&mut interp.heap, act, *dst, v);
             }
             Instr::MakeArray { dst, elem_regs } => {
-                let values = collect(&interp.heap, frame, elem_regs);
+                let values = collect(&interp.heap, act, elem_regs);
                 let v = Value::Obj(interp.new_array(values));
-                write_local(&mut interp.heap, frame, *dst, v);
+                write_local(&mut interp.heap, act, *dst, v);
             }
             Instr::InitSlot { src, own_index } => {
                 // Shares `store_instance_field` with
@@ -144,42 +144,42 @@ pub fn run_code(
                 // `self`, silently skipped for a non-instance receiver.
                 // `own_index` is relative to the executing mixin's own
                 // slots (the same compiled body runs for every application
-                // of that mixin); `frame.slot_base` -- set once, when
-                // `Interpreter::run_initializer_level` builds this level's
-                // frame, from that level's own
+                // of that mixin); the activation's `slot_base` -- set once,
+                // when `Interpreter::run_initializer_level` pushes this
+                // level's activation, from that level's own
                 // `MixinApplication.own_slot_base` -- is what turns it into
                 // this instance's actual absolute field index.
-                let v = read_local(&interp.heap, frame, *src);
-                let receiver = interp.heap.receiver(frame);
-                let base = interp.heap.frame_slot_base(frame);
+                let v = read_local(&interp.heap, act, *src);
+                let receiver = interp.heap.activation_receiver(act);
+                let base = interp.heap.activation_slot_base(act);
                 store_instance_field(&mut interp.heap, &receiver, base + *own_index as usize, v);
             }
             Instr::Return { reg } | Instr::ImplicitReturn { reg } => {
-                return Ok(read_local(&interp.heap, frame, *reg));
+                return Ok(read_local(&interp.heap, act, *reg));
             }
             Instr::NonLocalReturn { reg } => {
-                let v = read_local(&interp.heap, frame, *reg);
-                interp.heap.set_frame_pc(frame, pc);
-                return Err(interp.raise_return_pub(frame, v));
+                let v = read_local(&interp.heap, act, *reg);
+                interp.heap.set_activation_pc(act, pc);
+                return Err(interp.raise_return_pub(act, v));
             }
             Instr::Jump { target } => {
                 pc = *target as usize;
                 continue;
             }
             Instr::JumpIfNotBoolean { reg, target } => {
-                if !matches!(read_local(&interp.heap, frame, *reg), Value::Bool(_)) {
+                if !matches!(read_local(&interp.heap, act, *reg), Value::Bool(_)) {
                     pc = *target as usize;
                     continue;
                 }
             }
             Instr::BranchIfFalse { reg, target } => {
-                if matches!(read_local(&interp.heap, frame, *reg), Value::Bool(false)) {
+                if matches!(read_local(&interp.heap, act, *reg), Value::Bool(false)) {
                     pc = *target as usize;
                     continue;
                 }
             }
             Instr::BranchIfTrue { reg, target } => {
-                if matches!(read_local(&interp.heap, frame, *reg), Value::Bool(true)) {
+                if matches!(read_local(&interp.heap, act, *reg), Value::Bool(true)) {
                     pc = *target as usize;
                     continue;
                 }
@@ -193,15 +193,15 @@ pub fn run_code(
     }
 }
 
-fn collect(heap: &Heap, frame: &FrameRef, regs: &[u16]) -> Vec<Value> {
-    regs.iter().map(|r| read_local(heap, frame, *r)).collect()
+fn collect(heap: &Heap, act: &ActivationRef, regs: &[u16]) -> Vec<Value> {
+    regs.iter().map(|r| read_local(heap, act, *r)).collect()
 }
 
 /// Materializes a literal exactly as `eval::eval_literal` does -- including
 /// the two deferred error cases, `MalformedInt` and `UnresolvedIdent`.
 /// Both raise through `eval.rs`'s own constructors rather than rebuilding
 /// the error here, so the two engines cannot drift apart in wording.
-fn make_value(interp: &mut Interpreter, frame: &FrameRef, literal: &Literal) -> EvalResult {
+fn make_value(interp: &mut Interpreter, act: &ActivationRef, literal: &Literal) -> EvalResult {
     Ok(match literal {
         Literal::Nil => Value::Nil,
         Literal::Bool(b) => Value::Bool(*b),
@@ -213,7 +213,7 @@ fn make_value(interp: &mut Interpreter, frame: &FrameRef, literal: &Literal) -> 
         Literal::Array(elements) => {
             let mut values = Vec::with_capacity(elements.len());
             for e in elements {
-                values.push(make_value(interp, frame, e)?);
+                values.push(make_value(interp, act, e)?);
             }
             Value::Obj(interp.new_array(values))
         }
@@ -222,7 +222,7 @@ fn make_value(interp: &mut Interpreter, frame: &FrameRef, literal: &Literal) -> 
             Err(message) => return Err(malformed_int_error(message)),
         },
         Literal::UnresolvedIdent(name) => {
-            let receiver = interp.heap.receiver(frame);
+            let receiver = interp.heap.activation_receiver(act);
             return Err(unresolved_identifier_error(name, receiver));
         }
     })

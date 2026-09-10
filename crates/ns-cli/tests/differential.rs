@@ -137,6 +137,31 @@ fn a_does_not_understand_error_is_identical_under_both_engines() {
     );
 }
 
+/// A block created while its class initializes, whose `^` runs after the
+/// initializer has returned. Its home is dead, so this is §7.2's
+/// `cannotReturn` -- under both engines, from the shared `raise_return`.
+/// Before the activation stack an initializer frame was never marked
+/// uncontinuable and the return escaped the entry send instead.
+#[test]
+fn a_return_from_a_block_whose_initializer_has_finished_is_cannot_return() {
+    let outcome = assert_engines_agree_on_source(
+        "init_block_return",
+        "Newspeak3\n'Test'\nclass InitBlockReturn usingPlatform: platform = Object new (\n\
+         \t| blk = [ ^2 ]. |\n) (\n\
+         \tpublic main: p args: a = (\n\
+         \t\tblk value.\n\
+         \t\tp transcript show: 'unreachable'; newLine\n\
+         \t)\n) : ()\n",
+    );
+    assert!(!outcome.ok, "a dead home must be an error");
+    assert!(
+        outcome.stderr.contains("cannotReturn"),
+        "expected cannotReturn, got: {}",
+        outcome.stderr
+    );
+    assert!(!outcome.stdout.contains("unreachable"));
+}
+
 #[test]
 fn a_non_boolean_receiver_of_an_inlined_selector_does_not_understand_under_both_engines() {
     let outcome = assert_engines_agree_on_source(

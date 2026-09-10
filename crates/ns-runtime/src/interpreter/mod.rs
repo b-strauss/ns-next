@@ -15,12 +15,12 @@ use ns_syntax::Span;
 
 use crate::bytecode::{method_key, CompiledModule};
 use crate::dispatch::{self, Lookup};
-use crate::heap::Heap;
+use crate::heap::{ActivationHeader, ActivationRef, Heap};
 use crate::types::*;
 use crate::Symbol;
 
 pub enum Signal {
-    Return(FrameRef, Value),
+    Return(ActivationRef, Value),
     Error(NewspeakError),
 }
 
@@ -220,7 +220,32 @@ impl Interpreter {
         &mut self.heap
     }
 
-    /// An ordinary (explicit-receiver) send: `newspeak-spec.pdf` §5.5.
+    /// An ordinary (explicit-receiver) send: `newspeak-spec.pdf` §5.5. See
+    /// `dispatch_send` for the order the cases are tried in.
+    ///
+    /// A send leaves the activation stack exactly as it found it: every
+    /// activation it pushes is popped on every exit, error paths included.
+    /// Checked here, at every send, because a leaked entry is otherwise
+    /// silent -- a later activation would sit on top of a dead one's
+    /// registers.
+    pub fn send(
+        &mut self,
+        receiver: Value,
+        selector: Symbol,
+        args: Vec<Value>,
+        bindings: &Rc<HashMap<Span, Binding>>,
+    ) -> EvalResult {
+        let depth = self.heap.activation_depth();
+        let result = self.dispatch_send(receiver, selector, args, bindings);
+        debug_assert_eq!(
+            self.heap.activation_depth(),
+            depth,
+            "a send must leave the activation stack as it found it"
+        );
+        result
+    }
+
+    /// `send` without its stack check.
     ///
     /// Checked first, before any lookup: `ClassName new` (or a class's own
     /// non-default factory selector) never has a real method to find --
@@ -232,7 +257,7 @@ impl Interpreter {
     /// `instantiate` directly; see its own doc comment for why this can
     /// never double-fire against the superclass clause's own deferred
     /// factory message (`run_initializer_level` never calls `send`).
-    pub fn send(
+    fn dispatch_send(
         &mut self,
         receiver: Value,
         selector: Symbol,
@@ -429,20 +454,13 @@ impl Interpreter {
         }
     }
 
-    /// Creates a `Frame`, runs the method body, and unwinds a matching
+    /// Pushes an activation, runs the method body, and unwinds a matching
     /// `Signal::Return` back into an ordinary value.
     ///
-    /// The frame is marked `uncontinuable` on *every* path out, not only
-    /// when the body executed an explicit `^` (which is all `raise_return`
-    /// itself ever marked): a method activation is dead the moment
-    /// `invoke_method` hands control back to its own caller, whether it
-    /// returned via `^`, fell off the end, or unwound something else. A
-    /// block captured during the activation and invoked afterwards then
-    /// sees the correct `cannotReturn` `NewspeakError` from `raise_return`,
-    /// instead of raising a `Signal::Return` at a frame whose Rust-level
-    /// `invoke_method` call has already returned -- which had no live
-    /// catcher left and surfaced as the interpreter-invariant-shaped
-    /// "internal: non-local return escaped the entry send".
+    /// The activation is popped on *every* path out -- `^`, falling off the
+    /// end, or an unwinding error or return. If a block captured it, popping
+    /// divorces its frame, which is what makes a later `^` from that block
+    /// the spec's `cannotReturn` rather than a return with no live catcher.
     pub fn invoke_method(
         &mut self,
         receiver: Value,
@@ -451,14 +469,14 @@ impl Interpreter {
         args: Vec<Value>,
         bindings: Rc<HashMap<Span, Binding>>,
     ) -> EvalResult {
-        // A frame's locals are addressed as one run of registers -- the
-        // arguments first, the declared temporaries after them -- and
-        // `eval::read_local`/`write_local` find the boundary by asking the
-        // frame how many arguments it was *given*, not how many the method
-        // declares. A wrong-arity activation therefore does not fail; it
-        // silently shifts every temporary by the difference and reads
-        // arguments back where a temporary should be, under both engines
-        // identically, which is why the differential harness cannot see it.
+        // An activation's locals are addressed as one run of registers --
+        // the arguments first, the declared temporaries after them -- and
+        // the run is laid out from how many arguments the activation was
+        // *given*, not how many the method declares. A wrong-arity
+        // activation therefore does not fail; it silently shifts every
+        // temporary by the difference and reads arguments back where a
+        // temporary should be, under both engines identically, which is why
+        // the differential harness cannot see it.
         // Silent wrong output with exit status 0 is the failure mode this
         // repository's invariants single out, so the mismatch is refused
         // here, in the orchestration both engines share, as an ordinary
@@ -481,9 +499,9 @@ impl Interpreter {
                 ),
             }));
         }
-        // Hook 1 (spec: "`vm.rs` and the engine hook"): the frame, the
-        // `uncontinuable` marking, and the `Signal::Return` catch are
-        // shared; only the body's evaluation differs.
+        // Hook 1 (spec: "`vm.rs` and the engine hook"): the activation's
+        // push and pop and the `Signal::Return` catch are shared; only the
+        // body's evaluation differs.
         let compiled = match &self.engine {
             Engine::TreeWalk => None,
             Engine::Bytecode(module) => Some(
@@ -496,36 +514,33 @@ impl Interpreter {
                     }),
             ),
         };
-        // The tree-walker sizes the frame from the declaration's own named
-        // temporaries, and only ever runs a mixin built from source, so
-        // `decl` is always there when it is the one asking.
+        // The tree-walker sizes the activation from the declaration's own
+        // named temporaries, and only ever runs a mixin built from source,
+        // so `decl` is always there when it is the one asking.
         let temp_count = match &compiled {
             Some(code) => (code.num_registers - code.num_args) as usize,
             None => method.decl.as_ref().map_or(0, |d| d.body.temps.len()),
         };
-        let frame = self.heap.alloc_frame(Frame {
-            receiver,
-            args,
-            temps: vec![Value::Nil; temp_count],
-            pc: 0,
-            // Fixed by the same `compiled` that decides which body runs
-            // below, so the frame can never claim a unit its own body does
-            // not count in.
-            pc_kind: match &compiled {
-                Some(_) => PcKind::Bytecode,
-                None => PcKind::TreeWalk,
+        let act = self.heap.push_activation(
+            ActivationHeader {
+                receiver,
+                current_class: Some(defining_class),
+                kind: FrameKind::Method(method.clone()),
+                // Fixed by the same `compiled` that decides which body runs
+                // below, so the activation can never claim a unit its own
+                // body does not count in.
+                pc_kind: match &compiled {
+                    Some(_) => PcKind::Bytecode,
+                    None => PcKind::TreeWalk,
+                },
+                slot_base: 0, // a method body never contains InitSlot
             },
-            // A live activation's sender is structural (the activation stack, from M4 step 1a on); a stored one is never read.
-            sender: None,
-            home: None,
-            current_class: Some(defining_class),
-            kind: FrameKind::Method(method.clone()),
-            uncontinuable: false,
-            slot_base: 0, // a method body never contains InitSlot
-        });
+            &args,
+            temp_count,
+        );
         let result = match (&compiled, &method.decl) {
-            (Some(code), _) => crate::vm::run_code(self, &frame, code, &bindings),
-            (None, Some(decl)) => self.run_statements(&decl.body.stmts, &frame, &bindings),
+            (Some(code), _) => crate::vm::run_code(self, &act, code, &bindings),
+            (None, Some(decl)) => self.run_statements(&decl.body.stmts, &act, &bindings),
             // Unreachable rather than merely unlikely: a mixin without
             // declarations comes from an image, and `image::load` installs
             // `Engine::Bytecode`, so such a method always arrives compiled.
@@ -534,10 +549,10 @@ impl Interpreter {
                  decoded from an image"
             ),
         };
-        self.heap.mark_uncontinuable(&frame);
+        self.heap.pop_activation(&act);
         match result {
             Ok(value) => Ok(value),
-            Err(Signal::Return(target, value)) if target.same(&frame) => Ok(value),
+            Err(Signal::Return(target, value)) if target.same(&act) => Ok(value),
             Err(other) => Err(other),
         }
     }
@@ -545,56 +560,58 @@ impl Interpreter {
     fn run_statements(
         &mut self,
         stmts: &[ast::Stmt],
-        frame: &FrameRef,
+        act: &ActivationRef,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> EvalResult {
         let mut last = Value::Nil;
         for (i, stmt) in stmts.iter().enumerate() {
-            self.heap.set_frame_pc(frame, i);
+            self.heap.set_activation_pc(act, i);
             match stmt {
                 ast::Stmt::Expr(e) => {
-                    last = eval::eval_expr(self, e, frame, bindings)?;
+                    last = eval::eval_expr(self, e, act, bindings)?;
                 }
                 ast::Stmt::Return(e) => {
-                    let value = eval::eval_expr(self, e, frame, bindings)?;
-                    return Err(self.raise_return(frame, value));
+                    let value = eval::eval_expr(self, e, act, bindings)?;
+                    return Err(self.raise_return(act, value));
                 }
             }
         }
         // No explicit return: methods return `self` (spec §3.5), closures
-        // return the last expression's value (§5.1.8). `eval.rs`'s block
-        // invocation handles the closure case directly and never calls
-        // `run_statements` through this method-shaped path for a closure
-        // body's implicit-return value.
-        if self.heap.frame_is_method(frame) {
-            Ok(self.heap.receiver(frame))
+        // return the last expression's value (§5.1.8).
+        if self.heap.activation_is_method(act) {
+            Ok(self.heap.activation_receiver(act))
         } else {
             Ok(last)
         }
     }
 
-    fn raise_return(&mut self, frame: &FrameRef, value: Value) -> Signal {
-        // `Frame.home` is populated exactly when `kind` is
-        // `FrameKind::Closure` (`eval::invoke_closure` sets it to that
-        // closure's own `home` at construction, and nothing else ever sets
-        // it), so reading it here reaches the same target the per-kind
-        // match used to: the closure's enclosing method/initializer for a
-        // block activation, or the activation itself for every other kind.
-        let target = self.heap.frame_home(frame).unwrap_or(*frame);
-        if self.heap.frame_is_uncontinuable(&target) {
-            return Signal::Error(NewspeakError {
-                selector: Symbol::intern("^"),
-                receiver: value,
-                message: "cannotReturn: the enclosing method activation has already returned"
-                    .to_string(),
-            });
-        }
-        self.heap.mark_uncontinuable(&target);
+    /// Where a `^` in `act` returns to. A block returns from its home --
+    /// the method or initializer that lexically encloses it -- and only
+    /// while that activation is still running: its reified frame is married
+    /// to a live stack entry exactly until the activation returns, and a
+    /// frame the image decoder built never is. A dead home is §7.2's
+    /// `cannotReturn`. Every other activation's `^` returns from itself.
+    fn raise_return(&mut self, act: &ActivationRef, value: Value) -> Signal {
+        let target = match self.heap.activation_home(act) {
+            None => *act,
+            Some(home) => match self.heap.frame_activation(&home) {
+                Some(live) => live,
+                None => {
+                    return Signal::Error(NewspeakError {
+                        selector: Symbol::intern("^"),
+                        receiver: value,
+                        message:
+                            "cannotReturn: the enclosing method activation has already returned"
+                                .to_string(),
+                    })
+                }
+            },
+        };
         Signal::Return(target, value)
     }
 
-    pub(crate) fn raise_return_pub(&mut self, frame: &FrameRef, value: Value) -> Signal {
-        self.raise_return(frame, value)
+    pub(crate) fn raise_return_pub(&mut self, act: &ActivationRef, value: Value) -> Signal {
+        self.raise_return(act, value)
     }
 
     pub fn class_of(&self, value: &Value) -> ClassRef {

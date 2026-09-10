@@ -115,7 +115,7 @@ fn wrap_error(result: Result<Value, NewspeakError>) -> EvalResult {
 /// every `ifTrue: [^expr]` and `do: [:e | ... ^expr]` idiom there is. A
 /// return that really is aimed at a dead frame becomes a
 /// `cannotReturn`-style `NewspeakError` further down, in
-/// `Interpreter::raise_return`'s own `uncontinuable` check
+/// `Interpreter::raise_return`'s own check that the home is still live
 /// (`interpreter/mod.rs`), and that check runs regardless of how many
 /// native primitive frames the signal passes through on its way up -- so
 /// nothing here needs to re-implement it.
