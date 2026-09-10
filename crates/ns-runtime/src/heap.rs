@@ -1829,6 +1829,41 @@ mod tests {
         let _ = other.activation_local(&mine, 0);
     }
 
+    /// `ActivationRef::same` is how `invoke_method` and `run_clause_body`
+    /// decide that a `Signal::Return` is theirs, and it is handed two handles
+    /// and no `Heap`, so no accessor guard can reach it. Both handles below
+    /// are the first entry of their own heap's stack, so they share an index
+    /// and a release build answers "identical".
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "handle belongs to a different heap (comparing handle from heap")]
+    fn comparing_two_activation_handles_from_different_heaps_panics() {
+        let mut origin = Heap::new();
+        let mine = origin.push_activation(header(), &[], 1);
+        let mut other = Heap::new();
+        let theirs = other.push_activation(header(), &[], 1);
+        let _ = mine.same(&theirs);
+    }
+
+    /// The comparison `same`'s doc comment argues cannot happen: a catcher
+    /// holding a handle whose entry was popped, compared against the
+    /// activation that reused its index. A release build answers
+    /// "identical", which would land a return in the wrong activation; a
+    /// debug build must refuse the comparison instead of trusting that
+    /// argument.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(
+        expected = "stale activation handle: compared against a later activation at the same depth"
+    )]
+    fn comparing_a_popped_activation_handle_with_its_successor_panics() {
+        let mut heap = Heap::new();
+        let first = heap.push_activation(header(), &[], 1);
+        heap.pop_activation(&first);
+        let second = heap.push_activation(header(), &[], 1);
+        let _ = first.same(&second);
+    }
+
     /// Popping below the top would truncate the registers of every
     /// activation above it while their handles still look valid.
     #[test]

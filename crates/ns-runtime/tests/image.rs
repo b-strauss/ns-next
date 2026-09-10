@@ -5144,6 +5144,137 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
     assert!(err.contains("no activation is running"), "{err}");
 }
 
+/// The format records a frame's `sender`, and the decoder rebuilds it, but
+/// the runtime never sets one: a live activation's sender is the stack entry
+/// below it, and a returned one has none. So only a hand-built frame can
+/// carry one into the encoder, and this is the test that keeps that half of
+/// the frame record from rotting unnoticed.
+#[test]
+fn a_frames_sender_survives_a_round_trip() {
+    let (interp, _class, _o, decoded, _max) =
+        round_trip_graph(TRIVIAL_MODULE, |interp, class, bindings| {
+            let foo = interp
+                .compiled_module()
+                .expect("the bytecode engine is active")
+                .methods
+                .get(&class_method_key(interp.heap_ref(), class, "foo"))
+                .cloned()
+                .expect("`foo` is compiled");
+            let frame_running = |receiver: i64, sender| ns_runtime::Frame {
+                receiver: Value::SmallInt(receiver),
+                args: vec![],
+                temps: vec![Value::Nil; foo.num_registers as usize],
+                pc: 0,
+                pc_kind: ns_runtime::PcKind::Bytecode,
+                sender,
+                home: None,
+                current_class: Some(*class),
+                kind: FrameKind::TopLevel,
+                uncontinuable: true,
+                slot_base: 0,
+            };
+            let sender = interp.heap_mut().alloc_frame(frame_running(7, None));
+            let frame = interp
+                .heap_mut()
+                .alloc_frame(frame_running(8, Some(sender)));
+            let block_class = interp.builtin_class(BuiltinClass::Block);
+            vec![Value::Obj(interp.heap_mut().alloc_object(
+                block_class,
+                ObjectData::Closure(ns_runtime::ClosureData {
+                    params: vec![],
+                    body: ClosureBody::Compiled(foo.clone()),
+                    captured_frame: frame,
+                    home: frame,
+                    bindings: bindings.clone(),
+                }),
+            ))]
+        });
+    let heap = interp.heap_ref();
+    let c = heap
+        .closure_data(obj(&decoded[0]))
+        .expect("expected a closure");
+    assert!(matches!(heap.frame_receiver(&c.home), Value::SmallInt(8)));
+    let sender = heap
+        .frame_sender(&c.home)
+        .expect("the decoded frame keeps its sender");
+    assert!(!sender.same(&c.home));
+    assert!(matches!(heap.frame_receiver(&sender), Value::SmallInt(7)));
+    assert!(heap.frame_sender(&sender).is_none());
+}
+
+/// A decoded frame never ran in the loading world, so it is never married
+/// and no `^` can return into it -- whatever its record's `uncontinuable`
+/// flag says. `raise_return` decides a home's liveness by
+/// `Heap::frame_activation`, not by that flag: a file claiming a
+/// continuable home must still produce `cannotReturn` rather than a
+/// `Signal::Return` that no activation on the stack will ever catch.
+#[test]
+fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_continuable() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public mk = ( ^[ ^1 ] )\n) : ()";
+    let (mut interp, class, bindings) = load(src);
+    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
+    interp
+        .set_engine(Engine::Bytecode(module))
+        .expect("a source-built interpreter accepts the bytecode engine");
+    let platform = interp.platform();
+    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
+    let closure = expect_ok(
+        interp.send(instance, Symbol::intern("mk"), vec![], &bindings),
+        "mk",
+    );
+    // `mk` has returned, so its frame is divorced and marked uncontinuable.
+    // Clear the flag, as a hand-edited file could.
+    let home = interp
+        .heap_ref()
+        .closure_data(obj(&closure))
+        .expect("expected a closure")
+        .home;
+    let mut forged = interp.heap_ref().frame_snapshot(&home);
+    assert!(forged.uncontinuable, "`mk` had returned");
+    forged.uncontinuable = false;
+    interp.heap_mut().replace_frame(&home, forged);
+    let bytes = image::snapshot(
+        interp.heap_ref(),
+        None,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        interp.compiled_module().expect("bytecode engine"),
+        &platform,
+        &[instance, closure],
+    )
+    .expect("snapshot");
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let decoded = loaded.roots[1];
+    let decoded_home = loaded
+        .interp
+        .heap_ref()
+        .closure_data(obj(&decoded))
+        .expect("expected a closure")
+        .home;
+    assert!(
+        !loaded
+            .interp
+            .heap_ref()
+            .frame_is_uncontinuable(&decoded_home),
+        "the flag the file carried must survive decoding, or this tests nothing"
+    );
+    assert!(loaded
+        .interp
+        .heap_ref()
+        .frame_activation(&decoded_home)
+        .is_none());
+    let bindings = loaded.empty_bindings.clone();
+    match loaded
+        .interp
+        .send(decoded, Symbol::intern("value"), vec![], &bindings)
+    {
+        Err(Signal::Error(e)) => assert!(e.message.contains("cannotReturn"), "{}", e.message),
+        Err(Signal::Return(..)) => panic!("the return escaped instead of being refused"),
+        Ok(_) => panic!("a `^` into a decoded home must not return normally"),
+    }
+}
+
 /// A module written so that every *interesting* kind of source text is
 /// present and distinctive: a comment, an initializer expression, a slot
 /// clause, several method bodies, and a nested class. Each line the leak
