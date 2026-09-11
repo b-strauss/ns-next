@@ -7,10 +7,10 @@ Rust 1.98.0, edition 2021, three crates:
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`.
 - `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`),
   the VM (`vm.rs`) and the send machinery it calls (`interpreter/`), core library
-  (`builtins/`), image format (`image/`). Objects live in an arena owned by one `Heap` (`heap.rs`) and are
-  addressed by 32-bit handles; activations live on an activation stack in the
-  same `Heap` and are reified into the frame arena only when a block captures
-  one. Nothing reclaims an arena slot yet.
+  (`builtins/`), image format (`image/`). Objects live in an arena owned by one
+  `Heap` (`heap.rs`) and are addressed by 32-bit handles; activations live on an
+  activation stack in the same `Heap` and are reified into the frame arena only
+  when a block captures one. Nothing reclaims an arena slot yet.
 - `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
   `snapshot`, `load`, `bench`, `disasm`, `inspect`, `build`.
 

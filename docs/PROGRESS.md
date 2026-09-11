@@ -26,10 +26,14 @@ on a live activation. Three steps come before 1b, each landing on its own:
 - **A — Retire the tree-walker. Done.** Its verdicts were harvested into golden
   outcomes first, then everything that existed only because there were two
   engines was removed; see "M4 — Retiring the tree-walker" below.
-- **B — Clean up with one engine. Next.** Behaviour-preserving refactoring and
-  more idiomatic Rust, measured wherever it touches a hot path, with the golden
-  outcomes as the guard. The small items the retirement left behind are listed
-  under "M4 — Retiring the tree-walker" below, and are B's starting inventory.
+- **B — Clean up with one engine. Next; its plan is written first.**
+  Behaviour-preserving refactoring and more idiomatic Rust, now that no code has
+  to serve a second engine — measured wherever it touches a hot path, with the
+  golden outcomes as the guard, so a golden that changes means B changed
+  behaviour and went too far. B changes no design, so nothing under
+  `docs/design/` describes it: this entry is its brief, and the items the
+  retirement left behind, listed under "M4 — Retiring the tree-walker" below,
+  are its starting inventory.
 - **C — The reference lowering**, the differential oracle the retired
   tree-walker used to be ([compiler.md](design/compiler.md), "Planned: the
   reference lowering"). Its design has to settle how a recursion-depth limit
