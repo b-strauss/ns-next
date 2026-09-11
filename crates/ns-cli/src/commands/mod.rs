@@ -1,0 +1,10 @@
+pub(crate) mod bench;
+pub(crate) mod build;
+pub(crate) mod disasm;
+pub(crate) mod inspect;
+pub(crate) mod load;
+pub(crate) mod parse;
+pub(crate) mod parse_corpus;
+pub(crate) mod run;
+pub(crate) mod run_corpus;
+pub(crate) mod snapshot;

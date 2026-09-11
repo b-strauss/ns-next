@@ -1,0 +1,61 @@
+//! `ns-next snapshot`.
+
+use std::path::Path;
+use std::process::ExitCode;
+
+use crate::entry;
+use crate::source;
+
+/// `ns-next snapshot`: `run`'s pipeline up to (and optionally including)
+/// the entry send, then a serialized image of the resulting world. The
+/// image's own code table is what a later `load` runs.
+pub(crate) fn execute(file: &Path, out: &Path, send: Option<&str>, debug_source: bool) -> ExitCode {
+    let loaded = match source::load_source(file) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+    let (mut interp, class) = source::bootstrap(&loaded);
+    let instance = match entry::instantiate_root(&mut interp, class) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let platform = interp.platform();
+    let mut roots = vec![instance];
+    if let Some(selector) = send {
+        let args = match entry::entry_args(selector, platform) {
+            Ok(args) => args,
+            Err(msg) => {
+                eprintln!("error: {msg}");
+                return ExitCode::FAILURE;
+            }
+        };
+        match interp.send(instance, ns_runtime::Symbol::intern(selector), args) {
+            Ok(result) => roots.push(result),
+            Err(signal) => return entry::report_entry_send(Err(signal)),
+        }
+    }
+    let bytes = match ns_runtime::image::snapshot(
+        interp.heap_ref(),
+        debug_source.then_some(loaded.source.as_str()),
+        &loaded.origin,
+        class,
+        &platform,
+        &roots,
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: snapshot failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match std::fs::write(out, bytes) {
+        Ok(()) => {
+            println!("wrote {}", out.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: writing {}: {e}", out.display());
+            ExitCode::FAILURE
+        }
+    }
+}
