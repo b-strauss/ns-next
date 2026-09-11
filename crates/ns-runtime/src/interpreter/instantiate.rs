@@ -13,12 +13,12 @@ use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
 use crate::types::*;
 use crate::Symbol;
 
-use super::{Engine, EvalResult, Interpreter, Signal};
+use super::{EvalResult, Interpreter, Signal};
 
 /// A class body's methods as a mixin's method dictionary: everything a
-/// lookup or an engine hook reads is lifted out of the declaration here, so
-/// that a mixin decoded from an image -- which has no declaration at all --
-/// answers the same questions from the same fields.
+/// lookup or `Interpreter::invoke_method` reads is lifted out of the
+/// declaration here, so that a mixin decoded from an image -- which has no
+/// declaration at all -- answers the same questions from the same fields.
 fn build_methods(body: &ast::ClassBody) -> HashMap<Symbol, Rc<MixinMethod>> {
     body.methods
         .iter()
@@ -66,7 +66,7 @@ impl Interpreter {
     /// it (the accessor); until then it is pure, unapplied structure.
     ///
     /// It also compiles the whole mixin tree and installs the code, adding it
-    /// to any an earlier load installed: a class this returns is already
+    /// to whatever an earlier load installed: a class this returns is already
     /// runnable, so nothing can send to a loaded class whose code was never
     /// compiled.
     pub fn load_module(&mut self, resolved: &ResolvedModule) -> ClassRef {
@@ -124,7 +124,7 @@ impl Interpreter {
             // instantiated by `new`, which is also what an omitted
             // superclass-clause *message* defaults to -- the two halves of
             // the same rule, so `class C = (...)` inherits from `Object`
-            // through `new` under both engines.
+            // through `new`.
             factory: Some(match &decl.factory {
                 Some(pattern) => Factory {
                     selector: Symbol::intern(&method_name(pattern)),
@@ -138,8 +138,9 @@ impl Interpreter {
             superclass: decl.superclass.as_ref().map(superclass_clause_of),
             has_init_exprs: !decl.instance_side.init_exprs.is_empty(),
             // Class instantiation "must fix" #1: this class's own initExprs,
-            // evaluated for real by `run_own_init_exprs` below (Step 5 of
-            // the spec's six numbered steps).
+            // lowered into the instance initializer by
+            // `compiler::compile_mixin_initializer` (Step 5 of the spec's six
+            // numbered steps).
             init_exprs: decl.instance_side.init_exprs.clone(),
             nested,
             class_side,
@@ -368,7 +369,7 @@ impl Interpreter {
         }
 
         // Step 2, built here rather than above it: a level with no slots and
-        // no `initExprs` runs no code at all under either engine (see
+        // no `initExprs` runs no code at all (see
         // `run_own_initializer`), so its activation could never be observed
         // -- and every chain ends at a builtin, which is exactly such a
         // level. Building it only where something runs in it keeps one
@@ -388,14 +389,6 @@ impl Interpreter {
                 receiver: *instance,
                 current_class: Some(*class),
                 kind: FrameKind::Initializer(*class),
-                // `run_own_initializer` below picks the body off the same
-                // engine, and this activation is built only when that level
-                // has initializer code to run -- so under `Engine::Bytecode`
-                // it always ends up executing a `CompiledCode`.
-                pc_kind: match &self.engine {
-                    Engine::TreeWalk => PcKind::TreeWalk,
-                    Engine::Bytecode(_) => PcKind::Bytecode,
-                },
                 slot_base: self
                     .heap
                     .class_application(class)
@@ -406,9 +399,9 @@ impl Interpreter {
         );
 
         // Steps 4-5: this class's own slot clauses (declaration order), then
-        // its own initExprs -- engine hook 3. Popped on every path out, like
-        // every activation.
-        let result = self.run_own_initializer(class, instance, &act, bindings);
+        // its own initExprs. Popped on every path out, like every
+        // activation.
+        let result = self.run_own_initializer(class, &act, bindings);
         self.heap.pop_activation(&act);
         result
     }
@@ -436,8 +429,8 @@ impl Interpreter {
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Result<Vec<Value>, Signal> {
         // One lookup of the application for both questions below: the clause
-        // this class was declared with, and (under the bytecode engine) the
-        // mixin its compiled message body is keyed by.
+        // this class was declared with, and the mixin its compiled message
+        // body is keyed by.
         let application = self.heap.class_application(class);
         let clause = application
             .as_ref()
@@ -462,219 +455,75 @@ impl Interpreter {
             // evaluate, no activation built, nothing allocated.
             return Ok(vec![]);
         }
-        let compiled = match (&self.engine, &application) {
-            (Engine::TreeWalk, _) | (_, None) => None,
-            (Engine::Bytecode(module), Some(application)) => Some(
-                module
+        let code = application
+            .as_ref()
+            .and_then(|application| {
+                self.code
                     .superclass_messages
                     .get(&crate::mixin::mixin_key(&application.mixin))
                     .cloned()
-                    .unwrap_or_else(|| {
-                        panic!("internal: mixin whose superclass clause message takes arguments has no compiled form for it (compile_module coverage gap)")
-                    }),
-            ),
-        };
-        // The argument expressions are for the tree-walker alone, and
-        // building them clones the whole argument list -- on a path that
-        // runs at every instantiation, so it is built only when there is no
-        // compiled body to run instead.
-        let args_expr = match compiled {
-            Some(_) => None,
-            None => application
-                .as_ref()
-                .and_then(|application| application.mixin.decl.as_ref())
-                .and_then(|decl| decl.superclass.as_ref())
-                .and_then(super::nested::superclass_clause_message_args_expr),
-        };
+            })
+            .unwrap_or_else(|| {
+                panic!("internal: mixin whose superclass clause message takes arguments has no compiled form for it (compile_module coverage gap)")
+            });
         // The message is evaluated on the instance being initialized and
         // with *this* level's factory arguments -- §6.2's "in the context of
-        // the instance initializer". `run_clause_body` is the same shared
-        // activation the nested-class accessor runs the clause's receiver
-        // through, so neither engine gets a path of its own here.
+        // the instance initializer" -- through the same activation the
+        // nested-class accessor runs a clause's receiver in.
         let value = super::nested::run_clause_body(
             self,
             instance,
             factory_args.to_vec(),
             class,
             FrameKind::SuperclassMessage(*class),
-            compiled,
-            args_expr.as_ref(),
+            code,
             bindings,
         )?;
         argument_list(&self.heap, class, value)
     }
 
-    /// Engine hook 3 (M2 spec, "`vm.rs` and the engine hook"): Class
-    /// Instantiation steps 4-5 for one level of the chain -- this class's
-    /// own slot initializers, then its own `initExprs`, on that level's own
-    /// initializer activation. The tree-walker runs `run_own_slots` +
-    /// `run_own_init_exprs`; the bytecode engine runs the class's compiled
-    /// initializer (`compiler::compile_initializer`) after growing the
-    /// activation's register file to fit it. Both engines run the same
-    /// steps in the same order on the same activation.
+    /// Class Instantiation steps 4-5 for one level of the chain: this class's
+    /// compiled instance initializer -- its own slot initializers, then its
+    /// own `initExprs` -- on that level's own activation, after growing the
+    /// activation's register file to fit the body.
     ///
-    /// Review finding (round 1): `InitSlot`'s `own_index` is relative to the
-    /// mixin's own slots, not an absolute field index -- the compiled body
-    /// is shared by every application of the mixin (`compile_module` keys
-    /// by `mixin_key`), so it cannot bake in any one application's offset.
-    /// The activation's `slot_base` is what turns `own_index` into an
-    /// absolute index at run time: the same per-application value
-    /// `run_own_slots`'s tree-walking sibling reads through `slot_index`,
-    /// fetched once instead of per slot. Its one writer is
-    /// `run_initializer_level`, which pushes one activation per level and
-    /// sets its base from that level's own `MixinApplication.own_slot_base`
-    /// -- so an activation's base is fixed for its whole life and cannot be
-    /// observed describing another level. The assertion below states that
-    /// invariant where this function depends on it, in place of the
-    /// save/restore a single frame shared by the whole chain used to need.
+    /// `InitSlot`'s `own_index` is relative to the mixin's own slots, not an
+    /// absolute field index, because the compiled body is shared by every
+    /// application of the mixin. The activation's `slot_base` turns it into
+    /// an absolute index at run time; `run_initializer_level` sets it once,
+    /// from this level's own `MixinApplication.own_slot_base`, which the
+    /// assertion below states.
     fn run_own_initializer(
         &mut self,
         class: &ClassRef,
-        instance: &Value,
         act: &ActivationRef,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Result<(), Signal> {
-        let compiled = match &self.engine {
-            Engine::TreeWalk => None,
-            Engine::Bytecode(module) => {
-                // Every BuiltinClass, and any class with nothing to run:
-                // a no-op under both engines. `run_initializer_level` does
-                // not even push an activation for such a level; this repeats
-                // the test because `compile_module` emits no initializer for
-                // such a mixin, so the lookup below would have nothing to
-                // find if some other caller ever arrived here.
-                if !class_has_initializer_code(&self.heap, class) {
-                    return Ok(());
-                }
-                Some({
-                    // Keyed by mixin, not by class object (§6.2: every
-                    // application of a mixin shares its code) -- so the
-                    // lookup goes through the class's application, not its
-                    // own arena index. The application itself is kept
-                    // (not just its mixin) because its `own_slot_base` is
-                    // what makes the shared code correct for *this* level.
-                    let application = self.heap.class_application(class).expect(
-                        "internal: class_has_initializer_code confirmed this is a class object",
-                    );
-                    let code = module
-                        .initializers
-                        .get(&crate::mixin::mixin_key(&application.mixin))
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            panic!("internal: class has no compiled instance initializer (compile_module coverage gap)")
-                        });
-                    (code, application.own_slot_base)
-                })
-            }
-        };
-        match compiled {
-            None => {
-                self.run_own_slots(class, instance, act, bindings)?;
-                self.run_own_init_exprs(class, act, bindings)
-            }
-            Some((code, own_slot_base)) => {
-                debug_assert_eq!(
-                    self.heap.activation_slot_base(act),
-                    own_slot_base,
-                    "an initializer activation must be built for the level it runs"
-                );
-                let needed = (code.num_registers - code.num_args) as usize;
-                self.heap.grow_activation_temps(act, needed);
-                crate::vm::run_code(self, act, &code, bindings).map(|_| ())
-            }
-        }
-    }
-
-    fn run_own_slots(
-        &mut self,
-        class: &ClassRef,
-        instance: &Value,
-        act: &ActivationRef,
-        bindings: &Rc<HashMap<Span, Binding>>,
-    ) -> Result<(), Signal> {
-        // The application itself, not copies of the slot list and the merged
-        // `slot_index` map it holds: both are read-only here, and cloning
-        // them once per level per instantiation is allocation on the
-        // tree-walker's hottest path (and in the baseline `bench` hands the
-        // next milestone). Holding the `Rc` also releases the borrow on
-        // `class`, so the loop below can call back into `self`.
-        let Some(application) = self.heap.class_application(class) else {
+        // A builtin, or any class with nothing to run: `compile_module` emits
+        // no initializer for such a mixin, so there is nothing to look up.
+        if !class_has_initializer_code(&self.heap, class) {
             return Ok(());
-        };
-        // Only the tree-walker reaches this function, and
-        // `Interpreter::set_engine` refuses the tree-walker on a world
-        // decoded from an image (`EngineUnavailable::TreeWalkAfterLoad`), so
-        // every mixin that gets here was built from source and every slot
-        // has its declaration. That refusal is what makes skipping a
-        // declarationless slot below safe to read as "no slot is dropped":
-        // without it a decoded slot would be skipped silently and the
-        // instance would come back half-initialised.
-        for slot in application
-            .mixin
-            .slots
-            .iter()
-            .filter_map(|s| s.decl.as_ref())
-        {
-            if let Some(init) = &slot.init {
-                let value = crate::interpreter::eval::eval_expr(self, init, act, bindings)?;
-                let name = Symbol::intern(&slot.name.name);
-                // Absolute index (superclass slots offset, per the
-                // `slot_index` fix above) -- never the slot's local,
-                // this-class-only position. Using a bare `enumerate()`
-                // index here would silently overwrite an already-initialized
-                // superclass slot at the same low index instead of this
-                // class's own slot.
-                if let Some(&index) = application.slot_index.get(&name) {
-                    crate::interpreter::eval::store_instance_field(
-                        &mut self.heap,
-                        instance,
-                        index,
-                        value,
-                    );
-                }
-            }
         }
-        Ok(())
-    }
-
-    /// Class instantiation "must fix" #1: evaluates this class's own
-    /// `initExprs` (spec's Class Instantiation step 5), in declaration
-    /// order, discarding each statement's value -- mirroring
-    /// `Interpreter::run_statements`'s loop but without a return-value
-    /// capture. A `Stmt::Return` inside an `initExprs` list is not
-    /// meaningful (there is no enclosing method to return from; M1's
-    /// fixtures do not exercise it) -- treated the same as `Stmt::Expr` here
-    /// (evaluate the expression, discard the value) rather than raising a
-    /// non-local return with nowhere sensible to land.
-    ///
-    /// A mixin decoded from an image records *that* it has `initExprs`
-    /// (`has_init_exprs`) but not the statements themselves, so this loop
-    /// would run zero of them and report success. It never sees one:
-    /// `Interpreter::set_engine` refuses the tree-walker after a load
-    /// (`EngineUnavailable::TreeWalkAfterLoad`), and under the bytecode
-    /// engine the same step is the class's compiled initializer, which
-    /// `image::decode` refuses an image for omitting.
-    fn run_own_init_exprs(
-        &mut self,
-        class: &ClassRef,
-        act: &ActivationRef,
-        bindings: &Rc<HashMap<Span, Binding>>,
-    ) -> Result<(), Signal> {
-        // The mixin, not a deep copy of the statements it holds: the AST is
-        // read-only here, so this is an `Rc` bump rather than a clone of
-        // every `initExpr` node on every instantiation. Holding it also
-        // releases the borrow on `class` for the loop below.
-        let Some(application) = self.heap.class_application(class) else {
-            return Ok(());
-        };
-        for stmt in &application.mixin.init_exprs {
-            match stmt {
-                ast::Stmt::Expr(e) | ast::Stmt::Return(e) => {
-                    crate::interpreter::eval::eval_expr(self, e, act, bindings)?;
-                }
-            }
-        }
-        Ok(())
+        let application = self
+            .heap
+            .class_application(class)
+            .expect("internal: class_has_initializer_code confirmed this is a class object");
+        let code = self
+            .code
+            .initializers
+            .get(&crate::mixin::mixin_key(&application.mixin))
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!("internal: class has no compiled instance initializer (compile_module coverage gap)")
+            });
+        debug_assert_eq!(
+            self.heap.activation_slot_base(act),
+            application.own_slot_base,
+            "an initializer activation must be built for the level it runs"
+        );
+        self.heap
+            .grow_activation_temps(act, (code.num_registers - code.num_args) as usize);
+        crate::vm::run_code(self, act, &code, bindings).map(|_| ())
     }
 }
 
@@ -703,8 +552,7 @@ fn class_name(heap: &Heap, class: &ClassRef) -> Symbol {
 
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if the message
 /// determined by the inheritance clause is not the primary factory message
-/// of C." Raised from shared orchestration, so both engines print the same
-/// stderr byte for byte.
+/// of C."
 fn not_the_primary_factory_error(
     heap: &Heap,
     class: &ClassRef,
@@ -755,9 +603,9 @@ fn argument_list(heap: &Heap, class: &ClassRef, value: Value) -> Result<Vec<Valu
     }))
 }
 
-/// `pub(crate)` (rather than private) so `eval.rs`'s `eval_ident` can reuse
-/// this exact string->`BuiltinClass` mapping for its bare-builtin-name
-/// fallback, instead of duplicating it. Returns `None` for any name that is
+/// `pub(crate)` (rather than private) so `compiler::lower` can reuse this
+/// exact string->`BuiltinClass` mapping for its bare-builtin-name fallback,
+/// instead of duplicating it. Returns `None` for any name that is
 /// not a Milestone 1 builtin class name (an explicit `Object` arm replaces
 /// the old catch-all default of `BuiltinClass::Object`, since a caller
 /// outside this module must be able to tell "unrecognized name" apart from

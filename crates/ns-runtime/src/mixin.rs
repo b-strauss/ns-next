@@ -16,8 +16,7 @@
 //! `ast::ClassDecl` anywhere in reach. The `ast` fields that remain
 //! (`MixinMethod::decl`, `MixinSlot::decl`, `Mixin::init_exprs`,
 //! `Mixin::decl`) are read by the compiler, which runs before an image
-//! exists, and by the tree-walking engine, which cannot run from an image at
-//! all; a decoded mixin leaves them empty rather than inventing nodes for
+//! exists; a decoded mixin leaves them empty rather than inventing nodes for
 //! them.
 
 use std::collections::HashMap;
@@ -46,14 +45,14 @@ pub struct MixinMethod {
     /// `num_args` is reconciled against on load.
     pub num_args: usize,
     /// The declaration this entry was built from: the compiler lowers its
-    /// body, and the tree-walking engine evaluates it. `None` for a mixin
-    /// decoded from an image, which carries the compiled body instead.
+    /// body. `None` for a mixin decoded from an image, which carries the
+    /// compiled body instead.
     pub decl: Option<Rc<ast::MethodDecl>>,
 }
 
 impl MixinMethod {
-    /// The entry a parsed declaration becomes: everything a lookup or an
-    /// engine hook reads, lifted out of the AST once, here.
+    /// The entry a parsed declaration becomes: everything a lookup or
+    /// `Interpreter::invoke_method` reads, lifted out of the AST once, here.
     pub fn from_decl(decl: Rc<ast::MethodDecl>) -> MixinMethod {
         MixinMethod {
             selector: Symbol::intern(&crate::interpreter::instantiate::method_name(&decl.pattern)),
@@ -67,7 +66,7 @@ impl MixinMethod {
 /// One of a mixin's own instance slots. The name is what the run time
 /// needs (`Interpreter::apply_mixin` lays the instance out by name); the
 /// declaration carries the initializer expression, which only the compiler
-/// and the tree-walker read.
+/// reads.
 #[derive(Debug)]
 pub struct MixinSlot {
     pub name: Symbol,
@@ -100,7 +99,7 @@ pub struct Factory {
 /// The clause's *expressions* are Newspeak code, compiled per mixin into
 /// `CompiledModule::superclass_clauses` / `superclass_messages`; what is
 /// left here is the part the orchestration around those bodies needs, which
-/// both engines consult before any body runs. Storing it is what keeps
+/// it consults before any body runs. Storing it is what keeps
 /// `instantiate::eval_superclass_message` from having to read
 /// `Mixin::decl`: without it, a mixin decoded from an image would fall back
 /// to `new` and every class whose superclass has a keyword factory would
@@ -134,11 +133,11 @@ pub struct Mixin {
     pub factory: Option<Factory>,
     pub superclass: Option<SuperclassClause>,
     /// Whether the declaration wrote any `initExpr`s. Stored because
-    /// `instantiate::mixin_needs_initializer_code` asks the question on the
-    /// bytecode path too, where `init_exprs` below is empty by construction.
+    /// `instantiate::mixin_needs_initializer_code` asks the question of a
+    /// decoded mixin too, where `init_exprs` below is empty by construction.
     pub has_init_exprs: bool,
-    /// The `initExpr` statements themselves -- lowered by the compiler,
-    /// evaluated directly by the tree-walker. Empty for a decoded mixin.
+    /// The `initExpr` statements themselves -- lowered by the compiler into the
+    /// instance initializer. Empty for a decoded mixin.
     pub init_exprs: Vec<ast::Stmt>,
     /// The nested class declarations, in declaration order. Each one gets an
     /// implicit accessor and a hidden cache slot.
@@ -147,8 +146,7 @@ pub struct Mixin {
     /// Provenance for reflection and the image.
     pub span: Span,
     /// The declaration this mixin was built from: the compiler lowers its
-    /// superclass clause, and the tree-walker evaluates that clause's
-    /// expressions. `None` for a builtin's mixin, for a class side (a
+    /// superclass clause. `None` for a builtin's mixin, for a class side (a
     /// `ClassBody` is not an `ast::ClassDecl`), and for a mixin decoded from
     /// an image.
     pub decl: Option<Rc<ast::ClassDecl>>,

@@ -109,9 +109,9 @@ pub struct Row {
 ///
 /// Called by both `encode::encode_code_table` (which needs the rows to know
 /// which `CompiledCode` is reachable, and in what order) and `encode` below
-/// (which needs them to write the table). Recomputing it is one tree walk
-/// and one `HashMap`; sharing a cached copy between the two would trade that
-/// for a lifetime that has to thread through `snapshot`.
+/// (which needs them to write the table). Recomputing it is one walk of the
+/// tree and one `HashMap`; sharing a cached copy between the two would trade
+/// that for a lifetime that has to thread through `snapshot`.
 pub fn plan(
     heap: &Heap,
     root_class: &ClassRef,
@@ -595,9 +595,8 @@ fn build(raw: Vec<RawRow>) -> Decoded {
                         num_args,
                         // No declaration to point at, and none invented:
                         // the compiled body in the code table is what this
-                        // method runs, and the tree-walking engine -- the
-                        // only reader of a declaration at run time -- cannot
-                        // run from an image at all.
+                        // method runs, and nothing reads a declaration at
+                        // run time.
                         decl: None,
                     }),
                 )

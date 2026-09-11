@@ -2,24 +2,17 @@
 //! declaration `N` inside `OC` defines a method `N` on `OC` that lazily
 //! evaluates the declaration with the receiver as enclosing object and
 //! caches the resulting class object per receiver.
-//!
-//! Every behavioural test runs under both engines: the superclass clause is
-//! Newspeak code, so a tree-walked clause under `--engine=bytecode` would be
-//! exactly the kind of silent divergence the differential gate exists to
-//! catch, and a unit test that only ever runs the tree-walker cannot see it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_runtime::{
-    compiler, Binding, Engine, Heap, Interpreter, Signal, SourceOrigin, Symbol, Value,
-};
+use ns_runtime::{Binding, Heap, Interpreter, Signal, SourceOrigin, Symbol, Value};
 use ns_syntax::Span;
 
 type Bindings = Rc<HashMap<Span, Binding>>;
 
-fn load(src: &str, bytecode: bool) -> (Interpreter, ns_runtime::ClassRef, Bindings) {
+fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef, Bindings) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -30,12 +23,6 @@ fn load(src: &str, bytecode: bool) -> (Interpreter, ns_runtime::ClassRef, Bindin
     let bindings = resolved.bindings.clone();
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
-    if bytecode {
-        let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-        interp
-            .set_engine(Engine::Bytecode(compiled))
-            .expect("a source-built interpreter accepts the bytecode engine");
-    }
     (interp, class, bindings)
 }
 
@@ -83,8 +70,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn accessor_is_stable(bytecode: bool) {
-    let (mut interp, class, bindings) = load(SRC, bytecode);
+fn accessor_is_stable() {
+    let (mut interp, class, bindings) = load(SRC);
     let platform = interp.platform();
     let outer = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -106,16 +93,11 @@ fn accessor_is_stable(bytecode: bool) {
 
 #[test]
 fn the_accessor_returns_the_same_class_object_every_time() {
-    accessor_is_stable(false);
+    accessor_is_stable();
 }
 
-#[test]
-fn the_accessor_returns_the_same_class_object_every_time_under_bytecode() {
-    accessor_is_stable(true);
-}
-
-fn distinct_per_receiver(bytecode: bool) {
-    let (mut interp, class, bindings) = load(SRC, bytecode);
+fn distinct_per_receiver() {
+    let (mut interp, class, bindings) = load(SRC);
     let platform = interp.platform();
     let one = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -152,16 +134,11 @@ fn distinct_per_receiver(bytecode: bool) {
 
 #[test]
 fn two_enclosing_instances_get_distinct_nested_classes() {
-    distinct_per_receiver(false);
+    distinct_per_receiver();
 }
 
-#[test]
-fn two_enclosing_instances_get_distinct_nested_classes_under_bytecode() {
-    distinct_per_receiver(true);
-}
-
-fn enclosing_object_is_the_receiver(bytecode: bool) {
-    let (mut interp, class, bindings) = load(SRC, bytecode);
+fn enclosing_object_is_the_receiver() {
+    let (mut interp, class, bindings) = load(SRC);
     let platform = interp.platform();
     let outer = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -183,16 +160,11 @@ fn enclosing_object_is_the_receiver(bytecode: bool) {
 
 #[test]
 fn the_nested_class_remembers_its_enclosing_object() {
-    enclosing_object_is_the_receiver(false);
+    enclosing_object_is_the_receiver();
 }
 
-#[test]
-fn the_nested_class_remembers_its_enclosing_object_under_bytecode() {
-    enclosing_object_is_the_receiver(true);
-}
-
-fn instantiating_the_nested_class(bytecode: bool) {
-    let (mut interp, class, bindings) = load(SRC, bytecode);
+fn instantiating_the_nested_class() {
+    let (mut interp, class, bindings) = load(SRC);
     let platform = interp.platform();
     let outer = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -214,17 +186,12 @@ fn instantiating_the_nested_class(bytecode: bool) {
 
 #[test]
 fn a_nested_class_can_be_instantiated_through_its_accessor() {
-    instantiating_the_nested_class(false);
-}
-
-#[test]
-fn a_nested_class_can_be_instantiated_through_its_accessor_under_bytecode() {
-    instantiating_the_nested_class(true);
+    instantiating_the_nested_class();
 }
 
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if ec does not evaluate
 /// to a class object C." A program error, not an interpreter invariant --
-/// the same `NewspeakError` under both engines, never a panic.
+/// a `NewspeakError`, never a panic.
 const NON_CLASS_SUPERCLASS_SRC: &str = "\
 Newspeak3
 'Test'
@@ -234,8 +201,8 @@ class Outer usingPlatform: p = Object new (| notAClass = 7. |) (
 )
 ";
 
-fn non_class_superclass_clause(bytecode: bool) {
-    let (mut interp, class, bindings) = load(NON_CLASS_SUPERCLASS_SRC, bytecode);
+fn non_class_superclass_clause() {
+    let (mut interp, class, bindings) = load(NON_CLASS_SUPERCLASS_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -253,12 +220,7 @@ fn non_class_superclass_clause(bytecode: bool) {
 
 #[test]
 fn a_superclass_clause_that_is_not_a_class_is_a_program_error() {
-    non_class_superclass_clause(false);
-}
-
-#[test]
-fn a_superclass_clause_that_is_not_a_class_is_a_program_error_under_bytecode() {
-    non_class_superclass_clause(true);
+    non_class_superclass_clause();
 }
 
 /// §6: the implicit accessor has the declaration's own accessibility. The
@@ -276,8 +238,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn protected_nested_access(bytecode: bool) {
-    let (mut interp, class, bindings) = load(PROTECTED_NESTED_SRC, bytecode);
+fn protected_nested_access() {
+    let (mut interp, class, bindings) = load(PROTECTED_NESTED_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -305,12 +267,7 @@ fn protected_nested_access(bytecode: bool) {
 
 #[test]
 fn a_nested_class_defaults_to_protected_accessibility() {
-    protected_nested_access(false);
-}
-
-#[test]
-fn a_nested_class_defaults_to_protected_accessibility_under_bytecode() {
-    protected_nested_access(true);
+    protected_nested_access();
 }
 
 /// An *inherited* nested declaration: `Derived`'s superclass clause names
@@ -333,8 +290,8 @@ class M usingPlatform: p = Object new () (
 )
 ";
 
-fn inherited_nested_declaration(bytecode: bool) {
-    let (mut interp, class, bindings) = load(INHERITED_NESTED_SRC, bytecode);
+fn inherited_nested_declaration() {
+    let (mut interp, class, bindings) = load(INHERITED_NESTED_SRC);
     let platform = interp.platform();
     let m = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -388,23 +345,17 @@ fn inherited_nested_declaration(bytecode: bool) {
 
 #[test]
 fn an_inherited_nested_declaration_is_reached_through_the_chain() {
-    inherited_nested_declaration(false);
-}
-
-#[test]
-fn an_inherited_nested_declaration_is_reached_through_the_chain_under_bytecode() {
-    inherited_nested_declaration(true);
+    inherited_nested_declaration();
 }
 
 /// A `super`-prefixed clause receiver is the one form whose evaluation reads
 /// the clause frame's `current_class` (`resolver::resolve_superclass_clause`
-/// binds it as `Binding::SuperSend`). Milestone 1's `eval_ident` and the
-/// lowerer both treat a `SuperSend`-bound *identifier* as the bare-builtin
-/// fallback rather than a real super send, so today it raises the shared
-/// unresolved-identifier error instead of dispatching -- which is why this
-/// pins the two engines to the same outcome rather than to a class object.
-/// It is the regression guard for the day that form starts dispatching: by
-/// then the frame already carries the declaring class.
+/// binds it as `Binding::SuperSend`). The lowerer treats a `SuperSend`-bound
+/// *identifier* as the bare-builtin fallback rather than a real super send,
+/// so today `super Object` names the builtin `Object` and the accessor
+/// answers a class object without dispatching -- which is the outcome this
+/// pins. It is the regression guard for the day that form starts
+/// dispatching: by then the frame already carries the declaring class.
 const SUPER_PREFIXED_CLAUSE_SRC: &str = "\
 Newspeak3
 'Test'
@@ -415,28 +366,21 @@ class Outer usingPlatform: p = Object new () (
 ";
 
 #[test]
-fn a_super_prefixed_clause_behaves_identically_under_both_engines() {
-    let mut outcomes = vec![];
-    for bytecode in [false, true] {
-        let (mut interp, class, bindings) = load(SUPER_PREFIXED_CLAUSE_SRC, bytecode);
-        let platform = interp.platform();
-        let outer = expect_ok(
-            interp.instantiate(class, vec![platform], &bindings),
-            "instantiate Outer",
-        );
-        outcomes.push(
-            match interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings) {
-                Ok(Value::Obj(_)) => "a class object".to_string(),
-                Ok(_) => "a non-object value".to_string(),
-                Err(Signal::Return(..)) => "Signal::Return".to_string(),
-                Err(Signal::Error(e)) => e.message,
-            },
-        );
-    }
-    assert_eq!(
-        outcomes[0], outcomes[1],
-        "the two engines must agree on a super-prefixed superclass clause"
+fn a_super_prefixed_clause_answers_a_class_object() {
+    let (mut interp, class, bindings) = load(SUPER_PREFIXED_CLAUSE_SRC);
+    let platform = interp.platform();
+    let outer = expect_ok(
+        interp.instantiate(class, vec![platform], &bindings),
+        "instantiate Outer",
     );
+    let inner = expect_ok(
+        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
+        "innerClass",
+    );
+    let Value::Obj(inner) = inner else {
+        panic!("the accessor must yield a class object")
+    };
+    assert!(interp.heap_ref().is_class(&inner));
 }
 
 /// A class whose creation requires itself. §6 evaluates the declaration on
@@ -452,8 +396,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn cyclic_definition(bytecode: bool) {
-    let (mut interp, class, bindings) = load(CYCLIC_SRC, bytecode);
+fn cyclic_definition() {
+    let (mut interp, class, bindings) = load(CYCLIC_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -479,12 +423,7 @@ fn cyclic_definition(bytecode: bool) {
 
 #[test]
 fn a_self_referential_nested_class_is_a_program_error() {
-    cyclic_definition(false);
-}
-
-#[test]
-fn a_self_referential_nested_class_is_a_program_error_under_bytecode() {
-    cyclic_definition(true);
+    cyclic_definition();
 }
 
 const CLASS_SIDE_SRC: &str = "\
@@ -498,8 +437,8 @@ class Widget new = Object new () (
 
 /// §6.3: a class object's class-side methods are reachable by sending to
 /// the class object itself, through a lazily created metaclass.
-fn class_side_dispatch(bytecode: bool) {
-    let (mut interp, class, bindings) = load(CLASS_SIDE_SRC, bytecode);
+fn class_side_dispatch() {
+    let (mut interp, class, bindings) = load(CLASS_SIDE_SRC);
     let described = expect_ok(
         interp.send(
             Value::Obj(class),
@@ -517,20 +456,15 @@ fn class_side_dispatch(bytecode: bool) {
 
 #[test]
 fn a_class_side_method_dispatches_on_the_class_object() {
-    class_side_dispatch(false);
-}
-
-#[test]
-fn a_class_side_method_dispatches_on_the_class_object_under_bytecode() {
-    class_side_dispatch(true);
+    class_side_dispatch();
 }
 
 /// A class with no class side at all must still fall through to the
 /// ordinary `doesNotUnderstand:` -- `metaclass_of` returns `None` and the
 /// send path must not panic or invent a different error shape for a class
 /// object than for any other receiver.
-fn class_side_miss_is_ordinary_dnu(bytecode: bool) {
-    let (mut interp, class, bindings) = load(SRC, bytecode);
+fn class_side_miss_is_ordinary_dnu() {
+    let (mut interp, class, bindings) = load(SRC);
     let message = expect_error(
         interp.send(
             Value::Obj(class),
@@ -545,12 +479,7 @@ fn class_side_miss_is_ordinary_dnu(bytecode: bool) {
 
 #[test]
 fn a_class_with_no_class_side_still_reports_ordinary_does_not_understand() {
-    class_side_miss_is_ordinary_dnu(false);
-}
-
-#[test]
-fn a_class_with_no_class_side_still_reports_ordinary_does_not_understand_under_bytecode() {
-    class_side_miss_is_ordinary_dnu(true);
+    class_side_miss_is_ordinary_dnu();
 }
 
 const CLASS_SIDE_INHERITANCE_SRC: &str = "\
@@ -575,8 +504,8 @@ class Outer usingPlatform: p = Object new () (
 /// §3.2's metaclass hierarchy): `SpecialWidget` declares no class side of
 /// its own, but its superclass `Widget` does, so `SpecialWidget describe`
 /// must answer exactly what `Widget describe` does.
-fn class_side_is_inherited(bytecode: bool) {
-    let (mut interp, class, bindings) = load(CLASS_SIDE_INHERITANCE_SRC, bytecode);
+fn class_side_is_inherited() {
+    let (mut interp, class, bindings) = load(CLASS_SIDE_INHERITANCE_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -603,12 +532,7 @@ fn class_side_is_inherited(bytecode: bool) {
 
 #[test]
 fn a_subclass_with_no_class_side_inherits_the_superclasss_class_side_method() {
-    class_side_is_inherited(false);
-}
-
-#[test]
-fn a_subclass_with_no_class_side_inherits_the_superclasss_class_side_method_under_bytecode() {
-    class_side_is_inherited(true);
+    class_side_is_inherited();
 }
 
 /// The class object a nested declaration's accessor answers for `enclosing`.
@@ -644,10 +568,10 @@ fn application_of(
 /// this bite: it inherits its class side instead of declaring one, so its
 /// metaclass is built from a synthetic empty mixin -- which has to have one
 /// identity per mixin, not one per class object.
-fn an_inherited_class_side_shares_one_application(bytecode: bool) {
+fn an_inherited_class_side_shares_one_application() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/class_side.ns");
     let src = std::fs::read_to_string(&path).expect("read tests-fixtures/class_side.ns");
-    let (mut interp, class, bindings) = load(&src, bytecode);
+    let (mut interp, class, bindings) = load(&src);
     let platform = interp.platform();
     let one = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -687,19 +611,14 @@ fn an_inherited_class_side_shares_one_application(bytecode: bool) {
 
 #[test]
 fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
-    an_inherited_class_side_shares_one_application(false);
-}
-
-#[test]
-fn two_class_objects_sharing_an_application_share_their_inherited_class_side_under_bytecode() {
-    an_inherited_class_side_shares_one_application(true);
+    an_inherited_class_side_shares_one_application();
 }
 
 /// A class that declares its own class-side method of the same name still
 /// overrides the inherited one -- ordinary shadowing, exactly as on the
 /// instance side.
-fn class_side_override_shadows_the_inherited_method(bytecode: bool) {
-    let (mut interp, class, bindings) = load(CLASS_SIDE_INHERITANCE_SRC, bytecode);
+fn class_side_override_shadows_the_inherited_method() {
+    let (mut interp, class, bindings) = load(CLASS_SIDE_INHERITANCE_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -726,12 +645,7 @@ fn class_side_override_shadows_the_inherited_method(bytecode: bool) {
 
 #[test]
 fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name() {
-    class_side_override_shadows_the_inherited_method(false);
-}
-
-#[test]
-fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name_under_bytecode() {
-    class_side_override_shadows_the_inherited_method(true);
+    class_side_override_shadows_the_inherited_method();
 }
 
 /// `Frame.current_class` must be the class object of the level
@@ -756,8 +670,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn nested_super_and_outer(bytecode: bool) {
-    let (mut interp, class, bindings) = load(NESTED_SUPER_SRC, bytecode);
+fn nested_super_and_outer() {
+    let (mut interp, class, bindings) = load(NESTED_SUPER_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -775,12 +689,7 @@ fn nested_super_and_outer(bytecode: bool) {
 
 #[test]
 fn super_and_outer_both_resolve_through_the_defining_level() {
-    nested_super_and_outer(false);
-}
-
-#[test]
-fn super_and_outer_both_resolve_through_the_defining_level_under_bytecode() {
-    nested_super_and_outer(true);
+    nested_super_and_outer();
 }
 
 /// A *three*-level hierarchy where the middle level (`Mid`) is reached only
@@ -808,8 +717,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn super_chain_progresses_past_an_inherited_middle_level(bytecode: bool) {
-    let (mut interp, class, bindings) = load(SUPER_CHAIN_SRC, bytecode);
+fn super_chain_progresses_past_an_inherited_middle_level() {
+    let (mut interp, class, bindings) = load(SUPER_CHAIN_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -824,12 +733,7 @@ fn super_chain_progresses_past_an_inherited_middle_level(bytecode: bool) {
 
 #[test]
 fn a_super_chain_progresses_through_an_inherited_middle_level() {
-    super_chain_progresses_past_an_inherited_middle_level(false);
-}
-
-#[test]
-fn a_super_chain_progresses_through_an_inherited_middle_level_under_bytecode() {
-    super_chain_progresses_past_an_inherited_middle_level(true);
+    super_chain_progresses_past_an_inherited_middle_level();
 }
 
 /// §3.3: an activation's enclosing objects belong to the level that
@@ -856,8 +760,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn outer_resolves_from_the_defining_level(bytecode: bool) {
-    let (mut interp, class, bindings) = load(OUTER_THROUGH_INHERITED_SRC, bytecode);
+fn outer_resolves_from_the_defining_level() {
+    let (mut interp, class, bindings) = load(OUTER_THROUGH_INHERITED_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -872,12 +776,7 @@ fn outer_resolves_from_the_defining_level(bytecode: bool) {
 
 #[test]
 fn outer_in_an_inherited_method_resolves_from_the_defining_level() {
-    outer_resolves_from_the_defining_level(false);
-}
-
-#[test]
-fn outer_in_an_inherited_method_resolves_from_the_defining_level_under_bytecode() {
-    outer_resolves_from_the_defining_level(true);
+    outer_resolves_from_the_defining_level();
 }
 
 /// The same defect one hop further out, which only a lexical *declaration*
@@ -904,8 +803,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn a_two_level_outer_resolves_from_the_defining_level(bytecode: bool) {
-    let (mut interp, class, bindings) = load(DEEP_OUTER_THROUGH_INHERITED_SRC, bytecode);
+fn a_two_level_outer_resolves_from_the_defining_level() {
+    let (mut interp, class, bindings) = load(DEEP_OUTER_THROUGH_INHERITED_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -920,12 +819,7 @@ fn a_two_level_outer_resolves_from_the_defining_level(bytecode: bool) {
 
 #[test]
 fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
-    a_two_level_outer_resolves_from_the_defining_level(false);
-}
-
-#[test]
-fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically_under_bytecode() {
-    a_two_level_outer_resolves_from_the_defining_level(true);
+    a_two_level_outer_resolves_from_the_defining_level();
 }
 
 /// §6.3.1: a class side is written inside the same class declaration its
@@ -955,8 +849,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn class_side_outer_reaches_the_enclosing_object(bytecode: bool) {
-    let (mut interp, class, bindings) = load(CLASS_SIDE_OUTER_SRC, bytecode);
+fn class_side_outer_reaches_the_enclosing_object() {
+    let (mut interp, class, bindings) = load(CLASS_SIDE_OUTER_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
         interp.instantiate(class, vec![platform], &bindings),
@@ -976,10 +870,5 @@ fn class_side_outer_reaches_the_enclosing_object(bytecode: bool) {
 
 #[test]
 fn outer_in_a_class_side_method_reaches_the_enclosing_object() {
-    class_side_outer_reaches_the_enclosing_object(false);
-}
-
-#[test]
-fn outer_in_a_class_side_method_reaches_the_enclosing_object_under_bytecode() {
-    class_side_outer_reaches_the_enclosing_object(true);
+    class_side_outer_reaches_the_enclosing_object();
 }

@@ -1,10 +1,10 @@
-//! Expression-level evaluation: literals, sends (ordinary, `LexicalSend`,
-//! `SuperSend`), cascades, blocks, assignment.
+//! Send helpers (`LexicalSend`, `SuperSend`), local and outer-local access,
+//! closure invocation, and the errors the VM raises for a deferred literal.
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expr};
+use ns_syntax::ast;
 use ns_syntax::Span;
 
 use crate::dispatch::{self, Lookup};
@@ -14,77 +14,12 @@ use crate::Symbol;
 
 use super::{EvalResult, Interpreter, Signal};
 
-pub fn eval_expr(
-    interp: &mut Interpreter,
-    expr: &Expr,
-    act: &ActivationRef,
-    bindings: &Rc<HashMap<Span, Binding>>,
-) -> EvalResult {
-    match expr {
-        Expr::Ident(id) => eval_ident(interp, id, act, bindings),
-        Expr::Literal(lit) => eval_literal(interp, lit),
-        Expr::Send(send) => eval_send(interp, send, act, bindings),
-        Expr::Cascade(cascade) => eval_cascade(interp, cascade, act, bindings),
-        Expr::Assign { target, value, .. } => eval_assign(interp, target, value, act, bindings),
-        Expr::Block(block) => eval_block_literal(interp, block, act, bindings),
-        Expr::DynamicArray { elements, .. } => {
-            let mut values = Vec::with_capacity(elements.len());
-            for e in elements {
-                values.push(eval_expr(interp, e, act, bindings)?);
-            }
-            Ok(Value::Obj(interp.new_array(values)))
-        }
-    }
-}
-
-fn eval_ident(
-    interp: &mut Interpreter,
-    id: &ast::Ident,
-    act: &ActivationRef,
-    bindings: &Rc<HashMap<Span, Binding>>,
-) -> EvalResult {
-    if id.name == "self" {
-        return Ok(interp.heap.activation_receiver(act));
-    }
-    match bindings.get(&id.span) {
-        Some(Binding::Local(i)) => Ok(read_local(&interp.heap, act, *i)),
-        Some(Binding::OuterLocal { depth, index }) => {
-            Ok(read_outer_local(&interp.heap, act, *depth, *index))
-        }
-        Some(Binding::LexicalSend { depth }) => dispatch_lexical_send(
-            interp,
-            act,
-            *depth,
-            Symbol::intern(&id.name),
-            vec![],
-            bindings,
-        ),
-        // The resolver (`resolve_ident`) records no `Binding` at all for a
-        // bare identifier that names a Milestone 1 builtin class (e.g.
-        // plain `OrderedCollection` in `OrderedCollection new`, outside any
-        // superclass clause) -- mirroring `resolve_superclass_clause`'s
-        // existing convention for the analogous superclass-clause case.
-        // Resolve such a name against the builtin table by name here,
-        // symmetrically, instead of treating an absent binding as always an
-        // internal resolver error.
-        Some(Binding::SuperSend) | None => {
-            if let Some(kind) = super::instantiate::builtin_kind_from_name(&id.name) {
-                return Ok(Value::Obj(interp.builtin_class(kind)));
-            }
-            let receiver = interp.heap.activation_receiver(act);
-            Err(unresolved_identifier_error(&id.name, receiver))
-        }
-    }
-}
-
 /// The program-level error a bare identifier raises when it has no binding
 /// and names no builtin class -- in Milestone 1 and 2 reachable only for a
 /// bare `super`, which `resolver::resolve_ident` deliberately leaves
 /// unbound and which the lexer deliberately does not reserve.
 ///
-/// Shared with the bytecode engine (`bytecode::Literal::UnresolvedIdent`,
-/// raised by `vm::make_value`) so the two engines cannot drift apart in
-/// wording: the tree-walker is the differential oracle down to the byte.
+/// Raised by `vm::make_value` for `bytecode::Literal::UnresolvedIdent`.
 pub(crate) fn unresolved_identifier_error(name: &str, receiver: Value) -> Signal {
     Signal::Error(NewspeakError {
         selector: Symbol::intern(name),
@@ -94,8 +29,8 @@ pub(crate) fn unresolved_identifier_error(name: &str, receiver: Value) -> Signal
 }
 
 /// The error a lexer-accepted integer literal that `parse_int_literal`
-/// rejects raises when it is *evaluated*. Shared with the bytecode engine
-/// (`bytecode::Literal::MalformedInt`) for the same reason.
+/// rejects raises when it is *evaluated*. Raised by `vm::make_value` for
+/// `bytecode::Literal::MalformedInt`.
 pub(crate) fn malformed_int_error(message: String) -> Signal {
     Signal::Error(NewspeakError {
         selector: Symbol::intern("parse"),
@@ -139,7 +74,7 @@ fn frame_at_depth(heap: &Heap, act: &ActivationRef, depth: u16) -> OuterFrame {
     OuterFrame::Captured(frame)
 }
 
-/// Shared by the tree-walker's `eval_ident` and the VM's `LoadOuterLocal`.
+/// The VM's `LoadOuterLocal`.
 pub(crate) fn read_outer_local(heap: &Heap, act: &ActivationRef, depth: u16, index: u16) -> Value {
     match frame_at_depth(heap, act, depth) {
         OuterFrame::Own(own) => heap.activation_local(&own, index),
@@ -147,7 +82,7 @@ pub(crate) fn read_outer_local(heap: &Heap, act: &ActivationRef, depth: u16, ind
     }
 }
 
-/// Shared by the tree-walker's `eval_assign` and the VM's `StoreOuterLocal`.
+/// The VM's `StoreOuterLocal`.
 pub(crate) fn write_outer_local(
     heap: &mut Heap,
     act: &ActivationRef,
@@ -164,8 +99,7 @@ pub(crate) fn write_outer_local(
 /// The `home` a closure created in `act` gets: a closure activation passes
 /// its own closure's `home` on; any other activation -- method, initializer,
 /// superclass clause or message -- is its own return target, so it is
-/// reified and is its own home. Shared by the tree-walker's
-/// `eval_block_literal` and the VM's `MakeClosure`.
+/// reified and is its own home. The VM's `MakeClosure` calls it.
 pub(crate) fn home_of(heap: &mut Heap, act: &ActivationRef) -> FrameRef {
     match heap.activation_home(act) {
         Some(home) => home,
@@ -176,10 +110,8 @@ pub(crate) fn home_of(heap: &mut Heap, act: &ActivationRef) -> FrameRef {
 /// Writes `value` into instance field `index` on `instance`'s
 /// `ObjectData::Instance` fields -- silently skipped when `instance` is not
 /// an object, or is an object with some other `ObjectData` shape, or
-/// `index` is out of range. Shared by `instantiate::run_own_slots` (the
-/// tree-walker's per-slot-initializer write) and `vm::run_code`'s
-/// `Instr::InitSlot` arm (the bytecode engine's equivalent), instead of the
-/// same four-line downcast-bounds-check-assign shape living in both places.
+/// `index` is out of range. `vm::run_code`'s `Instr::InitSlot` arm writes a
+/// slot initializer's value through it.
 pub(crate) fn store_instance_field(heap: &mut Heap, instance: &Value, index: usize, value: Value) {
     if let Value::Obj(obj) = instance {
         heap.set_instance_field(obj, index, value);
@@ -237,83 +169,6 @@ pub(crate) fn parse_int_literal(text: &str) -> Result<i64, String> {
             .ok_or_else(|| format!("integer literal out of i64 range: {text}"))
     } else {
         Ok(value)
-    }
-}
-
-fn eval_literal(interp: &mut Interpreter, lit: &ast::Literal) -> EvalResult {
-    Ok(match lit {
-        ast::Literal::Int { text, .. } => {
-            let n = parse_int_literal(text).map_err(malformed_int_error)?;
-            Value::SmallInt(n)
-        }
-        ast::Literal::Float { text, .. } => {
-            let n: f64 = text.parse().unwrap_or(f64::NAN);
-            Value::Float(n)
-        }
-        ast::Literal::String { value, .. } => Value::Obj(interp.new_string(value.clone())),
-        ast::Literal::Symbol { value, .. } => interp.new_symbol(Symbol::intern(value)),
-        ast::Literal::Char { value, .. } => Value::Obj(interp.new_character(*value)),
-        ast::Literal::Bool { value, .. } => Value::Bool(*value),
-        ast::Literal::Nil { .. } => Value::Nil,
-        ast::Literal::Array { elements, .. } => {
-            let mut values = Vec::with_capacity(elements.len());
-            for e in elements {
-                let ev = eval_literal(interp, e)?;
-                values.push(ev);
-            }
-            Value::Obj(interp.new_array(values))
-        }
-        ast::Literal::Pattern { .. } => Value::Nil, // Non-Goal: typechecker/patterns (M1 spec)
-    })
-}
-
-fn eval_send(
-    interp: &mut Interpreter,
-    send: &ast::Send,
-    act: &ActivationRef,
-    bindings: &Rc<HashMap<Span, Binding>>,
-) -> EvalResult {
-    match bindings.get(&send.span) {
-        Some(Binding::SuperSend) => {
-            let args = eval_args(interp, &send.message, act, bindings)?;
-            dispatch_super_send(interp, act, selector_of(&send.message), args, bindings)
-        }
-        Some(Binding::LexicalSend { depth }) => {
-            let args = eval_args(interp, &send.message, act, bindings)?;
-            dispatch_lexical_send(
-                interp,
-                act,
-                *depth,
-                selector_of(&send.message),
-                args,
-                bindings,
-            )
-        }
-        _ => {
-            let receiver = eval_expr(interp, &send.receiver, act, bindings)?;
-            let args = eval_args(interp, &send.message, act, bindings)?;
-            interp.send(receiver, selector_of(&send.message), args, bindings)
-        }
-    }
-}
-
-fn eval_args(
-    interp: &mut Interpreter,
-    message: &ast::MessageSend,
-    act: &ActivationRef,
-    bindings: &Rc<HashMap<Span, Binding>>,
-) -> Result<Vec<Value>, Signal> {
-    let mut values = Vec::with_capacity(message.args.len());
-    for a in &message.args {
-        values.push(eval_expr(interp, a, act, bindings)?);
-    }
-    Ok(values)
-}
-
-fn selector_of(message: &ast::MessageSend) -> Symbol {
-    match &message.selector {
-        ast::Selector::Unary(s) | ast::Selector::Binary(s) => Symbol::intern(s),
-        ast::Selector::Keyword(s) => Symbol::intern(s),
     }
 }
 
@@ -502,83 +357,9 @@ pub(crate) fn dispatch_super_send(
     }
 }
 
-fn eval_cascade(
-    interp: &mut Interpreter,
-    cascade: &ast::Cascade,
-    act: &ActivationRef,
-    bindings: &Rc<HashMap<Span, Binding>>,
-) -> EvalResult {
-    let receiver = eval_expr(interp, &cascade.receiver, act, bindings)?;
-    let first_args = eval_args(interp, &cascade.first, act, bindings)?;
-    let mut result = interp.send(receiver, selector_of(&cascade.first), first_args, bindings)?;
-    for m in &cascade.rest {
-        let args = eval_args(interp, m, act, bindings)?;
-        result = interp.send(receiver, selector_of(m), args, bindings)?;
-    }
-    Ok(result)
-}
-
-/// `id:: e` (`Expr::Assign`): resolves and dispatches exactly like an
-/// implicit-receiver keyword send to `id:`, per the runtime spec's "Setter
-/// sends" note, then yields `e`'s value (not the setter's own return
-/// value, per §6.3.2/§5.4.3).
-fn eval_assign(
-    interp: &mut Interpreter,
-    target: &ast::Ident,
-    value: &Expr,
-    act: &ActivationRef,
-    bindings: &Rc<HashMap<Span, Binding>>,
-) -> EvalResult {
-    let v = eval_expr(interp, value, act, bindings)?;
-    match bindings.get(&target.span) {
-        Some(Binding::Local(i)) => write_local(&mut interp.heap, act, *i, v),
-        Some(Binding::OuterLocal { depth, index }) => {
-            write_outer_local(&mut interp.heap, act, *depth, *index, v)
-        }
-        Some(Binding::LexicalSend { depth }) => {
-            let setter = Symbol::intern(&format!("{}:", target.name));
-            dispatch_lexical_send(interp, act, *depth, setter, vec![v], bindings)?;
-        }
-        _ => {
-            return Err(Signal::Error(NewspeakError {
-                selector: Symbol::intern(&target.name),
-                receiver: interp.heap.activation_receiver(act),
-                message: format!("internal: unresolved setter target `{}`", target.name),
-            }))
-        }
-    }
-    Ok(v)
-}
-
-fn eval_block_literal(
-    interp: &mut Interpreter,
-    block: &ast::BlockExpr,
-    act: &ActivationRef,
-    bindings: &Rc<HashMap<Span, Binding>>,
-) -> EvalResult {
-    // A block reaches its method's variables through the activation it was
-    // created in, and returns through its home, so both must outlive this
-    // call: reifying is what makes them storable.
-    let captured_frame = interp.heap.reify(act);
-    let home = home_of(&mut interp.heap, act);
-    let closure = Rc::new(ClosureData {
-        params: block
-            .params
-            .iter()
-            .map(|p| Symbol::intern(&p.name))
-            .collect(),
-        body: ClosureBody::Ast(Rc::new(block.body.clone())),
-        captured_frame,
-        home,
-        bindings: bindings.clone(),
-    });
-    Ok(Value::Obj(interp.new_closure(closure)))
-}
-
-/// Invokes a closure with `args`. Called by `builtins::block` for
-/// `value`, `value:`, `value:value:`, etc. Public because block-invocation
-/// selectors are Milestone 1 *native* methods on `BuiltinClass::Block`, not
-/// user-overridable Newspeak methods.
+/// Invokes a closure with `args`. Called by `builtins::block` for `value`,
+/// `value:`, `value:value:` and so on, and by every native that runs a block
+/// argument, through `builtins::call_block`.
 ///
 /// The invoking activation is not passed: a live activation's sender is the
 /// one below it on the activation stack.
@@ -588,13 +369,11 @@ pub fn invoke_closure(
     args: Vec<Value>,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    // Reject a wrong argument count as a NewspeakError up front, before it
-    // can reach `read_local`. The register window is laid out from the
-    // arguments actually given, so without this guard a call with too few
-    // args leaves the body addressing registers past the end of its window
-    // -- a panic -- and a call with too many args would silently misaddress
-    // temps instead of erroring. Never panic on this Newspeak-program-input
-    // path.
+    // A wrong argument count is refused before it can reach a register: the
+    // window is laid out from the arguments actually given, so too few would
+    // address registers past its end -- a panic -- and too many would
+    // silently shift every temporary. Never panic on this
+    // Newspeak-program-input path.
     if args.len() != closure.params.len() {
         let receiver = interp.heap.frame_receiver(&closure.captured_frame);
         return Err(Signal::Error(NewspeakError {
@@ -609,60 +388,22 @@ pub fn invoke_closure(
     }
     let receiver = interp.heap.frame_receiver(&closure.captured_frame);
     let current_class = interp.heap.frame_current_class(&closure.captured_frame);
-    // Hook 2 (spec: "`vm.rs` and the engine hook"): the activation is built
-    // the same way for both engines; only the body's evaluation differs, and
-    // which engine that is was decided when the closure was created.
-    let temp_count = match &closure.body {
-        ClosureBody::Ast(body) => body.temps.len(),
-        ClosureBody::Compiled(code) => (code.num_registers - code.num_args) as usize,
-    };
+    let code = &closure.code;
     let act = interp.heap.push_activation(
         ActivationHeader {
             receiver,
             current_class,
             kind: FrameKind::Closure(closure.clone()),
-            // Decided by the closure's own body, not by the interpreter's
-            // current engine: a closure always runs with the engine that
-            // created it (`ClosureBody`'s doc comment).
-            pc_kind: match &closure.body {
-                ClosureBody::Ast(_) => PcKind::TreeWalk,
-                ClosureBody::Compiled(_) => PcKind::Bytecode,
-            },
             slot_base: 0, // a closure body never contains InitSlot
         },
         &args,
-        temp_count,
+        (code.num_registers - code.num_args) as usize,
     );
-    let result = match &closure.body {
-        ClosureBody::Compiled(code) => crate::vm::run_code(interp, &act, code, bindings),
-        ClosureBody::Ast(body) => run_block_body(interp, body, &act, bindings),
-    };
-    // Popped on every path out, like `invoke_method`'s. A closure
-    // activation catches no return: its `^` targets its home.
+    let result = crate::vm::run_code(interp, &act, code, bindings);
+    // Popped on every path out. A closure activation catches no return: its
+    // `^` targets its home.
     interp.heap.pop_activation(&act);
     result
-}
-
-/// The tree-walker's block body: the statements in order, the last one's
-/// value as the result, and a `^` raised toward the block's home.
-fn run_block_body(
-    interp: &mut Interpreter,
-    body: &ast::CodeBody,
-    act: &ActivationRef,
-    bindings: &Rc<HashMap<Span, Binding>>,
-) -> EvalResult {
-    let mut last = Value::Nil;
-    for (i, stmt) in body.stmts.iter().enumerate() {
-        interp.heap.set_activation_pc(act, i);
-        match stmt {
-            ast::Stmt::Expr(e) => last = eval_expr(interp, e, act, bindings)?,
-            ast::Stmt::Return(e) => {
-                let value = eval_expr(interp, e, act, bindings)?;
-                return Err(interp.raise_return_pub(act, value));
-            }
-        }
-    }
-    Ok(last)
 }
 
 #[cfg(test)]

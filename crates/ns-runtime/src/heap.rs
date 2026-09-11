@@ -196,7 +196,6 @@ pub struct ActivationHeader {
     /// `None` only for `FrameKind::TopLevel` (`newspeak-spec.pdf` §3.6).
     pub current_class: Option<ClassRef>,
     pub kind: FrameKind,
-    pub pc_kind: PcKind,
     /// See `Frame::slot_base`.
     pub slot_base: usize,
 }
@@ -211,7 +210,6 @@ struct StackEntry {
     base: u32,
     num_args: u32,
     pc: usize,
-    pc_kind: PcKind,
     slot_base: usize,
     /// The frame `Heap::reify` created for this activation, married to it
     /// until the entry is popped.
@@ -267,8 +265,8 @@ pub struct Heap {
 
 /// Prints the counter and both arenas' lengths, never their contents. A
 /// derived `Debug` would walk every activation and every object ever
-/// allocated, and a `ClosureBody::Ast(Rc<CodeBody>)` reachable through
-/// either one would print a whole AST -- the same hazard `CLAUDE.md`'s
+/// allocated, and a method's declaration reachable through a frame's kind
+/// would print a whole AST -- the same hazard `CLAUDE.md`'s
 /// "never `{:?}` a `Value`" names for a single object, now reachable
 /// through the heap itself rather than through one handle. Nothing prints
 /// a `Heap` today, so this is latent, but a derive would have turned a
@@ -1163,7 +1161,6 @@ impl Heap {
             base,
             num_args,
             pc: 0,
-            pc_kind: header.pc_kind,
             slot_base: header.slot_base,
             reified: None,
             #[cfg(debug_assertions)]
@@ -1217,7 +1214,6 @@ impl Heap {
             args: Vec::new(),
             temps: Vec::new(),
             pc: entry.pc,
-            pc_kind: entry.pc_kind,
             sender: None,
             home: match &entry.kind {
                 FrameKind::Closure(closure) => Some(closure.home),
@@ -1304,17 +1300,6 @@ impl Heap {
             FrameKind::Closure(closure) => Some(closure.captured_frame),
             _ => None,
         }
-    }
-
-    /// Whether the activation runs a method body -- `run_statements` needs
-    /// it to decide what falling off the end returns: `self` for a method
-    /// (spec §3.5), the last statement's value for anything else.
-    pub fn activation_is_method(&self, act: &ActivationRef) -> bool {
-        self.check_activation(act);
-        matches!(
-            self.stack.entries[act.index as usize].kind,
-            FrameKind::Method(_)
-        )
     }
 
     /// Grows the top activation's temporaries to `needed`, filling with
@@ -1406,7 +1391,6 @@ mod tests {
             args: Vec::new(),
             temps: Vec::new(),
             pc: 0,
-            pc_kind: PcKind::Bytecode,
             sender: None,
             home: None,
             current_class: None,
@@ -1567,7 +1551,6 @@ mod tests {
             args: vec![],
             temps: vec![],
             pc: 0,
-            pc_kind: PcKind::TreeWalk,
             sender: None,
             home: None,
             current_class: None,
@@ -1697,7 +1680,6 @@ mod tests {
             receiver: Value::Nil,
             current_class: None,
             kind: FrameKind::TopLevel,
-            pc_kind: PcKind::Bytecode,
             slot_base: 0,
         }
     }
@@ -1919,7 +1901,7 @@ mod tests {
 
         let closure_data = ClosureData {
             params: vec![],
-            body: ClosureBody::Compiled(std::rc::Rc::new(crate::bytecode::CompiledCode {
+            code: std::rc::Rc::new(crate::bytecode::CompiledCode {
                 kind: crate::bytecode::CodeKind::Block,
                 instrs: vec![crate::bytecode::Instr::ImplicitReturn { reg: 0 }],
                 num_args: 0,
@@ -1927,7 +1909,7 @@ mod tests {
                 statement_pc: vec![],
                 call_sites: vec![],
                 source: ns_syntax::Span::new(0, 0),
-            })),
+            }),
             captured_frame: home_frame,
             home: home_frame,
             bindings: std::rc::Rc::new(std::collections::HashMap::new()),
@@ -1937,7 +1919,6 @@ mod tests {
                 receiver: Value::Nil,
                 current_class: None,
                 kind: FrameKind::Closure(std::rc::Rc::new(closure_data)),
-                pc_kind: PcKind::Bytecode,
                 slot_base: 0,
             },
             &[],

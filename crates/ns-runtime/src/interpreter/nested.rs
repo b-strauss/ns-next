@@ -17,8 +17,8 @@
 //!
 //! This lives under `interpreter/` rather than in `mixin.rs` because it is
 //! the one part of nesting that *evaluates Newspeak code*: the superclass
-//! clause. That code runs through the same engine hook `instantiate.rs` uses
-//! for instance initializers, so `--engine=bytecode` never tree-walks it.
+//! clause. That code runs compiled, in an activation of its own, the same
+//! way `instantiate.rs` runs a superclass clause's deferred message.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -31,7 +31,7 @@ use crate::mixin::{mixin_key, Mixin};
 use crate::types::*;
 use crate::Symbol;
 
-use super::{Engine, EvalResult, Interpreter, Signal};
+use super::{EvalResult, Interpreter, Signal};
 
 /// What a superclass clause evaluates: the `ec` of `newspeak-spec.pdf` §6.1,
 /// as an ordinary expression.
@@ -47,10 +47,9 @@ use super::{Engine, EvalResult, Interpreter, Signal};
 /// expression in a frame whose receiver is the enclosing object is exactly
 /// the spec's "as if it occurred inside an instance method of the enclosing
 /// class". That is also why this is a plain `ast::Expr` rather than a
-/// bespoke evaluation: `eval::eval_ident` and `compiler::lower`'s identifier
-/// lowering are already a matched pair, and reusing them is what keeps the
-/// two engines from drifting on a clause receiver that is anything other
-/// than a builtin class name.
+/// bespoke evaluation: `compiler::lower`'s identifier lowering already
+/// handles every such form, so a clause receiver that is anything other than
+/// a builtin class name needs no lowering of its own.
 pub(crate) fn superclass_clause_expr(clause: &ast::SuperclassClause) -> ast::Expr {
     ast::Expr::Ident(clause.receiver.clone())
 }
@@ -124,9 +123,9 @@ pub(crate) fn nested_class(
     if let Some(cached) = read_cache_slot(&interp.heap, receiver, index) {
         return Ok(cached);
     }
-    // Step 2: the superclass clause, evaluated in the receiver's context
-    // through the engine hook -- guarded against a class whose own creation
-    // is already underway on this receiver.
+    // Step 2: the superclass clause, evaluated in the receiver's context --
+    // guarded against a class whose own creation is already underway on
+    // this receiver.
     let key = in_progress_key(&interp.heap, &obj, nested);
     if interp.nested_in_progress.contains(&key) {
         return Err(cyclic_definition_error(receiver, nested.name));
@@ -236,9 +235,9 @@ fn read_cache_slot(heap: &Heap, receiver: &Value, index: usize) -> Option<Value>
     }
 }
 
-/// Engine hook: the superclass clause is Newspeak code, so the tree-walker
-/// evaluates its AST and the bytecode engine runs the body
-/// `compiler::compile_superclass_clause` emitted for this mixin.
+/// The superclass clause is Newspeak code: the body
+/// `compiler::compile_superclass_clause` emitted for this mixin runs in a
+/// fresh activation.
 ///
 /// The clause belongs to the class that *declares* it: it is resolved
 /// against that declaration's enclosing chain, and `super`-prefixed forms
@@ -258,49 +257,30 @@ fn eval_superclass_clause(
     if nested.superclass.is_none() {
         // No clause at all (`class N = (...)`): `Object`, the same default
         // `instantiate::resolve_superclass_receiver` gives a root class.
-        // Neither engine runs any code for this, so neither can diverge.
         return Ok(Value::Obj(interp.builtin_class(BuiltinClass::Object)));
     }
-    let compiled = match &interp.engine {
-        Engine::TreeWalk => None,
-        Engine::Bytecode(module) => Some(
-            module
-                .superclass_clauses
-                .get(&mixin_key(nested))
-                .cloned()
-                .unwrap_or_else(|| {
-                    panic!("internal: mixin with a superclass clause has no compiled form for it (compile_module coverage gap)")
-                }),
-        ),
-    };
-    // The clause's expression is for the tree-walker alone; the bytecode
-    // engine runs the body compiled for this mixin and never looks at it,
-    // so it is not built at all when there is one.
-    let expr = match compiled {
-        Some(_) => None,
-        None => nested
-            .decl
-            .as_ref()
-            .and_then(|decl| decl.superclass.as_ref())
-            .map(superclass_clause_expr),
-    };
+    let code = interp
+        .code
+        .superclass_clauses
+        .get(&mixin_key(nested))
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!("internal: mixin with a superclass clause has no compiled form for it (compile_module coverage gap)")
+        });
     run_clause_body(
         interp,
         receiver,
         vec![],
         declaring_class,
         FrameKind::SuperclassClause(*declaring_class),
-        compiled,
-        expr.as_ref(),
+        code,
         bindings,
     )
 }
 
-/// One per-mixin clause body in a fresh activation, run through the engine
-/// hook: the tree-walker evaluates `expr`, the bytecode engine runs
-/// `compiled`. Everything around the body -- the activation, the receiver,
-/// the `Signal::Return` catch -- is shared, exactly as in
-/// `Interpreter::invoke_method` and `run_own_initializer`.
+/// One per-mixin clause body, compiled, in a fresh activation. Everything
+/// around the body -- the activation, the receiver, the `Signal::Return`
+/// catch -- is the same shape as `Interpreter::invoke_method`'s.
 ///
 /// Shared with `instantiate`, which runs the same clause's *deferred
 /// message arguments* through it one level down. The two differ only in
@@ -313,49 +293,26 @@ fn eval_superclass_clause(
 /// Both kinds are return targets for `home_of`/`raise_return`, so a `^`
 /// inside a block written in the clause unwinds to this activation rather
 /// than escaping into the caller.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn run_clause_body(
     interp: &mut Interpreter,
     receiver: &Value,
     args: Vec<Value>,
     current_class: &ClassRef,
     kind: FrameKind,
-    compiled: Option<Rc<crate::bytecode::CompiledCode>>,
-    expr: Option<&ast::Expr>,
+    code: Rc<crate::bytecode::CompiledCode>,
     bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
-    let temp_count = compiled
-        .as_ref()
-        .map_or(0, |code| (code.num_registers - code.num_args) as usize);
     let act = interp.heap.push_activation(
         ActivationHeader {
             receiver: *receiver,
             current_class: Some(*current_class),
             kind,
-            // The same choice `compiled` makes below: a clause body runs
-            // compiled when the module carries one and is tree-walked from
-            // its own AST otherwise.
-            pc_kind: match &compiled {
-                Some(_) => PcKind::Bytecode,
-                None => PcKind::TreeWalk,
-            },
             slot_base: 0, // no clause body ever contains InitSlot
         },
         &args,
-        temp_count,
+        (code.num_registers - code.num_args) as usize,
     );
-    let result = match (&compiled, expr) {
-        (Some(code), _) => crate::vm::run_code(interp, &act, code, bindings),
-        (None, Some(expr)) => crate::interpreter::eval::eval_expr(interp, expr, &act, bindings),
-        // The tree-walker evaluates the clause's own AST, and a mixin
-        // decoded from an image carries none. Unreachable rather than
-        // merely unlikely: `image::load` installs `Engine::Bytecode`, so a
-        // decoded mixin's clause always arrives here with a compiled body.
-        (None, None) => panic!(
-            "internal: the tree-walking engine cannot run a superclass clause \
-             of a mixin decoded from an image"
-        ),
-    };
+    let result = crate::vm::run_code(interp, &act, &code, bindings);
     interp.heap.pop_activation(&act);
     match result {
         Ok(value) => Ok(value),
@@ -366,8 +323,7 @@ pub(super) fn run_clause_body(
 
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if ec does not evaluate
 /// to a class object C." A program error, raised through the ordinary
-/// `NewspeakError` channel from shared orchestration, so both engines print
-/// the identical stderr.
+/// `NewspeakError` channel.
 fn not_a_class_error(name: Symbol, value: Value) -> Signal {
     Signal::Error(NewspeakError {
         selector: name,

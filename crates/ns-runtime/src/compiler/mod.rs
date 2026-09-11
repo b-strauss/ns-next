@@ -62,7 +62,7 @@ pub fn compile_method(
 /// Compiles a loaded class's own instance-initializer body. Delegates to
 /// `compile_mixin_initializer`; kept as a `ClassRef`-taking entry point
 /// because `ns-cli`'s `disasm` and this module's own tests address a class
-/// directly, without going through `compile_module`'s tree walk.
+/// directly, without going through `compile_module`'s walk of the mixin tree.
 ///
 /// Takes `heap` rather than building one. `Heap` owns real per-instance
 /// state -- both the frame and the object arenas -- so a freshly built
@@ -130,15 +130,11 @@ fn compile_mixin_initializer(
 ///
 /// The expression itself comes from `interpreter::nested`'s
 /// `superclass_clause_expr`, the *one* definition of what a superclass
-/// clause evaluates -- the tree-walker evaluates that same `ast::Expr`
-/// directly. Building a second, compiler-local notion of "the clause's
-/// expression" here is exactly how the two engines would come to disagree
-/// about a clause that is anything more interesting than a builtin class
-/// name.
+/// clause evaluates.
 ///
 /// Returns `None` for a mixin with no clause (a class side, a builtin, or
-/// `class C = (...)`), which the accessor answers with `Object` under both
-/// engines without running any code at all.
+/// `class C = (...)`), which the accessor answers with `Object` without
+/// running any code at all.
 fn compile_superclass_clause(
     mixin: &Rc<Mixin>,
     bindings: &Rc<HashMap<Span, Binding>>,
@@ -168,9 +164,9 @@ fn compile_superclass_clause(
 ///
 /// The expression comes from `interpreter::nested`'s
 /// `superclass_clause_message_args_expr`, the one definition of what the
-/// clause's arguments are -- the tree-walker evaluates that same
-/// `ast::Expr`. `None` when the clause has no message, or a message with no
-/// arguments: then there is nothing to evaluate under either engine.
+/// clause's arguments are -- `SuperclassClause::has_args` is read off it
+/// too. `None` when the clause has no message, or a message with no
+/// arguments: then there is nothing to evaluate.
 fn compile_superclass_message(
     mixin: &Rc<Mixin>,
     bindings: &Rc<HashMap<Span, Binding>>,

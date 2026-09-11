@@ -48,7 +48,7 @@ pub fn dispatch(
 /// `doesNotUnderstand:` by default) and that send's result is the loop
 /// expression's value. The bytecode compiler's inlined loop reproduces
 /// exactly this on its guard-failure path (M2 spec, "Control-flow
-/// inlining"), so both engines agree without re-running the condition.
+/// inlining"), so the two agree without re-running the condition.
 fn run_while(
     interp: &mut Interpreter,
     cond: &Value,

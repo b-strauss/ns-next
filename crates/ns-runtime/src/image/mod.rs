@@ -29,7 +29,6 @@ use ns_syntax::Span;
 
 use crate::bytecode::CompiledModule;
 use crate::heap::Heap;
-use crate::interpreter::Engine;
 use crate::types::{Binding, ClassRef, SourceOrigin, Value};
 use crate::{Interpreter, Symbol};
 
@@ -216,9 +215,7 @@ pub fn build(
 }
 
 pub struct LoadedImage {
-    /// Bootstrapped, with `Engine::Bytecode` (the image's own code table)
-    /// installed and the tree-walker sealed off
-    /// (`interpreter::EngineUnavailable::TreeWalkAfterLoad`).
+    /// Bootstrapped, with the image's own code table installed.
     pub interp: Interpreter,
     pub root_class: ClassRef,
     pub roots: Vec<Value>,
@@ -235,17 +232,14 @@ pub struct LoadedImage {
     ///
     /// **It is empty because nothing a loaded world runs can read it, and
     /// that is a property of the bytecode engine, not an omission to be
-    /// repaired.** A binding is resolved *by span* at exactly two kinds of
-    /// call site, and neither is reachable here:
+    /// repaired.** A binding is resolved *by span* at one kind of call site,
+    /// which is not reachable here:
     ///
     /// - `compiler/lower.rs` -- compile time. Lowering is what turns a
     ///   `Binding` into a register index, an `Instr::LoadOuterLocal`, or a
     ///   `LexicalSend`; it ran before the snapshot, and its results are the
     ///   instructions in the image's code table. Nothing recompiles on
     ///   load.
-    /// - `interpreter/eval.rs` -- the tree-walker, which cannot run from an
-    ///   image at all: `set_engine(Engine::TreeWalk)` is refused on a
-    ///   loaded interpreter.
     ///
     /// So do not "fix" this by reconstructing a real map. Reconstructing
     /// one requires re-resolving the source, which requires re-parsing it,
@@ -265,7 +259,7 @@ pub struct LoadedImage {
 
 /// Decodes an artifact: symbols, code table, mixin table, root class, entry,
 /// then -- for an image, never a binary -- the object graph. Installs
-/// `Engine::Bytecode` and, for an image, advances the identity-hash counter
+/// the code table and, for an image, advances the identity-hash counter
 /// past the graph's maximum.
 ///
 /// Nothing here parses, resolves or compiles. The root class is rebuilt
@@ -350,12 +344,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         }
         .to_string());
     }
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .map_err(|e| e.to_string())?;
-    // Last, so that no failure above leaves a sealed interpreter behind:
-    // from here on the tree-walker is refused on this world.
-    interp.mark_decoded_from_image();
+    interp.install_code(module);
     Ok(LoadedImage {
         interp,
         root_class,

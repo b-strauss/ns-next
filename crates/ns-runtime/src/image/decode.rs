@@ -14,8 +14,8 @@ use crate::heap::Heap;
 use crate::interpreter::instantiate;
 use crate::mixin::mixin_key;
 use crate::types::{
-    Binding, BuiltinClass, ClassRef, ClosureBody, ClosureData, Frame, FrameKind, FrameRef, ObjRef,
-    Object, ObjectData, PcKind, SourceOrigin, Value,
+    Binding, BuiltinClass, ClassRef, ClosureData, Frame, FrameKind, FrameRef, ObjRef, Object,
+    ObjectData, SourceOrigin, Value,
 };
 use crate::Interpreter;
 use crate::Symbol;
@@ -198,8 +198,8 @@ pub enum DecodeError {
         target: u32,
         instrs: usize,
     },
-    /// More arguments than registers: every engine hook sizes a frame's
-    /// temps as `num_registers - num_args`, which underflows here.
+    /// More arguments than registers: an activation is pushed with
+    /// `num_registers - num_args` temporaries, which underflows here.
     ArgsExceedRegisters {
         num_args: u16,
         num_registers: u16,
@@ -884,8 +884,8 @@ pub fn verify_code_table(table: &DecodedCodeTable) -> Result<(), DecodeError> {
 }
 
 fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
-    // Every engine hook sizes a frame's temps as `num_registers -
-    // num_args`, a `u16` subtraction.
+    // Every activation is pushed with `num_registers - num_args`
+    // temporaries, a `u16` subtraction.
     if code.num_args > code.num_registers {
         return Err(DecodeError::ArgsExceedRegisters {
             num_args: code.num_args,
@@ -1554,15 +1554,11 @@ fn decode_closure_record(
     let home = decode_frame_id(r, tables)?;
     Ok(ClosureData {
         params,
-        // A decoded closure always carries compiled code: the encoder
-        // refuses a `ClosureBody::Ast` outright, so the format has no
-        // representation for one.
-        body: ClosureBody::Compiled(code),
+        code,
         captured_frame,
         home,
-        // Never serialized: no `bindings.get(&span)` runs under the
-        // bytecode engine, so a decoded closure carries the load's empty
-        // map (`image::LoadedImage::empty_bindings`).
+        // Never serialized: nothing reads one, so a decoded closure
+        // carries the load's empty map (`image::LoadedImage::empty_bindings`).
         bindings: ctx.bindings.clone(),
     })
 }
@@ -1633,7 +1629,6 @@ fn decode_frame(
         args,
         temps,
         pc,
-        pc_kind: PcKind::Bytecode,
         sender,
         home,
         current_class,
@@ -1654,7 +1649,6 @@ fn placeholder_frame() -> Frame {
         args: Vec::new(),
         temps: Vec::new(),
         pc: 0,
-        pc_kind: PcKind::Bytecode,
         sender: None,
         home: None,
         current_class: None,
@@ -2141,13 +2135,7 @@ fn frame_body(heap: &Heap, frame: &FrameRef, module: &CompiledModule) -> Option<
             .and_then(|m| module.superclass_clauses.get(&mixin_key(&m)).cloned()),
         FrameKind::SuperclassMessage(class) => frame_mixin(heap, class)
             .and_then(|m| module.superclass_messages.get(&mixin_key(&m)).cloned()),
-        FrameKind::Closure(closure) => match &closure.body {
-            ClosureBody::Compiled(code) => Some(code.clone()),
-            // Unreachable from the wire: the format has no representation
-            // for a tree-walker closure (`encode_closure_record` refuses
-            // one outright), so this is the exhaustiveness arm.
-            ClosureBody::Ast(_) => None,
-        },
+        FrameKind::Closure(closure) => Some(closure.code.clone()),
         FrameKind::TopLevel => None,
     }
 }
@@ -2157,9 +2145,9 @@ fn frame_body(heap: &Heap, frame: &FrameRef, module: &CompiledModule) -> Option<
 /// cannot see:
 ///
 /// 0. A frame's `pc` must be an instruction index of the body that runs in
-///    it. The frame record says its `pc` counts instructions
-///    (`PcKind::Bytecode` is the only value the format admits), but which
-///    body it counts them in is only known once the module exists.
+///    it. A frame's `pc` counts instructions (an image carries only
+///    bytecode), but which body it counts them in is only known once the
+///    module exists.
 /// 1. A frame's register file must match the body that runs in it -- the
 ///    same `args` count, and at least as many registers. (At least, not
 ///    exactly: a frame's register file is grown, never shrunk -- the
@@ -2228,10 +2216,7 @@ fn verify_closure(
     module: &CompiledModule,
     heap: &Heap,
 ) -> Result<(), DecodeError> {
-    let ClosureBody::Compiled(code) = &closure.body else {
-        // As in `frame_body`: the format cannot express an AST body.
-        return Err(DecodeError::WrongCodeKind { expected: "block" });
-    };
+    let code = &closure.code;
     if code.kind != CodeKind::Block {
         return Err(DecodeError::WrongCodeKind { expected: "block" });
     }

@@ -120,16 +120,10 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
     }
 }
 
-/// Regression coverage for the `ClosureData.bindings` fix: the block body
-/// here (`[ x ]`) reads `x`, a slot on the enclosing class, resolved as a
-/// `Binding::LexicalSend` keyed by this block's own `Span` in the resolver's
-/// bindings map. If `invoke_block` (or `invoke_closure`'s caller more
-/// generally) invoked this closure with a fresh, empty bindings map instead
-/// of the one the block was actually resolved under, `x`'s `Span` would not
-/// be present in that empty map and `eval_ident` would fall through to its
-/// `None` arm -- an "unresolved identifier" `NewspeakError`, not
-/// `SmallInt(5)`. Both forms now run compiled; the variable form still
-/// reaches the native `ifTrue:ifFalse:` with a real closure.
+/// The block body here (`[ x ]`) reads `x`, a slot on the enclosing class,
+/// resolved as a `Binding::LexicalSend` and lowered into a lexical send, so
+/// it must answer `SmallInt(5)` whether the block is inlined or -- the
+/// variable form -- reaches the native `ifTrue:ifFalse:` as a real closure.
 #[test]
 fn if_true_block_body_resolves_an_enclosing_slot_reference() {
     for body in [

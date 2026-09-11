@@ -143,8 +143,7 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
 /// together with `add:`/`size`. The receiver is built via
 /// `new_ordered_collection` (see its doc comment for why) and passed in as a
 /// method argument, so the cascade's receiver expression (`aColl`) is a real
-/// `Expr::Cascade` evaluated by `eval.rs::eval_cascade`, not something faked
-/// in Rust.
+/// `Expr::Cascade`, compiled and run, not something faked in Rust.
 #[test]
 fn ordered_collection_add_and_size_through_a_real_cascade() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m: aColl = ( ^aColl add: 1; add: 2; size )\n) : ()";

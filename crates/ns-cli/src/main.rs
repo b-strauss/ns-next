@@ -457,9 +457,7 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
             Err(signal) => return report_entry_send(Err(signal)),
         }
     }
-    let module = interp
-        .compiled_module()
-        .expect("load_module installed the module's code");
+    let module = interp.compiled_module();
     let bytes = match ns_runtime::image::snapshot(
         interp.heap_ref(),
         debug_source.then_some(loaded.source.as_str()),
@@ -880,11 +878,7 @@ fn cmd_disasm(
     let (root_mixin, module) = if looks_like_an_artifact(&raw) {
         match ns_runtime::image::load(&raw) {
             Ok(loaded) => {
-                let module = loaded
-                    .interp
-                    .compiled_module()
-                    .expect("load installed the bytecode engine")
-                    .clone();
+                let module = loaded.interp.compiled_module().clone();
                 let root_mixin = match root_mixin_of(loaded.interp.heap_ref(), &loaded.root_class) {
                     Ok(m) => m,
                     Err(msg) => {
@@ -905,10 +899,7 @@ fn cmd_disasm(
             Err(code) => return code,
         };
         let (interp, class) = bootstrap(&loaded);
-        let module = interp
-            .compiled_module()
-            .expect("load_module installed the module's code")
-            .clone();
+        let module = interp.compiled_module().clone();
         let root_mixin = match root_mixin_of(interp.heap_ref(), &class) {
             Ok(m) => m,
             Err(msg) => {
@@ -1089,9 +1080,7 @@ fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -
         return ExitCode::FAILURE;
     }
 
-    let module = interp
-        .compiled_module()
-        .expect("load_module installed the module's code");
+    let module = interp.compiled_module();
     let bytes = match ns_runtime::image::build(
         interp.heap_ref(),
         debug_source.then_some(loaded.source.as_str()),

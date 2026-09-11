@@ -109,8 +109,8 @@ impl<'a> Lowerer<'a> {
     }
 
     /// The initializer's per-slot statement: the slot's initializer
-    /// expression, then `InitSlot` (M1's `run_own_slots` writes the field
-    /// directly, never through a setter send). One `statement_pc` entry.
+    /// expression, then `InitSlot`, which writes the field directly, never
+    /// through a setter send. One `statement_pc` entry.
     /// `own_index` is the slot's position among the mixin's own slots
     /// (declaration order) -- `vm::run_code` turns it into an absolute
     /// field index at run time via the executing frame's `slot_base`.
@@ -153,10 +153,10 @@ impl<'a> Lowerer<'a> {
     }
 
     /// What a `^` means here -- the spec's per-code-kind table. `None` is
-    /// "evaluate and discard" (a top-level `^` in `initExprs`, exactly as
-    /// M1's `run_own_init_exprs`). Inside an inlined block (`scopes.last()
+    /// "evaluate and discard" (a top-level `^` in `initExprs`, which has no
+    /// method to return from). Inside an inlined block (`scopes.last()
     /// == Inlined`) an initializer's `^` must instead raise the
-    /// same `Signal::Return` M1's real block would, so it becomes
+    /// same `Signal::Return` a real block would, so it becomes
     /// `NonLocalReturn`.
     fn return_instr(&self, reg: u16) -> Option<Instr> {
         let inside_inlined = self.scopes.last() == Some(&ScopeKind::Inlined);
@@ -405,7 +405,7 @@ impl<'a> Lowerer<'a> {
             }
             // M1's resolver never attaches `SuperSend` to a bare identifier (only to
             // a `super m` send's own span) -- grouped with `None` here because both
-            // fall to the same builtin-name fallback, mirroring `eval_ident`.
+            // fall to the same builtin-name fallback.
             Some(Binding::SuperSend) | None => {
                 match crate::interpreter::instantiate::builtin_kind_from_name(&id.name) {
                     Some(kind) => {
@@ -921,7 +921,7 @@ fn lower_literal(lit: &ast::Literal) -> BcLiteral {
         ast::Literal::Array { elements, .. } => {
             BcLiteral::Array(elements.iter().map(lower_literal).collect())
         }
-        ast::Literal::Pattern { .. } => BcLiteral::Nil, // Non-Goal, matches eval_literal
+        ast::Literal::Pattern { .. } => BcLiteral::Nil, // Non-Goal: typechecker/patterns (M1 spec)
     }
 }
 
@@ -1293,8 +1293,9 @@ mod tests {
     /// between, so the copy is pure overhead: one instruction, and one more
     /// register in every activation's `temps`. The three tests below pin
     /// the cheap form for each position; the guard that the copy is still
-    /// made where the value *does* outlive the setter is the differential
-    /// test `assert_engines_agree_on_source`'s `setterValue` case.
+    /// made where the value *does* outlive the setter is the `setterValue`
+    /// case of `ns-cli`'s
+    /// `an_operand_written_by_a_callee_keeps_its_evaluated_value`.
     #[test]
     fn a_slot_assignment_in_statement_position_does_not_copy_its_value() {
         let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  m = ( | t | t := 1. n := t )\n) : ()";
