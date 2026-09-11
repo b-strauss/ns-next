@@ -53,8 +53,9 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
         );
         checked += 1;
     }
-    // Same reasoning as `differential.rs`'s floor: a fixture that stops
-    // being discovered loses its expected-stdout check silently, so the
+    // A floor rather than whatever the directory yields: a fixture that
+    // stops being discovered -- renamed, moved, its extension changed --
+    // loses its expected-output check without any test failing, so the
     // floor tracks the actual count.
     assert!(
         checked >= 22,

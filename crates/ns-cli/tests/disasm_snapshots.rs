@@ -82,10 +82,9 @@ fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
 /// `--class` addresses a nested class's own method and a class side's own
 /// method by mixin path, and reports a clean error (not a panic) for a
 /// path segment that names nothing in the tree. Not a `tests-fixtures/`
-/// fixture: adding one there would need updating `differential.rs`'s
-/// hardcoded fixture count, and nested-class instantiation is out of scope
-/// until the accessor exists -- this only exercises `disasm`'s addressing,
-/// never runs the module.
+/// fixture: this only exercises `disasm`'s addressing and never runs the
+/// module, while every fixture is run end to end and checked against its
+/// `.expected` file by `run_fixtures.rs`.
 #[test]
 fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
     let dir = ScratchDir::new("disasm-nested-path");

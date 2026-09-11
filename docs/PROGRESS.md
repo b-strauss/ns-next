@@ -62,8 +62,8 @@ retired the tree-walker; see "M4 — Retiring the tree-walker" below.
 **Before 1b fixes its baseline, profile `bench_block.ns`.** Its time did not
 move under the activation stack, although the stack took the block's own
 activation out of the frame arena; what offsets that saving is not known.
-Retiring the tree-walker took about 4% off it, from a smaller closure, which
-does not answer that question.
+Retiring the tree-walker took about 4% off it — attributed, without a profile,
+to a smaller closure — which does not answer that question.
 
 The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
 with A done, everything from 1b on still ahead — and it is not the order the
@@ -324,9 +324,11 @@ from 4.6 MB to 25.4 MB for one tree-walk run, and from 4.6 MB to 340.7 MB for
 ever created, not to what is live. The tree-walk maximum in the same ten timed
 runs also went from ~38 ms to ~117 ms, which the arena's `Vec` doubling would
 explain — an inference from the shape of the growth curve rather than a measured
-cause. Both, with the conditions the figures were taken under and the control
-that would settle the attribution, are in [memory.md](design/memory.md), "What
-the collector owns".
+cause, and one the next step contradicted for this benchmark (below). The
+conditions the peak figures were taken under, and the control that would settle
+the doubling attribution, are in [memory.md](design/memory.md), "Open: what the
+collector owns"; the tree-walk figures, retired with the engine, are recorded
+only here.
 
 ## M4 — The activation stack (2026-09-10)
 
@@ -434,9 +436,10 @@ left for later — the argument vector `collect` builds for every send, the
 Rust stack with no depth limit. The first and the last are 1b's, the lookup the
 inline caches'. And the tree-walker's ~112 ms maximum on `bench_loop.ns`, which
 the arena's `Vec` doubling was thought to explain, survived under a binary that
-retains nothing for that benchmark, so that explanation does not hold for it;
-[memory.md](design/memory.md), "What the collector owns", records what the
-maxima do and do not show.
+retains nothing for that benchmark — 4.6 MB across all twenty-two entry sends —
+so that explanation does not hold for it; its cause was never found. What the
+bytecode maxima do and do not show is in [memory.md](design/memory.md), "Open:
+what the collector owns".
 
 ## M4 — Retiring the tree-walker (2026-09-11)
 
@@ -480,9 +483,10 @@ claimed it was an error was wrong, and was corrected.
   `decoded_from_image`, the AST evaluator, the tree-walk halves of the three
   body-execution hooks, `ClosureBody`, `PcKind`, `run_own_slots` and
   `run_own_init_exprs`, and `Heap::activation_is_method`. The `Interpreter`
-  holds one code table. Tests that built classes by hand now load real
-  modules, and 18 `_under_bytecode` duplicates folded into the tests they
-  duplicated.
+  holds one code table. `crates/ns-runtime/tests/interpreter.rs`'s tests,
+  which built their classes by hand, now load real modules, and 18
+  `_under_bytecode` duplicates in `nested_classes.rs` folded into the tests
+  they duplicated.
 - The resolver's bindings map from every run-time signature: `send(receiver,
   selector, args)`, `instantiate(class, args)`, `invoke_closure(interp,
   closure, args)`, `run_code(interp, act, code)`. `ClosureData`,
@@ -520,15 +524,11 @@ record also lower the image decoder's worst-case amplification, from ~17.8x to
 **Left for B**, found during the retirement and deliberately not fixed in it —
 B's starting inventory, none of them a behaviour change:
 
-- Code comments that still describe the retired engine or harness:
-  `crates/ns-cli/tests/disasm_snapshots.rs` (names `differential.rs`),
-  `run_fixtures.rs` ("Same reasoning as `differential.rs`'s floor"),
-  `snapshot_load.rs` ("the differential harness exists to keep
-  byte-identical"), and `ns-cli/src/main.rs`'s
-  `snapshot` help ("under the bytecode engine") and `cmd_build` doc ("up to
-  engine installation"); `image/inspect.rs`'s module doc ("installs an
-  engine"); `interpreter/eval.rs`'s `unresolved_identifier_error` doc ("in
-  Milestone 1 and 2").
+- Comments that still speak of an engine choice or of past milestones:
+  `ns-cli/src/main.rs`'s `snapshot` help ("under the bytecode engine") and
+  `cmd_build` doc ("up to engine installation"); `image/inspect.rs`'s module
+  doc ("installs an engine"); `interpreter/eval.rs`'s
+  `unresolved_identifier_error` doc ("in Milestone 1 and 2").
 - `interpreter/mod.rs`: `raise_return_pub` is now a wrapper with no reason to
   exist, and `invoke_method`'s arity comment says "silently" twice.
 - Tests: leftover `_under_bytecode` names in `crates/ns-runtime/tests/vm.rs`

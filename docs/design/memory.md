@@ -361,20 +361,22 @@ its variables. After it, a surviving block holds exactly what it captured.
   The step shape is **consistent with** the arena's `Vec` doubling: the copy at
   a doubling point has the old and the new buffer resident at once, and would
   stall the run that triggers it. The benchmark maxima, measured in the same
-  sitting as the last column above, are consistent with that. On
-  `bench_send.ns`, whose retention the stack removed (324.9 MB to 4.6 MB above),
-  the roughly doubled maxima went away — 40.4–40.8 ms over a 23.5 ms median
-  under the arena, 20.8–21.6 ms under the stack. The same happened on row two of
-  the send decomposition ([execution.md](execution.md), "What the activation
-  stack moved"); its peak working set was not measured, so that its retention
-  went too is inferred from its shape, which creates no block per iteration.
-  `bench_block.ns`, which still grows both arenas every iteration, still shows
-  one slow run in ten: a maximum of 64–68 ms over a 38–40 ms median in every
-  timed run of 2026-09-11 ([execution.md](execution.md)'s measurements
-  section). Consistent is not proven: pre-sizing the arenas with
-  `with_capacity` is the control that would settle the doubling explanation,
-  and it has not been run. This is recorded because a collector's design should
-  know the interim may have a latency cost as well as a memory one.
+  sitting as the last column above, do not contradict it, but they do not
+  single it out either: they moved with retention. On `bench_send.ns`, whose
+  retention the stack removed (324.9 MB to 4.6 MB above), the roughly doubled
+  maxima went away — 40.4–40.8 ms over a 23.5 ms median under the arena,
+  20.8–21.6 ms under the stack. The same happened on row two of the send
+  decomposition ([execution.md](execution.md), "What the activation stack
+  moved"); its peak working set was not measured, so that its retention went
+  too is inferred from its shape, which creates no block per iteration.
+  `bench_block.ns`, which still grows both arenas every iteration, still has a
+  maximum well above its median: 63.8–67.9 ms over medians of 37.6–39.9 ms in
+  all six `bench` runs of the 2026-09-11 before-and-after measurement of the
+  retirement. `bench` reports only the median, minimum and maximum, so how many
+  runs were slow is not measured. Pre-sizing the arenas with `with_capacity` is
+  the control that would settle the doubling explanation, and it has not been
+  run. This is recorded because a collector's design should know the interim
+  may have a latency cost as well as a memory one.
 
   A corollary the collector's design should know about, stated carefully because
   the careless version is wrong. A **failed** image decode holds its placeholders

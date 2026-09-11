@@ -4,19 +4,19 @@ A native runtime for [Newspeak](https://newspeaklanguage.org/), written in Rust.
 
 `ns-next` parses and runs Newspeak source directly: a hand-written lexer and parser for
 the Newspeak3 textual syntax, a name resolver implementing Newspeak's lexical, `outer`
-and `super` scoping, and two execution engines — a tree-walking interpreter and a
-register-based bytecode compiler with its own VM. A running world can be serialized to a
-versioned image and loaded back.
+and `super` scoping, and a register-based bytecode compiler with its own VM. A running
+world can be serialized to a versioned image and loaded back.
 
 ## Status
 
 Working today: the full frontend, Newspeak's real name resolution, nested classes and
-mixins with a class object per enclosing instance, both execution engines, and a
+mixins with a class object per enclosing instance, the bytecode compiler and VM, and a
 source-free image format. Every `.ns` file in the vendored corpus parses but one.
 
 Not built yet, and the limits worth knowing before trying it on real code:
 
-- **No garbage collector.** Objects are reference-counted and cycles leak.
+- **No garbage collector.** Objects live in an arena of 32-bit handles and nothing
+  reclaims a slot yet, so every object a process creates is kept until it exits.
 - **Integers are `i64`.** Overflow raises a Newspeak error; there are no bignums.
 - **The platform is minimal**, and widens only when a whitelisted corpus module needs
   something. Six of the 211 corpus modules run end to end; the rest ask for
@@ -37,7 +37,7 @@ other tooling is needed; the project has no external runtime dependencies.
 ```bash
 # build every crate; the ns-next binary lands in target/debug
 cargo build --workspace
-# the full suite, including the differential harness over both engines
+# the full suite, including the golden program outcomes
 cargo test --workspace
 # formatting
 cargo fmt --all
@@ -61,9 +61,10 @@ On Windows the C runtime is linked statically (see `.cargo/config.toml`), so
 `ns-next.exe` is one self-contained file: it needs no Rust installation and no VC++
 redistributable on the machine that runs it.
 
-The differential harness runs every fixture under both engines and compares exit status,
-stdout and stderr byte for byte. The corpus is a vendored set of real Newspeak modules,
-kept as a non-regression gate for the parser.
+Every fixture is checked against its recorded `.expected` stdout and an empty stderr,
+and `crates/ns-cli/tests/program_outcomes.rs` pins the exit status, stdout and stderr
+of programs that cannot be fixtures, byte for byte. The corpus is a vendored set of real
+Newspeak modules, kept as a non-regression gate for the parser.
 
 ## Usage
 
@@ -72,14 +73,7 @@ kept as a non-regression gate for the parser.
 cargo run -p ns-cli -- run tests-fixtures/hello.ns
 ```
 
-The entry selector defaults to `main:args:`; `--send <selector>` picks another one. Two
-engines are available and must produce identical output — the tree-walker is kept as a
-differential oracle for the bytecode engine, which is the default:
-
-```bash
-# the same program under the Milestone 1 tree-walking interpreter
-cargo run -p ns-cli -- run tests-fixtures/while_loop.ns --engine tree-walk
-```
+The entry selector defaults to `main:args:`; `--send <selector>` picks another one.
 
 ```bash
 # print one compiled body; nothing is instantiated or run. Takes a .ns file,
@@ -118,7 +112,7 @@ cargo run -p ns-cli -- inspect world.img --full
 ```
 
 ```bash
-# time one entry send under both engines; measure with --release, never a debug build
+# time one entry send; measure with --release, never a debug build
 cargo run --release -p ns-cli -- bench tests-fixtures/bench_loop.ns --iterations 30
 ```
 
@@ -128,7 +122,7 @@ cargo run --release -p ns-cli -- bench tests-fixtures/bench_loop.ns --iterations
 
 ```
 crates/ns-syntax     lexer, parser, AST, spans
-crates/ns-runtime    resolver, object model, dispatch, both engines, core library, image format
+crates/ns-runtime    resolver, object model, dispatch, compiler, VM, core library, image format
 crates/ns-cli        the `ns-next` binary
 corpus/              vendored Newspeak modules used as a parser corpus
 tests-fixtures/      end-to-end programs with their expected output
