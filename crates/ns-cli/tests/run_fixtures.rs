@@ -12,6 +12,9 @@ fn normalize_newlines(s: &str) -> String {
     s.replace("\r\n", "\n")
 }
 
+/// Every fixture succeeds, prints exactly its `.expected` stdout and writes
+/// nothing to stderr -- the three streams the engine differential used to
+/// compare, pinned against a recorded answer instead.
 #[test]
 fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
@@ -35,6 +38,12 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
             path.display(),
             String::from_utf8_lossy(&output.stderr)
         );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "",
+            "{} wrote to stderr",
+            path.display()
+        );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(
             normalize_newlines(stdout.trim_end()),
@@ -44,8 +53,9 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
         );
         checked += 1;
     }
-    // Same reasoning as `differential.rs`'s floor: a fixture that stops
-    // being discovered loses its expected-stdout check silently, so the
+    // A floor rather than whatever the directory yields: a fixture that
+    // stops being discovered -- renamed, moved, its extension changed --
+    // loses its expected-output check without any test failing, so the
     // floor tracks the actual count.
     assert!(
         checked >= 22,

@@ -287,8 +287,8 @@ impl Resolver {
     /// returns `None`, unlike `depth_search`'s always-defaults-to-0
     /// behavior) is checked against `classes::is_builtin_class_name`
     /// *before* falling back to a self send. A builtin match records no
-    /// `Binding` at all for this span -- the interpreter resolves it
-    /// against the builtin table by name instead (see `eval_ident`).
+    /// `Binding` at all for this span -- the compiler resolves it against
+    /// the builtin table by name instead (`Instr::LoadBuiltinClass`).
     fn resolve_ident(&mut self, id: &ast::Ident, scope: &mut ScopeStack, chain: &[EnclosingClass]) {
         if id.name == "self" || id.name == "super" {
             return;

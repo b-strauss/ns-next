@@ -9,14 +9,14 @@ use std::rc::Rc;
 
 use ns_syntax::Span;
 
-use crate::types::{Binding, BuiltinClass};
+use crate::types::BuiltinClass;
 use crate::Symbol;
 
 /// A compiled instruction-set literal -- a lowered form of `ast::Literal`
 /// that keeps only what execution needs. Int/float text is parsed once at
 /// compile time; `Str`/`Sym`/`Char`/`Array` still allocate a fresh heap
-/// object each time they execute (matching `eval::eval_literal` -- a literal
-/// string is a fresh `Object` on every evaluation in Milestone 1 too).
+/// object each time they execute (a literal string is a fresh `Object` on
+/// every evaluation, as it was in Milestone 1).
 ///
 /// `MalformedInt` carries the raw text of an integer literal the lexer
 /// accepted but `interpreter::eval::parse_int_literal` rejects (out of
@@ -66,8 +66,8 @@ pub enum Instr {
     LoadSelf {
         dst: u16,
     },
-    /// M1's "bare builtin class name has no `Binding`" convention
-    /// (`eval::eval_ident`'s fallback), resolved at compile time.
+    /// M1's "bare builtin class name has no `Binding`" convention, resolved
+    /// at compile time.
     LoadBuiltinClass {
         dst: u16,
         kind: BuiltinClass,
@@ -118,9 +118,9 @@ pub enum Instr {
         dst: u16,
         call_site: CallSite,
     },
-    /// Builds a closure over the *compiled* block body. `captured_frame`,
-    /// `home`, and `bindings` are runtime values the VM supplies from its
-    /// current frame when the instruction executes.
+    /// Builds a closure over the *compiled* block body. `captured_frame` and
+    /// `home` are runtime values the VM supplies from its current frame
+    /// when the instruction executes.
     MakeClosure {
         dst: u16,
         params: Rc<Vec<Symbol>>,
@@ -224,7 +224,7 @@ pub struct CompiledCode {
     pub instrs: Vec<Instr>,
     pub num_args: u16,
     /// Total register count: `num_args` + named temps + compiler-allocated
-    /// scratch registers. The engine hooks size `Frame.temps` to
+    /// scratch registers. An activation is pushed with
     /// `num_registers - num_args`.
     pub num_registers: u16,
     /// Maps a statement index (a method's/block's `CodeBody.stmts` index;
@@ -237,11 +237,11 @@ pub struct CompiledCode {
     pub source: Span,
 }
 
-/// The bytecode engine's per-module cache, installed on the `Interpreter`
-/// as `Engine::Bytecode(module)`. `methods` is keyed by `Rc` pointer
-/// identity of the *loaded* `MethodDecl` -- the exact `Rc` `dispatch.rs`
-/// hands back -- so no name-based index can drift and no two same-named
-/// methods on different mixins can collide.
+/// Every compiled body a module loaded into an `Interpreter` runs, installed
+/// by `Interpreter::install_code`. `methods` is keyed by `Rc` pointer
+/// identity of the *loaded* `MixinMethod` (`method_key`) -- the exact `Rc`
+/// `dispatch.rs` hands back -- so no name-based index can drift and no two
+/// same-named methods on different mixins can collide.
 ///
 /// `initializers` is keyed by `crate::mixin::mixin_key`, not by class
 /// object: `newspeak-spec.pdf` §6.2 has every application of a mixin share
@@ -250,7 +250,7 @@ pub struct CompiledCode {
 /// same initializer body once per enclosing instance instead of once per
 /// mixin -- exactly what `compiler::compile_module` walking the mixin tree
 /// once, up front, is meant to avoid.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CompiledModule {
     pub methods: HashMap<usize, Rc<CompiledCode>>,
     pub initializers: HashMap<usize, Rc<CompiledCode>>,
@@ -267,14 +267,26 @@ pub struct CompiledModule {
     /// message takes no arguments -- the overwhelmingly common `= Object
     /// new` shape runs no code at all here, and allocates nothing.
     pub superclass_messages: HashMap<usize, Rc<CompiledCode>>,
-    /// The module's resolver output, carried so the hooks can pass it to
-    /// the shared orchestration's `bindings` parameters.
-    ///
-    /// Empty for a module decoded from an image, and correctly so: the map
-    /// is read only by `compiler::lower` (compile time) and by the
-    /// tree-walker, and neither runs on a loaded world. See
-    /// `image::LoadedImage::empty_bindings`.
-    pub bindings: Rc<HashMap<Span, Binding>>,
+}
+
+impl CompiledModule {
+    /// Adds `other`'s bodies to this module's. Every key is a mixin's or a
+    /// method's `Rc` identity, so the bodies of two separately loaded modules
+    /// never collide, and nothing already installed is replaced -- provided
+    /// every `Rc<Mixin>` and `Rc<MixinMethod>` a key was taken from is still
+    /// alive. A key is only an address: once its `Rc` is freed, a later
+    /// allocation can reuse the address, and `HashMap::extend` would then
+    /// overwrite the old entry with the new module's body. Today nothing is
+    /// freed -- the object arena keeps every class object, and with it its
+    /// application and mixin, and the application cache keeps every
+    /// application -- so the precondition holds; a collector has to keep it
+    /// (`docs/design/memory.md`, "Open: what the collector owns").
+    pub fn extend(&mut self, other: CompiledModule) {
+        self.methods.extend(other.methods);
+        self.initializers.extend(other.initializers);
+        self.superclass_clauses.extend(other.superclass_clauses);
+        self.superclass_messages.extend(other.superclass_messages);
+    }
 }
 
 /// A method's identity: the `Rc<MixinMethod>` its own mixin's dictionary

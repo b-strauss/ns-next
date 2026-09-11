@@ -1,7 +1,7 @@
-//! The tree-walking interpreter's core: sends, method invocation, and the
-//! `Signal` non-local-return/error channel. Expression-level evaluation is
-//! in `eval.rs`. The bootstrap and class-instantiation machinery are in
-//! `instantiate.rs`.
+//! Sends, method invocation, and the `Signal` non-local-return/error channel,
+//! shared by everything that runs Newspeak code. Send helpers and
+//! local-variable access are in `eval.rs`; the bootstrap and class
+//! instantiation in `instantiate.rs`.
 
 pub mod eval;
 pub mod instantiate;
@@ -9,9 +9,6 @@ pub(crate) mod nested;
 
 use std::collections::HashMap;
 use std::rc::Rc;
-
-use ns_syntax::ast;
-use ns_syntax::Span;
 
 use crate::bytecode::{method_key, CompiledModule};
 use crate::dispatch::{self, Lookup};
@@ -26,62 +23,14 @@ pub enum Signal {
 
 pub type EvalResult = Result<Value, Signal>;
 
-/// Which engine evaluates method bodies, block bodies, and instance
-/// initializers. Everything else -- dispatch, `doesNotUnderstand:`, native
-/// dispatch, instantiation, frame construction -- is shared. See the M2
-/// spec's "`vm.rs` and the engine hook".
-pub enum Engine {
-    TreeWalk,
-    Bytecode(CompiledModule),
-}
-
-/// Why `Interpreter::set_engine` refused.
-///
-/// One variant so far, and the reason it is an enum rather than a `bool`
-/// is that a caller should be able to tell the cases apart if a second one
-/// ever appears.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EngineUnavailable {
-    /// `Engine::TreeWalk` on a world decoded from an image.
-    ///
-    /// The tree-walker evaluates declarations: a method's `ast::CodeBody`,
-    /// a slot clause's initializer expression, a class's `initExprs`, a
-    /// superclass clause's receiver. An image carries none of those -- it
-    /// carries compiled code and a mixin table, and every `Mixin`,
-    /// `MixinMethod` and `MixinSlot` `image::mixins::decode` rebuilds has
-    /// `decl: None`. Running the tree-walker over such a world does not
-    /// fail uniformly: `invoke_method` and `nested::run_clause_body` panic
-    /// on the missing declaration, while `instantiate::run_own_slots`
-    /// filter-maps the declarationless slots away and
-    /// `run_own_init_exprs` iterates an empty vector -- silently producing
-    /// a half-initialised object, which is the worse of the two outcomes.
-    ///
-    /// Refusing the switch is what makes the behaviour consistent, and it
-    /// does so for every such path at once, including paths added later:
-    /// the alternative -- teaching each individual tree-walk path to fail
-    /// loudly -- has to be re-done for every path anyone writes next, and
-    /// forgetting once puts the silent half-initialisation back.
-    TreeWalkAfterLoad,
-}
-
-impl std::fmt::Display for EngineUnavailable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EngineUnavailable::TreeWalkAfterLoad => write!(
-                f,
-                "the tree-walking engine cannot run a world decoded from an image: \
-                 an image carries compiled code, not the declarations the tree-walker \
-                 evaluates"
-            ),
-        }
-    }
-}
-
 pub struct Interpreter {
     pub(crate) heap: Heap,
     builtin_classes: Option<HashMap<BuiltinClass, ClassRef>>,
     platform_singleton: Option<Value>,
-    engine: Engine,
+    /// Every compiled body every loaded module runs. `load_module` and
+    /// `image::load` add to it through `install_code`; nothing runs a body
+    /// that is not here.
+    code: CompiledModule,
     /// (mixin identity, superclass application identity) -> behaviour.
     /// Keyed on the superclass's *application*, never on a superclass class
     /// object: a nested superclass has one class object per enclosing
@@ -106,10 +55,6 @@ pub struct Interpreter {
     /// a linear scan beats hashing and allocates nothing in the common
     /// case.
     nested_in_progress: Vec<(usize, usize)>,
-    /// Set by `image::load`: this world's declarations came off the wire,
-    /// so they are mixins without `decl`s. See
-    /// `EngineUnavailable::TreeWalkAfterLoad`.
-    decoded_from_image: bool,
 }
 
 impl Default for Interpreter {
@@ -124,11 +69,10 @@ impl Interpreter {
             heap: Heap::new(),
             builtin_classes: None,
             platform_singleton: None,
-            engine: Engine::TreeWalk,
+            code: CompiledModule::default(),
             applications: HashMap::new(),
             empty_class_sides: HashMap::new(),
             nested_in_progress: Vec::new(),
-            decoded_from_image: false,
         }
     }
 
@@ -137,46 +81,24 @@ impl Interpreter {
             heap: Heap::new(),
             builtin_classes: None,
             platform_singleton: None,
-            engine: Engine::TreeWalk,
+            code: CompiledModule::default(),
             applications: HashMap::new(),
             empty_class_sides: HashMap::new(),
             nested_in_progress: Vec::new(),
-            decoded_from_image: false,
         };
         interp.builtin_classes = Some(build_builtin_classes(&mut interp));
         interp
     }
 
-    /// Switches engines. Call after `load_module` and `compile_module`; the
-    /// default is `TreeWalk`, so every Milestone 1 caller keeps its
-    /// behavior.
-    ///
-    /// Refused in exactly one case -- `Engine::TreeWalk` on a world
-    /// `image::load` built, for the reasons on
-    /// `EngineUnavailable::TreeWalkAfterLoad`. `Engine::Bytecode` is never
-    /// refused, so every caller that installs the VM (which is all of them
-    /// but one test) can treat the result as infallible.
-    pub fn set_engine(&mut self, engine: Engine) -> Result<(), EngineUnavailable> {
-        if self.decoded_from_image && matches!(engine, Engine::TreeWalk) {
-            return Err(EngineUnavailable::TreeWalkAfterLoad);
-        }
-        self.engine = engine;
-        Ok(())
+    /// Makes `module`'s compiled bodies runnable, adding them to whatever an
+    /// earlier load installed. `load_module`, where loading and compiling
+    /// are one step, and `image::load` are the callers.
+    pub(crate) fn install_code(&mut self, module: CompiledModule) {
+        self.code.extend(module);
     }
 
-    /// Marks this world as decoded from an image -- `image::load`'s last
-    /// step, and the only writer. Sealing the interpreter rather than each
-    /// tree-walk path is the whole of the policy; see
-    /// `EngineUnavailable::TreeWalkAfterLoad`.
-    pub(crate) fn mark_decoded_from_image(&mut self) {
-        self.decoded_from_image = true;
-    }
-
-    pub fn compiled_module(&self) -> Option<&CompiledModule> {
-        match &self.engine {
-            Engine::Bytecode(module) => Some(module),
-            Engine::TreeWalk => None,
-        }
+    pub fn compiled_module(&self) -> &CompiledModule {
+        &self.code
     }
 
     pub fn builtin_class(&self, kind: BuiltinClass) -> ClassRef {
@@ -228,15 +150,9 @@ impl Interpreter {
     /// Checked here, at every send, because a leaked entry is otherwise
     /// silent -- a later activation would sit on top of a dead one's
     /// registers.
-    pub fn send(
-        &mut self,
-        receiver: Value,
-        selector: Symbol,
-        args: Vec<Value>,
-        bindings: &Rc<HashMap<Span, Binding>>,
-    ) -> EvalResult {
+    pub fn send(&mut self, receiver: Value, selector: Symbol, args: Vec<Value>) -> EvalResult {
         let depth = self.heap.activation_depth();
-        let result = self.dispatch_send(receiver, selector, args, bindings);
+        let result = self.dispatch_send(receiver, selector, args);
         debug_assert_eq!(
             self.heap.activation_depth(),
             depth,
@@ -257,14 +173,8 @@ impl Interpreter {
     /// `instantiate` directly; see its own doc comment for why this can
     /// never double-fire against the superclass clause's own deferred
     /// factory message (`run_initializer_level` never calls `send`).
-    fn dispatch_send(
-        &mut self,
-        receiver: Value,
-        selector: Symbol,
-        args: Vec<Value>,
-        bindings: &Rc<HashMap<Span, Binding>>,
-    ) -> EvalResult {
-        if let Some(result) = self.try_factory_send(&receiver, selector, &args, bindings) {
+    fn dispatch_send(&mut self, receiver: Value, selector: Symbol, args: Vec<Value>) -> EvalResult {
+        if let Some(result) = self.try_factory_send(&receiver, selector, &args) {
             return result;
         }
         // §6.3: a class object's class-side methods are reached through its
@@ -281,26 +191,13 @@ impl Interpreter {
                 if let Some(metaclass) = self.metaclass_of(obj) {
                     match dispatch::lookup_public(&self.heap, &metaclass, selector) {
                         Lookup::Method(method, defining_class) => {
-                            return self.invoke_method(
-                                receiver,
-                                method,
-                                defining_class,
-                                args,
-                                bindings.clone(),
-                            );
+                            return self.invoke_method(receiver, method, defining_class, args);
                         }
                         Lookup::NestedClass(mixin, declaring_class) => {
-                            return nested::nested_class(
-                                self,
-                                &receiver,
-                                &mixin,
-                                &declaring_class,
-                                bindings,
-                            );
+                            return nested::nested_class(self, &receiver, &mixin, &declaring_class);
                         }
                         Lookup::Native(kind) => {
-                            return self
-                                .dispatch_native_or_dnu(kind, receiver, selector, args, bindings);
+                            return self.dispatch_native_or_dnu(kind, receiver, selector, args);
                         }
                         Lookup::NotFound => {}
                     }
@@ -310,19 +207,17 @@ impl Interpreter {
         let class = self.class_of(&receiver);
         match dispatch::lookup_public(&self.heap, &class, selector) {
             Lookup::Method(method, defining_class) => {
-                self.invoke_method(receiver, method, defining_class, args, bindings.clone())
+                self.invoke_method(receiver, method, defining_class, args)
             }
             // §6: the implicit accessor a nested declaration defines is
             // reached exactly like any other member, and it ignores `args`
             // -- the accessor is unary, so a send that supplied arguments
             // did not name it (`walk` matched on the bare selector).
             Lookup::NestedClass(mixin, declaring_class) => {
-                nested::nested_class(self, &receiver, &mixin, &declaring_class, bindings)
+                nested::nested_class(self, &receiver, &mixin, &declaring_class)
             }
-            Lookup::Native(kind) => {
-                self.dispatch_native_or_dnu(kind, receiver, selector, args, bindings)
-            }
-            Lookup::NotFound => self.does_not_understand(receiver, selector, args, bindings),
+            Lookup::Native(kind) => self.dispatch_native_or_dnu(kind, receiver, selector, args),
+            Lookup::NotFound => self.does_not_understand(receiver, selector, args),
         }
     }
 
@@ -370,11 +265,10 @@ impl Interpreter {
         receiver: Value,
         selector: Symbol,
         args: Vec<Value>,
-        bindings: &Rc<HashMap<Span, Binding>>,
     ) -> EvalResult {
         match self.dispatch_native_inheriting_object(kind, &receiver, selector, &args) {
             Some(result) => result,
-            None => self.does_not_understand(receiver, selector, args, bindings),
+            None => self.does_not_understand(receiver, selector, args),
         }
     }
 
@@ -394,7 +288,6 @@ impl Interpreter {
         receiver: Value,
         selector: Symbol,
         args: Vec<Value>,
-        bindings: &Rc<HashMap<Span, Binding>>,
     ) -> EvalResult {
         let class = self.class_of(&receiver);
         let dnu_selector = Symbol::intern("doesNotUnderstand:");
@@ -407,13 +300,7 @@ impl Interpreter {
                 let selector_value = self.new_symbol(selector);
                 let args_value = Value::Obj(self.new_array(args));
                 let message_arg = Value::Obj(self.new_array(vec![selector_value, args_value]));
-                self.invoke_method(
-                    receiver,
-                    method,
-                    defining_class,
-                    vec![message_arg],
-                    bindings.clone(),
-                )
+                self.invoke_method(receiver, method, defining_class, vec![message_arg])
             }
             Lookup::Native(kind) => {
                 let selector_value = self.new_symbol(selector);
@@ -454,8 +341,8 @@ impl Interpreter {
         }
     }
 
-    /// Pushes an activation, runs the method body, and unwinds a matching
-    /// `Signal::Return` back into an ordinary value.
+    /// Pushes an activation, runs the method's compiled body, and unwinds a
+    /// matching `Signal::Return` back into an ordinary value.
     ///
     /// The activation is popped on *every* path out -- `^`, falling off the
     /// end, or an unwinding error or return. If a block captured it, popping
@@ -467,7 +354,6 @@ impl Interpreter {
         method: Rc<crate::mixin::MixinMethod>,
         defining_class: ClassRef,
         args: Vec<Value>,
-        bindings: Rc<HashMap<Span, Binding>>,
     ) -> EvalResult {
         // An activation's locals are addressed as one run of registers --
         // the arguments first, the declared temporaries after them -- and
@@ -475,12 +361,12 @@ impl Interpreter {
         // *given*, not how many the method declares. A wrong-arity
         // activation therefore does not fail; it silently shifts every
         // temporary by the difference and reads arguments back where a
-        // temporary should be, under both engines identically, which is why
-        // the differential harness cannot see it.
+        // temporary should be, silently, which no golden output necessarily
+        // shows.
         // Silent wrong output with exit status 0 is the failure mode this
         // repository's invariants single out, so the mismatch is refused
-        // here, in the orchestration both engines share, as an ordinary
-        // Newspeak error -- never a panic, since the caller may be a host.
+        // here, in the shared orchestration, as an ordinary Newspeak error
+        // -- never a panic, since the caller may be a host.
         //
         // No Newspeak-level send can reach this: the parser builds a
         // message whose argument count matches its selector by
@@ -499,89 +385,30 @@ impl Interpreter {
                 ),
             }));
         }
-        // Hook 1 (spec: "`vm.rs` and the engine hook"): the activation's
-        // push and pop and the `Signal::Return` catch are shared; only the
-        // body's evaluation differs.
-        let compiled = match &self.engine {
-            Engine::TreeWalk => None,
-            Engine::Bytecode(module) => Some(
-                module
-                    .methods
-                    .get(&method_key(&method))
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        panic!("internal: dispatched method has no compiled form (compile_module coverage gap)")
-                    }),
-            ),
-        };
-        // The tree-walker sizes the activation from the declaration's own
-        // named temporaries, and only ever runs a mixin built from source,
-        // so `decl` is always there when it is the one asking.
-        let temp_count = match &compiled {
-            Some(code) => (code.num_registers - code.num_args) as usize,
-            None => method.decl.as_ref().map_or(0, |d| d.body.temps.len()),
-        };
+        let code = self
+            .code
+            .methods
+            .get(&method_key(&method))
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!("internal: dispatched method has no compiled form (compile_module coverage gap)")
+            });
         let act = self.heap.push_activation(
             ActivationHeader {
                 receiver,
                 current_class: Some(defining_class),
-                kind: FrameKind::Method(method.clone()),
-                // Fixed by the same `compiled` that decides which body runs
-                // below, so the activation can never claim a unit its own
-                // body does not count in.
-                pc_kind: match &compiled {
-                    Some(_) => PcKind::Bytecode,
-                    None => PcKind::TreeWalk,
-                },
+                kind: FrameKind::Method(method),
                 slot_base: 0, // a method body never contains InitSlot
             },
             &args,
-            temp_count,
+            (code.num_registers - code.num_args) as usize,
         );
-        let result = match (&compiled, &method.decl) {
-            (Some(code), _) => crate::vm::run_code(self, &act, code, &bindings),
-            (None, Some(decl)) => self.run_statements(&decl.body.stmts, &act, &bindings),
-            // Unreachable rather than merely unlikely: a mixin without
-            // declarations comes from an image, and `image::load` installs
-            // `Engine::Bytecode`, so such a method always arrives compiled.
-            (None, None) => panic!(
-                "internal: the tree-walking engine cannot run a method of a mixin \
-                 decoded from an image"
-            ),
-        };
+        let result = crate::vm::run_code(self, &act, &code);
         self.heap.pop_activation(&act);
         match result {
             Ok(value) => Ok(value),
             Err(Signal::Return(target, value)) if target.same(&act) => Ok(value),
             Err(other) => Err(other),
-        }
-    }
-
-    fn run_statements(
-        &mut self,
-        stmts: &[ast::Stmt],
-        act: &ActivationRef,
-        bindings: &Rc<HashMap<Span, Binding>>,
-    ) -> EvalResult {
-        let mut last = Value::Nil;
-        for (i, stmt) in stmts.iter().enumerate() {
-            self.heap.set_activation_pc(act, i);
-            match stmt {
-                ast::Stmt::Expr(e) => {
-                    last = eval::eval_expr(self, e, act, bindings)?;
-                }
-                ast::Stmt::Return(e) => {
-                    let value = eval::eval_expr(self, e, act, bindings)?;
-                    return Err(self.raise_return(act, value));
-                }
-            }
-        }
-        // No explicit return: methods return `self` (spec §3.5), closures
-        // return the last expression's value (§5.1.8).
-        if self.heap.activation_is_method(act) {
-            Ok(self.heap.activation_receiver(act))
-        } else {
-            Ok(last)
         }
     }
 

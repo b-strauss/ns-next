@@ -10,20 +10,42 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
 
-M4 is under way, and **the next piece is 1b, the trampoline** — designed in
-[execution.md](design/execution.md), "Planned: the trampoline". Its pieces are
-one change: the object representation, the activation representation and the
-root discipline each constrain the other two, which is why the object and
-activation representations were converted together rather than one at a time.
-Each piece is designed in the document for its own aspect; those documents are
-the authority, and this is only the map to them.
+M4 is under way, and **the next piece is B, cleaning up with one engine. Its
+detailed plan is written first**, before any code changes. The bytecode VM is
+now the only engine ([execution.md](design/execution.md), "One engine"): step
+A retired the tree-walker on 2026-09-11, because designing 1b, the trampoline,
+showed that a recursive AST evaluator cannot take part in what the trampoline
+exists for — suspending a running computation, the debugger, edit-and-continue
+on a live activation. Three steps come before 1b, each landing on its own:
 
-**Three pieces are done.** The heap seam routes every object and activation
+- **A — Retire the tree-walker. Done.** Its verdicts were harvested into golden
+  outcomes first, then everything that existed only because there were two
+  engines was removed; see "M4 — Retiring the tree-walker" below.
+- **B — Clean up with one engine. Next; its plan is written first.**
+  Behaviour-preserving refactoring and more idiomatic Rust, now that no code has
+  to serve a second engine — measured wherever it touches a hot path, with the
+  golden outcomes as the guard, so a golden that changes means B changed
+  behaviour and went too far. B changes no design, so nothing under
+  `docs/design/` describes it: this entry is its brief, and the items the
+  retirement left behind, listed under "M4 — Retiring the tree-walker" below,
+  are its starting inventory.
+- **C — The reference lowering**, the differential oracle the retired
+  tree-walker used to be ([compiler.md](design/compiler.md), "Planned: the
+  reference lowering"). Its design has to settle how a recursion-depth limit
+  counts before 1b needs one.
+
+M4's pieces are one change: the object representation, the activation
+representation and the root discipline each constrain the other two, which is
+why the object and activation representations were converted together rather
+than one at a time. Each piece is designed in the document for its own aspect;
+those documents are the authority, and this is only the map to them.
+
+**Four pieces are done.** The heap seam routes every object and activation
 access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
 it replaced `Rc<RefCell<_>>`: an `ObjRef` or a `FrameRef` is a 32-bit index
 into a `Vec` the `Heap` owns, with a private field so the compiler enforces the
@@ -34,24 +56,19 @@ and frame arena" below. Then activations moved onto a stack the `Heap` owns
 see "M4 — The activation stack" below. **Nothing reclaims an arena slot** —
 every object and every reified frame is kept for the life of the process. That
 is a deliberate interim cost. The activation stack bounded it for activations
-nothing captures, and step 5, the collector, is what ends it.
+nothing captures, and step 5, the collector, is what ends it. Then step A
+retired the tree-walker; see "M4 — Retiring the tree-walker" below.
 
-**Before 1b fixes its baseline, know that the tree-walker retains more than the
-VM.** It evaluates every block literal, including the `ifTrue:`/`and:`/
-`whileTrue:` arguments the compiler inlines, and reifies the running activation
-for each one; every closure it creates also carries its own copy of the block's
-syntax tree. So its storage is not bounded like the VM's: 300,000 calls of a
-method holding `ifTrue: [^0]` peak at 136.8 MB under the tree-walker against
-4.6 MB under the VM ([memory.md](design/memory.md), "Open: what the collector
-owns"). That does not explain why `bench_block.ns`'s time did not move under the
-tree-walker, though: its loop creates no control-flow block per iteration, so
-both engines reify one frame per iteration there, and its time did not move
-under the VM either. What offsets the stack's saving on that source is not
-known; profile it under both engines before 1b takes its numbers.
+**Before 1b fixes its baseline, profile `bench_block.ns`.** Its time did not
+move under the activation stack, although the stack took the block's own
+activation out of the frame arena; what offsets that saving is not known.
+Retiring the tree-walker took about 4% off it — attributed, without a profile,
+to a smaller closure — which does not answer that question.
 
-The list below is M4's order of work — 1a done, everything from 1b on still
-ahead — and it is not the order the milestone was originally sketched in. Two
-things settled it, neither of them a preference.
+The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
+with A done, everything from 1b on still ahead — and it is not the order the
+milestone was originally sketched in. Two things settled the order of the
+numbered steps, neither of them a preference.
 
 The first is a measurement. On a release build, before the arena, a
 user-method send cost ~165 ns, of which ~68 ns — about 41% — was spent building
@@ -79,10 +96,10 @@ so nothing is lost by it going second.
    - **1a — the stack. Done.** Activations are entries on one stack the `Heap`
      owns, addressed by an `ActivationRef`; a `Frame` is reified only when a
      block is created, and divorced — its registers copied out — when its
-     activation returns. Both engines share it. A user-method send under the
-     bytecode engine fell from ~146 ns to ~91 ns, and an activation nothing
-     captures leaves nothing behind; see "M4 — The activation stack" below.
-   - **1b — the trampoline. Next.** `send` split into a decision and an
+     activation returns. A user-method send fell from ~146 ns to ~91 ns, and
+     an activation nothing captures leaves nothing behind; see "M4 — The
+     activation stack" below.
+   - **1b — the trampoline. After A to C.** `send` split into a decision and an
      activation, arguments copied straight from the caller's registers,
      `Block value` absorbed, recursion depth an ordinary Newspeak error.
      Designed in [execution.md](design/execution.md), "Planned: the
@@ -307,9 +324,11 @@ from 4.6 MB to 25.4 MB for one tree-walk run, and from 4.6 MB to 340.7 MB for
 ever created, not to what is live. The tree-walk maximum in the same ten timed
 runs also went from ~38 ms to ~117 ms, which the arena's `Vec` doubling would
 explain — an inference from the shape of the growth curve rather than a measured
-cause. Both, with the conditions the figures were taken under and the control
-that would settle the attribution, are in [memory.md](design/memory.md), "What
-the collector owns".
+cause, and one the next step contradicted for this benchmark (below). The
+conditions the peak figures were taken under, and the control that would settle
+the doubling attribution, are in [memory.md](design/memory.md), "Open: what the
+collector owns"; the tree-walk figures, retired with the engine, are recorded
+only here.
 
 ## M4 — The activation stack (2026-09-10)
 
@@ -417,9 +436,179 @@ left for later — the argument vector `collect` builds for every send, the
 Rust stack with no depth limit. The first and the last are 1b's, the lookup the
 inline caches'. And the tree-walker's ~112 ms maximum on `bench_loop.ns`, which
 the arena's `Vec` doubling was thought to explain, survived under a binary that
-retains nothing for that benchmark, so that explanation does not hold for it;
-[memory.md](design/memory.md), "What the collector owns", records what the
-maxima do and do not show.
+retains nothing for that benchmark — 4.6 MB across all twenty-two entry sends —
+so that explanation does not hold for it; its cause was never found. What the
+bytecode maxima do and do not show is in [memory.md](design/memory.md), "Open:
+what the collector owns".
+
+## M4 — Retiring the tree-walker (2026-09-11)
+
+Plan: [ns-next-retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md).
+
+Step A of the three inserted ahead of 1b. The bytecode VM is the only engine;
+why the tree-walker went, and what protects behaviour until the reference
+lowering exists, is in [execution.md](design/execution.md), "One engine".
+
+**What was harvested first.** Loading a module now compiles and installs its
+code (`load_module`; a second load adds to the first's), which moved every
+runtime test that never installed an engine — and so had run under the
+tree-walker by default — onto the VM. Exactly four tests failed, all four as
+predicted and none a VM divergence: two image tests that deliberately built
+tree-walker closures, one `vm.rs` test asserting the tree-walker was the
+default, and `instantiate.rs`'s two-module test, which needed the second load's
+code added rather than replacing the first's. Tests whose point is a
+control-flow native now also pass blocks through variables, which the compiler
+does not inline, so the native path stays covered. Helpers that took a
+`bytecode: bool` ran the VM for both halves from then on; their agreement had
+been established before, when each half ran its own engine.
+
+Then `differential.rs`'s inline cases became thirteen golden outcomes in
+`crates/ns-cli/tests/program_outcomes.rs` — exit status, stdout and stderr,
+captured from both engines, which agreed on every one — and
+`run_fixtures.rs` now also pins each fixture's empty stderr. **No divergence
+was found anywhere in the harvest.** A review probe on the pre-deletion code,
+with the tree-walker switched on explicitly, found that a `super`-prefixed
+superclass clause answers a class object under both engines: the test doc that
+claimed it was an error was wrong, and was corrected.
+
+**What was deleted.**
+
+- From the CLI: `--engine`, the tree-walk line of `bench`, and
+  `crates/ns-cli/tests/differential.rs`. `run-corpus` runs each row from
+  source and as a built binary.
+- From the image format: the frame record's pc-kind byte, so the minimum frame
+  record is 18 bytes rather than 19. `PC_KIND_*` retired its two numbers,
+  which stay pinned. A one-frame record in the old layout is refused
+  (`crates/ns-runtime/tests/image.rs`,
+  `a_frame_record_in_the_old_layout_is_refused`); in a multi-frame image the
+  misaligned stream is very likely, but not provably, refused.
+- From the runtime: `Engine`, `set_engine`, `EngineUnavailable`,
+  `decoded_from_image`, the AST evaluator, the tree-walk halves of the three
+  body-execution hooks, `ClosureBody`, `PcKind`, `run_own_slots` and
+  `run_own_init_exprs`, and `Heap::activation_is_method`. The `Interpreter`
+  holds one code table. `crates/ns-runtime/tests/interpreter.rs`'s tests,
+  which built their classes by hand, now load real modules, and 18
+  `_under_bytecode` duplicates in `nested_classes.rs` folded into the tests
+  they duplicated.
+- The resolver's bindings map from every run-time signature: `send(receiver,
+  selector, args)`, `instantiate(class, args)`, `invoke_closure(interp,
+  closure, args)`, `run_code(interp, act, code)`. `ClosureData`,
+  `CompiledModule` and `LoadedImage` no longer carry one.
+
+**What replaced the differential for now** is recorded answers: every fixture
+against its `.expected` stdout and an empty stderr, the golden outcomes, and
+`run-corpus` — `CLAUDE.md`'s "Program outcomes are pinned, not re-derived".
+Step C's reference lowering is the planned differential oracle.
+
+Measured before and after in one sitting on a release build, the "before" built
+from the branch's merge-base in a throwaway worktree: three rounds of
+`ns-next bench` over the three fixtures, alternating the two binaries within
+each round. Bytecode medians in ms, rounds 1–3:
+
+| Source | Before | After |
+|---|---|---|
+| `bench_loop.ns` | 16.58, 16.53, 16.43 | 16.57, 16.38, 16.51 |
+| `bench_send.ns` | 20.75, 20.68, 20.83 | 20.67, 20.48, 20.44 |
+| `bench_block.ns` | 39.40, 39.91, 39.04 | 37.65, 37.61, 38.48 |
+
+Nothing got slower. `bench_loop.ns` did not move and `bench_send.ns` moved
+about 1%, at the edge of noise. `bench_block.ns`, which creates and invokes a
+block every iteration, got about 4% faster: a closure no longer carries a
+bindings `Rc` or a body enum, and an `Object` shrank from 64 to 56 bytes in a
+release build (80 in a debug one, from 88) — an inference from what was
+removed, not a profile. The smaller `Object` and the one-byte-shorter frame
+record also lower the image decoder's worst-case amplification, from ~17.8x to
+~16.9x in a release build and from ~22.2x to ~21.3x in a debug one
+([memory.md](design/memory.md)).
+
+583 tests pass, with one ignored; `parse-corpus` stays at **210/0/1/0** and
+`run-corpus` at **6/0/205**.
+
+**Left for B**, found during the retirement and deliberately not fixed in it —
+B's starting inventory, none of them a behaviour change:
+
+- Comments that still speak of an engine choice or of past milestones:
+  `ns-cli/src/main.rs`'s `snapshot` help ("under the bytecode engine") and
+  `cmd_build` doc ("up to engine installation"); `image/inspect.rs`'s module
+  doc ("installs an engine"); `interpreter/eval.rs`'s
+  `unresolved_identifier_error` doc ("in Milestone 1 and 2").
+- `interpreter/mod.rs`: `raise_return_pub` is now a wrapper with no reason to
+  exist, and `invoke_method`'s arity comment says "silently" twice.
+- Tests: leftover `_under_bytecode` names in `crates/ns-runtime/tests/vm.rs`
+  and `vm_initializer.rs`; `vm.rs`'s malformed-integer test no longer pins the
+  error's selector `parse`; `tests/image.rs` has a dead
+  `let module = interp.compiled_module(); let _ = module;` and doc comments
+  left over-long or ragged by the reflow.
+- The phrase "shared orchestration" in code comments predates one engine; it
+  still names `interpreter/` correctly, but "shared" now means shared with the
+  reference lowering and a JIT to come.
+
+The retirement's plan (its "Scope" section) also assigned B these, none of
+which the retirement started:
+
+- Renaming `interpreter/eval.rs`, which evaluates nothing any more: it holds
+  the lexical and super send helpers, local and outer-local access, closure
+  invocation and the errors a deferred literal raises.
+- Passing `Copy` handles (`ObjRef`, `ClassRef`, `FrameRef`, `ActivationRef`)
+  by value rather than by reference, and enabling
+  `clippy::trivially_copy_pass_by_ref` in `[workspace.lints.clippy]` so the
+  warning-free clippy gate keeps it that way. Check what the lint actually
+  covers: its size limit is judged on the layout clippy compiles, and in a
+  debug build every handle carries `origin`, `ActivationRef` a `generation`
+  too, so the larger ones may fall outside it.
+- Pre-interning the selectors the runtime sends itself, instead of
+  `Symbol::intern("...")` at each call site.
+- Splitting `crates/ns-cli/src/main.rs` into one module per command.
+- Rewriting comments that narrate history (Milestone 1, what a function
+  "used to" do) into statements of the current decision.
+- Attaching compiled code to `MixinMethod` instead of looking it up in the
+  `HashMap` keyed by mixin and method on every invocation. **This one is in
+  tension with "B changes no design":** where code lives is a design decision
+  ([compiler.md](design/compiler.md), "Keyed by mixin"), and
+  [execution.md](design/execution.md), "What 1a left for it", assigns removing
+  that lookup to the inline caches, whose entries carry the body. B's plan
+  has to decide whether it belongs in B, with the design document updated to
+  match, or stays with the inline caches.
+
+Found by the retirement's final review, and also B's:
+
+- `crates/ns-cli/tests/run_fixtures.rs` (~49-50) compares each fixture's stdout
+  after `trim_end()`, so a lost or an extra final newline is no longer pinned;
+  the retired differential compared exact bytes.
+- Stale doc comments: `compile_initializer`'s
+  (`crates/ns-runtime/src/compiler/mod.rs` ~62-66) says `ns-cli`'s `disasm`
+  uses it, and `Heap::new`'s (`crates/ns-runtime/src/heap.rs` ~307) says
+  `cmd_disasm` takes a `&Heap` parameter. Neither is true: `cmd_disasm` clones
+  the loaded interpreter's `compiled_module()` and reads through
+  `interp.heap_ref()`. Its own comment (`main.rs` ~845) misspells "resolver's"
+  as "resolver.s". And `compiler/lower.rs` ~406 says the resolver never
+  attaches `SuperSend` to a bare identifier, which a `super`-prefixed
+  superclass-clause receiver does (the known gap under
+  [dispatch.md](design/dispatch.md), "Binding variants").
+- `crates/ns-runtime/tests/image.rs`: `load` (~240) still returns the
+  resolver's bindings, and 14 call sites recompile with
+  `compiler::compile_module` after `load_module` already installed the code;
+  they should start from `interp.compiled_module().clone()`, and `load` then
+  need not return bindings.
+- `crates/ns-runtime/tests/nested_classes.rs` keeps the one-caller helpers that
+  folding the `_under_bytecode` duplicates left behind — `accessor_is_stable()`
+  (~68, called only at ~91) and its siblings — which can fold into the tests
+  that call them. `crates/ns-cli/tests/cli.rs`'s
+  `run_no_longer_accepts_an_engine` (~269-279) tests that clap rejects an
+  undeclared flag, which clap already guarantees.
+- A lead for the `bench_block.ns` profile required before 1b: every block
+  creation and invocation copies `ClosureData`. `MakeClosure`
+  (`crates/ns-runtime/src/vm.rs` ~126-132) builds an `Rc<ClosureData>`, cloning
+  its `params` vector, only for `Interpreter::new_closure`
+  (`interpreter/mod.rs` ~616-619) to deep-clone it into
+  `ObjectData::Closure`. Each `value:` then copies `ClosureData` out of the heap
+  twice — `builtins/block.rs` ~17 and `builtins::call_block` (`builtins/mod.rs`
+  ~119) — and re-wraps it in a new `Rc` (~122). At run time `ClosureData.params`
+  is read only for its length, which duplicates `code.num_args` (the image
+  encoder also records the names, `image/encode.rs` ~865-868). Storing
+  `ObjectData::Closure(Rc<ClosureData>)` would turn those copies into
+  reference-count bumps. It is behaviour-preserving; whether it is the offset
+  the profile is looking for has to be measured, not assumed.
 
 ## Notes
 
@@ -447,9 +636,8 @@ is exactly why four were missed. A full suite run left 807 directories in the
 system temp folder; it now leaves none. Cleanup that every call site has to
 remember is cleanup that some call site will forget.
 
-`cli.rs`, `differential.rs` and `run.rs` keep their own handling: they remove
-what they create, and rewriting working tests for symmetry is tidying rather
-than fixing.
+`cli.rs` and `run.rs` keep their own handling: they remove what they create,
+and rewriting working tests for symmetry is tidying rather than fixing.
 
 **Deferred follow-ups from the object-and-frame-arena branch — cleared
 2026-09-10.** Three items were left out of the arena commit deliberately;

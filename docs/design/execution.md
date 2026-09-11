@@ -1,34 +1,42 @@
-# Execution — activations, both engines, the VM
+# Execution — activations, the VM
 
 > **Status:** built.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > arena, the `ActivationRef` and `FrameRef` handles, every read and write of an
-> activation), `types.rs` (`Frame`), `vm.rs`, `interpreter/` (the shared
-> orchestration and the three engine hooks).
+> activation), `types.rs` (`Frame`), `vm.rs`, `interpreter/` (the send
+> machinery and activation construction).
 
 This is the consumer side. What produces the bytecode — the instruction set,
 lowering, register allocation, inlining — is [compiler.md](compiler.md).
 
-## Two engines, permanently
+## One engine
 
-`ns-next run` defaults to `--engine=bytecode`. `--engine=tree-walk` is the
-Milestone 1 interpreter, kept **permanently** as a differential oracle rather than
-as a transitional convenience.
+The bytecode VM is the only engine. A module's code is compiled when the module
+is loaded, or decoded from an artifact, and every Newspeak-level body — method,
+block, initializer, superclass clause — runs as compiled code in
+`vm::run_code`.
 
-**For every program both engines must produce identical exit status, stdout and
-stderr.** `crates/ns-cli/tests/differential.rs` enforces this over every
-`tests-fixtures/*.ns` plus inline sources, with no exemptions, and `run-corpus`
-does the same over the runnable corpus. If a change makes the engines disagree,
-the tree-walker is the reference — fix the compiler or the VM.
+The Milestone 1 tree-walking interpreter, which ran beside the VM as a
+differential oracle, was retired on 2026-09-11. A recursive AST evaluator keeps
+its computation on the Rust stack, so it could take part in none of what the
+trampoline ("Planned: the trampoline" below) exists for — suspending and
+serializing a running computation, debugger stepping, edit-and-continue on a
+live activation — and it constrained the design wherever it still had to agree.
+The oracle was also blind to defects in the orchestration the two shared: four
+of the six silent defects Milestone 3's review found were identically wrong
+under both.
 
-Two engines that must agree byte for byte is a verification property this project
-funds on purpose. When the moving collector lands, the tree-walker gets its own
-handle-based root discipline rather than being retired; see [memory.md](memory.md).
-
-The one thing the tree-walker cannot do is run from a loaded image: `image::load`
-decodes mixins and class objects, never AST-carrying bindings, so there is no
-source for it to execute. `Interpreter::set_engine(Engine::TreeWalk)` refuses on a
-loaded image rather than running it against the wrong data.
+Until the reference lowering lands there is no second way to run a program and
+compare against, so behaviour is protected by recorded answers: every
+`tests-fixtures/*.ns` against its `.expected` stdout and an empty stderr
+(`crates/ns-cli/tests/run_fixtures.rs`), the golden exit status, stdout and
+stderr of the programs that cannot be fixtures
+(`crates/ns-cli/tests/program_outcomes.rs`), and `run-corpus` over the runnable
+corpus. The answers recorded before the retirement are verdicts the oracle and
+the VM agreed on. A change that alters one is a behaviour change, to be
+justified as one — never recorded because the code now produces it. The
+reference lowering ([compiler.md](compiler.md), "Planned: the reference
+lowering") is the planned differential oracle.
 
 ## Activations
 
@@ -57,9 +65,9 @@ frame's temporaries and a widowed context needs none of them. ns-next's closures
 read an enclosing activation's locals **by reference**, through
 `captured_frame`, including after that activation has returned — a counter block
 returned from the method that declares `n` goes on writing `n`
-(`tests-fixtures/closure_variables.ns` pins this under both engines). So a
-reified frame here keeps its registers when its activation returns ("Pop" below).
-Removing that need is a step of its own, "Planned: closure conversion" below.
+(`tests-fixtures/closure_variables.ns` pins this). So a reified frame here keeps
+its registers when its activation returns ("Pop" below). Removing that need is a
+step of its own, "Planned: closure conversion" below.
 
 ### Representation
 
@@ -77,7 +85,6 @@ struct StackEntry {
     base: u32,                 // first register in `values`
     num_args: u32,
     pc: usize,
-    pc_kind: PcKind,
     slot_base: usize,
     reified: Option<FrameRef>, // set once the activation is married
 }
@@ -101,19 +108,10 @@ pub struct ActivationRef {
   the temporaries with nil and appends a `StackEntry`. Both vectors keep their
   capacity across pops, so once they have grown to the program's depth a push
   allocates nothing. Four sites push: `invoke_method`, `invoke_closure`,
-  `run_initializer_level` and `nested::run_clause_body`. They are shared
-  orchestration, so both engines push onto the same stack, and under either an
-  activation nothing reifies leaves nothing behind. What gets reified differs:
-  the tree-walker evaluates every block literal, including the
-  `ifTrue:`/`and:`/`whileTrue:` arguments the compiler inlines, and
-  `eval_block_literal` reifies the running activation for each one. So a method
-  whose body holds such an argument leaves a reified frame and a closure behind
-  per call under the tree-walker and nothing under the VM: 300,000 calls of
-  `clip: x = ( x < 0 ifTrue: [^0]. ^x + 1 )` peak at 136.8 MB under the
-  tree-walker against 4.6 MB under the VM (release build, peak working set,
-  conditions in [memory.md](memory.md), "Open: what the collector owns"). The
-  tree-walker's storage is bounded like the VM's only for code that creates the
-  same blocks under both.
+  `run_initializer_level` and `nested::run_clause_body`, all in
+  `interpreter/`. An activation nothing reifies leaves nothing behind; only a
+  block the compiler did not inline reifies one, since an inlined
+  `ifTrue:`/`and:`/`whileTrue:` argument creates no closure.
 - **Register access through an `ActivationRef`** is `values[entries[i].base +
   r]`, with no branch on the handle's kind or on an args/temps split; a release
   build still bounds-checks both slice indexes. A debug build also checks that
@@ -145,8 +143,8 @@ pub struct ActivationRef {
   `live` is set, the frame's own `args`/`temps` are empty and a register read or
   write through the `FrameRef` (`Heap::frame_local`/`frame_set_local`) reaches the
   stack slot. That branch exists only on the path from a block to its method's
-  variables — `read_outer_local`/`write_outer_local`, shared by the VM's
-  `LoadOuterLocal`/`StoreOuterLocal` and the tree-walker's outer reads and writes.
+  variables — `read_outer_local`/`write_outer_local`, behind the VM's
+  `LoadOuterLocal`/`StoreOuterLocal`.
 - **The accessor prefix names the handle.** `activation_*` reads or writes a live
   activation through an `ActivationRef`; `frame_*` a reified frame through a
   `FrameRef`.
@@ -156,14 +154,13 @@ pub struct ActivationRef {
 **Reify.** `Heap::reify(act) -> FrameRef` is idempotent: the first call creates
 the arena `Frame` — receiver, `kind`, `current_class`, `pc`, and `home` when the
 activation is a closure's — marries it to the entry, and records it in
-`entry.reified`; every later call answers the same handle. Its callers are closure
-creation: the VM's `MakeClosure` and the tree-walker's `eval_block_literal`, each
-directly for the new closure's `captured_frame` and through `home_of` for its
-`home`. `home_of` passes a closure activation's own `home` on and reifies any
-other activation as its own home. Every block creation reifies the activation
-that creates it, whether or not the block reads one of its variables, because
-`captured_frame` is also where `invoke_closure` reads the block's receiver and
-current class from.
+`entry.reified`; every later call answers the same handle. Its caller is closure
+creation, the VM's `MakeClosure`: directly for the new closure's
+`captured_frame`, and through `home_of` for its `home`. `home_of` passes a
+closure activation's own `home` on and reifies any other activation as its own
+home. Every block creation reifies the activation that creates it, whether or
+not the block reads one of its variables, because `captured_frame` is also where
+`invoke_closure` reads the block's receiver and current class from.
 
 **Pop.** Every site that pushes pops on *every* exit, error paths included, and
 only the top entry can be popped. If the entry was reified, its frame is
@@ -190,8 +187,8 @@ outlives a call — a closure, another frame, an image record — holds a `Frame
 ### Signatures
 
 - Wherever a function means *the running activation* it takes an
-  `ActivationRef`: `run_code`, `run_statements`, the `eval_*` functions,
-  `dispatch_lexical_send`, `dispatch_super_send`, `read_local`/`write_local`.
+  `ActivationRef`: `run_code`, `dispatch_lexical_send`, `dispatch_super_send`,
+  `read_local`/`write_local`, `read_outer_local`/`write_outer_local`.
   `FrameRef` stays for closures, `Frame.home`, the image, and `frame_at_depth`
   from depth 1 on: the first hop goes from a closure activation to its
   `captured_frame`, the rest follow `FrameRef` links.
@@ -201,8 +198,8 @@ outlives a call — a closure, another frame, an image record — holds a `Frame
   It was removed rather than retyped to an `ActivationRef`: its only use was to
   fill `Frame.sender`, and once a live activation's sender is the entry below it,
   nothing read it. No native takes an activation handle at all.
-- The three engine hooks receive the `ActivationRef` the shared orchestration
-  pushed, and differ only in the body they run.
+- `run_code` receives the `ActivationRef` of the activation one of the four push
+  sites pushed for it, and never pushes or pops that activation itself.
 - The image encoder only ever runs between sends, when nothing is live:
   `image::snapshot` refuses to start while any activation is on the stack, and
   `Heap::frame_snapshot` debug-asserts that no encoded frame is married. The
@@ -235,9 +232,7 @@ superclass-message and top-level activation. An initializer activation must be
 able to name the code it is executing so that `pc` is interpretable, since the
 statement→PC table is reached through its kind.
 
-`pc` means a statement index under the tree-walker and an instruction index under
-the VM. Frames are serialized, so this is a format-visible ambiguity, and every
-activation carries a discriminator (`pc_kind`) rather than leaving it implicit.
+`pc` is an instruction index into the activation's compiled body.
 
 **The chain of running activations is walkable independently of the Rust
 stack**: it is the activation stack, innermost last. That is what the debugger
@@ -245,38 +240,39 @@ will reflect over and what a precise collector will scan. An image snapshot
 serializes reified frames only, and is taken when nothing is running
 ([image-format.md](image-format.md)).
 
-## The VM and the three hooks
+## The VM
 
-`Interpreter` carries `engine: Engine`, either `TreeWalk` or
-`Bytecode(CompiledModule)`. Everything in `interpreter/` that decides *what* to
-run is shared and identical under both. Exactly three places decide *how* a body
-runs:
+`Interpreter` carries one code table, a `CompiledModule`, holding every compiled
+body every loaded module runs; `load_module` and `image::load` add to it
+(`install_code`), and nothing runs a body that is not there. Everything in
+`interpreter/` decides *what* to run. Four places run a body, each by pushing an
+activation, calling `run_code` and popping it on every exit:
 
-1. **Method body** — `invoke_method`, after pushing the activation.
-2. **Block body** — `invoke_closure`, dispatching on `ClosureData.body`, which is
-   `ClosureBody::Ast` or `ClosureBody::Compiled`. A closure therefore always runs
-   with the engine that created it, and "under `--engine=bytecode` no
-   Newspeak-level code is tree-walked" is enforced by the type rather than by a
-   flag. Every native that invokes a block — `ifTrue:ifFalse:`, `do:`, `and:`,
-   `whileTrue:`, `value` — goes through the same unchanged path and simply lands
-   on the compiled arm.
-3. **Instance initializer** — `instantiate`'s per-level "run this level's own slot
-   initializers and initializer expressions" step. A class with no compiled
-   initializer and no slots is a no-op under both; a user class missing from the
-   cache is a compilation-coverage bug and panics.
+1. **Method body** — `invoke_method`, which also catches a `^` that targets its
+   own activation.
+2. **Block body** — `invoke_closure`, running `ClosureData.code`. Every native
+   that invokes a block — `ifTrue:ifFalse:`, `do:`, `and:`, `whileTrue:`,
+   `value` — goes through it.
+3. **Instance initializer** — `run_initializer_level`, `instantiate`'s per-level
+   step, which runs that level's compiled initializer: its own slot initializers
+   and initializer expressions. A class with no compiled initializer and no
+   slots is a no-op; a user class missing from the table is a
+   compilation-coverage bug and panics.
+4. **Superclass clause and its message arguments** — `nested::run_clause_body`,
+   for the nested-class accessor and for `instantiate`'s deferred clause message.
 
-`vm.rs` is therefore *only* a `match`-dispatch loop over `Instr` —
-`run_code(interp, act, code, bindings)`: one compiled body, a `pc` in a local, and
-the activation's register window. Its send handlers call straight back into the
-shared orchestration, which re-enters `run_code` through hook 1 or 2 for any
-user-defined target.
+`vm.rs` is *only* a `match`-dispatch loop over `Instr` —
+`run_code(interp, act, code)`: one compiled body, a `pc` in a local, and the
+activation's register window. Its send handlers call straight back into
+`interpreter/`, which re-enters `run_code` through `invoke_method` or
+`invoke_closure` for any user-defined target.
 
 **The VM has no dispatch logic, no `doesNotUnderstand:` construction, no native
 dispatch and no error text of its own.** Every error a program can observe is
-produced by the same shared code under both engines. That is what makes the
-tree-walker a byte-for-byte oracle including stderr, rather than a merely similar
-one — and it is why the shared-orchestration rule in `CLAUDE.md` forbids copying
-anything out of `interpreter/` into `vm.rs`.
+produced in `interpreter/` and `builtins/`. That keeps dispatch in one place,
+which the reference lowering and a later JIT will reach unchanged — and it is
+why `CLAUDE.md`'s "`vm.rs` holds no dispatch logic" forbids copying anything out
+of `interpreter/` into `vm.rs`.
 
 Block invocation is not special-cased into an opcode: `Block value` is still a
 native method, the closure's activation is pushed above the one that invoked it —
@@ -284,12 +280,11 @@ its sender, by position — and a wrong argument count is still the same error.
 
 ## Where `pc` is stored
 
-Under the VM an activation's `pc` is written **only by the instructions that can
-hand the activation to an observer**: every send, since a nested activation runs
-above it; `MakeClosure`, since the activation escapes into the object graph — the
-store comes just before `reify`, which copies it into the frame it creates; and
-`NonLocalReturn`, since control leaves with a signal. The tree-walker stores the
-statement index at the start of each statement.
+An activation's `pc` is written **only by the instructions that can hand the
+activation to an observer**: every send, since a nested activation runs above it;
+`MakeClosure`, since the activation escapes into the object graph — the store
+comes just before `reify`, which copies it into the frame it creates; and
+`NonLocalReturn`, since control leaves with a signal.
 
 The stores go to the stack entry (`Heap::set_activation_pc`), so they keep the
 activation's `pc` current for as long as it runs; a frame married to it holds no
@@ -313,15 +308,15 @@ it: for a closure activation, its closure's `home` — the stack entry that fram
 married to (`Heap::frame_activation`) while its activation is still running, and
 `cannotReturn` if it is dead, either divorced because the activation returned or
 built by the image decoder, which never marries a frame. For any other activation
-the target is the activation itself, which is the tree-walker's method-level `^`.
+the target is the activation itself.
 
 That signal propagates out of `run_code` through every intervening Rust frame,
-native primitives included, until the shared `invoke_method` or
+native primitives included, until the `invoke_method` or
 `nested::run_clause_body` whose activation is the target catches it, by
-`ActivationRef::same` — exactly as it catches the tree-walker's. Because there is
-one stack, a live target is always below the activation raising the return, and
-nothing is pushed while the signal propagates, so the target's index cannot have
-been reused by the time a catcher compares it.
+`ActivationRef::same`. Because there is one stack, a live target is always below
+the activation raising the return, and nothing is pushed while the signal
+propagates, so the target's index cannot have been reused by the time a catcher
+compares it.
 
 **An initializer home follows the same rule.** A block created during
 initialization — `| blk = [ ^2 ]. |` — whose `^` runs after initialization has
@@ -329,13 +324,12 @@ finished raises `cannotReturn`, as `newspeak-spec.pdf` §7.2 requires, because
 the initializer's frame was divorced when its activation returned. A `^` into an
 initializer that is still running escapes: `run_initializer_level` catches no
 return, so the signal reaches the top of the entry send as "internal: non-local
-return escaped the entry send", a gap both engines share identically.
+return escaped the entry send", a known gap.
 
-Under the VM a method body's own `^` is an ordinary `Return` and raises no signal;
-under the tree-walker it raises one at its own activation, which `invoke_method`
-catches at once. Either way the observable discipline — a block invoked after its
-home has returned gets `cannotReturn` — comes from the pop, which divorces a
-reified home on every exit path, without a signal round-trip on the common path.
+A method body's own `^` is an ordinary `Return` and raises no signal. The
+observable discipline — a block invoked after its home has returned gets
+`cannotReturn` — comes from the pop, which divorces a reified home on every exit
+path, without a signal round-trip on the common path.
 
 **Never `.unwrap()`, `.expect()` or `{:?}` an `EvalResult`.** `Signal`
 deliberately carries no `Debug` impl of its own -- every field it holds
@@ -348,12 +342,12 @@ reviewer has to catch. Tests unwrap through a local `expect_ok` helper.
 ## Measurements
 
 `ns-next bench` times the entry send alone — parsing, resolving, bootstrapping and
-compiling excluded — over a 50,000-iteration `whileTrue:` loop, on a release
-build. Over `bench_loop.ns`: bytecode median ~16.2 ms against tree-walk ~32.2 ms.
-
-That ratio is **not** a pure dispatch comparison: the compiler inlines
-`whileTrue:`, so the bytecode engine does not pay the loop-control overhead the
-tree-walker does.
+compiling excluded — and reports the median of ten timed runs after a discarded
+warm-up. Its three fixtures each run a 50,000-iteration `whileTrue:` loop, which
+the compiler inlines: `bench_loop.ns` sums the counter, `bench_send.ns` adds a
+user-method send per iteration and `bench_block.ns` a method that creates and
+invokes a block. On a release build, on 2026-09-11, their medians were about
+16.5, 20.5 and 38 ms.
 
 Never judge performance from a debug build.
 
@@ -417,13 +411,13 @@ this branch's merge-base into a throwaway worktree, and both binaries ran the
 same `ns-next bench tests-fixtures/bench_loop.ns` — ten timed runs after a
 discarded warm-up — three times each, alternating.
 
-| Run | Before, bytecode | After, bytecode | Before, tree-walk | After, tree-walk |
-|---|---|---|---|---|
-| 1 | 19.38 ms | 16.45 ms | 37.04 ms | 36.78 ms |
-| 2 | 19.54 ms | 16.82 ms | 37.50 ms | 37.23 ms |
-| 3 | 19.60 ms | 16.53 ms | 37.13 ms | 37.12 ms |
+| Run | Before, bytecode | After, bytecode |
+|---|---|---|
+| 1 | 19.38 ms | 16.45 ms |
+| 2 | 19.54 ms | 16.82 ms |
+| 3 | 19.60 ms | 16.53 ms |
 
-**The bytecode engine gained about 15%**, from ~19.5 ms to ~16.5 ms. The three
+**The VM gained about 15%**, from ~19.5 ms to ~16.5 ms. The three
 before-figures and the three after-figures do not overlap, and the split is
 larger than either group's own spread, so this is a real move rather than noise.
 
@@ -438,17 +432,6 @@ arguments or temporaries, the `HashMap` lookup per invocation that finds the
 compiled body survived, and building an activation was still an allocation rather
 than an index bump. The activation stack took the two vectors and the allocation;
 see "What the activation stack moved" below. The lookup is still there.
-
-**The tree-walker did not move**, and its medians are within noise of each
-other. Its maximum, however, got worse: ~117 ms in every after-run against ~38 ms
-before, on the same ten timed runs. That was first put down to the arena's `Vec`
-doubling — nothing reclaims a slot, so the frame arena grew across the ten runs,
-and the copy at a doubling point would show up as exactly one slow run. The
-activation stack's measurement contradicts it for this benchmark: under the stack
-the tree-walker retains nothing over `bench_loop.ns` — peak working set stays at
-4.6 MB across twenty-two entry sends — and its maximum is still 112–113 ms. The
-cause is not known. [memory.md](memory.md), "What the collector owns", records
-what the maxima do and do not show.
 
 ### A 13% regression, found and recovered
 
@@ -481,8 +464,8 @@ which sites those are is to measure, not to guess from the shape of the code.
 
 Moving activations onto the stack was measured against the arena in one sitting,
 on 2026-09-10: the before-binary was built from the branch's merge-base in a
-throwaway worktree, and both binaries ran `ns-next bench` — ten timed runs per
-engine after a discarded warm-up — over five sources, three rounds, alternating
+throwaway worktree, and both binaries ran `ns-next bench` — ten timed runs
+after a discarded warm-up — over five sources, three rounds, alternating
 the binaries within each round. Three sources are fixtures: `bench_loop.ns`,
 `bench_send.ns` (row three of the decomposition above, `tick: x = ( ^x + 1 )`)
 and `bench_block.ns` (a method that creates and invokes a block per iteration).
@@ -498,25 +481,15 @@ and the middle of the three as ns per iteration (`median_ms * 1e6 / 50000`):
 | row one, `sum := sum + 1` | 16.16, 16.18, 16.24 ms | 15.97, 15.98, 16.26 ms | 323.5 → 319.5 |
 | row two, `tick: x = ( ^x )` | 19.18, 20.07, 19.28 ms | 17.84, 17.83, 17.90 ms | 385.6 → 356.9 |
 
-| Tree-walk | Before (arena), rounds 1–3 | After (stack), rounds 1–3 | ns/iteration |
-|---|---|---|---|
-| `bench_loop.ns` | 37.83, 37.12, 38.29 ms | 31.85, 32.24, 32.53 ms | 756.5 → 644.8 |
-| `bench_send.ns` | 40.64, 40.96, 41.14 ms | 37.41, 37.51, 37.49 ms | 819.1 → 749.9 |
-| `bench_block.ns` | 75.16, 74.81, 75.74 ms | 75.32, 74.98, 74.74 ms | 1503.1 → 1499.7 |
-| row one, `sum := sum + 1` | 34.85, 35.52, 34.63 ms | 31.87, 32.14, 32.14 ms | 697.1 → 642.8 |
-| row two, `tick: x = ( ^x )` | 37.00, 37.24, 38.29 ms | 33.64, 34.02, 33.67 ms | 744.8 → 673.3 |
-
 The decomposition, re-taken from the middle medians (ns per iteration):
 
 | | Row one | Row two | Row three | User send (3 − 1) | 2 − 1 | 3 − 2 |
 |---|---|---|---|---|---|---|
 | Bytecode, arena | 323.5 | 385.6 | 469.8 | 146.3 | 62.1 | 84.2 |
 | Bytecode, stack | 319.5 | 356.9 | 410.2 | **90.7** | **37.3** | 53.4 |
-| Tree-walk, arena | 697.1 | 744.8 | 819.1 | 122.0 | 47.7 | 74.3 |
-| Tree-walk, stack | 642.8 | 673.3 | 749.9 | 107.1 | 30.5 | 76.6 |
 
-**A user-method send under the bytecode engine fell from ~146 ns to ~91 ns,
-about 38%**, and `bench_send.ns` from 23.5 ms to 20.5 ms, about 13%. The three
+**A user-method send fell from ~146 ns to ~91 ns, about 38%**, and
+`bench_send.ns` from 23.5 ms to 20.5 ms, about 13%. The three
 before-medians and the three after-medians do not overlap, and the per-round
 differences agree with each other: 146.7, 145.7 and 146.8 ns before, 94.1, 90.7
 and 85.0 ns after. What a user send costs beyond a native one (row two minus row
@@ -530,24 +503,13 @@ vector and row two's did not, so the arena binary's 3 − 2 carries that allocat
 and its 2 − 1 leaves it out. The stack allocates for neither. That attribution is
 an inference from the two bodies' register counts; no profile was taken. It also
 means the arena binary's 2 − 1 understated what an activation with temporaries
-cost, so 3 − 1 is the figure to compare. The tree-walker has no such asymmetry:
-it sizes an activation's temporaries from the method's declared ones, and
-neither `tick:` declares any, so neither row allocated a temporaries vector in
-either binary. Its 3 − 2 did not move (74.3 → 76.6 ns).
+cost, so 3 − 1 is the figure to compare.
 
-`bench_loop.ns` and row one did **not** move under the bytecode engine: the
-compiler inlines `whileTrue:`, so the loop builds no activation for the stack to
-make cheaper, and the medians overlap.
+`bench_loop.ns` and row one did **not** move: the compiler inlines `whileTrue:`,
+so the loop builds no activation for the stack to make cheaper, and the medians
+overlap.
 
-**The tree-walker moved on every source that builds activations without
-creating a block per iteration**: `bench_loop.ns` from 37.8 ms to 32.2 ms, about
-15%, row one about 8%, row two about 10% and `bench_send.ns` about 8%, none of
-them overlapping. It does not inline `whileTrue:`, so each iteration activates the
-loop's two blocks; each of those was an arena frame, and is now a push. Its
-decomposition is noisier than the bytecode engine's — row two minus row one ran
-43.0, 34.4 and 73.1 ns in the three arena rounds — and no claim rests on it.
-
-**`bench_block.ns` did not move under either engine.** Every iteration creates a
+**`bench_block.ns` did not move.** Every iteration creates a
 block, so every iteration still reifies `bump:`'s activation into the frame arena,
 and divorcing it copies its registers into two vectors when it returns. The stack
 took the block's own activation out of the arena, yet the median did not move;
@@ -561,14 +523,37 @@ string-comparison chain the user path does not. The pre-arena figures above —
 ~165 ns a user send, ~68 ns an activation — come from another sitting and are not
 compared with these.
 
+### What retiring the tree-walker moved
+
+The retirement was measured against the branch's merge-base in one sitting, on
+2026-09-11, the same way: the before-binary built in a throwaway
+worktree, `ns-next bench` over the three fixtures, three rounds, alternating the
+binaries within each round. Bytecode medians in ms:
+
+| Source | Before, rounds 1–3 | After, rounds 1–3 |
+|---|---|---|
+| `bench_loop.ns` | 16.58, 16.53, 16.43 | 16.57, 16.38, 16.51 |
+| `bench_send.ns` | 20.75, 20.68, 20.83 | 20.67, 20.48, 20.44 |
+| `bench_block.ns` | 39.40, 39.91, 39.04 | 37.65, 37.61, 38.48 |
+
+Nothing got slower. `bench_loop.ns` did not move. `bench_send.ns` moved about
+1% — the two groups just fail to overlap — which is at the edge of noise.
+**`bench_block.ns` got about 4% faster**, from ~39.4 ms to ~37.6 ms, by more than
+either group's spread. That source creates and invokes a block every iteration,
+and the block is what changed: a closure no longer carries the resolver's
+bindings map or a body enum, so creating one no longer clones a shared `Rc` and
+invoking one no longer matches on the body, and the closure object it allocates
+is smaller — an `Object` went from 64 to 56 bytes in a release build. That
+attribution is an inference from what the change removed; no profile was taken.
+
 ## Planned: the trampoline
 
 What would change: sends stop recursing on the Rust stack. Every running
 activation already lives on the activation stack; the trampoline makes that stack
 the only place a running computation lives, by turning `run_code` →
-`interp.send` → hook → `run_code` into a loop that pushes and pops. This is step
-1b of Milestone 4, and it lands the way the stack did: against a green suite and
-with its own before-and-after measurement.
+`interp.send` → `invoke_method` → `run_code` into a loop that pushes and pops.
+This is step 1b of Milestone 4, and it lands the way the stack did: against a
+green suite and with its own before-and-after measurement.
 
 ### What 1a left for it
 
@@ -593,13 +578,12 @@ stack is what a trampolined `run_code` needs, and it exists, so replacing the
 Rust-stack recursion with a loop that pushes is the same change viewed from the
 other side. Getting there requires splitting `Interpreter::send` so that it
 *decides* without *executing*: lookup, `doesNotUnderstand:`, native dispatch and
-the nested-class accessor stay in `interpreter/`, shared by both engines and
-unchanged in what they produce, but they return a description of what to
-activate instead of activating it. That keeps the shared-orchestration rule
-intact — what moves into the loop is the act of running a body, never the
-decision of which body. The loop then copies the arguments straight from the
-caller's argument registers into the callee's window, which is where `collect`'s
-vector disappears.
+the nested-class accessor stay in `interpreter/`, unchanged in what they
+produce, but they return a description of what to activate instead of
+activating it. That keeps `vm.rs` free of dispatch logic — what moves into the
+loop is the act of running a body, never the decision of which body. The loop
+then copies the arguments straight from the caller's argument registers into the
+callee's window, which is where `collect`'s vector disappears.
 
 Two things the trampoline settles on its own:
 
@@ -610,17 +594,23 @@ Two things the trampoline settles on its own:
 - **Recursion depth becomes a checkable limit and an ordinary Newspeak error**
   instead of a native stack overflow that aborts the process. That closes the
   exposure [image-format.md](image-format.md) records against a loaded artifact.
-  The limit counts stack entries, so it means the same thing under both engines —
-  but the tree-walker stays recursive on the Rust stack, and it must reach the
-  limit before it exhausts the native stack or the two engines disagree at
-  depth. How that is guaranteed is 1b's to settle.
+  How the limit counts has to be settled first. Counting stack entries does
+  **not** mean the same thing under two ways of running one program when one of
+  them activates blocks the other inlines, as the reference lowering will
+  ([compiler.md](compiler.md), "Planned: the reference lowering"). That
+  lowering's design decides it. Measured on Windows's 1 MB main-thread stack
+  before any of this, the recursion depth reachable today is 818 for recursion
+  inside an `ifFalse:` block (release build), and 307 through `do:` — below the
+  1000 that Newspeak's own `KernelWeakTests.ns` (`deepStack: 1000`) expects.
 
 `Signal::Return` needs re-implementing against the stack. It already names its
 target by `ActivationRef`, but it still propagates through Rust `?` until the
 `invoke_method` that owns the target catches it; under the trampoline it becomes
 an unwind of the activation stack to the target entry. The semantics are
-unchanged and both engines must still agree on them, so this is the part of the
-change the differential harness has to be trusted hardest on.
+unchanged, and this is the part of the change the golden outcomes have to be
+trusted hardest on: the reference lowering lands first, but it runs on the same
+VM, so it cannot cross-check the trampoline's unwind of `Signal::Return` — both
+ways of running a program would unwind through the same code.
 
 ### What stays recursive, and why that is not a hole
 
@@ -629,7 +619,7 @@ keep their Rust frames for now. That is a barrier for a future JIT rather than a
 correctness problem, and it is addressed by moving them out of Rust rather than
 by trampolining around them; see [core-library.md](core-library.md). Their
 Rust-held values are covered by the scope discipline in
-[memory.md](memory.md), the same way the tree-walker's are.
+[memory.md](memory.md).
 
 ### How this meets the liveness requirements
 
@@ -658,8 +648,8 @@ level below the JIT.
 What would change: a block stops reaching its method's variables through the
 method's frame. A captured variable that is only read is copied into the closure
 when the closure is created; one that is written lives in a small heap box that
-the method and the block share. The resolver decides which is which, so both
-engines see the same conversion. Placed after the inline caches and before the
+the method and the block share. The resolver decides which is which, so every
+lowering sees the same conversion. Placed after the inline caches and before the
 collector, whose retention it affects most.
 
 The activation stack keeps ns-next's by-reference model and pays for it with a
@@ -702,8 +692,7 @@ case for conversion is the collector's space safety and the JIT's freedom, not
 the interpreter's speed. `bench_block.ns`, which creates a block per iteration,
 is the benchmark that would show what it saves. What it costs is breadth: the
 resolver's capture analysis, the compiler's instructions for boxes and copied
-values, the tree-walker's matching semantics, and the closure record in the image
-format.
+values, and the closure record in the image format.
 
 ## Planned: JIT tiers
 
@@ -713,14 +702,12 @@ binds it is that no native code may ever enter an image.
 
 ## Decisions
 
-- **The tree-walker is permanent**, and is the reference when the engines
-  disagree.
+- **One engine.** The tree-walker was retired because it could not represent a
+  suspended computation; golden outcomes protect behaviour until the reference
+  lowering becomes the differential oracle.
 - **`vm.rs` holds no dispatch logic.** Every observable error comes from shared
-  code, which is what makes the differential harness meaningful rather than
-  approximate. Splitting `send` into a decision and an activation preserves this:
-  the decision does not move.
-- **A closure runs with the engine that created it**, enforced by the type of its
-  body rather than by a run-time flag.
+  code, so the reference lowering and a JIT share it. Splitting `send` into a
+  decision and an activation preserves this: the decision does not move.
 - **`pc` is stored only at observable points**, not at every instruction — a
   deliberate hot-path trade the debugger milestone may have to revisit.
 - **Activations are stack entries, reified on demand**, because the
@@ -728,9 +715,8 @@ binds it is that no native code may ever enter an image.
   most activations never expose. The arena took the `Rc` box and the `RefCell`
   borrow, about 15% of `bench_loop.ns`. The stack took the two vector allocations
   and the reification of every activation nothing captures. Measured against the
-  arena in one sitting, a user-method send under the bytecode engine fell from
-  ~146 ns to ~91 ns, and `bench_send.ns` from 23.5 ms to 20.5 ms. The
-  tree-walker's `bench_loop.ns` fell from 37.8 ms to 32.2 ms. Peak working set
+  arena in one sitting, a user-method send fell from ~146 ns to ~91 ns, and
+  `bench_send.ns` from 23.5 ms to 20.5 ms. Peak working set
   over `bench`'s twenty-two entry sends of `bench_loop.ns` fell from 340.7 MB to
   4.6 MB.
 - **A live activation and a reified frame are two handle types**, `ActivationRef`

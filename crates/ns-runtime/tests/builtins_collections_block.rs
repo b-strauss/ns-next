@@ -3,14 +3,12 @@
 //! (`crate::builtins::block`), wired through `crate::builtins::dispatch_native`
 //! via `Interpreter::send` -- same pattern as `tests/builtins_boolean_numbers.rs`.
 
-use std::rc::Rc;
-
-use ns_runtime::{BuiltinClass, Interpreter, ObjectData, ResolvedModule, Signal, Symbol, Value};
+use ns_runtime::{BuiltinClass, Interpreter, ObjectData, Signal, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both --
 /// same pattern as `tests/instantiate.rs` and `tests/builtins_boolean_numbers.rs`.
-fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef, ResolvedModule) {
+fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -20,7 +18,7 @@ fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef, ResolvedModule) {
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
-    (interp, class, resolved)
+    (interp, class)
 }
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
@@ -68,12 +66,9 @@ fn new_ordered_collection(interp: &mut Interpreter) -> Value {
 fn array_at_returns_the_one_based_element() {
     let src =
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^{1. 2. 3} at: 2 )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let result = interp.send(receiver, Symbol::intern("m"), vec![]);
     match expect_ok(result, "{1. 2. 3} at: 2") {
         Value::SmallInt(2) => {}
         other => panic!(
@@ -87,12 +82,9 @@ fn array_at_returns_the_one_based_element() {
 fn array_at_out_of_range_is_a_newspeak_error_not_a_panic() {
     let src =
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^{1. 2. 3} at: 5 )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let result = interp.send(receiver, Symbol::intern("m"), vec![]);
     let err = expect_error(interp.heap_ref(), result, "{1. 2. 3} at: 5");
     assert!(
         err.message.to_lowercase().contains("range"),
@@ -104,12 +96,9 @@ fn array_at_out_of_range_is_a_newspeak_error_not_a_panic() {
 #[test]
 fn array_at_put_writes_and_returns_the_receiver() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( | a | a := {1. 2. 3}. a at: 2 put: 99. ^a at: 2 )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let result = interp.send(receiver, Symbol::intern("m"), vec![]);
     match expect_ok(result, "at:put: then at:") {
         Value::SmallInt(99) => {}
         other => panic!(
@@ -124,12 +113,9 @@ fn array_at_put_writes_and_returns_the_receiver() {
 #[test]
 fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( | sum | sum := 0. {1. 2. 3} do: [:x | sum := sum + x]. ^sum )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let result = interp.send(receiver, Symbol::intern("m"), vec![]);
     match expect_ok(result, "{1. 2. 3} do: [:x | sum := sum + x]") {
         Value::SmallInt(6) => {}
         other => panic!(
@@ -143,18 +129,14 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
 /// together with `add:`/`size`. The receiver is built via
 /// `new_ordered_collection` (see its doc comment for why) and passed in as a
 /// method argument, so the cascade's receiver expression (`aColl`) is a real
-/// `Expr::Cascade` evaluated by `eval.rs::eval_cascade`, not something faked
-/// in Rust.
+/// `Expr::Cascade`, compiled and run, not something faked in Rust.
 #[test]
 fn ordered_collection_add_and_size_through_a_real_cascade() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m: aColl = ( ^aColl add: 1; add: 2; size )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let oc = new_ordered_collection(&mut interp);
-    let result = interp.send(receiver, Symbol::intern("m:"), vec![oc], &resolved.bindings);
+    let result = interp.send(receiver, Symbol::intern("m:"), vec![oc]);
     match expect_ok(result, "OrderedCollection new add: 1; add: 2; size") {
         Value::SmallInt(2) => {}
         other => panic!(
@@ -168,13 +150,7 @@ fn ordered_collection_add_and_size_through_a_real_cascade() {
 fn ordered_collection_add_returns_the_argument_not_the_receiver() {
     let mut interp = Interpreter::bootstrap();
     let oc = new_ordered_collection(&mut interp);
-    let bindings = Rc::new(std::collections::HashMap::new());
-    let result = interp.send(
-        oc,
-        Symbol::intern("add:"),
-        vec![Value::SmallInt(42)],
-        &bindings,
-    );
+    let result = interp.send(oc, Symbol::intern("add:"), vec![Value::SmallInt(42)]);
     match expect_ok(result, "OrderedCollection add: 42") {
         Value::SmallInt(42) => {}
         other => panic!(
@@ -188,13 +164,7 @@ fn ordered_collection_add_returns_the_argument_not_the_receiver() {
 fn ordered_collection_at_out_of_range_is_a_newspeak_error_not_a_panic() {
     let mut interp = Interpreter::bootstrap();
     let oc = new_ordered_collection(&mut interp);
-    let bindings = Rc::new(std::collections::HashMap::new());
-    let result = interp.send(
-        oc,
-        Symbol::intern("at:"),
-        vec![Value::SmallInt(1)],
-        &bindings,
-    );
+    let result = interp.send(oc, Symbol::intern("at:"), vec![Value::SmallInt(1)]);
     let err = expect_error(interp.heap_ref(), result, "OrderedCollection (empty) at: 1");
     assert!(
         err.message.to_lowercase().contains("range"),
@@ -212,11 +182,10 @@ fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
     // passed a `SmallInt` index, which formats harmlessly, which is why the
     // defect survived.
     let mut interp = Interpreter::bootstrap();
-    let bindings = Rc::new(std::collections::HashMap::new());
     let receiver = Value::Obj(interp.new_array(vec![Value::SmallInt(1)]));
     let index = Value::Obj(interp.new_string("not an integer".to_string()));
 
-    let result = interp.send(receiver, Symbol::intern("at:"), vec![index], &bindings);
+    let result = interp.send(receiver, Symbol::intern("at:"), vec![index]);
 
     let err = expect_error(interp.heap_ref(), result, "{1} at: 'not an integer'");
     assert!(
@@ -229,12 +198,9 @@ fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
 #[test]
 fn block_value_invokes_a_zero_arg_closure() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^[42] value )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let result = interp.send(receiver, Symbol::intern("m"), vec![]);
     match expect_ok(result, "[42] value") {
         Value::SmallInt(42) => {}
         other => panic!(
@@ -247,12 +213,9 @@ fn block_value_invokes_a_zero_arg_closure() {
 #[test]
 fn block_value_colon_passes_the_argument_positionally() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^[:x | x + 1] value: 41 )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let result = interp.send(receiver, Symbol::intern("m"), vec![]);
     match expect_ok(result, "[:x | x + 1] value: 41") {
         Value::SmallInt(42) => {}
         other => panic!(
@@ -265,12 +228,9 @@ fn block_value_colon_passes_the_argument_positionally() {
 #[test]
 fn block_num_args_reports_the_declared_parameter_count() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^[:x :y | x + y] numArgs )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let result = interp.send(receiver, Symbol::intern("m"), vec![]);
     match expect_ok(result, "[:x :y | x + y] numArgs") {
         Value::SmallInt(2) => {}
         other => panic!(
@@ -286,12 +246,9 @@ fn block_num_args_reports_the_declared_parameter_count() {
 fn block_called_with_too_few_arguments_is_a_newspeak_error_not_a_panic() {
     let src =
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^[:x | x] value )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let result = interp.send(receiver, Symbol::intern("m"), vec![]);
     let err = expect_error(
         interp.heap_ref(),
         result,
@@ -309,12 +266,9 @@ fn block_called_with_too_few_arguments_is_a_newspeak_error_not_a_panic() {
 fn block_called_with_too_many_arguments_is_a_newspeak_error_not_a_panic() {
     let src =
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^[42] value: 1 )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let result = interp.send(receiver, Symbol::intern("m"), vec![]);
     let err = expect_error(interp.heap_ref(), result, "[42] value: 1 (1 arg, 0 params)");
     assert!(
         err.message.to_lowercase().contains("argument"),

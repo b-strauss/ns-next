@@ -117,37 +117,14 @@ pub enum BuiltinClass {
     Platform,
 }
 
-/// A closure's body: the AST the tree-walker created it from, or the
-/// compiled code the bytecode VM created it from. `eval::invoke_closure`
-/// dispatches on this, so a closure always runs with the engine that
-/// created it -- the invariant "under `--engine=bytecode` no Newspeak-level
-/// code is tree-walked" is enforced by the type, not by a runtime flag.
-#[derive(Debug, Clone)]
-pub enum ClosureBody {
-    Ast(Rc<ast::CodeBody>),
-    Compiled(Rc<crate::bytecode::CompiledCode>),
-}
-
 #[derive(Debug, Clone)]
 pub struct ClosureData {
     pub params: Vec<Symbol>,
-    pub body: ClosureBody,
+    pub code: Rc<crate::bytecode::CompiledCode>,
     pub captured_frame: FrameRef,
     /// The lexically enclosing *method* (or initializer) activation -- see
     /// the design note above on why this is a `FrameRef`, not an `ObjRef`.
     pub home: FrameRef,
-    /// The resolver's bindings map the block literal's body was originally
-    /// resolved under. A `ClosureBody::Ast` needs exactly this map: every
-    /// `LexicalSend`, `SuperSend` and local-variable reference in the body
-    /// is resolved by span through it, so invoking such a closure with a
-    /// different map would break those references. Cloning an `Rc` here is
-    /// cheap.
-    ///
-    /// A `ClosureBody::Compiled` reads it never -- lowering already turned
-    /// every binding into an instruction -- which is why a closure decoded
-    /// from an image can carry the load's empty map
-    /// (`image::LoadedImage::empty_bindings`) without losing anything.
-    pub bindings: Rc<HashMap<Span, Binding>>,
 }
 
 // ---------- Resolver output ----------
@@ -219,22 +196,6 @@ pub enum FrameKind {
     SuperclassMessage(ClassRef),
 }
 
-/// What a `Frame`'s `pc` counts. The two engines number an activation's
-/// progress in different units -- the tree-walker in statements of a
-/// `CodeBody`, the VM in instructions of a `CompiledCode` -- and a frame is
-/// serialized, so a reader that had to ask the *interpreter* which engine
-/// built it could not interpret a frame record at all. The discriminator
-/// travels with the frame instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PcKind {
-    /// A statement index into the enclosing `ast::CodeBody.stmts`
-    /// (`Interpreter::run_statements`).
-    TreeWalk,
-    /// An instruction index into the enclosing `CompiledCode.instrs`
-    /// (`vm::run_code`).
-    Bytecode,
-}
-
 /// A *reified* activation: one a block captured, or one the image decoder
 /// rebuilt. A running activation lives on the `Heap`'s activation stack and
 /// becomes a `Frame` only when `Heap::reify` is asked for one; while it runs,
@@ -247,12 +208,9 @@ pub struct Frame {
     /// Indexable by resolver slot index, growable (liveness spec's
     /// reified-activation constraint).
     pub temps: Vec<Value>,
-    /// How far this activation has progressed, counted in the unit
-    /// `pc_kind` names. Set where the frame is built and never
-    /// reinterpreted: the engine that will run the body is chosen at the
-    /// same place, so the two fields are decided together.
+    /// How far this activation has progressed: an instruction index into
+    /// the `CompiledCode` it runs.
     pub pc: usize,
-    pub pc_kind: PcKind,
     /// `None` for every frame the runtime reifies: a live activation's
     /// sender is the stack entry below it, and a returned activation has
     /// none. Kept for the image format, which records one per frame.
@@ -368,7 +326,6 @@ mod tests {
             args: vec![],
             temps: vec![],
             pc: 0,
-            pc_kind: PcKind::TreeWalk,
             sender: None,
             home: None,
             current_class: None,

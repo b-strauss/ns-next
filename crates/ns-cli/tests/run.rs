@@ -189,24 +189,20 @@ fn a_unary_entry_selector_gets_no_arguments_and_reads_its_temporary_as_nil() {
     let f = dir.join("Probe.ns");
     std::fs::write(&f, UNARY_PROBE).unwrap();
 
-    for engine in ["bytecode", "tree-walk"] {
-        let out = ns_next()
-            .arg("run")
-            .arg(&f)
-            .arg("--send")
-            .arg("probe")
-            .arg("--engine")
-            .arg(engine)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{engine}: stderr: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let stdout = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
-        assert_eq!(stdout, "nil-ok\n", "{engine}: unexpected stdout");
-    }
+    let out = ns_next()
+        .arg("run")
+        .arg(&f)
+        .arg("--send")
+        .arg("probe")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+    assert_eq!(stdout, "nil-ok\n", "unexpected stdout");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

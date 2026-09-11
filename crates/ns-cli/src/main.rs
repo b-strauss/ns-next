@@ -28,8 +28,8 @@ enum Cmd {
         #[arg(long)]
         blacklist: Option<PathBuf>,
     },
-    /// Run every whitelisted .ns file under a directory, under both
-    /// engines, and check each against its recorded expected output.
+    /// Run every whitelisted .ns file under a directory, from source and as
+    /// a built binary, and check each against its recorded expected output.
     RunCorpus {
         dir: PathBuf,
         #[arg(long)]
@@ -45,8 +45,6 @@ enum Cmd {
         /// a full `main:args:`-shaped application.
         #[arg(long, default_value = "main:args:")]
         send: String,
-        #[arg(long, value_enum, default_value_t = EngineArg::Bytecode)]
-        engine: EngineArg,
     },
     /// Run a file under the bytecode engine, then serialize the resulting
     /// (quiesced) world to an image file.
@@ -78,10 +76,9 @@ enum Cmd {
         #[arg(long)]
         print_source: bool,
     },
-    /// Time the entry send under both engines: bootstrap, load, and (for
-    /// the bytecode engine) compile once, then discard a warm-up run and
-    /// time `--iterations` further runs, reporting each engine's median
-    /// (with min and max) time for the entry send alone.
+    /// Time the entry send: bootstrap, load and compile once, then discard
+    /// a warm-up run and time `--iterations` further runs, reporting the
+    /// median (with min and max) time for the entry send alone.
     ///
     /// Only the entry send is timed -- parsing, resolving, bootstrapping,
     /// and compiling all happen once beforehand and are excluded, because
@@ -143,22 +140,12 @@ enum Cmd {
     },
 }
 
-/// `--engine`: which evaluator runs Newspeak-level code. `bytecode` is the
-/// default; `tree-walk` is the Milestone 1 interpreter, kept permanently as
-/// the differential-testing oracle (M2 spec, "`ns-cli` additions").
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-#[value(rename_all = "kebab-case")]
-enum EngineArg {
-    Bytecode,
-    TreeWalk,
-}
-
 fn main() -> ExitCode {
     match Cli::parse().command {
         Cmd::Parse { file, ast } => cmd_parse(&file, ast),
         Cmd::ParseCorpus { dir, blacklist } => cmd_parse_corpus(&dir, blacklist.as_deref()),
         Cmd::RunCorpus { dir, whitelist } => cmd_run_corpus(&dir, whitelist.as_deref()),
-        Cmd::Run { file, send, engine } => cmd_run(&file, &send, engine),
+        Cmd::Run { file, send } => cmd_run(&file, &send),
         Cmd::Snapshot {
             file,
             out,
@@ -256,34 +243,18 @@ fn load_source(file: &Path) -> Result<LoadedSource, ExitCode> {
     })
 }
 
-/// Bootstraps an interpreter, loads the module's root class, and installs
-/// the requested engine -- *before* anything is instantiated, so the root
-/// class's instance initializer runs under it too (M2 spec, "`ns-cli`
-/// additions").
-fn bootstrap_with_engine(
-    loaded: &LoadedSource,
-    engine: EngineArg,
-) -> (ns_runtime::Interpreter, ns_runtime::ClassRef) {
+/// Bootstraps an interpreter and loads the module's root class, which
+/// compiles the module and installs its code -- before anything is
+/// instantiated, so the root class's instance initializer runs compiled too.
+fn bootstrap(loaded: &LoadedSource) -> (ns_runtime::Interpreter, ns_runtime::ClassRef) {
     let mut interp = ns_runtime::Interpreter::bootstrap();
     let class = interp.load_module(&loaded.resolved);
-    if engine == EngineArg::Bytecode {
-        let compiled = ns_runtime::compiler::compile_module(
-            interp.heap_ref(),
-            &class,
-            &loaded.resolved.bindings,
-        );
-        interp
-            .set_engine(ns_runtime::Engine::Bytecode(compiled))
-            // Only `Engine::TreeWalk` on a loaded world is ever refused,
-            // and this interpreter was built from source a line ago.
-            .expect("the bytecode engine is never refused");
-    }
     (interp, class)
 }
 
 /// Renders the entry send's outcome exactly as Milestone 1's `run` did --
-/// these strings are compared byte for byte across engines by the
-/// differential harness, so they are shared and never duplicated.
+/// `program_outcomes.rs` pins these strings byte for byte, so they live here
+/// once and are never duplicated.
 fn report_entry_send(result: Result<ns_runtime::Value, ns_runtime::Signal>) -> ExitCode {
     match result {
         Ok(_) => ExitCode::SUCCESS,
@@ -350,7 +321,7 @@ fn factory_args_for(
 
 /// The mixin name behind a class object, for `factory_args_for`'s error
 /// message. `class` is always `ObjectData::Class` at every call site -- it
-/// comes either from `bootstrap_with_engine` or, when `load` starts a
+/// comes either from `bootstrap` or, when `load` starts a
 /// stateless binary, from `image::load`'s rebuilt root class -- so the
 /// fallback is unreachable in practice and exists only to keep this a total
 /// function.
@@ -411,17 +382,16 @@ fn entry_args(
     }
 }
 
-/// `ns-next run`: parse, resolve, bootstrap, load, install the engine,
+/// `ns-next run`: parse, resolve, bootstrap, load,
 /// instantiate the root class with whatever its declared primary factory
 /// takes, send the entry selector with whatever `entry_args` sizes for it,
 /// report.
-fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
+fn cmd_run(file: &Path, send: &str) -> ExitCode {
     let loaded = match load_source(file) {
         Ok(l) => l,
         Err(code) => return code,
     };
-    let bindings = loaded.resolved.bindings.clone();
-    let (mut interp, class) = bootstrap_with_engine(&loaded, engine);
+    let (mut interp, class) = bootstrap(&loaded);
     let platform = interp.platform();
     let factory_args = match factory_args_for(interp.heap_ref(), &class, platform) {
         Ok(args) => args,
@@ -430,7 +400,7 @@ fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let instance = match interp.instantiate(class, factory_args, &bindings) {
+    let instance = match interp.instantiate(class, factory_args) {
         Ok(v) => v,
         Err(signal) => return report_signal(signal),
     };
@@ -442,21 +412,18 @@ fn cmd_run(file: &Path, send: &str, engine: EngineArg) -> ExitCode {
         }
     };
     let selector = ns_runtime::Symbol::intern(send);
-    report_entry_send(interp.send(instance, selector, args, &bindings))
+    report_entry_send(interp.send(instance, selector, args))
 }
 
 /// `ns-next snapshot`: `run`'s pipeline up to (and optionally including)
-/// the entry send, then a serialized image of the resulting world. Always
-/// the bytecode engine -- a tree-walker closure carries `ClosureBody::Ast`,
-/// which the format has no representation for, and the image's own code
-/// table is what a later `load` runs.
+/// the entry send, then a serialized image of the resulting world. The
+/// image's own code table is what a later `load` runs.
 fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool) -> ExitCode {
     let loaded = match load_source(file) {
         Ok(l) => l,
         Err(code) => return code,
     };
-    let bindings = loaded.resolved.bindings.clone();
-    let (mut interp, class) = bootstrap_with_engine(&loaded, EngineArg::Bytecode);
+    let (mut interp, class) = bootstrap(&loaded);
     let platform = interp.platform();
     let factory_args = match factory_args_for(interp.heap_ref(), &class, platform) {
         Ok(args) => args,
@@ -465,7 +432,7 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
             return ExitCode::FAILURE;
         }
     };
-    let instance = match interp.instantiate(class, factory_args, &bindings) {
+    let instance = match interp.instantiate(class, factory_args) {
         Ok(v) => v,
         Err(signal) => return report_signal(signal),
     };
@@ -478,19 +445,12 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
                 return ExitCode::FAILURE;
             }
         };
-        match interp.send(
-            instance,
-            ns_runtime::Symbol::intern(selector),
-            args,
-            &bindings,
-        ) {
+        match interp.send(instance, ns_runtime::Symbol::intern(selector), args) {
             Ok(result) => roots.push(result),
             Err(signal) => return report_entry_send(Err(signal)),
         }
     }
-    let module = interp
-        .compiled_module()
-        .expect("bootstrap_with_engine installed the bytecode engine");
+    let module = interp.compiled_module();
     let bytes = match ns_runtime::image::snapshot(
         interp.heap_ref(),
         debug_source.then_some(loaded.source.as_str()),
@@ -550,7 +510,6 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
         roots,
         origin: _,
         source,
-        empty_bindings: bindings,
         entry,
         stateless,
     } = match ns_runtime::image::load(&bytes) {
@@ -600,7 +559,7 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        match interp.instantiate(root_class, factory_args, &bindings) {
+        match interp.instantiate(root_class, factory_args) {
             Ok(v) => v,
             Err(signal) => return report_signal(signal),
         }
@@ -643,18 +602,10 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    report_entry_send(interp.send(
-        instance,
-        ns_runtime::Symbol::intern(selector),
-        args,
-        &bindings,
-    ))
+    report_entry_send(interp.send(instance, ns_runtime::Symbol::intern(selector), args))
 }
 
-/// One engine's timing summary. Enough for the reported median to be
-/// interpretable on its own -- the iteration count it was computed from,
-/// plus the spread around it -- rather than a bare number nobody can
-/// sanity-check.
+/// The timing summary.
 struct BenchStats {
     iterations: u32,
     median: std::time::Duration,
@@ -662,19 +613,9 @@ struct BenchStats {
     max: std::time::Duration,
 }
 
-/// The word each engine's report line leads with -- the same spelling
-/// `--engine` itself uses, so a result can be grepped by the same string
-/// that selects it.
-fn engine_label(engine: EngineArg) -> &'static str {
-    match engine {
-        EngineArg::Bytecode => "bytecode",
-        EngineArg::TreeWalk => "tree-walk",
-    }
-}
-
 /// Renders an `instantiate`/`send` failure for `bench`'s purposes. Neither
 /// call site treats it as fatal to the whole process the way `run` does --
-/// `cmd_bench` folds it into that engine's `Result` instead -- so this
+/// `cmd_bench` folds it into its `Result` instead -- so this
 /// produces a `String`, not an `ExitCode`.
 fn signal_message(signal: ns_runtime::Signal) -> String {
     match signal {
@@ -699,31 +640,23 @@ fn timed_send(
     factory_args: &[ns_runtime::Value],
     selector: ns_runtime::Symbol,
     entry_args: &[ns_runtime::Value],
-    bindings: &Rc<std::collections::HashMap<ns_syntax::Span, ns_runtime::Binding>>,
 ) -> Result<std::time::Duration, String> {
     let instance = interp
-        .instantiate(*class, factory_args.to_vec(), bindings)
+        .instantiate(*class, factory_args.to_vec())
         .map_err(signal_message)?;
     let start = std::time::Instant::now();
-    let outcome = interp.send(instance, selector, entry_args.to_vec(), bindings);
+    let outcome = interp.send(instance, selector, entry_args.to_vec());
     let elapsed = start.elapsed();
     outcome.map(|_| elapsed).map_err(signal_message)
 }
 
-/// Bootstraps `engine`, discards one warm-up `timed_send`, times
-/// `iterations` further ones, and reduces the samples to `BenchStats`.
-/// Bootstrapping, module loading, and (for the bytecode engine) compiling
-/// all happen here but before the loop starts -- once-per-process costs a
-/// real program pays at startup, excluded from the per-send timing for the
-/// same reason instantiation is.
-fn bench_engine(
-    loaded: &LoadedSource,
-    bindings: &Rc<std::collections::HashMap<ns_syntax::Span, ns_runtime::Binding>>,
-    send: &str,
-    iterations: u32,
-    engine: EngineArg,
-) -> Result<BenchStats, String> {
-    let (mut interp, class) = bootstrap_with_engine(loaded, engine);
+/// Bootstraps and loads the module (which compiles it), discards one
+/// warm-up `timed_send`, times `iterations` further ones, and reduces the
+/// samples to `BenchStats`. Bootstrapping, loading and compiling all happen
+/// before the loop -- once-per-process costs, excluded from the per-send
+/// timing for the same reason instantiation is.
+fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<BenchStats, String> {
+    let (mut interp, class) = bootstrap(loaded);
     let platform = interp.platform();
     let factory_args = factory_args_for(interp.heap_ref(), &class, platform)?;
     let entry_args_list = entry_args(send, platform)?;
@@ -738,7 +671,6 @@ fn bench_engine(
         &factory_args,
         selector,
         &entry_args_list,
-        bindings,
     )?;
 
     let mut timings = Vec::with_capacity(iterations as usize);
@@ -749,7 +681,6 @@ fn bench_engine(
             &factory_args,
             selector,
             &entry_args_list,
-            bindings,
         )?);
     }
     timings.sort();
@@ -774,14 +705,12 @@ fn bench_engine(
 }
 
 /// `ns-next bench`: see the `Bench` variant's doc comment for what is
-/// timed and why, and `bench_engine`/`timed_send` for how. Runs the
-/// bytecode engine first, then the tree-walker, so the two report lines
-/// come out in the same order `--engine`'s own default does.
+/// timed and why, and `bench_entry`/`timed_send` for how.
 fn cmd_bench(file: &Path, send: &str, iterations: u32) -> ExitCode {
     if cfg!(debug_assertions) {
         eprintln!(
             "warning: this is a debug build; the timings below measure debug-build overhead, \
-             not the engines. Rebuild and re-run with `--release`."
+             not the runtime. Rebuild and re-run with `--release`."
         );
     }
     if iterations == 0 {
@@ -792,47 +721,21 @@ fn cmd_bench(file: &Path, send: &str, iterations: u32) -> ExitCode {
         Ok(l) => l,
         Err(code) => return code,
     };
-    let bindings = loaded.resolved.bindings.clone();
     println!(
         "timing: the entry send `{send}` only, after instantiation -- parsing, resolving, \
          bootstrapping, and compiling all happened once beforehand and are excluded. \
-         {iterations} timed run(s) per engine, after one discarded warm-up run."
+         {iterations} timed run(s), after one discarded warm-up run."
     );
-    for engine in [EngineArg::Bytecode, EngineArg::TreeWalk] {
-        match bench_engine(&loaded, &bindings, send, iterations, engine) {
-            Ok(stats) => println!(
-                "{}: median {:?} (min {:?}, max {:?}, n={})",
-                engine_label(engine),
-                stats.median,
-                stats.min,
-                stats.max,
-                stats.iterations
-            ),
-            Err(msg) => {
-                eprintln!("error: {}: {msg}", engine_label(engine));
-                return ExitCode::FAILURE;
-            }
+    match bench_entry(&loaded, send, iterations) {
+        Ok(stats) => println!(
+            "median {:?} (min {:?}, max {:?}, n={})",
+            stats.median, stats.min, stats.max, stats.iterations
+        ),
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return ExitCode::FAILURE;
         }
     }
-    // The single caveat that matters most for reading these two numbers
-    // together: the baseline compiler inlines `whileTrue:`/`whileFalse:`/
-    // `ifTrue:...`/`and:`/`or:` into straight-line jumps when every block
-    // operand is a literal, parameter-less, temp-less block (M2 spec,
-    // "Control-flow inlining"; `compiler::control_flow::recognize`). The
-    // tree-walker has no such inlining and pays a real block invocation for
-    // each one. A loop written in that shape -- as any straightforward
-    // `whileTrue:` loop is -- therefore makes the bytecode engine skip work
-    // the tree-walker still does, for a reason that has nothing to do with
-    // send dispatch. Printed here, not only in a report, because this
-    // command and its output will still be read long after any one report
-    // is gone.
-    println!(
-        "note: control-flow selectors such as `whileTrue:` are inlined by the baseline \
-         compiler, so the cross-engine ratio above includes loop-control overhead the \
-         bytecode engine does not pay -- it is not a pure dispatch comparison. The bytecode \
-         median alone is the dispatch baseline: today every send is a full lookup, the \
-         inline-cache slot is reserved but not yet wired up."
-    );
     ExitCode::SUCCESS
 }
 
@@ -916,16 +819,14 @@ fn root_mixin_of(
         .ok_or_else(|| "internal: loaded module did not produce a class object".to_string())
 }
 
-/// `ns-next disasm`: for a `.ns` file, bootstrap and compile the *whole*
-/// mixin tree (`compiler::compile_module`, exactly as the bytecode engine
-/// would); for a serialized artifact, decode it directly and reuse its own
-/// code table instead of recompiling anything. Either way, the result is a
-/// `(root_mixin, module)` pair from which a `--class` path can address any
-/// mixin's code, then look up exactly one method or the target mixin's
-/// initializer and print its bytecode listing. The source path never
-/// instantiates and never installs the bytecode engine -- compile only; the
-/// artifact path never instantiates either, since `image::load` only
-/// decodes the world.
+/// `ns-next disasm`: for a `.ns` file, bootstrap and load it, which compiles
+/// the *whole* mixin tree; for a serialized artifact, decode it directly and
+/// reuse its own code table instead of recompiling anything. Either way, the
+/// result is a `(root_mixin, module)` pair from which a `--class` path can
+/// address any mixin's code, then look up exactly one method or the target
+/// mixin's initializer and print its bytecode listing. The source path never
+/// instantiates; the artifact path never instantiates either, since
+/// `image::load` only decodes the world.
 fn cmd_disasm(
     file: &Path,
     selector: Option<&str>,
@@ -955,11 +856,7 @@ fn cmd_disasm(
     let (root_mixin, module) = if looks_like_an_artifact(&raw) {
         match ns_runtime::image::load(&raw) {
             Ok(loaded) => {
-                let module = loaded
-                    .interp
-                    .compiled_module()
-                    .expect("load installed the bytecode engine")
-                    .clone();
+                let module = loaded.interp.compiled_module().clone();
                 let root_mixin = match root_mixin_of(loaded.interp.heap_ref(), &loaded.root_class) {
                     Ok(m) => m,
                     Err(msg) => {
@@ -979,9 +876,8 @@ fn cmd_disasm(
             Ok(l) => l,
             Err(code) => return code,
         };
-        let bindings = loaded.resolved.bindings.clone();
-        let (interp, class) = bootstrap_with_engine(&loaded, EngineArg::TreeWalk);
-        let module = ns_runtime::compiler::compile_module(interp.heap_ref(), &class, &bindings);
+        let (interp, class) = bootstrap(&loaded);
+        let module = interp.compiled_module().clone();
         let root_mixin = match root_mixin_of(interp.heap_ref(), &class) {
             Ok(m) => m,
             Err(msg) => {
@@ -1134,7 +1030,7 @@ fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -
         Ok(l) => l,
         Err(code) => return code,
     };
-    let (mut interp, class) = bootstrap_with_engine(&loaded, EngineArg::Bytecode);
+    let (mut interp, class) = bootstrap(&loaded);
 
     let entry = match entry {
         Some(e) => e.to_string(),
@@ -1162,9 +1058,7 @@ fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -
         return ExitCode::FAILURE;
     }
 
-    let module = interp
-        .compiled_module()
-        .expect("bootstrap_with_engine installed the bytecode engine");
+    let module = interp.compiled_module();
     let bytes = match ns_runtime::image::build(
         interp.heap_ref(),
         debug_source.then_some(loaded.source.as_str()),
@@ -1277,32 +1171,28 @@ fn load_whitelist(path: &Path) -> Result<Vec<RunnableEntry>, String> {
     Ok(wl.entry)
 }
 
-/// What one `ns-next run` of a whitelisted module produced.
-struct EngineOutcome {
+/// What one `ns-next run` or `load` of a whitelisted module produced.
+struct RunOutcome {
     status: Option<i32>,
     stdout: String,
     stderr: String,
 }
 
-/// Runs one module through a *child* `ns-next run`, once per engine.
+/// Runs one module through a *child* `ns-next run`.
 ///
-/// A child process rather than an in-process call on purpose: the thing
-/// being compared is the module's own stdout, which Newspeak code writes
-/// straight to the process's stdout through `platform transcript`. Running
-/// both engines in this process would interleave their output with the
-/// gate's own, leaving nothing to compare byte for byte -- which is the
-/// whole point of running each entry twice.
-fn run_one(exe: &Path, file: &Path, send: &str, engine: &str) -> Result<EngineOutcome, String> {
+/// A child process rather than an in-process call on purpose: the module's
+/// stdout, which Newspeak code writes straight to the process's stdout
+/// through `platform transcript`, is what gets compared, and running it in
+/// this process would interleave it with the gate's own output.
+fn run_one(exe: &Path, file: &Path, send: &str) -> Result<RunOutcome, String> {
     let out = std::process::Command::new(exe)
         .arg("run")
         .arg(file)
         .arg("--send")
         .arg(send)
-        .arg("--engine")
-        .arg(engine)
         .output()
         .map_err(|e| format!("could not run {}: {e}", exe.display()))?;
-    Ok(EngineOutcome {
+    Ok(RunOutcome {
         status: out.status.code(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -1358,7 +1248,7 @@ impl Drop for ScratchDir {
 /// `corpus/`, so a `run-corpus` invocation leaves the working tree exactly
 /// as it found it; `ScratchDir`'s `Drop` removes it once this row is done
 /// whether the row passed or failed.
-fn run_one_binary(exe: &Path, file: &Path, send: &str) -> Result<EngineOutcome, String> {
+fn run_one_binary(exe: &Path, file: &Path, send: &str) -> Result<RunOutcome, String> {
     let stem = file
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -1386,7 +1276,7 @@ fn run_one_binary(exe: &Path, file: &Path, send: &str) -> Result<EngineOutcome, 
         .arg(&artifact)
         .output()
         .map_err(|e| format!("could not load {}: {e}", exe.display()))?;
-    Ok(EngineOutcome {
+    Ok(RunOutcome {
         status: out.status.code(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -1399,27 +1289,25 @@ fn run_one_binary(exe: &Path, file: &Path, send: &str) -> Result<EngineOutcome, 
 /// counts as running only once someone has recorded what running it
 /// produces. Growth is therefore deliberate and a regression is loud.
 ///
-/// Every entry is run under both engines and the two are compared on exit
-/// status, stdout and stderr before either is compared to the expectation.
-/// Each entry is then run a third way -- built into a stateless binary with
-/// `--entry <row.send>` and loaded with no `--send`, so the recorded entry is
-/// what starts it -- and checked against the same expectations, with stderr
-/// checked against the bytecode engine's. A row's `send` doubling as the
-/// build's `--entry` is why `runnable.toml` needs no field of its own for
-/// this lane. Each row still counts once in `ran`/`failed`: the first lane
-/// that disagrees decides the row and the rest are skipped for it, the same
-/// way the two engine lanes already worked before this third lane existed.
+/// Every entry is run from source and checked against the expectation: the
+/// recorded exit status and stdout, and -- for a row expected to exit 0 -- an
+/// empty stderr. It is then run a second way -- built into a stateless binary
+/// with `--entry <row.send>` and loaded with no `--send`, so the recorded
+/// entry is what starts it -- and checked against the same exit status and
+/// stdout, with stderr checked against the source run's. A row's `send`
+/// doubling as the build's `--entry` is why `runnable.toml` needs no field of
+/// its own for this lane. Each row still counts once in `ran`/`failed`: the
+/// first lane that fails decides the row.
 ///
 /// What that is worth, stated honestly: with `expected_stdout` empty on
 /// every real row -- no corpus module that currently runs writes to the
 /// transcript at all -- this is a tripwire that a whitelisted module still
 /// instantiates and still answers one message without error, plus a check
-/// that the two engines fail or succeed the same way, plus a check that the
-/// same module still starts from a built binary instead of from source. It
-/// is not yet a differential harness over observable *output* from real
-/// modules; it becomes one on the day a row can record something printed.
-/// Treat a green `run-corpus` as "nothing regressed", not as "the corpus is
-/// covered".
+/// that the same module still starts from a built binary instead of from
+/// source. It is not yet a differential harness over observable *output*
+/// from real modules; it becomes one on the day a row can record something
+/// printed. Treat a green `run-corpus` as "nothing regressed", not as "the
+/// corpus is covered".
 fn cmd_run_corpus(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
     let wl_path = whitelist
         .map(PathBuf::from)
@@ -1450,10 +1338,9 @@ fn cmd_run_corpus(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
         })
         .count();
 
-    // `ran` counts rows whose module both engines actually executed, so a
-    // row naming a deleted file, or one whose child could not be spawned,
-    // reports as a failure without inflating the number a reader uses to
-    // judge coverage.
+    // `ran` counts rows whose module actually executed, so a row naming a
+    // deleted file, or one whose child could not be spawned, reports as a
+    // failure without inflating the number a reader uses to judge coverage.
     let (mut ran, mut failed) = (0, 0);
     for entry in &entries {
         let file = dir.join(&entry.file);
@@ -1462,15 +1349,7 @@ fn cmd_run_corpus(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
             eprintln!("FAIL {}: no such file under {}", entry.file, dir.display());
             continue;
         }
-        let bytecode = match run_one(&exe, &file, &entry.send, "bytecode") {
-            Ok(o) => o,
-            Err(e) => {
-                failed += 1;
-                eprintln!("FAIL {}: {e}", entry.file);
-                continue;
-            }
-        };
-        let tree_walk = match run_one(&exe, &file, &entry.send, "tree-walk") {
+        let source = match run_one(&exe, &file, &entry.send) {
             Ok(o) => o,
             Err(e) => {
                 failed += 1;
@@ -1479,30 +1358,36 @@ fn cmd_run_corpus(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
             }
         };
         ran += 1;
-        if let Some(diff) = engines_disagree(&bytecode, &tree_walk) {
-            failed += 1;
-            eprintln!("FAIL {}: engines disagree on {diff}", entry.file);
-            continue;
-        }
-        if bytecode.status != Some(entry.expected_status) {
+        if source.status != Some(entry.expected_status) {
             failed += 1;
             eprintln!(
                 "FAIL {}: expected exit {}, got {} (stderr: {})",
                 entry.file,
                 entry.expected_status,
-                match bytecode.status {
+                match source.status {
                     Some(c) => c.to_string(),
                     None => "signal".to_string(),
                 },
-                bytecode.stderr.trim_end()
+                source.stderr.trim_end()
             );
             continue;
         }
-        if bytecode.stdout != entry.expected_stdout {
+        if source.stdout != entry.expected_stdout {
             failed += 1;
             eprintln!(
                 "FAIL {}: expected stdout {:?}, got {:?}",
-                entry.file, entry.expected_stdout, bytecode.stdout
+                entry.file, entry.expected_stdout, source.stdout
+            );
+            continue;
+        }
+        // A successful run writes nothing to stderr. Without this, a warning
+        // or a stray diagnostic that both lanes print identically would pass,
+        // since the binary lane's stderr is compared with this run's only.
+        if entry.expected_status == 0 && !source.stderr.is_empty() {
+            failed += 1;
+            eprintln!(
+                "FAIL {}: expected no stderr, got {:?}",
+                entry.file, source.stderr
             );
             continue;
         }
@@ -1537,11 +1422,11 @@ fn cmd_run_corpus(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
             );
             continue;
         }
-        if binary.stderr != bytecode.stderr {
+        if binary.stderr != source.stderr {
             failed += 1;
             eprintln!(
-                "FAIL {}: binary: stderr differs from the bytecode engine's: binary {:?}, bytecode {:?}",
-                entry.file, binary.stderr, bytecode.stderr
+                "FAIL {}: binary: stderr differs from the source run's: binary {:?}, source {:?}",
+                entry.file, binary.stderr, source.stderr
             );
         }
     }
@@ -1551,30 +1436,6 @@ fn cmd_run_corpus(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
-}
-
-/// Names the first stream the two engines differ on, or `None` if they
-/// agree byte for byte on all three.
-fn engines_disagree(bytecode: &EngineOutcome, tree_walk: &EngineOutcome) -> Option<String> {
-    if bytecode.status != tree_walk.status {
-        return Some(format!(
-            "exit status: bytecode {:?}, tree-walk {:?}",
-            bytecode.status, tree_walk.status
-        ));
-    }
-    if bytecode.stdout != tree_walk.stdout {
-        return Some(format!(
-            "stdout: bytecode {:?}, tree-walk {:?}",
-            bytecode.stdout, tree_walk.stdout
-        ));
-    }
-    if bytecode.stderr != tree_walk.stderr {
-        return Some(format!(
-            "stderr: bytecode {:?}, tree-walk {:?}",
-            bytecode.stderr, tree_walk.stderr
-        ));
-    }
-    None
 }
 
 fn collect_ns_files(dir: &Path, out: &mut Vec<PathBuf>) {

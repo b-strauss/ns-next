@@ -65,6 +65,20 @@ includes the superclass clause's receiver part, which §6.1 evaluates "as if it
 occurred inside an instance method" of the enclosing class — the same mechanism,
 evaluated at a particular time rather than a distinct binding kind.
 
+**Known gap: a `super`-prefixed clause receiver does not dispatch.** For
+`class N = super Foo (...)` the resolver binds the receiver `Foo` as
+`SuperSend` (`resolver::resolve_superclass_clause`), but the lowerer treats a
+`SuperSend`-bound *identifier* like an unbound one: it falls to the
+bare-builtin-name fallback (`LoadBuiltinClass`), and for any other name to the
+deferred `UnresolvedIdent`. So the form works only when `Foo` names a builtin
+class, and then answers that builtin rather than the result of sending `Foo`
+with lookup starting above the declaring class, as §6.1 requires; any other
+`Foo` raises an "unresolved identifier" error when the accessor first runs the
+clause. The clause's activation already carries the declaring class as its
+`current_class`, so the fix is a lowering change;
+`crates/ns-runtime/tests/nested_classes.rs`'s
+`a_super_prefixed_clause_answers_a_class_object` pins today's builtin case.
+
 ### Setter sends
 
 `id:: e` (§5.4.3) desugars to sending the keyword message `id: e` and yielding
@@ -153,14 +167,15 @@ plausible answer rather than a crash.
 
 ## Shared orchestration
 
-`interpreter/` is not the tree-walker's private code. Send, `doesNotUnderstand:`,
-lexical, super and native dispatch, frame construction and `instantiate` serve
-**both** engines; the engines differ only at three body-execution hooks — method
-body, block body, instance initializer.
+Send, `doesNotUnderstand:`, lexical, super and native dispatch, frame
+construction and `instantiate` live in `interpreter/`, the orchestration every
+way of running code shares: the VM's instruction loop calls them and runs
+whatever body they choose ([execution.md](execution.md), "The VM").
 
 Never copy dispatch logic, lookup logic or error text out of `interpreter/` into
-`vm.rs` or `compiler/`. That is how the two engines drift and stderr stops
-matching. Something needed there is widened to `pub(crate)`, not duplicated.
+`vm.rs` or `compiler/`. The reference lowering and, later, a JIT must reach the
+same dispatch and raise the same errors, and a second copy is how they would
+drift. Something needed there is widened to `pub(crate)`, not duplicated.
 
 An arity check belongs here too: a method activation addresses its arguments and
 temporaries as one run of registers, so a send whose argument count does not
@@ -226,5 +241,5 @@ application, for the same reason the guard is.
   implementation is protected and would otherwise be unreachable.
 - **Unmarked members are protected**, per §6.3.1, which decides public
   reachability rather than only documenting intent.
-- **Dispatch lives in `interpreter/` for both engines.** Duplicating it into the
-  VM is the failure mode this rule exists to prevent.
+- **Dispatch lives in `interpreter/`, once.** Duplicating it into the VM is the
+  failure mode this rule exists to prevent.

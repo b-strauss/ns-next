@@ -90,10 +90,10 @@ surface is.
   and the possibility of loading an image whose stored layout disagrees with its
   mixins. It is also what proves two instances that shared an application before
   a snapshot still share one after it.
-- **The bindings map.** A binding is resolved by span only at compile time and in
-  the tree-walker, neither of which a loaded world reaches, so `load` allocates
-  one empty map for the signatures that still take one. Reconstructing a real map
-  would require re-resolving the source, which would require re-parsing it —
+- **The bindings map.** A binding is resolved by span only at compile time, which
+  a loaded world never reaches: lowering has already turned every binding into an
+  instruction, and nothing that runs compiled code takes a map. Reconstructing
+  one would require re-resolving the source, which would require re-parsing it —
   exactly the load path that was removed.
 
 A hostile image therefore cannot replace a builtin, because a class tag resolves
@@ -155,16 +155,16 @@ the decoder alike rather than repeated as magic numbers on each side.
 share a number, so a renumbering fails the suite at the moment it happens instead
 of surfacing later as an image that no longer means what it said.
 
-The graph section's five tag families live there under the same rule: how a
-`Value` is encoded, an object record's body, how a class reference is named,
-what a frame was activated for, and the unit `pc` counts in. They were bare
-literals in the encoder and again in the decoder until `inspect` became a third
-reader of those bytes — and three hand-kept copies of one numbering is how a
-viewer starts quietly disagreeing with the loader. One value there is *retired*
-rather than free: `pc` kind 0 means a tree-walker activation, whose statement
-counter an image's code table cannot represent, so nothing writes it and the
-decoder refuses it. Bytecode deliberately took the next number, so a stale
-artifact naming 0 fails instead of being read as bytecode.
+The graph section's four tag families live there under the same rule: how a
+`Value` is encoded, an object record's body, how a class reference is named, and
+what a frame was activated for. They were bare literals in the encoder and again
+in the decoder until `inspect` became a third reader of those bytes — and three
+hand-kept copies of one numbering is how a viewer starts quietly disagreeing with
+the loader. A fifth family is *retired*: a frame record once carried a byte
+naming the unit its `pc` counted in, and only instruction indices were ever
+representable, so the byte was removed. Its two numbers, 0 and 1 (`PC_KIND_*`),
+stay assigned and pinned, so a unit field that ever returns cannot give them a
+new meaning.
 
 **Mixin table.** One row per declaration: the name, its own slot names, the
 primary factory selector and arity, the method table as selector → code id, the
@@ -182,12 +182,11 @@ receiver's dynamic one, so an image that dropped it would come back resolving
 strings, symbols, arrays, closures — decoded in two passes (placeholder, then
 fill) so cycles and shared references round-trip with identity preserved. A
 closure encodes its parameters, its compiled body as a code id, and its captured
-frame and home as frame ids. A closure carrying an AST body is a snapshot error
-rather than a silent omission; `snapshot` always runs under the bytecode engine,
-so none can exist in a world it snapshots.
+frame and home as frame ids.
 
 **Frame table.** Every `Frame` reachable from the roots, with receiver, args,
-temps, `pc`, `sender`, `home`, `current_class`, `kind` and `uncontinuable`.
+temps, `pc` — an instruction index into the frame's compiled body — `sender`,
+`home`, `current_class`, `kind` and `uncontinuable`.
 Frames and objects reference each other freely, so both tables are
 placeholder-allocated before either is filled.
 
@@ -305,11 +304,11 @@ the artifact itself.
 
 **One-way only. There is no text format that can be loaded back.** That would
 be a second encoder and decoder pair to keep in step with the binary one — the
-drift shape this project has already paid for twice, in two engines that must
-agree and in two copies of the tag table. The argument that would justify it is
-hand-authoring test images, and that need is already met differently: the
-untrusted-input tests take real images and corrupt them at located offsets, which
-exercises real structures rather than the ones someone thought to write out.
+drift shape this project has already paid for in two copies of the tag table.
+The argument that would justify it is hand-authoring test images, and that need
+is already met differently: the untrusted-input tests take real images and
+corrupt them at located offsets, which exercises real structures rather than the
+ones someone thought to write out.
 
 **This is not the decompiler**, and the two are easy to confuse:
 
@@ -324,9 +323,9 @@ into it. It is not in it.
 ## The stateless binary
 
 `ns-next build <file.ns> <out> [--entry SEL] [--debug-source]` runs the pipeline
-up to engine installation — parse, resolve, bootstrap, compile — and then **does
-not instantiate**. That omission is the point: the artifact never sees a
-platform.
+up to installing the compiled code — parse, resolve, bootstrap, compile — and
+then **does not instantiate**. That omission is the point: the artifact never
+sees a platform.
 
 **Format delta.** A second header flag, `FLAG_STATELESS`, and an entry-selector
 field encoded as a symbol id, bounds-checked like every other id. The field sits
@@ -379,8 +378,8 @@ this narrower set keeps the byte-identity guarantee above sound.
 
 **Loading.** `load` reads the header and branches. A stateful image is unchanged.
 A stateless binary decodes symbols → code → mixins → root class → entry id, with
-no graph section, then installs the bytecode engine, seals the world, and hands
-back empty roots with the entry as an option. The caller instantiates the root
+no graph section, then installs the decoded code and hands back empty roots with
+the entry as an option. The caller instantiates the root
 class with the freshly bootstrapped platform and sends the entry, so the primary
 factory and every initializer run **inside the loaded world** against the
 artifact's own code. Capabilities enter at start time.
@@ -390,7 +389,7 @@ command-line entry point supplies the platform is a CLI concern, because nothing
 in the runtime needs to know it was invoked from a terminal.
 
 **Tests**, in order of importance: `build` then `load` reproduces
-`run --engine=bytecode`'s stdout, stderr and exit status byte for byte
+`run`'s stdout, stderr and exit status byte for byte
 (`every_fixture_runs_identically_from_source_and_from_a_binary`); `build` and
 `snapshot` agree on the describing sections' bytes
 (`a_build_and_a_snapshot_agree_on_the_describing_sections`); `run-corpus`
@@ -425,8 +424,8 @@ frame's `pc` and register-file size against the compiled body it reconciles
 each frame against, but it never cross-checks `home` against `kind`: a
 crafted image can pair a method-kind frame (`home` meaningful only for
 `FrameKind::Closure`) with a non-nil `home`. Nothing observes the
-mismatch today, because the tree-walker and VM never run a frame loaded
-from an image -- only ever an activation one of the four push sites built.
+mismatch today, because the VM never runs a frame loaded from an image
+-- only ever an activation one of the four push sites built.
 A decoded home is only ever consulted as a return target, and a decoded
 frame is never married to a live activation, so a `^` into one is
 `cannotReturn` whatever its record says.

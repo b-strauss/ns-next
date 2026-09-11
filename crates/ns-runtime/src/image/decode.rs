@@ -14,8 +14,8 @@ use crate::heap::Heap;
 use crate::interpreter::instantiate;
 use crate::mixin::mixin_key;
 use crate::types::{
-    Binding, BuiltinClass, ClassRef, ClosureBody, ClosureData, Frame, FrameKind, FrameRef, ObjRef,
-    Object, ObjectData, PcKind, SourceOrigin, Value,
+    BuiltinClass, ClassRef, ClosureData, Frame, FrameKind, FrameRef, ObjRef, Object, ObjectData,
+    SourceOrigin, Value,
 };
 use crate::Interpreter;
 use crate::Symbol;
@@ -42,12 +42,6 @@ pub enum DecodeError {
     UnknownHeaderFlags {
         flags: u8,
     },
-    /// A frame record claimed its `pc` counts statements. Only the
-    /// bytecode engine's activations are representable: an image's code
-    /// table carries compiled bodies and no statements, so such a `pc`
-    /// indexes nothing the image contains. The encoder refuses to write
-    /// one for the same reason.
-    TreeWalkFrame,
     /// A frame's `pc` is not an instruction index of the body that runs in
     /// it. `vm::run_code` stores the index of the instruction it is
     /// executing, so every real activation's `pc` is in range; a crafted
@@ -204,8 +198,8 @@ pub enum DecodeError {
         target: u32,
         instrs: usize,
     },
-    /// More arguments than registers: every engine hook sizes a frame's
-    /// temps as `num_registers - num_args`, which underflows here.
+    /// More arguments than registers: an activation is pushed with
+    /// `num_registers - num_args` temporaries, which underflows here.
     ArgsExceedRegisters {
         num_args: u16,
         num_registers: u16,
@@ -261,11 +255,6 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "image header sets flag bits {:#04x} this build does not know",
                 flags & !super::encode::KNOWN_FLAGS
-            ),
-            DecodeError::TreeWalkFrame => write!(
-                f,
-                "an image frame claims a tree-walker `pc`, which counts statements the image \
-                 does not carry"
             ),
             DecodeError::PcOutOfRange { pc, instrs } => write!(
                 f,
@@ -661,14 +650,12 @@ fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError>
 pub fn build_module(
     table: &DecodedCodeTable,
     mixins: &mixins::Decoded,
-    bindings: &Rc<HashMap<Span, Binding>>,
 ) -> Result<CompiledModule, DecodeError> {
     let mut module = CompiledModule {
         methods: HashMap::new(),
         initializers: HashMap::new(),
         superclass_clauses: HashMap::new(),
         superclass_messages: HashMap::new(),
-        bindings: bindings.clone(),
     };
     for (mixin, section) in mixins.mixins.iter().zip(&mixins.code) {
         for (selector, id) in &section.methods {
@@ -895,8 +882,8 @@ pub fn verify_code_table(table: &DecodedCodeTable) -> Result<(), DecodeError> {
 }
 
 fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
-    // Every engine hook sizes a frame's temps as `num_registers -
-    // num_args`, a `u16` subtraction.
+    // Every activation is pushed with `num_registers - num_args`
+    // temporaries, a `u16` subtraction.
     if code.num_args > code.num_registers {
         return Err(DecodeError::ArgsExceedRegisters {
             num_args: code.num_args,
@@ -1386,9 +1373,8 @@ fn decode_literal(
 
 /// Everything the graph decoder resolves tags against: the live bootstrap
 /// (`interp`), the root class built from the mixin table, the decoded code
-/// table, the bindings map a decoded closure carries, the interpreter's
-/// `platform` singleton, and the decoded declaration tree a class object's
-/// mixin id names.
+/// table, the interpreter's `platform` singleton, and the decoded
+/// declaration tree a class object's mixin id names.
 ///
 /// `interp` is `&mut` because decoding a class object *allocates into* the
 /// interpreter: rebuilding its `MixinApplication` goes through
@@ -1399,7 +1385,6 @@ pub struct DecodeContext<'a> {
     pub interp: &'a mut Interpreter,
     pub root_class: &'a ClassRef,
     pub codes: &'a [Rc<CompiledCode>],
-    pub bindings: &'a Rc<HashMap<Span, Binding>>,
     pub platform: Value,
     /// The decoded mixin table's rows, indexed by row id -- the same
     /// `Rc<Mixin>`s `build_module` keyed the compiled bodies by, so a class
@@ -1565,16 +1550,9 @@ fn decode_closure_record(
     let home = decode_frame_id(r, tables)?;
     Ok(ClosureData {
         params,
-        // A decoded closure always carries compiled code: the encoder
-        // refuses a `ClosureBody::Ast` outright, so the format has no
-        // representation for one.
-        body: ClosureBody::Compiled(code),
+        code,
         captured_frame,
         home,
-        // Never serialized: no `bindings.get(&span)` runs under the
-        // bytecode engine, so a decoded closure carries the load's empty
-        // map (`image::LoadedImage::empty_bindings`).
-        bindings: ctx.bindings.clone(),
     })
 }
 
@@ -1615,22 +1593,6 @@ fn decode_frame(
     let args = decode_values(r, ctx, tables)?;
     let temps = decode_values(r, ctx, tables)?;
     let pc = r.read_u32()? as usize;
-    // Tag 0 (`TreeWalk`) is a value the format defines and refuses: the
-    // discriminator exists so that a frame record says what its `pc`
-    // counts, and saying "statements" is saying it indexes a body no image
-    // carries. Rejected here rather than silently normalized to
-    // `Bytecode`, which would reinterpret the number instead of refusing
-    // it. `verify_graph` then bounds the `pc` itself against the body.
-    let pc_kind = match r.read_u8()? {
-        PC_KIND_TREE_WALK => return Err(DecodeError::TreeWalkFrame),
-        PC_KIND_BYTECODE => PcKind::Bytecode,
-        tag => {
-            return Err(DecodeError::InvalidTag {
-                what: "frame pc kind",
-                tag,
-            })
-        }
-    };
     let sender = decode_frame_ref(r, tables)?;
     let home = decode_frame_ref(r, tables)?;
     let current_class = decode_optional_class(r, ctx, tables)?;
@@ -1660,7 +1622,6 @@ fn decode_frame(
         args,
         temps,
         pc,
-        pc_kind,
         sender,
         home,
         current_class,
@@ -1681,7 +1642,6 @@ fn placeholder_frame() -> Frame {
         args: Vec::new(),
         temps: Vec::new(),
         pc: 0,
-        pc_kind: PcKind::Bytecode,
         sender: None,
         home: None,
         current_class: None,
@@ -1697,10 +1657,10 @@ fn placeholder_frame() -> Frame {
 const MIN_OBJECT_RECORD_BYTES: usize = 6;
 
 /// The smallest frame record the wire admits: a `nil` receiver (1), empty
-/// `args` and `temps` counts (4 + 4), a `pc` (4) and its kind tag (1),
-/// absent `sender`, `home` and `current_class` (1 + 1 + 1), a `TopLevel`
-/// kind tag (1), and `uncontinuable` (1). Every other frame kind is larger.
-const MIN_FRAME_RECORD_BYTES: usize = 19;
+/// `args` and `temps` counts (4 + 4), a `pc` (4), absent `sender`, `home` and
+/// `current_class` (1 + 1 + 1), a `TopLevel` kind tag (1), and
+/// `uncontinuable` (1). Every other frame kind is larger.
+const MIN_FRAME_RECORD_BYTES: usize = 18;
 
 /// A record count read from an untrusted stream, refused before it is used
 /// to *allocate*. The bytes still unread bound how many records can really
@@ -2168,13 +2128,7 @@ fn frame_body(heap: &Heap, frame: &FrameRef, module: &CompiledModule) -> Option<
             .and_then(|m| module.superclass_clauses.get(&mixin_key(&m)).cloned()),
         FrameKind::SuperclassMessage(class) => frame_mixin(heap, class)
             .and_then(|m| module.superclass_messages.get(&mixin_key(&m)).cloned()),
-        FrameKind::Closure(closure) => match &closure.body {
-            ClosureBody::Compiled(code) => Some(code.clone()),
-            // Unreachable from the wire: the format has no representation
-            // for a tree-walker closure (`encode_closure_record` refuses
-            // one outright), so this is the exhaustiveness arm.
-            ClosureBody::Ast(_) => None,
-        },
+        FrameKind::Closure(closure) => Some(closure.code.clone()),
         FrameKind::TopLevel => None,
     }
 }
@@ -2184,9 +2138,9 @@ fn frame_body(heap: &Heap, frame: &FrameRef, module: &CompiledModule) -> Option<
 /// cannot see:
 ///
 /// 0. A frame's `pc` must be an instruction index of the body that runs in
-///    it. The frame record says its `pc` counts instructions
-///    (`PcKind::Bytecode` is the only value the format admits), but which
-///    body it counts them in is only known once the module exists.
+///    it. A frame's `pc` counts instructions (an image carries only
+///    bytecode), but which body it counts them in is only known once the
+///    module exists.
 /// 1. A frame's register file must match the body that runs in it -- the
 ///    same `args` count, and at least as many registers. (At least, not
 ///    exactly: a frame's register file is grown, never shrunk -- the
@@ -2255,10 +2209,7 @@ fn verify_closure(
     module: &CompiledModule,
     heap: &Heap,
 ) -> Result<(), DecodeError> {
-    let ClosureBody::Compiled(code) = &closure.body else {
-        // As in `frame_body`: the format cannot express an AST body.
-        return Err(DecodeError::WrongCodeKind { expected: "block" });
-    };
+    let code = &closure.code;
     if code.kind != CodeKind::Block {
         return Err(DecodeError::WrongCodeKind { expected: "block" });
     }

@@ -1,16 +1,16 @@
 # ns-next
 
 A native Rust runtime for [Newspeak](https://newspeaklanguage.org/): lexer, parser,
-resolver, tree-walking interpreter, bytecode compiler and register VM, and a versioned
-image format. Rust 1.98.0, edition 2021, three crates:
+resolver, bytecode compiler and register VM, and a versioned image format.
+Rust 1.98.0, edition 2021, three crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`.
-- `crates/ns-runtime` — resolver, object model, dispatch, both execution engines
-  (`interpreter/` and `compiler/` + `vm.rs`), core library (`builtins/`), image format
-  (`image/`). Objects live in an arena owned by one `Heap` (`heap.rs`) and are
-  addressed by 32-bit handles; activations live on an activation stack in the
-  same `Heap` and are reified into the frame arena only when a block captures
-  one. Nothing reclaims an arena slot yet.
+- `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`),
+  the VM (`vm.rs`) and the send machinery it calls (`interpreter/`), core library
+  (`builtins/`), image format (`image/`). Objects live in an arena owned by one
+  `Heap` (`heap.rs`) and are addressed by 32-bit handles; activations live on an
+  activation stack in the same `Heap` and are reified into the frame arena only
+  when a block captures one. Nothing reclaims an arena slot yet.
 - `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
   `snapshot`, `load`, `bench`, `disasm`, `inspect`, `build`.
 
@@ -24,28 +24,26 @@ These are not style preferences. Each one has already produced a real defect in 
 repository; the reasoning behind them is in the design documents under
 `docs/design/`.
 
-**Two engines must agree byte for byte.** `ns-next run` defaults to `--engine=bytecode`;
-`--engine=tree-walk` is the Milestone 1 interpreter, kept permanently as the differential
-oracle. Two engines that must agree is a verification property the project funds on
-purpose, not a transitional convenience — when the moving GC lands, the tree-walker gets
-its own handle-based root discipline rather than being retired. For every program both
-engines must produce identical exit status, stdout **and stderr**.
-`crates/ns-cli/tests/differential.rs` enforces this over every `tests-fixtures/*.ns` plus
-inline sources, with no exemptions. If a change makes the engines disagree, the
-tree-walker is the reference — fix the compiler or the VM.
+**Program outcomes are pinned, not re-derived.** Until the reference lowering lands
+(`docs/design/compiler.md`, "Planned: the reference lowering") there is no second way to
+run a program and compare against. What protects behaviour is recorded answers: every
+`tests-fixtures/*.ns` against its `.expected` stdout and an empty stderr, the golden exit
+status, stdout and stderr in `crates/ns-cli/tests/program_outcomes.rs`, and `run-corpus`.
+A change that alters one is a behaviour change: establish that the new output is right
+before updating the golden, never update it because the code now produces it.
 
-**`interpreter/` is shared orchestration, not the tree-walker's private code.** Send,
-`doesNotUnderstand:`, lexical/super/native dispatch, frame construction and `instantiate`
-serve both engines; the engine differs only at three body-execution hooks (method body,
-block body, instance initializer). Never copy dispatch logic, lookup logic or error text
-out of `interpreter/` into `vm.rs` or `compiler/` — that is how the two engines drift and
-stderr stops matching. If you need something private there, widen it to `pub(crate)`.
+**`vm.rs` holds no dispatch logic.** Send, `doesNotUnderstand:`, lexical, super and
+native dispatch, frame construction and `instantiate` live in `interpreter/`; the VM's
+instruction loop calls them. Never copy dispatch logic, lookup logic or error text into
+`vm.rs` or `compiler/`: the reference lowering and, later, a JIT must reach the same
+dispatch and raise the same errors, and a second copy is how they would drift. If you
+need something private there, widen it to `pub(crate)`.
 
 **Compiling an already-resolved module can never raise a `NewspeakError`.** Compilation
 is a total, deterministic lowering; a compiler-invariant violation is `panic!` /
-`debug_assert!`. A *program-level* error that Milestone 1 raises at evaluation time is
+`debug_assert!`. A *program-level* error the language raises at evaluation time is
 deferred to execution instead (see `Literal::MalformedInt` and
-`Literal::UnresolvedIdent`), so both engines report it identically.
+`Literal::UnresolvedIdent`), so a method that is never run never fails.
 
 **An expression's value register must still hold that value when its consumer executes.**
 A named local's register is live storage. `lower_operand` copies it when anything lowered
@@ -56,7 +54,7 @@ with exit status 0, not a crash.
 **An image is untrusted input.** No byte sequence may cause a panic or a process abort:
 validate every id, tag, count and length before it indexes, allocates or slices, and
 bound any recursion whose depth the input controls. `image::load` also runs two
-structural verification passes before installing the engine. See
+structural verification passes before installing the decoded code. See
 `docs/design/image-format.md`'s "Verification" section for the scope of what they
 do and do not guarantee. One thing to keep in mind while decoding: the decoder
 allocates one placeholder object and reified frame per declared record before it
@@ -66,8 +64,8 @@ leak — `image::load` owns its `Interpreter` in a local, so every `Err` path dr
 it and both arenas with it — but the peak is amplified against the bytes remaining
 at the graph section, and both `bounded_count` calls divide the *same* remainder,
 so one file maxes out both arenas rather than trading one against the other:
-about **17.8x in a release build** (an `Object` is 64 bytes against a 6-byte
-minimum record, a frame-arena entry 136 against 19) and about 22.2x in a debug
+about **16.9x in a release build** (an `Object` is 56 bytes against a 6-byte
+minimum record, a frame-arena entry 136 against 18) and about 21.3x in a debug
 build, where both are larger. `bounded_count` is what keeps this proportional to
 the input at all rather than to a `u32` — do not add a pre-allocation that is not
 bounded that way. `docs/design/memory.md` has the breakdown.
@@ -142,10 +140,9 @@ One mixin backs every application of it, so code is compiled once per mixin and 
 across every application; an absolute field index baked into that shared code would be
 wrong the moment a second application inserts different inherited slots ahead of it. The
 VM resolves `own_index` against the executing activation's `slot_base`
-(`MixinApplication.own_slot_base` for that level) at run time. The tree-walker must
-resolve the same slot by name instead of by index — it has no compiled `InitSlot` to
-share — so a bug here shows up as the two engines disagreeing, not as a single wrong
-answer.
+(`MixinApplication.own_slot_base` for that level) at run time. Getting it wrong is
+silent wrong output under one application and correct output under another;
+`vm_initializer.rs` pins both.
 
 **`outer` walks the *lexical* declaration chain, never the receiver's dynamic class.**
 The running activation's `current_class` seeds it and `ClassData::declaring_class`
@@ -154,17 +151,12 @@ nesting boundary runs with the class that lexically declares it, not the receive
 class — using the receiver's class instead silently resolves `outer` to the wrong
 enclosing object.
 
-**The tree-walking engine cannot run from a loaded image.** `image::load` decodes mixins
-and class objects, never AST-carrying bindings, so there is no source for the
-tree-walker to execute; `Interpreter::set_engine(Engine::TreeWalk)` refuses on a
-loaded image rather than running it against the wrong data.
-
 ## Working in this repository
 
 ```bash
 # build every crate
 cargo build --workspace
-# the full suite, including the differential harness that compares the two engines
+# the full suite, including the golden program outcomes
 cargo test --workspace
 # before every commit
 cargo fmt --all
@@ -181,9 +173,9 @@ one to measure.
 
 A file that legitimately cannot parse yet belongs in `corpus/blacklist.toml`. A corpus
 module that runs end to end belongs in `corpus/runnable.toml`, with the entry selector
-to send and the output it produces; `run-corpus` runs every listed module under both
-engines and fails if they disagree. Nothing under `crates/ns-syntax` should change for
-runtime work.
+to send and the output it produces; `run-corpus` runs every listed module from source
+and as a built binary and fails if either differs from the recorded output. Nothing
+under `crates/ns-syntax` should change for runtime work.
 
 `platform.rs` is widened only on demand: an accessor exists because a module on
 `corpus/runnable.toml` needs it, and the whitelist entry that demanded it is named in the

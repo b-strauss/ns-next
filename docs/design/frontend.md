@@ -87,9 +87,9 @@ Comments are retained as tokens for tooling and skipped by the parser.
 
 **Every node carries a `Span`** — byte offsets into the source, as
 `Span { start: u32, end: u32 }`. Spans are how the resolver attaches bindings,
-how errors point at source, and how provenance is recorded. They are load-bearing
-for the tree-walking engine, which looks bindings up by span; the bytecode engine
-bakes its resolutions into instructions and does not.
+how errors point at source, and how provenance is recorded. The compiler looks
+each binding up by its node's span once and bakes the resolution into an
+instruction, so nothing at run time consults a span to find a binding.
 
 ## What is parsed and dropped
 

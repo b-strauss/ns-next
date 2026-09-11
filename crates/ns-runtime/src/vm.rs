@@ -1,16 +1,13 @@
 //! The register VM's run loop -- and nothing else. `run_code` is a `match`
 //! over `Instr`; every `Send*` calls straight back into `interpreter/`'s
 //! shared orchestration (`Interpreter::send`, `dispatch_lexical_send`,
-//! `dispatch_super_send`), which re-enters `run_code` through the engine
-//! hooks for any user-defined target. No dispatch logic, no
-//! `doesNotUnderstand:`, no native dispatch, and no error text of its own
-//! live here -- that is what makes the tree-walker a byte-for-byte oracle.
-//! See `docs/design/execution.md`, "The VM and the three hooks".
+//! `dispatch_super_send`), which re-enters `run_code` for any
+//! user-defined target. No dispatch logic, no `doesNotUnderstand:`, no
+//! native dispatch, and no error text of its own live here -- dispatch
+//! lives in one place, which the reference lowering and a JIT will share.
+//! See `docs/design/execution.md`, "The VM".
 
-use std::collections::HashMap;
 use std::rc::Rc;
-
-use ns_syntax::Span;
 
 use crate::bytecode::{CompiledCode, Instr, Literal};
 use crate::heap::{ActivationRef, Heap};
@@ -43,7 +40,6 @@ pub fn run_code(
     interp: &mut Interpreter,
     act: &ActivationRef,
     code: &Rc<CompiledCode>,
-    bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     let mut pc = 0usize;
     loop {
@@ -89,7 +85,7 @@ pub fn run_code(
                 let receiver = read_local(&interp.heap, act, *receiver_reg);
                 let args = collect(&interp.heap, act, arg_regs);
                 interp.heap.set_activation_pc(act, pc);
-                let result = interp.send(receiver, *selector, args, bindings)?;
+                let result = interp.send(receiver, *selector, args)?;
                 write_local(&mut interp.heap, act, *dst, result);
             }
             Instr::SendLexical {
@@ -101,7 +97,7 @@ pub fn run_code(
             } => {
                 let args = collect(&interp.heap, act, arg_regs);
                 interp.heap.set_activation_pc(act, pc);
-                let result = dispatch_lexical_send(interp, act, *depth, *selector, args, bindings)?;
+                let result = dispatch_lexical_send(interp, act, *depth, *selector, args)?;
                 write_local(&mut interp.heap, act, *dst, result);
             }
             Instr::SendSuper {
@@ -112,7 +108,7 @@ pub fn run_code(
             } => {
                 let args = collect(&interp.heap, act, arg_regs);
                 interp.heap.set_activation_pc(act, pc);
-                let result = dispatch_super_send(interp, act, *selector, args, bindings)?;
+                let result = dispatch_super_send(interp, act, *selector, args)?;
                 write_local(&mut interp.heap, act, *dst, result);
             }
             Instr::MakeClosure {
@@ -129,10 +125,9 @@ pub fn run_code(
                 let home = home_of(&mut interp.heap, act);
                 let closure = Rc::new(ClosureData {
                     params: (**params).clone(),
-                    body: ClosureBody::Compiled(block.clone()),
+                    code: block.clone(),
                     captured_frame,
                     home,
-                    bindings: bindings.clone(),
                 });
                 let v = Value::Obj(interp.new_closure(closure));
                 write_local(&mut interp.heap, act, *dst, v);
@@ -143,8 +138,7 @@ pub fn run_code(
                 write_local(&mut interp.heap, act, *dst, v);
             }
             Instr::InitSlot { src, own_index } => {
-                // Shares `store_instance_field` with
-                // `instantiate::run_own_slots`: a direct field write on
+                // Through `store_instance_field`: a direct field write on
                 // `self`, silently skipped for a non-instance receiver.
                 // `own_index` is relative to the executing mixin's own
                 // slots (the same compiled body runs for every application
@@ -201,10 +195,10 @@ fn collect(heap: &Heap, act: &ActivationRef, regs: &[u16]) -> Vec<Value> {
     regs.iter().map(|r| read_local(heap, act, *r)).collect()
 }
 
-/// Materializes a literal exactly as `eval::eval_literal` does -- including
-/// the two deferred error cases, `MalformedInt` and `UnresolvedIdent`.
-/// Both raise through `eval.rs`'s own constructors rather than rebuilding
-/// the error here, so the two engines cannot drift apart in wording.
+/// Materializes a literal -- including the two deferred error cases,
+/// `MalformedInt` and `UnresolvedIdent`. Both raise through `eval.rs`'s own
+/// constructors rather than rebuilding the error here: error text lives in
+/// `interpreter/`, never in the VM.
 fn make_value(interp: &mut Interpreter, act: &ActivationRef, literal: &Literal) -> EvalResult {
     Ok(match literal {
         Literal::Nil => Value::Nil,

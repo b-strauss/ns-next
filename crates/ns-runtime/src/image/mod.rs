@@ -22,15 +22,9 @@ pub mod mixins;
 pub mod opcodes;
 pub mod symbols;
 
-use std::collections::HashMap;
-use std::rc::Rc;
-
-use ns_syntax::Span;
-
 use crate::bytecode::CompiledModule;
 use crate::heap::Heap;
-use crate::interpreter::Engine;
-use crate::types::{Binding, ClassRef, SourceOrigin, Value};
+use crate::types::{ClassRef, SourceOrigin, Value};
 use crate::{Interpreter, Symbol};
 
 /// The sections that describe code and structure, encoded into their own
@@ -216,9 +210,7 @@ pub fn build(
 }
 
 pub struct LoadedImage {
-    /// Bootstrapped, with `Engine::Bytecode` (the image's own code table)
-    /// installed and the tree-walker sealed off
-    /// (`interpreter::EngineUnavailable::TreeWalkAfterLoad`).
+    /// Bootstrapped, with the image's own code table installed.
     pub interp: Interpreter,
     pub root_class: ClassRef,
     pub roots: Vec<Value>,
@@ -229,29 +221,6 @@ pub struct LoadedImage {
     /// source-free image. Never parsed, never resolved, never executed:
     /// `load` reads it out of the byte stream and hands it over unchanged.
     pub source: Option<String>,
-    /// An empty map, allocated once per load, for the `&Rc<HashMap<Span,
-    /// Binding>>` every `Interpreter::send`, `instantiate` and closure
-    /// activation still takes.
-    ///
-    /// **It is empty because nothing a loaded world runs can read it, and
-    /// that is a property of the bytecode engine, not an omission to be
-    /// repaired.** A binding is resolved *by span* at exactly two kinds of
-    /// call site, and neither is reachable here:
-    ///
-    /// - `compiler/lower.rs` -- compile time. Lowering is what turns a
-    ///   `Binding` into a register index, an `Instr::LoadOuterLocal`, or a
-    ///   `LexicalSend`; it ran before the snapshot, and its results are the
-    ///   instructions in the image's code table. Nothing recompiles on
-    ///   load.
-    /// - `interpreter/eval.rs` -- the tree-walker, which cannot run from an
-    ///   image at all: `set_engine(Engine::TreeWalk)` is refused on a
-    ///   loaded interpreter.
-    ///
-    /// So do not "fix" this by reconstructing a real map. Reconstructing
-    /// one requires re-resolving the source, which requires re-parsing it,
-    /// which is exactly the load path this milestone removed -- and the
-    /// map's only readers would still never look at it.
-    pub empty_bindings: Rc<HashMap<Span, Binding>>,
     /// The selector to send after instantiation. Mandatory in a binary,
     /// always `None` in an image today.
     pub entry: Option<Symbol>,
@@ -265,7 +234,7 @@ pub struct LoadedImage {
 
 /// Decodes an artifact: symbols, code table, mixin table, root class, entry,
 /// then -- for an image, never a binary -- the object graph. Installs
-/// `Engine::Bytecode` and, for an image, advances the identity-hash counter
+/// the code table and, for an image, advances the identity-hash counter
 /// past the graph's maximum.
 ///
 /// Nothing here parses, resolves or compiles. The root class is rebuilt
@@ -295,14 +264,12 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         None
     };
     let origin = decode::decode_source_origin(&mut r).map_err(|e| e.to_string())?;
-    let empty_bindings = Rc::new(HashMap::new());
     let mut interp = Interpreter::bootstrap();
     let symbols = symbols::decode(&mut r).map_err(|e| e.to_string())?;
     let table = decode::decode_code_table(&mut r, &symbols).map_err(|e| e.to_string())?;
     decode::verify_code_table(&table).map_err(|e| e.to_string())?;
     let mixins = mixins::decode(&mut r, &symbols, &table.codes).map_err(|e| e.to_string())?;
-    let module =
-        decode::build_module(&table, &mixins, &empty_bindings).map_err(|e| e.to_string())?;
+    let module = decode::build_module(&table, &mixins).map_err(|e| e.to_string())?;
     let root_superclass =
         decode::decode_root_superclass(&mut r, &interp).map_err(|e| e.to_string())?;
     let root_class = decode::build_root_class(&mut interp, &mixins, root_superclass)
@@ -330,7 +297,6 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             interp: &mut interp,
             root_class: &root_class,
             codes: &table.codes,
-            bindings: &empty_bindings,
             platform,
             mixins: &mixins.mixins,
         };
@@ -350,19 +316,13 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         }
         .to_string());
     }
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .map_err(|e| e.to_string())?;
-    // Last, so that no failure above leaves a sealed interpreter behind:
-    // from here on the tree-walker is refused on this world.
-    interp.mark_decoded_from_image();
+    interp.install_code(module);
     Ok(LoadedImage {
         interp,
         root_class,
         roots: graph.roots,
         origin,
         source,
-        empty_bindings,
         entry,
         stateless: header.stateless,
     })

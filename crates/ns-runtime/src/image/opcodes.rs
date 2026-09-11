@@ -51,8 +51,8 @@ pub const LIT_SYM: u8 = 5;
 pub const LIT_CHAR: u8 = 6;
 pub const LIT_ARRAY: u8 = 7;
 /// An integer the lexer accepted and the parser rejects. Carried as its
-/// original text because the error it raises is produced at execution time by
-/// the same code the tree-walker uses.
+/// original text because the error it raises is produced at execution time, by
+/// `interpreter::eval::malformed_int_error`.
 pub const LIT_MALFORMED_INT: u8 = 8;
 pub const LIT_UNRESOLVED_IDENT: u8 = 9;
 
@@ -104,11 +104,9 @@ pub const FRAME_INITIALIZER: u8 = 3;
 pub const FRAME_SUPERCLASS_CLAUSE: u8 = 4;
 pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
 
-/// The unit `Frame.pc` counts in.
-///
-/// A tree-walker activation counts statements, which an image's code table
-/// does not carry, so this value is written by nothing and refused by the
-/// decoder. It is retired rather than free: bytecode took the next number so
-/// that a stale artifact naming 0 fails instead of being read as bytecode.
+/// Retired. A frame record once said which unit its `pc` counted in -- a
+/// statement or an instruction -- and only bytecode was ever representable,
+/// so the byte was removed from the record. Both numbers stay assigned so
+/// that a pc-unit field, if one ever returns, cannot give them a new meaning.
 pub const PC_KIND_TREE_WALK: u8 = 0;
 pub const PC_KIND_BYTECODE: u8 = 1;

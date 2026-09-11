@@ -2,21 +2,12 @@
 //! `Integer`/`Float` native methods, wired through
 //! `crate::builtins::dispatch_native` via `Interpreter::send`.
 
-use std::collections::HashMap;
-use std::rc::Rc;
-
 use ns_runtime::{Heap, Interpreter, Signal, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both --
 /// same pattern as `tests/instantiate.rs`.
-fn load(
-    src: &str,
-) -> (
-    Interpreter,
-    ns_runtime::ClassRef,
-    ns_runtime::ResolvedModule,
-) {
+fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -26,7 +17,7 @@ fn load(
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
-    (interp, class, resolved)
+    (interp, class)
 }
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
@@ -49,13 +40,11 @@ fn as_string(heap: &Heap, value: &Value) -> String {
 #[test]
 fn integer_addition_via_direct_send_evaluates_correctly() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::SmallInt(3),
         Symbol::intern("+"),
         vec![Value::SmallInt(4)],
-        &bindings,
     );
 
     match expect_ok(result, "3 + 4") {
@@ -70,13 +59,11 @@ fn integer_addition_via_direct_send_evaluates_correctly() {
 #[test]
 fn integer_addition_overflow_is_a_newspeak_error_not_a_panic() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::SmallInt(i64::MAX),
         Symbol::intern("+"),
         vec![Value::SmallInt(1)],
-        &bindings,
     );
 
     match result {
@@ -97,52 +84,49 @@ fn integer_addition_overflow_is_a_newspeak_error_not_a_panic() {
 
 #[test]
 fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^true ifTrue: [1] ifFalse: [2] )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
-
-    match expect_ok(result, "true ifTrue:ifFalse:") {
-        Value::SmallInt(1) => {}
-        other => panic!(
-            "expected Value::SmallInt(1), got {}",
-            interp.heap_ref().describe(&other)
-        ),
+    for body in [
+        "^true ifTrue: [1] ifFalse: [2]",
+        "| t f | t := [1]. f := [2]. ^true ifTrue: t ifFalse: f",
+    ] {
+        let src = format!(
+            "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( {body} )\n) : ()"
+        );
+        let (mut interp, class) = load(&src);
+        let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let result = interp.send(receiver, Symbol::intern("m"), vec![]);
+        match expect_ok(result, body) {
+            Value::SmallInt(1) => {}
+            other => panic!(
+                "{body}: expected Value::SmallInt(1), got {}",
+                interp.heap_ref().describe(&other)
+            ),
+        }
     }
 }
 
-/// Regression coverage for the `ClosureData.bindings` fix: the block body
-/// here (`[ x ]`) reads `x`, a slot on the enclosing class, resolved as a
-/// `Binding::LexicalSend` keyed by this block's own `Span` in the resolver's
-/// bindings map. If `invoke_block` (or `invoke_closure`'s caller more
-/// generally) invoked this closure with a fresh, empty bindings map instead
-/// of the one the block was actually resolved under, `x`'s `Span` would not
-/// be present in that empty map and `eval_ident` would fall through to its
-/// `None` arm -- an "unresolved identifier" `NewspeakError`, not
-/// `SmallInt(5)`.
+/// The block body here (`[ x ]`) reads `x`, a slot on the enclosing class,
+/// resolved as a `Binding::LexicalSend` and lowered into a lexical send, so
+/// it must answer `SmallInt(5)` whether the block is inlined or -- the
+/// variable form -- reaches the native `ifTrue:ifFalse:` as a real closure.
 #[test]
 fn if_true_block_body_resolves_an_enclosing_slot_reference() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (|x = 5.|) (\n  public m = ( ^true ifTrue: [ x ] ifFalse: [ 0 ] )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
-
-    match expect_ok(result, "true ifTrue: [ x ] ifFalse: [ 0 ]") {
-        Value::SmallInt(5) => {}
-        other => panic!(
-            "expected Value::SmallInt(5), got {}",
-            interp.heap_ref().describe(&other)
-        ),
+    for body in [
+        "^true ifTrue: [ x ] ifFalse: [ 0 ]",
+        "| t f | t := [ x ]. f := [ 0 ]. ^true ifTrue: t ifFalse: f",
+    ] {
+        let src = format!(
+            "Newspeak3\n'T'\nclass Foo = Object new (|x = 5.|) (\n  public m = ( {body} )\n) : ()"
+        );
+        let (mut interp, class) = load(&src);
+        let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let result = interp.send(receiver, Symbol::intern("m"), vec![]);
+        match expect_ok(result, body) {
+            Value::SmallInt(5) => {}
+            other => panic!(
+                "{body}: expected Value::SmallInt(5), got {}",
+                interp.heap_ref().describe(&other)
+            ),
+        }
     }
 }
 
@@ -161,21 +145,22 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
 /// and the second statement never runs at all.
 #[test]
 fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( true and: [^'escaped']. ^'fell through' )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
-
-    assert_eq!(
-        as_string(interp.heap_ref(), &expect_ok(result, "true and: [^'escaped']. ^'fell through'")),
-        "escaped",
-        "the block's non-local return must unwind `m`'s own activation directly, not be swallowed into `false` and fall through to the second statement"
-    );
+    for body in [
+        "true and: [^'escaped']. ^'fell through'",
+        "| b | b := [^'escaped']. true and: b. ^'fell through'",
+    ] {
+        let src = format!(
+            "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( {body} )\n) : ()"
+        );
+        let (mut interp, class) = load(&src);
+        let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let result = interp.send(receiver, Symbol::intern("m"), vec![]);
+        assert_eq!(
+            as_string(interp.heap_ref(), &expect_ok(result, body)),
+            "escaped",
+            "the block's non-local return must unwind `m`'s own activation directly, not be swallowed into `false` and fall through to the second statement"
+        );
+    }
 }
 
 /// Quick sanity check (controller review, second pass): the fix above must
@@ -186,24 +171,22 @@ fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
 /// this test would see that value instead of `'correct'`.
 #[test]
 fn and_or_short_circuit_never_invokes_the_untaken_block() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( false and: [^'wrongly invoked']. true or: [^'wrongly invoked']. ^'correct' )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
-
-    assert_eq!(
-        as_string(
-            interp.heap_ref(),
-            &expect_ok(result, "false and: [...]. true or: [...]. ^'correct'")
-        ),
-        "correct",
-        "false and: [...] and true or: [...] must never invoke their block argument at all"
-    );
+    for body in [
+        "false and: [^'wrongly invoked']. true or: [^'wrongly invoked']. ^'correct'",
+        "| b | b := [^'wrongly invoked']. false and: b. true or: b. ^'correct'",
+    ] {
+        let src = format!(
+            "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( {body} )\n) : ()"
+        );
+        let (mut interp, class) = load(&src);
+        let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let result = interp.send(receiver, Symbol::intern("m"), vec![]);
+        assert_eq!(
+            as_string(interp.heap_ref(), &expect_ok(result, body)),
+            "correct",
+            "false and: [...] and true or: [...] must never invoke their block argument at all"
+        );
+    }
 }
 
 /// Milestone 1 has no Integer/Float coercion. That
@@ -214,13 +197,11 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
 #[test]
 fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::SmallInt(1),
         Symbol::intern("+"),
         vec![Value::Float(1.5)],
-        &bindings,
     );
 
     match result {
@@ -256,16 +237,10 @@ fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
 #[test]
 fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let arg = Value::Obj(interp.new_array(vec![]));
 
-    let result = interp.send(
-        Value::SmallInt(1),
-        Symbol::intern("+"),
-        vec![arg],
-        &bindings,
-    );
+    let result = interp.send(Value::SmallInt(1), Symbol::intern("+"), vec![arg]);
 
     match result {
         Err(Signal::Error(e)) => {
@@ -288,13 +263,11 @@ fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow()
 #[test]
 fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::SmallInt(1),
         Symbol::intern("<"),
         vec![Value::Float(1.5)],
-        &bindings,
     );
 
     match result {
@@ -316,13 +289,11 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
 #[test]
 fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::SmallInt(1),
         Symbol::intern("="),
         vec![Value::Float(1.0)],
-        &bindings,
     );
 
     match expect_ok(result, "1 = 1.0") {
@@ -339,13 +310,11 @@ fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
 #[test]
 fn float_arithmetic_still_widens_an_integer_argument() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::Float(1.5),
         Symbol::intern("+"),
         vec![Value::SmallInt(1)],
-        &bindings,
     );
 
     match expect_ok(result, "1.5 + 1") {
@@ -362,13 +331,11 @@ fn float_arithmetic_still_widens_an_integer_argument() {
 #[test]
 fn a_real_integer_overflow_is_still_reported_as_an_overflow() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::SmallInt(i64::MAX),
         Symbol::intern("*"),
         vec![Value::SmallInt(2)],
-        &bindings,
     );
 
     match result {
@@ -390,12 +357,9 @@ fn a_real_integer_overflow_is_still_reported_as_an_overflow() {
 #[test]
 fn a_radix_integer_literal_evaluates() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^16r1F )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let result = interp.send(receiver, Symbol::intern("m"), vec![]);
     match expect_ok(result, "^16r1F") {
         Value::SmallInt(31) => {}
         other => panic!(

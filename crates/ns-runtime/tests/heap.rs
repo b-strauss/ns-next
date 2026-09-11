@@ -4,7 +4,7 @@
 
 use ns_runtime::types::Value;
 use ns_runtime::Interpreter;
-use ns_runtime::{ResolvedModule, Signal, Symbol};
+use ns_runtime::{Signal, Symbol};
 
 #[test]
 fn array_accessors_read_and_write_through_the_seam() {
@@ -127,7 +127,7 @@ fn a_builtin_class_reports_its_kind_through_the_seam() {
     assert!(interp.heap_ref().class_builtin(&class).is_some());
 }
 
-fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef, ResolvedModule) {
+fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -137,7 +137,7 @@ fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef, ResolvedModule) {
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
-    (interp, class, resolved)
+    (interp, class)
 }
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
@@ -156,7 +156,7 @@ fn register_addressing_puts_arguments_before_temporaries() {
     // agree with itself.
     let src = "Newspeak3\n'T'\nclass T usingPlatform: p = Object new () (\n\
                \tpublic run: a = (| t | t := a. ^t)\n) : ()\n";
-    let (mut interp, class, resolved) = load(src);
+    let (mut interp, class) = load(src);
     // Computed ahead of the call: `send` takes `&mut Interpreter`, and so
     // does `platform()`, so the two cannot be nested in one expression.
     let platform = interp.platform();
@@ -165,17 +165,11 @@ fn register_addressing_puts_arguments_before_temporaries() {
             Value::Obj(class),
             Symbol::intern("usingPlatform:"),
             vec![platform],
-            &resolved.bindings,
         ),
         "instantiate",
     );
     let result = expect_ok(
-        interp.send(
-            instance,
-            Symbol::intern("run:"),
-            vec![Value::SmallInt(41)],
-            &resolved.bindings,
-        ),
+        interp.send(instance, Symbol::intern("run:"), vec![Value::SmallInt(41)]),
         "run:",
     );
     assert!(matches!(result, Value::SmallInt(41)));

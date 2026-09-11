@@ -166,21 +166,31 @@ lookup rules, and reassigning that slot later cannot disturb an already-cached
 nested class. That this falls out of ordinary dispatch is evidence the layering
 is right.
 
-**The accessor lives in `interpreter/`**, as shared orchestration. It evaluates
-Newspeak code — the superclass clause — so it runs that code through the same
-body-execution hook `instantiate` uses. It is deliberately not synthesized
-bytecode: a compiler-side accessor would have to be mirrored in the tree-walker,
-and the two would drift in exactly the way the shared-orchestration rule exists
-to prevent.
+**The accessor lives in `interpreter/`**, beside dispatch. It evaluates Newspeak
+code — the superclass clause, compiled like any other body — and runs it through
+`nested::run_clause_body`, the same path `instantiate` runs the clause's deferred
+message through. It is deliberately not synthesized bytecode: what it does
+around that code — caching the class object per enclosing instance, detecting a
+cyclic definition, applying the mixin — is dispatch-side work, and a
+compiler-side copy of it would drift from the interpreter's in exactly the way
+the rule that `vm.rs` holds no dispatch logic exists to prevent.
 
 ## Module loading
 
 Loading is two-stage. `load_module` builds the **mixin tree** — root declaration,
-every nested declaration, every class side — and nothing else. That is pure
-structure with no evaluation, so it stays total. Only the root class is then
-created, as the application of the root mixin to its superclass, with
-`enclosing = nil` (§3.3: a module definition's enclosing object is nil, which is
-why a module has no state of its own).
+every nested declaration, every class side — as pure structure with no
+evaluation. Only the root class is then created, as the application of the root
+mixin to its superclass, with `enclosing = nil` (§3.3: a module definition's
+enclosing object is nil, which is why a module has no state of its own).
+
+Before it returns, `load_module` also compiles the whole mixin tree — every
+method, initializer and superclass clause, nested classes and class sides
+included — and installs that code in the interpreter's code table through
+`install_code` ([execution.md](execution.md), "The VM"), so a class it returns is
+already runnable. Nothing it does evaluates Newspeak code, and compiling a
+resolved module is total — a program-level error is deferred to the execution of
+the body that raises it ([compiler.md](compiler.md), "Compilation cannot fail") —
+so loading stays total.
 
 ## Instantiation
 
@@ -296,7 +306,7 @@ forwarding in a moving collector, and no collector exists yet
   site megamorphic.
 - **The hidden nested-class slot is keyed by mixin, not by name.** Keying by name
   makes an override and the declaration it overrides collide in one slot.
-- **The accessor is interpreted shared orchestration, not synthesized bytecode**,
-  so the two engines cannot drift on it.
+- **The accessor is interpreter code, not synthesized bytecode**, so there is one
+  copy of it for every lowering to reach.
 - **Identity hashes come from a counter, not from addresses**, so identity
   survives a moving collector and a snapshot.

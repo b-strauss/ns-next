@@ -7,8 +7,8 @@ use std::rc::Rc;
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal};
 use crate::heap::Heap;
 use crate::types::{
-    BuiltinClass, ClassData, ClassRef, ClosureBody, ClosureData, FrameKind, FrameRef, ObjRef,
-    ObjectData, PcKind, SourceOrigin, Value,
+    BuiltinClass, ClassData, ClassRef, ClosureData, FrameKind, FrameRef, ObjRef, ObjectData,
+    SourceOrigin, Value,
 };
 
 use super::opcodes::*;
@@ -288,8 +288,7 @@ pub fn encode_entry(w: &mut Writer, entry: Option<u32>) {
 /// A method a mixin holds but the `CompiledModule` has no code for is an
 /// `Err`, not a panic: a method added to a live class after `compile_module`
 /// ran is exactly what the liveness spec's Req. 1 anticipates, so it is a
-/// refusal to snapshot this world, on the same footing as
-/// `encode_closure_record`'s tree-walker closure.
+/// refusal to snapshot this world.
 pub fn encode_code_table(
     w: &mut Writer,
     heap: &Heap,
@@ -856,28 +855,18 @@ fn encode_frame_ref(w: &mut Writer, heap: &Heap, frame: Option<&FrameRef>, table
     }
 }
 
-/// `params`, `code_id`, `captured_frame` id, `home` id. `bindings` is not
-/// serialized: a compiled closure never reads one (lowering already turned
-/// every binding into an instruction), so a decoded closure carries the
-/// load's empty map -- see `image::LoadedImage::empty_bindings`.
+/// `params`, `code_id`, `captured_frame` id, `home` id.
 fn encode_closure_record(
     w: &mut Writer,
     closure: &ClosureData,
     ctx: &EncodeContext,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
-    let ClosureBody::Compiled(code) = &closure.body else {
-        return Err(
-            "image encoding cannot serialize a closure created by the tree-walker \
-                    (ClosureBody::Ast); snapshot always runs under the bytecode engine"
-                .to_string(),
-        );
-    };
     w.write_u16(u16_field("closure parameter count", closure.params.len()));
     for p in &closure.params {
         w.write_u32(symbols.intern(p.as_str()));
     }
-    w.write_u32(ctx.code_ids.id_of(code));
+    w.write_u32(ctx.code_ids.id_of(&closure.code));
     w.write_u32(ctx.table.frame_id(ctx.heap, &closure.captured_frame));
     w.write_u32(ctx.table.frame_id(ctx.heap, &closure.home));
     Ok(())
@@ -986,22 +975,8 @@ fn encode_frame(
     encode_values(w, &f.args, ctx);
     encode_values(w, &f.temps, ctx);
     w.write_u32(u32_field("frame pc", f.pc));
-    // `pc` alone is ambiguous -- a statement index under one engine, an
-    // instruction index under the other -- so the unit travels with it.
-    // Only `Bytecode` is representable: an image's code table holds
-    // compiled bodies and no statements, so a tree-walker activation's
-    // `pc` would decode as an index into a body it never ran. Refused for
-    // the same reason `encode_closure_record` refuses `ClosureBody::Ast`.
-    match f.pc_kind {
-        PcKind::Bytecode => w.write_u8(PC_KIND_BYTECODE),
-        PcKind::TreeWalk => {
-            return Err(
-                "image encoding cannot serialize a tree-walker activation: its `pc` counts \
-                 statements, which an image's code table does not carry"
-                    .to_string(),
-            )
-        }
-    }
+    // An image's code table holds only compiled bodies, so a frame's `pc` is
+    // always an instruction index and the record does not say so.
     encode_frame_ref(w, ctx.heap, f.sender.as_ref(), ctx.table);
     encode_frame_ref(w, ctx.heap, f.home.as_ref(), ctx.table);
     encode_optional_class(w, f.current_class.as_ref(), ctx);

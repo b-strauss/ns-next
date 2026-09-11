@@ -1,7 +1,10 @@
 # Corpus modules that are expected to run end to end, with what running
-# them produces. `ns-next run-corpus corpus/modules` runs every entry under
-# both engines, fails if the two disagree byte for byte, and fails if
-# either differs from what is recorded here.
+# them produces. `ns-next run-corpus corpus/modules` runs every entry twice:
+# from source (`run --send <send>`), and as a built binary (`build --entry
+# <send>`, then `load` with no `--send`, so the recorded entry starts it). A
+# row fails if either run's exit status or stdout differs from what is
+# recorded here, if a row expected to exit 0 writes anything to stderr from
+# source, or if the binary's stderr differs from the source run's.
 #
 # Format:
 #   [[entry]]

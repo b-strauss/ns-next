@@ -1,19 +1,16 @@
-//! Hook 3: instance initializers (slot initializers + initExprs) under the
-//! bytecode engine, compared against the tree-walker.
+//! Instance initializers: a class's slot initializers and `initExprs`,
+//! compiled into one body per mixin and run on each level's own activation.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::{
-    compiler, Binding, BuiltinClass, ClassData, ClassRef, ClosureBody, Engine, FrameKind,
-    Interpreter, Mixin, MixinApplication, ObjectData, Signal, SourceOrigin, Symbol, Value,
+    BuiltinClass, ClassData, ClassRef, FrameKind, Interpreter, Mixin, MixinApplication, ObjectData,
+    Signal, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
-type Bindings = Rc<HashMap<Span, Binding>>;
-
-fn load(src: &str, bytecode: bool) -> (Interpreter, ClassRef, Bindings) {
+fn load(src: &str) -> (Interpreter, ClassRef) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -21,16 +18,9 @@ fn load(src: &str, bytecode: bool) -> (Interpreter, ClassRef, Bindings) {
         SourceOrigin::File(PathBuf::from("t.ns")),
     )
     .expect("resolve");
-    let bindings = resolved.bindings.clone();
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
-    if bytecode {
-        let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-        interp
-            .set_engine(Engine::Bytecode(compiled))
-            .expect("a source-built interpreter accepts the bytecode engine");
-    }
-    (interp, class, bindings)
+    (interp, class)
 }
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
@@ -48,16 +38,12 @@ fn int_of(v: &Value) -> i64 {
     }
 }
 
-/// Instantiates with `factory_args`, sends `getter`, returns the result --
-/// under whichever engine `load` installed.
-fn instantiate_and_get(src: &str, bytecode: bool, factory_args: Vec<Value>, getter: &str) -> Value {
-    let (mut interp, class, bindings) = load(src, bytecode);
-    let instance = expect_ok(
-        interp.instantiate(class, factory_args, &bindings),
-        "instantiate",
-    );
+/// Instantiates with `factory_args`, sends `getter`, returns the result.
+fn instantiate_and_get(src: &str, factory_args: Vec<Value>, getter: &str) -> Value {
+    let (mut interp, class) = load(src);
+    let instance = expect_ok(interp.instantiate(class, factory_args), "instantiate");
     expect_ok(
-        interp.send(instance, Symbol::intern(getter), vec![], &bindings),
+        interp.send(instance, Symbol::intern(getter), vec![]),
         getter,
     )
 }
@@ -67,35 +53,23 @@ const INIT_EXPRS: &str = "Newspeak3\n'T'\nclass Foo = Object new (\n  | q ::= 5.
 
 #[test]
 fn a_slot_initializer_reads_a_factory_parameter_under_bytecode() {
-    let v = instantiate_and_get(FACTORY_PARAM, true, vec![Value::SmallInt(7)], "p2");
+    let v = instantiate_and_get(FACTORY_PARAM, vec![Value::SmallInt(7)], "p2");
     assert_eq!(int_of(&v), 7);
 }
 
 #[test]
 fn init_exprs_run_after_slot_initializers_under_bytecode() {
-    let v = instantiate_and_get(INIT_EXPRS, true, vec![], "r2");
+    let v = instantiate_and_get(INIT_EXPRS, vec![], "r2");
     assert_eq!(int_of(&v), 6);
-}
-
-#[test]
-fn both_engines_produce_identical_instance_state() {
-    for (src, args, getter) in [
-        (FACTORY_PARAM, vec![Value::SmallInt(7)], "p2"),
-        (INIT_EXPRS, vec![], "r2"),
-    ] {
-        let tw = instantiate_and_get(src, false, args.clone(), getter);
-        let bc = instantiate_and_get(src, true, args, getter);
-        assert_eq!(int_of(&tw), int_of(&bc), "{getter}: engines disagree");
-    }
 }
 
 #[test]
 fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initializer_frame() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n  | blk = [ 3 ]. |\n) (\n  public blk2 = ( ^blk )\n) : ()";
-    let (mut interp, class, bindings) = load(src, true);
-    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
+    let (mut interp, class) = load(src);
+    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let v = expect_ok(
-        interp.send(instance, Symbol::intern("blk2"), vec![], &bindings),
+        interp.send(instance, Symbol::intern("blk2"), vec![]),
         "blk2",
     );
     let Value::Obj(obj) = &v else {
@@ -105,7 +79,7 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
         .heap_ref()
         .closure_data(obj)
         .unwrap_or_else(|| panic!("expected a closure"));
-    assert!(matches!(closure.body, ClosureBody::Compiled(_)));
+    assert_eq!(closure.code.num_args, 0);
     assert!(matches!(
         interp.heap_ref().frame_kind(&closure.home),
         FrameKind::Initializer(_)
@@ -113,25 +87,20 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
 }
 
 #[test]
-fn a_return_inside_a_block_in_init_exprs_escapes_instantiate_under_both_engines() {
-    // M1 gap, deliberately carried forward in both engines (spec: "Class
-    // instantiation"): the `Signal::Return` targets the initializer
-    // activation, which is still running, and nothing catches it.
+fn a_return_inside_a_block_in_init_exprs_escapes_instantiate() {
+    // M1 gap, deliberately carried forward (spec: "Class instantiation"):
+    // the `Signal::Return` targets the initializer activation, which is
+    // still running, and nothing catches it.
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n  | |\n  [ ^1 ] value.\n) (\n) : ()";
-    for bytecode in [false, true] {
-        let (mut interp, class, bindings) = load(src, bytecode);
-        let result = interp.instantiate(class, vec![], &bindings);
-        assert!(
-            matches!(result, Err(Signal::Return(..))),
-            "bytecode={bytecode}"
-        );
-    }
+    let (mut interp, class) = load(src);
+    let result = interp.instantiate(class, vec![]);
+    assert!(matches!(result, Err(Signal::Return(..))));
 }
 
 #[test]
 fn a_factory_arity_mismatch_is_still_the_shared_error() {
-    let (mut interp, class, bindings) = load(FACTORY_PARAM, true);
-    match interp.instantiate(class, vec![], &bindings) {
+    let (mut interp, class) = load(FACTORY_PARAM);
+    match interp.instantiate(class, vec![]) {
         Err(Signal::Error(e)) => assert!(
             e.message.contains("wrong number of factory arguments"),
             "{}",
@@ -223,35 +192,18 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     // `Interpreter::apply_mixin` directly (`load_module` always builds a
     // fresh `Mixin` per module, so two ordinary loaded classes never share
     // one).
+    //
+    // The mixin is the one `load_module` built, so the initializer it
+    // compiled for it -- keyed by that mixin -- is the one both hand-made
+    // applications run.
     let src = "Newspeak3\n'T'\nclass Shared x: a = Object new (\n  | v = a. |\n) (\n) : ()";
-    let module = ns_syntax::parse(src).expect("parse");
-    let resolved = ns_runtime::resolve(
-        module,
-        Rc::from(src),
-        SourceOrigin::File(PathBuf::from("t.ns")),
-    )
-    .expect("resolve");
-    let bindings = resolved.bindings.clone();
-    let decl = &resolved.module.root_class;
-    let factory_pattern = decl.factory.clone().expect("declares x:");
-    let shared_mixin = Rc::new(Mixin {
-        slots: decl
-            .instance_side
-            .slots
-            .iter()
-            .map(|s| ns_runtime::mixin::MixinSlot::from_decl(Rc::new(s.clone())))
-            .collect(),
-        factory: Some(ns_runtime::mixin::Factory {
-            selector: Symbol::intern("x:"),
-            num_args: match &factory_pattern {
-                ns_syntax::ast::MessagePattern::Keyword { parts } => parts.len(),
-                _ => panic!("the fixture declares a keyword factory"),
-            },
-        }),
-        ..Mixin::empty(Symbol::intern("Shared"))
-    });
-
-    let mut interp = Interpreter::bootstrap();
+    let (mut interp, loaded) = load(src);
+    let shared_mixin = interp
+        .heap_ref()
+        .class_application(&loaded)
+        .expect("a class object")
+        .mixin
+        .clone();
     let object_class = interp.builtin_class(BuiltinClass::Object);
 
     // Two structurally different superclass shapes for the same mixin: one
@@ -273,44 +225,29 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     let class_a = make_class(&mut interp, object_class, app_a.clone());
     let class_b = make_class(&mut interp, object_class, app_b.clone());
 
-    for bytecode in [false, true] {
-        interp
-            .set_engine(if bytecode {
-                Engine::Bytecode(compiler::compile_module(
-                    interp.heap_ref(),
-                    &class_a,
-                    &bindings,
-                ))
-            } else {
-                Engine::TreeWalk
-            })
-            // This interpreter was built from source, so even the
-            // tree-walker is available to it.
-            .expect("a source-built interpreter accepts either engine");
-        let a = expect_ok(
-            interp.instantiate(class_a, vec![Value::SmallInt(11)], &bindings),
-            "instantiate a",
-        );
-        let b = expect_ok(
-            interp.instantiate(class_b, vec![Value::SmallInt(22)], &bindings),
-            "instantiate b",
-        );
-        assert_eq!(
-            field_at(interp.heap_ref(), &a, app_a.own_slot_base),
-            11,
-            "bytecode={bytecode}: a's own slot must land at its own application's absolute offset"
-        );
-        assert_eq!(
-            field_at(interp.heap_ref(), &b, app_b.own_slot_base),
-            22,
-            "bytecode={bytecode}: b's own slot must land at its own application's absolute offset"
-        );
-    }
+    let a = expect_ok(
+        interp.instantiate(class_a, vec![Value::SmallInt(11)]),
+        "instantiate a",
+    );
+    let b = expect_ok(
+        interp.instantiate(class_b, vec![Value::SmallInt(22)]),
+        "instantiate b",
+    );
+    assert_eq!(
+        field_at(interp.heap_ref(), &a, app_a.own_slot_base),
+        11,
+        "a's own slot must land at its own application's absolute offset"
+    );
+    assert_eq!(
+        field_at(interp.heap_ref(), &b, app_b.own_slot_base),
+        22,
+        "b's own slot must land at its own application's absolute offset"
+    );
 }
 
 /// A real three-level chain -- `Leaf` -> `Middle` -> `Base`, each level
 /// declaring two slots of its own and passing an argument up through its
-/// superclass clause -- under both engines.
+/// superclass clause.
 ///
 /// Until the clause's message was evaluated per level, no test ran two
 /// compiled `InitSlot` bodies in one chain, so the per-level `slot_base` a
@@ -332,28 +269,20 @@ class Levels = Object new () (
     )
 ) : ()
 ";
-    for bytecode in [false, true] {
-        let (mut interp, class, bindings) = load(src, bytecode);
-        let module = expect_ok(
-            interp.instantiate(class, vec![], &bindings),
-            "instantiate Levels",
+    let (mut interp, class) = load(src);
+    let module = expect_ok(interp.instantiate(class, vec![]), "instantiate Levels");
+    let leaf_class = expect_ok(interp.send(module, Symbol::intern("Leaf"), vec![]), "Leaf");
+    let leaf = expect_ok(
+        interp.send(leaf_class, Symbol::intern("new"), vec![]),
+        "Leaf new",
+    );
+    // `Middle withMiddle: 2` -> `Base withBase: 2 + 1`, so the deepest
+    // level's own argument is the one its own clause computed.
+    for (index, expected) in [(0, 3), (1, 10), (2, 2), (3, 20), (4, 3), (5, 30)] {
+        assert_eq!(
+            field_at(interp.heap_ref(), &leaf, index),
+            expected,
+            "field {index} holds the wrong level's value"
         );
-        let leaf_class = expect_ok(
-            interp.send(module, Symbol::intern("Leaf"), vec![], &bindings),
-            "Leaf",
-        );
-        let leaf = expect_ok(
-            interp.send(leaf_class, Symbol::intern("new"), vec![], &bindings),
-            "Leaf new",
-        );
-        // `Middle withMiddle: 2` -> `Base withBase: 2 + 1`, so the deepest
-        // level's own argument is the one its own clause computed.
-        for (index, expected) in [(0, 3), (1, 10), (2, 2), (3, 20), (4, 3), (5, 30)] {
-            assert_eq!(
-                field_at(interp.heap_ref(), &leaf, index),
-                expected,
-                "bytecode={bytecode}: field {index} holds the wrong level's value"
-            );
-        }
     }
 }

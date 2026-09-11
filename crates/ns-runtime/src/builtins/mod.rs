@@ -99,11 +99,6 @@ fn wrap_error(result: Result<Value, NewspeakError>) -> EvalResult {
 /// reference library's convention that `ifTrue: aValue` degrades to
 /// `aValue` when `aValue` isn't a block.
 ///
-/// It invokes the closure under `closure.bindings.clone()` -- the
-/// resolver's bindings the block body was resolved under -- and never a
-/// fresh empty map. A block body's free names resolve against the scope it
-/// was written in, so an empty map silently changes what they mean.
-///
 /// Returns `EvalResult`, forwarding `invoke_closure`'s own result directly,
 /// so a `Signal::Return` escaping the block passes straight through. It
 /// must not be converted into a `NewspeakError` here: the ordinary case is
@@ -125,8 +120,7 @@ pub(super) fn call_block(interp: &mut Interpreter, block: &Value, args: Vec<Valu
             match closure_data {
                 Some(closure_data) => {
                     let closure = std::rc::Rc::new(closure_data);
-                    let bindings = closure.bindings.clone();
-                    crate::interpreter::eval::invoke_closure(interp, &closure, args, &bindings)
+                    crate::interpreter::eval::invoke_closure(interp, &closure, args)
                 }
                 None => Ok(*block),
             }

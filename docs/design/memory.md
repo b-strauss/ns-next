@@ -273,13 +273,13 @@ It costs nothing at run time — the lifetimes are gone after monomorphization �
 and its price is ergonomic: Nova's own experience report is largely a complaint
 about the resulting `unbind()` noise. That price is accepted deliberately.
 
-This is what lets the two engines keep their present shape. The tree-walker holds
-intermediates in Rust locals — `eval_expr` returns values up the Rust stack, a
-dynamic array literal collects into a `Vec<Value>` there, and `eval_send` holds a
-receiver across argument evaluation, which allocates. Under a checked scope
-discipline that is expressible and verified, rather than a discipline that has to
-be re-established by hand on every later change. The same applies to every native
-in `builtins/` that holds values across an allocation.
+This is what lets the Rust code that holds values keep its present shape. The VM
+keeps a running activation's values in its registers, on the activation stack,
+but not every value: a send's arguments are collected into a `Vec<Value>` (the
+VM's `collect`) and held across the send, which allocates, and every native in
+`builtins/` that holds values across an allocation does the same. Under a
+checked scope discipline that is expressible and verified, rather than a
+discipline that has to be re-established by hand on every later change.
 
 ### Considered and rejected: conservative stack scanning
 
@@ -318,8 +318,7 @@ its variables. After it, a surviving block holds exactly what it captured.
 
   | Command | Entry sends | Before the arena | After the arena | After the activation stack |
   |---|---|---|---|---|
-  | `run --engine=bytecode`, `bench_loop.ns` | 1 | 4.6 MB | 4.6 MB | 4.6 MB |
-  | `run --engine=tree-walk`, `bench_loop.ns` | 1 | 4.6 MB | 25.4 MB | 4.6 MB |
+  | `run`, `bench_loop.ns` | 1 | 4.6 MB | 4.6 MB | 4.6 MB |
   | `bench --iterations 10`, `bench_loop.ns` | 22 | 4.6 MB | 340.7 MB | 4.6 MB |
   | `bench --iterations 10`, `bench_send.ns` | 22 | — | 324.9 MB | 4.6 MB |
   | `bench --iterations 10`, `bench_block.ns` | 22 | — | 966.9 MB | 446.0 MB |
@@ -335,29 +334,17 @@ its variables. After it, a surviving block holds exactly what it captured.
   The shape is what matters more than the figures. An activation that nothing
   reified leaves nothing behind, so a program that creates no block per
   iteration now runs in the same 4.6 MB however many activations it builds —
-  `bench_loop.ns` and `bench_send.ns` under either engine, whose blocks are
-  created once, before the loop starts. Which blocks a program creates depends
-  on the engine, though: **the tree-walker creates — and so reifies the
-  activation for — every block literal it evaluates, including the
-  `ifTrue:`/`and:`/`whileTrue:` arguments the VM inlines.** A method that holds
-  one therefore retains a frame and a closure per call under the tree-walker
-  alone. Measured on 2026-09-11 under the conditions above, with a scratch
-  program making 300,000 calls of `clip: x = ( x < 0 ifTrue: [^0]. ^x + 1 )`:
-  136.8 MB under the tree-walker, 4.6 MB under the VM, and 4.5 MB under the
-  tree-walker once `clip:` is reduced to `^x + 1`. A tree-walker closure also
-  keeps a copy of its block's syntax tree, because `eval_block_literal` clones
-  the block's body into every closure it creates. So the tree-walker retains
-  more per block than the VM does even where both create the same blocks, in
-  proportion to the block's size: `run` over `bench_block.ns` peaks at 20.2 MB
-  under the VM and 40.3 MB under the tree-walker. Lengthening that block's
-  body to twelve more `+ 0` sends takes the tree-walker to 168.9 MB and leaves
-  the VM at 20.2 MB.
+  `bench_loop.ns` and `bench_send.ns`, whose blocks are created once, before
+  the loop starts. An `ifTrue:`/`and:`/`whileTrue:` argument the compiler
+  inlines creates no block at all, so it reifies nothing either: 300,000 calls
+  of `clip: x = ( x < 0 ifTrue: [^0]. ^x + 1 )` peak at 4.6 MB (2026-09-11,
+  under the conditions above).
 
   **What is still unbounded is everything in an arena: every reified frame and
   every object the process has ever created**, not what is live.
-  `bench_block.ns` shows it: every iteration creates a block, so under either
-  engine every iteration reifies one frame and allocates one closure, and
-  nothing gives either back. Its peak roughly halved, because the block's own
+  `bench_block.ns` shows it: every iteration creates a block, so every
+  iteration reifies one frame and allocates one closure, and nothing gives
+  either back. Its peak roughly halved, because the block's own
   activation no longer takes an arena entry, but it still grows with the work
   done. A long-running process that creates blocks is therefore unbounded until
   the collector exists, and closure conversion (above) is what shrinks each
@@ -374,25 +361,22 @@ its variables. After it, a surviving block holds exactly what it captured.
   The step shape is **consistent with** the arena's `Vec` doubling: the copy at
   a doubling point has the old and the new buffer resident at once, and would
   stall the run that triggers it. The benchmark maxima, measured in the same
-  sitting as the last column above, are consistent with that for some sources
-  and refute it for the one it was first offered for. On `bench_send.ns`, whose
-  retention the stack removed (324.9 MB to 4.6 MB above), the bytecode engine's
-  roughly doubled maxima went away — 40.4–40.8 ms over a 23.5 ms median under
-  the arena, 20.8–21.6 ms under the stack — and so did the tree-walker's. The
-  same happened on row two of the send decomposition under the bytecode engine
-  and on row one under the tree-walker ([execution.md](execution.md), "What the
-  activation stack moved"); their peak working set was not measured, so that
-  their retention went too is inferred from their shape, which creates no block
-  per iteration. But the tree-walker's maximum on `bench_loop.ns` stayed at
-  112–113 ms over a ~32 ms median under a binary that measurably retains nothing
-  for it — 4.6 MB across all twenty-two entry sends — so doubling is not what
-  causes that one. Row two under the tree-walker kept its maximum too, 113–115 ms
-  over ~34 ms; that doubling is not the cause there either is an inference by
-  the same shape argument. Neither cause is known. Pre-sizing the arenas
-  with `with_capacity` is still the control that would settle the doubling
-  explanation where it does fit; it has not been run. This is recorded because a
-  collector's design should know the interim may have a latency cost as well as
-  a memory one.
+  sitting as the last column above, do not contradict it, but they do not
+  single it out either: they moved with retention. On `bench_send.ns`, whose
+  retention the stack removed (324.9 MB to 4.6 MB above), the roughly doubled
+  maxima went away — 40.4–40.8 ms over a 23.5 ms median under the arena,
+  20.8–21.6 ms under the stack. The same happened on row two of the send
+  decomposition ([execution.md](execution.md), "What the activation stack
+  moved"); its peak working set was not measured, so that its retention went
+  too is inferred from its shape, which creates no block per iteration.
+  `bench_block.ns`, which still grows both arenas every iteration, still has a
+  maximum well above its median: 63.8–67.9 ms over medians of 37.6–39.9 ms in
+  all six `bench` runs of the 2026-09-11 before-and-after measurement of the
+  retirement. `bench` reports only the median, minimum and maximum, so how many
+  runs were slow is not measured. Pre-sizing the arenas with `with_capacity` is
+  the control that would settle the doubling explanation, and it has not been
+  run. This is recorded because a collector's design should know the interim
+  may have a latency cost as well as a memory one.
 
   A corollary the collector's design should know about, stated carefully because
   the careless version is wrong. A **failed** image decode holds its placeholders
@@ -415,9 +399,9 @@ its variables. After it, a surviving block holds exactly what it captured.
 
   | | `Object` | Frame-arena entry | Combined |
   |---|---|---|---|
-  | Record minimum | 6 B | 19 B | — |
-  | Release size | 64 B → 10.7x | 136 B → 7.2x | **~17.8x** |
-  | Debug size | 88 B → 14.7x | 144 B → 7.6x | ~22.2x |
+  | Record minimum | 6 B | 18 B | — |
+  | Release size | 56 B → 9.3x | 136 B → 7.6x | **~16.9x** |
+  | Debug size | 80 B → 13.3x | 144 B → 8.0x | ~21.3x |
 
   A frame-arena entry is a `FrameSlot`: the `Frame` (128 B in a release build,
   136 B in a debug one) and the `live` marriage field beside it, 8 bytes more.
@@ -437,6 +421,11 @@ its variables. After it, a surviving block holds exactly what it captured.
   cached globally; nothing collects them today because nothing collects at all.
   The collector has to decide whether an application whose classes are all
   unreachable is itself collectable.
+- **The code table is keyed by `Rc` identity**, the address of a `Mixin` or a
+  `MixinMethod` (`CompiledModule`, `crates/ns-runtime/src/bytecode.rs`), so a
+  collector must not free a keyed mixin or method while its entry remains: a
+  new one allocated at the same address would share its key, so a load would
+  overwrite the entry, and a mixin nothing compiled would find the dead body.
 - **The application cache grows without bound** in the presence of live editing,
   because every re-application mints a fresh entry that nothing evicts. That is
   the same knot as `Mixin`'s lack of interior mutability; see
@@ -465,7 +454,5 @@ its variables. After it, a surviving block holds exactly what it captured.
   bounded — the `Mixin` declaration tree, capped by the parser — a ceiling is
   the right answer and `image/mixins.rs` uses one. Objects and activations need
   neither: an arena entry holds indices, so there is nothing to unwind.
-- **The tree-walker survives the collector.** Its Rust-held intermediates are
-  covered by the scope discipline, not by retiring the engine.
 - **The root discipline is enforced by the type system**, not by convention, and
   the ergonomic cost of that is accepted rather than traded away.

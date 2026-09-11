@@ -14,8 +14,8 @@ use ns_runtime::image::{decode, encode, mixins, symbols};
 use ns_runtime::mixin::mixin_key;
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
-    compiler, Binding, BuiltinClass, ClassData, ClassRef, ClosureBody, Engine, FrameKind, Heap,
-    Interpreter, Mixin, MixinApplication, ObjectData, Signal, SourceOrigin, Symbol, Value,
+    compiler, Binding, BuiltinClass, ClassData, ClassRef, FrameKind, Heap, Interpreter, Mixin,
+    MixinApplication, ObjectData, Signal, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
@@ -414,8 +414,8 @@ fn every_instr_once() -> CompiledCode {
     }
 }
 
-/// The compiled code of `class`'s method `selector`, looked up the way the
-/// engine hook does (by the loaded `Rc<MethodDecl>`'s identity).
+/// The compiled code of `class`'s method `selector`, looked up the way
+/// `Interpreter::invoke_method` does (by the loaded method's identity).
 fn method_code(
     heap: &Heap,
     class: &ClassRef,
@@ -537,7 +537,7 @@ fn a_decoded_code_table_builds_the_module_from_the_mixin_table_alone() {
     let (interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
     let (table, decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), &module, &class);
-    let built = decode::build_module(&table, &decoded_mixins, &bindings).expect("build");
+    let built = decode::build_module(&table, &decoded_mixins).expect("build");
     let root = decoded_mixins.root().expect("a root row");
     assert_eq!(built.methods.len(), root.methods.len());
     for (selector, decl) in &root.methods {
@@ -551,7 +551,6 @@ fn a_decoded_code_table_builds_the_module_from_the_mixin_table_alone() {
         );
     }
     assert!(built.initializers.contains_key(&mixin_key(root)));
-    assert!(Rc::ptr_eq(&built.bindings, &bindings));
 }
 
 #[test]
@@ -958,7 +957,7 @@ fn every_decoded_method_has_a_body_in_the_built_module() {
     let (interp, class, bindings) = load(RICH);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
     let (table, decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), &module, &class);
-    let built = decode::build_module(&table, &decoded_mixins, &bindings).expect("build");
+    let built = decode::build_module(&table, &decoded_mixins).expect("build");
     for mixin in &decoded_mixins.mixins {
         for (selector, decl) in &mixin.methods {
             assert!(
@@ -1079,7 +1078,6 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     }
 }
 
-/// Loads `src` under the bytecode engine, lets `make_roots` build the
 /// The mixin table's row ids, without keeping the table's own bytes: a
 /// graph section names a class object's declaration by row id, so encoding
 /// one needs exactly the map `image::snapshot` builds.
@@ -1094,37 +1092,29 @@ fn mixin_ids_for(
         &mut scratch,
         interp.heap_ref(),
         class,
-        interp
-            .compiled_module()
-            .expect("the bytecode engine is active"),
+        interp.compiled_module(),
         symbols,
         ids,
     )
     .expect("mixin table")
 }
 
-/// roots, encodes code table + graph section, decodes both with the same
-/// `Reader`, and returns (interp, class, original roots, decoded roots,
-/// max identity hash).
+/// Loads `src`, lets `make_roots` build the roots, encodes code table +
+/// graph section, decodes both with the same `Reader`, and returns
+/// (interp, class, original roots, decoded roots, max identity hash).
 fn round_trip_graph(
     src: &str,
-    make_roots: impl FnOnce(&mut Interpreter, &ClassRef, &Bindings) -> Vec<Value>,
+    make_roots: impl FnOnce(&mut Interpreter, &ClassRef) -> Vec<Value>,
 ) -> (Interpreter, ClassRef, Vec<Value>, Vec<Value>, u32) {
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let roots = make_roots(&mut interp, &class, &bindings);
+    let (mut interp, class, _) = load(src);
+    let roots = make_roots(&mut interp, &class);
     let platform = interp.platform();
     let mut symbols = symbols::Builder::new();
     let mut w = encode::Writer::new();
     let ids = encode::encode_code_table(
         &mut w,
         interp.heap_ref(),
-        interp
-            .compiled_module()
-            .expect("the bytecode engine is active"),
+        interp.compiled_module(),
         &class,
         &mut symbols,
     )
@@ -1151,7 +1141,6 @@ fn round_trip_graph(
             interp: &mut interp,
             root_class: &class,
             codes: &code_table.codes,
-            bindings: &bindings,
             platform,
             mixins: &mixin_order,
         };
@@ -1177,7 +1166,7 @@ fn obj(v: &Value) -> &ns_runtime::ObjRef {
 
 #[test]
 fn instances_and_arrays_round_trip_with_shared_identity_preserved() {
-    let (interp, _c, original, decoded, _max) = round_trip_graph(EMPTY, |interp, _, _| {
+    let (interp, _c, original, decoded, _max) = round_trip_graph(EMPTY, |interp, _| {
         let shared = Value::Obj(interp.new_string("shared".to_string()));
         vec![Value::Obj(interp.new_array(vec![
             shared,
@@ -1210,7 +1199,7 @@ fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
     // root order, so the maximum is *not* the last one seen and
     // `assert_eq!` can tell a real fold from a stale field or a running
     // counter.
-    let (interp, _c, original, decoded, max) = round_trip_graph(EMPTY, |interp, _, _| {
+    let (interp, _c, original, decoded, max) = round_trip_graph(EMPTY, |interp, _| {
         let first = Value::Obj(interp.new_string("x".to_string()));
         let second = Value::Obj(interp.new_string("y".to_string()));
         vec![second, first]
@@ -1226,7 +1215,7 @@ fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
 
 #[test]
 fn class_references_resolve_to_the_same_live_class_objects() {
-    let (interp, class, _o, decoded, _max) = round_trip_graph(EMPTY, |interp, class, _| {
+    let (interp, class, _o, decoded, _max) = round_trip_graph(EMPTY, |interp, class| {
         vec![
             Value::Obj(interp.builtin_class(BuiltinClass::Integer)),
             Value::Obj(*class),
@@ -1239,18 +1228,15 @@ fn class_references_resolve_to_the_same_live_class_objects() {
 #[test]
 fn the_platform_singleton_resolves_to_the_interpreters_own() {
     let (mut interp, _c, _o, decoded, _max) =
-        round_trip_graph(EMPTY, |interp, _, _| vec![interp.platform()]);
+        round_trip_graph(EMPTY, |interp, _| vec![interp.platform()]);
     assert!(obj(&decoded[0]).same(obj(&interp.platform())));
 }
 
 #[test]
 fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | a = 1. b = 'two'. |\n) (\n) : ()";
-    let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class, bindings| {
-        vec![expect_ok(
-            interp.instantiate(*class, vec![], bindings),
-            "instantiate",
-        )]
+    let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class| {
+        vec![expect_ok(interp.instantiate(*class, vec![]), "instantiate")]
     });
     let heap = interp.heap_ref();
     let snapshot = heap.object_snapshot(obj(&decoded[0]));
@@ -1268,47 +1254,42 @@ fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
 #[test]
 fn a_closure_and_its_paused_home_frame_round_trip() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  mk = ( ^[ 1 ] )\n  public outer = ( ^mk )\n) : ()";
-    let (interp, class, original, decoded, _max) =
-        round_trip_graph(src, |interp, class, bindings| {
-            let instance = expect_ok(interp.instantiate(*class, vec![], bindings), "instantiate");
-            let closure = expect_ok(
-                interp.send(instance, Symbol::intern("outer"), vec![], bindings),
-                "outer",
+    let (interp, class, original, decoded, _max) = round_trip_graph(src, |interp, class| {
+        let instance = expect_ok(interp.instantiate(*class, vec![]), "instantiate");
+        let closure = expect_ok(
+            interp.send(instance, Symbol::intern("outer"), vec![]),
+            "outer",
+        );
+        // Synthetic "paused" state: edit the home frame's pc and grow its
+        // register file before snapshotting.
+        {
+            let c = interp
+                .heap_ref()
+                .closure_data(obj(&closure))
+                .expect("expected a closure");
+            let (_, args_len, temps_len) = interp.heap_ref().frame_register_shape(&c.home);
+            interp.heap_mut().frame_grow_temps(&c.home, temps_len + 1);
+            interp.heap_mut().frame_set_local(
+                &c.home,
+                (args_len + temps_len) as u16,
+                Value::SmallInt(9),
             );
-            // Synthetic "paused" state: edit the home frame's pc and grow its
-            // register file before snapshotting.
-            {
-                let c = interp
-                    .heap_ref()
-                    .closure_data(obj(&closure))
-                    .expect("expected a closure");
-                let (_, args_len, temps_len) = interp.heap_ref().frame_register_shape(&c.home);
-                interp.heap_mut().frame_grow_temps(&c.home, temps_len + 1);
-                interp.heap_mut().frame_set_local(
-                    &c.home,
-                    (args_len + temps_len) as u16,
-                    Value::SmallInt(9),
-                );
-                interp.heap_mut().set_frame_pc(&c.home, 1);
-            }
-            vec![closure]
-        });
+            interp.heap_mut().set_frame_pc(&c.home, 1);
+        }
+        vec![closure]
+    });
     let heap = interp.heap_ref();
     let original_code = {
         let c = heap
             .closure_data(obj(&original[0]))
             .expect("expected a closure");
-        let ClosureBody::Compiled(code) = &c.body else {
-            panic!("the bytecode engine builds compiled closures")
-        };
+        let code = &c.code;
         code.clone()
     };
     let c = heap
         .closure_data(obj(&decoded[0]))
         .expect("expected a closure");
-    let ClosureBody::Compiled(code) = &c.body else {
-        panic!("decoded closures carry compiled code")
-    };
+    let code = &c.code;
     assert_eq!(**code, *original_code);
     assert!(
         c.captured_frame.same(&c.home),
@@ -1347,11 +1328,8 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
 #[test]
 fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
-    let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class, bindings| {
-        vec![expect_ok(
-            interp.instantiate(*class, vec![], bindings),
-            "instantiate",
-        )]
+    let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class| {
+        vec![expect_ok(interp.instantiate(*class, vec![]), "instantiate")]
     });
     let heap = interp.heap_ref();
     let held = heap
@@ -1366,120 +1344,19 @@ fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
 }
 
 #[test]
-fn a_tree_walker_closure_is_a_snapshot_error_not_a_silent_omission() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public mk = ( ^[ 1 ] )\n) : ()";
-    let (mut interp, class, bindings) = load(src); // tree-walk engine
-    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
-    let closure = expect_ok(
-        interp.send(instance, Symbol::intern("mk"), vec![], &bindings),
-        "mk",
-    );
-    let platform = interp.platform();
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    let mut symbols = symbols::Builder::new();
-    let mut w = encode::Writer::new();
-    let ids = encode::encode_code_table(&mut w, interp.heap_ref(), &module, &class, &mut symbols)
-        .expect("encode code table");
-    let err = encode::encode_graph_section(
-        &mut w,
-        interp.heap_ref(),
-        &[closure],
-        &platform,
-        &ids,
-        &class,
-        &HashMap::new(),
-        &mut symbols,
-    )
-    .expect_err("Ast closure");
-    assert!(err.contains("tree-walker"), "{err}");
-}
-
-#[test]
-fn a_decoded_closure_carries_the_loads_own_bindings_map() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let roots = vec![expect_ok(
-        interp.instantiate(class, vec![], &bindings),
-        "instantiate",
-    )];
-    let platform = interp.platform();
-    let mut symbols = symbols::Builder::new();
-    let mut w = encode::Writer::new();
-    let ids = encode::encode_code_table(
-        &mut w,
-        interp.heap_ref(),
-        interp
-            .compiled_module()
-            .expect("the bytecode engine is active"),
-        &class,
-        &mut symbols,
-    )
-    .expect("encode code table");
-    let mixin_ids = mixin_ids_for(&class, &interp, &mut symbols, &ids);
-    encode::encode_graph_section(
-        &mut w,
-        interp.heap_ref(),
-        &roots,
-        &platform,
-        &ids,
-        &class,
-        &mixin_ids,
-        &mut symbols,
-    )
-    .expect("encode graph");
-    let bytes = w.into_bytes();
-    let symbol_table = symbols.build();
-    let mut r = decode::Reader::new(&bytes);
-    let table = decode::decode_code_table(&mut r, &symbol_table).expect("code table");
-    // A *different* bindings map, standing in for the empty one `load`
-    // builds: every decoded closure must receive this one, proving
-    // `ClosureData.bindings` is never serialized.
-    let loads_bindings: Bindings = Rc::new(HashMap::new());
-    let mixin_order = mixin_preorder(interp.heap_ref(), &class);
-    let mut ctx = decode::DecodeContext {
-        interp: &mut interp,
-        root_class: &class,
-        codes: &table.codes,
-        bindings: &loads_bindings,
-        platform,
-        mixins: &mixin_order,
-    };
-    let decoded = decode::decode_graph_section(&mut r, &mut ctx, &symbol_table).expect("graph");
-    let heap = interp.heap_ref();
-    let held = heap
-        .instance_field(obj(&decoded.roots[0]), 0)
-        .expect("expected an instance");
-    let c = heap.closure_data(obj(&held)).expect("slot holds a closure");
-    assert!(Rc::ptr_eq(&c.bindings, &loads_bindings));
-}
-
-#[test]
 fn the_graph_section_encoding_is_deterministic() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | a = 1. blk = [ 2 ]. s = 'three'. |\n) (\n) : ()";
     let mut encodings = Vec::new();
     for _ in 0..2 {
-        let (mut interp, class, bindings) = load(src);
-        let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-        interp
-            .set_engine(Engine::Bytecode(module))
-            .expect("a source-built interpreter accepts the bytecode engine");
-        let roots = vec![expect_ok(
-            interp.instantiate(class, vec![], &bindings),
-            "instantiate",
-        )];
+        let (mut interp, class, _) = load(src);
+        let roots = vec![expect_ok(interp.instantiate(class, vec![]), "instantiate")];
         let platform = interp.platform();
         let mut symbols = symbols::Builder::new();
         let mut w = encode::Writer::new();
         let ids = encode::encode_code_table(
             &mut w,
             interp.heap_ref(),
-            interp
-                .compiled_module()
-                .expect("the bytecode engine is active"),
+            interp.compiled_module(),
             &class,
             &mut symbols,
         )
@@ -1506,7 +1383,6 @@ fn the_graph_section_encoding_is_deterministic() {
 struct GraphFixture {
     interp: Interpreter,
     class: ClassRef,
-    bindings: Bindings,
     platform: Value,
     codes: Vec<Rc<CompiledCode>>,
     /// Empty by default: most fixtures' hand-crafted bytes never reference a
@@ -1520,13 +1396,12 @@ struct GraphFixture {
 
 impl GraphFixture {
     fn new() -> GraphFixture {
-        let (mut interp, class, bindings) = load(EMPTY);
+        let (mut interp, class, _) = load(EMPTY);
         let platform = interp.platform();
         let mixins = mixin_preorder(interp.heap_ref(), &class);
         GraphFixture {
             interp,
             class,
-            bindings,
             platform,
             codes: Vec::new(),
             symbols: symbols::Table::empty(),
@@ -1541,7 +1416,6 @@ impl GraphFixture {
             interp: &mut self.interp,
             root_class: &self.class,
             codes: &self.codes,
-            bindings: &self.bindings,
             platform: self.platform,
             mixins: &self.mixins,
         };
@@ -1599,7 +1473,6 @@ fn a_frame_id_out_of_range_is_a_decode_error_not_a_panic() {
     w.write_u32(0); // no args
     w.write_u32(0); // no temps
     w.write_u32(0); // pc
-    w.write_u8(1); // pc kind: an instruction index
     w.write_bool(true); // has a sender...
     w.write_u32(99); // ...whose id is out of range
     let bytes = w.into_bytes();
@@ -1875,19 +1748,12 @@ fn class_objects_inheriting_from_each_other_in_a_cycle_are_refused() {
 
 /// A one-frame graph section up to (but excluding) the frame-kind tag.
 fn one_frame_prefix() -> encode::Writer {
-    one_frame_prefix_with_pc_kind(1)
-}
-
-/// `one_frame_prefix` with the `pc` discriminator left to the caller, for
-/// the tests that craft an invalid one.
-fn one_frame_prefix_with_pc_kind(pc_kind: u8) -> encode::Writer {
     let mut w = encode::Writer::new();
     graph_counts(&mut w, 0, 1);
     w.write_u8(0); // receiver: nil
     w.write_u32(0); // no args
     w.write_u32(0); // no temps
     w.write_u32(0); // pc
-    w.write_u8(pc_kind);
     w.write_bool(false); // no sender
     w.write_bool(false); // no home
     w.write_bool(false); // no current class
@@ -1909,6 +1775,32 @@ fn an_invalid_frame_kind_tag_is_a_decode_error_not_a_panic() {
             tag: 200
         }
     );
+}
+
+/// The byte after `pc` is the frame's `sender` flag: a frame record no longer
+/// says what its `pc` counts, because an image's code table holds only
+/// bytecode. A record written in the old layout -- the retired pc-kind byte
+/// after `pc` -- therefore has that byte read as "a sender follows", and the
+/// next four bytes (the old sender, home and current-class flags and the kind
+/// tag) as a sender id far outside the one-frame table, so it is refused
+/// rather than read as a different frame.
+#[test]
+fn a_frame_record_in_the_old_layout_is_refused() {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 0, 1);
+    w.write_u8(0); // receiver: nil
+    w.write_u32(0); // no args
+    w.write_u32(0); // no temps
+    w.write_u32(0); // pc
+    w.write_u8(1); // the retired pc-kind byte (bytecode)
+    w.write_bool(false); // no sender
+    w.write_bool(false); // no home
+    w.write_bool(false); // no current class
+    w.write_u8(2); // frame kind: TopLevel
+    w.write_bool(false); // continuable
+    w.write_u32(0); // no roots
+    let bytes = w.into_bytes();
+    assert!(GraphFixture::new().decode(&bytes).is_err());
 }
 
 #[test]
@@ -1942,24 +1834,15 @@ fn a_closure_frames_code_id_out_of_range_is_a_decode_error_not_a_panic() {
 #[test]
 fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let roots = vec![expect_ok(
-        interp.instantiate(class, vec![], &bindings),
-        "instantiate",
-    )];
+    let (mut interp, class, _) = load(src);
+    let roots = vec![expect_ok(interp.instantiate(class, vec![]), "instantiate")];
     let platform = interp.platform();
     let mut symbols = symbols::Builder::new();
     let mut w = encode::Writer::new();
     let ids = encode::encode_code_table(
         &mut w,
         interp.heap_ref(),
-        interp
-            .compiled_module()
-            .expect("the bytecode engine is active"),
+        interp.compiled_module(),
         &class,
         &mut symbols,
     )
@@ -1986,7 +1869,6 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         interp: &mut interp,
         root_class: &class,
         codes: &[],
-        bindings: &bindings,
         platform,
         mixins: &mixin_order,
     };
@@ -2005,10 +1887,10 @@ fn a_closure_capturing_a_block_activation_round_trips() {
     // `captured_frame` is a *block activation* -- a `FrameKind::Closure`
     // frame, the one frame kind the quiesced worlds above never produce.
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public mk = ( ^[:x | [ x ] ] value: 5 )\n) : ()";
-    let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class, bindings| {
-        let instance = expect_ok(interp.instantiate(*class, vec![], bindings), "instantiate");
+    let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class| {
+        let instance = expect_ok(interp.instantiate(*class, vec![]), "instantiate");
         vec![expect_ok(
-            interp.send(instance, Symbol::intern("mk"), vec![], bindings),
+            interp.send(instance, Symbol::intern("mk"), vec![]),
             "mk",
         )]
     });
@@ -2021,10 +1903,9 @@ fn a_closure_capturing_a_block_activation_round_trips() {
         "the inner closure was captured by the block activation, not by `mk`"
     );
     let captured = heap.frame_snapshot(&inner.captured_frame);
-    let FrameKind::Closure(outer) = &captured.kind else {
+    let FrameKind::Closure(_) = &captured.kind else {
         panic!("the captured frame is a block activation")
     };
-    assert!(matches!(&outer.body, ClosureBody::Compiled(_)));
     assert!(matches!(captured.args.first(), Some(Value::SmallInt(5))));
     assert!(
         captured
@@ -2100,7 +1981,6 @@ fn closure_object_with_param_count(params: &[&str]) -> Vec<u8> {
     w.write_u32(0); // no args
     w.write_u32(0); // no temps
     w.write_u32(0); // pc
-    w.write_u8(1); // pc kind: an instruction index
     w.write_bool(false); // no sender
     w.write_bool(false); // no home
     w.write_bool(false); // no current class
@@ -2181,14 +2061,10 @@ fn a_closure_record_declaring_too_many_parameters_is_a_decode_error() {
 #[test]
 fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_counter() {
     let src = "Newspeak3\n'T'\nclass Counter = Object new (\n  | n ::= 0. |\n) (\n  public bump = ( n := n + 1. ^n )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
+    let (mut interp, class, _) = load(src);
+    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     expect_ok(
-        interp.send(instance, Symbol::intern("bump"), vec![], &bindings),
+        interp.send(instance, Symbol::intern("bump"), vec![]),
         "bump",
     );
     let platform = interp.platform();
@@ -2197,7 +2073,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().unwrap(),
+        interp.compiled_module(),
         &platform,
         std::slice::from_ref(&instance),
     )
@@ -2206,19 +2082,18 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
 
     let mut loaded = image::load(&bytes).expect("load");
     assert!(
-        loaded.interp.compiled_module().is_some(),
-        "the bytecode engine is installed"
+        !loaded.interp.compiled_module().methods.is_empty(),
+        "the image's code table is installed"
     );
     assert!(loaded
         .interp
         .heap_ref()
         .class_of_obj(obj(&loaded.roots[0]))
         .same(&loaded.root_class));
-    let bindings = loaded.empty_bindings.clone();
     let n = expect_ok(
         loaded
             .interp
-            .send(loaded.roots[0], Symbol::intern("bump"), vec![], &bindings),
+            .send(loaded.roots[0], Symbol::intern("bump"), vec![]),
         "bump",
     );
     assert!(
@@ -2235,18 +2110,14 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
 #[test]
 fn bytes_after_the_last_section_are_refused_not_ignored() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(src);
     let platform = interp.platform();
     let mut bytes = image::snapshot(
         interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         &[],
     )
@@ -2264,18 +2135,14 @@ fn bytes_after_the_last_section_are_refused_not_ignored() {
 #[test]
 fn load_refuses_a_version_mismatch() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(src);
     let platform = interp.platform();
     let mut bytes = image::snapshot(
         interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().unwrap(),
+        interp.compiled_module(),
         &platform,
         &[],
     )
@@ -2287,8 +2154,7 @@ fn load_refuses_a_version_mismatch() {
 
 /// `image::load`'s error message. Never `expect_err`: that would require
 /// `Debug` on the `Ok` side, and `LoadedImage` has none -- it carries an
-/// `Interpreter`, and `Interpreter`'s own `Engine` field has no `Debug`
-/// impl, so neither type can derive one.
+/// `Interpreter`, which has no `Debug` impl either.
 fn load_err(bytes: &[u8]) -> String {
     match image::load(bytes) {
         Ok(_) => panic!("expected a load error, got a loaded image"),
@@ -2323,55 +2189,24 @@ fn an_invalid_source_origin_tag_is_a_decode_error_not_a_panic() {
 }
 
 #[test]
-fn a_snapshot_of_a_tree_walker_closure_is_refused_rather_than_written() {
-    // `snapshot` is only ever called under the bytecode engine (the CLI
-    // installs it before instantiating). A tree-walker closure carries
-    // `ClosureBody::Ast`, which the format has no representation for: the
-    // encoder must refuse rather than write an image nothing could read.
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let platform = interp.platform();
-    let err = image::snapshot(
-        interp.heap_ref(),
-        Some(src),
-        &Origin::File(PathBuf::from("t.ns")),
-        &class,
-        interp.compiled_module().expect("bytecode engine"),
-        &platform,
-        &[instance],
-    )
-    .expect_err("a tree-walker closure cannot be encoded");
-    assert!(err.contains("ClosureBody::Ast"), "{err}");
-}
-
-#[test]
 fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n  public run = ( ^blk value )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
+    let (mut interp, class, _) = load(src);
+    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let platform = interp.platform();
     let bytes = image::snapshot(
         interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         &[instance],
     )
     .expect("snapshot");
     for cut in 0..bytes.len() {
         // Never `{:?}` the `Ok` side: `LoadedImage` has no `Debug` impl at
-        // all (its `Interpreter` field's `Engine` does not derive one).
+        // all (its `Interpreter` field has none either).
         assert!(
             image::load(&bytes[..cut]).is_err(),
             "a truncated image must never load"
@@ -2539,8 +2374,8 @@ fn a_body_that_runs_past_its_last_instruction_is_refused() {
 
 #[test]
 fn more_arguments_than_registers_is_refused() {
-    // Every engine hook sizes a frame's temps as `num_registers -
-    // num_args`; that `u16` subtraction underflows here.
+    // Every activation is pushed with `num_registers - num_args`
+    // temporaries; that `u16` subtraction underflows here.
     let table = table_of(vec![code_with(
         CodeKind::Method,
         3,
@@ -2825,7 +2660,7 @@ fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_at_install() {
     let mut body = (*table.codes[id]).clone();
     body.num_args = 2;
     table.codes[id] = Rc::new(body);
-    let err = decode::build_module(&table, &decoded_mixins, &bindings).expect_err("arity mismatch");
+    let err = decode::build_module(&table, &decoded_mixins).expect_err("arity mismatch");
     assert_eq!(
         err,
         decode::DecodeError::CodeArityMismatch {
@@ -2848,7 +2683,7 @@ fn a_method_root_naming_a_block_body_is_refused_at_install() {
     body.kind = CodeKind::Block;
     table.codes[id] = Rc::new(body);
     // `CompiledModule` is not `PartialEq`; match rather than compare.
-    match decode::build_module(&table, &decoded_mixins, &bindings) {
+    match decode::build_module(&table, &decoded_mixins) {
         Err(err) => assert_eq!(
             err,
             decode::DecodeError::WrongCodeKind { expected: "method" }
@@ -2875,7 +2710,7 @@ fn class_method_key(heap: &Heap, class: &ClassRef, selector: &str) -> usize {
 /// against that body. Everything a decoded closure over `block`
 /// needs to verify: its lexical parent is `foo`, which has two registers.
 fn closure_world() -> (GraphFixture, decode::DecodedCodeTable, CompiledModule) {
-    let (mut interp, class, bindings) = load(ONE_METHOD);
+    let (mut interp, class, _) = load(ONE_METHOD);
     let platform = interp.platform();
     let block = code_with(
         CodeKind::Block,
@@ -2904,7 +2739,6 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable, CompiledModule) {
         initializers: HashMap::new(),
         superclass_clauses: HashMap::new(),
         superclass_messages: HashMap::new(),
-        bindings: bindings.clone(),
     };
     module
         .methods
@@ -2914,7 +2748,6 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable, CompiledModule) {
         codes: table.codes.clone(),
         interp,
         class,
-        bindings,
         platform,
         // `foo_frame` below writes the `Method` frame kind's selector as id
         // 0, which must resolve to "foo" -- the method `class_method_key`
@@ -2960,7 +2793,6 @@ fn foo_frame_at_pc(temps: u32, pc: u32) -> impl FnOnce(&mut encode::Writer) {
             w.write_u8(0); // each temp: nil
         }
         w.write_u32(pc);
-        w.write_u8(1); // pc kind: an instruction index
         w.write_bool(false); // no sender
         w.write_bool(false); // no home
         w.write_bool(false); // no current class
@@ -3022,7 +2854,6 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
             w.write_u32(0); // no args
             w.write_u32(0); // no temps
             w.write_u32(0); // pc
-            w.write_u8(1); // pc kind: an instruction index
             w.write_bool(false); // no sender
             w.write_bool(false); // no home
             w.write_bool(false); // no current class
@@ -3041,14 +2872,10 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
     // The end-to-end control: a quiesced world holding a closure over a
     // method activation, through the real sections and back.
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | held ::= nil. |\n) (\n  public keep = ( | t | t := 7. held := [ t ]. ^held )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
+    let (mut interp, class, _) = load(src);
+    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     expect_ok(
-        interp.send(instance, Symbol::intern("keep"), vec![], &bindings),
+        interp.send(instance, Symbol::intern("keep"), vec![]),
         "keep",
     );
     let platform = interp.platform();
@@ -3057,23 +2884,20 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         &[instance],
     )
     .expect("snapshot");
     let mut loaded = image::load(&bytes).expect("load");
-    let bindings = loaded.empty_bindings.clone();
     let held = expect_ok(
         loaded
             .interp
-            .send(loaded.roots[0], Symbol::intern("keep"), vec![], &bindings),
+            .send(loaded.roots[0], Symbol::intern("keep"), vec![]),
         "keep",
     );
     let value = expect_ok(
-        loaded
-            .interp
-            .send(held, Symbol::intern("value"), vec![], &bindings),
+        loaded.interp.send(held, Symbol::intern("value"), vec![]),
         "value",
     );
     assert!(
@@ -3091,14 +2915,10 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
     // `value` after the load is what proves the reconstructed chain reads
     // the right register.
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | held ::= nil. |\n) (\n  public keep = ( held := [:x | [ x ] ] value: 5. ^held )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
+    let (mut interp, class, _) = load(src);
+    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     expect_ok(
-        interp.send(instance, Symbol::intern("keep"), vec![], &bindings),
+        interp.send(instance, Symbol::intern("keep"), vec![]),
         "keep",
     );
     let platform = interp.platform();
@@ -3107,13 +2927,12 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         std::slice::from_ref(&instance),
     )
     .expect("snapshot");
     let mut loaded = image::load(&bytes).expect("load");
-    let bindings = loaded.empty_bindings.clone();
     let held = loaded
         .interp
         .heap_ref()
@@ -3133,9 +2952,7 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
         "the inner closure was captured by the outer block's activation"
     );
     let value = expect_ok(
-        loaded
-            .interp
-            .send(held, Symbol::intern("value"), vec![], &bindings),
+        loaded.interp.send(held, Symbol::intern("value"), vec![]),
         "value",
     );
     assert!(
@@ -3171,7 +2988,7 @@ fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_at_install
         "the fixture's class really does compile an initializer"
     );
     decoded_mixins.code[0].initializer = None;
-    match decode::build_module(&table, &decoded_mixins, &bindings) {
+    match decode::build_module(&table, &decoded_mixins) {
         Err(err) => {
             assert_eq!(err, decode::DecodeError::MissingInitializer);
             assert_eq!(
@@ -3189,33 +3006,16 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
     // whose `initializers` map has been emptied encodes an image with the
     // initializer flag cleared, and every other check passes -- a quiesced
     // snapshot has no initializer frame for `verify_graph` to catch.
-    let (mut interp, class, bindings) = load(NEEDS_INITIALIZER);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
+    let (mut interp, class, _) = load(NEEDS_INITIALIZER);
+    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let platform = interp.platform();
     let doctored = CompiledModule {
-        methods: interp
-            .compiled_module()
-            .expect("bytecode engine")
-            .methods
-            .clone(),
+        methods: interp.compiled_module().methods.clone(),
         initializers: HashMap::new(),
         // Left intact: this fixture doctors *only* the initializer map, so
         // the refusal it asserts cannot be the superclass clause's.
-        superclass_clauses: interp
-            .compiled_module()
-            .expect("bytecode engine")
-            .superclass_clauses
-            .clone(),
-        superclass_messages: interp
-            .compiled_module()
-            .expect("bytecode engine")
-            .superclass_messages
-            .clone(),
-        bindings: bindings.clone(),
+        superclass_clauses: interp.compiled_module().superclass_clauses.clone(),
+        superclass_messages: interp.compiled_module().superclass_messages.clone(),
     };
     let bytes = image::snapshot(
         interp.heap_ref(),
@@ -3267,12 +3067,8 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
     // there costs a shared hash (identity is `Rc` identity, never the
     // hash) instead of aborting the process.
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
+    let (mut interp, class, _) = load(src);
+    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     interp
         .heap_mut()
         .set_identity_hash(obj(&instance), u32::MAX - 1);
@@ -3282,7 +3078,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         std::slice::from_ref(&instance),
     )
@@ -3364,7 +3160,7 @@ fn a_snapshotted_nested_mixins_method_and_initializer_survive_a_load() {
     let (interp, class, bindings) = load(NESTED_MODULE);
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
     let (table, decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), &module, &class);
-    let installed = decode::build_module(&table, &decoded_mixins, &bindings).expect("install");
+    let installed = decode::build_module(&table, &decoded_mixins).expect("install");
 
     // The *decoded* nested mixin, not the live one: the built module is
     // keyed by the declarations the mixin table rebuilt, which is what a
@@ -3393,14 +3189,10 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
     // nested class's own compiled method with a real send -- proving
     // `build_module` bound it back under the right key, not just that
     // some entry with the right shape exists.
-    let (mut interp, class, bindings) = load(NESTED_MODULE);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(NESTED_MODULE);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
     let bytes = image::snapshot(
@@ -3408,7 +3200,7 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
         Some(NESTED_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         std::slice::from_ref(&outer),
     )
@@ -3437,18 +3229,13 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
         Some(&object_application),
     );
     let inner_instance = expect_ok(
-        loaded
-            .interp
-            .instantiate(inner_class, vec![], &loaded.empty_bindings),
+        loaded.interp.instantiate(inner_class, vec![]),
         "instantiate Inner",
     );
     let result = expect_ok(
-        loaded.interp.send(
-            inner_instance,
-            Symbol::intern("value"),
-            vec![],
-            &loaded.empty_bindings,
-        ),
+        loaded
+            .interp
+            .send(inner_instance, Symbol::intern("value"), vec![]),
         "send value",
     );
     match result {
@@ -3460,19 +3247,15 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
 #[test]
 fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
     // The accessor evaluates the nested declaration's superclass clause,
-    // and under `Engine::Bytecode` the only thing it can evaluate is the
-    // compiled clause body the code table carries. A reloaded image whose
+    // and the only thing it can evaluate is the compiled clause body the
+    // code table carries. A reloaded image whose
     // sections dropped it would panic on the first `Inner` access here --
     // which is why `MixinSection` carries the clause alongside the
     // initializer, and `build_module` refuses an image missing one.
-    let (mut interp, class, bindings) = load(NESTED_MODULE);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(NESTED_MODULE);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
     let bytes = image::snapshot(
@@ -3480,7 +3263,7 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
         Some(NESTED_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         std::slice::from_ref(&outer),
     )
@@ -3493,30 +3276,22 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
         .copied()
         .expect("the snapshotted Outer");
     let inner_class = expect_ok(
-        loaded.interp.send(
-            reloaded_outer,
-            Symbol::intern("Inner"),
-            vec![],
-            &loaded.empty_bindings,
-        ),
+        loaded
+            .interp
+            .send(reloaded_outer, Symbol::intern("Inner"), vec![]),
         "Inner",
     );
     let Value::Obj(inner_class) = inner_class else {
         panic!("the accessor must yield a class object")
     };
     let inner_instance = expect_ok(
-        loaded
-            .interp
-            .instantiate(inner_class, vec![], &loaded.empty_bindings),
+        loaded.interp.instantiate(inner_class, vec![]),
         "instantiate Inner",
     );
     let result = expect_ok(
-        loaded.interp.send(
-            inner_instance,
-            Symbol::intern("value"),
-            vec![],
-            &loaded.empty_bindings,
-        ),
+        loaded
+            .interp
+            .send(inner_instance, Symbol::intern("value"), vec![]),
         "send value",
     );
     match result {
@@ -3525,22 +3300,17 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
     }
 }
 
-/// A world loaded under the bytecode engine with one instance of its root
-/// class -- the starting point every whole-image nesting test shares.
-/// Returns the interpreter, the root class, the bindings, the `platform`
-/// singleton and the instance.
-fn instantiated_world(src: &str) -> (Interpreter, ClassRef, Bindings, Value, Value) {
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
+/// A world built from `src` with one instance of its root class -- the
+/// starting point every whole-image nesting test shares. Returns the
+/// interpreter, the root class, the `platform` singleton and the instance.
+fn instantiated_world(src: &str) -> (Interpreter, ClassRef, Value, Value) {
+    let (mut interp, class, _) = load(src);
     let platform = interp.platform();
     let root = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate the root class",
     );
-    (interp, class, bindings, platform, root)
+    (interp, class, platform, root)
 }
 
 fn snapshot_world(
@@ -3555,7 +3325,7 @@ fn snapshot_world(
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         platform,
         roots,
     )
@@ -3598,11 +3368,10 @@ fn cached_nested_class(heap: &ns_runtime::Heap, enclosing: &Value, name: &str) -
 }
 
 fn send_to(loaded: &mut image::LoadedImage, receiver: Value, selector: &str) -> Value {
-    let bindings = loaded.empty_bindings.clone();
     expect_ok(
         loaded
             .interp
-            .send(receiver, Symbol::intern(selector), vec![], &bindings),
+            .send(receiver, Symbol::intern(selector), vec![]),
         selector,
     )
 }
@@ -3623,18 +3392,12 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     // the format's class tag named no particular user class, so encoding one
     // would have decoded it back as the root. Both now round-trip, because a
     // class object is an ordinary record in the object table.
-    let (mut interp, class, bindings, platform, outer) = instantiated_world(NESTED_MODULE);
-    let inner_class = expect_ok(
-        interp.send(outer, Symbol::intern("Inner"), vec![], &bindings),
-        "Inner",
-    );
+    let (mut interp, class, platform, outer) = instantiated_world(NESTED_MODULE);
+    let inner_class = expect_ok(interp.send(outer, Symbol::intern("Inner"), vec![]), "Inner");
     let Value::Obj(inner_class) = inner_class else {
         panic!("the accessor must yield a class object")
     };
-    let inner_instance = expect_ok(
-        interp.instantiate(inner_class, vec![], &bindings),
-        "instantiate Inner",
-    );
+    let inner_instance = expect_ok(interp.instantiate(inner_class, vec![]), "instantiate Inner");
 
     // Reached as the cached value in Outer's hidden slot...
     let bytes = snapshot_world(
@@ -3656,9 +3419,7 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
         "Inner"
     );
     let instance = expect_ok(
-        loaded
-            .interp
-            .instantiate(reloaded_inner, vec![], &loaded.empty_bindings),
+        loaded.interp.instantiate(reloaded_inner, vec![]),
         "instantiate Inner",
     );
     match send_to(&mut loaded, instance, "value") {
@@ -3698,11 +3459,8 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
     // The retired tag named no particular class, so a second user-defined
     // class object came back as the root: a wrong class silently installed,
     // with no field count to contradict it, rather than a decode error.
-    let (mut interp, class, bindings, platform, outer) = instantiated_world(NESTED_MODULE);
-    let _ = expect_ok(
-        interp.send(outer, Symbol::intern("Inner"), vec![], &bindings),
-        "Inner",
-    );
+    let (mut interp, class, platform, outer) = instantiated_world(NESTED_MODULE);
+    let _ = expect_ok(interp.send(outer, Symbol::intern("Inner"), vec![]), "Inner");
     let bytes = snapshot_world(
         &interp,
         NESTED_MODULE,
@@ -3737,13 +3495,10 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
     // cache key is content-derived. If the rebuild lost the sharing,
     // Milestone 4's call sites would go megamorphic after every load, which
     // is why this is a property test rather than a shape test.
-    let (mut interp, class, bindings, platform, first) = instantiated_world(NESTED_MODULE);
-    let second = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
-        "a second Outer",
-    );
+    let (mut interp, class, platform, first) = instantiated_world(NESTED_MODULE);
+    let second = expect_ok(interp.instantiate(class, vec![platform]), "a second Outer");
     let inner_of = |interp: &mut Interpreter, outer: &Value| match expect_ok(
-        interp.send(*outer, Symbol::intern("Inner"), vec![], &bindings),
+        interp.send(*outer, Symbol::intern("Inner"), vec![]),
         "Inner",
     ) {
         Value::Obj(class) => class,
@@ -3825,9 +3580,9 @@ class Outer usingPlatform: p = Object new () (
 
 #[test]
 fn outer_still_resolves_through_a_declaration_chain_that_came_from_an_image() {
-    let (mut interp, class, bindings, platform, outer) = instantiated_world(DEEP_OUTER_MODULE);
+    let (mut interp, class, platform, outer) = instantiated_world(DEEP_OUTER_MODULE);
     let deep = expect_ok(
-        interp.send(outer, Symbol::intern("makeDeep"), vec![], &bindings),
+        interp.send(outer, Symbol::intern("makeDeep"), vec![]),
         "makeDeep",
     );
     let bytes = snapshot_world(
@@ -3873,20 +3628,16 @@ class Args usingPlatform: p = Object new () (
 ";
 
 /// `newspeak-spec.pdf` §6.2 evaluates the superclass clause's message on
-/// every instantiation, so under `Engine::Bytecode` a reloaded image is the
-/// only place its compiled body can come from -- exactly the reason the
+/// every instantiation, so a reloaded image is the only place its compiled
+/// body can come from -- exactly the reason the
 /// clause's *receiver* already travels in `MixinSection`. A round trip that
 /// still hands `Base` its `7` proves the message body made it across.
 #[test]
 fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
-    let (mut interp, class, bindings) = load(NESTED_SUPERCLASS_ARGS);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(NESTED_SUPERCLASS_ARGS);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Args",
     );
     let bytes = image::snapshot(
@@ -3894,7 +3645,7 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
         Some(NESTED_SUPERCLASS_ARGS),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         std::slice::from_ref(&outer),
     )
@@ -3903,30 +3654,22 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
     let mut loaded = image::load(&bytes).expect("load");
     let reloaded = loaded.roots.first().copied().expect("the snapshotted Args");
     let derived = expect_ok(
-        loaded.interp.send(
-            reloaded,
-            Symbol::intern("Derived"),
-            vec![],
-            &loaded.empty_bindings,
-        ),
+        loaded
+            .interp
+            .send(reloaded, Symbol::intern("Derived"), vec![]),
         "Derived",
     );
     let Value::Obj(derived) = derived else {
         panic!("the accessor must yield a class object")
     };
     let instance = expect_ok(
-        loaded
-            .interp
-            .instantiate(derived, vec![], &loaded.empty_bindings),
+        loaded.interp.instantiate(derived, vec![]),
         "instantiate Derived",
     );
     let result = expect_ok(
-        loaded.interp.send(
-            instance,
-            Symbol::intern("value"),
-            vec![],
-            &loaded.empty_bindings,
-        ),
+        loaded
+            .interp
+            .send(instance, Symbol::intern("value"), vec![]),
         "send value",
     );
     match result {
@@ -3951,7 +3694,7 @@ fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_ref
         .position(|m| m.superclass_message.is_some())
         .expect("Derived's clause really does compile a message body");
     decoded_mixins.code[with_message].superclass_message = None;
-    match decode::build_module(&table, &decoded_mixins, &bindings) {
+    match decode::build_module(&table, &decoded_mixins) {
         Err(err) => {
             assert_eq!(err, decode::DecodeError::MissingSuperclassMessage);
             assert_eq!(
@@ -3997,22 +3740,33 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
             source: Span::new(0, 0),
         }),
     );
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    // An image is the only way such a body reaches an interpreter, so the
+    // tampered module travels through one.
     let platform = interp.platform();
+    let bytes = image::snapshot(
+        interp.heap_ref(),
+        None,
+        &Origin::File(PathBuf::from("t.ns")),
+        &class,
+        &module,
+        &platform,
+        &[],
+    )
+    .expect("snapshot");
+    let mut loaded = image::load(&bytes).expect("load");
+    let platform = loaded.interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        loaded.interp.instantiate(loaded.root_class, vec![platform]),
         "instantiate Args",
     );
     let derived = expect_ok(
-        interp.send(outer, Symbol::intern("Derived"), vec![], &bindings),
+        loaded.interp.send(outer, Symbol::intern("Derived"), vec![]),
         "Derived",
     );
     let Value::Obj(derived) = derived else {
         panic!("the accessor must yield a class object")
     };
-    match interp.instantiate(derived, vec![], &bindings) {
+    match loaded.interp.instantiate(derived, vec![]) {
         Err(Signal::Error(e)) => assert!(
             e.message.contains("did not evaluate its message arguments"),
             "unexpected error message: {}",
@@ -4060,22 +3814,17 @@ fn the_superclass_clause_frame_kinds_decode() {
 
 const TRIVIAL_MODULE: &str = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n) : ()";
 
-/// A full `image::snapshot` of `src` under the bytecode engine, with no
-/// roots -- these tests care about the code table's own bytes, not the
+/// A full `image::snapshot` of `src`, with no roots -- these tests care about the code table's own bytes, not the
 /// object graph.
 fn snapshot_of(src: &str) -> Vec<u8> {
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(src);
     let platform = interp.platform();
     image::snapshot(
         interp.heap_ref(),
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         &[],
     )
@@ -4189,16 +3938,11 @@ fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywh
     );
     let mut loaded = image::load(&bytes).expect("load");
     let instance = expect_ok(
-        loaded
-            .interp
-            .instantiate(loaded.root_class, vec![], &loaded.empty_bindings),
+        loaded.interp.instantiate(loaded.root_class, vec![]),
         "instantiate",
     );
-    let bindings = loaded.empty_bindings.clone();
     let result = expect_ok(
-        loaded
-            .interp
-            .send(instance, Symbol::intern("a"), vec![], &bindings),
+        loaded.interp.send(instance, Symbol::intern("a"), vec![]),
         "a",
     );
     assert!(matches!(result, Value::SmallInt(42)));
@@ -4383,14 +4127,10 @@ fn a_mixin_table_that_is_not_a_declaration_tree_is_an_error() {
 /// instantiates such a class without error.
 #[test]
 fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
-    let (mut interp, class, bindings) = load(NESTED_SUPERCLASS_ARGS);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(NESTED_SUPERCLASS_ARGS);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Args",
     );
     let bytes = image::snapshot(
@@ -4398,7 +4138,7 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
         Some(NESTED_SUPERCLASS_ARGS),
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         std::slice::from_ref(&outer),
     )
@@ -4430,30 +4170,22 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
     let mut loaded = image::load(&bytes).expect("load");
     let reloaded = loaded.roots.first().copied().expect("the snapshotted Args");
     let derived_class = expect_ok(
-        loaded.interp.send(
-            reloaded,
-            Symbol::intern("Derived"),
-            vec![],
-            &loaded.empty_bindings,
-        ),
+        loaded
+            .interp
+            .send(reloaded, Symbol::intern("Derived"), vec![]),
         "Derived",
     );
     let Value::Obj(derived_class) = derived_class else {
         panic!("the accessor must yield a class object")
     };
     let instance = expect_ok(
-        loaded
-            .interp
-            .instantiate(derived_class, vec![], &loaded.empty_bindings),
+        loaded.interp.instantiate(derived_class, vec![]),
         "instantiate Derived",
     );
     let result = expect_ok(
-        loaded.interp.send(
-            instance,
-            Symbol::intern("value"),
-            vec![],
-            &loaded.empty_bindings,
-        ),
+        loaded
+            .interp
+            .send(instance, Symbol::intern("value"), vec![]),
         "value",
     );
     assert!(matches!(result, Value::SmallInt(7)));
@@ -4573,7 +4305,6 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
         initializers: HashMap::new(),
         superclass_clauses: HashMap::new(),
         superclass_messages: HashMap::new(),
-        bindings: Rc::new(HashMap::new()),
     };
     let platform = interp.platform();
     let Err(err) = image::snapshot(
@@ -4716,12 +4447,11 @@ fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
     let mut loaded = image::load(&bytes).expect("load");
     let head = loaded.roots[0];
     assert_eq!(superclass_depth(loaded.interp.heap_ref(), &head), DEEP);
-    let bindings = loaded.empty_bindings.clone();
     // Nothing on the chain declares the selector, so the send ends in an
     // ordinary Newspeak error. That it ends at all is the point.
     let answered = loaded
         .interp
-        .send(head, Symbol::intern("noSuchThing"), vec![], &bindings)
+        .send(head, Symbol::intern("noSuchThing"), vec![])
         .is_ok();
     assert!(!answered, "no class on the chain declares `noSuchThing`");
 }
@@ -4805,24 +4535,17 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     occurrences(haystack, needle) > 0
 }
 
-/// Instantiates `src` under the bytecode engine and snapshots the instance
+/// Instantiates `src` and snapshots the instance
 /// (plus, with `extra_send`, that send's result) -- with or without the
 /// module's source text in the image.
 fn snapshot_module(src: &str, source: Option<&str>, extra_send: Option<&str>) -> Vec<u8> {
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(src);
     let platform = interp.platform();
-    let instance = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
-        "instantiate",
-    );
+    let instance = expect_ok(interp.instantiate(class, vec![platform]), "instantiate");
     let mut roots = vec![instance];
     if let Some(selector) = extra_send {
         roots.push(expect_ok(
-            interp.send(instance, Symbol::intern(selector), vec![], &bindings),
+            interp.send(instance, Symbol::intern(selector), vec![]),
             selector,
         ));
     }
@@ -4831,7 +4554,7 @@ fn snapshot_module(src: &str, source: Option<&str>, extra_send: Option<&str>) ->
         source,
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         &roots,
     )
@@ -4853,12 +4576,9 @@ fn a_source_free_image_still_runs() {
     assert!(loaded.source.is_none());
     let instance = loaded.roots.first().copied().expect("the root instance");
     let result = expect_ok(
-        loaded.interp.send(
-            instance,
-            Symbol::intern("answer"),
-            vec![],
-            &loaded.empty_bindings,
-        ),
+        loaded
+            .interp
+            .send(instance, Symbol::intern("answer"), vec![]),
         "answer",
     );
     assert!(
@@ -4876,9 +4596,8 @@ fn a_source_free_image_still_reaches_its_nested_classes() {
     let mut loaded = image::load(&bytes).expect("load");
     let outer = loaded.roots.first().copied().expect("the root instance");
     let inner_class = nested_class_of(&mut loaded, outer, "Inner");
-    let bindings = loaded.empty_bindings.clone();
     let instance = expect_ok(
-        loaded.interp.instantiate(inner_class, vec![], &bindings),
+        loaded.interp.instantiate(inner_class, vec![]),
         "instantiate Inner",
     );
     match send_to(&mut loaded, instance, "value") {
@@ -4900,12 +4619,9 @@ fn the_debug_variant_still_carries_source() {
     // And it is still a working world, not merely a readable file.
     let instance = loaded.roots.first().copied().expect("the root instance");
     let result = expect_ok(
-        loaded.interp.send(
-            instance,
-            Symbol::intern("answer"),
-            vec![],
-            &loaded.empty_bindings,
-        ),
+        loaded
+            .interp
+            .send(instance, Symbol::intern("answer"), vec![]),
         "answer",
     );
     assert!(matches!(result, Value::SmallInt(42)));
@@ -4925,57 +4641,6 @@ fn the_two_variants_differ_only_by_the_source_blob() {
     );
 }
 
-#[test]
-fn a_frame_says_which_engine_its_pc_belongs_to() {
-    // `block` hands back a live closure, whose `captured_frame` and `home`
-    // are the method activation it was created in -- so this image's frame
-    // table is non-empty.
-    let bytes = snapshot_module(SOURCE_FREE_MODULE, None, Some("block"));
-    let loaded = image::load(&bytes).expect("load");
-    let block = loaded.roots.get(1).copied().expect("the block root");
-    let heap = loaded.interp.heap_ref();
-    let closure = heap
-        .closure_data(obj(&block))
-        .expect("the second root must be a closure");
-    assert_eq!(
-        heap.frame_snapshot(&closure.captured_frame).pc_kind,
-        ns_runtime::PcKind::Bytecode,
-        "a decoded frame's pc is an instruction index, and says so"
-    );
-}
-
-/// The discriminator is not decoration: a frame record claiming a
-/// tree-walker `pc` names a statement index into a body no image carries,
-/// so it is refused rather than reinterpreted.
-#[test]
-fn a_frame_claiming_a_tree_walk_pc_is_refused() {
-    let mut w = one_frame_prefix_with_pc_kind(0);
-    w.write_u8(2); // frame kind: TopLevel
-    w.write_bool(false); // continuable
-    w.write_u32(0); // no roots
-    let bytes = w.into_bytes();
-    assert_eq!(
-        GraphFixture::new().decode_err(&bytes),
-        decode::DecodeError::TreeWalkFrame
-    );
-}
-
-#[test]
-fn an_unknown_frame_pc_kind_is_an_error_not_a_panic() {
-    let mut w = one_frame_prefix_with_pc_kind(7);
-    w.write_u8(2); // frame kind: TopLevel
-    w.write_bool(false);
-    w.write_u32(0);
-    let bytes = w.into_bytes();
-    assert_eq!(
-        GraphFixture::new().decode_err(&bytes),
-        decode::DecodeError::InvalidTag {
-            what: "frame pc kind",
-            tag: 7
-        }
-    );
-}
-
 /// A `pc` past the end of the body that runs in the frame. Nothing
 /// re-activates a decoded frame today, but `pc` is an index and this bound
 /// is what keeps it from becoming one that is never checked.
@@ -4988,45 +4653,6 @@ fn a_frame_pc_past_its_bodys_last_instruction_is_refused() {
     let err = decode::verify_graph(&graph, &table, &module, fixture.interp.heap_ref())
         .expect_err("out-of-range pc");
     assert_eq!(err, decode::DecodeError::PcOutOfRange { pc: 99, instrs: 2 });
-}
-
-/// The tree-walk-after-load policy, pinned. A loaded world's declarations
-/// came off the wire and carry no AST, so the tree-walker is refused for it
-/// outright -- one refusal covering every tree-walk path at once, instead
-/// of each path having to notice for itself (some of which used to notice
-/// by silently doing nothing).
-#[test]
-fn the_tree_walking_engine_is_refused_after_a_load() {
-    let bytes = snapshot_module(SOURCE_FREE_MODULE, None, None);
-    let mut loaded = image::load(&bytes).expect("load");
-    assert_eq!(
-        loaded.interp.set_engine(Engine::TreeWalk),
-        Err(ns_runtime::EngineUnavailable::TreeWalkAfterLoad)
-    );
-    // And the refusal left the bytecode engine in place: the world still
-    // runs, rather than being wedged by the attempt.
-    let instance = loaded.roots.first().copied().expect("the root instance");
-    let result = expect_ok(
-        loaded.interp.send(
-            instance,
-            Symbol::intern("answer"),
-            vec![],
-            &loaded.empty_bindings,
-        ),
-        "answer",
-    );
-    assert!(matches!(result, Value::SmallInt(42)));
-}
-
-/// The same interpreter, built from source rather than decoded, still
-/// accepts either engine -- so the refusal above is about the *world*, not
-/// about `set_engine` having become one-way.
-#[test]
-fn a_source_built_interpreter_still_accepts_the_tree_walking_engine() {
-    let (mut interp, class, bindings) = load(SOURCE_FREE_MODULE);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    assert_eq!(interp.set_engine(Engine::Bytecode(module)), Ok(()));
-    assert_eq!(interp.set_engine(Engine::TreeWalk), Ok(()));
 }
 
 /// `load` never calls the parser, so source that could not possibly parse
@@ -5045,64 +4671,6 @@ fn the_debug_variants_source_is_never_parsed() {
     );
 }
 
-/// The encoder's half of the `pc` discriminator. A tree-walker activation
-/// counts statements, and an image's code table has no statements to count
-/// -- so a world holding one is refused when it is *written*, where the
-/// mistake is, rather than decoded into a `pc` that indexes the wrong
-/// thing. (The same rule `encode_closure_record` applies to a
-/// `ClosureBody::Ast`.)
-#[test]
-fn a_world_holding_a_tree_walker_activation_is_refused_when_written() {
-    let (mut interp, class, bindings) = load(TRIVIAL_MODULE);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    let foo = module
-        .methods
-        .get(&class_method_key(interp.heap_ref(), &class, "foo"))
-        .cloned()
-        .expect("`foo` is compiled");
-    // An activation of `foo` that claims to be counting statements. Nothing
-    // in the runtime builds one under `Engine::Bytecode`; it is written by
-    // hand here because the encoder's refusal is what stops it from ever
-    // reaching an image.
-    let frame: ns_runtime::FrameRef = interp.heap_mut().alloc_frame(ns_runtime::Frame {
-        receiver: Value::Nil,
-        args: vec![],
-        temps: vec![Value::Nil; foo.num_registers as usize],
-        pc: 0,
-        pc_kind: ns_runtime::PcKind::TreeWalk,
-        sender: None,
-        home: None,
-        current_class: Some(class),
-        kind: FrameKind::TopLevel,
-        uncontinuable: false,
-        slot_base: 0,
-    });
-    let block_class = interp.builtin_class(BuiltinClass::Block);
-    let closure = Value::Obj(interp.heap_mut().alloc_object(
-        block_class,
-        ObjectData::Closure(ns_runtime::ClosureData {
-            params: vec![],
-            body: ClosureBody::Compiled(foo),
-            captured_frame: frame,
-            home: frame,
-            bindings: bindings.clone(),
-        }),
-    ));
-    let platform = interp.platform();
-    let Err(err) = image::snapshot(
-        interp.heap_ref(),
-        None,
-        &Origin::File(PathBuf::from("t.ns")),
-        &class,
-        &module,
-        &platform,
-        std::slice::from_ref(&closure),
-    ) else {
-        panic!("a tree-walker activation must not be serializable")
-    };
-    assert!(err.contains("tree-walker activation"), "{err}");
-}
-
 /// A snapshot is taken between sends, when no activation is running. A
 /// frame married to a live activation keeps its registers on the stack, not
 /// in the frame the encoder reads, so a mid-execution snapshot would write
@@ -5111,18 +4679,13 @@ fn a_world_holding_a_tree_walker_activation_is_refused_when_written() {
 /// release build also makes.
 #[test]
 fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
-    let (mut interp, class, bindings) = load(TRIVIAL_MODULE);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(TRIVIAL_MODULE);
     let platform = interp.platform();
     let running = interp.heap_mut().push_activation(
         ns_runtime::ActivationHeader {
             receiver: Value::Nil,
             current_class: None,
             kind: FrameKind::TopLevel,
-            pc_kind: ns_runtime::PcKind::Bytecode,
             slot_base: 0,
         },
         &[],
@@ -5133,7 +4696,7 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
         None,
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         &[],
     );
@@ -5151,44 +4714,40 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
 /// the frame record from rotting unnoticed.
 #[test]
 fn a_frames_sender_survives_a_round_trip() {
-    let (interp, _class, _o, decoded, _max) =
-        round_trip_graph(TRIVIAL_MODULE, |interp, class, bindings| {
-            let foo = interp
-                .compiled_module()
-                .expect("the bytecode engine is active")
-                .methods
-                .get(&class_method_key(interp.heap_ref(), class, "foo"))
-                .cloned()
-                .expect("`foo` is compiled");
-            let frame_running = |receiver: i64, sender| ns_runtime::Frame {
-                receiver: Value::SmallInt(receiver),
-                args: vec![],
-                temps: vec![Value::Nil; foo.num_registers as usize],
-                pc: 0,
-                pc_kind: ns_runtime::PcKind::Bytecode,
-                sender,
-                home: None,
-                current_class: Some(*class),
-                kind: FrameKind::TopLevel,
-                uncontinuable: true,
-                slot_base: 0,
-            };
-            let sender = interp.heap_mut().alloc_frame(frame_running(7, None));
-            let frame = interp
-                .heap_mut()
-                .alloc_frame(frame_running(8, Some(sender)));
-            let block_class = interp.builtin_class(BuiltinClass::Block);
-            vec![Value::Obj(interp.heap_mut().alloc_object(
-                block_class,
-                ObjectData::Closure(ns_runtime::ClosureData {
-                    params: vec![],
-                    body: ClosureBody::Compiled(foo.clone()),
-                    captured_frame: frame,
-                    home: frame,
-                    bindings: bindings.clone(),
-                }),
-            ))]
-        });
+    let (interp, _class, _o, decoded, _max) = round_trip_graph(TRIVIAL_MODULE, |interp, class| {
+        let foo = interp
+            .compiled_module()
+            .methods
+            .get(&class_method_key(interp.heap_ref(), class, "foo"))
+            .cloned()
+            .expect("`foo` is compiled");
+        let frame_running = |receiver: i64, sender| ns_runtime::Frame {
+            receiver: Value::SmallInt(receiver),
+            args: vec![],
+            temps: vec![Value::Nil; foo.num_registers as usize],
+            pc: 0,
+            sender,
+            home: None,
+            current_class: Some(*class),
+            kind: FrameKind::TopLevel,
+            uncontinuable: true,
+            slot_base: 0,
+        };
+        let sender = interp.heap_mut().alloc_frame(frame_running(7, None));
+        let frame = interp
+            .heap_mut()
+            .alloc_frame(frame_running(8, Some(sender)));
+        let block_class = interp.builtin_class(BuiltinClass::Block);
+        vec![Value::Obj(interp.heap_mut().alloc_object(
+            block_class,
+            ObjectData::Closure(ns_runtime::ClosureData {
+                params: vec![],
+                code: foo.clone(),
+                captured_frame: frame,
+                home: frame,
+            }),
+        ))]
+    });
     let heap = interp.heap_ref();
     let c = heap
         .closure_data(obj(&decoded[0]))
@@ -5211,17 +4770,10 @@ fn a_frames_sender_survives_a_round_trip() {
 #[test]
 fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_continuable() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public mk = ( ^[ ^1 ] )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(src);
     let platform = interp.platform();
-    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
-    let closure = expect_ok(
-        interp.send(instance, Symbol::intern("mk"), vec![], &bindings),
-        "mk",
-    );
+    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let closure = expect_ok(interp.send(instance, Symbol::intern("mk"), vec![]), "mk");
     // `mk` has returned, so its frame is divorced and marked uncontinuable.
     // Clear the flag, as a hand-edited file could.
     let home = interp
@@ -5238,7 +4790,7 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
         None,
         &Origin::File(PathBuf::from("t.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         &[instance, closure],
     )
@@ -5264,11 +4816,7 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
         .heap_ref()
         .frame_activation(&decoded_home)
         .is_none());
-    let bindings = loaded.empty_bindings.clone();
-    match loaded
-        .interp
-        .send(decoded, Symbol::intern("value"), vec![], &bindings)
-    {
+    match loaded.interp.send(decoded, Symbol::intern("value"), vec![]) {
         Err(Signal::Error(e)) => assert!(e.message.contains("cannotReturn"), "{}", e.message),
         Err(Signal::Return(..)) => panic!("the return escaped instead of being refused"),
         Ok(_) => panic!("a `^` into a decoded home must not return normally"),
@@ -5389,8 +4937,7 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
 /// `CodeKind::Initializer` entry to cover.
 ///
 /// Left out on purpose: a superclass clause or message, multiple levels of
-/// user-defined inheritance, a tree-walker frame, and a paused/suspended
-/// closure. Each of those already has its own dedicated round-trip test
+/// user-defined inheritance, and a paused/suspended closure. Each of those already has its own dedicated round-trip test
 /// above; folding every format feature into one fixture would leave a future
 /// diff of `golden-image.bin` unable to say which section actually moved.
 const GOLDEN_SRC: &str = "\
@@ -5419,22 +4966,15 @@ class Golden usingPlatform: p = Object new (
 /// and its own method `HashMap`, so nothing here can share iteration order
 /// between two encodes the way a single shared `CompiledModule` would.
 fn snapshot_of_without_source(src: &str) -> Vec<u8> {
-    let (mut interp, class, bindings) = load(src);
-    let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(module))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(src);
     let platform = interp.platform();
-    let instance = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
-        "instantiate",
-    );
+    let instance = expect_ok(interp.instantiate(class, vec![platform]), "instantiate");
     image::snapshot(
         interp.heap_ref(),
         None,
         &Origin::File(PathBuf::from("golden.ns")),
         &class,
-        interp.compiled_module().expect("bytecode engine"),
+        interp.compiled_module(),
         &platform,
         &[instance],
     )
@@ -5541,14 +5081,10 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
     // Build both from one compiled module so the only difference is the
     // artifact shape, then compare through the inspector rather than by raw
     // offset: a raw offset says two files differ, a section says which one.
-    let (mut interp, class, bindings) = load(ENTRY_SRC);
-    let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(compiled))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(ENTRY_SRC);
     let platform = interp.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
-    let module = interp.compiled_module().expect("bytecode engine");
+    let module = interp.compiled_module();
 
     let binary = image::build(
         interp.heap_ref(),
@@ -5620,12 +5156,8 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
 /// `build` later to chase an identity this format never promised here.
 #[test]
 fn build_accepts_an_entry_selector_the_module_never_declares() {
-    let (mut interp, class, bindings) = load(TRIVIAL_MODULE);
-    let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(compiled))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let module = interp.compiled_module().expect("bytecode engine");
+    let (interp, class, _) = load(TRIVIAL_MODULE);
+    let module = interp.compiled_module();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let binary = image::build(
@@ -5649,12 +5181,8 @@ fn build_accepts_an_entry_selector_the_module_never_declares() {
 /// graph section to read a starting point out of.
 #[test]
 fn a_binary_loads_with_no_roots_and_its_entry() {
-    let (mut interp, class, bindings) = load(ENTRY_SRC);
-    let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(compiled))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let module = interp.compiled_module().expect("bytecode engine");
+    let (interp, class, _) = load(ENTRY_SRC);
+    let module = interp.compiled_module();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let binary = image::build(
@@ -5675,8 +5203,8 @@ fn a_binary_loads_with_no_roots_and_its_entry() {
         Some("main:args:")
     );
     assert!(
-        loaded.interp.compiled_module().is_some(),
-        "the bytecode engine must be installed"
+        !loaded.interp.compiled_module().methods.is_empty(),
+        "the binary's code table must be installed"
     );
 }
 
@@ -5691,14 +5219,10 @@ fn a_binary_loads_with_no_roots_and_its_entry() {
 /// carried none of.
 #[test]
 fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
-    let (mut interp, class, bindings) = load(ENTRY_SRC);
-    let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(compiled))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(ENTRY_SRC);
     let platform = interp.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
-    let module = interp.compiled_module().expect("bytecode engine");
+    let module = interp.compiled_module();
 
     let img = image::snapshot(
         interp.heap_ref(),
@@ -5729,12 +5253,8 @@ fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
 /// refuses it up front instead.
 #[test]
 fn a_stateless_artifact_without_an_entry_is_refused() {
-    let (mut interp, class, bindings) = load(ENTRY_SRC);
-    let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(compiled))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let module = interp.compiled_module().expect("bytecode engine");
+    let (interp, class, _) = load(ENTRY_SRC);
+    let module = interp.compiled_module();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let mut bytes = image::build(
@@ -5760,9 +5280,9 @@ fn a_stateless_artifact_without_an_entry_is_refused() {
     bytes.truncate(entry_start);
     bytes.push(0);
 
-    // Not `.expect_err`: `LoadedImage` carries an `Interpreter`, and
-    // `Interpreter`'s `Engine` field has no `Debug` impl, so neither type
-    // can derive one -- `expect_err` requires `T: Debug` on the `Ok` side.
+    // Not `.expect_err`: `LoadedImage` carries an `Interpreter`, which has
+    // no `Debug` impl, so neither type has one -- `expect_err` requires
+    // `T: Debug` on the `Ok` side.
     let err = match image::load(&bytes) {
         Ok(_) => panic!("a binary must carry an entry"),
         Err(e) => e,
@@ -5771,19 +5291,15 @@ fn a_stateless_artifact_without_an_entry_is_refused() {
 }
 
 /// The stateless binary is untrusted input exactly like the snapshot image
-/// is -- the differential harness never runs a binary that a fuzzer or a
-/// half-written file produced, so this sweep is the only thing standing
-/// between a truncated binary and a panic. Mirrors
+/// is -- no fixture is a binary that a fuzzer or a half-written file
+/// produced, so this sweep is the only thing standing between a truncated
+/// binary and a panic. Mirrors
 /// `every_truncation_of_an_image_is_reported_rather_than_panicking`, the
 /// existing model for the image shape.
 #[test]
 fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
-    let (mut interp, class, bindings) = load(ENTRY_SRC);
-    let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(compiled))
-        .expect("a source-built interpreter accepts the bytecode engine");
-    let module = interp.compiled_module().expect("bytecode engine");
+    let (interp, class, _) = load(ENTRY_SRC);
+    let module = interp.compiled_module();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let binary = image::build(
@@ -5802,9 +5318,8 @@ fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
         // symbol table, a truncated entry field, ...) and the point of this
         // sweep is that every one of those is a decode error rather than a
         // panic, not that they share one message. Never `{:?}` the `Ok`
-        // side either: `LoadedImage` carries an `Interpreter`, whose
-        // `Engine` field has no `Debug` impl, so neither type can derive
-        // one.
+        // side either: `LoadedImage` carries an `Interpreter`, which has no
+        // `Debug` impl, so neither type has one.
         assert!(
             image::load(&binary[..cut]).is_err(),
             "a binary truncated to {cut} bytes must be refused, not panic"
@@ -5828,13 +5343,9 @@ fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
 /// exactly that failure mode caught in review.
 #[test]
 fn a_binary_with_a_graph_appended_is_refused() {
-    let (mut interp, class, bindings) = load(ENTRY_SRC);
-    let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(compiled))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(ENTRY_SRC);
     let platform = interp.platform();
-    let module = interp.compiled_module().expect("bytecode engine");
+    let module = interp.compiled_module();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let binary = image::build(
@@ -5897,13 +5408,9 @@ fn a_binary_with_a_graph_appended_is_refused() {
 /// refused specifically because it has no entry to start from.
 #[test]
 fn a_relabelled_snapshot_is_refused_for_missing_entry() {
-    let (mut interp, class, bindings) = load(ENTRY_SRC);
-    let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-    interp
-        .set_engine(Engine::Bytecode(compiled))
-        .expect("a source-built interpreter accepts the bytecode engine");
+    let (mut interp, class, _) = load(ENTRY_SRC);
     let platform = interp.platform();
-    let module = interp.compiled_module().expect("bytecode engine");
+    let module = interp.compiled_module();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let mut bytes = image::snapshot(
@@ -5959,18 +5466,14 @@ class X usingPlatform: p = Object new (
 ) (
 ) : ()";
     for src in [ENTRY_SRC, TRIVIAL_MODULE, WITH_A_FRAME] {
-        let (mut interp, class, bindings) = load(src);
-        let compiled = compiler::compile_module(interp.heap_ref(), &class, &bindings);
-        interp
-            .set_engine(Engine::Bytecode(compiled))
-            .expect("a source-built interpreter accepts the bytecode engine");
+        let (mut interp, class, _) = load(src);
         let platform = interp.platform();
         let origin = Origin::File(PathBuf::from("t.ns"));
         let instance = {
-            let module = interp.compiled_module().expect("bytecode engine");
+            let module = interp.compiled_module();
             let _ = module;
             let args = vec![platform];
-            interp.instantiate(class, args, &bindings)
+            interp.instantiate(class, args)
         };
         let roots: Vec<_> = match instance {
             Ok(v) => vec![v],
@@ -5978,7 +5481,7 @@ class X usingPlatform: p = Object new (
             // graph worth walking -- just without an instance in it.
             Err(_) => Vec::new(),
         };
-        let module = interp.compiled_module().expect("bytecode engine");
+        let module = interp.compiled_module();
         let img = image::snapshot(
             interp.heap_ref(),
             None,
