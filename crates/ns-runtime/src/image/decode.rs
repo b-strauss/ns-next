@@ -638,8 +638,10 @@ fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError>
 ///   three `Missing*` errors), because the run-time paths that reach for
 ///   those bodies panic on the invariant rather than failing.
 ///
-/// Methods are checked in selector order, as the row lists them, so the error
-/// reported is the one the row's first bad entry causes.
+/// Methods are checked in selector order, the order the encoder writes a row
+/// in, so for any artifact the encoder produced the reported error is the
+/// row's first bad entry. `read_row` enforces no order, so for a crafted row
+/// that lists its selectors otherwise it is merely one of them.
 ///
 /// `mixins::decode` attaches the bodies but checks none of this, so `inspect`
 /// can still display an artifact whose halves disagree; `image::load` calls

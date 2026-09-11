@@ -941,10 +941,12 @@ impl Heap {
 
     /// Answers whether the write happened, mirroring `array_set` and
     /// `set_instance_field`. `image::decode::rebuild_applications` is the
-    /// only caller, and it only ever calls this on an object it filled in
-    /// as a class record two lines above -- a wrong-shape `class` here would
-    /// be a decoder bug, not an untrusted-input case, so the caller turns a
-    /// `false` into an `unreachable!` rather than a `DecodeError`.
+    /// only caller in the runtime, and it only ever calls this on an object
+    /// it filled in as a class record two lines above -- a wrong-shape
+    /// `class` here would be a decoder bug, not an untrusted-input case, so
+    /// that caller turns a `false` into an `unreachable!` rather than a
+    /// `DecodeError`. Tests also call it, to swap a doctored mixin onto a
+    /// live class (`install_mixin` in `tests/image.rs`).
     pub fn set_class_application(
         &mut self,
         class: &ClassRef,

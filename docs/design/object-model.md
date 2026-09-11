@@ -189,10 +189,11 @@ themselves: a method's body onto its `MixinMethod`, a mixin's initializer and
 clause bodies onto the `Mixin`, before the mixin is shared
 ([execution.md](execution.md), "The VM"), so a class `load_module` returns is
 already runnable. A mixin decoded from an image carries the bodies its row
-names instead, reconciled on load by `image::decode::verify_mixins`. Nothing it does evaluates Newspeak code, and compiling a
-resolved module is total — a program-level error is deferred to the execution of
-the body that raises it ([compiler.md](compiler.md), "Compilation cannot fail") —
-so loading stays total.
+names instead, reconciled on load by `image::decode::verify_mixins`. Nothing it
+does evaluates Newspeak code, and compiling a resolved module is total — a
+program-level error is deferred to the execution of the body that raises it
+([compiler.md](compiler.md), "Compilation cannot fail") — so loading stays
+total.
 
 ## Instantiation
 

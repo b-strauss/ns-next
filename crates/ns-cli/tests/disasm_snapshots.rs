@@ -228,6 +228,78 @@ fn disasm_of_a_binary_matches_disasm_of_its_source() {
     );
 }
 
+/// An artifact whose root row names no instance initializer is legal when the
+/// class declares no slots and no `initExpr`s -- `verify_mixins` accepts it --
+/// so `disasm --initializer` on one must refuse with a message, not panic: an
+/// artifact is untrusted input. No source compiles to such a row (every mixin
+/// built from source gets an initializer), so the artifact is written through
+/// the runtime with the root's initializer removed, the way a crafted file
+/// would present it.
+#[test]
+fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
+    use ns_runtime::{Interpreter, Mixin, SourceOrigin, Symbol};
+    use std::rc::Rc;
+
+    let src = "Newspeak3\n'T'\nclass Bare usingPlatform: p = Object new () (\n\
+               \x20   public main: p args: a = ( ^0 )\n\
+               ) : ()\n";
+    let module = ns_syntax::parse(src).expect("parse");
+    let resolved = ns_runtime::resolve(module, Rc::from(src), SourceOrigin::File("bare.ns".into()))
+        .expect("resolve");
+    let mut interp = Interpreter::bootstrap();
+    let class = interp.load_module(&resolved);
+    let application = interp
+        .heap_ref()
+        .class_application(&class)
+        .expect("a class object");
+    let bare = Mixin {
+        initializer_code: None,
+        ..(*application.mixin).clone()
+    };
+    let rewired = interp.apply_mixin(&Rc::new(bare), application.superclass.as_ref());
+    assert!(interp.heap_mut().set_class_application(&class, rewired));
+    let bytes = ns_runtime::image::build(
+        interp.heap_ref(),
+        None,
+        &SourceOrigin::File("bare.ns".into()),
+        &class,
+        Symbol::intern("main:args:"),
+    )
+    .expect("build");
+
+    let dir = ScratchDir::new("disasm-no-init");
+    let bin = dir.join("bare.nsb");
+    std::fs::write(&bin, bytes).expect("write artifact");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+        .arg("disasm")
+        .arg(&bin)
+        .arg("--initializer")
+        .output()
+        .expect("run ns-next disasm");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("panicked"), "disasm panicked: {err}");
+    assert_eq!(out.status.code(), Some(1), "stderr: {err}");
+    assert!(
+        err.contains("error: `Bare` has no instance initializer"),
+        "unexpected stderr: {err}"
+    );
+
+    // The same artifact still disassembles a method: only the missing body
+    // is refused.
+    let method = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+        .arg("disasm")
+        .arg(&bin)
+        .arg("main:args:")
+        .output()
+        .expect("run ns-next disasm");
+    assert!(
+        method.status.success(),
+        "{}",
+        String::from_utf8_lossy(&method.stderr)
+    );
+}
+
 /// A file that is neither parseable source nor a valid artifact must report
 /// one clear failure, not a decoder backtrace.
 #[test]

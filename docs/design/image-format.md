@@ -257,9 +257,9 @@ see `a_binary_with_a_graph_appended_is_refused` in `crates/ns-runtime/tests/imag
 
 `disasm` accepts an artifact as well as a `.ns` file: the same decoder that
 `load` uses rebuilds the mixin tree with each body attached to its declaration,
-and `verify_mixins` reconciles every body with what it is attached to before
-anything runs, so `disasm` formats a decoded body's `Instr`s exactly as it does
-a freshly compiled one's.
+and `disasm` formats a decoded body's `Instr`s exactly as it does a freshly
+compiled one's. Like every load, it refuses an artifact `verify_mixins` finds
+inconsistent before printing anything.
 
 `ns-next inspect <artifact>` prints the file itself. Its default is a table of
 contents — header flags, section offsets, the symbol table, **the code table
@@ -329,9 +329,9 @@ into it. It is not in it.
 ## The stateless binary
 
 `ns-next build <file.ns> <out> [--entry SEL] [--debug-source]` runs the pipeline
-up to compiling the code onto the declarations — parse, resolve, bootstrap, compile — and
-then **does not instantiate**. That omission is the point: the artifact never
-sees a platform.
+up to compiling the code onto the declarations — parse, resolve, bootstrap,
+compile — and then **does not instantiate**. That omission is the point: the
+artifact never sees a platform.
 
 **Format delta.** A second header flag, `FLAG_STATELESS`, and an entry-selector
 field encoded as a symbol id, bounds-checked like every other id. The field sits
@@ -384,11 +384,11 @@ this narrower set keeps the byte-identity guarantee above sound.
 
 **Loading.** `load` reads the header and branches. A stateful image is unchanged.
 A stateless binary decodes symbols → code → mixins → root class → entry id, with
-no graph section, then verifies the decoded declarations against their code and hands back empty roots with
-the entry as an option. The caller instantiates the root
-class with the freshly bootstrapped platform and sends the entry, so the primary
-factory and every initializer run **inside the loaded world** against the
-artifact's own code. Capabilities enter at start time.
+no graph section, then verifies the decoded declarations against their code and
+hands back empty roots with the entry as an option. The caller instantiates the
+root class with the freshly bootstrapped platform and sends the entry, so the
+primary factory and every initializer run **inside the loaded world** against
+the artifact's own code. Capabilities enter at start time.
 
 Instantiation stays in the CLI rather than in `image::load`: deciding *that* a
 command-line entry point supplies the platform is a CLI concern, because nothing

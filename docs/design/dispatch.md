@@ -212,12 +212,13 @@ class object — is the wrong one, and picking it would produce a cache that
 never hits.
 
 **Caches come after the representation change, not before it.** A cache removes
-the lookup; the method it records carries its compiled body. It does not touch what an activation costs
-to build, which was measured at ~68 ns — about 41% of a user-method send — on
-the pre-arena representation; see [execution.md](execution.md)'s measurements.
-Wiring caches up first would optimize the half of a send that sits on top of a
-fixed cost the same milestone removes anyway, so the representation goes first
-and the caches land on the cheaper one.
+the lookup; the method it records carries its compiled body. It does not touch
+what an activation costs to build, which was measured at ~68 ns — about 41% of a
+user-method send — on the pre-arena representation; see
+[execution.md](execution.md)'s measurements. Wiring caches up first would
+optimize the half of a send that sits on top of a fixed cost the same milestone
+removes anyway, so the representation goes first and the caches land on the
+cheaper one.
 
 That representation change has happened. The arena replaced `Rc<RefCell<_>>`,
 worth about 15% of the benchmark ([memory.md](memory.md)). The activation stack

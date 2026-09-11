@@ -54,8 +54,8 @@ with exit status 0, not a crash.
 **An image is untrusted input.** No byte sequence may cause a panic or a process abort:
 validate every id, tag, count and length before it indexes, allocates or slices, and
 bound any recursion whose depth the input controls. `image::load` also runs two
-structural verification passes, and reconciles every decoded mixin with the bodies
-it carries, before any decoded code can run. See
+structural verification passes, and reconciles every decoded mixin with the
+bodies it carries, before any decoded code can run. See
 `docs/design/image-format.md`'s "Verification" section for the scope of what they
 do and do not guarantee. One thing to keep in mind while decoding: the decoder
 allocates one placeholder object and reified frame per declared record before it
@@ -96,12 +96,12 @@ scope, and never hold a handle across the death of the interpreter that allocate
 it: the index is in range in the other heap too, so the read answers a **different,
 perfectly valid object** rather than failing. Reach the real `Heap` instead:
 `image::encode::encode_code_table` and `image::mixins::plan` take a `&Heap`
-parameter for exactly this reason, and `ns-cli`'s `cmd_disasm` — which builds its own class object
-and so has no parameter to take — reads through `interp.heap_ref()` while that
-interpreter is still alive, before it goes out of scope. A `debug_assertions`-only
-origin guard turns the mistake into a panic at the read, so a debug-build test run
-catches it; a release build does not, which is why this is an invariant and not a
-check to rely on.
+parameter for exactly this reason, and `ns-cli`'s `cmd_disasm` — which builds its
+own class object and so has no parameter to take — reads through
+`interp.heap_ref()` while that interpreter is still alive, before it goes out of
+scope. A `debug_assertions`-only origin guard turns the mistake into a panic at
+the read, so a debug-build test run catches it; a release build does not, which
+is why this is an invariant and not a check to rely on.
 
 **A running activation is an `ActivationRef`; only a `FrameRef` is ever
 stored.** An `ActivationRef` indexes the `Heap`'s activation stack and is

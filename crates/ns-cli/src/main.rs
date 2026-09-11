@@ -890,9 +890,14 @@ fn cmd_disasm(
     };
     let (code, name) = match (selector, initializer) {
         (None, true) => {
-            let code = mixin.initializer_code.clone().unwrap_or_else(|| {
-                panic!("internal: `{}` carries no instance initializer", mixin.name)
-            });
+            // Not an invariant: a decoded mixin with no slots and no
+            // `initExpr`s legitimately carries no initializer (`verify_mixins`
+            // accepts that row), and an artifact is untrusted input, so this
+            // is a refusal rather than a panic.
+            let Some(code) = mixin.initializer_code.clone() else {
+                eprintln!("error: `{}` has no instance initializer", mixin.name);
+                return ExitCode::FAILURE;
+            };
             (code, mixin.name.to_string())
         }
         (Some(selector), false) => {

@@ -245,8 +245,8 @@ serializes reified frames only, and is taken when nothing is running
 Every body a program runs hangs off the declaration it belongs to — a method's
 off its `MixinMethod`, an initializer's and a superclass clause's off the
 `Mixin` — so what dispatch finds is what runs; nothing looks code up beside it.
-Everything in `interpreter/` decides *what* to run. Four places run a body, each by pushing an
-activation, calling `run_code` and popping it on every exit:
+Everything in `interpreter/` decides *what* to run. Four places run a body, each
+by pushing an activation, calling `run_code` and popping it on every exit:
 
 1. **Method body** — `invoke_method`, which also catches a `^` that targets its
    own activation.

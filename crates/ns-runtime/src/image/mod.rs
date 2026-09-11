@@ -246,9 +246,8 @@ pub struct LoadedImage {
 /// Both verification passes run before anything the image describes can be
 /// executed: `verify_code_table` and `verify_mixins` before anything is
 /// built on the code, `verify_graph` (image only) resolving each frame's
-/// body off the decoded mixins that carry it. A corrupt but version-matching artifact is an
-/// `Err` here,
-/// never a panic in the VM later.
+/// body off the decoded mixins that carry it. A corrupt but version-matching
+/// artifact is an `Err` here, never a panic in the VM later.
 pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let mut r = decode::Reader::new(bytes);
     let header = decode::read_header(&mut r).map_err(|e| e.to_string())?;
