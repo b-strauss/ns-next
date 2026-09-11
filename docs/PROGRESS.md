@@ -15,13 +15,29 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-M4 is under way, and **the next piece is 1b, the trampoline** — designed in
-[execution.md](design/execution.md), "Planned: the trampoline". Its pieces are
-one change: the object representation, the activation representation and the
-root discipline each constrain the other two, which is why the object and
-activation representations were converted together rather than one at a time.
-Each piece is designed in the document for its own aspect; those documents are
-the authority, and this is only the map to them.
+M4 is under way, and **the next piece is retiring the tree-walker** —
+designed in [execution.md](design/execution.md), "Planned: one engine". It was
+decided on 2026-09-11, when designing 1b, the trampoline, showed that a
+recursive AST evaluator cannot take part in what the trampoline exists for:
+suspending a running computation, the debugger, edit-and-continue on a live
+activation. Three steps now come before 1b, each landing on its own:
+
+- **A — Retire the tree-walker.** Harvest its verdicts first (move the
+  runtime tests that run under it by default onto the VM, turn
+  `differential.rs`'s inline cases into golden tests), then remove everything
+  that exists only because there are two engines.
+- **B — Clean up with one engine.** Behaviour-preserving refactoring and more
+  idiomatic Rust; its detailed plan is written once A has landed.
+- **C — The reference lowering**, the differential oracle that replaces the
+  tree-walker ([compiler.md](design/compiler.md), "Planned: the reference
+  lowering"). Its design has to settle how a recursion-depth limit counts
+  before 1b needs one.
+
+M4's pieces are one change: the object representation, the activation
+representation and the root discipline each constrain the other two, which is
+why the object and activation representations were converted together rather
+than one at a time. Each piece is designed in the document for its own aspect;
+those documents are the authority, and this is only the map to them.
 
 **Three pieces are done.** The heap seam routes every object and activation
 access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
@@ -36,22 +52,14 @@ every object and every reified frame is kept for the life of the process. That
 is a deliberate interim cost. The activation stack bounded it for activations
 nothing captures, and step 5, the collector, is what ends it.
 
-**Before 1b fixes its baseline, know that the tree-walker retains more than the
-VM.** It evaluates every block literal, including the `ifTrue:`/`and:`/
-`whileTrue:` arguments the compiler inlines, and reifies the running activation
-for each one; every closure it creates also carries its own copy of the block's
-syntax tree. So its storage is not bounded like the VM's: 300,000 calls of a
-method holding `ifTrue: [^0]` peak at 136.8 MB under the tree-walker against
-4.6 MB under the VM ([memory.md](design/memory.md), "Open: what the collector
-owns"). That does not explain why `bench_block.ns`'s time did not move under the
-tree-walker, though: its loop creates no control-flow block per iteration, so
-both engines reify one frame per iteration there, and its time did not move
-under the VM either. What offsets the stack's saving on that source is not
-known; profile it under both engines before 1b takes its numbers.
+**Before 1b fixes its baseline, profile `bench_block.ns`.** Its time did not
+move under the activation stack, although the stack took the block's own
+activation out of the frame arena; what offsets that saving is not known.
 
-The list below is M4's order of work — 1a done, everything from 1b on still
-ahead — and it is not the order the milestone was originally sketched in. Two
-things settled it, neither of them a preference.
+The list below is M4's order of work — 1a done, A to C inserted ahead of 1b,
+everything from 1b on still ahead — and it is not the order the milestone was
+originally sketched in. Two things settled the order of the numbered steps,
+neither of them a preference.
 
 The first is a measurement. On a release build, before the arena, a
 user-method send cost ~165 ns, of which ~68 ns — about 41% — was spent building
@@ -82,7 +90,7 @@ so nothing is lost by it going second.
      activation returns. Both engines share it. A user-method send under the
      bytecode engine fell from ~146 ns to ~91 ns, and an activation nothing
      captures leaves nothing behind; see "M4 — The activation stack" below.
-   - **1b — the trampoline. Next.** `send` split into a decision and an
+   - **1b — the trampoline. After A to C.** `send` split into a decision and an
      activation, arguments copied straight from the caller's registers,
      `Block value` absorbed, recursion depth an ordinary Newspeak error.
      Designed in [execution.md](design/execution.md), "Planned: the

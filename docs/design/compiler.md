@@ -299,6 +299,30 @@ These are the first pieces of the VM's own introspection tooling, the equivalent
 of `d8`; the rest, inline-cache transition traces and deoptimization reasons,
 arrives with the mechanisms it would observe.
 
+## Planned: the reference lowering
+
+What would change: the compiler gains a second, deliberately naive lowering,
+and every program must behave byte for byte the same under both. It is the
+differential oracle that replaces the tree-walker
+([execution.md](execution.md), "Planned: one engine").
+
+The reference lowering inlines no control flow — `ifTrue:`, `and:`,
+`whileTrue:` and their kin become real sends with real closures — gives every
+value a fresh register, and copies every named local before use. What it checks
+is exactly what the two lowerings do differently: register allocation and
+liveness (the class of defect "The value-register invariant" above guards
+against), control-flow inlining with its guard and fallback, the lexical-depth
+rewrite inside an inlined block, and the lowering of `^` there. What it cannot
+check is anything the two share: dispatch, the natives, the instructions' own
+semantics and `InitSlot` addressing. Golden tests of exit status, stdout and
+stderr cover those.
+
+One question is open, and must be settled before the trampoline needs the
+answer. The reference lowering activates blocks the optimized one inlines, so a
+recursion-depth limit that counts activations would trip at different points
+under the two — the same problem the tree-walker posed, without its Rust-stack
+half. This lowering's design decides how the limit counts.
+
 ## Follow-up: entry points that reach a class object only to find its mixin
 
 `compile_module`, `compile_initializer` and `image::encode_code_table` each

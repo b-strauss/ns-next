@@ -35,8 +35,8 @@ that cannot name its code is describing an intention, and should say so.
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
-| AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | inline-cache slots wired up |
-| Activations, both engines, the VM loop | [execution.md](execution.md) | Built | the trampoline, closure conversion, JIT tiers |
+| AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | the reference lowering, inline-cache slots wired up |
+| Activations, both engines, the VM loop | [execution.md](execution.md) | Built | one engine, the trampoline, closure conversion, JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena and the activation stack are built, nothing reclaims an arena slot | checked roots, a collector |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | Partial | the leaf/callback split |

@@ -30,6 +30,41 @@ decodes mixins and class objects, never AST-carrying bindings, so there is no
 source for it to execute. `Interpreter::set_engine(Engine::TreeWalk)` refuses on a
 loaded image rather than running it against the wrong data.
 
+## Planned: one engine
+
+What would change: the tree-walker is removed and the bytecode VM becomes the
+only engine. Decided on 2026-09-11, reversing the decision recorded in the
+section above, which still describes what is built until the removal lands.
+
+The reason is structural. The trampoline ("Planned: the trampoline" below)
+makes the activation stack the only place a running computation lives, and
+suspending and serializing a computation, debugger stepping and
+edit-and-continue on a live activation all build on that. A recursive AST
+evaluator keeps its computation on the Rust stack, so it can take part in none
+of them, and it constrains the design wherever it still has to agree. A
+recursion-depth limit is the case that surfaced it: it would have had to count
+activations identically in two engines that create different ones, because the
+compiler inlines the `ifTrue:`/`whileTrue:` blocks the tree-walker activates.
+The oracle was also structurally blind to defects in the orchestration both
+engines share: four of the six silent defects Milestone 3's review found were
+identically wrong under both.
+
+The verification property is kept. Three steps, in order:
+
+1. **Removal.** First the tree-walker's verdicts are harvested. The runtime
+   tests that never install compiled code, and so run under the tree-walker
+   today, move onto the VM, and any failure is fixed against the tree-walker
+   while it still exists. Every inline case of `differential.rs` becomes a
+   golden test of exit status, stdout and stderr. Then everything that exists
+   only because there are two engines goes: `Engine` and `set_engine`, the
+   tree-walk halves of the three hooks, `ClosureBody::Ast`, `PcKind` together
+   with its byte in the image's frame record (whose two tag values retire), and
+   the run-time `bindings` parameter, which only the tree-walker reads.
+2. **Cleanup with one engine.** Behaviour-preserving refactoring, measured
+   wherever it touches a hot path.
+3. **The reference lowering** ([compiler.md](compiler.md), "Planned: the
+   reference lowering") replaces the tree-walker as the differential oracle.
+
 ## Activations
 
 A Newspeak-level activation is never represented only by Rust locals or the Rust
@@ -610,10 +645,15 @@ Two things the trampoline settles on its own:
 - **Recursion depth becomes a checkable limit and an ordinary Newspeak error**
   instead of a native stack overflow that aborts the process. That closes the
   exposure [image-format.md](image-format.md) records against a loaded artifact.
-  The limit counts stack entries, so it means the same thing under both engines —
-  but the tree-walker stays recursive on the Rust stack, and it must reach the
-  limit before it exhausts the native stack or the two engines disagree at
-  depth. How that is guaranteed is 1b's to settle.
+  How the limit counts has to be settled first. Counting stack entries does
+  **not** mean the same thing under two ways of running one program when one of
+  them activates blocks the other inlines — the tree-walker did, and the
+  reference lowering will ([compiler.md](compiler.md), "Planned: the reference
+  lowering"). That lowering's design decides it. Measured on Windows's 1 MB
+  main-thread stack before any of this, the recursion depth reachable today is
+  818 under the VM and 276 under the tree-walker for recursion inside an
+  `ifFalse:` block (release build), and 307 through `do:` — below the 1000 that
+  Newspeak's own `KernelWeakTests.ns` (`deepStack: 1000`) expects.
 
 `Signal::Return` needs re-implementing against the stack. It already names its
 target by `ActivationRef`, but it still propagates through Rust `?` until the
