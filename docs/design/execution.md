@@ -612,6 +612,34 @@ trusted hardest on: the reference lowering lands first, but it runs on the same
 VM, so it cannot cross-check the trampoline's unwind of `Signal::Return` — both
 ways of running a program would unwind through the same code.
 
+### How other systems bound recursion depth
+
+The limit's design should start from what the prior art does with a recursion
+that outgrows its stack:
+
+| System | Model | Depth limit |
+|---|---|---|
+| Primordial Soup | Fully trampolined: a closure's `value` primitive is `ActivateClosure`, which pushes a frame and returns to `Interpret`, so Newspeak code never recurses on the C stack. The frame stack is 1024 slots (`kStackSlots`, `vm/interpreter.h`); on overflow `StackOverflowOrInterrupt` flushes every frame but the top one into heap activations (`FlushAllFrames`, `vm/interpreter.cc`). | None. Depth is bounded by the heap; `vm/virtual_memory_*.cc` treats a failed allocation as `FATAL`. |
+| Cog | Stack pages. `handleStackOverflow` (`src/spur64.stack/interp.c`) moves frames to the next page, first divorcing that page's frames into heap contexts if it is in use (`divorceFramesIn`). | None. Depth is bounded by memory. |
+| Nova | Recursive on the Rust stack. `Agent::check_call_depth` (`nova_vm/src/ecmascript/execution/agent.rs`) counts execution contexts. | 3500 — "experimental number that caused stack overflow on local machine" — then a `RangeError`. |
+| SOMns | A Truffle AST interpreter, recursive on the Java stack. | None. A `StackOverflowError` is a JVM failure; one of its test scripts raises the thread stack (`-Xss4096k`). |
+
+Newspeak's own tests assume the Smalltalk behaviour: `KernelWeakTests.ns`'s
+`deepStack: 1000` exists to overflow Primordial Soup's frame stack and force a
+flush.
+
+What that means for the limit, without deciding it. The Smalltalk-lineage VMs
+make depth a question of memory, not a count, and a trampolined VM can do the
+same, since its activation stack is a `Vec` on the heap. A fixed count like
+Nova's is what a runtime falls back on when the stack its evaluator recurses on
+cannot grow. After 1b some paths still recurse on the Rust stack — the natives
+that call back into Newspeak, instantiation, the nested-class accessor ("What
+stays recursive" below) — and each level of them still costs native stack:
+derived from the depth reachable on a 1 MB stack before the trampoline,
+recursion through `do:` cost roughly 3.4 KB of native stack per Newspeak level
+in a release build and 13.4 KB in a debug one. Whatever the limit counts, those
+paths need either a bounded depth or a native stack sized for it.
+
 ### What stays recursive, and why that is not a hole
 
 The natives that call back into Newspeak — `builtins::call_block`'s callers —
