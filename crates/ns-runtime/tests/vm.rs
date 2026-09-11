@@ -324,23 +324,65 @@ fn a_method_that_falls_off_its_end_implicitly_returns_self() {
     assert!(matches!((&result, &instance), (Value::Obj(a), Value::Obj(b)) if a.same(b)));
 }
 
+/// Loading and compiling are one step: a class `load_module` returns is
+/// already runnable as bytecode, so nothing can instantiate or send to a
+/// loaded class whose code was never compiled.
 #[test]
-fn the_tree_walk_engine_is_still_the_default() {
+fn loading_a_module_installs_its_compiled_code() {
     let src =
         "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public makeBlock = ( ^[ 1 ] )\n) : ()";
     let (mut interp, class, bindings) = load(src);
-    assert!(interp.compiled_module().is_none());
+    assert!(interp.compiled_module().is_some());
     let instance = new_instance(&mut interp, &class, &bindings);
     let block = expect_ok(
         send(&mut interp, instance, "makeBlock", vec![], &bindings),
         "makeBlock",
     );
-    let Value::Obj(obj) = &block else { panic!() };
+    let Value::Obj(obj) = &block else {
+        panic!("expected a closure object")
+    };
     let closure = interp
         .heap_ref()
         .closure_data(obj)
-        .unwrap_or_else(|| panic!());
-    assert!(matches!(closure.body, ClosureBody::Ast(_)));
+        .unwrap_or_else(|| panic!("expected ObjectData::Closure"));
+    assert!(matches!(closure.body, ClosureBody::Compiled(_)));
+}
+
+/// A second `load_module` into the same interpreter adds its code to the
+/// first module's rather than replacing it: every key is a mixin's or a
+/// method's `Rc` identity, so two modules' bodies never collide, and a class
+/// from the first load must keep running.
+#[test]
+fn loading_a_second_module_keeps_the_first_modules_code() {
+    let first = "Newspeak3\n'T'\nclass A = Object new (\n) (\n  public answer = ( ^1 )\n) : ()";
+    let second = "Newspeak3\n'T'\nclass B = Object new (\n) (\n  public answer = ( ^2 )\n) : ()";
+    let (mut interp, a, bindings) = load(first);
+    let module = ns_syntax::parse(second).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        Rc::from(second),
+        SourceOrigin::File(PathBuf::from("b.ns")),
+    )
+    .expect("resolve");
+    let b = interp.load_module(&resolved);
+    let a_instance = new_instance(&mut interp, &a, &bindings);
+    let b_instance = new_instance(&mut interp, &b, &resolved.bindings);
+    let from_a = expect_ok(
+        send(&mut interp, a_instance, "answer", vec![], &bindings),
+        "A answer",
+    );
+    let from_b = expect_ok(
+        send(
+            &mut interp,
+            b_instance,
+            "answer",
+            vec![],
+            &resolved.bindings,
+        ),
+        "B answer",
+    );
+    assert_eq!(int_of(&from_a), 1);
+    assert_eq!(int_of(&from_b), 2);
 }
 
 /// The probe that exposed the frame-shift defect: a method with a declared

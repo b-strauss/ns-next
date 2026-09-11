@@ -1,7 +1,9 @@
 //! The three control-flow natives Milestone 2 adds (`Block>>whileTrue:`,
-//! `Block>>whileFalse:`, `Boolean>>ifFalse:ifTrue:`), exercised under the
-//! tree-walker -- the engine that has no inlining, so these really are the
-//! natives running.
+//! `Block>>whileFalse:`, `Boolean>>ifFalse:ifTrue:`). Every block reaches
+//! the send through a variable: the compiler inlines only literal blocks, so
+//! a variable is what makes these the natives running rather than the
+//! inlined form, which the compiler's own tests and `program_outcomes.rs`
+//! cover.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -61,12 +63,12 @@ fn module(body: &str) -> String {
 #[test]
 fn while_true_loops_until_the_condition_is_false_and_answers_nil() {
     let (_interp, result) = run_method(
-        &module("| n | n := 0. [n < 3] whileTrue: [n := n + 1]. ^n"),
+        &module("| n c b | n := 0. c := [n < 3]. b := [n := n + 1]. c whileTrue: b. ^n"),
         "run",
     );
     let v = expect_ok(result, "run");
     assert_eq!(int_of(&v), 3);
-    let (_interp, result) = run_method(&module("^[false] whileTrue: [nil]"), "run");
+    let (_interp, result) = run_method(&module("| c | c := [false]. ^c whileTrue: [nil]"), "run");
     let v = expect_ok(result, "run");
     assert!(matches!(v, Value::Nil));
 }
@@ -74,7 +76,7 @@ fn while_true_loops_until_the_condition_is_false_and_answers_nil() {
 #[test]
 fn while_false_loops_until_the_condition_is_true() {
     let (_interp, result) = run_method(
-        &module("| n | n := 0. [n = 3] whileFalse: [n := n + 1]. ^n"),
+        &module("| n c | n := 0. c := [n = 3]. c whileFalse: [n := n + 1]. ^n"),
         "run",
     );
     let v = expect_ok(result, "run");
@@ -83,7 +85,7 @@ fn while_false_loops_until_the_condition_is_true() {
 
 #[test]
 fn a_non_boolean_condition_sends_must_be_boolean() {
-    let (_interp, result) = run_method(&module("^[3] whileTrue: [nil]"), "run");
+    let (_interp, result) = run_method(&module("| c | c := [3]. ^c whileTrue: [nil]"), "run");
     match result {
         Err(Signal::Error(e)) => {
             assert!(
@@ -99,7 +101,7 @@ fn a_non_boolean_condition_sends_must_be_boolean() {
 #[test]
 fn a_non_local_return_escapes_a_while_loop() {
     let (_interp, result) = run_method(
-        &module("| n | n := 0. [true] whileTrue: [n := n + 1. n = 5 ifTrue: [^n]]"),
+        &module("| n c | n := 0. c := [true]. c whileTrue: [n := n + 1. n = 5 ifTrue: [^n]]"),
         "run",
     );
     let v = expect_ok(result, "run");
@@ -108,10 +110,16 @@ fn a_non_local_return_escapes_a_while_loop() {
 
 #[test]
 fn if_false_if_true_picks_the_right_block() {
-    let (interp, result) = run_method(&module("^true ifFalse: ['f'] ifTrue: ['t']"), "run");
+    let (interp, result) = run_method(
+        &module("| f t | f := ['f']. t := ['t']. ^true ifFalse: f ifTrue: t"),
+        "run",
+    );
     let v = expect_ok(result, "run");
     assert_eq!(string_of(interp.heap_ref(), &v), "t");
-    let (interp, result) = run_method(&module("^false ifFalse: ['f'] ifTrue: ['t']"), "run");
+    let (interp, result) = run_method(
+        &module("| f t | f := ['f']. t := ['t']. ^false ifFalse: f ifTrue: t"),
+        "run",
+    );
     let v = expect_ok(result, "run");
     assert_eq!(string_of(interp.heap_ref(), &v), "f");
 }

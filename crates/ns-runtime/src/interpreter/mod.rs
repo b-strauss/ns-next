@@ -147,9 +147,9 @@ impl Interpreter {
         interp
     }
 
-    /// Switches engines. Call after `load_module` and `compile_module`; the
-    /// default is `TreeWalk`, so every Milestone 1 caller keeps its
-    /// behavior.
+    /// Switches engines. `load_module` already installs the bytecode engine;
+    /// the CLI switches to the tree-walker afterwards to run it as the
+    /// differential oracle.
     ///
     /// Refused in exactly one case -- `Engine::TreeWalk` on a world
     /// `image::load` built, for the reasons on
@@ -170,6 +170,16 @@ impl Interpreter {
     /// `EngineUnavailable::TreeWalkAfterLoad`.
     pub(crate) fn mark_decoded_from_image(&mut self) {
         self.decoded_from_image = true;
+    }
+
+    /// Makes `module`'s compiled bodies runnable, adding them to whatever an
+    /// earlier load installed. `load_module` is the caller: loading and
+    /// compiling are one step.
+    pub(crate) fn install_code(&mut self, module: CompiledModule) {
+        match &mut self.engine {
+            Engine::Bytecode(installed) => installed.extend(module),
+            Engine::TreeWalk => self.engine = Engine::Bytecode(module),
+        }
     }
 
     pub fn compiled_module(&self) -> Option<&CompiledModule> {

@@ -97,22 +97,26 @@ fn integer_addition_overflow_is_a_newspeak_error_not_a_panic() {
 
 #[test]
 fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^true ifTrue: [1] ifFalse: [2] )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
-
-    match expect_ok(result, "true ifTrue:ifFalse:") {
-        Value::SmallInt(1) => {}
-        other => panic!(
-            "expected Value::SmallInt(1), got {}",
-            interp.heap_ref().describe(&other)
-        ),
+    for body in [
+        "^true ifTrue: [1] ifFalse: [2]",
+        "| t f | t := [1]. f := [2]. ^true ifTrue: t ifFalse: f",
+    ] {
+        let src = format!(
+            "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( {body} )\n) : ()"
+        );
+        let (mut interp, class, resolved) = load(&src);
+        let receiver = expect_ok(
+            interp.instantiate(class, vec![], &resolved.bindings),
+            "instantiate",
+        );
+        let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+        match expect_ok(result, body) {
+            Value::SmallInt(1) => {}
+            other => panic!(
+                "{body}: expected Value::SmallInt(1), got {}",
+                interp.heap_ref().describe(&other)
+            ),
+        }
     }
 }
 
@@ -124,25 +128,30 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
 /// of the one the block was actually resolved under, `x`'s `Span` would not
 /// be present in that empty map and `eval_ident` would fall through to its
 /// `None` arm -- an "unresolved identifier" `NewspeakError`, not
-/// `SmallInt(5)`.
+/// `SmallInt(5)`. Both forms now run compiled; the variable form still
+/// reaches the native `ifTrue:ifFalse:` with a real closure.
 #[test]
 fn if_true_block_body_resolves_an_enclosing_slot_reference() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (|x = 5.|) (\n  public m = ( ^true ifTrue: [ x ] ifFalse: [ 0 ] )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
-
-    match expect_ok(result, "true ifTrue: [ x ] ifFalse: [ 0 ]") {
-        Value::SmallInt(5) => {}
-        other => panic!(
-            "expected Value::SmallInt(5), got {}",
-            interp.heap_ref().describe(&other)
-        ),
+    for body in [
+        "^true ifTrue: [ x ] ifFalse: [ 0 ]",
+        "| t f | t := [ x ]. f := [ 0 ]. ^true ifTrue: t ifFalse: f",
+    ] {
+        let src = format!(
+            "Newspeak3\n'T'\nclass Foo = Object new (|x = 5.|) (\n  public m = ( {body} )\n) : ()"
+        );
+        let (mut interp, class, resolved) = load(&src);
+        let receiver = expect_ok(
+            interp.instantiate(class, vec![], &resolved.bindings),
+            "instantiate",
+        );
+        let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+        match expect_ok(result, body) {
+            Value::SmallInt(5) => {}
+            other => panic!(
+                "{body}: expected Value::SmallInt(5), got {}",
+                interp.heap_ref().describe(&other)
+            ),
+        }
     }
 }
 
@@ -161,21 +170,25 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
 /// and the second statement never runs at all.
 #[test]
 fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( true and: [^'escaped']. ^'fell through' )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
-
-    assert_eq!(
-        as_string(interp.heap_ref(), &expect_ok(result, "true and: [^'escaped']. ^'fell through'")),
-        "escaped",
-        "the block's non-local return must unwind `m`'s own activation directly, not be swallowed into `false` and fall through to the second statement"
-    );
+    for body in [
+        "true and: [^'escaped']. ^'fell through'",
+        "| b | b := [^'escaped']. true and: b. ^'fell through'",
+    ] {
+        let src = format!(
+            "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( {body} )\n) : ()"
+        );
+        let (mut interp, class, resolved) = load(&src);
+        let receiver = expect_ok(
+            interp.instantiate(class, vec![], &resolved.bindings),
+            "instantiate",
+        );
+        let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+        assert_eq!(
+            as_string(interp.heap_ref(), &expect_ok(result, body)),
+            "escaped",
+            "the block's non-local return must unwind `m`'s own activation directly, not be swallowed into `false` and fall through to the second statement"
+        );
+    }
 }
 
 /// Quick sanity check (controller review, second pass): the fix above must
@@ -186,24 +199,25 @@ fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
 /// this test would see that value instead of `'correct'`.
 #[test]
 fn and_or_short_circuit_never_invokes_the_untaken_block() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( false and: [^'wrongly invoked']. true or: [^'wrongly invoked']. ^'correct' )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
-
-    assert_eq!(
-        as_string(
-            interp.heap_ref(),
-            &expect_ok(result, "false and: [...]. true or: [...]. ^'correct'")
-        ),
-        "correct",
-        "false and: [...] and true or: [...] must never invoke their block argument at all"
-    );
+    for body in [
+        "false and: [^'wrongly invoked']. true or: [^'wrongly invoked']. ^'correct'",
+        "| b | b := [^'wrongly invoked']. false and: b. true or: b. ^'correct'",
+    ] {
+        let src = format!(
+            "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( {body} )\n) : ()"
+        );
+        let (mut interp, class, resolved) = load(&src);
+        let receiver = expect_ok(
+            interp.instantiate(class, vec![], &resolved.bindings),
+            "instantiate",
+        );
+        let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+        assert_eq!(
+            as_string(interp.heap_ref(), &expect_ok(result, body)),
+            "correct",
+            "false and: [...] and true or: [...] must never invoke their block argument at all"
+        );
+    }
 }
 
 /// Milestone 1 has no Integer/Float coercion. That

@@ -277,6 +277,18 @@ pub struct CompiledModule {
     pub bindings: Rc<HashMap<Span, Binding>>,
 }
 
+impl CompiledModule {
+    /// Adds `other`'s bodies to this module's. Every key is a mixin's or a
+    /// method's `Rc` identity, so the bodies of two separately loaded modules
+    /// never collide, and nothing already installed is replaced.
+    pub fn extend(&mut self, other: CompiledModule) {
+        self.methods.extend(other.methods);
+        self.initializers.extend(other.initializers);
+        self.superclass_clauses.extend(other.superclass_clauses);
+        self.superclass_messages.extend(other.superclass_messages);
+    }
+}
+
 /// A method's identity: the `Rc<MixinMethod>` its own mixin's dictionary
 /// holds. Pointer identity rather than `(mixin, selector)` because dispatch
 /// already hands the entry itself to every consumer, so the key costs no

@@ -256,27 +256,22 @@ fn load_source(file: &Path) -> Result<LoadedSource, ExitCode> {
     })
 }
 
-/// Bootstraps an interpreter, loads the module's root class, and installs
-/// the requested engine -- *before* anything is instantiated, so the root
-/// class's instance initializer runs under it too (M2 spec, "`ns-cli`
-/// additions").
+/// Bootstraps an interpreter and loads the module's root class, which
+/// compiles it and installs the bytecode engine; `tree-walk` switches to the
+/// tree-walker afterwards -- *before* anything is instantiated, so the root
+/// class's instance initializer runs under it too.
 fn bootstrap_with_engine(
     loaded: &LoadedSource,
     engine: EngineArg,
 ) -> (ns_runtime::Interpreter, ns_runtime::ClassRef) {
     let mut interp = ns_runtime::Interpreter::bootstrap();
     let class = interp.load_module(&loaded.resolved);
-    if engine == EngineArg::Bytecode {
-        let compiled = ns_runtime::compiler::compile_module(
-            interp.heap_ref(),
-            &class,
-            &loaded.resolved.bindings,
-        );
+    if engine == EngineArg::TreeWalk {
         interp
-            .set_engine(ns_runtime::Engine::Bytecode(compiled))
-            // Only `Engine::TreeWalk` on a loaded world is ever refused,
+            .set_engine(ns_runtime::Engine::TreeWalk)
+            // Only `Engine::TreeWalk` on a loaded image is ever refused,
             // and this interpreter was built from source a line ago.
-            .expect("the bytecode engine is never refused");
+            .expect("a source-built interpreter accepts the tree-walker");
     }
     (interp, class)
 }

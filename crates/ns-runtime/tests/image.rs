@@ -1369,6 +1369,9 @@ fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
 fn a_tree_walker_closure_is_a_snapshot_error_not_a_silent_omission() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public mk = ( ^[ 1 ] )\n) : ()";
     let (mut interp, class, bindings) = load(src); // tree-walk engine
+    interp
+        .set_engine(Engine::TreeWalk)
+        .expect("a source-built interpreter accepts the tree-walker");
     let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     let closure = expect_ok(
         interp.send(instance, Symbol::intern("mk"), vec![], &bindings),
@@ -2330,6 +2333,9 @@ fn a_snapshot_of_a_tree_walker_closure_is_refused_rather_than_written() {
     // encoder must refuse rather than write an image nothing could read.
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
     let (mut interp, class, bindings) = load(src);
+    interp
+        .set_engine(Engine::TreeWalk)
+        .expect("a source-built interpreter accepts the tree-walker");
     let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
     let module = compiler::compile_module(interp.heap_ref(), &class, &bindings);
     interp

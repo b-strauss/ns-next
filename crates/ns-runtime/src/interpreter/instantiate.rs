@@ -64,6 +64,11 @@ impl Interpreter {
     /// computing a slot layout -- only happens for the root here. A nested
     /// mixin gets its own application when something actually materializes
     /// it (the accessor); until then it is pure, unapplied structure.
+    ///
+    /// It also compiles the whole mixin tree and installs the code, adding it
+    /// to any an earlier load installed: a class this returns is already
+    /// runnable, so nothing can send to a loaded class whose code was never
+    /// compiled.
     pub fn load_module(&mut self, resolved: &ResolvedModule) -> ClassRef {
         let decl = &resolved.module.root_class;
         let mixin = self.build_mixin(decl);
@@ -80,7 +85,10 @@ impl Interpreter {
         // class is the outermost level, so no object encloses it and no
         // declaration contains it. Every other class object in the system
         // comes from `interpreter::nested`, which passes both.
-        self.new_class_object(application, None, None, superclass)
+        let class = self.new_class_object(application, None, None, superclass);
+        let code = crate::compiler::compile_module(&self.heap, &class, &resolved.bindings);
+        self.install_code(code);
+        class
     }
 
     /// Builds the mixin for `decl`, recursively including its nested
