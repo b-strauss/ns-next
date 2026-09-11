@@ -13,7 +13,7 @@
 //! choice: almost every call site borrows, clones one field and drops the
 //! borrow, and a reference-returning accessor would be unusable at the
 //! sites that call back into the interpreter while holding one -- which is
-//! most of `interpreter/eval.rs`.
+//! most of `interpreter/locals.rs`.
 
 use crate::types::*;
 use crate::Symbol;
@@ -1045,7 +1045,7 @@ impl Heap {
     }
 
     /// The frame a closure activation captured, or `None` for any other
-    /// kind. `eval::frame_at_depth` walks this.
+    /// kind. `locals::frame_at_depth` walks this.
     pub fn frame_captured(&self, frame: &FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
         match &self.frames[frame.index as usize].frame.kind {
@@ -1293,7 +1293,7 @@ impl Heap {
     }
 
     /// The frame a closure activation's closure captured, or `None` for any
-    /// other kind. The first hop of `eval::frame_at_depth`.
+    /// other kind. The first hop of `locals::frame_at_depth`.
     pub fn activation_captured(&self, act: &ActivationRef) -> Option<FrameRef> {
         self.check_activation(act);
         match &self.stack.entries[act.index as usize].kind {
@@ -1885,7 +1885,7 @@ mod tests {
     /// both `activation_home` and `activation_captured` by construction --
     /// closure creation is the only reason either exists. `raise_return`
     /// picks a non-local return's target off `activation_home`, and the
-    /// outer-local walk (`eval::frame_at_depth`) starts every hop off
+    /// outer-local walk (`locals::frame_at_depth`) starts every hop off
     /// `activation_captured`/`frame_captured`, so a closure activation that
     /// answered `None` for either would silently misroute a `^` or a
     /// captured-variable read rather than fail loudly. This also exercises

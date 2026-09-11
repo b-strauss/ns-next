@@ -89,7 +89,7 @@ fn wrap_error(result: Result<Value, NewspeakError>) -> EvalResult {
 /// closure-invocation entry point used by control-flow primitives
 /// (`boolean.rs`'s `ifTrue:`/`and:`/etc.), collection traversal
 /// (`collections.rs`'s `do:`), and `Block value`/`value:`/... itself
-/// (`block.rs`). Goes straight through `interpreter::eval::invoke_closure`
+/// (`block.rs`). Goes straight through `Interpreter::invoke_closure`
 /// rather than a full `send`, since block invocation is a Milestone 1
 /// *native* primitive, not a user-overridable method, and must not depend
 /// on `Block`'s own native methods being registered yet in dispatch order.
@@ -120,7 +120,7 @@ pub(super) fn call_block(interp: &mut Interpreter, block: &Value, args: Vec<Valu
             match closure_data {
                 Some(closure_data) => {
                     let closure = std::rc::Rc::new(closure_data);
-                    crate::interpreter::eval::invoke_closure(interp, &closure, args)
+                    interp.invoke_closure(&closure, args)
                 }
                 None => Ok(*block),
             }

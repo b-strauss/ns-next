@@ -123,7 +123,7 @@ pub enum DecodeError {
     /// by different parts of `invoke_closure`: it checks the *call's*
     /// arity against `params.len()` but sizes the register file from the
     /// *code* (`num_registers - num_args`). Disagreement leaves
-    /// `eval::read_local` computing `temps[i - args.len()]` past the end
+    /// `locals::read_local` computing `temps[i - args.len()]` past the end
     /// of `temps` -- an unchecked index panic from a version-matching
     /// image -- or, the other way round, silently misaddressing temps as
     /// arguments.
@@ -802,7 +802,7 @@ fn check_code_arity(
 //
 // Decoding is byte-safe: every id, tag and length is checked as it is read.
 // It does not make the result *coherent*. `vm::run_code` indexes
-// `code.instrs[pc]` directly, and `eval::read_local`/`write_local` index a
+// `code.instrs[pc]` directly, and `locals::read_local`/`write_local` index a
 // frame's `args`/`temps` directly, so a jump target, a register operand or
 // an arity that decoded cleanly can still panic the process the first time
 // the body runs. Everything below is a bounded, linear pass over the flat,
@@ -1023,7 +1023,7 @@ fn verify_outer_locals(
     Ok(())
 }
 
-/// `eval::frame_at_depth`'s static counterpart: the body of the activation
+/// `locals::frame_at_depth`'s static counterpart: the body of the activation
 /// `depth` hops out from an activation of `table.codes[at]`.
 ///
 /// The two agree because `verify_graph` and `vm::run_code` between them
@@ -2093,7 +2093,7 @@ fn decode_class_record(
 // selector-to-body mapping, so it can check a closure record's own two
 // halves (`ClosureArityMismatch`) and nothing more. Once the code table is
 // installed as a `CompiledModule`, every frame's body can be resolved --
-// and must be, because `eval::read_local` splits a frame at `args.len()`
+// and must be, because `locals::read_local` splits a frame at `args.len()`
 // and indexes `temps` unchecked. A crafted frame that is smaller than the
 // body addressing it is an out-of-bounds index reached from a
 // version-matching image.

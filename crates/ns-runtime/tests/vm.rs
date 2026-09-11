@@ -305,7 +305,7 @@ fn loading_a_second_module_keeps_the_first_modules_code() {
 /// temporary, reached through a host-initiated send.
 ///
 /// A method activation addresses its arguments and temporaries as one run
-/// of registers, and `eval::read_local` finds the boundary from the count
+/// of registers, and `locals::read_local` finds the boundary from the count
 /// of arguments the frame was *given*. Before `invoke_method` checked
 /// arity, sending `probe` two surplus arguments therefore made register 0
 /// -- `t` -- read back the first surplus argument instead of `Nil`,

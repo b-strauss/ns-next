@@ -12,7 +12,7 @@ use ns_syntax::Span;
 
 use super::control_flow::{self, InlineForm};
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instr, Literal as BcLiteral};
-use crate::interpreter::eval::parse_int_literal;
+use crate::interpreter::literals::parse_int_literal;
 use crate::types::Binding;
 
 /// One entry of the compile-time scope stack. The resolver counts every
@@ -419,7 +419,7 @@ impl<'a> Lowerer<'a> {
                     // is a program M1 accepts and rejects at *evaluation*
                     // time. Compilation cannot raise a `NewspeakError`, so
                     // the error is deferred exactly like `MalformedInt`:
-                    // the VM raises `eval`'s own error when the
+                    // the VM raises `literals`' own error when the
                     // instruction executes.
                     None => {
                         let dst = self.alloc_scratch();

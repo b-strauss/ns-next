@@ -311,7 +311,7 @@ impl Interpreter {
         // initExpr may reference a factory parameter as `Binding::Local(i)`,
         // resolved against this class's *declared* factory pattern -- but
         // the activation pushed below starts with no temporaries, so if
-        // fewer arguments were supplied than the pattern declares, `eval.rs`'s
+        // fewer arguments were supplied than the pattern declares, `locals.rs`'s
         // `read_local`/`write_local` index straight past the end of its
         // register window and Rust panics.
         //

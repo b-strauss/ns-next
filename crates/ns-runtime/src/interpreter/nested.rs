@@ -157,7 +157,7 @@ pub(crate) fn nested_class(
         Some(superclass),
     );
     // Step 5: cache before returning, so step 1 hits from now on.
-    crate::interpreter::eval::store_instance_field(
+    crate::interpreter::locals::store_instance_field(
         &mut interp.heap,
         receiver,
         index,

@@ -1,11 +1,14 @@
 //! Sends, method invocation, and the `Signal` non-local-return/error channel,
-//! shared by everything that runs Newspeak code. Send helpers and
-//! local-variable access are in `eval.rs`; the bootstrap and class
-//! instantiation in `instantiate.rs`.
+//! shared by everything that runs Newspeak code. Implicit-receiver and
+//! `super` sends are in `sends.rs`, register and outer-local access in
+//! `locals.rs`, the errors a deferred literal raises in `literals.rs`; the
+//! bootstrap and class instantiation are in `instantiate.rs`.
 
-pub mod eval;
 pub mod instantiate;
+pub(crate) mod literals;
+pub(crate) mod locals;
 pub(crate) mod nested;
+pub(crate) mod sends;
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -57,25 +60,7 @@ pub struct Interpreter {
     nested_in_progress: Vec<(usize, usize)>,
 }
 
-impl Default for Interpreter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Interpreter {
-    pub fn new() -> Interpreter {
-        Interpreter {
-            heap: Heap::new(),
-            builtin_classes: None,
-            platform_singleton: None,
-            code: CompiledModule::default(),
-            applications: HashMap::new(),
-            empty_class_sides: HashMap::new(),
-            nested_in_progress: Vec::new(),
-        }
-    }
-
     pub fn bootstrap() -> Interpreter {
         let mut interp = Interpreter {
             heap: Heap::new(),
@@ -359,14 +344,13 @@ impl Interpreter {
         // the arguments first, the declared temporaries after them -- and
         // the run is laid out from how many arguments the activation was
         // *given*, not how many the method declares. A wrong-arity
-        // activation therefore does not fail; it silently shifts every
-        // temporary by the difference and reads arguments back where a
-        // temporary should be, silently, which no golden output necessarily
-        // shows.
-        // Silent wrong output with exit status 0 is the failure mode this
-        // repository's invariants single out, so the mismatch is refused
-        // here, in the shared orchestration, as an ordinary Newspeak error
-        // -- never a panic, since the caller may be a host.
+        // activation therefore does not fail: it shifts every temporary by
+        // the difference and reads an argument back where a temporary
+        // should be, which no golden output necessarily shows. Silent wrong
+        // output with exit status 0 is the failure mode this repository's
+        // invariants single out, so the mismatch is refused here as an
+        // ordinary Newspeak error -- never a panic, since the caller may be
+        // a host.
         //
         // No Newspeak-level send can reach this: the parser builds a
         // message whose argument count matches its selector by
@@ -412,13 +396,57 @@ impl Interpreter {
         }
     }
 
+    /// Invokes a closure with `args`. Called by `builtins::block` for `value`,
+    /// `value:`, `value:value:` and so on, and by every native that runs a
+    /// block argument, through `builtins::call_block`.
+    ///
+    /// The invoking activation is not passed: a live activation's sender is
+    /// the one below it on the activation stack.
+    pub fn invoke_closure(&mut self, closure: &Rc<ClosureData>, args: Vec<Value>) -> EvalResult {
+        // A wrong argument count is refused before it can reach a register: the
+        // window is laid out from the arguments actually given, so too few would
+        // address registers past its end -- a panic -- and too many would
+        // silently shift every temporary. Never panic on this
+        // Newspeak-program-input path.
+        if args.len() != closure.params.len() {
+            let receiver = self.heap.frame_receiver(&closure.captured_frame);
+            return Err(Signal::Error(NewspeakError {
+                selector: Symbol::intern("value"),
+                receiver,
+                message: format!(
+                    "wrong number of block arguments: block takes {}, got {}",
+                    closure.params.len(),
+                    args.len()
+                ),
+            }));
+        }
+        let receiver = self.heap.frame_receiver(&closure.captured_frame);
+        let current_class = self.heap.frame_current_class(&closure.captured_frame);
+        let code = &closure.code;
+        let act = self.heap.push_activation(
+            ActivationHeader {
+                receiver,
+                current_class,
+                kind: FrameKind::Closure(closure.clone()),
+                slot_base: 0, // a closure body never contains InitSlot
+            },
+            &args,
+            (code.num_registers - code.num_args) as usize,
+        );
+        let result = crate::vm::run_code(self, &act, code);
+        // Popped on every path out. A closure activation catches no return: its
+        // `^` targets its home.
+        self.heap.pop_activation(&act);
+        result
+    }
+
     /// Where a `^` in `act` returns to. A block returns from its home --
     /// the method or initializer that lexically encloses it -- and only
     /// while that activation is still running: its reified frame is married
     /// to a live stack entry exactly until the activation returns, and a
     /// frame the image decoder built never is. A dead home is §7.2's
     /// `cannotReturn`. Every other activation's `^` returns from itself.
-    fn raise_return(&mut self, act: &ActivationRef, value: Value) -> Signal {
+    pub(crate) fn raise_return(&mut self, act: &ActivationRef, value: Value) -> Signal {
         let target = match self.heap.activation_home(act) {
             None => *act,
             Some(home) => match self.heap.frame_activation(&home) {
@@ -435,10 +463,6 @@ impl Interpreter {
             },
         };
         Signal::Return(target, value)
-    }
-
-    pub(crate) fn raise_return_pub(&mut self, act: &ActivationRef, value: Value) -> Signal {
-        self.raise_return(act, value)
     }
 
     pub fn class_of(&self, value: &Value) -> ClassRef {

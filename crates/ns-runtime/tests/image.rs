@@ -2015,7 +2015,7 @@ fn a_well_formed_closure_record_whose_arity_agrees_still_decodes() {
 fn a_closure_record_declaring_too_few_parameters_is_a_decode_error() {
     // `invoke_closure` checks the *call's* arity against `params.len()`
     // but sizes the register file from the *code* (`num_registers -
-    // num_args`), and `eval::read_local` then indexes `temps[i - args.len()]`
+    // num_args`), and `locals::read_local` then indexes `temps[i - args.len()]`
     // unchecked. So this section -- otherwise entirely well-formed, as the
     // control above proves -- would decode cleanly and panic the process
     // the first time the closure is sent `value`. `decode_closure_record`
@@ -2819,7 +2819,7 @@ fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
     // `foo`'s body has two registers; this activation has one. A
     // `LoadOuterLocal` of r1 from the closure would index `temps[1]` of a
     // one-element `temps` -- an unchecked out-of-bounds index in
-    // `eval::read_local`, reached from a version-matching image.
+    // `locals::read_local`, reached from a version-matching image.
     let (mut fixture, table, module) = closure_world();
     let graph = fixture
         .decode(&closure_over_frame(foo_frame(1)))

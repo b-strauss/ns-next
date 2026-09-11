@@ -19,7 +19,7 @@ use crate::Symbol;
 /// every evaluation, as it was in Milestone 1).
 ///
 /// `MalformedInt` carries the raw text of an integer literal the lexer
-/// accepted but `interpreter::eval::parse_int_literal` rejects (out of
+/// accepted but `interpreter::literals::parse_int_literal` rejects (out of
 /// `i64` range, a fractional radix literal). That is a Newspeak-program
 /// error M1 raises *when the literal is evaluated*; compilation cannot
 /// raise a `NewspeakError`, so the VM re-runs `parse_int_literal` when the

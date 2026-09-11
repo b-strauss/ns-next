@@ -252,7 +252,7 @@ fn a_factory_parameter_is_visible_in_an_init_expr() {
 /// actual declared arity. A slot initializer referencing the *second*,
 /// missing parameter resolves (since 1e07dee) to `Binding::Local(1)`, but
 /// `factory_args` here has only one element and the instance-initializer
-/// `Frame`'s `temps` is always empty -- before the fix, `eval.rs`'s
+/// `Frame`'s `temps` is always empty -- before the fix, `locals.rs`'s
 /// `read_local` indexed straight past both and panicked with "index out of
 /// bounds" instead of returning a clean `NewspeakError`.
 #[test]

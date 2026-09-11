@@ -11,11 +11,13 @@ use std::rc::Rc;
 
 use crate::bytecode::{CompiledCode, Instr, Literal};
 use crate::heap::{ActivationRef, Heap};
-use crate::interpreter::eval::{
-    dispatch_lexical_send, dispatch_super_send, home_of, malformed_int_error, parse_int_literal,
-    read_local, read_outer_local, store_instance_field, unresolved_identifier_error, write_local,
-    write_outer_local,
+use crate::interpreter::literals::{
+    malformed_int_error, parse_int_literal, unresolved_identifier_error,
 };
+use crate::interpreter::locals::{
+    home_of, read_local, read_outer_local, store_instance_field, write_local, write_outer_local,
+};
+use crate::interpreter::sends::{dispatch_lexical_send, dispatch_super_send};
 use crate::interpreter::{EvalResult, Interpreter};
 use crate::types::*;
 
@@ -158,7 +160,7 @@ pub fn run_code(
             Instr::NonLocalReturn { reg } => {
                 let v = read_local(&interp.heap, act, *reg);
                 interp.heap.set_activation_pc(act, pc);
-                return Err(interp.raise_return_pub(act, v));
+                return Err(interp.raise_return(act, v));
             }
             Instr::Jump { target } => {
                 pc = *target as usize;
@@ -196,7 +198,7 @@ fn collect(heap: &Heap, act: &ActivationRef, regs: &[u16]) -> Vec<Value> {
 }
 
 /// Materializes a literal -- including the two deferred error cases,
-/// `MalformedInt` and `UnresolvedIdent`. Both raise through `eval.rs`'s own
+/// `MalformedInt` and `UnresolvedIdent`. Both raise through `literals.rs`'s own
 /// constructors rather than rebuilding the error here: error text lives in
 /// `interpreter/`, never in the VM.
 fn make_value(interp: &mut Interpreter, act: &ActivationRef, literal: &Literal) -> EvalResult {
