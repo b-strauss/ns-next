@@ -305,7 +305,7 @@ mod tests {
     fn class_data_is_reachable_through_object_data() {
         let mut heap = crate::Heap::new();
         let class = dummy_class(&mut heap);
-        assert!(heap.is_class(&class));
+        assert!(heap.is_class(class));
     }
 
     #[test]
@@ -316,7 +316,7 @@ mod tests {
         let a = Value::Obj(instance);
         let b = a;
         match (a, b) {
-            (Value::Obj(x), Value::Obj(y)) => assert!(x.same(&y)),
+            (Value::Obj(x), Value::Obj(y)) => assert!(x.same(y)),
             _ => panic!("expected Value::Obj"),
         }
     }

@@ -39,7 +39,7 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 fn string_contents(heap: &Heap, value: &Value) -> String {
     match value {
         Value::Obj(obj) => heap
-            .str_value(obj)
+            .str_value(*obj)
             .unwrap_or_else(|| panic!("expected ObjectData::Str")),
         _ => panic!("expected Value::Obj"),
     }
@@ -84,7 +84,7 @@ fn the_accessor_returns_the_same_class_object_every_time() {
     let (Value::Obj(a), Value::Obj(b)) = (&first, &second) else {
         panic!("a nested class access must yield a class object");
     };
-    assert!(a.same(b), "spec 6: cached within r");
+    assert!(a.same(*b), "spec 6: cached within r");
 }
 
 #[test]
@@ -110,10 +110,10 @@ fn two_enclosing_instances_get_distinct_nested_classes() {
     let (Value::Obj(a), Value::Obj(b)) = (&a, &b) else {
         panic!("class objects")
     };
-    assert!(!a.same(b), "spec 6: a distinct class per instance");
+    assert!(!a.same(*b), "spec 6: a distinct class per instance");
     let (Some(a_application), Some(b_application)) = (
-        interp.heap_ref().class_application(a),
-        interp.heap_ref().class_application(b),
+        interp.heap_ref().class_application(*a),
+        interp.heap_ref().class_application(*b),
     ) else {
         panic!("class data")
     };
@@ -141,9 +141,9 @@ fn the_nested_class_remembers_its_enclosing_object() {
     };
     let enclosing = interp
         .heap_ref()
-        .class_enclosing(inner)
+        .class_enclosing(*inner)
         .expect("spec 6: a nested class's one piece of state is its enclosing object");
-    assert!(enclosing.same(outer));
+    assert!(enclosing.same(*outer));
 }
 
 #[test]
@@ -276,10 +276,10 @@ fn an_inherited_nested_declaration_is_reached_through_the_chain() {
     {
         let enclosing = interp
             .heap_ref()
-            .class_enclosing(n_class)
+            .class_enclosing(*n_class)
             .expect("an enclosing object");
         assert!(
-            enclosing.same(derived_obj),
+            enclosing.same(*derived_obj),
             "the enclosing object is the receiver, not the declaring level"
         );
     }
@@ -288,7 +288,7 @@ fn an_inherited_nested_declaration_is_reached_through_the_chain() {
     let Value::Obj(again) = &again else {
         panic!("class object")
     };
-    assert!(n_class.same(again), "spec 6: cached within r");
+    assert!(n_class.same(*again), "spec 6: cached within r");
     let instance = expect_ok(interp.instantiate(*n_class, vec![]), "instantiate N");
     let tag = expect_ok(interp.send(instance, Symbol::intern("tag"), vec![]), "tag");
     let Value::SmallInt(tag) = tag else {
@@ -329,7 +329,7 @@ fn a_super_prefixed_clause_answers_a_class_object() {
     let Value::Obj(inner) = inner else {
         panic!("the accessor must yield a class object")
     };
-    assert!(interp.heap_ref().is_class(&inner));
+    assert!(interp.heap_ref().is_class(inner));
 }
 
 /// A class whose creation requires itself. §6 evaluates the declaration on
@@ -472,7 +472,7 @@ fn nested_class_object(
 
 fn application_of(
     heap: &ns_runtime::Heap,
-    class: &ns_runtime::ClassRef,
+    class: ns_runtime::ClassRef,
 ) -> Rc<ns_runtime::MixinApplication> {
     heap.class_application(class).expect("a class object")
 }
@@ -503,26 +503,26 @@ fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
     let a = nested_class_object(&mut interp, one, "SpecialWidget");
     let b = nested_class_object(&mut interp, two, "SpecialWidget");
     assert!(
-        !a.same(&b),
+        !a.same(b),
         "spec 6: one class object per enclosing instance"
     );
     assert!(
         Rc::ptr_eq(
-            &application_of(interp.heap_ref(), &a),
-            &application_of(interp.heap_ref(), &b)
+            &application_of(interp.heap_ref(), a),
+            &application_of(interp.heap_ref(), b)
         ),
         "spec 6.2: both share one instance-side application"
     );
     let ma = interp
-        .metaclass_of(&a)
+        .metaclass_of(a)
         .expect("SpecialWidget inherits Widget's class side");
     let mb = interp
-        .metaclass_of(&b)
+        .metaclass_of(b)
         .expect("SpecialWidget inherits Widget's class side");
     assert!(
         Rc::ptr_eq(
-            &application_of(interp.heap_ref(), &ma),
-            &application_of(interp.heap_ref(), &mb)
+            &application_of(interp.heap_ref(), ma),
+            &application_of(interp.heap_ref(), mb)
         ),
         "spec 6.2: an inherited class side must share one metaclass application too"
     );

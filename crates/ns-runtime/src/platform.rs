@@ -32,7 +32,7 @@ pub fn dispatch(
     };
     // The `?` below is unreachable: every `BuiltinClass::Platform`-classed
     // object is built by one of the three constructors named above.
-    let tag = interp.heap_ref().instance_field_count(obj)?;
+    let tag = interp.heap_ref().instance_field_count(*obj)?;
     if tag == 2 {
         return dispatch_collections(interp, selector);
     }
@@ -94,7 +94,7 @@ fn dispatch_stream(
     match selector.as_str() {
         "show:" => {
             if let Some(Value::Obj(s)) = args.first() {
-                if let Some(text) = interp.heap_ref().str_value(s) {
+                if let Some(text) = interp.heap_ref().str_value(*s) {
                     print!("{text}");
                     let _ = std::io::stdout().flush();
                 }

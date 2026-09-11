@@ -153,15 +153,15 @@ impl Interpreter {
         // second `doesNotUnderstand:` path, only a second class to try
         // `lookup_public` against first.
         if let Value::Obj(obj) = &receiver {
-            let is_class = self.heap.is_class(obj);
+            let is_class = self.heap.is_class(*obj);
             if is_class {
-                if let Some(metaclass) = self.metaclass_of(obj) {
-                    match dispatch::lookup_public(&self.heap, &metaclass, selector) {
+                if let Some(metaclass) = self.metaclass_of(*obj) {
+                    match dispatch::lookup_public(&self.heap, metaclass, selector) {
                         Lookup::Method(method, defining_class) => {
                             return self.invoke_method(receiver, method, defining_class, args);
                         }
                         Lookup::NestedClass(mixin, declaring_class) => {
-                            return nested::nested_class(self, &receiver, &mixin, &declaring_class);
+                            return nested::nested_class(self, &receiver, &mixin, declaring_class);
                         }
                         Lookup::Native(kind) => {
                             return self.dispatch_native_or_dnu(kind, receiver, selector, args);
@@ -172,7 +172,7 @@ impl Interpreter {
             }
         }
         let class = self.class_of(&receiver);
-        match dispatch::lookup_public(&self.heap, &class, selector) {
+        match dispatch::lookup_public(&self.heap, class, selector) {
             Lookup::Method(method, defining_class) => {
                 self.invoke_method(receiver, method, defining_class, args)
             }
@@ -181,7 +181,7 @@ impl Interpreter {
             // -- the accessor is unary, so a send that supplied arguments
             // did not name it (`walk` matched on the bare selector).
             Lookup::NestedClass(mixin, declaring_class) => {
-                nested::nested_class(self, &receiver, &mixin, &declaring_class)
+                nested::nested_class(self, &receiver, &mixin, declaring_class)
             }
             Lookup::Native(kind) => self.dispatch_native_or_dnu(kind, receiver, selector, args),
             Lookup::NotFound => self.does_not_understand(receiver, selector, args),
@@ -262,7 +262,7 @@ impl Interpreter {
         // `{selector. args}` rather than a real MessageMirror object
         // (mirrors are a later milestone's Non-Goal). Callers relying on a
         // real `MessageMirror` API are out of scope.
-        match dispatch::lookup_defined_for(&self.heap, &class, dnu_selector) {
+        match dispatch::lookup_defined_for(&self.heap, class, dnu_selector) {
             Lookup::Method(method, defining_class) => {
                 let selector_value = self.new_symbol(selector);
                 let args_value = Value::Obj(self.new_array(args));
@@ -362,11 +362,11 @@ impl Interpreter {
             &args,
             (code.num_registers - code.num_args) as usize,
         );
-        let result = crate::vm::run_code(self, &act, &code);
-        self.heap.pop_activation(&act);
+        let result = crate::vm::run_code(self, act, &code);
+        self.heap.pop_activation(act);
         match result {
             Ok(value) => Ok(value),
-            Err(Signal::Return(target, value)) if target.same(&act) => Ok(value),
+            Err(Signal::Return(target, value)) if target.same(act) => Ok(value),
             Err(other) => Err(other),
         }
     }
@@ -384,7 +384,7 @@ impl Interpreter {
         // silently shift every temporary. Never panic on this
         // Newspeak-program-input path.
         if args.len() != closure.params.len() {
-            let receiver = self.heap.frame_receiver(&closure.captured_frame);
+            let receiver = self.heap.frame_receiver(closure.captured_frame);
             return Err(Signal::Error(NewspeakError {
                 selector: Symbol::VALUE,
                 receiver,
@@ -395,8 +395,8 @@ impl Interpreter {
                 ),
             }));
         }
-        let receiver = self.heap.frame_receiver(&closure.captured_frame);
-        let current_class = self.heap.frame_current_class(&closure.captured_frame);
+        let receiver = self.heap.frame_receiver(closure.captured_frame);
+        let current_class = self.heap.frame_current_class(closure.captured_frame);
         let code = &closure.code;
         let act = self.heap.push_activation(
             ActivationHeader {
@@ -408,10 +408,10 @@ impl Interpreter {
             &args,
             (code.num_registers - code.num_args) as usize,
         );
-        let result = crate::vm::run_code(self, &act, code);
+        let result = crate::vm::run_code(self, act, code);
         // Popped on every path out. A closure activation catches no return: its
         // `^` targets its home.
-        self.heap.pop_activation(&act);
+        self.heap.pop_activation(act);
         result
     }
 
@@ -421,10 +421,10 @@ impl Interpreter {
     /// to a live stack entry exactly until the activation returns, and a
     /// frame the image decoder built never is. A dead home is §7.2's
     /// `cannotReturn`. Every other activation's `^` returns from itself.
-    pub(crate) fn raise_return(&mut self, act: &ActivationRef, value: Value) -> Signal {
+    pub(crate) fn raise_return(&mut self, act: ActivationRef, value: Value) -> Signal {
         let target = match self.heap.activation_home(act) {
-            None => *act,
-            Some(home) => match self.heap.frame_activation(&home) {
+            None => act,
+            Some(home) => match self.heap.frame_activation(home) {
                 Some(live) => live,
                 None => {
                     return Signal::Error(NewspeakError {
@@ -442,7 +442,7 @@ impl Interpreter {
 
     pub fn class_of(&self, value: &Value) -> ClassRef {
         match value {
-            Value::Obj(obj) => self.heap.class_of_obj(obj),
+            Value::Obj(obj) => self.heap.class_of_obj(*obj),
             // Nil/Bool/SmallInt/Float classes are wired up by the bootstrap
             // into interpreter-held globals, read from there via
             // `Interpreter::builtin_class(kind)`.
@@ -494,22 +494,22 @@ impl Interpreter {
     /// decoded graph whose superclass links form a cycle, and no other
     /// construction site can build one (a superclass is fixed before the
     /// class object that inherits it exists).
-    pub fn metaclass_of(&mut self, class: &ClassRef) -> Option<ClassRef> {
+    pub fn metaclass_of(&mut self, class: ClassRef) -> Option<ClassRef> {
         // Walk out to the first level that already answers -- a cached
         // metaclass, a non-class object, or the end of the chain -- pushing
         // each level that still has to be built. `chain` is nearest-first,
         // so the build below runs it in reverse.
         let mut chain: Vec<ClassRef> = Vec::new();
         let mut super_metaclass: Option<ClassRef> = None;
-        let mut level = *class;
+        let mut level = class;
         loop {
             // Not a class object: it has no metaclass, and nothing below it
             // can inherit one through this level.
-            if !self.heap.is_class(&level) {
+            if !self.heap.is_class(level) {
                 break;
             }
-            let cached = self.heap.class_metaclass(&level);
-            let superclass = self.heap.class_superclass(&level);
+            let cached = self.heap.class_metaclass(level);
+            let superclass = self.heap.class_superclass(level);
             if cached.is_some() {
                 super_metaclass = cached;
                 break;
@@ -521,11 +521,11 @@ impl Interpreter {
         for level in chain.iter().rev() {
             let own_application = self
                 .heap
-                .class_application(level)
+                .class_application(*level)
                 .expect("only class objects are pushed onto the chain");
             let own_mixin = own_application.mixin.clone();
-            let enclosing = self.heap.class_enclosing(level);
-            let declaring_class = self.heap.class_declaring(level);
+            let enclosing = self.heap.class_enclosing(*level);
+            let declaring_class = self.heap.class_declaring(*level);
             let class_side = own_mixin.class_side.clone();
             let class_side_mixin = match class_side {
                 Some(mixin) => mixin,
@@ -545,7 +545,7 @@ impl Interpreter {
             };
             let super_application = super_metaclass
                 .as_ref()
-                .and_then(|metaclass| self.heap.class_application(metaclass));
+                .and_then(|metaclass| self.heap.class_application(*metaclass));
             let application = self.apply_mixin(&class_side_mixin, super_application.as_ref());
             // §6.3.1: a class side is written inside the same class
             // declaration its instance side is, and `resolver::resolve_class`
@@ -556,7 +556,7 @@ impl Interpreter {
             // starting a new, empty one.
             let metaclass =
                 self.new_class_object(application, enclosing, declaring_class, super_metaclass);
-            if !self.heap.set_class_metaclass(level, metaclass) {
+            if !self.heap.set_class_metaclass(*level, metaclass) {
                 unreachable!("only class objects are pushed onto the chain");
             }
             super_metaclass = Some(metaclass);

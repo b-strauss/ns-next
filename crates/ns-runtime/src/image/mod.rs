@@ -60,7 +60,7 @@ struct Describing {
 /// the way. Shared by `snapshot` and `build`: both need the same two tables,
 /// and both need them encoded before the (still-open) symbol table can be
 /// written, since it is the table's *contents* that fill it.
-fn encode_describing(root_class: &ClassRef, heap: &Heap) -> Result<Describing, String> {
+fn encode_describing(root_class: ClassRef, heap: &Heap) -> Result<Describing, String> {
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
     let ids = encode::encode_code_table(&mut code, heap, root_class, &mut symbols)?;
@@ -86,7 +86,7 @@ fn write_describing(
     origin: &SourceOrigin,
     flags: u8,
     d: Describing,
-    root_class: &ClassRef,
+    root_class: ClassRef,
     heap: &Heap,
 ) -> Result<(), String> {
     encode::write_header(
@@ -126,7 +126,7 @@ pub fn snapshot(
     heap: &Heap,
     source: Option<&str>,
     origin: &SourceOrigin,
-    root_class: &ClassRef,
+    root_class: ClassRef,
     platform: &Value,
     roots: &[Value],
 ) -> Result<Vec<u8>, String> {
@@ -180,7 +180,7 @@ pub fn build(
     heap: &Heap,
     source: Option<&str>,
     origin: &SourceOrigin,
-    root_class: &ClassRef,
+    root_class: ClassRef,
     entry: Symbol,
 ) -> Result<Vec<u8>, String> {
     let mut d = encode_describing(root_class, heap)?;

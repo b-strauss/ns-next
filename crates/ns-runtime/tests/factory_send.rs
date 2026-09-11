@@ -36,7 +36,7 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
             interp.heap_ref().describe(&receiver)
         );
     };
-    let elements = interp.heap_ref().array_elements(obj);
+    let elements = interp.heap_ref().array_elements(*obj);
     assert!(
         matches!(&elements, Some(items) if items.is_empty()),
         "expected an empty ObjectData::Array payload"

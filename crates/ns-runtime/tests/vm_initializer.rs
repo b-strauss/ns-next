@@ -77,11 +77,11 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
     };
     let closure = interp
         .heap_ref()
-        .closure_data(obj)
+        .closure_data(*obj)
         .unwrap_or_else(|| panic!("expected a closure"));
     assert_eq!(closure.code.num_args, 0);
     assert!(matches!(
-        interp.heap_ref().frame_kind(&closure.home),
+        interp.heap_ref().frame_kind(closure.home),
         FrameKind::Initializer(_)
     ));
 }
@@ -169,7 +169,7 @@ fn field_at(heap: &ns_runtime::Heap, instance: &Value, index: usize) -> i64 {
     let Value::Obj(obj) = instance else {
         panic!("expected an instance")
     };
-    match heap.instance_field(obj, index) {
+    match heap.instance_field(*obj, index) {
         Some(Value::SmallInt(n)) => n,
         Some(_) => panic!("expected field {index} to hold a SmallInt"),
         None => panic!("expected an Instance payload"),
@@ -200,7 +200,7 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     let (mut interp, loaded) = load(src);
     let shared_mixin = interp
         .heap_ref()
-        .class_application(&loaded)
+        .class_application(loaded)
         .expect("a class object")
         .mixin
         .clone();

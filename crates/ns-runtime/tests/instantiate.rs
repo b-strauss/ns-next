@@ -107,21 +107,19 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
     // chains disagree about the instance's shape.
     let sup_application = interp
         .heap_ref()
-        .class_application(&sup_class)
+        .class_application(sup_class)
         .unwrap_or_else(|| panic!("expected Sup to be a class object"));
     let sub_mixin = interp
         .heap_ref()
-        .class_application(&sub_class)
+        .class_application(sub_class)
         .unwrap_or_else(|| panic!("expected Sub to be a class object"))
         .mixin
         .clone();
     let sub_application = interp.apply_mixin(&sub_mixin, Some(&sup_application));
-    let relinked = interp
-        .heap_mut()
-        .set_class_superclass(&sub_class, sup_class)
+    let relinked = interp.heap_mut().set_class_superclass(sub_class, sup_class)
         && interp
             .heap_mut()
-            .set_class_application(&sub_class, sub_application);
+            .set_class_application(sub_class, sub_application);
     assert!(relinked, "expected Sub to be a class object");
 
     let receiver = expect_ok(interp.instantiate(sub_class, vec![]), "instantiate");
@@ -200,7 +198,7 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
     );
 
     match &result {
-        Value::Obj(obj) => match interp.heap_ref().str_value(obj) {
+        Value::Obj(obj) => match interp.heap_ref().str_value(*obj) {
             Some(s) => assert_eq!(s, "99"),
             None => panic!(
                 "expected ObjectData::Str(\"99\"), got {}",

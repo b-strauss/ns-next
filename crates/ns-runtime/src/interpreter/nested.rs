@@ -108,7 +108,7 @@ pub(crate) fn nested_class(
     interp: &mut Interpreter,
     receiver: &Value,
     nested: &Rc<Mixin>,
-    declaring_class: &ClassRef,
+    declaring_class: ClassRef,
 ) -> EvalResult {
     let Some((obj, index)) = cache_slot(interp, receiver, nested) else {
         return Err(no_cache_slot_error(receiver, nested.name));
@@ -123,7 +123,7 @@ pub(crate) fn nested_class(
     // Step 2: the superclass clause, evaluated in the receiver's context --
     // guarded against a class whose own creation is already underway on
     // this receiver.
-    let key = in_progress_key(&interp.heap, &obj, nested);
+    let key = in_progress_key(&interp.heap, obj, nested);
     if interp.nested_in_progress.contains(&key) {
         return Err(cyclic_definition_error(receiver, nested.name));
     }
@@ -134,7 +134,7 @@ pub(crate) fn nested_class(
     let Value::Obj(superclass) = superclass else {
         return Err(not_a_class_error(nested.name, superclass));
     };
-    let Some(super_application) = interp.heap.class_application(&superclass) else {
+    let Some(super_application) = interp.heap.class_application(superclass) else {
         return Err(not_a_class_error(nested.name, Value::Obj(superclass)));
     };
     // Step 3: the application cache decides whether this behaviour already
@@ -153,7 +153,7 @@ pub(crate) fn nested_class(
     let class = interp.new_class_object(
         application,
         Some(obj),
-        Some(*declaring_class),
+        Some(declaring_class),
         Some(superclass),
     );
     // Step 5: cache before returning, so step 1 hits from now on.
@@ -190,14 +190,14 @@ fn cache_slot(
     let class = interp.class_of(receiver);
     let index = interp
         .heap
-        .class_application(&class)?
+        .class_application(class)?
         .nested_slot
         .get(&mixin_key(nested))
         .copied()?;
     match receiver {
         Value::Obj(obj) => interp
             .heap
-            .instance_field(obj, index)
+            .instance_field(*obj, index)
             .map(|_| (*obj, index)),
         _ => None,
     }
@@ -208,8 +208,8 @@ fn cache_slot(
 /// declaration's identity. The index is a safe key for as long as `heap`
 /// exists, not merely for the duration of this stack entry: the
 /// arena never reuses a slot (there is no collector yet), so no other
-/// object -- live or not -- can ever carry the same index. Taking `&ObjRef`
-/// rather than `&Value` is what makes that the whole of this function's
+/// object -- live or not -- can ever carry the same index. Taking `ObjRef`
+/// rather than `Value` is what makes that the whole of this function's
 /// contract: there is no "receiver is not an object" case to key at all,
 /// so no sentinel is needed and none could collide with a real entry.
 /// `cache_slot` is the only caller, and it only ever hands back the object
@@ -218,7 +218,7 @@ fn cache_slot(
 /// The declaration, not its name, for the same reason `cache_slot` uses it:
 /// `class N = super N (...)` is a subclass redeclaring what it inherits,
 /// not a cycle, and a name key would report the legal shape as one.
-fn in_progress_key(heap: &Heap, obj: &ObjRef, nested: &Rc<Mixin>) -> (usize, usize) {
+fn in_progress_key(heap: &Heap, obj: ObjRef, nested: &Rc<Mixin>) -> (usize, usize) {
     (heap.object_identity_key(obj), mixin_key(nested))
 }
 
@@ -226,7 +226,7 @@ fn read_cache_slot(heap: &Heap, receiver: &Value, index: usize) -> Option<Value>
     let Value::Obj(obj) = receiver else {
         return None;
     };
-    match heap.instance_field(obj, index) {
+    match heap.instance_field(*obj, index) {
         Some(Value::Nil) | None => None,
         Some(value) => Some(value),
     }
@@ -245,7 +245,7 @@ fn eval_superclass_clause(
     interp: &mut Interpreter,
     receiver: &Value,
     nested: &Rc<Mixin>,
-    declaring_class: &ClassRef,
+    declaring_class: ClassRef,
 ) -> EvalResult {
     // Whether there is a clause at all is read off the mixin, not off its
     // declaration: a mixin decoded from an image has no declaration, and the
@@ -263,7 +263,7 @@ fn eval_superclass_clause(
         receiver,
         vec![],
         declaring_class,
-        FrameKind::SuperclassClause(*declaring_class),
+        FrameKind::SuperclassClause(declaring_class),
         code,
     )
 }
@@ -287,25 +287,25 @@ pub(super) fn run_clause_body(
     interp: &mut Interpreter,
     receiver: &Value,
     args: Vec<Value>,
-    current_class: &ClassRef,
+    current_class: ClassRef,
     kind: FrameKind,
     code: Rc<crate::bytecode::CompiledCode>,
 ) -> EvalResult {
     let act = interp.heap.push_activation(
         ActivationHeader {
             receiver: *receiver,
-            current_class: Some(*current_class),
+            current_class: Some(current_class),
             kind,
             slot_base: 0, // no clause body ever contains InitSlot
         },
         &args,
         (code.num_registers - code.num_args) as usize,
     );
-    let result = crate::vm::run_code(interp, &act, &code);
-    interp.heap.pop_activation(&act);
+    let result = crate::vm::run_code(interp, act, &code);
+    interp.heap.pop_activation(act);
     match result {
         Ok(value) => Ok(value),
-        Err(Signal::Return(target, value)) if target.same(&act) => Ok(value),
+        Err(Signal::Return(target, value)) if target.same(act) => Ok(value),
         Err(other) => Err(other),
     }
 }

@@ -17,7 +17,7 @@ use crate::{Heap, Interpreter, Symbol};
 /// (a distinct payload) and non-`Obj` values.
 fn arg_str(heap: &Heap, arg: Option<&Value>) -> Option<String> {
     match arg {
-        Some(Value::Obj(obj)) => heap.str_value(obj),
+        Some(Value::Obj(obj)) => heap.str_value(*obj),
         _ => None,
     }
 }
@@ -49,7 +49,7 @@ pub fn dispatch_string(
     let Value::Obj(obj) = &receiver else {
         return None;
     };
-    let s = interp.heap.str_value(obj)?;
+    let s = interp.heap.str_value(*obj)?;
     match selector.as_str() {
         "size" => Some(Ok(Value::SmallInt(s.chars().count() as i64))),
         "," => Some(match arg_str(&interp.heap, args.first()) {
@@ -81,11 +81,11 @@ pub fn dispatch_symbol(
     let Value::Obj(obj) = &receiver else {
         return None;
     };
-    let sym = interp.heap.sym_value(obj)?;
+    let sym = interp.heap.sym_value(*obj)?;
     match selector.as_str() {
         "asString" => Some(Ok(Value::Obj(interp.new_string(sym.as_str().to_string())))),
         "=" => Some(Ok(Value::Bool(match args.first() {
-            Some(Value::Obj(arg_obj)) => interp.heap.sym_value(arg_obj) == Some(sym),
+            Some(Value::Obj(arg_obj)) => interp.heap.sym_value(*arg_obj) == Some(sym),
             _ => false,
         }))),
         "printString" => Some(Ok(Value::Obj(
@@ -104,7 +104,7 @@ pub fn dispatch_character(
     let Value::Obj(obj) = &receiver else {
         return None;
     };
-    let s = interp.heap.str_value(obj)?;
+    let s = interp.heap.str_value(*obj)?;
     // Invariant from `Interpreter::new_character`: this payload is always
     // exactly one `char`. Fall back to `'\0'` rather than panicking if that
     // invariant is ever violated -- never panic on a Newspeak-input path.

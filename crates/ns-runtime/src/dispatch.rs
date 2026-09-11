@@ -78,7 +78,7 @@ pub fn kth_enclosing_object(
     };
     let mut remaining = depth;
     loop {
-        let Some(enclosing) = heap.class_enclosing(&level) else {
+        let Some(enclosing) = heap.class_enclosing(level) else {
             return Value::Nil;
         };
         remaining -= 1;
@@ -87,7 +87,7 @@ pub fn kth_enclosing_object(
         }
         // One step out along the declaration chain -- the class object of
         // the level that lexically declares `level`.
-        let Some(next) = heap.class_declaring(&level) else {
+        let Some(next) = heap.class_declaring(level) else {
             return Value::Nil;
         };
         level = next;
@@ -97,7 +97,7 @@ pub fn kth_enclosing_object(
 /// §5.5: ordinary (explicit-receiver) sends. A `protected`/`private`
 /// declaration shadows an inherited `public` one -- the search stops at
 /// the first declaration found, matching or not.
-pub fn lookup_public(heap: &Heap, class: &ClassRef, selector: Symbol) -> Lookup {
+pub fn lookup_public(heap: &Heap, class: ClassRef, selector: Symbol) -> Lookup {
     walk(
         heap,
         class,
@@ -110,7 +110,7 @@ pub fn lookup_public(heap: &Heap, class: &ClassRef, selector: Symbol) -> Lookup 
 /// §5.9 (non-`private` half of a `LexicalSend`): matches `public` or
 /// `protected`; a `private` declaration is transparently skipped, the walk
 /// continues past it.
-pub fn lookup_protected(heap: &Heap, class: &ClassRef, selector: Symbol) -> Lookup {
+pub fn lookup_protected(heap: &Heap, class: ClassRef, selector: Symbol) -> Lookup {
     walk(
         heap,
         class,
@@ -123,7 +123,7 @@ pub fn lookup_protected(heap: &Heap, class: &ClassRef, selector: Symbol) -> Look
 /// The plain, access-blind "defined for" walk (§3.5): used by `super`
 /// sends (§5.10) and by `doesNotUnderstand:` resolution, which is exempt
 /// from every access check (§5.5).
-pub fn lookup_defined_for(heap: &Heap, class: &ClassRef, selector: Symbol) -> Lookup {
+pub fn lookup_defined_for(heap: &Heap, class: ClassRef, selector: Symbol) -> Lookup {
     walk(heap, class, selector, |_| true, false)
 }
 
@@ -134,7 +134,7 @@ pub fn lookup_defined_for(heap: &Heap, class: &ClassRef, selector: Symbol) -> Lo
 /// that doesn't match the predicate is transparently skipped.
 fn walk(
     heap: &Heap,
-    class: &ClassRef,
+    class: ClassRef,
     selector: Symbol,
     accept: impl Fn(ast::AccessModifier) -> bool,
     hard_stop_on_mismatch: bool,
@@ -147,7 +147,7 @@ fn walk(
         // hierarchy where that chain diverges from the application chain
         // must end the search here rather than read stale `data` off a `c`
         // that no longer names a class.
-        let Some((builtin, superclass)) = heap.class_lookup_step(&c) else {
+        let Some((builtin, superclass)) = heap.class_lookup_step(c) else {
             return Lookup::NotFound;
         };
         let next = next_level(superclass, &application);
@@ -199,9 +199,9 @@ fn walk(
 /// code, the class object supplies the identity `Frame.current_class` needs
 /// for `super` and `outer`. Returns `None` for a non-class object, which is
 /// what ends a walk that was handed one.
-fn level_of(heap: &Heap, class: &ClassRef) -> Option<(ClassRef, Rc<MixinApplication>)> {
+fn level_of(heap: &Heap, class: ClassRef) -> Option<(ClassRef, Rc<MixinApplication>)> {
     heap.class_application(class)
-        .map(|application| (*class, application))
+        .map(|application| (class, application))
 }
 
 /// Steps both chains together. Every construction site (`load_module`,
@@ -226,7 +226,7 @@ fn next_level(
 /// access-controlled the way a method send is in Milestone 1, which is a
 /// known gap. Used by `sends::dispatch_lexical_send`
 /// before falling through to `lookup_defined_for`/`lookup_protected`.
-pub fn lookup_slot(heap: &Heap, class: &ClassRef, name: Symbol) -> Option<usize> {
+pub fn lookup_slot(heap: &Heap, class: ClassRef, name: Symbol) -> Option<usize> {
     heap.class_application(class)?
         .slot_index
         .get(&name)
@@ -282,7 +282,7 @@ mod tests {
         // chain is: `next_level` steps both, so a superclass linked on only
         // one of them would end the walk one level early and these tests
         // would pass for the wrong reason.
-        let super_application = superclass.as_ref().and_then(|s| heap.class_application(s));
+        let super_application = superclass.as_ref().and_then(|s| heap.class_application(*s));
         let application = Rc::new(MixinApplication {
             mixin: Rc::new(crate::mixin::Mixin {
                 methods,
@@ -319,7 +319,7 @@ mod tests {
             None,
         );
         assert!(matches!(
-            lookup_public(&heap, &class, Symbol::intern("foo")),
+            lookup_public(&heap, class, Symbol::intern("foo")),
             Lookup::Method(..)
         ));
     }
@@ -342,7 +342,7 @@ mod tests {
             Some(base),
         );
         assert!(matches!(
-            lookup_public(&heap, &derived, Symbol::intern("foo")),
+            lookup_public(&heap, derived, Symbol::intern("foo")),
             Lookup::NotFound
         ));
     }
@@ -367,7 +367,7 @@ mod tests {
         // lookup_protected on Derived's own `foo` (private) must not match,
         // but must continue to Base's public `foo`.
         assert!(matches!(
-            lookup_protected(&heap, &derived, Symbol::intern("foo")),
+            lookup_protected(&heap, derived, Symbol::intern("foo")),
             Lookup::Method(..)
         ));
     }

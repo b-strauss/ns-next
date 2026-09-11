@@ -51,7 +51,7 @@ fn string_of(heap: &Heap, v: &Value) -> String {
     let Value::Obj(obj) = v else {
         panic!("expected a string object")
     };
-    heap.str_value(obj)
+    heap.str_value(*obj)
         .unwrap_or_else(|| panic!("expected ObjectData::Str"))
 }
 

@@ -31,7 +31,7 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 fn as_string(heap: &Heap, value: &Value) -> String {
     match value {
         Value::Obj(obj) => heap
-            .str_value(obj)
+            .str_value(*obj)
             .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
         other => panic!("expected Value::Obj, got {}", heap.describe(other)),
     }

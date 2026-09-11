@@ -232,7 +232,7 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
 /// is refused here rather than written wrongly; extending
 /// `resolve_superclass_receiver` is what would make it representable, and
 /// that extension is where this format would grow with it.
-pub fn encode_root_class(w: &mut Writer, heap: &Heap, root_class: &ClassRef) -> Result<(), String> {
+pub fn encode_root_class(w: &mut Writer, heap: &Heap, root_class: ClassRef) -> Result<(), String> {
     if !heap.is_class(root_class) {
         return Err("image encoding's root object is not a class".to_string());
     }
@@ -240,7 +240,7 @@ pub fn encode_root_class(w: &mut Writer, heap: &Heap, root_class: &ClassRef) -> 
     match superclass {
         None => w.write_bool(false),
         Some(superclass) => {
-            let builtin = heap.class_builtin(&superclass);
+            let builtin = heap.class_builtin(superclass);
             let Some(kind) = builtin else {
                 return Err(
                     "image encoding cannot serialize a root class whose superclass is a \
@@ -287,7 +287,7 @@ pub fn encode_entry(w: &mut Writer, entry: Option<u32>) {
 pub fn encode_code_table(
     w: &mut Writer,
     heap: &Heap,
-    root_class: &ClassRef,
+    root_class: ClassRef,
     symbols: &mut symbols::Builder,
 ) -> Result<CodeIds, String> {
     let mut order: Vec<Rc<CompiledCode>> = Vec::new();
@@ -355,7 +355,7 @@ fn encode_code(w: &mut Writer, code: &CompiledCode, ids: &CodeIds, symbols: &mut
     }
     w.write_u32(u32_field("call site count", code.call_sites.len()));
     for site in &code.call_sites {
-        encode_call_site(w, site);
+        encode_call_site(w, *site);
     }
     w.write_u32(u32_field("instruction count", code.instrs.len()));
     for instr in &code.instrs {
@@ -363,7 +363,7 @@ fn encode_code(w: &mut Writer, code: &CompiledCode, ids: &CodeIds, symbols: &mut
     }
 }
 
-fn encode_call_site(w: &mut Writer, site: &CallSite) {
+fn encode_call_site(w: &mut Writer, site: CallSite) {
     w.write_u16(site.call_site_id);
 }
 
@@ -424,7 +424,7 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symb
             w.write_u32(symbols.intern(selector.as_str()));
             encode_regs(w, arg_regs);
             w.write_u16(*dst);
-            encode_call_site(w, call_site);
+            encode_call_site(w, *call_site);
         }
         Instr::SendPublic {
             selector,
@@ -438,7 +438,7 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symb
             w.write_u16(*receiver_reg);
             encode_regs(w, arg_regs);
             w.write_u16(*dst);
-            encode_call_site(w, call_site);
+            encode_call_site(w, *call_site);
         }
         Instr::SendSuper {
             selector,
@@ -450,7 +450,7 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symb
             w.write_u32(symbols.intern(selector.as_str()));
             encode_regs(w, arg_regs);
             w.write_u16(*dst);
-            encode_call_site(w, call_site);
+            encode_call_site(w, *call_site);
         }
         Instr::MakeClosure { dst, params, code } => {
             w.write_u8(OP_MAKE_CLOSURE);
@@ -556,7 +556,7 @@ fn encode_literal(w: &mut Writer, literal: &Literal, symbols: &mut symbols::Buil
 // ---------------------------------------------------------------------------
 
 fn is_same_object(a: &Value, b: &Value) -> bool {
-    matches!((a, b), (Value::Obj(x), Value::Obj(y)) if x.same(y))
+    matches!((a, b), (Value::Obj(x), Value::Obj(y)) if x.same(*y))
 }
 
 /// One entry of `GraphTable::build`'s explicit work stack: the traversal
@@ -585,7 +585,7 @@ fn class_refs(data: &ClassData) -> impl Iterator<Item = ObjRef> + '_ {
 /// the graph says so, so neither is a record. Every other class object is.
 /// The mirror of `decode::is_prebuilt_class`, including its explicit,
 /// today-redundant `is_class` guard -- see that function's doc comment.
-fn is_class_tag(heap: &Heap, obj: &ObjRef, root_class: &ClassRef) -> bool {
+fn is_class_tag(heap: &Heap, obj: ObjRef, root_class: ClassRef) -> bool {
     heap.is_class(obj) && (heap.class_builtin(obj).is_some() || obj.same(root_class))
 }
 
@@ -614,7 +614,7 @@ impl GraphTable {
         heap: &Heap,
         roots: &[Value],
         platform: &Value,
-        root_class: &ClassRef,
+        root_class: ClassRef,
     ) -> GraphTable {
         let mut table = GraphTable {
             objects: Vec::new(),
@@ -626,7 +626,7 @@ impl GraphTable {
         while let Some(pending) = stack.pop() {
             match pending {
                 Pending::Value(v) => table.visit_value(heap, &v, platform, root_class, &mut stack),
-                Pending::Frame(f) => table.visit_frame(heap, &f, &mut stack),
+                Pending::Frame(f) => table.visit_frame(heap, f, &mut stack),
             }
         }
         table
@@ -637,14 +637,14 @@ impl GraphTable {
         heap: &Heap,
         v: &Value,
         platform: &Value,
-        root_class: &ClassRef,
+        root_class: ClassRef,
         stack: &mut Vec<Pending>,
     ) {
         let Value::Obj(obj) = v else { return };
-        if is_same_object(v, platform) || is_class_tag(heap, obj, root_class) {
+        if is_same_object(v, platform) || is_class_tag(heap, *obj, root_class) {
             return;
         }
-        let key = heap.object_identity_key(obj);
+        let key = heap.object_identity_key(*obj);
         if self.object_ids.contains_key(&key) {
             return;
         }
@@ -653,7 +653,7 @@ impl GraphTable {
         self.objects.push(*obj);
         let before = stack.len();
         {
-            let record = heap.object_snapshot(obj);
+            let record = heap.object_snapshot(*obj);
             // An object's own class is a reference like every other: now
             // that a class object can be a record, reaching one only
             // through whatever values happen to point at it would leave
@@ -680,14 +680,14 @@ impl GraphTable {
         stack[before..].reverse();
     }
 
-    fn visit_frame(&mut self, heap: &Heap, frame: &FrameRef, stack: &mut Vec<Pending>) {
+    fn visit_frame(&mut self, heap: &Heap, frame: FrameRef, stack: &mut Vec<Pending>) {
         let key = heap.frame_identity_key(frame);
         if self.frame_ids.contains_key(&key) {
             return;
         }
         self.frame_ids
             .insert(key, u32_field("frame table id", self.frames.len()));
-        self.frames.push(*frame);
+        self.frames.push(frame);
         let before = stack.len();
         {
             let f = heap.frame_snapshot(frame);
@@ -727,14 +727,14 @@ impl GraphTable {
         stack[before..].reverse();
     }
 
-    pub fn object_id(&self, heap: &Heap, obj: &ObjRef) -> u32 {
+    pub fn object_id(&self, heap: &Heap, obj: ObjRef) -> u32 {
         *self
             .object_ids
             .get(&heap.object_identity_key(obj))
             .expect("object was visited by build()")
     }
 
-    pub fn frame_id(&self, heap: &Heap, frame: &FrameRef) -> u32 {
+    pub fn frame_id(&self, heap: &Heap, frame: FrameRef) -> u32 {
         *self
             .frame_ids
             .get(&heap.frame_identity_key(frame))
@@ -778,7 +778,7 @@ pub struct EncodeContext<'a> {
 /// enclosing instance's hidden cache slot and the `.class` of every
 /// instance of it, and there is one per enclosing instance, so no tag that
 /// names a class only by its position in the source could tell them apart.
-fn encode_class_tag(w: &mut Writer, class: &ClassRef, ctx: &EncodeContext) {
+fn encode_class_tag(w: &mut Writer, class: ClassRef, ctx: &EncodeContext) {
     if !ctx.heap.is_class(class) {
         panic!("internal: a class reference does not point at a class object");
     }
@@ -788,7 +788,7 @@ fn encode_class_tag(w: &mut Writer, class: &ClassRef, ctx: &EncodeContext) {
             w.write_u8(CLS_BUILTIN);
             w.write_u8(builtin_class_tag(kind));
         }
-        None if class.same(ctx.root_class) => w.write_u8(CLS_USER_ROOT),
+        None if class.same(*ctx.root_class) => w.write_u8(CLS_USER_ROOT),
         None => {
             w.write_u8(CLS_RECORD);
             w.write_u32(ctx.table.object_id(ctx.heap, class));
@@ -800,7 +800,7 @@ fn encode_optional_class(w: &mut Writer, class: Option<&ClassRef>, ctx: &EncodeC
     match class {
         Some(c) => {
             w.write_bool(true);
-            encode_class_tag(w, c, ctx);
+            encode_class_tag(w, *c, ctx);
         }
         None => w.write_bool(false),
     }
@@ -823,13 +823,13 @@ fn encode_value(w: &mut Writer, v: &Value, ctx: &EncodeContext) {
         w.write_u8(VAL_PLATFORM);
         return;
     }
-    if ctx.heap.is_class(obj) {
+    if ctx.heap.is_class(*obj) {
         w.write_u8(VAL_CLASS_TAG);
-        encode_class_tag(w, obj, ctx);
+        encode_class_tag(w, *obj, ctx);
         return;
     }
     w.write_u8(VAL_OBJECT_ID);
-    w.write_u32(ctx.table.object_id(ctx.heap, obj));
+    w.write_u32(ctx.table.object_id(ctx.heap, *obj));
 }
 
 fn encode_values(w: &mut Writer, values: &[Value], ctx: &EncodeContext) {
@@ -843,7 +843,7 @@ fn encode_frame_ref(w: &mut Writer, heap: &Heap, frame: Option<&FrameRef>, table
     match frame {
         Some(f) => {
             w.write_bool(true);
-            w.write_u32(table.frame_id(heap, f));
+            w.write_u32(table.frame_id(heap, *f));
         }
         None => w.write_bool(false),
     }
@@ -861,8 +861,8 @@ fn encode_closure_record(
         w.write_u32(symbols.intern(p.as_str()));
     }
     w.write_u32(ctx.code_ids.id_of(&closure.code));
-    w.write_u32(ctx.table.frame_id(ctx.heap, &closure.captured_frame));
-    w.write_u32(ctx.table.frame_id(ctx.heap, &closure.home));
+    w.write_u32(ctx.table.frame_id(ctx.heap, closure.captured_frame));
+    w.write_u32(ctx.table.frame_id(ctx.heap, closure.home));
 }
 
 /// A class object's record: which declaration it applies, and the three
@@ -921,12 +921,12 @@ fn encode_class_record(
 
 fn encode_object(
     w: &mut Writer,
-    obj: &ObjRef,
+    obj: ObjRef,
     ctx: &EncodeContext,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let record = ctx.heap.object_snapshot(obj);
-    encode_class_tag(w, &record.class, ctx);
+    encode_class_tag(w, record.class, ctx);
     w.write_u32(record.identity_hash);
     match &record.data {
         ObjectData::Instance(fields) => {
@@ -959,7 +959,7 @@ fn encode_object(
 
 fn encode_frame(
     w: &mut Writer,
-    frame: &FrameRef,
+    frame: FrameRef,
     ctx: &EncodeContext,
     symbols: &mut symbols::Builder,
 ) {
@@ -985,15 +985,15 @@ fn encode_frame(
         FrameKind::TopLevel => w.write_u8(FRAME_TOP_LEVEL),
         FrameKind::Initializer(class) => {
             w.write_u8(FRAME_INITIALIZER);
-            encode_class_tag(w, class, ctx);
+            encode_class_tag(w, *class, ctx);
         }
         FrameKind::SuperclassClause(class) => {
             w.write_u8(FRAME_SUPERCLASS_CLAUSE);
-            encode_class_tag(w, class, ctx);
+            encode_class_tag(w, *class, ctx);
         }
         FrameKind::SuperclassMessage(class) => {
             w.write_u8(FRAME_SUPERCLASS_MESSAGE);
-            encode_class_tag(w, class, ctx);
+            encode_class_tag(w, *class, ctx);
         }
     }
     w.write_bool(f.uncontinuable);
@@ -1009,7 +1009,7 @@ pub fn encode_graph_section(
     roots: &[Value],
     platform: &Value,
     code_ids: &CodeIds,
-    root_class: &ClassRef,
+    root_class: ClassRef,
     mixin_ids: &HashMap<usize, u32>,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
@@ -1018,17 +1018,17 @@ pub fn encode_graph_section(
         table: &table,
         code_ids,
         platform,
-        root_class,
+        root_class: &root_class,
         mixin_ids,
         heap,
     };
     w.write_u32(u32_field("object table entry count", table.objects().len()));
     w.write_u32(u32_field("frame table entry count", table.frames().len()));
     for obj in table.objects() {
-        encode_object(w, obj, &ctx, symbols)?;
+        encode_object(w, *obj, &ctx, symbols)?;
     }
     for frame in table.frames() {
-        encode_frame(w, frame, &ctx, symbols);
+        encode_frame(w, *frame, &ctx, symbols);
     }
     encode_values(w, roots, &ctx);
     Ok(())

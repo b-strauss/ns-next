@@ -40,7 +40,7 @@ use crate::types::*;
 /// yields between them.
 pub fn run_code(
     interp: &mut Interpreter,
-    act: &ActivationRef,
+    act: ActivationRef,
     code: &Rc<CompiledCode>,
 ) -> EvalResult {
     let mut pc = 0usize;
@@ -193,7 +193,7 @@ pub fn run_code(
     }
 }
 
-fn collect(heap: &Heap, act: &ActivationRef, regs: &[u16]) -> Vec<Value> {
+fn collect(heap: &Heap, act: ActivationRef, regs: &[u16]) -> Vec<Value> {
     regs.iter().map(|r| read_local(heap, act, *r)).collect()
 }
 
@@ -201,7 +201,7 @@ fn collect(heap: &Heap, act: &ActivationRef, regs: &[u16]) -> Vec<Value> {
 /// `MalformedInt` and `UnresolvedIdent`. Both raise through `literals.rs`'s own
 /// constructors rather than rebuilding the error here: error text lives in
 /// `interpreter/`, never in the VM.
-fn make_value(interp: &mut Interpreter, act: &ActivationRef, literal: &Literal) -> EvalResult {
+fn make_value(interp: &mut Interpreter, act: ActivationRef, literal: &Literal) -> EvalResult {
     Ok(match literal {
         Literal::Nil => Value::Nil,
         Literal::Bool(b) => Value::Bool(*b),

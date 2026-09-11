@@ -20,7 +20,7 @@ fn load(src: &str) -> (Interpreter, ClassRef) {
     (interp, class)
 }
 
-fn root_mixin(interp: &Interpreter, class: &ClassRef) -> Rc<Mixin> {
+fn root_mixin(interp: &Interpreter, class: ClassRef) -> Rc<Mixin> {
     interp
         .heap_ref()
         .class_application(class)
@@ -33,7 +33,7 @@ fn root_mixin(interp: &Interpreter, class: &ClassRef) -> Rc<Mixin> {
 fn loading_compiles_every_method_and_the_initializer_onto_the_mixin() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n  bar = ( ^2 )\n) : ()";
     let (interp, class) = load(src);
-    let mixin = root_mixin(&interp, &class);
+    let mixin = root_mixin(&interp, class);
     assert_eq!(mixin.methods.len(), 2);
     for method in mixin.methods.values() {
         assert_eq!(method.code.kind, CodeKind::Method);
@@ -59,7 +59,7 @@ fn the_method_dispatch_finds_carries_its_body() {
     let (interp, class) = load(src);
     // Access-blind: the fixture's unmarked `foo` is protected, which
     // `lookup_public` would not find.
-    match ns_runtime::dispatch::lookup_defined_for(interp.heap_ref(), &class, Symbol::intern("foo"))
+    match ns_runtime::dispatch::lookup_defined_for(interp.heap_ref(), class, Symbol::intern("foo"))
     {
         Lookup::Method(method, _) => assert_eq!(method.code.kind, CodeKind::Method),
         _ => panic!("expected a method"),
@@ -70,7 +70,7 @@ fn the_method_dispatch_finds_carries_its_body() {
 fn the_initializer_lowers_slots_then_init_exprs_with_own_slot_indices() {
     let src = "Newspeak3\n'T'\nclass Foo x: a = Object new (\n  | p = a. q ::= 5. |\n  q := p.\n) (\n) : ()";
     let (interp, class) = load(src);
-    let init = root_mixin(&interp, &class)
+    let init = root_mixin(&interp, class)
         .initializer_code
         .clone()
         .expect("an initializer");
@@ -125,7 +125,7 @@ fn the_initializer_lowers_slots_then_init_exprs_with_own_slot_indices() {
 fn an_uninitialized_slot_emits_nothing() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | a. b = 1. |\n) (\n) : ()";
     let (interp, class) = load(src);
-    let init = root_mixin(&interp, &class)
+    let init = root_mixin(&interp, class)
         .initializer_code
         .clone()
         .expect("an initializer");
@@ -160,7 +160,7 @@ class Outer usingPlatform: p = Object new () (
 #[test]
 fn every_mixin_in_the_tree_gets_its_bodies() {
     let (interp, class) = load(NESTED_SRC);
-    let mixin = root_mixin(&interp, &class);
+    let mixin = root_mixin(&interp, class);
 
     // The nested mixin's own method must be compiled -- proof the tree was
     // compiled past the root's own method table into `nested`.

@@ -15,7 +15,7 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 fn as_string(heap: &Heap, value: &Value) -> String {
     match value {
         Value::Obj(obj) => heap
-            .str_value(obj)
+            .str_value(*obj)
             .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
         other => panic!("expected Value::Obj, got {}", heap.describe(other)),
     }
@@ -134,7 +134,7 @@ fn symbol_round_trips_through_as_string_and_as_symbol() {
         "'foo:bar:' asSymbol",
     );
     match &back_to_symbol {
-        Value::Obj(obj) => match interp.heap_ref().sym_value(obj) {
+        Value::Obj(obj) => match interp.heap_ref().sym_value(*obj) {
             Some(s) => assert_eq!(s, Symbol::intern("foo:bar:")),
             None => panic!(
                 "expected ObjectData::Sym, got {}",

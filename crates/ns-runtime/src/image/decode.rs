@@ -1533,7 +1533,7 @@ fn method_decl(
     let found = ctx
         .interp
         .heap
-        .class_application(class)
+        .class_application(*class)
         .and_then(|a| a.mixin.methods.get(&selector).cloned());
     found.ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
 }
@@ -1662,7 +1662,7 @@ pub fn build_root_class(
     let root_mixin = mixins.root().cloned().ok_or(DecodeError::NotAClass)?;
     let super_application = superclass
         .as_ref()
-        .and_then(|superclass| interp.heap.class_application(superclass));
+        .and_then(|superclass| interp.heap.class_application(*superclass));
     let application = interp.apply_mixin(&root_mixin, super_application.as_ref());
     Ok(interp.new_class_object(application, None, None, superclass))
 }
@@ -1740,7 +1740,7 @@ fn rebuild_applications(
     // handle, not as the id it was written with.
     let mut position: HashMap<usize, usize> = HashMap::with_capacity(pending.len());
     for (i, p) in pending.iter().enumerate() {
-        position.insert(ctx.interp.heap.object_identity_key(&objects[p.object]), i);
+        position.insert(ctx.interp.heap.object_identity_key(objects[p.object]), i);
     }
     let mut done = vec![false; pending.len()];
     let mut on_chain = vec![false; pending.len()];
@@ -1759,10 +1759,9 @@ fn rebuild_applications(
             let superclass = ctx
                 .interp
                 .heap
-                .class_superclass(&objects[pending[current].object]);
+                .class_superclass(objects[pending[current].object]);
             let Some(superclass) = superclass else { break };
-            let Some(&next) = position.get(&ctx.interp.heap.object_identity_key(&superclass))
-            else {
+            let Some(&next) = position.get(&ctx.interp.heap.object_identity_key(superclass)) else {
                 break;
             };
             if done[next] {
@@ -1775,11 +1774,11 @@ fn rebuild_applications(
         // application in hand.
         for &i in chain.iter().rev() {
             let object = &objects[pending[i].object];
-            let super_application = match ctx.interp.heap.class_superclass(object) {
+            let super_application = match ctx.interp.heap.class_superclass(*object) {
                 Some(superclass) => Some(
                     ctx.interp
                         .heap
-                        .class_application(&superclass)
+                        .class_application(superclass)
                         .ok_or(DecodeError::NotAClassReference)?,
                 ),
                 None => None,
@@ -1787,7 +1786,7 @@ fn rebuild_applications(
             let application = ctx
                 .interp
                 .apply_mixin(&pending[i].mixin, super_application.as_ref());
-            if !ctx.interp.heap.set_class_application(object, application) {
+            if !ctx.interp.heap.set_class_application(*object, application) {
                 unreachable!("this object was filled in as a class record");
             }
             done[i] = true;
@@ -1806,7 +1805,7 @@ fn rebuild_applications(
 /// this answering `false` for a non-class object on its own terms rather
 /// than through that indirect argument, so it stays honest if either
 /// check's meaning shifts later.
-fn is_prebuilt_class(heap: &Heap, class: &ClassRef, root_class: &ClassRef) -> bool {
+fn is_prebuilt_class(heap: &Heap, class: ClassRef, root_class: ClassRef) -> bool {
     heap.is_class(class) && (heap.class_builtin(class).is_some() || class.same(root_class))
 }
 
@@ -1835,29 +1834,29 @@ fn check_class_references(
     heap: &Heap,
     objects: &[ObjRef],
     frames: &[FrameRef],
-    root_class: &ClassRef,
+    root_class: ClassRef,
 ) -> Result<(), DecodeError> {
     for object in objects {
-        let class = heap.class_of_obj(object);
-        if !heap.is_class(&class) {
+        let class = heap.class_of_obj(*object);
+        if !heap.is_class(class) {
             return Err(DecodeError::NotAClassReference);
         }
-        if heap.is_class(object) {
-            if !is_prebuilt_class(heap, &class, root_class) {
+        if heap.is_class(*object) {
+            if !is_prebuilt_class(heap, class, root_class) {
                 return Err(DecodeError::ClassOfAClassIsARecord);
             }
-            let superclass = heap.class_superclass(object);
-            let declaring_class = heap.class_declaring(object);
+            let superclass = heap.class_superclass(*object);
+            let declaring_class = heap.class_declaring(*object);
             for class in superclass.iter().chain(declaring_class.iter()) {
-                if !heap.is_class(class) {
+                if !heap.is_class(*class) {
                     return Err(DecodeError::NotAClassReference);
                 }
             }
         }
     }
     for frame in frames {
-        let current_class = heap.frame_current_class(frame);
-        let kind = heap.frame_kind(frame);
+        let current_class = heap.frame_current_class(*frame);
+        let kind = heap.frame_kind(*frame);
         let kind_class = match &kind {
             FrameKind::Initializer(c)
             | FrameKind::SuperclassClause(c)
@@ -1865,7 +1864,7 @@ fn check_class_references(
             FrameKind::Method(_) | FrameKind::Closure(_) | FrameKind::TopLevel => None,
         };
         for class in current_class.iter().chain(kind_class) {
-            if !heap.is_class(class) {
+            if !heap.is_class(*class) {
                 return Err(DecodeError::NotAClassReference);
             }
         }
@@ -1906,7 +1905,7 @@ pub fn decode_graph_section(
     let placeholder_application = ctx
         .interp
         .heap
-        .class_application(&placeholder_class)
+        .class_application(placeholder_class)
         .ok_or(DecodeError::NotAClass)?;
     let objects: Vec<ObjRef> = (0..object_count)
         .map(|_| {
@@ -1958,7 +1957,7 @@ pub fn decode_graph_section(
             }
         };
         ctx.interp.heap.replace_object(
-            obj,
+            *obj,
             Object {
                 class,
                 identity_hash,
@@ -1969,9 +1968,9 @@ pub fn decode_graph_section(
     rebuild_applications(ctx, &objects, pending_classes)?;
     for frame in &frames {
         let decoded = decode_frame(r, ctx, &tables, symbols)?;
-        ctx.interp.heap.replace_frame(frame, decoded);
+        ctx.interp.heap.replace_frame(*frame, decoded);
     }
-    check_class_references(&ctx.interp.heap, &objects, &frames, ctx.root_class)?;
+    check_class_references(&ctx.interp.heap, &objects, &frames, *ctx.root_class)?;
     let roots = decode_values(r, ctx, &tables)?;
     Ok(DecodedGraph {
         roots,
@@ -2062,18 +2061,18 @@ fn decode_class_record(
 /// entered -- nothing re-activates a decoded frame, and no closure may be
 /// captured by one (`verify_closure` refuses that) -- so there is nothing to
 /// reconcile.
-fn frame_body(heap: &Heap, frame: &FrameRef) -> Option<Rc<CompiledCode>> {
+fn frame_body(heap: &Heap, frame: FrameRef) -> Option<Rc<CompiledCode>> {
     /// The mixin whose code a class-carrying frame kind names. `None` only
     /// if the decoded value is not a class object -- `decode_class_tag`
     /// never produces one, but returning `None` keeps a future change to it
     /// from turning an untrusted image into a panic here.
-    fn frame_mixin(heap: &Heap, class: &crate::types::ClassRef) -> Option<Rc<crate::mixin::Mixin>> {
+    fn frame_mixin(heap: &Heap, class: crate::types::ClassRef) -> Option<Rc<crate::mixin::Mixin>> {
         heap.class_application(class).map(|a| a.mixin.clone())
     }
     match &heap.frame_kind(frame) {
         FrameKind::Method(method) => Some(method.code.clone()),
         FrameKind::Initializer(class) => {
-            frame_mixin(heap, class).and_then(|m| m.initializer_code.clone())
+            frame_mixin(heap, *class).and_then(|m| m.initializer_code.clone())
         }
         // Each clause activation resolves against the field its own body
         // lives in. They share `Initializer`'s frame shape -- a class's code
@@ -2082,10 +2081,10 @@ fn frame_body(heap: &Heap, frame: &FrameRef) -> Option<Rc<CompiledCode>> {
         // ran in it: a legitimate image refused, and a crafted one checked
         // against the wrong register file.
         FrameKind::SuperclassClause(class) => {
-            frame_mixin(heap, class).and_then(|m| m.superclass_clause_code.clone())
+            frame_mixin(heap, *class).and_then(|m| m.superclass_clause_code.clone())
         }
         FrameKind::SuperclassMessage(class) => {
-            frame_mixin(heap, class).and_then(|m| m.superclass_message_code.clone())
+            frame_mixin(heap, *class).and_then(|m| m.superclass_message_code.clone())
         }
         FrameKind::Closure(closure) => Some(closure.code.clone()),
         FrameKind::TopLevel => None,
@@ -2122,10 +2121,10 @@ pub fn verify_graph(
     let parents = lexical_parents(table)?;
     let index_of = code_index(table);
     for frame in &graph.frames {
-        let Some(code) = frame_body(heap, frame) else {
+        let Some(code) = frame_body(heap, *frame) else {
             continue;
         };
-        let (pc, num_args, num_temps) = heap.frame_register_shape(frame);
+        let (pc, num_args, num_temps) = heap.frame_register_shape(*frame);
         // `vm::run_code` stores the index of the instruction it is
         // executing, and a body with no instructions is already refused
         // (`UnterminatedBody`), so every genuine activation -- including one
@@ -2147,12 +2146,12 @@ pub fn verify_graph(
         }
     }
     for object in &graph.objects {
-        if let Some(closure) = heap.closure_data(object) {
+        if let Some(closure) = heap.closure_data(*object) {
             verify_closure(&closure, table, &parents, &index_of, heap)?;
         }
     }
     for frame in &graph.frames {
-        if let FrameKind::Closure(closure) = &heap.frame_kind(frame) {
+        if let FrameKind::Closure(closure) = &heap.frame_kind(*frame) {
             verify_closure(closure, table, &parents, &index_of, heap)?;
         }
     }
@@ -2179,7 +2178,7 @@ fn verify_closure(
     // in step.
     let parent = parents[id].ok_or(DecodeError::CapturedFrameMismatch)?;
     let running =
-        frame_body(heap, &closure.captured_frame).ok_or(DecodeError::CapturedFrameMismatch)?;
+        frame_body(heap, closure.captured_frame).ok_or(DecodeError::CapturedFrameMismatch)?;
     if !Rc::ptr_eq(&running, &table.codes[parent]) {
         return Err(DecodeError::CapturedFrameMismatch);
     }

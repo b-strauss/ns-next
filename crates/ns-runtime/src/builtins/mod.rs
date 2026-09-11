@@ -116,7 +116,7 @@ fn wrap_error(result: Result<Value, NewspeakError>) -> EvalResult {
 pub(super) fn call_block(interp: &mut Interpreter, block: &Value, args: Vec<Value>) -> EvalResult {
     match block {
         Value::Obj(obj) => {
-            let closure_data = interp.heap.closure_data(obj);
+            let closure_data = interp.heap.closure_data(*obj);
             match closure_data {
                 Some(closure) => interp.invoke_closure(&closure, args),
                 None => Ok(*block),

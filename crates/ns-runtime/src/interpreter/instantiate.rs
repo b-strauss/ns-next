@@ -79,7 +79,7 @@ impl Interpreter {
         // computes -- or can disagree about -- an instance's shape.
         let super_application = superclass
             .as_ref()
-            .and_then(|superclass| self.heap.class_application(superclass));
+            .and_then(|superclass| self.heap.class_application(*superclass));
         let application = self.apply_mixin(&mixin, super_application.as_ref());
         // `enclosing`/`declaring_class` are both `None` -- the module's root
         // class is the outermost level, so no object encloses it and no
@@ -216,11 +216,11 @@ impl Interpreter {
         let Value::Obj(obj) = receiver else {
             return None;
         };
-        let factory_selector = primary_factory_selector(&self.heap, obj)?;
+        let factory_selector = primary_factory_selector(&self.heap, *obj)?;
         if selector != factory_selector {
             return None;
         }
-        let builtin = self.heap.class_builtin(obj);
+        let builtin = self.heap.class_builtin(*obj);
         let class_ref = *obj;
         Some(match builtin {
             // `Array`/`OrderedCollection`'s Milestone 1 representation is
@@ -284,7 +284,7 @@ impl Interpreter {
         // chain here again would be a second answer to the same question.
         let slot_count = self
             .heap
-            .class_application(&class)
+            .class_application(class)
             .map_or(0, |a| a.num_slots);
         let instance =
             self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil; slot_count]));
@@ -292,7 +292,7 @@ impl Interpreter {
 
         // Steps 2-5, for this class and then, recursively, for every level
         // above it.
-        self.run_initializer_level(&class, &receiver, factory_args)?;
+        self.run_initializer_level(class, &receiver, factory_args)?;
 
         // Step 6.
         Ok(receiver)
@@ -314,7 +314,7 @@ impl Interpreter {
     /// the subclass's argument list -- or panicked when there was none.
     fn run_initializer_level(
         &mut self,
-        class: &ClassRef,
+        class: ClassRef,
         instance: &Value,
         factory_args: Vec<Value>,
     ) -> Result<(), Signal> {
@@ -343,7 +343,7 @@ impl Interpreter {
             if factory_args.len() != declared_arity {
                 return Err(Signal::Error(NewspeakError {
                     selector: Symbol::NEW,
-                    receiver: Value::Obj(*class),
+                    receiver: Value::Obj(class),
                     message: format!(
                         "wrong number of factory arguments: factory takes {}, got {}",
                         declared_arity,
@@ -359,8 +359,8 @@ impl Interpreter {
         let superclass = self.heap.class_superclass(class);
         if let Some(superclass) = superclass {
             let super_args =
-                self.eval_superclass_message(class, &superclass, instance, &factory_args)?;
-            self.run_initializer_level(&superclass, instance, super_args)?;
+                self.eval_superclass_message(class, superclass, instance, &factory_args)?;
+            self.run_initializer_level(superclass, instance, super_args)?;
         }
 
         // Step 2, built here rather than above it: a level with no slots and
@@ -382,8 +382,8 @@ impl Interpreter {
         let act = self.heap.push_activation(
             ActivationHeader {
                 receiver: *instance,
-                current_class: Some(*class),
-                kind: FrameKind::Initializer(*class),
+                current_class: Some(class),
+                kind: FrameKind::Initializer(class),
                 slot_base: self
                     .heap
                     .class_application(class)
@@ -396,8 +396,8 @@ impl Interpreter {
         // Steps 4-5: this class's own slot clauses (declaration order), then
         // its own initExprs. Popped on every path out, like every
         // activation.
-        let result = self.run_own_initializer(class, &act);
-        self.heap.pop_activation(&act);
+        let result = self.run_own_initializer(class, act);
+        self.heap.pop_activation(act);
         result
     }
 
@@ -417,8 +417,8 @@ impl Interpreter {
     /// side effects.
     fn eval_superclass_message(
         &mut self,
-        class: &ClassRef,
-        superclass: &ClassRef,
+        class: ClassRef,
+        superclass: ClassRef,
         instance: &Value,
         factory_args: &[Value],
     ) -> Result<Vec<Value>, Signal> {
@@ -464,7 +464,7 @@ impl Interpreter {
             instance,
             factory_args.to_vec(),
             class,
-            FrameKind::SuperclassMessage(*class),
+            FrameKind::SuperclassMessage(class),
             code,
         )?;
         argument_list(&self.heap, class, value)
@@ -481,7 +481,7 @@ impl Interpreter {
     /// an absolute index at run time; `run_initializer_level` sets it once,
     /// from this level's own `MixinApplication.own_slot_base`, which the
     /// assertion below states.
-    fn run_own_initializer(&mut self, class: &ClassRef, act: &ActivationRef) -> Result<(), Signal> {
+    fn run_own_initializer(&mut self, class: ClassRef, act: ActivationRef) -> Result<(), Signal> {
         // A builtin, or any class with nothing to run: such a mixin may carry
         // no initializer at all, so there is nothing to reach for.
         if !class_has_initializer_code(&self.heap, class) {
@@ -513,7 +513,7 @@ impl Interpreter {
 /// incoming send *is* the factory message) and `eval_superclass_message`
 /// (which decides whether a superclass clause names it) -- `newspeak-spec.pdf`
 /// §6.1 makes those the same question asked from two sides.
-pub(crate) fn primary_factory_selector(heap: &Heap, class: &ClassRef) -> Option<Symbol> {
+pub(crate) fn primary_factory_selector(heap: &Heap, class: ClassRef) -> Option<Symbol> {
     heap.class_application(class)
         .map(|application| match &application.mixin.factory {
             Some(factory) => factory.selector,
@@ -521,7 +521,7 @@ pub(crate) fn primary_factory_selector(heap: &Heap, class: &ClassRef) -> Option<
         })
 }
 
-fn class_name(heap: &Heap, class: &ClassRef) -> Symbol {
+fn class_name(heap: &Heap, class: ClassRef) -> Symbol {
     heap.class_application(class)
         .map_or(Symbol::AN_OBJECT, |application| application.mixin.name)
 }
@@ -531,8 +531,8 @@ fn class_name(heap: &Heap, class: &ClassRef) -> Symbol {
 /// of C."
 fn not_the_primary_factory_error(
     heap: &Heap,
-    class: &ClassRef,
-    superclass: &ClassRef,
+    class: ClassRef,
+    superclass: ClassRef,
     selector: Symbol,
     expected: Option<Symbol>,
 ) -> Signal {
@@ -547,7 +547,7 @@ fn not_the_primary_factory_error(
     };
     Signal::Error(NewspeakError {
         selector,
-        receiver: Value::Obj(*superclass),
+        receiver: Value::Obj(superclass),
         message: format!(
             "the superclass clause of class {subclass_name} sends #{selector}, \
              but the primary factory of class {superclass_name} is {expected}"
@@ -562,9 +562,9 @@ fn not_the_primary_factory_error(
 /// body that produced this value can come off the wire, where
 /// `image::decode::verify_mixins` reconciles its kind and arity but nothing
 /// constrains what it returns. An image is untrusted input.
-fn argument_list(heap: &Heap, class: &ClassRef, value: Value) -> Result<Vec<Value>, Signal> {
+fn argument_list(heap: &Heap, class: ClassRef, value: Value) -> Result<Vec<Value>, Signal> {
     if let Value::Obj(obj) = &value {
-        if let Some(items) = heap.array_elements(obj) {
+        if let Some(items) = heap.array_elements(*obj) {
             return Ok(items);
         }
     }
@@ -642,7 +642,7 @@ pub(crate) fn pattern_param_count(pattern: &ast::MessagePattern) -> usize {
 /// every `BuiltinClass` and for a non-class object. Delegates to
 /// `mixin_needs_initializer_code`, the one definition of "needs initializer
 /// code" a class-level and a mixin-level caller both share.
-pub(crate) fn class_has_initializer_code(heap: &Heap, class: &ClassRef) -> bool {
+pub(crate) fn class_has_initializer_code(heap: &Heap, class: ClassRef) -> bool {
     heap.class_application(class)
         .is_some_and(|application| mixin_needs_initializer_code(&application.mixin))
 }

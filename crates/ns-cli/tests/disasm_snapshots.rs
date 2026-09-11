@@ -250,19 +250,19 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
     let class = interp.load_module(&resolved);
     let application = interp
         .heap_ref()
-        .class_application(&class)
+        .class_application(class)
         .expect("a class object");
     let bare = Mixin {
         initializer_code: None,
         ..(*application.mixin).clone()
     };
     let rewired = interp.apply_mixin(&Rc::new(bare), application.superclass.as_ref());
-    assert!(interp.heap_mut().set_class_application(&class, rewired));
+    assert!(interp.heap_mut().set_class_application(class, rewired));
     let bytes = ns_runtime::image::build(
         interp.heap_ref(),
         None,
         &SourceOrigin::File("bare.ns".into()),
-        &class,
+        class,
         Symbol::intern("main:args:"),
     )
     .expect("build");

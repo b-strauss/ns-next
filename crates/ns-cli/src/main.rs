@@ -288,7 +288,7 @@ fn report_entry_send(result: Result<ns_runtime::Value, ns_runtime::Signal>) -> E
 /// fail for a reason this message never mentions.
 fn factory_args_for(
     heap: &ns_runtime::Heap,
-    class: &ns_runtime::ClassRef,
+    class: ns_runtime::ClassRef,
     platform: ns_runtime::Value,
 ) -> Result<Vec<ns_runtime::Value>, String> {
     let factory = heap
@@ -325,7 +325,7 @@ fn factory_args_for(
 /// stateless binary, from `image::load`'s rebuilt root class -- so the
 /// fallback is unreachable in practice and exists only to keep this a total
 /// function.
-fn class_name(heap: &ns_runtime::Heap, class: &ns_runtime::ClassRef) -> String {
+fn class_name(heap: &ns_runtime::Heap, class: ns_runtime::ClassRef) -> String {
     heap.class_application(class)
         .map(|app| app.mixin.name.to_string())
         .unwrap_or_else(|| "<non-class>".to_string())
@@ -393,7 +393,7 @@ fn cmd_run(file: &Path, send: &str) -> ExitCode {
     };
     let (mut interp, class) = bootstrap(&loaded);
     let platform = interp.platform();
-    let factory_args = match factory_args_for(interp.heap_ref(), &class, platform) {
+    let factory_args = match factory_args_for(interp.heap_ref(), class, platform) {
         Ok(args) => args,
         Err(msg) => {
             eprintln!("error: {msg}");
@@ -425,7 +425,7 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
     };
     let (mut interp, class) = bootstrap(&loaded);
     let platform = interp.platform();
-    let factory_args = match factory_args_for(interp.heap_ref(), &class, platform) {
+    let factory_args = match factory_args_for(interp.heap_ref(), class, platform) {
         Ok(args) => args,
         Err(msg) => {
             eprintln!("error: {msg}");
@@ -454,7 +454,7 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
         interp.heap_ref(),
         debug_source.then_some(loaded.source.as_str()),
         &loaded.origin,
-        &class,
+        class,
         &platform,
         &roots,
     ) {
@@ -550,7 +550,7 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
         // concern -- nothing in the runtime needs to know it was invoked
         // from a terminal.
         let platform = interp.platform();
-        let factory_args = match factory_args_for(interp.heap_ref(), &root_class, platform) {
+        let factory_args = match factory_args_for(interp.heap_ref(), root_class, platform) {
             Ok(args) => args,
             Err(msg) => {
                 eprintln!("error: {msg}");
@@ -634,13 +634,13 @@ fn signal_message(signal: ns_runtime::Signal) -> String {
 /// already-mutated state instead of the same workload every iteration.
 fn timed_send(
     interp: &mut ns_runtime::Interpreter,
-    class: &ns_runtime::ClassRef,
+    class: ns_runtime::ClassRef,
     factory_args: &[ns_runtime::Value],
     selector: ns_runtime::Symbol,
     entry_args: &[ns_runtime::Value],
 ) -> Result<std::time::Duration, String> {
     let instance = interp
-        .instantiate(*class, factory_args.to_vec())
+        .instantiate(class, factory_args.to_vec())
         .map_err(signal_message)?;
     let start = std::time::Instant::now();
     let outcome = interp.send(instance, selector, entry_args.to_vec());
@@ -656,7 +656,7 @@ fn timed_send(
 fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<BenchStats, String> {
     let (mut interp, class) = bootstrap(loaded);
     let platform = interp.platform();
-    let factory_args = factory_args_for(interp.heap_ref(), &class, platform)?;
+    let factory_args = factory_args_for(interp.heap_ref(), class, platform)?;
     let entry_args_list = entry_args(send, platform)?;
     let selector = ns_runtime::Symbol::intern(send);
 
@@ -665,7 +665,7 @@ fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<Ben
     // a one-time cost (e.g. a lazily-populated cache) the rest do not.
     timed_send(
         &mut interp,
-        &class,
+        class,
         &factory_args,
         selector,
         &entry_args_list,
@@ -675,7 +675,7 @@ fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<Ben
     for _ in 0..iterations {
         timings.push(timed_send(
             &mut interp,
-            &class,
+            class,
             &factory_args,
             selector,
             &entry_args_list,
@@ -810,7 +810,7 @@ fn looks_like_an_artifact(bytes: &[u8]) -> bool {
 /// alive, rather than through a `Heap` built after the fact.
 fn root_mixin_of(
     heap: &ns_runtime::Heap,
-    class: &ns_runtime::ClassRef,
+    class: ns_runtime::ClassRef,
 ) -> Result<Rc<ns_runtime::Mixin>, String> {
     heap.class_application(class)
         .map(|app| app.mixin.clone())
@@ -855,7 +855,7 @@ fn cmd_disasm(
     // disassembled without a word of complaint.
     let root_mixin = if looks_like_an_artifact(&raw) {
         match ns_runtime::image::load(&raw) {
-            Ok(loaded) => match root_mixin_of(loaded.interp.heap_ref(), &loaded.root_class) {
+            Ok(loaded) => match root_mixin_of(loaded.interp.heap_ref(), loaded.root_class) {
                 Ok(m) => m,
                 Err(msg) => {
                     eprintln!("error: {msg}");
@@ -873,7 +873,7 @@ fn cmd_disasm(
             Err(code) => return code,
         };
         let (interp, class) = bootstrap(&loaded);
-        match root_mixin_of(interp.heap_ref(), &class) {
+        match root_mixin_of(interp.heap_ref(), class) {
             Ok(m) => m,
             Err(msg) => {
                 eprintln!("error: {msg}");
@@ -991,7 +991,7 @@ fn cmd_inspect(artifact: &Path, full: bool) -> ExitCode {
 /// inherits directly from `Object`.
 fn root_class_answers(
     heap: &ns_runtime::Heap,
-    class: &ns_runtime::ClassRef,
+    class: ns_runtime::ClassRef,
     selector: &str,
 ) -> bool {
     let sym = ns_runtime::Symbol::intern(selector);
@@ -1019,7 +1019,7 @@ fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -
 
     let entry = match entry {
         Some(e) => e.to_string(),
-        None if root_class_answers(interp.heap_ref(), &class, "main:args:") => {
+        None if root_class_answers(interp.heap_ref(), class, "main:args:") => {
             "main:args:".to_string()
         }
         None => {
@@ -1035,7 +1035,7 @@ fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -
         eprintln!("error: cannot use `{entry}` as an entry point: {msg}");
         return ExitCode::FAILURE;
     }
-    if !root_class_answers(interp.heap_ref(), &class, &entry) {
+    if !root_class_answers(interp.heap_ref(), class, &entry) {
         eprintln!(
             "error: the root class of {} does not answer `{entry}`",
             file.display()
@@ -1047,7 +1047,7 @@ fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -
         interp.heap_ref(),
         debug_source.then_some(loaded.source.as_str()),
         &loaded.origin,
-        &class,
+        class,
         ns_runtime::Symbol::intern(&entry),
     ) {
         Ok(b) => b,

@@ -103,7 +103,7 @@ pub struct Row {
 /// (which needs them to write the table). Recomputing it is one walk of the
 /// tree and one `HashMap`; sharing a cached copy between the two would trade
 /// that for a lifetime that has to thread through `snapshot`.
-pub fn plan(heap: &Heap, root_class: &ClassRef) -> Result<Vec<Row>, String> {
+pub fn plan(heap: &Heap, root_class: ClassRef) -> Result<Vec<Row>, String> {
     let root_mixin = heap.class_application(root_class).map(|a| a.mixin.clone());
     // Not a class object: no declarations to describe, so the table is
     // empty rather than an error -- `encode_code_table` has always tolerated
@@ -207,7 +207,7 @@ pub(crate) type MixinIds = HashMap<usize, u32>;
 pub fn encode(
     w: &mut Writer,
     heap: &Heap,
-    root_class: &ClassRef,
+    root_class: ClassRef,
     symbols: &mut symbols::Builder,
     codes: &CodeIds,
 ) -> Result<MixinIds, String> {

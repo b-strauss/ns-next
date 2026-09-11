@@ -14,7 +14,7 @@ pub fn dispatch(
     let Value::Obj(obj) = &receiver else {
         return None;
     };
-    let closure = interp.heap.closure_data(obj)?;
+    let closure = interp.heap.closure_data(*obj)?;
     match selector.as_str() {
         "value" | "value:" | "value:value:" | "value:value:value:" => {
             Some(super::call_block(interp, &receiver, args.to_vec()))
