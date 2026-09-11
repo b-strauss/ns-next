@@ -5,9 +5,6 @@
 //! spawning a process, and check the singleton/identity behavior a
 //! process-level test can't easily observe.
 
-use std::collections::HashMap;
-use std::rc::Rc;
-
 use ns_runtime::{BuiltinClass, Interpreter, Signal, Symbol, Value};
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
@@ -16,10 +13,6 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
         Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
         Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
     }
-}
-
-fn empty_bindings() -> Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> {
-    Rc::new(HashMap::new())
 }
 
 #[test]
@@ -37,16 +30,15 @@ fn platform_is_memoized_across_calls() {
 fn platform_transcript_show_and_new_line_round_trip() {
     let mut interp = Interpreter::bootstrap();
     let platform = interp.platform();
-    let bindings = empty_bindings();
 
     let transcript = expect_ok(
-        interp.send(platform, Symbol::intern("transcript"), vec![], &bindings),
+        interp.send(platform, Symbol::intern("transcript"), vec![]),
         "platform transcript",
     );
 
     let s = Value::Obj(interp.new_string("hi".to_string()));
     let after_show = expect_ok(
-        interp.send(transcript, Symbol::intern("show:"), vec![s], &bindings),
+        interp.send(transcript, Symbol::intern("show:"), vec![s]),
         "transcript show: 'hi'",
     );
     // `show:` returns the receiver (the runtime spec's `Transcript`-style
@@ -57,7 +49,7 @@ fn platform_transcript_show_and_new_line_round_trip() {
     }
 
     expect_ok(
-        interp.send(transcript, Symbol::intern("newLine"), vec![], &bindings),
+        interp.send(transcript, Symbol::intern("newLine"), vec![]),
         "transcript newLine",
     );
 }
@@ -67,15 +59,9 @@ fn platform_class_accessors_return_the_matching_builtin_class() {
     let mut interp = Interpreter::bootstrap();
     let expected = interp.builtin_class(BuiltinClass::OrderedCollection);
     let platform = interp.platform();
-    let bindings = empty_bindings();
 
     let got = expect_ok(
-        interp.send(
-            platform,
-            Symbol::intern("OrderedCollection"),
-            vec![],
-            &bindings,
-        ),
+        interp.send(platform, Symbol::intern("OrderedCollection"), vec![]),
         "platform OrderedCollection",
     );
     match got {
@@ -96,14 +82,13 @@ fn platform_collections_answers_list_with_the_ordered_collection_class() {
     let mut interp = Interpreter::bootstrap();
     let expected = interp.builtin_class(BuiltinClass::OrderedCollection);
     let platform = interp.platform();
-    let bindings = empty_bindings();
 
     let collections = expect_ok(
-        interp.send(platform, Symbol::intern("collections"), vec![], &bindings),
+        interp.send(platform, Symbol::intern("collections"), vec![]),
         "platform collections",
     );
     let got = expect_ok(
-        interp.send(collections, Symbol::intern("List"), vec![], &bindings),
+        interp.send(collections, Symbol::intern("List"), vec![]),
         "platform collections List",
     );
     match got {
@@ -120,13 +105,12 @@ fn platform_collections_answers_list_with_the_ordered_collection_class() {
 fn platform_collections_does_not_invent_a_map() {
     let mut interp = Interpreter::bootstrap();
     let platform = interp.platform();
-    let bindings = empty_bindings();
 
     let collections = expect_ok(
-        interp.send(platform, Symbol::intern("collections"), vec![], &bindings),
+        interp.send(platform, Symbol::intern("collections"), vec![]),
         "platform collections",
     );
-    match interp.send(collections, Symbol::intern("Map"), vec![], &bindings) {
+    match interp.send(collections, Symbol::intern("Map"), vec![]) {
         Err(Signal::Error(e)) => assert!(
             e.message.contains("does not understand"),
             "message was: {}",
@@ -144,13 +128,12 @@ fn platform_collections_does_not_invent_a_map() {
 fn the_collections_namespace_is_not_a_transcript() {
     let mut interp = Interpreter::bootstrap();
     let platform = interp.platform();
-    let bindings = empty_bindings();
 
     let collections = expect_ok(
-        interp.send(platform, Symbol::intern("collections"), vec![], &bindings),
+        interp.send(platform, Symbol::intern("collections"), vec![]),
         "platform collections",
     );
-    match interp.send(collections, Symbol::intern("newLine"), vec![], &bindings) {
+    match interp.send(collections, Symbol::intern("newLine"), vec![]) {
         Err(Signal::Error(e)) => assert!(
             e.message.contains("does not understand"),
             "message was: {}",

@@ -52,7 +52,6 @@ fn compile_module_compiles_every_loaded_method_and_the_initializer() {
         init.instrs,
         vec![Instr::LoadSelf { dst: 0 }, Instr::ImplicitReturn { reg: 0 }]
     );
-    assert!(Rc::ptr_eq(&module.bindings, &bindings));
 }
 
 #[test]

@@ -2,21 +2,12 @@
 //! `Integer`/`Float` native methods, wired through
 //! `crate::builtins::dispatch_native` via `Interpreter::send`.
 
-use std::collections::HashMap;
-use std::rc::Rc;
-
 use ns_runtime::{Heap, Interpreter, Signal, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both --
 /// same pattern as `tests/instantiate.rs`.
-fn load(
-    src: &str,
-) -> (
-    Interpreter,
-    ns_runtime::ClassRef,
-    ns_runtime::ResolvedModule,
-) {
+fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -26,7 +17,7 @@ fn load(
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
-    (interp, class, resolved)
+    (interp, class)
 }
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
@@ -49,13 +40,11 @@ fn as_string(heap: &Heap, value: &Value) -> String {
 #[test]
 fn integer_addition_via_direct_send_evaluates_correctly() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::SmallInt(3),
         Symbol::intern("+"),
         vec![Value::SmallInt(4)],
-        &bindings,
     );
 
     match expect_ok(result, "3 + 4") {
@@ -70,13 +59,11 @@ fn integer_addition_via_direct_send_evaluates_correctly() {
 #[test]
 fn integer_addition_overflow_is_a_newspeak_error_not_a_panic() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::SmallInt(i64::MAX),
         Symbol::intern("+"),
         vec![Value::SmallInt(1)],
-        &bindings,
     );
 
     match result {
@@ -104,12 +91,9 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
         let src = format!(
             "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( {body} )\n) : ()"
         );
-        let (mut interp, class, resolved) = load(&src);
-        let receiver = expect_ok(
-            interp.instantiate(class, vec![], &resolved.bindings),
-            "instantiate",
-        );
-        let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+        let (mut interp, class) = load(&src);
+        let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let result = interp.send(receiver, Symbol::intern("m"), vec![]);
         match expect_ok(result, body) {
             Value::SmallInt(1) => {}
             other => panic!(
@@ -133,12 +117,9 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
         let src = format!(
             "Newspeak3\n'T'\nclass Foo = Object new (|x = 5.|) (\n  public m = ( {body} )\n) : ()"
         );
-        let (mut interp, class, resolved) = load(&src);
-        let receiver = expect_ok(
-            interp.instantiate(class, vec![], &resolved.bindings),
-            "instantiate",
-        );
-        let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+        let (mut interp, class) = load(&src);
+        let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let result = interp.send(receiver, Symbol::intern("m"), vec![]);
         match expect_ok(result, body) {
             Value::SmallInt(5) => {}
             other => panic!(
@@ -171,12 +152,9 @@ fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
         let src = format!(
             "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( {body} )\n) : ()"
         );
-        let (mut interp, class, resolved) = load(&src);
-        let receiver = expect_ok(
-            interp.instantiate(class, vec![], &resolved.bindings),
-            "instantiate",
-        );
-        let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+        let (mut interp, class) = load(&src);
+        let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let result = interp.send(receiver, Symbol::intern("m"), vec![]);
         assert_eq!(
             as_string(interp.heap_ref(), &expect_ok(result, body)),
             "escaped",
@@ -200,12 +178,9 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
         let src = format!(
             "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( {body} )\n) : ()"
         );
-        let (mut interp, class, resolved) = load(&src);
-        let receiver = expect_ok(
-            interp.instantiate(class, vec![], &resolved.bindings),
-            "instantiate",
-        );
-        let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+        let (mut interp, class) = load(&src);
+        let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let result = interp.send(receiver, Symbol::intern("m"), vec![]);
         assert_eq!(
             as_string(interp.heap_ref(), &expect_ok(result, body)),
             "correct",
@@ -222,13 +197,11 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
 #[test]
 fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::SmallInt(1),
         Symbol::intern("+"),
         vec![Value::Float(1.5)],
-        &bindings,
     );
 
     match result {
@@ -264,16 +237,10 @@ fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
 #[test]
 fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let arg = Value::Obj(interp.new_array(vec![]));
 
-    let result = interp.send(
-        Value::SmallInt(1),
-        Symbol::intern("+"),
-        vec![arg],
-        &bindings,
-    );
+    let result = interp.send(Value::SmallInt(1), Symbol::intern("+"), vec![arg]);
 
     match result {
         Err(Signal::Error(e)) => {
@@ -296,13 +263,11 @@ fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow()
 #[test]
 fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::SmallInt(1),
         Symbol::intern("<"),
         vec![Value::Float(1.5)],
-        &bindings,
     );
 
     match result {
@@ -324,13 +289,11 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
 #[test]
 fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::SmallInt(1),
         Symbol::intern("="),
         vec![Value::Float(1.0)],
-        &bindings,
     );
 
     match expect_ok(result, "1 = 1.0") {
@@ -347,13 +310,11 @@ fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
 #[test]
 fn float_arithmetic_still_widens_an_integer_argument() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::Float(1.5),
         Symbol::intern("+"),
         vec![Value::SmallInt(1)],
-        &bindings,
     );
 
     match expect_ok(result, "1.5 + 1") {
@@ -370,13 +331,11 @@ fn float_arithmetic_still_widens_an_integer_argument() {
 #[test]
 fn a_real_integer_overflow_is_still_reported_as_an_overflow() {
     let mut interp = Interpreter::bootstrap();
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let result = interp.send(
         Value::SmallInt(i64::MAX),
         Symbol::intern("*"),
         vec![Value::SmallInt(2)],
-        &bindings,
     );
 
     match result {
@@ -398,12 +357,9 @@ fn a_real_integer_overflow_is_still_reported_as_an_overflow() {
 #[test]
 fn a_radix_integer_literal_evaluates() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^16r1F )\n) : ()";
-    let (mut interp, class, resolved) = load(src);
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
-    let result = interp.send(receiver, Symbol::intern("m"), vec![], &resolved.bindings);
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let result = interp.send(receiver, Symbol::intern("m"), vec![]);
     match expect_ok(result, "^16r1F") {
         Value::SmallInt(31) => {}
         other => panic!(

@@ -1,11 +1,9 @@
 //! Send helpers (`LexicalSend`, `SuperSend`), local and outer-local access,
 //! closure invocation, and the errors the VM raises for a deferred literal.
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use ns_syntax::ast;
-use ns_syntax::Span;
 
 use crate::dispatch::{self, Lookup};
 use crate::heap::{ActivationHeader, ActivationRef, Heap};
@@ -230,7 +228,6 @@ pub(crate) fn dispatch_lexical_send(
     depth: u16,
     selector: Symbol,
     args: Vec<Value>,
-    bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     // The lexical depth counts levels out from the class that *defines* this
     // method, so the walk needs this activation's `current_class`, not the
@@ -284,18 +281,18 @@ pub(crate) fn dispatch_lexical_send(
         .unwrap_or_else(|| lexical_lookup(&interp.heap, &class, selector));
     match lookup {
         Lookup::Method(method, defining_class) => {
-            interp.invoke_method(o, method, defining_class, args, bindings.clone())
+            interp.invoke_method(o, method, defining_class, args)
         }
         Lookup::NestedClass(mixin, declaring_class) => {
-            crate::interpreter::nested::nested_class(interp, &o, &mixin, &declaring_class, bindings)
+            crate::interpreter::nested::nested_class(interp, &o, &mixin, &declaring_class)
         }
         Lookup::Native(kind) => {
             match crate::builtins::dispatch_native(interp, kind, o, selector, &args) {
                 Some(result) => result,
-                None => interp.send(o, selector, args, bindings),
+                None => interp.send(o, selector, args),
             }
         }
-        Lookup::NotFound => interp.send(o, selector, args, bindings),
+        Lookup::NotFound => interp.send(o, selector, args),
     }
 }
 
@@ -309,7 +306,6 @@ pub(crate) fn dispatch_super_send(
     act: &ActivationRef,
     selector: Symbol,
     args: Vec<Value>,
-    bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     let Some(current_class) = interp.heap.activation_current_class(act) else {
         return Err(Signal::Error(NewspeakError {
@@ -331,7 +327,7 @@ pub(crate) fn dispatch_super_send(
     let self_value = interp.heap.activation_receiver(act);
     match dispatch::lookup_defined_for(&interp.heap, &superclass, selector) {
         Lookup::Method(method, defining_class) => {
-            interp.invoke_method(self_value, method, defining_class, args, bindings.clone())
+            interp.invoke_method(self_value, method, defining_class, args)
         }
         // `super N` for a nested class the superclass declares. The
         // receiver stays `self` (§5.10), which is also the enclosing object
@@ -340,20 +336,16 @@ pub(crate) fn dispatch_super_send(
         // and different ones when a subclass redeclares `N`: the accessor
         // caches against the declaration's own hidden slot
         // (`MixinApplication::nested_slot`), not against its name.
-        Lookup::NestedClass(mixin, declaring_class) => crate::interpreter::nested::nested_class(
-            interp,
-            &self_value,
-            &mixin,
-            &declaring_class,
-            bindings,
-        ),
+        Lookup::NestedClass(mixin, declaring_class) => {
+            crate::interpreter::nested::nested_class(interp, &self_value, &mixin, &declaring_class)
+        }
         Lookup::Native(kind) => {
             match crate::builtins::dispatch_native(interp, kind, self_value, selector, &args) {
                 Some(result) => result,
-                None => interp.send(self_value, selector, args, bindings),
+                None => interp.send(self_value, selector, args),
             }
         }
-        Lookup::NotFound => interp.send(self_value, selector, args, bindings),
+        Lookup::NotFound => interp.send(self_value, selector, args),
     }
 }
 
@@ -367,7 +359,6 @@ pub fn invoke_closure(
     interp: &mut Interpreter,
     closure: &Rc<ClosureData>,
     args: Vec<Value>,
-    bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     // A wrong argument count is refused before it can reach a register: the
     // window is laid out from the arguments actually given, so too few would
@@ -399,7 +390,7 @@ pub fn invoke_closure(
         &args,
         (code.num_registers - code.num_args) as usize,
     );
-    let result = crate::vm::run_code(interp, &act, code, bindings);
+    let result = crate::vm::run_code(interp, &act, code);
     // Popped on every path out. A closure activation catches no return: its
     // `^` targets its home.
     interp.heap.pop_activation(&act);

@@ -7,13 +7,7 @@ use ns_runtime::{Interpreter, Signal, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both.
-fn load(
-    src: &str,
-) -> (
-    Interpreter,
-    ns_runtime::ClassRef,
-    ns_runtime::ResolvedModule,
-) {
+fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -23,7 +17,7 @@ fn load(
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
-    (interp, class, resolved)
+    (interp, class)
 }
 
 /// `Signal` carries no `Debug` impl of its own, so `EvalResult`
@@ -44,14 +38,11 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
     // reaches `public` members (`newspeak-spec.pdf` §5.5's `lookupPublic`);
     // the default access (no modifier) is `protected`.
     let src = "Newspeak3\n'T'\nclass Foo = Object new (|x = 42.|) (public bar = (^x)) : ()";
-    let (mut interp, class, resolved) = load(src);
+    let (mut interp, class) = load(src);
 
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
 
-    let result = interp.send(receiver, Symbol::intern("bar"), vec![], &resolved.bindings);
+    let result = interp.send(receiver, Symbol::intern("bar"), vec![]);
 
     match result {
         Ok(Value::SmallInt(42)) => {}
@@ -96,7 +87,7 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 #[test]
 fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
     let sup_src = "Newspeak3\n'T'\nclass Sup = Object new (|a = 10.|) () : ()";
-    let (mut interp, sup_class, _sup_resolved) = load(sup_src);
+    let (mut interp, sup_class) = load(sup_src);
 
     let sub_src = "Newspeak3\n'T'\nclass Sub = Object new (|b = a.|) (public getB = (^b)) : ()";
     let sub_module = ns_syntax::parse(sub_src).expect("parse");
@@ -133,17 +124,9 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
             .set_class_application(&sub_class, sub_application);
     assert!(relinked, "expected Sub to be a class object");
 
-    let receiver = expect_ok(
-        interp.instantiate(sub_class, vec![], &sub_resolved.bindings),
-        "instantiate",
-    );
+    let receiver = expect_ok(interp.instantiate(sub_class, vec![]), "instantiate");
 
-    let result = interp.send(
-        receiver,
-        Symbol::intern("getB"),
-        vec![],
-        &sub_resolved.bindings,
-    );
+    let result = interp.send(receiver, Symbol::intern("getB"), vec![]);
 
     match result {
         Ok(Value::SmallInt(10)) => {}
@@ -171,14 +154,14 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
 #[test]
 fn a_factory_parameter_is_visible_in_a_slot_initializer() {
     let src = "Newspeak3\n'T'\nclass M usingPlatform: platform = Object new (|t = platform.|) (public getT = (^t)) : ()";
-    let (mut interp, class, resolved) = load(src);
+    let (mut interp, class) = load(src);
 
     let receiver = expect_ok(
-        interp.instantiate(class, vec![Value::SmallInt(99)], &resolved.bindings),
+        interp.instantiate(class, vec![Value::SmallInt(99)]),
         "instantiate",
     );
 
-    let result = interp.send(receiver, Symbol::intern("getT"), vec![], &resolved.bindings);
+    let result = interp.send(receiver, Symbol::intern("getT"), vec![]);
 
     match result {
         Ok(Value::SmallInt(99)) => {}
@@ -200,20 +183,19 @@ fn a_factory_parameter_is_visible_in_a_slot_initializer() {
 #[test]
 fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
     let src = "Newspeak3\n'T'\nclass M usingPlatform: p = Object new (|t = p printString.|) (public getT = (^t)) : ()";
-    let (mut interp, class, resolved) = load(src);
+    let (mut interp, class) = load(src);
 
     let receiver = expect_ok(
         interp.send(
             Value::Obj(class),
             Symbol::intern("usingPlatform:"),
             vec![Value::SmallInt(99)],
-            &resolved.bindings,
         ),
         "M usingPlatform: 99",
     );
 
     let result = expect_ok(
-        interp.send(receiver, Symbol::intern("getT"), vec![], &resolved.bindings),
+        interp.send(receiver, Symbol::intern("getT"), vec![]),
         "getT",
     );
 
@@ -243,14 +225,14 @@ fn a_factory_parameter_is_visible_in_an_init_expr() {
         1,
         "this fixture is only meaningful if the header's `t:: p.` really parsed as an initExpr"
     );
-    let (mut interp, class, resolved) = load(src);
+    let (mut interp, class) = load(src);
 
     let receiver = expect_ok(
-        interp.instantiate(class, vec![Value::SmallInt(7)], &resolved.bindings),
+        interp.instantiate(class, vec![Value::SmallInt(7)]),
         "instantiate",
     );
 
-    let result = interp.send(receiver, Symbol::intern("getT"), vec![], &resolved.bindings);
+    let result = interp.send(receiver, Symbol::intern("getT"), vec![]);
 
     match result {
         Ok(Value::SmallInt(7)) => {}
@@ -276,9 +258,9 @@ fn a_factory_parameter_is_visible_in_an_init_expr() {
 #[test]
 fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
     let src = "Newspeak3\n'T'\nclass M usingPlatform: p ide: q = Object new (|t = q.|) (public getT = (^t)) : ()";
-    let (mut interp, class, resolved) = load(src);
+    let (mut interp, class) = load(src);
 
-    let result = interp.instantiate(class, vec![Value::SmallInt(1)], &resolved.bindings);
+    let result = interp.instantiate(class, vec![Value::SmallInt(1)]);
 
     match result {
         Err(Signal::Error(e)) => {
@@ -299,19 +281,11 @@ fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
 #[test]
 fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new () () : ()";
-    let (mut interp, class, resolved) = load(src);
+    let (mut interp, class) = load(src);
 
-    let receiver = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
-        "instantiate",
-    );
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
 
-    let result = interp.send(
-        receiver,
-        Symbol::intern("thisSelectorDoesNotExist"),
-        vec![],
-        &resolved.bindings,
-    );
+    let result = interp.send(receiver, Symbol::intern("thisSelectorDoesNotExist"), vec![]);
 
     match result {
         Err(Signal::Error(e)) => {
@@ -350,26 +324,21 @@ class SuperclassArgs = Object new () (
     )
 ) : ()
 ";
-    let (mut interp, class, resolved) = load(src);
+    let (mut interp, class) = load(src);
     let module = expect_ok(
-        interp.instantiate(class, vec![], &resolved.bindings),
+        interp.instantiate(class, vec![]),
         "instantiate SuperclassArgs",
     );
     let derived = expect_ok(
-        interp.send(
-            module,
-            Symbol::intern("Derived"),
-            vec![],
-            &resolved.bindings,
-        ),
+        interp.send(module, Symbol::intern("Derived"), vec![]),
         "Derived",
     );
     let instance = expect_ok(
-        interp.send(derived, Symbol::intern("new"), vec![], &resolved.bindings),
+        interp.send(derived, Symbol::intern("new"), vec![]),
         "Derived new",
     );
     let stored = expect_ok(
-        interp.send(instance, Symbol::intern("base"), vec![], &resolved.bindings),
+        interp.send(instance, Symbol::intern("base"), vec![]),
         "base",
     );
     assert!(

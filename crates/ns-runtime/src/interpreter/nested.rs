@@ -20,11 +20,9 @@
 //! clause. That code runs compiled, in an activation of its own, the same
 //! way `instantiate.rs` runs a superclass clause's deferred message.
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use ns_syntax::ast;
-use ns_syntax::Span;
 
 use crate::heap::{ActivationHeader, Heap};
 use crate::mixin::{mixin_key, Mixin};
@@ -111,7 +109,6 @@ pub(crate) fn nested_class(
     receiver: &Value,
     nested: &Rc<Mixin>,
     declaring_class: &ClassRef,
-    bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     let Some((obj, index)) = cache_slot(interp, receiver, nested) else {
         return Err(no_cache_slot_error(receiver, nested.name));
@@ -131,7 +128,7 @@ pub(crate) fn nested_class(
         return Err(cyclic_definition_error(receiver, nested.name));
     }
     interp.nested_in_progress.push(key);
-    let evaluated = eval_superclass_clause(interp, receiver, nested, declaring_class, bindings);
+    let evaluated = eval_superclass_clause(interp, receiver, nested, declaring_class);
     interp.nested_in_progress.pop();
     let superclass = evaluated?;
     let Value::Obj(superclass) = superclass else {
@@ -249,7 +246,6 @@ fn eval_superclass_clause(
     receiver: &Value,
     nested: &Rc<Mixin>,
     declaring_class: &ClassRef,
-    bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     // Whether there is a clause at all is read off the mixin, not off its
     // declaration: a mixin decoded from an image has no declaration, and the
@@ -274,7 +270,6 @@ fn eval_superclass_clause(
         declaring_class,
         FrameKind::SuperclassClause(*declaring_class),
         code,
-        bindings,
     )
 }
 
@@ -300,7 +295,6 @@ pub(super) fn run_clause_body(
     current_class: &ClassRef,
     kind: FrameKind,
     code: Rc<crate::bytecode::CompiledCode>,
-    bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     let act = interp.heap.push_activation(
         ActivationHeader {
@@ -312,7 +306,7 @@ pub(super) fn run_clause_body(
         &args,
         (code.num_registers - code.num_args) as usize,
     );
-    let result = crate::vm::run_code(interp, &act, &code, bindings);
+    let result = crate::vm::run_code(interp, &act, &code);
     interp.heap.pop_activation(&act);
     match result {
         Ok(value) => Ok(value),

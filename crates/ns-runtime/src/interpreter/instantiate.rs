@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ns_syntax::ast;
-use ns_syntax::Span;
 
 use crate::heap::{ActivationHeader, ActivationRef, Heap};
 use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
@@ -200,7 +199,6 @@ impl Interpreter {
         receiver: &Value,
         selector: Symbol,
         args: &[Value],
-        bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Option<EvalResult> {
         let Value::Obj(obj) = receiver else {
             return None;
@@ -228,7 +226,7 @@ impl Interpreter {
             Some(BuiltinClass::OrderedCollection) | Some(BuiltinClass::Array) => Ok(Value::Obj(
                 self.new_instance_object(class_ref, ObjectData::Array(vec![])),
             )),
-            _ => self.instantiate(class_ref, args.to_vec(), bindings),
+            _ => self.instantiate(class_ref, args.to_vec()),
         })
     }
 
@@ -253,14 +251,9 @@ impl Interpreter {
     /// The six numbered steps in the runtime spec's Class Instantiation
     /// section; see `instantiate_unchecked`. Like `send`, it leaves the
     /// activation stack as it found it.
-    pub fn instantiate(
-        &mut self,
-        class: ClassRef,
-        factory_args: Vec<Value>,
-        bindings: &Rc<HashMap<Span, Binding>>,
-    ) -> EvalResult {
+    pub fn instantiate(&mut self, class: ClassRef, factory_args: Vec<Value>) -> EvalResult {
         let depth = self.heap.activation_depth();
-        let result = self.instantiate_unchecked(class, factory_args, bindings);
+        let result = self.instantiate_unchecked(class, factory_args);
         debug_assert_eq!(
             self.heap.activation_depth(),
             depth,
@@ -272,12 +265,7 @@ impl Interpreter {
     /// The six numbered steps in the runtime spec's Class Instantiation
     /// section. Steps 2-5 are `run_initializer_level`, once per level of the
     /// superclass chain.
-    fn instantiate_unchecked(
-        &mut self,
-        class: ClassRef,
-        factory_args: Vec<Value>,
-        bindings: &Rc<HashMap<Span, Binding>>,
-    ) -> EvalResult {
+    fn instantiate_unchecked(&mut self, class: ClassRef, factory_args: Vec<Value>) -> EvalResult {
         // Step 1: one instance, every slot nil. The application already
         // knows the whole layout, inherited slots included -- summing the
         // chain here again would be a second answer to the same question.
@@ -291,7 +279,7 @@ impl Interpreter {
 
         // Steps 2-5, for this class and then, recursively, for every level
         // above it.
-        self.run_initializer_level(&class, &receiver, factory_args, bindings)?;
+        self.run_initializer_level(&class, &receiver, factory_args)?;
 
         // Step 6.
         Ok(receiver)
@@ -316,7 +304,6 @@ impl Interpreter {
         class: &ClassRef,
         instance: &Value,
         factory_args: Vec<Value>,
-        bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Result<(), Signal> {
         // Regression fix (re-review finding A): reject a factory-arity
         // mismatch as a NewspeakError before pushing this level's activation
@@ -358,14 +345,9 @@ impl Interpreter {
         // because this recursion runs before this level's own steps 4-5.
         let superclass = self.heap.class_superclass(class);
         if let Some(superclass) = superclass {
-            let super_args = self.eval_superclass_message(
-                class,
-                &superclass,
-                instance,
-                &factory_args,
-                bindings,
-            )?;
-            self.run_initializer_level(&superclass, instance, super_args, bindings)?;
+            let super_args =
+                self.eval_superclass_message(class, &superclass, instance, &factory_args)?;
+            self.run_initializer_level(&superclass, instance, super_args)?;
         }
 
         // Step 2, built here rather than above it: a level with no slots and
@@ -401,7 +383,7 @@ impl Interpreter {
         // Steps 4-5: this class's own slot clauses (declaration order), then
         // its own initExprs. Popped on every path out, like every
         // activation.
-        let result = self.run_own_initializer(class, &act, bindings);
+        let result = self.run_own_initializer(class, &act);
         self.heap.pop_activation(&act);
         result
     }
@@ -426,7 +408,6 @@ impl Interpreter {
         superclass: &ClassRef,
         instance: &Value,
         factory_args: &[Value],
-        bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Result<Vec<Value>, Signal> {
         // One lookup of the application for both questions below: the clause
         // this class was declared with, and the mixin its compiled message
@@ -477,7 +458,6 @@ impl Interpreter {
             class,
             FrameKind::SuperclassMessage(*class),
             code,
-            bindings,
         )?;
         argument_list(&self.heap, class, value)
     }
@@ -493,12 +473,7 @@ impl Interpreter {
     /// an absolute index at run time; `run_initializer_level` sets it once,
     /// from this level's own `MixinApplication.own_slot_base`, which the
     /// assertion below states.
-    fn run_own_initializer(
-        &mut self,
-        class: &ClassRef,
-        act: &ActivationRef,
-        bindings: &Rc<HashMap<Span, Binding>>,
-    ) -> Result<(), Signal> {
+    fn run_own_initializer(&mut self, class: &ClassRef, act: &ActivationRef) -> Result<(), Signal> {
         // A builtin, or any class with nothing to run: `compile_module` emits
         // no initializer for such a mixin, so there is nothing to look up.
         if !class_has_initializer_code(&self.heap, class) {
@@ -523,7 +498,7 @@ impl Interpreter {
         );
         self.heap
             .grow_activation_temps(act, (code.num_registers - code.num_args) as usize);
-        crate::vm::run_code(self, act, &code, bindings).map(|_| ())
+        crate::vm::run_code(self, act, &code).map(|_| ())
     }
 }
 

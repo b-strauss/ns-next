@@ -7,10 +7,7 @@
 //! lives in one place, which the reference lowering and a JIT will share.
 //! See `docs/design/execution.md`, "The VM and the three hooks".
 
-use std::collections::HashMap;
 use std::rc::Rc;
-
-use ns_syntax::Span;
 
 use crate::bytecode::{CompiledCode, Instr, Literal};
 use crate::heap::{ActivationRef, Heap};
@@ -43,7 +40,6 @@ pub fn run_code(
     interp: &mut Interpreter,
     act: &ActivationRef,
     code: &Rc<CompiledCode>,
-    bindings: &Rc<HashMap<Span, Binding>>,
 ) -> EvalResult {
     let mut pc = 0usize;
     loop {
@@ -89,7 +85,7 @@ pub fn run_code(
                 let receiver = read_local(&interp.heap, act, *receiver_reg);
                 let args = collect(&interp.heap, act, arg_regs);
                 interp.heap.set_activation_pc(act, pc);
-                let result = interp.send(receiver, *selector, args, bindings)?;
+                let result = interp.send(receiver, *selector, args)?;
                 write_local(&mut interp.heap, act, *dst, result);
             }
             Instr::SendLexical {
@@ -101,7 +97,7 @@ pub fn run_code(
             } => {
                 let args = collect(&interp.heap, act, arg_regs);
                 interp.heap.set_activation_pc(act, pc);
-                let result = dispatch_lexical_send(interp, act, *depth, *selector, args, bindings)?;
+                let result = dispatch_lexical_send(interp, act, *depth, *selector, args)?;
                 write_local(&mut interp.heap, act, *dst, result);
             }
             Instr::SendSuper {
@@ -112,7 +108,7 @@ pub fn run_code(
             } => {
                 let args = collect(&interp.heap, act, arg_regs);
                 interp.heap.set_activation_pc(act, pc);
-                let result = dispatch_super_send(interp, act, *selector, args, bindings)?;
+                let result = dispatch_super_send(interp, act, *selector, args)?;
                 write_local(&mut interp.heap, act, *dst, result);
             }
             Instr::MakeClosure {
@@ -132,7 +128,6 @@ pub fn run_code(
                     code: block.clone(),
                     captured_frame,
                     home,
-                    bindings: bindings.clone(),
                 });
                 let v = Value::Obj(interp.new_closure(closure));
                 write_local(&mut interp.heap, act, *dst, v);

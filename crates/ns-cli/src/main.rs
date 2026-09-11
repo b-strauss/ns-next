@@ -391,7 +391,6 @@ fn cmd_run(file: &Path, send: &str) -> ExitCode {
         Ok(l) => l,
         Err(code) => return code,
     };
-    let bindings = loaded.resolved.bindings.clone();
     let (mut interp, class) = bootstrap(&loaded);
     let platform = interp.platform();
     let factory_args = match factory_args_for(interp.heap_ref(), &class, platform) {
@@ -401,7 +400,7 @@ fn cmd_run(file: &Path, send: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let instance = match interp.instantiate(class, factory_args, &bindings) {
+    let instance = match interp.instantiate(class, factory_args) {
         Ok(v) => v,
         Err(signal) => return report_signal(signal),
     };
@@ -413,7 +412,7 @@ fn cmd_run(file: &Path, send: &str) -> ExitCode {
         }
     };
     let selector = ns_runtime::Symbol::intern(send);
-    report_entry_send(interp.send(instance, selector, args, &bindings))
+    report_entry_send(interp.send(instance, selector, args))
 }
 
 /// `ns-next snapshot`: `run`'s pipeline up to (and optionally including)
@@ -424,7 +423,6 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
         Ok(l) => l,
         Err(code) => return code,
     };
-    let bindings = loaded.resolved.bindings.clone();
     let (mut interp, class) = bootstrap(&loaded);
     let platform = interp.platform();
     let factory_args = match factory_args_for(interp.heap_ref(), &class, platform) {
@@ -434,7 +432,7 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
             return ExitCode::FAILURE;
         }
     };
-    let instance = match interp.instantiate(class, factory_args, &bindings) {
+    let instance = match interp.instantiate(class, factory_args) {
         Ok(v) => v,
         Err(signal) => return report_signal(signal),
     };
@@ -447,12 +445,7 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
                 return ExitCode::FAILURE;
             }
         };
-        match interp.send(
-            instance,
-            ns_runtime::Symbol::intern(selector),
-            args,
-            &bindings,
-        ) {
+        match interp.send(instance, ns_runtime::Symbol::intern(selector), args) {
             Ok(result) => roots.push(result),
             Err(signal) => return report_entry_send(Err(signal)),
         }
@@ -517,7 +510,6 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
         roots,
         origin: _,
         source,
-        empty_bindings: bindings,
         entry,
         stateless,
     } = match ns_runtime::image::load(&bytes) {
@@ -567,7 +559,7 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        match interp.instantiate(root_class, factory_args, &bindings) {
+        match interp.instantiate(root_class, factory_args) {
             Ok(v) => v,
             Err(signal) => return report_signal(signal),
         }
@@ -610,12 +602,7 @@ fn cmd_load(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    report_entry_send(interp.send(
-        instance,
-        ns_runtime::Symbol::intern(selector),
-        args,
-        &bindings,
-    ))
+    report_entry_send(interp.send(instance, ns_runtime::Symbol::intern(selector), args))
 }
 
 /// The timing summary.
@@ -653,13 +640,12 @@ fn timed_send(
     factory_args: &[ns_runtime::Value],
     selector: ns_runtime::Symbol,
     entry_args: &[ns_runtime::Value],
-    bindings: &Rc<std::collections::HashMap<ns_syntax::Span, ns_runtime::Binding>>,
 ) -> Result<std::time::Duration, String> {
     let instance = interp
-        .instantiate(*class, factory_args.to_vec(), bindings)
+        .instantiate(*class, factory_args.to_vec())
         .map_err(signal_message)?;
     let start = std::time::Instant::now();
-    let outcome = interp.send(instance, selector, entry_args.to_vec(), bindings);
+    let outcome = interp.send(instance, selector, entry_args.to_vec());
     let elapsed = start.elapsed();
     outcome.map(|_| elapsed).map_err(signal_message)
 }
@@ -669,12 +655,7 @@ fn timed_send(
 /// samples to `BenchStats`. Bootstrapping, loading and compiling all happen
 /// before the loop -- once-per-process costs, excluded from the per-send
 /// timing for the same reason instantiation is.
-fn bench_entry(
-    loaded: &LoadedSource,
-    bindings: &Rc<std::collections::HashMap<ns_syntax::Span, ns_runtime::Binding>>,
-    send: &str,
-    iterations: u32,
-) -> Result<BenchStats, String> {
+fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<BenchStats, String> {
     let (mut interp, class) = bootstrap(loaded);
     let platform = interp.platform();
     let factory_args = factory_args_for(interp.heap_ref(), &class, platform)?;
@@ -690,7 +671,6 @@ fn bench_entry(
         &factory_args,
         selector,
         &entry_args_list,
-        bindings,
     )?;
 
     let mut timings = Vec::with_capacity(iterations as usize);
@@ -701,7 +681,6 @@ fn bench_entry(
             &factory_args,
             selector,
             &entry_args_list,
-            bindings,
         )?);
     }
     timings.sort();
@@ -742,13 +721,12 @@ fn cmd_bench(file: &Path, send: &str, iterations: u32) -> ExitCode {
         Ok(l) => l,
         Err(code) => return code,
     };
-    let bindings = loaded.resolved.bindings.clone();
     println!(
         "timing: the entry send `{send}` only, after instantiation -- parsing, resolving, \
          bootstrapping, and compiling all happened once beforehand and are excluded. \
          {iterations} timed run(s), after one discarded warm-up run."
     );
-    match bench_entry(&loaded, &bindings, send, iterations) {
+    match bench_entry(&loaded, send, iterations) {
         Ok(stats) => println!(
             "median {:?} (min {:?}, max {:?}, n={})",
             stats.median, stats.min, stats.max, stats.iterations

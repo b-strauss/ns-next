@@ -199,7 +199,6 @@ pub fn compile_module(
         initializers: HashMap::new(),
         superclass_clauses: HashMap::new(),
         superclass_messages: HashMap::new(),
-        bindings: bindings.clone(),
     };
     // `crate::mixin::preorder` is also what `image::encode`/`decode` walk
     // the tree in, for the same code and the same reason: the two must

@@ -2,18 +2,10 @@
 //! explicit return, a bare builtin class name, and non-local return from a
 //! block to a live home and into a dead one.
 
-use std::rc::Rc;
-
 use ns_runtime::{Interpreter, NewspeakError, Signal, Symbol, Value};
 
 /// Loads `src`, instantiates its root class and returns both.
-fn instance_of(
-    src: &str,
-) -> (
-    Interpreter,
-    Value,
-    Rc<std::collections::HashMap<ns_syntax::Span, ns_runtime::Binding>>,
-) {
+fn instance_of(src: &str) -> (Interpreter, Value) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -23,13 +15,12 @@ fn instance_of(
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
-    let bindings = resolved.bindings.clone();
-    let receiver = match interp.instantiate(class, vec![], &bindings) {
+    let receiver = match interp.instantiate(class, vec![]) {
         Ok(v) => v,
         Err(Signal::Error(e)) => panic!("instantiate: unexpected Signal::Error: {}", e.message),
         Err(Signal::Return(..)) => panic!("instantiate: unexpected Signal::Return"),
     };
-    (interp, receiver, bindings)
+    (interp, receiver)
 }
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
@@ -55,13 +46,10 @@ fn expect_cannot_return(result: Result<Value, Signal>, what: &str) {
 
 #[test]
 fn method_with_no_explicit_return_returns_self() {
-    let (mut interp, receiver, bindings) = instance_of(
+    let (mut interp, receiver) = instance_of(
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public bar = ( 1. 2 )\n) : ()",
     );
-    let result = expect_ok(
-        interp.send(receiver, Symbol::intern("bar"), vec![], &bindings),
-        "bar",
-    );
+    let result = expect_ok(interp.send(receiver, Symbol::intern("bar"), vec![]), "bar");
     assert!(
         matches!((&result, &receiver), (Value::Obj(a), Value::Obj(b)) if a.same(b)),
         "a method with no explicit return must yield the receiver, not the last expression's value"
@@ -70,11 +58,11 @@ fn method_with_no_explicit_return_returns_self() {
 
 #[test]
 fn method_with_explicit_return_returns_the_returned_value() {
-    let (mut interp, receiver, bindings) = instance_of(
+    let (mut interp, receiver) = instance_of(
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public answer = ( ^42 )\n) : ()",
     );
     let result = expect_ok(
-        interp.send(receiver, Symbol::intern("answer"), vec![], &bindings),
+        interp.send(receiver, Symbol::intern("answer"), vec![]),
         "answer",
     );
     assert!(matches!(result, Value::SmallInt(42)));
@@ -84,13 +72,10 @@ fn method_with_explicit_return_returns_the_returned_value() {
 /// clause) names the builtin class.
 #[test]
 fn bare_builtin_class_name_reference_produces_a_working_instance() {
-    let (mut interp, receiver, bindings) = instance_of(
+    let (mut interp, receiver) = instance_of(
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public bar = ( ^OrderedCollection new )\n) : ()",
     );
-    let result = expect_ok(
-        interp.send(receiver, Symbol::intern("bar"), vec![], &bindings),
-        "bar",
-    );
+    let result = expect_ok(interp.send(receiver, Symbol::intern("bar"), vec![]), "bar");
     let Value::Obj(obj) = result else {
         panic!("expected an OrderedCollection instance")
     };
@@ -104,13 +89,10 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
 /// from the home: `m` answers 1, and its second statement never runs.
 #[test]
 fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
-    let (mut interp, receiver, bindings) = instance_of(
+    let (mut interp, receiver) = instance_of(
         "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( [ ^1 ] value. ^2 )\n) : ()",
     );
-    let result = expect_ok(
-        interp.send(receiver, Symbol::intern("m"), vec![], &bindings),
-        "m",
-    );
+    let result = expect_ok(interp.send(receiver, Symbol::intern("m"), vec![]), "m");
     assert!(matches!(result, Value::SmallInt(1)));
     assert_eq!(interp.heap_ref().activation_depth(), 0);
 }
@@ -119,16 +101,13 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
 /// the spec's `cannotReturn` -- a `NewspeakError`, not a panic.
 #[test]
 fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_not_a_panic() {
-    let (mut interp, receiver, bindings) = instance_of(
+    let (mut interp, receiver) = instance_of(
         "Newspeak3\n'T'\nclass Foo = Object new (|b.|) (\n  public m = ( b:: [ ^1 ]. ^b value )\n  public again = ( ^b value )\n) : ()",
     );
-    let first = expect_ok(
-        interp.send(receiver, Symbol::intern("m"), vec![], &bindings),
-        "m",
-    );
+    let first = expect_ok(interp.send(receiver, Symbol::intern("m"), vec![]), "m");
     assert!(matches!(first, Value::SmallInt(1)));
     expect_cannot_return(
-        interp.send(receiver, Symbol::intern("again"), vec![], &bindings),
+        interp.send(receiver, Symbol::intern("again"), vec![]),
         "again",
     );
 }
@@ -137,15 +116,15 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
 /// an explicit `^`: `capture` stores `[^1]` and falls off the end.
 #[test]
 fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() {
-    let (mut interp, receiver, bindings) = instance_of(
+    let (mut interp, receiver) = instance_of(
         "Newspeak3\n'T'\nclass Foo = Object new (|b.|) (\n  public capture = ( b:: [^1] )\n  public runIt = ( ^b value )\n) : ()",
     );
     expect_ok(
-        interp.send(receiver, Symbol::intern("capture"), vec![], &bindings),
+        interp.send(receiver, Symbol::intern("capture"), vec![]),
         "capture",
     );
     expect_cannot_return(
-        interp.send(receiver, Symbol::intern("runIt"), vec![], &bindings),
+        interp.send(receiver, Symbol::intern("runIt"), vec![]),
         "runIt",
     );
 }

@@ -3,16 +3,12 @@
 //! evaluates the declaration with the receiver as enclosing object and
 //! caches the resulting class object per receiver.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_runtime::{Binding, Heap, Interpreter, Signal, SourceOrigin, Symbol, Value};
-use ns_syntax::Span;
+use ns_runtime::{Heap, Interpreter, Signal, SourceOrigin, Symbol, Value};
 
-type Bindings = Rc<HashMap<Span, Binding>>;
-
-fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef, Bindings) {
+fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -20,10 +16,9 @@ fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef, Bindings) {
         SourceOrigin::File(PathBuf::from("t.ns")),
     )
     .expect("resolve");
-    let bindings = resolved.bindings.clone();
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
-    (interp, class, bindings)
+    (interp, class)
 }
 
 /// `Signal` carries no `Debug` impl, so `Result::expect` isn't usable on an
@@ -71,18 +66,18 @@ class Outer usingPlatform: p = Object new () (
 ";
 
 fn accessor_is_stable() {
-    let (mut interp, class, bindings) = load(SRC);
+    let (mut interp, class) = load(SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
     let first = expect_ok(
-        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
+        interp.send(outer, Symbol::intern("innerClass"), vec![]),
         "first Inner",
     );
     let second = expect_ok(
-        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
+        interp.send(outer, Symbol::intern("innerClass"), vec![]),
         "second Inner",
     );
     let (Value::Obj(a), Value::Obj(b)) = (&first, &second) else {
@@ -97,22 +92,22 @@ fn the_accessor_returns_the_same_class_object_every_time() {
 }
 
 fn distinct_per_receiver() {
-    let (mut interp, class, bindings) = load(SRC);
+    let (mut interp, class) = load(SRC);
     let platform = interp.platform();
     let one = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate first Outer",
     );
     let two = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate second Outer",
     );
     let a = expect_ok(
-        interp.send(one, Symbol::intern("innerClass"), vec![], &bindings),
+        interp.send(one, Symbol::intern("innerClass"), vec![]),
         "first",
     );
     let b = expect_ok(
-        interp.send(two, Symbol::intern("innerClass"), vec![], &bindings),
+        interp.send(two, Symbol::intern("innerClass"), vec![]),
         "second",
     );
     let (Value::Obj(a), Value::Obj(b)) = (&a, &b) else {
@@ -138,14 +133,14 @@ fn two_enclosing_instances_get_distinct_nested_classes() {
 }
 
 fn enclosing_object_is_the_receiver() {
-    let (mut interp, class, bindings) = load(SRC);
+    let (mut interp, class) = load(SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
     let inner = expect_ok(
-        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
+        interp.send(outer, Symbol::intern("innerClass"), vec![]),
         "Inner",
     );
     let (Value::Obj(inner), Value::Obj(outer)) = (&inner, &outer) else {
@@ -164,18 +159,18 @@ fn the_nested_class_remembers_its_enclosing_object() {
 }
 
 fn instantiating_the_nested_class() {
-    let (mut interp, class, bindings) = load(SRC);
+    let (mut interp, class) = load(SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
     let instance = expect_ok(
-        interp.send(outer, Symbol::intern("makeInner"), vec![], &bindings),
+        interp.send(outer, Symbol::intern("makeInner"), vec![]),
         "makeInner",
     );
     let value = expect_ok(
-        interp.send(instance, Symbol::intern("value"), vec![], &bindings),
+        interp.send(instance, Symbol::intern("value"), vec![]),
         "value",
     );
     let Value::SmallInt(value) = value else {
@@ -202,14 +197,14 @@ class Outer usingPlatform: p = Object new (| notAClass = 7. |) (
 ";
 
 fn non_class_superclass_clause() {
-    let (mut interp, class, bindings) = load(NON_CLASS_SUPERCLASS_SRC);
+    let (mut interp, class) = load(NON_CLASS_SUPERCLASS_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
     let message = expect_error(
-        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
+        interp.send(outer, Symbol::intern("innerClass"), vec![]),
         "innerClass",
     );
     assert!(
@@ -239,24 +234,21 @@ class Outer usingPlatform: p = Object new () (
 ";
 
 fn protected_nested_access() {
-    let (mut interp, class, bindings) = load(PROTECTED_NESTED_SRC);
+    let (mut interp, class) = load(PROTECTED_NESTED_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
     // Lexically, from inside Outer: reachable, and it really is a class.
-    let value = expect_ok(
-        interp.send(outer, Symbol::intern("reach"), vec![], &bindings),
-        "reach",
-    );
+    let value = expect_ok(interp.send(outer, Symbol::intern("reach"), vec![]), "reach");
     let Value::SmallInt(value) = value else {
         panic!("expected a SmallInt from `Hidden new value`")
     };
     assert_eq!(value, 7);
     // From outside, as an ordinary send: not reachable.
     let message = expect_error(
-        interp.send(outer, Symbol::intern("Hidden"), vec![], &bindings),
+        interp.send(outer, Symbol::intern("Hidden"), vec![]),
         "Hidden",
     );
     assert!(
@@ -291,22 +283,16 @@ class M usingPlatform: p = Object new () (
 ";
 
 fn inherited_nested_declaration() {
-    let (mut interp, class, bindings) = load(INHERITED_NESTED_SRC);
+    let (mut interp, class) = load(INHERITED_NESTED_SRC);
     let platform = interp.platform();
-    let m = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
-        "instantiate M",
-    );
+    let m = expect_ok(interp.instantiate(class, vec![platform]), "instantiate M");
     let derived = expect_ok(
-        interp.send(m, Symbol::intern("makeDerived"), vec![], &bindings),
+        interp.send(m, Symbol::intern("makeDerived"), vec![]),
         "makeDerived",
     );
     // `N` is declared on Base, reached here through Derived's chain -- and
     // its hidden cache slot is the inherited entry in Derived's layout.
-    let n_class = expect_ok(
-        interp.send(derived, Symbol::intern("N"), vec![], &bindings),
-        "N",
-    );
+    let n_class = expect_ok(interp.send(derived, Symbol::intern("N"), vec![]), "N");
     let (Value::Obj(n_class), Value::Obj(derived_obj)) = (&n_class, &derived) else {
         panic!("class object and instance")
     };
@@ -321,22 +307,13 @@ fn inherited_nested_declaration() {
         );
     }
     // Still cached per receiver across the inherited path.
-    let again = expect_ok(
-        interp.send(derived, Symbol::intern("N"), vec![], &bindings),
-        "N again",
-    );
+    let again = expect_ok(interp.send(derived, Symbol::intern("N"), vec![]), "N again");
     let Value::Obj(again) = &again else {
         panic!("class object")
     };
     assert!(n_class.same(again), "spec 6: cached within r");
-    let instance = expect_ok(
-        interp.instantiate(*n_class, vec![], &bindings),
-        "instantiate N",
-    );
-    let tag = expect_ok(
-        interp.send(instance, Symbol::intern("tag"), vec![], &bindings),
-        "tag",
-    );
+    let instance = expect_ok(interp.instantiate(*n_class, vec![]), "instantiate N");
+    let tag = expect_ok(interp.send(instance, Symbol::intern("tag"), vec![]), "tag");
     let Value::SmallInt(tag) = tag else {
         panic!("expected a SmallInt from `N new tag`")
     };
@@ -367,14 +344,14 @@ class Outer usingPlatform: p = Object new () (
 
 #[test]
 fn a_super_prefixed_clause_answers_a_class_object() {
-    let (mut interp, class, bindings) = load(SUPER_PREFIXED_CLAUSE_SRC);
+    let (mut interp, class) = load(SUPER_PREFIXED_CLAUSE_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
     let inner = expect_ok(
-        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
+        interp.send(outer, Symbol::intern("innerClass"), vec![]),
         "innerClass",
     );
     let Value::Obj(inner) = inner else {
@@ -397,14 +374,14 @@ class Outer usingPlatform: p = Object new () (
 ";
 
 fn cyclic_definition() {
-    let (mut interp, class, bindings) = load(CYCLIC_SRC);
+    let (mut interp, class) = load(CYCLIC_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
     let message = expect_error(
-        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
+        interp.send(outer, Symbol::intern("innerClass"), vec![]),
         "innerClass",
     );
     assert_eq!(
@@ -415,7 +392,7 @@ fn cyclic_definition() {
     // The guard is scoped to the evaluation, not latched: a second access
     // must raise the same error rather than a different one (or succeed).
     let again = expect_error(
-        interp.send(outer, Symbol::intern("innerClass"), vec![], &bindings),
+        interp.send(outer, Symbol::intern("innerClass"), vec![]),
         "innerClass again",
     );
     assert_eq!(message, again);
@@ -438,14 +415,9 @@ class Widget new = Object new () (
 /// §6.3: a class object's class-side methods are reachable by sending to
 /// the class object itself, through a lazily created metaclass.
 fn class_side_dispatch() {
-    let (mut interp, class, bindings) = load(CLASS_SIDE_SRC);
+    let (mut interp, class) = load(CLASS_SIDE_SRC);
     let described = expect_ok(
-        interp.send(
-            Value::Obj(class),
-            Symbol::intern("describe"),
-            vec![],
-            &bindings,
-        ),
+        interp.send(Value::Obj(class), Symbol::intern("describe"), vec![]),
         "class-side send",
     );
     assert_eq!(
@@ -464,13 +436,12 @@ fn a_class_side_method_dispatches_on_the_class_object() {
 /// send path must not panic or invent a different error shape for a class
 /// object than for any other receiver.
 fn class_side_miss_is_ordinary_dnu() {
-    let (mut interp, class, bindings) = load(SRC);
+    let (mut interp, class) = load(SRC);
     let message = expect_error(
         interp.send(
             Value::Obj(class),
             Symbol::intern("noSuchClassSideMethod"),
             vec![],
-            &bindings,
         ),
         "class-side miss",
     );
@@ -505,23 +476,18 @@ class Outer usingPlatform: p = Object new () (
 /// its own, but its superclass `Widget` does, so `SpecialWidget describe`
 /// must answer exactly what `Widget describe` does.
 fn class_side_is_inherited() {
-    let (mut interp, class, bindings) = load(CLASS_SIDE_INHERITANCE_SRC);
+    let (mut interp, class) = load(CLASS_SIDE_INHERITANCE_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
     let special_widget = expect_ok(
-        interp.send(outer, Symbol::intern("SpecialWidget"), vec![], &bindings),
+        interp.send(outer, Symbol::intern("SpecialWidget"), vec![]),
         "SpecialWidget accessor",
     );
     let described = expect_ok(
-        interp.send(
-            special_widget,
-            Symbol::intern("describe"),
-            vec![],
-            &bindings,
-        ),
+        interp.send(special_widget, Symbol::intern("describe"), vec![]),
         "inherited class-side send",
     );
     assert_eq!(
@@ -540,12 +506,8 @@ fn nested_class_object(
     interp: &mut Interpreter,
     enclosing: Value,
     name: &str,
-    bindings: &Bindings,
 ) -> ns_runtime::ClassRef {
-    let value = expect_ok(
-        interp.send(enclosing, Symbol::intern(name), vec![], bindings),
-        name,
-    );
+    let value = expect_ok(interp.send(enclosing, Symbol::intern(name), vec![]), name);
     match value {
         Value::Obj(obj) => obj,
         _ => panic!("{name} answers a class object"),
@@ -571,18 +533,18 @@ fn application_of(
 fn an_inherited_class_side_shares_one_application() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/class_side.ns");
     let src = std::fs::read_to_string(&path).expect("read tests-fixtures/class_side.ns");
-    let (mut interp, class, bindings) = load(&src);
+    let (mut interp, class) = load(&src);
     let platform = interp.platform();
     let one = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate first ClassSide",
     );
     let two = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate second ClassSide",
     );
-    let a = nested_class_object(&mut interp, one, "SpecialWidget", &bindings);
-    let b = nested_class_object(&mut interp, two, "SpecialWidget", &bindings);
+    let a = nested_class_object(&mut interp, one, "SpecialWidget");
+    let b = nested_class_object(&mut interp, two, "SpecialWidget");
     assert!(
         !a.same(&b),
         "spec 6: one class object per enclosing instance"
@@ -618,23 +580,18 @@ fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
 /// overrides the inherited one -- ordinary shadowing, exactly as on the
 /// instance side.
 fn class_side_override_shadows_the_inherited_method() {
-    let (mut interp, class, bindings) = load(CLASS_SIDE_INHERITANCE_SRC);
+    let (mut interp, class) = load(CLASS_SIDE_INHERITANCE_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
     let overriding_widget = expect_ok(
-        interp.send(outer, Symbol::intern("OverridingWidget"), vec![], &bindings),
+        interp.send(outer, Symbol::intern("OverridingWidget"), vec![]),
         "OverridingWidget accessor",
     );
     let described = expect_ok(
-        interp.send(
-            overriding_widget,
-            Symbol::intern("describe"),
-            vec![],
-            &bindings,
-        ),
+        interp.send(overriding_widget, Symbol::intern("describe"), vec![]),
         "overriding class-side send",
     );
     assert_eq!(
@@ -671,16 +628,13 @@ class Outer usingPlatform: p = Object new () (
 ";
 
 fn nested_super_and_outer() {
-    let (mut interp, class, bindings) = load(NESTED_SUPER_SRC);
+    let (mut interp, class) = load(NESTED_SUPER_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
-    let described = expect_ok(
-        interp.send(outer, Symbol::intern("run"), vec![], &bindings),
-        "run",
-    );
+    let described = expect_ok(interp.send(outer, Symbol::intern("run"), vec![]), "run");
     assert_eq!(
         string_contents(interp.heap_ref(), &described),
         "outer/derived"
@@ -718,16 +672,13 @@ class Outer usingPlatform: p = Object new () (
 ";
 
 fn super_chain_progresses_past_an_inherited_middle_level() {
-    let (mut interp, class, bindings) = load(SUPER_CHAIN_SRC);
+    let (mut interp, class) = load(SUPER_CHAIN_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
-    let described = expect_ok(
-        interp.send(outer, Symbol::intern("run"), vec![], &bindings),
-        "run",
-    );
+    let described = expect_ok(interp.send(outer, Symbol::intern("run"), vec![]), "run");
     assert_eq!(string_contents(interp.heap_ref(), &described), "grand/mid");
 }
 
@@ -761,16 +712,13 @@ class Outer usingPlatform: p = Object new () (
 ";
 
 fn outer_resolves_from_the_defining_level() {
-    let (mut interp, class, bindings) = load(OUTER_THROUGH_INHERITED_SRC);
+    let (mut interp, class) = load(OUTER_THROUGH_INHERITED_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
-    let described = expect_ok(
-        interp.send(outer, Symbol::intern("run"), vec![], &bindings),
-        "run",
-    );
+    let described = expect_ok(interp.send(outer, Symbol::intern("run"), vec![]), "run");
     assert_eq!(string_contents(interp.heap_ref(), &described), "top");
 }
 
@@ -804,16 +752,13 @@ class Outer usingPlatform: p = Object new () (
 ";
 
 fn a_two_level_outer_resolves_from_the_defining_level() {
-    let (mut interp, class, bindings) = load(DEEP_OUTER_THROUGH_INHERITED_SRC);
+    let (mut interp, class) = load(DEEP_OUTER_THROUGH_INHERITED_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
-    let described = expect_ok(
-        interp.send(outer, Symbol::intern("run"), vec![], &bindings),
-        "run",
-    );
+    let described = expect_ok(interp.send(outer, Symbol::intern("run"), vec![]), "run");
     assert_eq!(string_contents(interp.heap_ref(), &described), "top");
 }
 
@@ -850,21 +795,18 @@ class Outer usingPlatform: p = Object new () (
 ";
 
 fn class_side_outer_reaches_the_enclosing_object() {
-    let (mut interp, class, bindings) = load(CLASS_SIDE_OUTER_SRC);
+    let (mut interp, class) = load(CLASS_SIDE_OUTER_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform], &bindings),
+        interp.instantiate(class, vec![platform]),
         "instantiate Outer",
     );
     let shallow = expect_ok(
-        interp.send(outer, Symbol::intern("shallow"), vec![], &bindings),
+        interp.send(outer, Symbol::intern("shallow"), vec![]),
         "shallow",
     );
     assert_eq!(string_contents(interp.heap_ref(), &shallow), "top");
-    let deep = expect_ok(
-        interp.send(outer, Symbol::intern("deep"), vec![], &bindings),
-        "deep",
-    );
+    let deep = expect_ok(interp.send(outer, Symbol::intern("deep"), vec![]), "deep");
     assert_eq!(string_contents(interp.heap_ref(), &deep), "top");
 }
 

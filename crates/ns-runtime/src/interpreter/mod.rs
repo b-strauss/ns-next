@@ -10,8 +10,6 @@ pub(crate) mod nested;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_syntax::Span;
-
 use crate::bytecode::{method_key, CompiledModule};
 use crate::dispatch::{self, Lookup};
 use crate::heap::{ActivationHeader, ActivationRef, Heap};
@@ -152,15 +150,9 @@ impl Interpreter {
     /// Checked here, at every send, because a leaked entry is otherwise
     /// silent -- a later activation would sit on top of a dead one's
     /// registers.
-    pub fn send(
-        &mut self,
-        receiver: Value,
-        selector: Symbol,
-        args: Vec<Value>,
-        bindings: &Rc<HashMap<Span, Binding>>,
-    ) -> EvalResult {
+    pub fn send(&mut self, receiver: Value, selector: Symbol, args: Vec<Value>) -> EvalResult {
         let depth = self.heap.activation_depth();
-        let result = self.dispatch_send(receiver, selector, args, bindings);
+        let result = self.dispatch_send(receiver, selector, args);
         debug_assert_eq!(
             self.heap.activation_depth(),
             depth,
@@ -181,14 +173,8 @@ impl Interpreter {
     /// `instantiate` directly; see its own doc comment for why this can
     /// never double-fire against the superclass clause's own deferred
     /// factory message (`run_initializer_level` never calls `send`).
-    fn dispatch_send(
-        &mut self,
-        receiver: Value,
-        selector: Symbol,
-        args: Vec<Value>,
-        bindings: &Rc<HashMap<Span, Binding>>,
-    ) -> EvalResult {
-        if let Some(result) = self.try_factory_send(&receiver, selector, &args, bindings) {
+    fn dispatch_send(&mut self, receiver: Value, selector: Symbol, args: Vec<Value>) -> EvalResult {
+        if let Some(result) = self.try_factory_send(&receiver, selector, &args) {
             return result;
         }
         // §6.3: a class object's class-side methods are reached through its
@@ -205,26 +191,13 @@ impl Interpreter {
                 if let Some(metaclass) = self.metaclass_of(obj) {
                     match dispatch::lookup_public(&self.heap, &metaclass, selector) {
                         Lookup::Method(method, defining_class) => {
-                            return self.invoke_method(
-                                receiver,
-                                method,
-                                defining_class,
-                                args,
-                                bindings.clone(),
-                            );
+                            return self.invoke_method(receiver, method, defining_class, args);
                         }
                         Lookup::NestedClass(mixin, declaring_class) => {
-                            return nested::nested_class(
-                                self,
-                                &receiver,
-                                &mixin,
-                                &declaring_class,
-                                bindings,
-                            );
+                            return nested::nested_class(self, &receiver, &mixin, &declaring_class);
                         }
                         Lookup::Native(kind) => {
-                            return self
-                                .dispatch_native_or_dnu(kind, receiver, selector, args, bindings);
+                            return self.dispatch_native_or_dnu(kind, receiver, selector, args);
                         }
                         Lookup::NotFound => {}
                     }
@@ -234,19 +207,17 @@ impl Interpreter {
         let class = self.class_of(&receiver);
         match dispatch::lookup_public(&self.heap, &class, selector) {
             Lookup::Method(method, defining_class) => {
-                self.invoke_method(receiver, method, defining_class, args, bindings.clone())
+                self.invoke_method(receiver, method, defining_class, args)
             }
             // §6: the implicit accessor a nested declaration defines is
             // reached exactly like any other member, and it ignores `args`
             // -- the accessor is unary, so a send that supplied arguments
             // did not name it (`walk` matched on the bare selector).
             Lookup::NestedClass(mixin, declaring_class) => {
-                nested::nested_class(self, &receiver, &mixin, &declaring_class, bindings)
+                nested::nested_class(self, &receiver, &mixin, &declaring_class)
             }
-            Lookup::Native(kind) => {
-                self.dispatch_native_or_dnu(kind, receiver, selector, args, bindings)
-            }
-            Lookup::NotFound => self.does_not_understand(receiver, selector, args, bindings),
+            Lookup::Native(kind) => self.dispatch_native_or_dnu(kind, receiver, selector, args),
+            Lookup::NotFound => self.does_not_understand(receiver, selector, args),
         }
     }
 
@@ -294,11 +265,10 @@ impl Interpreter {
         receiver: Value,
         selector: Symbol,
         args: Vec<Value>,
-        bindings: &Rc<HashMap<Span, Binding>>,
     ) -> EvalResult {
         match self.dispatch_native_inheriting_object(kind, &receiver, selector, &args) {
             Some(result) => result,
-            None => self.does_not_understand(receiver, selector, args, bindings),
+            None => self.does_not_understand(receiver, selector, args),
         }
     }
 
@@ -318,7 +288,6 @@ impl Interpreter {
         receiver: Value,
         selector: Symbol,
         args: Vec<Value>,
-        bindings: &Rc<HashMap<Span, Binding>>,
     ) -> EvalResult {
         let class = self.class_of(&receiver);
         let dnu_selector = Symbol::intern("doesNotUnderstand:");
@@ -331,13 +300,7 @@ impl Interpreter {
                 let selector_value = self.new_symbol(selector);
                 let args_value = Value::Obj(self.new_array(args));
                 let message_arg = Value::Obj(self.new_array(vec![selector_value, args_value]));
-                self.invoke_method(
-                    receiver,
-                    method,
-                    defining_class,
-                    vec![message_arg],
-                    bindings.clone(),
-                )
+                self.invoke_method(receiver, method, defining_class, vec![message_arg])
             }
             Lookup::Native(kind) => {
                 let selector_value = self.new_symbol(selector);
@@ -391,7 +354,6 @@ impl Interpreter {
         method: Rc<crate::mixin::MixinMethod>,
         defining_class: ClassRef,
         args: Vec<Value>,
-        bindings: Rc<HashMap<Span, Binding>>,
     ) -> EvalResult {
         // An activation's locals are addressed as one run of registers --
         // the arguments first, the declared temporaries after them -- and
@@ -441,7 +403,7 @@ impl Interpreter {
             &args,
             (code.num_registers - code.num_args) as usize,
         );
-        let result = crate::vm::run_code(self, &act, &code, &bindings);
+        let result = crate::vm::run_code(self, &act, &code);
         self.heap.pop_activation(&act);
         match result {
             Ok(value) => Ok(value),

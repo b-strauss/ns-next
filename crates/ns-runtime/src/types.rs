@@ -125,8 +125,6 @@ pub struct ClosureData {
     /// The lexically enclosing *method* (or initializer) activation -- see
     /// the design note above on why this is a `FrameRef`, not an `ObjRef`.
     pub home: FrameRef,
-    /// Carried until the run-time `bindings` parameter goes; nothing reads it.
-    pub bindings: Rc<HashMap<Span, Binding>>,
 }
 
 // ---------- Resolver output ----------

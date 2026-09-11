@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use ns_syntax::Span;
 
-use crate::types::{Binding, BuiltinClass};
+use crate::types::BuiltinClass;
 use crate::Symbol;
 
 /// A compiled instruction-set literal -- a lowered form of `ast::Literal`
@@ -118,9 +118,9 @@ pub enum Instr {
         dst: u16,
         call_site: CallSite,
     },
-    /// Builds a closure over the *compiled* block body. `captured_frame`,
-    /// `home`, and `bindings` are runtime values the VM supplies from its
-    /// current frame when the instruction executes.
+    /// Builds a closure over the *compiled* block body. `captured_frame` and
+    /// `home` are runtime values the VM supplies from its current frame
+    /// when the instruction executes.
     MakeClosure {
         dst: u16,
         params: Rc<Vec<Symbol>>,
@@ -267,13 +267,6 @@ pub struct CompiledModule {
     /// message takes no arguments -- the overwhelmingly common `= Object
     /// new` shape runs no code at all here, and allocates nothing.
     pub superclass_messages: HashMap<usize, Rc<CompiledCode>>,
-    /// The module's resolver output, carried so it can be passed to the
-    /// shared orchestration's `bindings` parameters.
-    ///
-    /// Empty for a module decoded from an image, and correctly so: the map
-    /// is read only by `compiler::lower`, at compile time. See
-    /// `image::LoadedImage::empty_bindings`.
-    pub bindings: Rc<HashMap<Span, Binding>>,
 }
 
 impl CompiledModule {

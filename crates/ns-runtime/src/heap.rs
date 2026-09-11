@@ -1912,7 +1912,6 @@ mod tests {
             }),
             captured_frame: home_frame,
             home: home_frame,
-            bindings: std::rc::Rc::new(std::collections::HashMap::new()),
         };
         let closure_act = heap.push_activation(
             ActivationHeader {

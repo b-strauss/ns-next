@@ -4,9 +4,6 @@
 //! `Interpreter::instantiate` directly from Rust -- the code path an
 //! ordinary Newspeak `ClassName new` message send actually takes.
 
-use std::collections::HashMap;
-use std::rc::Rc;
-
 use ns_runtime::{BuiltinClass, Interpreter, Signal, Symbol, Value};
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
@@ -29,9 +26,8 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and_size() {
     let mut interp = Interpreter::bootstrap();
     let class_value = Value::Obj(interp.builtin_class(BuiltinClass::OrderedCollection));
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
-    let result = interp.send(class_value, Symbol::intern("new"), vec![], &bindings);
+    let result = interp.send(class_value, Symbol::intern("new"), vec![]);
     let receiver = expect_ok(result, "OrderedCollection new");
 
     let Value::Obj(obj) = &receiver else {
@@ -47,12 +43,7 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     );
 
     let add_result = expect_ok(
-        interp.send(
-            receiver,
-            Symbol::intern("add:"),
-            vec![Value::SmallInt(1)],
-            &bindings,
-        ),
+        interp.send(receiver, Symbol::intern("add:"), vec![Value::SmallInt(1)]),
         "OrderedCollection new add: 1",
     );
     match add_result {
@@ -64,7 +55,7 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     }
 
     let size_result = expect_ok(
-        interp.send(receiver, Symbol::intern("size"), vec![], &bindings),
+        interp.send(receiver, Symbol::intern("size"), vec![]),
         "OrderedCollection new (after add:) size",
     );
     match size_result {
@@ -83,19 +74,13 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
 fn array_new_via_ordinary_send_does_not_understand_add() {
     let mut interp = Interpreter::bootstrap();
     let class_value = Value::Obj(interp.builtin_class(BuiltinClass::Array));
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     let receiver = expect_ok(
-        interp.send(class_value, Symbol::intern("new"), vec![], &bindings),
+        interp.send(class_value, Symbol::intern("new"), vec![]),
         "Array new",
     );
 
-    match interp.send(
-        receiver,
-        Symbol::intern("add:"),
-        vec![Value::SmallInt(1)],
-        &bindings,
-    ) {
+    match interp.send(receiver, Symbol::intern("add:"), vec![Value::SmallInt(1)]) {
         Err(Signal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("add:"));
         }
@@ -126,33 +111,20 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
     let class_a = interp_a.load_module(&resolved);
     let class_value_a = Value::Obj(class_a);
     let via_send = expect_ok(
-        interp_a.send(
-            class_value_a,
-            Symbol::intern("new"),
-            vec![],
-            &resolved.bindings,
-        ),
+        interp_a.send(class_value_a, Symbol::intern("new"), vec![]),
         "Foo new (via send)",
     );
     let via_send_bar = expect_ok(
-        interp_a.send(via_send, Symbol::intern("bar"), vec![], &resolved.bindings),
+        interp_a.send(via_send, Symbol::intern("bar"), vec![]),
         "Foo new bar (via send)",
     );
 
     // Path B: `interp.instantiate(...)` called directly.
     let mut interp_b = Interpreter::bootstrap();
     let class_b = interp_b.load_module(&resolved);
-    let via_instantiate = expect_ok(
-        interp_b.instantiate(class_b, vec![], &resolved.bindings),
-        "instantiate(Foo)",
-    );
+    let via_instantiate = expect_ok(interp_b.instantiate(class_b, vec![]), "instantiate(Foo)");
     let via_instantiate_bar = expect_ok(
-        interp_b.send(
-            via_instantiate,
-            Symbol::intern("bar"),
-            vec![],
-            &resolved.bindings,
-        ),
+        interp_b.send(via_instantiate, Symbol::intern("bar"), vec![]),
         "instantiate(Foo) bar",
     );
 
@@ -175,13 +147,11 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
 fn a_class_object_receiving_a_non_factory_selector_falls_through_to_ordinary_dispatch() {
     let mut interp = Interpreter::bootstrap();
     let class_value = Value::Obj(interp.builtin_class(BuiltinClass::OrderedCollection));
-    let bindings: Rc<HashMap<ns_syntax::Span, ns_runtime::Binding>> = Rc::new(HashMap::new());
 
     match interp.send(
         class_value,
         Symbol::intern("thisSelectorDoesNotExist"),
         vec![],
-        &bindings,
     ) {
         Err(Signal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("thisSelectorDoesNotExist"));

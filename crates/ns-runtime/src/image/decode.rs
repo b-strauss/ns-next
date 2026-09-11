@@ -14,8 +14,8 @@ use crate::heap::Heap;
 use crate::interpreter::instantiate;
 use crate::mixin::mixin_key;
 use crate::types::{
-    Binding, BuiltinClass, ClassRef, ClosureData, Frame, FrameKind, FrameRef, ObjRef, Object,
-    ObjectData, SourceOrigin, Value,
+    BuiltinClass, ClassRef, ClosureData, Frame, FrameKind, FrameRef, ObjRef, Object, ObjectData,
+    SourceOrigin, Value,
 };
 use crate::Interpreter;
 use crate::Symbol;
@@ -650,14 +650,12 @@ fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError>
 pub fn build_module(
     table: &DecodedCodeTable,
     mixins: &mixins::Decoded,
-    bindings: &Rc<HashMap<Span, Binding>>,
 ) -> Result<CompiledModule, DecodeError> {
     let mut module = CompiledModule {
         methods: HashMap::new(),
         initializers: HashMap::new(),
         superclass_clauses: HashMap::new(),
         superclass_messages: HashMap::new(),
-        bindings: bindings.clone(),
     };
     for (mixin, section) in mixins.mixins.iter().zip(&mixins.code) {
         for (selector, id) in &section.methods {
@@ -1375,9 +1373,8 @@ fn decode_literal(
 
 /// Everything the graph decoder resolves tags against: the live bootstrap
 /// (`interp`), the root class built from the mixin table, the decoded code
-/// table, the bindings map a decoded closure carries, the interpreter's
-/// `platform` singleton, and the decoded declaration tree a class object's
-/// mixin id names.
+/// table, the interpreter's `platform` singleton, and the decoded
+/// declaration tree a class object's mixin id names.
 ///
 /// `interp` is `&mut` because decoding a class object *allocates into* the
 /// interpreter: rebuilding its `MixinApplication` goes through
@@ -1388,7 +1385,6 @@ pub struct DecodeContext<'a> {
     pub interp: &'a mut Interpreter,
     pub root_class: &'a ClassRef,
     pub codes: &'a [Rc<CompiledCode>],
-    pub bindings: &'a Rc<HashMap<Span, Binding>>,
     pub platform: Value,
     /// The decoded mixin table's rows, indexed by row id -- the same
     /// `Rc<Mixin>`s `build_module` keyed the compiled bodies by, so a class
@@ -1557,9 +1553,6 @@ fn decode_closure_record(
         code,
         captured_frame,
         home,
-        // Never serialized: nothing reads one, so a decoded closure
-        // carries the load's empty map (`image::LoadedImage::empty_bindings`).
-        bindings: ctx.bindings.clone(),
     })
 }
 

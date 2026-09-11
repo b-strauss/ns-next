@@ -22,14 +22,13 @@ fn run_method(src: &str, selector: &str) -> (Interpreter, Result<Value, Signal>)
         SourceOrigin::File(PathBuf::from("t.ns")),
     )
     .expect("resolve");
-    let bindings = resolved.bindings.clone();
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
-    let instance = match interp.instantiate(class, vec![], &bindings) {
+    let instance = match interp.instantiate(class, vec![]) {
         Ok(v) => v,
         Err(_) => panic!("instantiate failed"),
     };
-    let result = interp.send(instance, Symbol::intern(selector), vec![], &bindings);
+    let result = interp.send(instance, Symbol::intern(selector), vec![]);
     (interp, result)
 }
 

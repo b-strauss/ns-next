@@ -855,8 +855,7 @@ fn encode_frame_ref(w: &mut Writer, heap: &Heap, frame: Option<&FrameRef>, table
     }
 }
 
-/// `params`, `code_id`, `captured_frame` id, `home` id. `bindings` is not
-/// serialized: nothing reads one.
+/// `params`, `code_id`, `captured_frame` id, `home` id.
 fn encode_closure_record(
     w: &mut Writer,
     closure: &ClosureData,

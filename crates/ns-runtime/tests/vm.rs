@@ -1,17 +1,11 @@
 //! Bytecode execution through the shared orchestration, every send driven via `Interpreter::send`.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_runtime::{
-    Binding, ClassRef, Heap, Interpreter, NewspeakError, Signal, SourceOrigin, Symbol, Value,
-};
-use ns_syntax::Span;
+use ns_runtime::{ClassRef, Heap, Interpreter, NewspeakError, Signal, SourceOrigin, Symbol, Value};
 
-type Bindings = Rc<HashMap<Span, Binding>>;
-
-fn load(src: &str) -> (Interpreter, ClassRef, Bindings) {
+fn load(src: &str) -> (Interpreter, ClassRef) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -19,10 +13,9 @@ fn load(src: &str) -> (Interpreter, ClassRef, Bindings) {
         SourceOrigin::File(PathBuf::from("t.ns")),
     )
     .expect("resolve");
-    let bindings = resolved.bindings.clone();
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
-    (interp, class, bindings)
+    (interp, class)
 }
 
 /// `Signal` carries no `Debug` impl (M1 decision), so `Result::expect` is
@@ -43,8 +36,8 @@ fn expect_error(result: Result<Value, Signal>, what: &str) -> NewspeakError {
     }
 }
 
-fn new_instance(interp: &mut Interpreter, class: &ClassRef, bindings: &Bindings) -> Value {
-    expect_ok(interp.instantiate(*class, vec![], bindings), "instantiate")
+fn new_instance(interp: &mut Interpreter, class: &ClassRef) -> Value {
+    expect_ok(interp.instantiate(*class, vec![]), "instantiate")
 }
 
 fn send(
@@ -52,9 +45,8 @@ fn send(
     receiver: Value,
     selector: &str,
     args: Vec<Value>,
-    bindings: &Bindings,
 ) -> Result<Value, Signal> {
-    interp.send(receiver, Symbol::intern(selector), args, bindings)
+    interp.send(receiver, Symbol::intern(selector), args)
 }
 
 fn string_of(heap: &Heap, v: &Value) -> String {
@@ -75,22 +67,19 @@ fn int_of(v: &Value) -> i64 {
 #[test]
 fn a_user_method_runs_as_bytecode_and_returns_its_value() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public answer = ( ^42 )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
-    let result = expect_ok(
-        send(&mut interp, instance, "answer", vec![], &bindings),
-        "answer",
-    );
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
+    let result = expect_ok(send(&mut interp, instance, "answer", vec![]), "answer");
     assert_eq!(int_of(&result), 42);
 }
 
 #[test]
 fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public makeBlock = ( ^[ :x | x + 1 ] )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
     let block = expect_ok(
-        send(&mut interp, instance, "makeBlock", vec![], &bindings),
+        send(&mut interp, instance, "makeBlock", vec![]),
         "makeBlock",
     );
     {
@@ -107,13 +96,7 @@ fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
         );
     }
     let result = expect_ok(
-        send(
-            &mut interp,
-            block,
-            "value:",
-            vec![Value::SmallInt(9)],
-            &bindings,
-        ),
+        send(&mut interp, block, "value:", vec![Value::SmallInt(9)]),
         "value:",
     );
     assert_eq!(int_of(&result), 10);
@@ -122,39 +105,32 @@ fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
 #[test]
 fn temps_implicit_self_sends_and_arithmetic_work() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  helper = ( ^40 )\n  public foo = ( | t | t := helper. ^t + 2 )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
-    let result = expect_ok(send(&mut interp, instance, "foo", vec![], &bindings), "foo");
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
+    let result = expect_ok(send(&mut interp, instance, "foo", vec![]), "foo");
     assert_eq!(int_of(&result), 42);
 }
 
 #[test]
 fn slots_read_and_write_through_lexical_sends() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 1. |\n) (\n  public bump = ( n := n + 1. ^n )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
-    expect_ok(
-        send(&mut interp, instance, "bump", vec![], &bindings),
-        "bump",
-    );
-    let result = expect_ok(
-        send(&mut interp, instance, "bump", vec![], &bindings),
-        "bump",
-    );
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
+    expect_ok(send(&mut interp, instance, "bump", vec![]), "bump");
+    let result = expect_ok(send(&mut interp, instance, "bump", vec![]), "bump");
     assert_eq!(int_of(&result), 3);
 }
 
 #[test]
 fn an_unknown_selector_produces_the_shared_does_not_understand_error() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
-    let (mut interp, _class, bindings) = load(src);
+    let (mut interp, _class) = load(src);
     let err = expect_error(
         send(
             &mut interp,
             Value::SmallInt(3),
             "nonexistentSelector",
             vec![],
-            &bindings,
         ),
         "dnu",
     );
@@ -169,83 +145,62 @@ fn an_unknown_selector_produces_the_shared_does_not_understand_error() {
 #[test]
 fn a_super_send_falls_through_to_objects_native_print_string() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( ^super printString )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
-    let result = expect_ok(send(&mut interp, instance, "foo", vec![], &bindings), "foo");
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
+    let result = expect_ok(send(&mut interp, instance, "foo", vec![]), "foo");
     assert_eq!(string_of(interp.heap_ref(), &result), "an Object");
 }
 
 #[test]
 fn cascades_and_builtin_instantiation_work() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( | c | c := OrderedCollection new. c add: 1; add: 2. ^c size )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
-    let result = expect_ok(send(&mut interp, instance, "foo", vec![], &bindings), "foo");
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
+    let result = expect_ok(send(&mut interp, instance, "foo", vec![]), "foo");
     assert_eq!(int_of(&result), 2);
 }
 
 #[test]
 fn a_non_local_return_from_a_natively_invoked_block_unwinds_to_the_bytecode_frame() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  find: target in: coll = ( coll do: [:each | each = target ifTrue: [^'found']]. ^'not found' )\n  public main = ( | c | c := OrderedCollection new. c add: 1; add: 2; add: 3. ^(self find: 2 in: c), (self find: 9 in: c) )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
-    let result = expect_ok(
-        send(&mut interp, instance, "main", vec![], &bindings),
-        "main",
-    );
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
+    let result = expect_ok(send(&mut interp, instance, "main", vec![]), "main");
     assert_eq!(string_of(interp.heap_ref(), &result), "foundnot found");
 }
 
 #[test]
 fn a_block_writes_an_enclosing_temp_through_store_outer_local() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public sum = ( | n | n := 0. #(1 2 3) do: [:e | n := n + e]. ^n )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
-    let result = expect_ok(send(&mut interp, instance, "sum", vec![], &bindings), "sum");
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
+    let result = expect_ok(send(&mut interp, instance, "sum", vec![]), "sum");
     assert_eq!(int_of(&result), 6);
 }
 
 #[test]
 fn empty_and_multi_statement_blocks_return_nil_and_the_last_value() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public empty = ( ^[ ] value )\n  public last = ( ^[ 1. 2 ] value )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
-    let empty = expect_ok(
-        send(&mut interp, instance, "empty", vec![], &bindings),
-        "empty",
-    );
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
+    let empty = expect_ok(send(&mut interp, instance, "empty", vec![]), "empty");
     assert!(matches!(empty, Value::Nil));
-    let last = expect_ok(
-        send(&mut interp, instance, "last", vec![], &bindings),
-        "last",
-    );
+    let last = expect_ok(send(&mut interp, instance, "last", vec![]), "last");
     assert_eq!(int_of(&last), 2);
 }
 
 #[test]
 fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo: b = ( ^b ifTrue: ['yes'] ifFalse: ['no'] )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
     let yes = expect_ok(
-        send(
-            &mut interp,
-            instance,
-            "foo:",
-            vec![Value::Bool(true)],
-            &bindings,
-        ),
+        send(&mut interp, instance, "foo:", vec![Value::Bool(true)]),
         "foo:",
     );
     assert_eq!(string_of(interp.heap_ref(), &yes), "yes");
     let no = expect_ok(
-        send(
-            &mut interp,
-            instance,
-            "foo:",
-            vec![Value::Bool(false)],
-            &bindings,
-        ),
+        send(&mut interp, instance, "foo:", vec![Value::Bool(false)]),
         "foo:",
     );
     assert_eq!(string_of(interp.heap_ref(), &no), "no");
@@ -254,27 +209,27 @@ fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks()
 #[test]
 fn a_block_invoked_after_its_home_returned_gets_cannot_return() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  mk = ( ^[ ^1 ] )\n  public run = ( ^mk value )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
-    let err = expect_error(send(&mut interp, instance, "run", vec![], &bindings), "run");
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
+    let err = expect_error(send(&mut interp, instance, "run", vec![]), "run");
     assert!(err.message.contains("cannotReturn"), "{}", err.message);
 }
 
 #[test]
 fn a_malformed_integer_literal_raises_an_out_of_range_error_when_evaluated() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( ^99999999999999999999 )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
-    let err = expect_error(send(&mut interp, instance, "foo", vec![], &bindings), "foo");
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
+    let err = expect_error(send(&mut interp, instance, "foo", vec![]), "foo");
     assert!(err.message.contains("out of i64 range"), "{}", err.message);
 }
 
 #[test]
 fn a_dynamic_array_literal_evaluates_its_elements_under_bytecode() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( | a | a := {1. 2. 3}. ^a )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
-    let result = expect_ok(send(&mut interp, instance, "foo", vec![], &bindings), "foo");
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
+    let result = expect_ok(send(&mut interp, instance, "foo", vec![]), "foo");
     let Value::Obj(obj) = &result else {
         panic!("expected an array object")
     };
@@ -291,9 +246,9 @@ fn a_dynamic_array_literal_evaluates_its_elements_under_bytecode() {
 #[test]
 fn a_method_that_falls_off_its_end_implicitly_returns_self() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( 1 + 1 )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
-    let result = expect_ok(send(&mut interp, instance, "foo", vec![], &bindings), "foo");
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
+    let result = expect_ok(send(&mut interp, instance, "foo", vec![]), "foo");
     assert!(matches!((&result, &instance), (Value::Obj(a), Value::Obj(b)) if a.same(b)));
 }
 
@@ -304,10 +259,10 @@ fn a_method_that_falls_off_its_end_implicitly_returns_self() {
 fn loading_a_module_installs_its_compiled_code() {
     let src =
         "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public makeBlock = ( ^[ 1 ] )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = new_instance(&mut interp, &class, &bindings);
+    let (mut interp, class) = load(src);
+    let instance = new_instance(&mut interp, &class);
     let block = expect_ok(
-        send(&mut interp, instance, "makeBlock", vec![], &bindings),
+        send(&mut interp, instance, "makeBlock", vec![]),
         "makeBlock",
     );
     let Value::Obj(obj) = &block else {
@@ -328,7 +283,7 @@ fn loading_a_module_installs_its_compiled_code() {
 fn loading_a_second_module_keeps_the_first_modules_code() {
     let first = "Newspeak3\n'T'\nclass A = Object new (\n) (\n  public answer = ( ^1 )\n) : ()";
     let second = "Newspeak3\n'T'\nclass B = Object new (\n) (\n  public answer = ( ^2 )\n) : ()";
-    let (mut interp, a, bindings) = load(first);
+    let (mut interp, a) = load(first);
     let module = ns_syntax::parse(second).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -337,22 +292,10 @@ fn loading_a_second_module_keeps_the_first_modules_code() {
     )
     .expect("resolve");
     let b = interp.load_module(&resolved);
-    let a_instance = new_instance(&mut interp, &a, &bindings);
-    let b_instance = new_instance(&mut interp, &b, &resolved.bindings);
-    let from_a = expect_ok(
-        send(&mut interp, a_instance, "answer", vec![], &bindings),
-        "A answer",
-    );
-    let from_b = expect_ok(
-        send(
-            &mut interp,
-            b_instance,
-            "answer",
-            vec![],
-            &resolved.bindings,
-        ),
-        "B answer",
-    );
+    let a_instance = new_instance(&mut interp, &a);
+    let b_instance = new_instance(&mut interp, &b);
+    let from_a = expect_ok(send(&mut interp, a_instance, "answer", vec![]), "A answer");
+    let from_b = expect_ok(send(&mut interp, b_instance, "answer", vec![]), "B answer");
     assert_eq!(int_of(&from_a), 1);
     assert_eq!(int_of(&from_b), 2);
 }
@@ -371,28 +314,19 @@ const ARITY_PROBE: &str = "Newspeak3\n'T'\nclass Probe = Object new (\n) (\n\
 
 #[test]
 fn a_correctly_sent_method_reads_its_temporary_as_nil() {
-    let (mut interp, class, bindings) = load(ARITY_PROBE);
-    let instance = new_instance(&mut interp, &class, &bindings);
-    let result = expect_ok(
-        send(&mut interp, instance, "probe", vec![], &bindings),
-        "probe",
-    );
+    let (mut interp, class) = load(ARITY_PROBE);
+    let instance = new_instance(&mut interp, &class);
+    let result = expect_ok(send(&mut interp, instance, "probe", vec![]), "probe");
     assert_eq!(string_of(interp.heap_ref(), &result), "nil-ok");
 }
 
 #[test]
 fn a_wrong_arity_send_is_refused() {
-    let (mut interp, class, bindings) = load(ARITY_PROBE);
-    let instance = new_instance(&mut interp, &class, &bindings);
+    let (mut interp, class) = load(ARITY_PROBE);
+    let instance = new_instance(&mut interp, &class);
     let platform = interp.platform();
     let error = expect_error(
-        send(
-            &mut interp,
-            instance,
-            "probe",
-            vec![platform, Value::Nil],
-            &bindings,
-        ),
+        send(&mut interp, instance, "probe", vec![platform, Value::Nil]),
         "probe with two surplus arguments",
     );
     assert_eq!(

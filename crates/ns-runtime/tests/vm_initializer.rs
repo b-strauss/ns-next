@@ -1,19 +1,16 @@
 //! Instance initializers: a class's slot initializers and `initExprs`,
 //! compiled into one body per mixin and run on each level's own activation.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::{
-    Binding, BuiltinClass, ClassData, ClassRef, FrameKind, Interpreter, Mixin, MixinApplication,
-    ObjectData, Signal, SourceOrigin, Symbol, Value,
+    BuiltinClass, ClassData, ClassRef, FrameKind, Interpreter, Mixin, MixinApplication, ObjectData,
+    Signal, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
-type Bindings = Rc<HashMap<Span, Binding>>;
-
-fn load(src: &str) -> (Interpreter, ClassRef, Bindings) {
+fn load(src: &str) -> (Interpreter, ClassRef) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -21,10 +18,9 @@ fn load(src: &str) -> (Interpreter, ClassRef, Bindings) {
         SourceOrigin::File(PathBuf::from("t.ns")),
     )
     .expect("resolve");
-    let bindings = resolved.bindings.clone();
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
-    (interp, class, bindings)
+    (interp, class)
 }
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
@@ -44,13 +40,10 @@ fn int_of(v: &Value) -> i64 {
 
 /// Instantiates with `factory_args`, sends `getter`, returns the result.
 fn instantiate_and_get(src: &str, factory_args: Vec<Value>, getter: &str) -> Value {
-    let (mut interp, class, bindings) = load(src);
-    let instance = expect_ok(
-        interp.instantiate(class, factory_args, &bindings),
-        "instantiate",
-    );
+    let (mut interp, class) = load(src);
+    let instance = expect_ok(interp.instantiate(class, factory_args), "instantiate");
     expect_ok(
-        interp.send(instance, Symbol::intern(getter), vec![], &bindings),
+        interp.send(instance, Symbol::intern(getter), vec![]),
         getter,
     )
 }
@@ -73,10 +66,10 @@ fn init_exprs_run_after_slot_initializers_under_bytecode() {
 #[test]
 fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initializer_frame() {
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n  | blk = [ 3 ]. |\n) (\n  public blk2 = ( ^blk )\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let instance = expect_ok(interp.instantiate(class, vec![], &bindings), "instantiate");
+    let (mut interp, class) = load(src);
+    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let v = expect_ok(
-        interp.send(instance, Symbol::intern("blk2"), vec![], &bindings),
+        interp.send(instance, Symbol::intern("blk2"), vec![]),
         "blk2",
     );
     let Value::Obj(obj) = &v else {
@@ -99,15 +92,15 @@ fn a_return_inside_a_block_in_init_exprs_escapes_instantiate() {
     // the `Signal::Return` targets the initializer activation, which is
     // still running, and nothing catches it.
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n  | |\n  [ ^1 ] value.\n) (\n) : ()";
-    let (mut interp, class, bindings) = load(src);
-    let result = interp.instantiate(class, vec![], &bindings);
+    let (mut interp, class) = load(src);
+    let result = interp.instantiate(class, vec![]);
     assert!(matches!(result, Err(Signal::Return(..))));
 }
 
 #[test]
 fn a_factory_arity_mismatch_is_still_the_shared_error() {
-    let (mut interp, class, bindings) = load(FACTORY_PARAM);
-    match interp.instantiate(class, vec![], &bindings) {
+    let (mut interp, class) = load(FACTORY_PARAM);
+    match interp.instantiate(class, vec![]) {
         Err(Signal::Error(e)) => assert!(
             e.message.contains("wrong number of factory arguments"),
             "{}",
@@ -204,7 +197,7 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     // compiled for it -- keyed by that mixin -- is the one both hand-made
     // applications run.
     let src = "Newspeak3\n'T'\nclass Shared x: a = Object new (\n  | v = a. |\n) (\n) : ()";
-    let (mut interp, loaded, bindings) = load(src);
+    let (mut interp, loaded) = load(src);
     let shared_mixin = interp
         .heap_ref()
         .class_application(&loaded)
@@ -233,11 +226,11 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     let class_b = make_class(&mut interp, object_class, app_b.clone());
 
     let a = expect_ok(
-        interp.instantiate(class_a, vec![Value::SmallInt(11)], &bindings),
+        interp.instantiate(class_a, vec![Value::SmallInt(11)]),
         "instantiate a",
     );
     let b = expect_ok(
-        interp.instantiate(class_b, vec![Value::SmallInt(22)], &bindings),
+        interp.instantiate(class_b, vec![Value::SmallInt(22)]),
         "instantiate b",
     );
     assert_eq!(
@@ -276,17 +269,11 @@ class Levels = Object new () (
     )
 ) : ()
 ";
-    let (mut interp, class, bindings) = load(src);
-    let module = expect_ok(
-        interp.instantiate(class, vec![], &bindings),
-        "instantiate Levels",
-    );
-    let leaf_class = expect_ok(
-        interp.send(module, Symbol::intern("Leaf"), vec![], &bindings),
-        "Leaf",
-    );
+    let (mut interp, class) = load(src);
+    let module = expect_ok(interp.instantiate(class, vec![]), "instantiate Levels");
+    let leaf_class = expect_ok(interp.send(module, Symbol::intern("Leaf"), vec![]), "Leaf");
     let leaf = expect_ok(
-        interp.send(leaf_class, Symbol::intern("new"), vec![], &bindings),
+        interp.send(leaf_class, Symbol::intern("new"), vec![]),
         "Leaf new",
     );
     // `Middle withMiddle: 2` -> `Base withBase: 2 + 1`, so the deepest
