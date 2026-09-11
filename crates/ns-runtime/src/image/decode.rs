@@ -1549,7 +1549,7 @@ fn decode_closure_record(
     let captured_frame = decode_frame_id(r, tables)?;
     let home = decode_frame_id(r, tables)?;
     Ok(ClosureData {
-        params,
+        params: Rc::new(params),
         code,
         captured_frame,
         home,
@@ -1984,7 +1984,9 @@ pub fn decode_graph_section(
             OBJ_STR => ObjectData::Str(r.read_str()?),
             OBJ_SYM => ObjectData::Sym(decode_symbol(r, symbols)?),
             OBJ_ARRAY => ObjectData::Array(decode_values(r, ctx, &tables)?),
-            OBJ_CLOSURE => ObjectData::Closure(decode_closure_record(r, ctx, &tables, symbols)?),
+            OBJ_CLOSURE => {
+                ObjectData::Closure(Rc::new(decode_closure_record(r, ctx, &tables, symbols)?))
+            }
             OBJ_CLASS => {
                 let (data, mixin) = decode_class_record(r, ctx, &tables, &placeholder_application)?;
                 pending_classes.push(PendingClass {

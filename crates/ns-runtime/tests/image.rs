@@ -2008,7 +2008,7 @@ fn a_well_formed_closure_record_whose_arity_agrees_still_decodes() {
         .heap_ref()
         .closure_data(obj(&decoded.roots[0]))
         .expect("expected a closure");
-    assert_eq!(c.params, vec![Symbol::intern("x")]);
+    assert_eq!(*c.params, vec![Symbol::intern("x")]);
 }
 
 #[test]
@@ -4738,12 +4738,12 @@ fn a_frames_sender_survives_a_round_trip() {
         let block_class = interp.builtin_class(BuiltinClass::Block);
         vec![Value::Obj(interp.heap_mut().alloc_object(
             block_class,
-            ObjectData::Closure(ns_runtime::ClosureData {
-                params: vec![],
+            ObjectData::Closure(std::rc::Rc::new(ns_runtime::ClosureData {
+                params: std::rc::Rc::new(vec![]),
                 code: foo.clone(),
                 captured_frame: frame,
                 home: frame,
-            }),
+            })),
         ))]
     });
     let heap = interp.heap_ref();

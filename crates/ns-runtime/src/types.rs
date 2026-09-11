@@ -44,7 +44,7 @@ pub enum ObjectData {
     Str(String),
     Sym(Symbol),
     Array(Vec<Value>),
-    Closure(ClosureData),
+    Closure(Rc<ClosureData>),
     Class(ClassData),
 }
 
@@ -119,7 +119,9 @@ pub enum BuiltinClass {
 
 #[derive(Debug, Clone)]
 pub struct ClosureData {
-    pub params: Vec<Symbol>,
+    /// Shared with the `MakeClosure` instruction that created the closure --
+    /// the names are the same for every closure one instruction makes.
+    pub params: Rc<Vec<Symbol>>,
     pub code: Rc<crate::bytecode::CompiledCode>,
     pub captured_frame: FrameRef,
     /// The lexically enclosing *method* (or initializer) activation -- see

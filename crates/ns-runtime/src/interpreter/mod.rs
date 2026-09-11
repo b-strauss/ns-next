@@ -638,7 +638,7 @@ impl Interpreter {
 
     pub fn new_closure(&mut self, closure: Rc<ClosureData>) -> ObjRef {
         let class = self.builtin_class(BuiltinClass::Block);
-        self.new_instance_object(class, ObjectData::Closure((*closure).clone()))
+        self.new_instance_object(class, ObjectData::Closure(closure))
     }
 
     /// The `platform` object (runtime spec's Core Library section):

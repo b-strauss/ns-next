@@ -861,15 +861,14 @@ fn encode_closure_record(
     closure: &ClosureData,
     ctx: &EncodeContext,
     symbols: &mut symbols::Builder,
-) -> Result<(), String> {
+) {
     w.write_u16(u16_field("closure parameter count", closure.params.len()));
-    for p in &closure.params {
+    for p in closure.params.iter() {
         w.write_u32(symbols.intern(p.as_str()));
     }
     w.write_u32(ctx.code_ids.id_of(&closure.code));
     w.write_u32(ctx.table.frame_id(ctx.heap, &closure.captured_frame));
     w.write_u32(ctx.table.frame_id(ctx.heap, &closure.home));
-    Ok(())
 }
 
 /// A class object's record: which declaration it applies, and the three
@@ -954,7 +953,7 @@ fn encode_object(
         }
         ObjectData::Closure(c) => {
             w.write_u8(OBJ_CLOSURE);
-            encode_closure_record(w, c, ctx, symbols)?;
+            encode_closure_record(w, c, ctx, symbols);
         }
         ObjectData::Class(data) => {
             w.write_u8(OBJ_CLASS);
@@ -969,7 +968,7 @@ fn encode_frame(
     frame: &FrameRef,
     ctx: &EncodeContext,
     symbols: &mut symbols::Builder,
-) -> Result<(), String> {
+) {
     let f = ctx.heap.frame_snapshot(frame);
     encode_value(w, &f.receiver, ctx);
     encode_values(w, &f.args, ctx);
@@ -987,7 +986,7 @@ fn encode_frame(
         }
         FrameKind::Closure(c) => {
             w.write_u8(FRAME_CLOSURE);
-            encode_closure_record(w, c, ctx, symbols)?;
+            encode_closure_record(w, c, ctx, symbols);
         }
         FrameKind::TopLevel => w.write_u8(FRAME_TOP_LEVEL),
         FrameKind::Initializer(class) => {
@@ -1004,7 +1003,6 @@ fn encode_frame(
         }
     }
     w.write_bool(f.uncontinuable);
-    Ok(())
 }
 
 /// The object table, the frame table, and the roots. Both counts come
@@ -1036,7 +1034,7 @@ pub fn encode_graph_section(
         encode_object(w, obj, &ctx, symbols)?;
     }
     for frame in table.frames() {
-        encode_frame(w, frame, &ctx, symbols)?;
+        encode_frame(w, frame, &ctx, symbols);
     }
     encode_values(w, roots, &ctx);
     Ok(())

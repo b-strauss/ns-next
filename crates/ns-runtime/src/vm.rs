@@ -126,7 +126,7 @@ pub fn run_code(
                 let captured_frame = interp.heap.reify(act);
                 let home = home_of(&mut interp.heap, act);
                 let closure = Rc::new(ClosureData {
-                    params: (**params).clone(),
+                    params: params.clone(),
                     code: block.clone(),
                     captured_frame,
                     home,

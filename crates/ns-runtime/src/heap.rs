@@ -737,7 +737,8 @@ impl Heap {
         }
     }
 
-    pub fn closure_data(&self, obj: &ObjRef) -> Option<ClosureData> {
+    /// An `Rc` bump, not a copy: a closure is immutable once made.
+    pub fn closure_data(&self, obj: &ObjRef) -> Option<std::rc::Rc<ClosureData>> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Closure(c) => Some(c.clone()),
@@ -1900,7 +1901,7 @@ mod tests {
         let home_frame = heap.reify(&method_act);
 
         let closure_data = ClosureData {
-            params: vec![],
+            params: std::rc::Rc::new(vec![]),
             code: std::rc::Rc::new(crate::bytecode::CompiledCode {
                 kind: crate::bytecode::CodeKind::Block,
                 instrs: vec![crate::bytecode::Instr::ImplicitReturn { reg: 0 }],

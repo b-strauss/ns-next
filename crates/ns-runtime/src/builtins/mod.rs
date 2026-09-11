@@ -118,10 +118,7 @@ pub(super) fn call_block(interp: &mut Interpreter, block: &Value, args: Vec<Valu
         Value::Obj(obj) => {
             let closure_data = interp.heap.closure_data(obj);
             match closure_data {
-                Some(closure_data) => {
-                    let closure = std::rc::Rc::new(closure_data);
-                    interp.invoke_closure(&closure, args)
-                }
+                Some(closure) => interp.invoke_closure(&closure, args),
                 None => Ok(*block),
             }
         }
