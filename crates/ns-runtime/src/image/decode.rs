@@ -42,12 +42,6 @@ pub enum DecodeError {
     UnknownHeaderFlags {
         flags: u8,
     },
-    /// A frame record claimed its `pc` counts statements. Only the
-    /// bytecode engine's activations are representable: an image's code
-    /// table carries compiled bodies and no statements, so such a `pc`
-    /// indexes nothing the image contains. The encoder refuses to write
-    /// one for the same reason.
-    TreeWalkFrame,
     /// A frame's `pc` is not an instruction index of the body that runs in
     /// it. `vm::run_code` stores the index of the instruction it is
     /// executing, so every real activation's `pc` is in range; a crafted
@@ -261,11 +255,6 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "image header sets flag bits {:#04x} this build does not know",
                 flags & !super::encode::KNOWN_FLAGS
-            ),
-            DecodeError::TreeWalkFrame => write!(
-                f,
-                "an image frame claims a tree-walker `pc`, which counts statements the image \
-                 does not carry"
             ),
             DecodeError::PcOutOfRange { pc, instrs } => write!(
                 f,
@@ -1615,22 +1604,6 @@ fn decode_frame(
     let args = decode_values(r, ctx, tables)?;
     let temps = decode_values(r, ctx, tables)?;
     let pc = r.read_u32()? as usize;
-    // Tag 0 (`TreeWalk`) is a value the format defines and refuses: the
-    // discriminator exists so that a frame record says what its `pc`
-    // counts, and saying "statements" is saying it indexes a body no image
-    // carries. Rejected here rather than silently normalized to
-    // `Bytecode`, which would reinterpret the number instead of refusing
-    // it. `verify_graph` then bounds the `pc` itself against the body.
-    let pc_kind = match r.read_u8()? {
-        PC_KIND_TREE_WALK => return Err(DecodeError::TreeWalkFrame),
-        PC_KIND_BYTECODE => PcKind::Bytecode,
-        tag => {
-            return Err(DecodeError::InvalidTag {
-                what: "frame pc kind",
-                tag,
-            })
-        }
-    };
     let sender = decode_frame_ref(r, tables)?;
     let home = decode_frame_ref(r, tables)?;
     let current_class = decode_optional_class(r, ctx, tables)?;
@@ -1660,7 +1633,7 @@ fn decode_frame(
         args,
         temps,
         pc,
-        pc_kind,
+        pc_kind: PcKind::Bytecode,
         sender,
         home,
         current_class,
@@ -1697,10 +1670,10 @@ fn placeholder_frame() -> Frame {
 const MIN_OBJECT_RECORD_BYTES: usize = 6;
 
 /// The smallest frame record the wire admits: a `nil` receiver (1), empty
-/// `args` and `temps` counts (4 + 4), a `pc` (4) and its kind tag (1),
-/// absent `sender`, `home` and `current_class` (1 + 1 + 1), a `TopLevel`
-/// kind tag (1), and `uncontinuable` (1). Every other frame kind is larger.
-const MIN_FRAME_RECORD_BYTES: usize = 19;
+/// `args` and `temps` counts (4 + 4), a `pc` (4), absent `sender`, `home` and
+/// `current_class` (1 + 1 + 1), a `TopLevel` kind tag (1), and
+/// `uncontinuable` (1). Every other frame kind is larger.
+const MIN_FRAME_RECORD_BYTES: usize = 18;
 
 /// A record count read from an untrusted stream, refused before it is used
 /// to *allocate*. The bytes still unread bound how many records can really

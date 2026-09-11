@@ -282,16 +282,6 @@ fn walk_graph(
         let args = read_values(r)?;
         let temps = read_values(r)?;
         let pc = r.read_u32()?;
-        let pc_kind = match r.read_u8()? {
-            opcodes::PC_KIND_BYTECODE => "bytecode",
-            opcodes::PC_KIND_TREE_WALK => return Err(decode::DecodeError::TreeWalkFrame),
-            tag => {
-                return Err(decode::DecodeError::InvalidTag {
-                    what: "pc kind",
-                    tag,
-                })
-            }
-        };
         let sender = read_frame_ref(r)?;
         let home = read_frame_ref(r)?;
         let current_class = read_optional_class(r)?;
@@ -315,7 +305,7 @@ fn walk_graph(
         };
         let uncontinuable = r.read_bool()?;
         frames.push(format!(
-            "{kind}, receiver {receiver}, args [{}], temps [{}], pc {pc} ({pc_kind}), \
+            "{kind}, receiver {receiver}, args [{}], temps [{}], pc {pc}, \
              sender {sender}, home {home}, current class {current_class}, \
              uncontinuable {uncontinuable}",
             args.join(", "),

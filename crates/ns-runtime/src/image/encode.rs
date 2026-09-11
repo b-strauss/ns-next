@@ -986,21 +986,16 @@ fn encode_frame(
     encode_values(w, &f.args, ctx);
     encode_values(w, &f.temps, ctx);
     w.write_u32(u32_field("frame pc", f.pc));
-    // `pc` alone is ambiguous -- a statement index under one engine, an
-    // instruction index under the other -- so the unit travels with it.
-    // Only `Bytecode` is representable: an image's code table holds
-    // compiled bodies and no statements, so a tree-walker activation's
-    // `pc` would decode as an index into a body it never ran. Refused for
-    // the same reason `encode_closure_record` refuses `ClosureBody::Ast`.
-    match f.pc_kind {
-        PcKind::Bytecode => w.write_u8(PC_KIND_BYTECODE),
-        PcKind::TreeWalk => {
-            return Err(
-                "image encoding cannot serialize a tree-walker activation: its `pc` counts \
-                 statements, which an image's code table does not carry"
-                    .to_string(),
-            )
-        }
+    // An image's code table holds only compiled bodies, so a frame's `pc` is
+    // always an instruction index and the record does not say so. A
+    // tree-walker activation counts statements instead, which no image
+    // carries.
+    if f.pc_kind == PcKind::TreeWalk {
+        return Err(
+            "image encoding cannot serialize a tree-walker activation: its `pc` counts \
+             statements, which an image's code table does not carry"
+                .to_string(),
+        );
     }
     encode_frame_ref(w, ctx.heap, f.sender.as_ref(), ctx.table);
     encode_frame_ref(w, ctx.heap, f.home.as_ref(), ctx.table);

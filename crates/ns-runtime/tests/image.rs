@@ -1602,7 +1602,6 @@ fn a_frame_id_out_of_range_is_a_decode_error_not_a_panic() {
     w.write_u32(0); // no args
     w.write_u32(0); // no temps
     w.write_u32(0); // pc
-    w.write_u8(1); // pc kind: an instruction index
     w.write_bool(true); // has a sender...
     w.write_u32(99); // ...whose id is out of range
     let bytes = w.into_bytes();
@@ -1878,19 +1877,12 @@ fn class_objects_inheriting_from_each_other_in_a_cycle_are_refused() {
 
 /// A one-frame graph section up to (but excluding) the frame-kind tag.
 fn one_frame_prefix() -> encode::Writer {
-    one_frame_prefix_with_pc_kind(1)
-}
-
-/// `one_frame_prefix` with the `pc` discriminator left to the caller, for
-/// the tests that craft an invalid one.
-fn one_frame_prefix_with_pc_kind(pc_kind: u8) -> encode::Writer {
     let mut w = encode::Writer::new();
     graph_counts(&mut w, 0, 1);
     w.write_u8(0); // receiver: nil
     w.write_u32(0); // no args
     w.write_u32(0); // no temps
     w.write_u32(0); // pc
-    w.write_u8(pc_kind);
     w.write_bool(false); // no sender
     w.write_bool(false); // no home
     w.write_bool(false); // no current class
@@ -1912,6 +1904,32 @@ fn an_invalid_frame_kind_tag_is_a_decode_error_not_a_panic() {
             tag: 200
         }
     );
+}
+
+/// The byte after `pc` is the frame's `sender` flag: a frame record no longer
+/// says what its `pc` counts, because an image's code table holds only
+/// bytecode. A record written in the old layout -- the retired pc-kind byte
+/// after `pc` -- therefore has that byte read as "a sender follows", and the
+/// next four bytes (the old sender, home and current-class flags and the kind
+/// tag) as a sender id far outside the one-frame table, so it is refused
+/// rather than read as a different frame.
+#[test]
+fn a_frame_record_in_the_old_layout_with_the_pc_kind_byte_is_refused() {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 0, 1);
+    w.write_u8(0); // receiver: nil
+    w.write_u32(0); // no args
+    w.write_u32(0); // no temps
+    w.write_u32(0); // pc
+    w.write_u8(1); // the retired pc-kind byte (bytecode)
+    w.write_bool(false); // no sender
+    w.write_bool(false); // no home
+    w.write_bool(false); // no current class
+    w.write_u8(2); // frame kind: TopLevel
+    w.write_bool(false); // continuable
+    w.write_u32(0); // no roots
+    let bytes = w.into_bytes();
+    assert!(GraphFixture::new().decode(&bytes).is_err());
 }
 
 #[test]
@@ -2103,7 +2121,6 @@ fn closure_object_with_param_count(params: &[&str]) -> Vec<u8> {
     w.write_u32(0); // no args
     w.write_u32(0); // no temps
     w.write_u32(0); // pc
-    w.write_u8(1); // pc kind: an instruction index
     w.write_bool(false); // no sender
     w.write_bool(false); // no home
     w.write_bool(false); // no current class
@@ -2966,7 +2983,6 @@ fn foo_frame_at_pc(temps: u32, pc: u32) -> impl FnOnce(&mut encode::Writer) {
             w.write_u8(0); // each temp: nil
         }
         w.write_u32(pc);
-        w.write_u8(1); // pc kind: an instruction index
         w.write_bool(false); // no sender
         w.write_bool(false); // no home
         w.write_bool(false); // no current class
@@ -3028,7 +3044,6 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
             w.write_u32(0); // no args
             w.write_u32(0); // no temps
             w.write_u32(0); // pc
-            w.write_u8(1); // pc kind: an instruction index
             w.write_bool(false); // no sender
             w.write_bool(false); // no home
             w.write_bool(false); // no current class
@@ -4928,57 +4943,6 @@ fn the_two_variants_differ_only_by_the_source_blob() {
         with.len() - without.len(),
         SOURCE_FREE_MODULE.len() + 4,
         "the debug variant costs the source text plus its u32 length prefix"
-    );
-}
-
-#[test]
-fn a_frame_says_which_engine_its_pc_belongs_to() {
-    // `block` hands back a live closure, whose `captured_frame` and `home`
-    // are the method activation it was created in -- so this image's frame
-    // table is non-empty.
-    let bytes = snapshot_module(SOURCE_FREE_MODULE, None, Some("block"));
-    let loaded = image::load(&bytes).expect("load");
-    let block = loaded.roots.get(1).copied().expect("the block root");
-    let heap = loaded.interp.heap_ref();
-    let closure = heap
-        .closure_data(obj(&block))
-        .expect("the second root must be a closure");
-    assert_eq!(
-        heap.frame_snapshot(&closure.captured_frame).pc_kind,
-        ns_runtime::PcKind::Bytecode,
-        "a decoded frame's pc is an instruction index, and says so"
-    );
-}
-
-/// The discriminator is not decoration: a frame record claiming a
-/// tree-walker `pc` names a statement index into a body no image carries,
-/// so it is refused rather than reinterpreted.
-#[test]
-fn a_frame_claiming_a_tree_walk_pc_is_refused() {
-    let mut w = one_frame_prefix_with_pc_kind(0);
-    w.write_u8(2); // frame kind: TopLevel
-    w.write_bool(false); // continuable
-    w.write_u32(0); // no roots
-    let bytes = w.into_bytes();
-    assert_eq!(
-        GraphFixture::new().decode_err(&bytes),
-        decode::DecodeError::TreeWalkFrame
-    );
-}
-
-#[test]
-fn an_unknown_frame_pc_kind_is_an_error_not_a_panic() {
-    let mut w = one_frame_prefix_with_pc_kind(7);
-    w.write_u8(2); // frame kind: TopLevel
-    w.write_bool(false);
-    w.write_u32(0);
-    let bytes = w.into_bytes();
-    assert_eq!(
-        GraphFixture::new().decode_err(&bytes),
-        decode::DecodeError::InvalidTag {
-            what: "frame pc kind",
-            tag: 7
-        }
     );
 }
 
