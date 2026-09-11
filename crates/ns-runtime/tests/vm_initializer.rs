@@ -52,13 +52,13 @@ const FACTORY_PARAM: &str = "Newspeak3\n'T'\nclass Foo x: a = Object new (\n  | 
 const INIT_EXPRS: &str = "Newspeak3\n'T'\nclass Foo = Object new (\n  | q ::= 5. r ::= 0. |\n  r := q + 1.\n) (\n  public r2 = ( ^r )\n) : ()";
 
 #[test]
-fn a_slot_initializer_reads_a_factory_parameter_under_bytecode() {
+fn a_slot_initializer_reads_a_factory_parameter() {
     let v = instantiate_and_get(FACTORY_PARAM, vec![Value::SmallInt(7)], "p2");
     assert_eq!(int_of(&v), 7);
 }
 
 #[test]
-fn init_exprs_run_after_slot_initializers_under_bytecode() {
+fn init_exprs_run_after_slot_initializers() {
     let v = instantiate_and_get(INIT_EXPRS, vec![], "r2");
     assert_eq!(int_of(&v), 6);
 }

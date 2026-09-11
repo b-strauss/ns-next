@@ -1,4 +1,4 @@
-//! Bytecode execution through the shared orchestration, every send driven via `Interpreter::send`.
+//! Bytecode execution, every send driven through `Interpreter::send`.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -18,8 +18,8 @@ fn load(src: &str) -> (Interpreter, ClassRef) {
     (interp, class)
 }
 
-/// `Signal` carries no `Debug` impl (M1 decision), so `Result::expect` is
-/// unusable on an `EvalResult` -- unwrap by hand.
+/// `Signal` carries no `Debug` impl, so `Result::expect` is unusable on an
+/// `EvalResult` -- unwrap by hand.
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
     match result {
         Ok(v) => v,
@@ -222,10 +222,11 @@ fn a_malformed_integer_literal_raises_an_out_of_range_error_when_evaluated() {
     let instance = new_instance(&mut interp, &class);
     let err = expect_error(send(&mut interp, instance, "foo", vec![]), "foo");
     assert!(err.message.contains("out of i64 range"), "{}", err.message);
+    assert_eq!(err.selector, Symbol::intern("parse"));
 }
 
 #[test]
-fn a_dynamic_array_literal_evaluates_its_elements_under_bytecode() {
+fn a_dynamic_array_literal_evaluates_its_elements() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( | a | a := {1. 2. 3}. ^a )\n) : ()";
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);

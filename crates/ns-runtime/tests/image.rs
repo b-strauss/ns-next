@@ -2014,13 +2014,12 @@ fn a_well_formed_closure_record_whose_arity_agrees_still_decodes() {
 #[test]
 fn a_closure_record_declaring_too_few_parameters_is_a_decode_error() {
     // `invoke_closure` checks the *call's* arity against `params.len()`
-    // but sizes the register file from the *code*
-    // (`num_registers - num_args`), and `eval::read_local` then indexes
-    // `temps[i - args.len()]` unchecked. So this section -- otherwise
-    // entirely well-formed, as the control above proves -- would decode
-    // cleanly and panic the process the first time the closure is sent
-    // `value`. `decode_closure_record` is the only place that sees both
-    // halves of the arity.
+    // but sizes the register file from the *code* (`num_registers -
+    // num_args`), and `eval::read_local` then indexes `temps[i - args.len()]`
+    // unchecked. So this section -- otherwise entirely well-formed, as the
+    // control above proves -- would decode cleanly and panic the process
+    // the first time the closure is sent `value`. `decode_closure_record`
+    // is the only place that sees both halves of the arity.
     let mut fixture = GraphFixture::new();
     fixture.codes.push(block_code(1));
     let err = fixture.decode_err(&closure_object_with_param_count(&[]));
@@ -3036,10 +3035,10 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
 
 #[test]
 fn an_identity_hash_at_the_ceiling_is_refused_rather_than_overflowing_the_counter() {
-    // `load` hands the maximum decoded hash to
-    // `advance_identity_hash_past`, which computes `max + 1`: an overflow
-    // panic under this workspace's dev profile, and a wrap to 0 -- so a
-    // collision with every loaded object -- in release.
+    // `load` hands the maximum decoded hash to `advance_identity_hash_past`,
+    // which computes `max + 1`: an overflow panic under this workspace's dev
+    // profile, and a wrap to 0 -- so a collision with every loaded object --
+    // in release.
     let mut w = encode::Writer::new();
     graph_counts(&mut w, 1, 0);
     w.write_u8(0); // class tag: builtin
@@ -3248,10 +3247,10 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
 fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
     // The accessor evaluates the nested declaration's superclass clause,
     // and the only thing it can evaluate is the compiled clause body the
-    // code table carries. A reloaded image whose
-    // sections dropped it would panic on the first `Inner` access here --
-    // which is why `MixinSection` carries the clause alongside the
-    // initializer, and `build_module` refuses an image missing one.
+    // code table carries. A reloaded image whose sections dropped it would
+    // panic on the first `Inner` access here -- which is why `MixinSection`
+    // carries the clause alongside the initializer, and `build_module`
+    // refuses an image missing one.
     let (mut interp, class, _) = load(NESTED_MODULE);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -3629,9 +3628,9 @@ class Args usingPlatform: p = Object new () (
 
 /// `newspeak-spec.pdf` §6.2 evaluates the superclass clause's message on
 /// every instantiation, so a reloaded image is the only place its compiled
-/// body can come from -- exactly the reason the
-/// clause's *receiver* already travels in `MixinSection`. A round trip that
-/// still hands `Base` its `7` proves the message body made it across.
+/// body can come from -- exactly the reason the clause's *receiver* already
+/// travels in `MixinSection`. A round trip that still hands `Base` its `7`
+/// proves the message body made it across.
 #[test]
 fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
     let (mut interp, class, _) = load(NESTED_SUPERCLASS_ARGS);
@@ -3777,13 +3776,12 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
     }
 }
 
-/// The two clause frame kinds share `Initializer`'s shape on the wire (a
-/// class tag) but not its tag, which is what lets
-/// `image::decode`'s `frame_body` resolve each against the code table its
-/// own body actually lives in. Nothing in this milestone leaves such a frame
-/// reachable from an image's roots -- a clause body contains no
-/// `MakeClosure`, so nothing can capture one -- so only a hand-written
-/// section reaches the decoder's tag-4 and tag-5 branches.
+/// The two clause frame kinds share `Initializer`'s shape on the wire (a class
+/// tag) but not its tag, which is what lets `image::decode`'s `frame_body`
+/// resolve each against the code table its own body actually lives in. Nothing
+/// in this milestone leaves such a frame reachable from an image's roots --
+/// a clause body contains no `MakeClosure`, so nothing can capture one -- so
+/// only a hand-written section reaches the decoder's tag-4 and tag-5 branches.
 #[test]
 fn the_superclass_clause_frame_kinds_decode() {
     for (tag, expect_clause) in [(4u8, true), (5u8, false)] {
@@ -3814,8 +3812,8 @@ fn the_superclass_clause_frame_kinds_decode() {
 
 const TRIVIAL_MODULE: &str = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n) : ()";
 
-/// A full `image::snapshot` of `src`, with no roots -- these tests care about the code table's own bytes, not the
-/// object graph.
+/// A full `image::snapshot` of `src`, with no roots -- these tests care
+/// about the code table's own bytes, not the object graph.
 fn snapshot_of(src: &str) -> Vec<u8> {
     let (mut interp, class, _) = load(src);
     let platform = interp.platform();
@@ -4535,9 +4533,9 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     occurrences(haystack, needle) > 0
 }
 
-/// Instantiates `src` and snapshots the instance
-/// (plus, with `extra_send`, that send's result) -- with or without the
-/// module's source text in the image.
+/// Instantiates `src` and snapshots the instance (plus, with `extra_send`,
+/// that send's result) -- with or without the module's source text in
+/// the image.
 fn snapshot_module(src: &str, source: Option<&str>, extra_send: Option<&str>) -> Vec<u8> {
     let (mut interp, class, _) = load(src);
     let platform = interp.platform();
@@ -4761,12 +4759,12 @@ fn a_frames_sender_survives_a_round_trip() {
     assert!(heap.frame_sender(&sender).is_none());
 }
 
-/// A decoded frame never ran in the loading world, so it is never married
-/// and no `^` can return into it -- whatever its record's `uncontinuable`
-/// flag says. `raise_return` decides a home's liveness by
-/// `Heap::frame_activation`, not by that flag: a file claiming a
-/// continuable home must still produce `cannotReturn` rather than a
-/// `Signal::Return` that no activation on the stack will ever catch.
+/// A decoded frame never ran in the loading world, so it is never married and
+/// no `^` can return into it -- whatever its record's `uncontinuable` flag
+/// says. `raise_return` decides a home's liveness by `Heap::frame_activation`,
+/// not by that flag: a file claiming a continuable home must still produce
+/// `cannotReturn` rather than a `Signal::Return` that no activation on the
+/// stack will ever catch.
 #[test]
 fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_continuable() {
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public mk = ( ^[ ^1 ] )\n) : ()";
@@ -4931,15 +4929,15 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
 /// than one instance-side method (four: `increment`, `current`, `reset`,
 /// `doubled` -- enough that a `HashMap`'s iteration order has real room to
 /// vary, which is what makes the determinism test below able to fail), and a
-/// slot with an initializer -- both the slot's own initial value
-/// (`count ::= 0`) and a statement in the initializer body
-/// (`count := count + 1`), which is what gives the code table a
-/// `CodeKind::Initializer` entry to cover.
+/// slot with an initializer -- both the slot's own initial value (`count ::=
+/// 0`) and a statement in the initializer body (`count := count + 1`), which
+/// is what gives the code table a `CodeKind::Initializer` entry to cover.
 ///
 /// Left out on purpose: a superclass clause or message, multiple levels of
-/// user-defined inheritance, and a paused/suspended closure. Each of those already has its own dedicated round-trip test
-/// above; folding every format feature into one fixture would leave a future
-/// diff of `golden-image.bin` unable to say which section actually moved.
+/// user-defined inheritance, and a paused/suspended closure. Each of those
+/// already has its own dedicated round-trip test above; folding every format
+/// feature into one fixture would leave a future diff of `golden-image.bin`
+/// unable to say which section actually moved.
 const GOLDEN_SRC: &str = "\
 Newspeak3
 'Golden'
@@ -5469,12 +5467,7 @@ class X usingPlatform: p = Object new (
         let (mut interp, class, _) = load(src);
         let platform = interp.platform();
         let origin = Origin::File(PathBuf::from("t.ns"));
-        let instance = {
-            let module = interp.compiled_module();
-            let _ = module;
-            let args = vec![platform];
-            interp.instantiate(class, args)
-        };
+        let instance = interp.instantiate(class, vec![platform]);
         let roots: Vec<_> = match instance {
             Ok(v) => vec![v],
             // A module whose factory takes no platform argument still gives a

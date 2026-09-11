@@ -65,7 +65,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn accessor_is_stable() {
+#[test]
+fn the_accessor_returns_the_same_class_object_every_time() {
     let (mut interp, class) = load(SRC);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -87,11 +88,7 @@ fn accessor_is_stable() {
 }
 
 #[test]
-fn the_accessor_returns_the_same_class_object_every_time() {
-    accessor_is_stable();
-}
-
-fn distinct_per_receiver() {
+fn two_enclosing_instances_get_distinct_nested_classes() {
     let (mut interp, class) = load(SRC);
     let platform = interp.platform();
     let one = expect_ok(
@@ -128,11 +125,7 @@ fn distinct_per_receiver() {
 }
 
 #[test]
-fn two_enclosing_instances_get_distinct_nested_classes() {
-    distinct_per_receiver();
-}
-
-fn enclosing_object_is_the_receiver() {
+fn the_nested_class_remembers_its_enclosing_object() {
     let (mut interp, class) = load(SRC);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -154,11 +147,7 @@ fn enclosing_object_is_the_receiver() {
 }
 
 #[test]
-fn the_nested_class_remembers_its_enclosing_object() {
-    enclosing_object_is_the_receiver();
-}
-
-fn instantiating_the_nested_class() {
+fn a_nested_class_can_be_instantiated_through_its_accessor() {
     let (mut interp, class) = load(SRC);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -179,11 +168,6 @@ fn instantiating_the_nested_class() {
     assert_eq!(value, 42);
 }
 
-#[test]
-fn a_nested_class_can_be_instantiated_through_its_accessor() {
-    instantiating_the_nested_class();
-}
-
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if ec does not evaluate
 /// to a class object C." A program error, not an interpreter invariant --
 /// a `NewspeakError`, never a panic.
@@ -196,7 +180,8 @@ class Outer usingPlatform: p = Object new (| notAClass = 7. |) (
 )
 ";
 
-fn non_class_superclass_clause() {
+#[test]
+fn a_superclass_clause_that_is_not_a_class_is_a_program_error() {
     let (mut interp, class) = load(NON_CLASS_SUPERCLASS_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -211,11 +196,6 @@ fn non_class_superclass_clause() {
         message.contains("did not evaluate to a class object"),
         "unexpected message: {message}"
     );
-}
-
-#[test]
-fn a_superclass_clause_that_is_not_a_class_is_a_program_error() {
-    non_class_superclass_clause();
 }
 
 /// §6: the implicit accessor has the declaration's own accessibility. The
@@ -233,7 +213,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn protected_nested_access() {
+#[test]
+fn a_nested_class_defaults_to_protected_accessibility() {
     let (mut interp, class) = load(PROTECTED_NESTED_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -257,11 +238,6 @@ fn protected_nested_access() {
     );
 }
 
-#[test]
-fn a_nested_class_defaults_to_protected_accessibility() {
-    protected_nested_access();
-}
-
 /// An *inherited* nested declaration: `Derived`'s superclass clause names
 /// `Base`, so the accessor for `N` is reached one level up the chain. The
 /// class object `dispatch` reports as the declaring level is then `Base`'s,
@@ -282,7 +258,8 @@ class M usingPlatform: p = Object new () (
 )
 ";
 
-fn inherited_nested_declaration() {
+#[test]
+fn an_inherited_nested_declaration_is_reached_through_the_chain() {
     let (mut interp, class) = load(INHERITED_NESTED_SRC);
     let platform = interp.platform();
     let m = expect_ok(interp.instantiate(class, vec![platform]), "instantiate M");
@@ -318,11 +295,6 @@ fn inherited_nested_declaration() {
         panic!("expected a SmallInt from `N new tag`")
     };
     assert_eq!(tag, 11);
-}
-
-#[test]
-fn an_inherited_nested_declaration_is_reached_through_the_chain() {
-    inherited_nested_declaration();
 }
 
 /// A `super`-prefixed clause receiver is the one form whose evaluation reads
@@ -373,7 +345,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn cyclic_definition() {
+#[test]
+fn a_self_referential_nested_class_is_a_program_error() {
     let (mut interp, class) = load(CYCLIC_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -398,11 +371,6 @@ fn cyclic_definition() {
     assert_eq!(message, again);
 }
 
-#[test]
-fn a_self_referential_nested_class_is_a_program_error() {
-    cyclic_definition();
-}
-
 const CLASS_SIDE_SRC: &str = "\
 Newspeak3
 'Test'
@@ -414,7 +382,8 @@ class Widget new = Object new () (
 
 /// §6.3: a class object's class-side methods are reachable by sending to
 /// the class object itself, through a lazily created metaclass.
-fn class_side_dispatch() {
+#[test]
+fn a_class_side_method_dispatches_on_the_class_object() {
     let (mut interp, class) = load(CLASS_SIDE_SRC);
     let described = expect_ok(
         interp.send(Value::Obj(class), Symbol::intern("describe"), vec![]),
@@ -426,16 +395,12 @@ fn class_side_dispatch() {
     );
 }
 
-#[test]
-fn a_class_side_method_dispatches_on_the_class_object() {
-    class_side_dispatch();
-}
-
 /// A class with no class side at all must still fall through to the
 /// ordinary `doesNotUnderstand:` -- `metaclass_of` returns `None` and the
 /// send path must not panic or invent a different error shape for a class
 /// object than for any other receiver.
-fn class_side_miss_is_ordinary_dnu() {
+#[test]
+fn a_class_with_no_class_side_still_reports_ordinary_does_not_understand() {
     let (mut interp, class) = load(SRC);
     let message = expect_error(
         interp.send(
@@ -446,11 +411,6 @@ fn class_side_miss_is_ordinary_dnu() {
         "class-side miss",
     );
     assert!(message.contains("does not understand #noSuchClassSideMethod"));
-}
-
-#[test]
-fn a_class_with_no_class_side_still_reports_ordinary_does_not_understand() {
-    class_side_miss_is_ordinary_dnu();
 }
 
 const CLASS_SIDE_INHERITANCE_SRC: &str = "\
@@ -475,7 +435,8 @@ class Outer usingPlatform: p = Object new () (
 /// §3.2's metaclass hierarchy): `SpecialWidget` declares no class side of
 /// its own, but its superclass `Widget` does, so `SpecialWidget describe`
 /// must answer exactly what `Widget describe` does.
-fn class_side_is_inherited() {
+#[test]
+fn a_subclass_with_no_class_side_inherits_the_superclasss_class_side_method() {
     let (mut interp, class) = load(CLASS_SIDE_INHERITANCE_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -494,11 +455,6 @@ fn class_side_is_inherited() {
         string_contents(interp.heap_ref(), &described),
         "a widget class"
     );
-}
-
-#[test]
-fn a_subclass_with_no_class_side_inherits_the_superclasss_class_side_method() {
-    class_side_is_inherited();
 }
 
 /// The class object a nested declaration's accessor answers for `enclosing`.
@@ -530,7 +486,8 @@ fn application_of(
 /// this bite: it inherits its class side instead of declaring one, so its
 /// metaclass is built from a synthetic empty mixin -- which has to have one
 /// identity per mixin, not one per class object.
-fn an_inherited_class_side_shares_one_application() {
+#[test]
+fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/class_side.ns");
     let src = std::fs::read_to_string(&path).expect("read tests-fixtures/class_side.ns");
     let (mut interp, class) = load(&src);
@@ -571,15 +528,11 @@ fn an_inherited_class_side_shares_one_application() {
     );
 }
 
-#[test]
-fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
-    an_inherited_class_side_shares_one_application();
-}
-
 /// A class that declares its own class-side method of the same name still
 /// overrides the inherited one -- ordinary shadowing, exactly as on the
 /// instance side.
-fn class_side_override_shadows_the_inherited_method() {
+#[test]
+fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name() {
     let (mut interp, class) = load(CLASS_SIDE_INHERITANCE_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -598,11 +551,6 @@ fn class_side_override_shadows_the_inherited_method() {
         string_contents(interp.heap_ref(), &described),
         "a special widget class"
     );
-}
-
-#[test]
-fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name() {
-    class_side_override_shadows_the_inherited_method();
 }
 
 /// `Frame.current_class` must be the class object of the level
@@ -627,7 +575,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn nested_super_and_outer() {
+#[test]
+fn super_and_outer_both_resolve_through_the_defining_level() {
     let (mut interp, class) = load(NESTED_SUPER_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -639,11 +588,6 @@ fn nested_super_and_outer() {
         string_contents(interp.heap_ref(), &described),
         "outer/derived"
     );
-}
-
-#[test]
-fn super_and_outer_both_resolve_through_the_defining_level() {
-    nested_super_and_outer();
 }
 
 /// A *three*-level hierarchy where the middle level (`Mid`) is reached only
@@ -671,7 +615,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn super_chain_progresses_past_an_inherited_middle_level() {
+#[test]
+fn a_super_chain_progresses_through_an_inherited_middle_level() {
     let (mut interp, class) = load(SUPER_CHAIN_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -680,11 +625,6 @@ fn super_chain_progresses_past_an_inherited_middle_level() {
     );
     let described = expect_ok(interp.send(outer, Symbol::intern("run"), vec![]), "run");
     assert_eq!(string_contents(interp.heap_ref(), &described), "grand/mid");
-}
-
-#[test]
-fn a_super_chain_progresses_through_an_inherited_middle_level() {
-    super_chain_progresses_past_an_inherited_middle_level();
 }
 
 /// §3.3: an activation's enclosing objects belong to the level that
@@ -711,7 +651,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn outer_resolves_from_the_defining_level() {
+#[test]
+fn outer_in_an_inherited_method_resolves_from_the_defining_level() {
     let (mut interp, class) = load(OUTER_THROUGH_INHERITED_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -720,11 +661,6 @@ fn outer_resolves_from_the_defining_level() {
     );
     let described = expect_ok(interp.send(outer, Symbol::intern("run"), vec![]), "run");
     assert_eq!(string_contents(interp.heap_ref(), &described), "top");
-}
-
-#[test]
-fn outer_in_an_inherited_method_resolves_from_the_defining_level() {
-    outer_resolves_from_the_defining_level();
 }
 
 /// The same defect one hop further out, which only a lexical *declaration*
@@ -751,7 +687,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn a_two_level_outer_resolves_from_the_defining_level() {
+#[test]
+fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
     let (mut interp, class) = load(DEEP_OUTER_THROUGH_INHERITED_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -760,11 +697,6 @@ fn a_two_level_outer_resolves_from_the_defining_level() {
     );
     let described = expect_ok(interp.send(outer, Symbol::intern("run"), vec![]), "run");
     assert_eq!(string_contents(interp.heap_ref(), &described), "top");
-}
-
-#[test]
-fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
-    a_two_level_outer_resolves_from_the_defining_level();
 }
 
 /// §6.3.1: a class side is written inside the same class declaration its
@@ -794,7 +726,8 @@ class Outer usingPlatform: p = Object new () (
 )
 ";
 
-fn class_side_outer_reaches_the_enclosing_object() {
+#[test]
+fn outer_in_a_class_side_method_reaches_the_enclosing_object() {
     let (mut interp, class) = load(CLASS_SIDE_OUTER_SRC);
     let platform = interp.platform();
     let outer = expect_ok(
@@ -808,9 +741,4 @@ fn class_side_outer_reaches_the_enclosing_object() {
     assert_eq!(string_contents(interp.heap_ref(), &shallow), "top");
     let deep = expect_ok(interp.send(outer, Symbol::intern("deep"), vec![]), "deep");
     assert_eq!(string_contents(interp.heap_ref(), &deep), "top");
-}
-
-#[test]
-fn outer_in_a_class_side_method_reaches_the_enclosing_object() {
-    class_side_outer_reaches_the_enclosing_object();
 }

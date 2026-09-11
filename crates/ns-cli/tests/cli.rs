@@ -263,19 +263,6 @@ fn bench_reports_the_entry_sends_median() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(stdout.contains("median"), "{stdout}");
-    assert!(!stdout.contains("tree-walk"), "{stdout}");
-}
-
-#[test]
-fn run_no_longer_accepts_an_engine() {
-    let out = ns_next()
-        .arg("run")
-        .arg(repo_root().join("tests-fixtures/while_loop.ns"))
-        .arg("--engine")
-        .arg("tree-walk")
-        .output()
-        .unwrap();
-    assert_ne!(out.status.code(), Some(0));
 }
 
 /// `bench` must reject a zero iteration count rather than dividing by it
