@@ -28,7 +28,11 @@ pub type EvalResult = Result<Value, Signal>;
 
 pub struct Interpreter {
     pub(crate) heap: Heap,
-    builtin_classes: Option<HashMap<BuiltinClass, ClassRef>>,
+    /// Every builtin class object, indexed by `BuiltinClass as usize`.
+    /// Indexed rather than hashed because `class_of` asks for one on every
+    /// send to a primitive receiver. Empty only while `bootstrap` is
+    /// building it; nothing can reach an `Interpreter` in that state.
+    builtin_classes: Vec<ClassRef>,
     platform_singleton: Option<Value>,
     /// Every compiled body every loaded module runs. `load_module` and
     /// `image::load` add to it through `install_code`; nothing runs a body
@@ -64,14 +68,14 @@ impl Interpreter {
     pub fn bootstrap() -> Interpreter {
         let mut interp = Interpreter {
             heap: Heap::new(),
-            builtin_classes: None,
+            builtin_classes: Vec::new(),
             platform_singleton: None,
             code: CompiledModule::default(),
             applications: HashMap::new(),
             empty_class_sides: HashMap::new(),
             nested_in_progress: Vec::new(),
         };
-        interp.builtin_classes = Some(build_builtin_classes(&mut interp));
+        interp.builtin_classes = build_builtin_classes(&mut interp);
         interp
     }
 
@@ -87,12 +91,7 @@ impl Interpreter {
     }
 
     pub fn builtin_class(&self, kind: BuiltinClass) -> ClassRef {
-        *self
-            .builtin_classes
-            .as_ref()
-            .expect("bootstrap() must run before builtin_class()")
-            .get(&kind)
-            .expect("every BuiltinClass variant is registered by build_builtin_classes")
+        self.builtin_classes[kind as usize]
     }
 
     /// A thin delegate; see `Heap::alloc_identity_hash`'s doc comment for why
@@ -804,7 +803,7 @@ impl Interpreter {
 /// actually inheriting from a `Boolean` superclass node, since they do not
 /// yet. Fix this only if a corpus module or fixture test needs real
 /// `Boolean`/`True`/`False` inheritance to observe correct behavior.
-fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, ClassRef> {
+fn build_builtin_classes(interp: &mut Interpreter) -> Vec<ClassRef> {
     // NOTE: deliberately *not* `use BuiltinClass::*;` here --
     // `BuiltinClass::Object` and `crate::types::Object`
     // (the object-model struct, brought into scope by `use crate::types::*;`
@@ -841,7 +840,7 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
     let object_application = interp.apply_mixin(&builtin_mixin(BuiltinClass::Object), None);
     let class_of_class =
         build_self_referential_object_class(&mut interp.heap, object_application.clone());
-    let mut map = HashMap::new();
+    let mut classes = Vec::with_capacity(kinds.len());
     for kind in kinds {
         let (superclass, application) = if kind == BuiltinClass::Object {
             (None, object_application.clone())
@@ -862,10 +861,20 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
                 metaclass: None,
             }),
         );
-        map.insert(kind, obj);
+        // `builtin_class` indexes by discriminant, so the vector must be
+        // filled in exactly that order.
+        debug_assert_eq!(classes.len(), kind as usize);
+        // `Object`'s entry is the self-referential class every builtin has as
+        // its `.class`; the object this iteration allocated for it is never
+        // used, and is kept only because removing it would shift every later
+        // identity hash.
+        classes.push(if kind == BuiltinClass::Object {
+            class_of_class
+        } else {
+            obj
+        });
     }
-    map.insert(BuiltinClass::Object, class_of_class);
-    map
+    classes
 }
 
 /// The empty mixin behind one `BuiltinClass`. A fresh `Rc` per call, so the
