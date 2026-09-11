@@ -25,7 +25,7 @@ pub(crate) fn unresolved_identifier_error(name: &str, receiver: Value) -> Signal
 /// `bytecode::Literal::MalformedInt`.
 pub(crate) fn malformed_int_error(message: String) -> Signal {
     Signal::Error(NewspeakError {
-        selector: Symbol::intern("parse"),
+        selector: Symbol::PARSE,
         receiver: Value::Nil,
         message,
     })

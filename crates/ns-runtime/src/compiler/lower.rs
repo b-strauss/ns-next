@@ -702,7 +702,7 @@ impl<'a> Lowerer<'a> {
     /// The guard-failure path of an inlined loop: what the native
     /// `whileTrue:`/`whileFalse:` does with a non-Boolean condition value.
     fn emit_must_be_boolean(&mut self, reg: u16) -> u16 {
-        let selector = crate::Symbol::intern("mustBeBoolean");
+        let selector = crate::Symbol::MUST_BE_BOOLEAN;
         self.emit_send(|dst, call_site| Instr::SendPublic {
             selector,
             receiver_reg: reg,

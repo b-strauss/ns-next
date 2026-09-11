@@ -303,8 +303,7 @@ fn factory_args_for(
         // Library factory convention) is the only keyword shape the CLI
         // knows what to fill in.
         Some(factory)
-            if factory.num_args == 1
-                && factory.selector == ns_runtime::Symbol::intern("usingPlatform:") =>
+            if factory.num_args == 1 && factory.selector == ns_runtime::Symbol::USING_PLATFORM =>
         {
             Ok(vec![platform])
         }

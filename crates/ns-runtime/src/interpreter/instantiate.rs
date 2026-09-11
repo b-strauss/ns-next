@@ -41,10 +41,8 @@ fn build_slots(body: &ast::ClassBody) -> Vec<MixinSlot> {
 /// it from the declaration.
 fn superclass_clause_of(clause: &ast::SuperclassClause) -> SuperclassClause {
     SuperclassClause {
-        selector: super::nested::superclass_clause_message(clause).map_or_else(
-            || Symbol::intern("new"),
-            crate::compiler::lower::selector_of,
-        ),
+        selector: super::nested::superclass_clause_message(clause)
+            .map_or(Symbol::NEW, crate::compiler::lower::selector_of),
         has_args: super::nested::superclass_clause_message_args_expr(clause).is_some(),
     }
 }
@@ -130,7 +128,7 @@ impl Interpreter {
                     num_args: pattern_param_count(pattern),
                 },
                 None => Factory {
-                    selector: Symbol::intern("new"),
+                    selector: Symbol::NEW,
                     num_args: 0,
                 },
             }),
@@ -162,7 +160,7 @@ impl Interpreter {
             has_init_exprs: !side.init_exprs.is_empty(),
             init_exprs: side.init_exprs.clone(),
             span: side.span,
-            ..Mixin::empty(Symbol::intern("class side"))
+            ..Mixin::empty(Symbol::CLASS_SIDE)
         })
     }
 
@@ -329,7 +327,7 @@ impl Interpreter {
         if let Some(declared_arity) = declared_arity {
             if factory_args.len() != declared_arity {
                 return Err(Signal::Error(NewspeakError {
-                    selector: Symbol::intern("new"),
+                    selector: Symbol::NEW,
                     receiver: Value::Obj(*class),
                     message: format!(
                         "wrong number of factory arguments: factory takes {}, got {}",
@@ -424,7 +422,7 @@ impl Interpreter {
         // class whose superclass has a keyword factory would raise a
         // spurious "not the primary factory message" error on the first
         // instantiation after a load.
-        let selector = clause.map_or_else(|| Symbol::intern("new"), |clause| clause.selector);
+        let selector = clause.map_or(Symbol::NEW, |clause| clause.selector);
         let expected = primary_factory_selector(&self.heap, superclass);
         if Some(selector) != expected {
             return Err(not_the_primary_factory_error(
@@ -514,15 +512,13 @@ pub(crate) fn primary_factory_selector(heap: &Heap, class: &ClassRef) -> Option<
     heap.class_application(class)
         .map(|application| match &application.mixin.factory {
             Some(factory) => factory.selector,
-            None => Symbol::intern("new"),
+            None => Symbol::NEW,
         })
 }
 
 fn class_name(heap: &Heap, class: &ClassRef) -> Symbol {
-    heap.class_application(class).map_or_else(
-        || Symbol::intern("an object"),
-        |application| application.mixin.name,
-    )
+    heap.class_application(class)
+        .map_or(Symbol::AN_OBJECT, |application| application.mixin.name)
 }
 
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if the message
@@ -568,7 +564,7 @@ fn argument_list(heap: &Heap, class: &ClassRef, value: Value) -> Result<Vec<Valu
         }
     }
     Err(Signal::Error(NewspeakError {
-        selector: Symbol::intern("new"),
+        selector: Symbol::NEW,
         receiver: value,
         message: format!(
             "the superclass clause of class {} did not evaluate its message \

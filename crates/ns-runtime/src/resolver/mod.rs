@@ -57,7 +57,7 @@ fn collect_member_sets(decl: &ast::ClassDecl, sets: &mut HashMap<Symbol, HashSet
         .superclass
         .as_ref()
         .map(|clause| Symbol::intern(&clause.receiver.name))
-        .unwrap_or_else(|| Symbol::intern("Object"));
+        .unwrap_or(Symbol::OBJECT);
     // Inherit the superclass's member set if we've already computed it
     // (nested classes are declared textually after their enclosing class,
     // and Object/builtins are the fixed base case -- their own instance

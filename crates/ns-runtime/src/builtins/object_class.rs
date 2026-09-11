@@ -74,5 +74,5 @@ fn extract_dnu_selector(heap: &Heap, message_mirror_shaped_array: &Value) -> Sym
             }
         }
     }
-    Symbol::intern("unknown")
+    Symbol::UNKNOWN
 }

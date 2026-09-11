@@ -274,7 +274,7 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> EvalResult {
         let class = self.class_of(&receiver);
-        let dnu_selector = Symbol::intern("doesNotUnderstand:");
+        let dnu_selector = Symbol::DOES_NOT_UNDERSTAND;
         // Milestone 1 passes a minimal message-mirror-shaped value: an Array
         // `{selector. args}` rather than a real MessageMirror object
         // (mirrors are a later milestone's Non-Goal). Callers relying on a
@@ -410,7 +410,7 @@ impl Interpreter {
         if args.len() != closure.params.len() {
             let receiver = self.heap.frame_receiver(&closure.captured_frame);
             return Err(Signal::Error(NewspeakError {
-                selector: Symbol::intern("value"),
+                selector: Symbol::VALUE,
                 receiver,
                 message: format!(
                     "wrong number of block arguments: block takes {}, got {}",
@@ -452,7 +452,7 @@ impl Interpreter {
                 Some(live) => live,
                 None => {
                     return Signal::Error(NewspeakError {
-                        selector: Symbol::intern("^"),
+                        selector: Symbol::CARET,
                         receiver: value,
                         message:
                             "cannotReturn: the enclosing method activation has already returned"

@@ -41,7 +41,7 @@ fn run_while(interp: &mut Interpreter, cond: &Value, body: &Value, expect: bool)
                 super::call_block(interp, body, vec![])?;
             }
             Value::Bool(_) => return Ok(Value::Nil),
-            other => return interp.send(other, Symbol::intern("mustBeBoolean"), vec![]),
+            other => return interp.send(other, Symbol::MUST_BE_BOOLEAN, vec![]),
         }
     }
 }
