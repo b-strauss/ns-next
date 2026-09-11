@@ -102,9 +102,9 @@ fn loading_a_binary_runs_its_initializers_against_the_loading_platform() {
 ///
 /// This is the binary's substitute for the two-engine differential check,
 /// which it structurally cannot have -- a binary has no AST, so the
-/// tree-walker cannot run it. Because the differential harness already pins
-/// bytecode against tree-walk over these same fixtures, equality here holds
-/// transitively against the tree-walker too.
+/// tree-walker cannot run it. `run_fixtures.rs` pins the same fixtures'
+/// output against their `.expected` files, so equality here also holds
+/// against a recorded answer.
 #[test]
 fn every_fixture_runs_identically_from_source_and_from_a_binary() {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
