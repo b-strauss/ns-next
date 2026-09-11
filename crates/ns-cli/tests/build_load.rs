@@ -98,13 +98,10 @@ fn loading_a_binary_runs_its_initializers_against_the_loading_platform() {
 }
 
 /// `build` then `load` must be indistinguishable from `run` on the same
-/// source: exit status, stdout and stderr.
-///
-/// This is the binary's substitute for the two-engine differential check,
-/// which it structurally cannot have -- a binary has no AST, so the
-/// tree-walker cannot run it. `run_fixtures.rs` pins the same fixtures'
-/// output against their `.expected` files, so equality here also holds
-/// against a recorded answer.
+/// source: exit status, stdout and stderr. A binary carries no source, so
+/// comparing it against `run` is how a binary is checked at all;
+/// `run_fixtures.rs` pins the same fixtures' output against their
+/// `.expected` files, so equality here also holds against a recorded answer.
 #[test]
 fn every_fixture_runs_identically_from_source_and_from_a_binary() {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
