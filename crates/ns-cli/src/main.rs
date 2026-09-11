@@ -244,8 +244,9 @@ fn load_source(file: &Path) -> Result<LoadedSource, ExitCode> {
 }
 
 /// Bootstraps an interpreter and loads the module's root class, which
-/// compiles the module and installs its code -- before anything is
-/// instantiated, so the root class's instance initializer runs compiled too.
+/// compiles every body onto the declaration it belongs to -- before anything
+/// is instantiated, so the root class's instance initializer runs compiled
+/// too.
 fn bootstrap(loaded: &LoadedSource) -> (ns_runtime::Interpreter, ns_runtime::ClassRef) {
     let mut interp = ns_runtime::Interpreter::bootstrap();
     let class = interp.load_module(&loaded.resolved);
@@ -449,13 +450,11 @@ fn cmd_snapshot(file: &Path, out: &Path, send: Option<&str>, debug_source: bool)
             Err(signal) => return report_entry_send(Err(signal)),
         }
     }
-    let module = interp.compiled_module();
     let bytes = match ns_runtime::image::snapshot(
         interp.heap_ref(),
         debug_source.then_some(loaded.source.as_str()),
         &loaded.origin,
         &class,
-        module,
         &platform,
         &roots,
     ) {
@@ -819,13 +818,14 @@ fn root_mixin_of(
 }
 
 /// `ns-next disasm`: for a `.ns` file, bootstrap and load it, which compiles
-/// the *whole* mixin tree; for a serialized artifact, decode it directly and
-/// reuse its own code table instead of recompiling anything. Either way, the
-/// result is a `(root_mixin, module)` pair from which a `--class` path can
-/// address any mixin's code, then look up exactly one method or the target
-/// mixin's initializer and print its bytecode listing. The source path never
-/// instantiates; the artifact path never instantiates either, since
-/// `image::load` only decodes the world.
+/// the *whole* mixin tree onto its declarations; for a serialized artifact,
+/// decode it directly, which attaches its own code table's bodies instead of
+/// recompiling anything. Either way, the result is the root mixin, whose tree
+/// carries the code, from which a `--class` path can address any mixin, then
+/// take exactly one method's body or the target mixin's initializer and print
+/// its bytecode listing. The source path never instantiates; the artifact
+/// path never instantiates either, since `image::load` only decodes the
+/// world.
 fn cmd_disasm(
     file: &Path,
     selector: Option<&str>,
@@ -840,9 +840,10 @@ fn cmd_disasm(
         }
     };
 
-    // Two ways to reach the same pair. Compiling from source needs the
-    // resolver.s bindings; an artifact already carries compiled bodies, so
-    // loading it is a decode and nothing is recompiled. Each arm reads
+    // Two ways to reach the root mixin, whose tree carries the code.
+    // Compiling from source needs the resolver's bindings; an artifact
+    // already carries compiled bodies, so loading it is a decode and nothing
+    // is recompiled. Each arm reads
     // `root_mixin` out of its own `class` before that arm's interpreter (or
     // `loaded.interp`) goes out of scope, rather than through a fresh
     // `Heap` afterwards. A `ClassRef` is an index into the arena of the
@@ -852,19 +853,15 @@ fn cmd_disasm(
     // and in a release build the index is in range and names whatever
     // object that heap put there -- a different, perfectly valid object,
     // disassembled without a word of complaint.
-    let (root_mixin, module) = if looks_like_an_artifact(&raw) {
+    let root_mixin = if looks_like_an_artifact(&raw) {
         match ns_runtime::image::load(&raw) {
-            Ok(loaded) => {
-                let module = loaded.interp.compiled_module().clone();
-                let root_mixin = match root_mixin_of(loaded.interp.heap_ref(), &loaded.root_class) {
-                    Ok(m) => m,
-                    Err(msg) => {
-                        eprintln!("error: {msg}");
-                        return ExitCode::FAILURE;
-                    }
-                };
-                (root_mixin, module)
-            }
+            Ok(loaded) => match root_mixin_of(loaded.interp.heap_ref(), &loaded.root_class) {
+                Ok(m) => m,
+                Err(msg) => {
+                    eprintln!("error: {msg}");
+                    return ExitCode::FAILURE;
+                }
+            },
             Err(e) => {
                 eprintln!("error: {}: {e}", file.display());
                 return ExitCode::FAILURE;
@@ -876,15 +873,13 @@ fn cmd_disasm(
             Err(code) => return code,
         };
         let (interp, class) = bootstrap(&loaded);
-        let module = interp.compiled_module().clone();
-        let root_mixin = match root_mixin_of(interp.heap_ref(), &class) {
+        match root_mixin_of(interp.heap_ref(), &class) {
             Ok(m) => m,
             Err(msg) => {
                 eprintln!("error: {msg}");
                 return ExitCode::FAILURE;
             }
-        };
-        (root_mixin, module)
+        }
     };
     let mixin = match resolve_mixin_path(&root_mixin, class_path) {
         Ok(m) => m,
@@ -895,16 +890,9 @@ fn cmd_disasm(
     };
     let (code, name) = match (selector, initializer) {
         (None, true) => {
-            let code = module
-                .initializers
-                .get(&ns_runtime::mixin::mixin_key(&mixin))
-                .cloned()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "internal: compile_module has no initializer for `{}` (coverage gap)",
-                        mixin.name
-                    )
-                });
+            let code = mixin.initializer_code.clone().unwrap_or_else(|| {
+                panic!("internal: `{}` carries no instance initializer", mixin.name)
+            });
             (code, mixin.name.to_string())
         }
         (Some(selector), false) => {
@@ -916,14 +904,7 @@ fn cmd_disasm(
                 eprintln!("error: no method `{selector}` found on `{}`", mixin.name);
                 return ExitCode::FAILURE;
             };
-            let code = module
-                .methods
-                .get(&ns_runtime::bytecode::method_key(&method))
-                .cloned()
-                .unwrap_or_else(|| {
-                    panic!("internal: compile_module has no code for `{selector}` (coverage gap)")
-                });
-            (code, selector.to_string())
+            (method.code.clone(), selector.to_string())
         }
         _ => {
             eprintln!("error: disasm takes exactly one of <selector> or --initializer");
@@ -1057,13 +1038,11 @@ fn cmd_build(file: &Path, out: &Path, entry: Option<&str>, debug_source: bool) -
         return ExitCode::FAILURE;
     }
 
-    let module = interp.compiled_module();
     let bytes = match ns_runtime::image::build(
         interp.heap_ref(),
         debug_source.then_some(loaded.source.as_str()),
         &loaded.origin,
         &class,
-        module,
         ns_runtime::Symbol::intern(&entry),
     ) {
         Ok(b) => b,

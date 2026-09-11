@@ -62,8 +62,8 @@ that lowering is mostly a transliteration rather than a translation.
 - `MakeArray { dst, elem_regs }`.
 - `InitSlot { src, own_index }` — writes one of `self`'s own instance slots.
   Emitted **only** by initializer compilation, for a slot's own initializer
-  expression. The one layout-dependent instruction in the set; see "Keyed by
-  mixin".
+  expression. The one layout-dependent instruction in the set; see "One body
+  per mixin".
 
 **Leaving a body**
 
@@ -102,20 +102,27 @@ A method body, a block body and an instance initializer all compile to the same
 shape; `kind` tags which. An activation of it is pushed with
 `num_registers - num_args` temporaries.
 
-`CompiledModule` holds `methods`, `initializers`, `superclass_clauses` and
-`superclass_messages` — the last two because a nested class's superclass clause is
-code too, evaluated by the accessor once per enclosing instance. Nothing else:
-lowering turns every resolver binding into an instruction, so no bindings map
-outlives compilation. `CompiledModule::extend` adds one module's bodies to
-another's, which is how the interpreter's single code table grows as modules
-load.
+A compiled body lives on the declaration it belongs to. A method's is on its
+`MixinMethod` (`code`); a mixin's instance initializer and its superclass clause's
+two bodies are on the `Mixin` (`initializer_code`, `superclass_clause_code`,
+`superclass_message_code`) — the clause's because a nested class's superclass
+clause is code too, evaluated by the accessor once per enclosing instance, and
+its message's because §6.2 evaluates the message's arguments on every
+instantiation. While the tree is built from source, `MixinMethod::from_decl`
+compiles each method and `compile_mixin_bodies` a mixin's three bodies, before
+the mixin is wrapped in the `Rc` every application shares; `image::mixins::decode`
+attaches the bodies a row names from the image's code table. So a method without
+a body cannot exist, and nothing looks code up beside a declaration: a send that
+found a method has found its code. That is how the prior art holds it — Primordial
+Soup's `Method::bytecode()`, SOMns's `SInvokable.invokable`. Lowering turns every
+resolver binding into an instruction, so no bindings map outlives compilation.
 
-### Keyed by mixin
+### One body per mixin
 
-One mixin backs every application of it, so a body is compiled **once per mixin**
-and reused across every application. §6.2: "they all share their code and
-structural definition with the mixin." Keying by class object would recompile the
-same body per enclosing instance, since a class object is per-instance.
+One mixin backs every application of it, so a body is compiled **once per mixin**,
+stored on it, and shared by every application. §6.2: "they all share their code and
+structural definition with the mixin." Storing it per class object would recompile
+the same body per enclosing instance, since a class object is per-instance.
 
 **`InitSlot`'s `own_index` is therefore mixin-relative.** An absolute field index
 baked into shared code would be wrong the moment a second application inserts
@@ -298,7 +305,7 @@ it, so a method that is never run never fails. Two literals carry that deferral:
 
 `ns-next disasm <file.ns> <selector>` prints one body's instructions, compiling
 only — nothing is instantiated or run — and addressing code through mixins,
-since that is what code is keyed by. It also accepts an artifact in place of a
+since that is what code lives on. It also accepts an artifact in place of a
 `.ns` file, decoding rather than compiling; a deployed binary ships no source
 at all, so that path is what makes `disasm` usable on one. See
 [image-format.md](image-format.md)'s "Reading an artifact".
@@ -337,39 +344,29 @@ under the two. This lowering's design decides how the limit counts.
 
 ## Follow-up: entry points that reach a class object only to find its mixin
 
-`compile_module`, `compile_initializer` and `image::encode_code_table` each
-take a `ClassRef` parameter, and each one's first move is to walk from it to
-the `Mixin` that backs it — "Keyed by mixin" above is this repository's own
-invariant, and none of these three addresses code any other way. Reaching a
-class object's `mixin` is a read only `heap.rs` may perform, so each of the
-three also needs a `&Heap` parameter purely to make that one hop.
+The compiler itself no longer has such an entry point: it compiles onto a
+`Mixin` while the tree is built, and never sees a class object. The pattern
+remains in two places. `image::encode_code_table` and `image::mixins::plan` each
+take a `ClassRef` parameter, and each one's first move is to walk from it to the
+`Mixin` that backs it — the code they encode lives on that mixin's tree and
+nowhere else. Reaching a class object's `mixin` is a read only `heap.rs` may
+perform, so each also needs a `&Heap` parameter purely to make that one hop.
+Taking the root mixin directly instead would remove the need for a `Heap` there —
+there is nothing else on the class object either of them reads.
 
-Taking the mixin directly instead of the class object would remove the need
-for a `Heap` at these three call sites — there is nothing else on the class
-object any of them reads. `ns-cli`'s `cmd_disasm` has the identical shape
-but not the identical fix: it takes no `ClassRef` parameter to narrow, since
-it builds a class object itself (from source, or from a loaded artifact)
-and reaches the mixin through its own `root_mixin_of` helper, needing a
-`Heap` for the same reason. Its fix is not "take a `Mixin` instead of a
-`ClassRef`" but "stop building a class object at all" — a different, and
-possibly larger, change.
+`ns-cli`'s `cmd_disasm` has the identical shape but not the identical fix: it
+takes no `ClassRef` parameter to narrow, since it builds a class object itself
+(from source, or from a loaded artifact) and reaches the mixin through its own
+`root_mixin_of` helper, needing a `Heap` for the same reason. It reads through
+`interp.heap_ref()` inside the lifetime of the interpreter that built the class
+object, because under the arena it must: a handle is an index meaningful only
+against its own heap, so a stand-in `Heap` reads the wrong object in a release
+build and trips the debug origin guard in a debug one. Its fix is not "take a
+`Mixin` instead of a `ClassRef`" but "stop building a class object at all" — a
+different, and possibly larger, change.
 
-The pattern surfaced three separate times while migrating object and frame
-access onto the heap seam (`docs/design/memory.md`, "The seam"):
-`compile_initializer`, `compile_module` and `cmd_disasm` each reached the mixin
-through a `Heap` that was not the one that allocated the class object. All three
-now reach the real one, because under the arena they must: a handle is an index
-meaningful only against its own heap, so a stand-in `Heap` reads the wrong object
-in a release build and trips the debug origin guard in a debug one. The two
-compiler entry points take a `&Heap` parameter; `cmd_disasm` has no `ClassRef`
-parameter and therefore none to take, so it reads through `interp.heap_ref()`
-inside the lifetime of the interpreter that built the class object.
-
-What remains is only the narrowing. Taking the mixin directly would drop the
-`&Heap` parameter from the two compiler entry points, and `cmd_disasm`'s
-different fix — stop building a class object at all — is still a larger change.
 Recorded here as a follow-up rather than undertaken now, because narrowing the
-signatures is a design change to this module's interface, not a migration.
+signatures is a design change to the image module's interface, not a migration.
 
 ## Decisions
 
@@ -382,7 +379,7 @@ signatures is a design change to this module's interface, not a migration.
 - **`whileTrue:` with a non-Boolean condition sends `mustBeBoolean`** rather than
   falling back to a re-send, because a re-send would duplicate the condition's
   side effects and the inlined loop would diverge from the native one.
-- **Code is keyed by mixin and `InitSlot` is mixin-relative**, because one mixin
+- **Code lives on the mixin and `InitSlot` is mixin-relative**, because one mixin
   backs many applications with different inherited layouts.
 - **Call-site slots are emitted inert from the start**, so wiring up inline caches
   is not a format break.

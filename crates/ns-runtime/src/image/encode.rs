@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::bytecode::{CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal};
+use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instr, Literal};
 use crate::heap::Heap;
 use crate::types::{
     BuiltinClass, ClassData, ClassRef, ClosureData, FrameKind, FrameRef, ObjRef, ObjectData,
@@ -190,7 +190,7 @@ pub struct CodeIds {
 impl CodeIds {
     pub fn id_of(&self, code: &Rc<CompiledCode>) -> u32 {
         *self.ids.get(&(Rc::as_ptr(code) as usize)).expect(
-            "every CompiledCode reachable from the module was assigned an id by encode_code_table",
+            "every CompiledCode reachable from the mixin tree was assigned an id by encode_code_table",
         )
     }
 }
@@ -274,25 +274,19 @@ pub fn encode_entry(w: &mut Writer, entry: Option<u32>) {
     }
 }
 
-/// The code table: every `CompiledCode` reachable from `module` -- every
-/// mixin's methods, every mixin's initializer, every superclass clause and
-/// clause-message body, and every nested block body -- with nested block
-/// code *before* the code that creates it. Flat and unnamed: *which* body
-/// belongs to which declaration is the mixin table's business
-/// (`image::mixins`), which addresses this table by id.
+/// The code table: every `CompiledCode` reachable from the mixin tree under
+/// `root_class` -- every mixin's methods, every mixin's initializer, every
+/// superclass clause and clause-message body, and every nested block body --
+/// with nested block code *before* the code that creates it. Flat and
+/// unnamed: *which* body belongs to which declaration is the mixin table's
+/// business (`image::mixins`), which addresses this table by id.
 ///
-/// Collected in `mixin::preorder` order -- the same order `compile_module`
-/// compiled in and the same order the mixin table's rows are written in --
-/// so the same module always encodes to the same bytes.
-///
-/// A method a mixin holds but the `CompiledModule` has no code for is an
-/// `Err`, not a panic: a method added to a live class after `compile_module`
-/// ran is exactly what the liveness spec's Req. 1 anticipates, so it is a
-/// refusal to snapshot this world.
+/// Collected in `mixin::preorder` order -- the same order the mixin table's
+/// rows are written in -- so the same module always encodes to the same
+/// bytes.
 pub fn encode_code_table(
     w: &mut Writer,
     heap: &Heap,
-    module: &CompiledModule,
     root_class: &ClassRef,
     symbols: &mut symbols::Builder,
 ) -> Result<CodeIds, String> {
@@ -300,15 +294,15 @@ pub fn encode_code_table(
     let mut ids = CodeIds {
         ids: HashMap::new(),
     };
-    let rows = mixins::plan(heap, root_class, module)?;
+    let rows = mixins::plan(heap, root_class)?;
     for row in &rows {
-        for (_, code) in &row.methods {
-            collect_code(code, &mut order, &mut ids);
+        for method in &row.methods {
+            collect_code(&method.code, &mut order, &mut ids);
         }
         for code in [
-            &row.initializer,
-            &row.superclass_clause,
-            &row.superclass_message,
+            &row.mixin.initializer_code,
+            &row.mixin.superclass_clause_code,
+            &row.mixin.superclass_message_code,
         ]
         .into_iter()
         .flatten()

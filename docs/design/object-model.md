@@ -183,11 +183,13 @@ evaluation. Only the root class is then created, as the application of the root
 mixin to its superclass, with `enclosing = nil` (§3.3: a module definition's
 enclosing object is nil, which is why a module has no state of its own).
 
-Before it returns, `load_module` also compiles the whole mixin tree — every
-method, initializer and superclass clause, nested classes and class sides
-included — and installs that code in the interpreter's code table through
-`install_code` ([execution.md](execution.md), "The VM"), so a class it returns is
-already runnable. Nothing it does evaluates Newspeak code, and compiling a
+Building the tree also compiles it — every method, initializer and superclass
+clause, nested classes and class sides included — onto the declarations
+themselves: a method's body onto its `MixinMethod`, a mixin's initializer and
+clause bodies onto the `Mixin`, before the mixin is shared
+([execution.md](execution.md), "The VM"), so a class `load_module` returns is
+already runnable. A mixin decoded from an image carries the bodies its row
+names instead, reconciled on load by `image::decode::verify_mixins`. Nothing it does evaluates Newspeak code, and compiling a
 resolved module is total — a program-level error is deferred to the execution of
 the body that raises it ([compiler.md](compiler.md), "Compilation cannot fail") —
 so loading stays total.

@@ -233,7 +233,7 @@ fn read_cache_slot(heap: &Heap, receiver: &Value, index: usize) -> Option<Value>
 }
 
 /// The superclass clause is Newspeak code: the body
-/// `compiler::compile_superclass_clause` emitted for this mixin runs in a
+/// `compiler::compile_superclass_clause` compiled onto this mixin runs in a
 /// fresh activation.
 ///
 /// The clause belongs to the class that *declares* it: it is resolved
@@ -255,14 +255,9 @@ fn eval_superclass_clause(
         // `instantiate::resolve_superclass_receiver` gives a root class.
         return Ok(Value::Obj(interp.builtin_class(BuiltinClass::Object)));
     }
-    let code = interp
-        .code
-        .superclass_clauses
-        .get(&mixin_key(nested))
-        .cloned()
-        .unwrap_or_else(|| {
-            panic!("internal: mixin with a superclass clause has no compiled form for it (compile_module coverage gap)")
-        });
+    let code = nested.superclass_clause_code.clone().unwrap_or_else(|| {
+        panic!("internal: mixin with a superclass clause carries no compiled form for it (a mixin built from source always does; verify_mixins refuses a decoded one)")
+    });
     run_clause_body(
         interp,
         receiver,

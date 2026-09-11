@@ -83,8 +83,8 @@ source bytes
   -> ns-syntax::parse           Module (AST + spans)
   -> ns-runtime::resolve        ResolvedModule (bindings + slot layout)
   -> Interpreter::load_module   the module's root class object, its code
-                                compiled and installed: one CompiledCode per
-                                body, keyed by mixin
+                                compiled onto the declarations: one
+                                CompiledCode per body, on its mixin
   -> instantiate                the primary factory, then each level's initializer
   -> the entry send             whatever the CLI was asked to send
 ```

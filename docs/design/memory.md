@@ -421,11 +421,6 @@ its variables. After it, a surviving block holds exactly what it captured.
   cached globally; nothing collects them today because nothing collects at all.
   The collector has to decide whether an application whose classes are all
   unreachable is itself collectable.
-- **The code table is keyed by `Rc` identity**, the address of a `Mixin` or a
-  `MixinMethod` (`CompiledModule`, `crates/ns-runtime/src/bytecode.rs`), so a
-  collector must not free a keyed mixin or method while its entry remains: a
-  new one allocated at the same address would share its key, so a load would
-  overwrite the entry, and a mixin nothing compiled would find the dead body.
 - **The application cache grows without bound** in the presence of live editing,
   because every re-application mints a fresh entry that nothing evicts. That is
   the same knot as `Mixin`'s lack of interior mutability; see

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ns_syntax::ast;
+use ns_syntax::Span;
 
 use crate::heap::{ActivationHeader, ActivationRef, Heap};
 use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
@@ -18,11 +19,14 @@ use super::{EvalResult, Interpreter, Signal};
 /// lookup or `Interpreter::invoke_method` reads is lifted out of the
 /// declaration here, so that a mixin decoded from an image -- which has no
 /// declaration at all -- answers the same questions from the same fields.
-fn build_methods(body: &ast::ClassBody) -> HashMap<Symbol, Rc<MixinMethod>> {
+fn build_methods(
+    body: &ast::ClassBody,
+    bindings: &Rc<HashMap<Span, Binding>>,
+) -> HashMap<Symbol, Rc<MixinMethod>> {
     body.methods
         .iter()
         .map(|m| {
-            let method = MixinMethod::from_decl(Rc::new(m.clone()));
+            let method = MixinMethod::from_decl(Rc::new(m.clone()), bindings);
             (method.selector, Rc::new(method))
         })
         .collect()
@@ -62,13 +66,12 @@ impl Interpreter {
     /// mixin gets its own application when something actually materializes
     /// it (the accessor); until then it is pure, unapplied structure.
     ///
-    /// It also compiles the whole mixin tree and installs the code, adding it
-    /// to whatever an earlier load installed: a class this returns is already
-    /// runnable, so nothing can send to a loaded class whose code was never
-    /// compiled.
+    /// Every method and every per-mixin body is compiled onto the
+    /// declaration it belongs to as the tree is built, so a class this
+    /// returns is already runnable.
     pub fn load_module(&mut self, resolved: &ResolvedModule) -> ClassRef {
         let decl = &resolved.module.root_class;
-        let mixin = self.build_mixin(decl);
+        let mixin = self.build_mixin(decl, &resolved.bindings);
         let superclass = self.resolve_superclass_receiver(decl);
         // The slot layout is the application's job, not the class object's:
         // `apply_mixin` offsets this class's own slots past every inherited
@@ -82,10 +85,7 @@ impl Interpreter {
         // class is the outermost level, so no object encloses it and no
         // declaration contains it. Every other class object in the system
         // comes from `interpreter::nested`, which passes both.
-        let class = self.new_class_object(application, None, None, superclass);
-        let code = crate::compiler::compile_module(&self.heap, &class, &resolved.bindings);
-        self.install_code(code);
-        class
+        self.new_class_object(application, None, None, superclass)
     }
 
     /// Builds the mixin for `decl`, recursively including its nested
@@ -99,20 +99,24 @@ impl Interpreter {
     /// built) -- a nested mixin has no class object of its own until
     /// something materializes it (the accessor), and a class side until
     /// `Interpreter::metaclass_of` builds the metaclass that applies it.
-    fn build_mixin(&mut self, decl: &ast::ClassDecl) -> Rc<Mixin> {
-        let methods = build_methods(&decl.instance_side);
+    fn build_mixin(
+        &mut self,
+        decl: &ast::ClassDecl,
+        bindings: &Rc<HashMap<Span, Binding>>,
+    ) -> Rc<Mixin> {
+        let methods = build_methods(&decl.instance_side, bindings);
         let slots = build_slots(&decl.instance_side);
         let nested = decl
             .instance_side
             .nested_classes
             .iter()
-            .map(|n| self.build_mixin(n))
+            .map(|n| self.build_mixin(n, bindings))
             .collect();
         let class_side = decl
             .class_side
             .as_ref()
-            .map(|side| self.build_class_side(side));
-        Rc::new(Mixin {
+            .map(|side| self.build_class_side(side, bindings));
+        let mut mixin = Mixin {
             name: Symbol::intern(&decl.name.name),
             access: crate::dispatch::effective_access(decl.access),
             methods,
@@ -143,7 +147,12 @@ impl Interpreter {
             class_side,
             span: decl.span,
             decl: Some(Rc::new(decl.clone())),
-        })
+            initializer_code: None,
+            superclass_clause_code: None,
+            superclass_message_code: None,
+        };
+        crate::compiler::compile_mixin_bodies(&mut mixin, bindings);
+        Rc::new(mixin)
     }
 
     /// A class side's own methods, as a `Mixin`. Kept separate from
@@ -153,15 +162,21 @@ impl Interpreter {
     /// instance side's `nested_classes` recurse. `decl` is `None` because a
     /// `ClassBody` is not itself an `ast::ClassDecl`; there is no single
     /// declaration node to keep as provenance for it.
-    fn build_class_side(&mut self, side: &ast::ClassBody) -> Rc<Mixin> {
-        Rc::new(Mixin {
-            methods: build_methods(side),
+    fn build_class_side(
+        &mut self,
+        side: &ast::ClassBody,
+        bindings: &Rc<HashMap<Span, Binding>>,
+    ) -> Rc<Mixin> {
+        let mut mixin = Mixin {
+            methods: build_methods(side, bindings),
             slots: build_slots(side),
             has_init_exprs: !side.init_exprs.is_empty(),
             init_exprs: side.init_exprs.clone(),
             span: side.span,
             ..Mixin::empty(Symbol::CLASS_SIDE)
-        })
+        };
+        crate::compiler::compile_mixin_bodies(&mut mixin, bindings);
+        Rc::new(mixin)
     }
 
     /// Intercepts an ordinary explicit-receiver send (`Interpreter::send`'s
@@ -409,7 +424,7 @@ impl Interpreter {
     ) -> Result<Vec<Value>, Signal> {
         // One lookup of the application for both questions below: the clause
         // this class was declared with, and the mixin its compiled message
-        // body is keyed by.
+        // body lives on.
         let application = self.heap.class_application(class);
         let clause = application
             .as_ref()
@@ -436,14 +451,9 @@ impl Interpreter {
         }
         let code = application
             .as_ref()
-            .and_then(|application| {
-                self.code
-                    .superclass_messages
-                    .get(&crate::mixin::mixin_key(&application.mixin))
-                    .cloned()
-            })
+            .and_then(|application| application.mixin.superclass_message_code.clone())
             .unwrap_or_else(|| {
-                panic!("internal: mixin whose superclass clause message takes arguments has no compiled form for it (compile_module coverage gap)")
+                panic!("internal: mixin whose superclass clause message takes arguments carries no compiled form for it (a mixin built from source always does; verify_mixins refuses a decoded one)")
             });
         // The message is evaluated on the instance being initialized and
         // with *this* level's factory arguments -- §6.2's "in the context of
@@ -472,8 +482,8 @@ impl Interpreter {
     /// from this level's own `MixinApplication.own_slot_base`, which the
     /// assertion below states.
     fn run_own_initializer(&mut self, class: &ClassRef, act: &ActivationRef) -> Result<(), Signal> {
-        // A builtin, or any class with nothing to run: `compile_module` emits
-        // no initializer for such a mixin, so there is nothing to look up.
+        // A builtin, or any class with nothing to run: such a mixin may carry
+        // no initializer at all, so there is nothing to reach for.
         if !class_has_initializer_code(&self.heap, class) {
             return Ok(());
         }
@@ -481,14 +491,9 @@ impl Interpreter {
             .heap
             .class_application(class)
             .expect("internal: class_has_initializer_code confirmed this is a class object");
-        let code = self
-            .code
-            .initializers
-            .get(&crate::mixin::mixin_key(&application.mixin))
-            .cloned()
-            .unwrap_or_else(|| {
-                panic!("internal: class has no compiled instance initializer (compile_module coverage gap)")
-            });
+        let code = application.mixin.initializer_code.clone().unwrap_or_else(|| {
+            panic!("internal: class needs an instance initializer and its mixin carries none (a mixin built from source always does; verify_mixins refuses a decoded one)")
+        });
         debug_assert_eq!(
             self.heap.activation_slot_base(act),
             application.own_slot_base,
@@ -555,7 +560,7 @@ fn not_the_primary_factory_error(
 ///
 /// A `NewspeakError` rather than a `panic!` on the wrong shape: the compiled
 /// body that produced this value can come off the wire, where
-/// `image::decode::build_module` reconciles its kind and arity but nothing
+/// `image::decode::verify_mixins` reconciles its kind and arity but nothing
 /// constrains what it returns. An image is untrusted input.
 fn argument_list(heap: &Heap, class: &ClassRef, value: Value) -> Result<Vec<Value>, Signal> {
     if let Value::Obj(obj) = &value {
@@ -644,11 +649,10 @@ pub(crate) fn class_has_initializer_code(heap: &Heap, class: &ClassRef) -> bool 
 
 /// Whether `mixin` declares any slot or `initExpr` at all.
 ///
-/// `pub(crate)` for `image::decode::build_module`, which must refuse
+/// `pub(crate)` for `image::decode::verify_mixins`, which must refuse
 /// an image that has no compiled initializer for a mixin that needs one
 /// rather than let `run_own_initializer` above panic on the invariant --
-/// checked per mixin now that a code table covers the whole tree, not only
-/// the root.
+/// checked per mixin, since every mixin of the tree carries its own.
 pub(crate) fn mixin_needs_initializer_code(mixin: &crate::mixin::Mixin) -> bool {
     !mixin.slots.is_empty() || mixin.has_init_exprs
 }

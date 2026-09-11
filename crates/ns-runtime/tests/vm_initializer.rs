@@ -180,10 +180,10 @@ fn field_at(heap: &ns_runtime::Heap, instance: &Value, index: usize) -> i64 {
 fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_ones_absolute_offset()
 {
     // The review's finding: `InitSlot` used to carry an ABSOLUTE field
-    // index, baked in at compile time from whichever class `compile_module`
+    // index, baked in at compile time from whichever class the compiler
     // happened to be called against -- but the compiled initializer is
-    // shared by *every* application of its mixin (`compile_module` keys by
-    // `mixin_key`, not by class object, per §6.2). Two applications of the
+    // shared by *every* application of its mixin (it lives on the mixin,
+    // not on a class object, per §6.2). Two applications of the
     // SAME mixin to superclasses with different slot counts legitimately
     // disagree about where the mixin's own slot lands; the old scheme could
     // only be right for one of them. This is a general defect, not a

@@ -212,8 +212,7 @@ class object — is the wrong one, and picking it would produce a cache that
 never hits.
 
 **Caches come after the representation change, not before it.** A cache removes
-the lookup and can carry the compiled body along with it, retiring the per-call
-`HashMap` lookup in `invoke_method`. It does not touch what an activation costs
+the lookup; the method it records carries its compiled body. It does not touch what an activation costs
 to build, which was measured at ~68 ns — about 41% of a user-method send — on
 the pre-arena representation; see [execution.md](execution.md)'s measurements.
 Wiring caches up first would optimize the half of a send that sits on top of a
@@ -226,8 +225,7 @@ means an activation nothing captures allocates nothing: no arena entry and none
 of the two `Vec`s every activation used to take. A captured one still pays for
 its reified frame and, when it returns, two vectors for the divorce. Against the
 arena, a user-method send fell from ~146 ns to ~91 ns
-([execution.md](execution.md), "What the activation stack moved"). The per-call
-`HashMap` lookup is still there, and it is the caches' to remove. Each cache
+([execution.md](execution.md), "What the activation stack moved"). Each cache
 also carries a dependency key, per
 [liveness-and-reflection.md](liveness-and-reflection.md); the key is the
 application, for the same reason the guard is.

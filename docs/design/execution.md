@@ -242,10 +242,10 @@ serializes reified frames only, and is taken when nothing is running
 
 ## The VM
 
-`Interpreter` carries one code table, a `CompiledModule`, holding every compiled
-body every loaded module runs; `load_module` and `image::load` add to it
-(`install_code`), and nothing runs a body that is not there. Everything in
-`interpreter/` decides *what* to run. Four places run a body, each by pushing an
+Every body a program runs hangs off the declaration it belongs to — a method's
+off its `MixinMethod`, an initializer's and a superclass clause's off the
+`Mixin` — so what dispatch finds is what runs; nothing looks code up beside it.
+Everything in `interpreter/` decides *what* to run. Four places run a body, each by pushing an
 activation, calling `run_code` and popping it on every exit:
 
 1. **Method body** — `invoke_method`, which also catches a `^` that targets its
@@ -256,8 +256,8 @@ activation, calling `run_code` and popping it on every exit:
 3. **Instance initializer** — `run_initializer_level`, `instantiate`'s per-level
    step, which runs that level's compiled initializer: its own slot initializers
    and initializer expressions. A class with no compiled initializer and no
-   slots is a no-op; a user class missing from the table is a
-   compilation-coverage bug and panics.
+   slots is a no-op; a user class whose mixin carries no initializer is refused
+   on load and panics if built any other way.
 4. **Superclass clause and its message arguments** — `nested::run_clause_body`,
    for the nested-class accessor and for `instantiate`'s deferred clause message.
 
@@ -431,7 +431,8 @@ What did **not** move was the rest of the activation cost. `Frame.args` and
 arguments or temporaries, the `HashMap` lookup per invocation that finds the
 compiled body survived, and building an activation was still an allocation rather
 than an index bump. The activation stack took the two vectors and the allocation;
-see "What the activation stack moved" below. The lookup is still there.
+see "What the activation stack moved" below. The lookup went when compiled code
+moved onto the declaration it belongs to (see "The VM").
 
 ### A 13% regression, found and recovered
 
@@ -567,9 +568,6 @@ green suite and with its own before-and-after measurement.
   goes through `Heap::activation_local`/`activation_set_local`, which read the
   entry's `base` again. Caching it belongs to the loop the trampoline builds,
   which owns the activation it runs.
-- **The `HashMap` lookup** that finds a compiled body per invocation stays too,
-  but it is not the trampoline's: the inline caches ([dispatch.md](dispatch.md))
-  remove it, since a cache entry carries the body.
 
 ### The trampoline (1b)
 

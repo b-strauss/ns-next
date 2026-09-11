@@ -184,16 +184,16 @@ pub enum FrameKind {
     /// that *declares* the clause.
     ///
     /// Distinct from `Initializer` even though the two look alike, because
-    /// a frame kind is how `image::decode::frame_body` names the table an
+    /// a frame kind is how `image::decode::frame_body` names the field an
     /// activation's compiled body lives in: this one's body comes from
-    /// `CompiledModule::superclass_clauses`, and verifying it against the
+    /// `Mixin::superclass_clause_code`, and verifying it against the
     /// class's instance initializer would reconcile a frame against a body
     /// that never ran in it.
     SuperclassClause(ClassRef),
     /// The arguments of a superclass clause's deferred factory message,
     /// evaluated on the instance being initialized and with `class`'s own
     /// factory arguments (§6.2). Its body comes from
-    /// `CompiledModule::superclass_messages`; see `SuperclassClause` above
+    /// `Mixin::superclass_message_code`; see `SuperclassClause` above
     /// for why that makes it a kind of its own.
     SuperclassMessage(ClassRef),
 }

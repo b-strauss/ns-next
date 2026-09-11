@@ -232,10 +232,14 @@ decompiler that is supposed to meet it properly does not exist.
 ## Verification
 
 Two structural passes run before anything the image describes can execute:
-`verify_code_table` between decoding and installing the code table, and
-`verify_graph` once the module exists to resolve each frame's body against. A
-corrupt but version-matching image is an error there, never a panic in the VM
-later.
+`verify_code_table` over the decoded code table, and `verify_graph` resolving
+each frame's body off the decoded mixins that carry it. Between them,
+`verify_mixins` reconciles every decoded mixin with the bodies its row attached
+— each body's kind and arity against the declaration's, and a body present
+wherever the declaration needs one. `mixins::decode` attaches without checking,
+so `inspect` can still display an artifact whose halves disagree; only `load`
+refuses it. A corrupt but version-matching image is an error there, never a
+panic in the VM later.
 
 The mixin tree's nesting depth is input-controlled, so building it is iterative —
 the "bound any recursion whose depth the input controls" case. Symbol ids, mixin
@@ -252,8 +256,10 @@ see `a_binary_with_a_graph_appended_is_refused` in `crates/ns-runtime/tests/imag
 ## Reading an artifact
 
 `disasm` accepts an artifact as well as a `.ns` file: the same decoder that
-`load` uses produces a `CompiledModule`, and `disasm` formats its `Instr`s
-exactly as it does for a freshly compiled one.
+`load` uses rebuilds the mixin tree with each body attached to its declaration,
+and `verify_mixins` reconciles every body with what it is attached to before
+anything runs, so `disasm` formats a decoded body's `Instr`s exactly as it does
+a freshly compiled one's.
 
 `ns-next inspect <artifact>` prints the file itself. Its default is a table of
 contents — header flags, section offsets, the symbol table, **the code table
@@ -323,7 +329,7 @@ into it. It is not in it.
 ## The stateless binary
 
 `ns-next build <file.ns> <out> [--entry SEL] [--debug-source]` runs the pipeline
-up to installing the compiled code — parse, resolve, bootstrap, compile — and
+up to compiling the code onto the declarations — parse, resolve, bootstrap, compile — and
 then **does not instantiate**. That omission is the point: the artifact never
 sees a platform.
 
@@ -378,7 +384,7 @@ this narrower set keeps the byte-identity guarantee above sound.
 
 **Loading.** `load` reads the header and branches. A stateful image is unchanged.
 A stateless binary decodes symbols → code → mixins → root class → entry id, with
-no graph section, then installs the decoded code and hands back empty roots with
+no graph section, then verifies the decoded declarations against their code and hands back empty roots with
 the entry as an option. The caller instantiates the root
 class with the freshly bootstrapped platform and sends the entry, so the primary
 factory and every initializer run **inside the loaded world** against the

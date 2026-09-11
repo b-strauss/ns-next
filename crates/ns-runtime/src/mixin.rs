@@ -15,9 +15,12 @@
 //! right, because an image's mixin table has to rebuild all of it with no
 //! `ast::ClassDecl` anywhere in reach. The `ast` fields that remain
 //! (`MixinMethod::decl`, `MixinSlot::decl`, `Mixin::init_exprs`,
-//! `Mixin::decl`) are read by the compiler, which runs before an image
-//! exists; a decoded mixin leaves them empty rather than inventing nodes for
-//! them.
+//! `Mixin::decl`) are read only by the compiler, which runs while a mixin is
+//! built from source; a decoded mixin leaves them empty rather than
+//! inventing nodes for them. The compiled bodies themselves live on the
+//! mixin (`Mixin::initializer_code` and the two superclass-clause bodies)
+//! and on its methods (`MixinMethod::code`), for a built mixin and a decoded
+//! one alike.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -25,39 +28,50 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
+use crate::bytecode::CompiledCode;
+use crate::types::Binding;
 use crate::Symbol;
 
-/// One entry of a mixin's method dictionary.
+/// One entry of a mixin's method dictionary, with the body it runs.
 ///
-/// `Rc` identity is the method's identity: `bytecode::method_key` keys
-/// compiled code by it, so each mixin's own `Rc<MixinMethod>` is what binds
-/// a dispatched selector to a compiled body -- for a mixin built from source
-/// and for one decoded from an image alike.
-#[derive(Debug)]
+/// The body lives here, on the entry dispatch hands back, rather than in a
+/// table beside the mixin: a send that found the method has found its code.
+/// That is how every system in `prior-art/` holds it -- Primordial Soup's
+/// `Method::bytecode()`, SOMns's `SInvokable.invokable` -- and it means a
+/// method cannot exist without a body: one built from source is compiled as
+/// it is built, one decoded from an image is handed the body its row names.
+#[derive(Debug, Clone)]
 pub struct MixinMethod {
     pub selector: Symbol,
     /// §5.2 accessibility, already defaulted through
     /// `dispatch::effective_access`. Read by every lookup, so it is stored
     /// rather than re-derived from `decl`, which a decoded mixin has none of.
     pub access: ast::AccessModifier,
-    /// The selector's parameter count -- what the shared orchestration fills
-    /// a method activation's `args` from, and what an installed body's
-    /// `num_args` is reconciled against on load.
+    /// The selector's parameter count -- what a method activation's `args`
+    /// are checked against, and what a decoded body's `num_args` is
+    /// reconciled against on load.
     pub num_args: usize,
-    /// The declaration this entry was built from: the compiler lowers its
-    /// body. `None` for a mixin decoded from an image, which carries the
-    /// compiled body instead.
+    /// The declaration this entry was built from. `None` for a mixin decoded
+    /// from an image.
     pub decl: Option<Rc<ast::MethodDecl>>,
+    /// The compiled body, shared by every application of the mixin
+    /// (`newspeak-spec.pdf` §6.2). Never replaced: editing a method builds a
+    /// new `MixinMethod`.
+    pub code: Rc<CompiledCode>,
 }
 
 impl MixinMethod {
-    /// The entry a parsed declaration becomes: everything a lookup or
-    /// `Interpreter::invoke_method` reads, lifted out of the AST once, here.
-    pub fn from_decl(decl: Rc<ast::MethodDecl>) -> MixinMethod {
+    /// The entry a parsed declaration becomes, compiled against the
+    /// resolver's `bindings` for the module it belongs to.
+    pub fn from_decl(
+        decl: Rc<ast::MethodDecl>,
+        bindings: &Rc<HashMap<Span, Binding>>,
+    ) -> MixinMethod {
         MixinMethod {
             selector: Symbol::intern(&crate::interpreter::instantiate::method_name(&decl.pattern)),
             access: crate::dispatch::effective_access(decl.access),
             num_args: crate::interpreter::instantiate::pattern_param_count(&decl.pattern),
+            code: Rc::new(crate::compiler::compile_method(&decl, bindings)),
             decl: Some(decl),
         }
     }
@@ -67,7 +81,7 @@ impl MixinMethod {
 /// needs (`Interpreter::apply_mixin` lays the instance out by name); the
 /// declaration carries the initializer expression, which only the compiler
 /// reads.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MixinSlot {
     pub name: Symbol,
     /// `None` for a slot of a mixin decoded from an image: its initializer
@@ -97,7 +111,7 @@ pub struct Factory {
 /// A mixin's superclass clause, reduced to what run time reads off it.
 ///
 /// The clause's *expressions* are Newspeak code, compiled per mixin into
-/// `CompiledModule::superclass_clauses` / `superclass_messages`; what is
+/// `Mixin::superclass_clause_code` / `superclass_message_code`; what is
 /// left here is the part the orchestration around those bodies needs, which
 /// it consults before any body runs. Storing it is what keeps
 /// `instantiate::eval_superclass_message` from having to read
@@ -111,7 +125,7 @@ pub struct SuperclassClause {
     /// `new`").
     pub selector: Symbol,
     /// Whether that message carries argument expressions, and therefore a
-    /// compiled body in `CompiledModule::superclass_messages`. The
+    /// compiled body in `Mixin::superclass_message_code`. The
     /// overwhelmingly common `= Object new` shape has none and runs no code.
     pub has_args: bool,
 }
@@ -120,7 +134,7 @@ pub struct SuperclassClause {
 /// now that a class object's behaviour lives here. Printing one walks the
 /// whole superclass chain and every method's AST -- as `ClassData`'s own
 /// `Debug` already did before the split.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Mixin {
     pub name: Symbol,
     /// The accessibility of the implicit accessor this declaration defines
@@ -150,6 +164,19 @@ pub struct Mixin {
     /// `ClassBody` is not an `ast::ClassDecl`), and for a mixin decoded from
     /// an image.
     pub decl: Option<Rc<ast::ClassDecl>>,
+    /// The instance initializer: this mixin's own slot initializers, then its
+    /// own `initExpr`s. Every mixin built from source has one, a class side
+    /// included. `None` for a builtin's mixin and `metaclass_of`'s
+    /// placeholder, which run no code, and for a decoded row that names none
+    /// -- `image::decode::verify_mixins` refuses that when the mixin needs one.
+    pub initializer_code: Option<Rc<CompiledCode>>,
+    /// The superclass clause's receiver expression (§6.1's `ec`), which the
+    /// nested-class accessor runs once per enclosing object. `None` when the
+    /// declaration has no clause.
+    pub superclass_clause_code: Option<Rc<CompiledCode>>,
+    /// The arguments of the clause's factory message, run on every
+    /// instantiation (§6.2). `None` when the message takes none.
+    pub superclass_message_code: Option<Rc<CompiledCode>>,
 }
 
 impl Mixin {
@@ -172,6 +199,9 @@ impl Mixin {
             class_side: None,
             span: Span::new(0, 0),
             decl: None,
+            initializer_code: None,
+            superclass_clause_code: None,
+            superclass_message_code: None,
         }
     }
 }
@@ -185,8 +215,8 @@ pub struct MixinApplication {
     /// spec's object-model constraint. Used for by-name slot access
     /// (`dispatch::lookup_slot`, a `SendLexical` read/write of a slot); never
     /// baked into compiled code, since a mixin's *compiled* initializer runs
-    /// for every application of it (`compile_module` keys by `mixin_key`) and
-    /// this map is a per-application answer.
+    /// for every application of it (it lives on the mixin) and this map is a
+    /// per-application answer.
     pub slot_index: HashMap<Symbol, usize>,
     /// Absolute index of the hidden cache slot for each nested class
     /// declaration, including inherited ones. The slot stores the cached
@@ -255,13 +285,12 @@ pub fn application_key(application: &Rc<MixinApplication>) -> usize {
 }
 
 /// `mixin`, then every nested declaration (recursively), then its class
-/// side (recursively) -- the traversal order `compiler::compile_module` and
-/// `image::encode`/`decode` both walk the mixin tree in, so a compiled
-/// module and an image's code table always enumerate the same mixins in the
-/// same order. Sharing one definition is what keeps the two from drifting
-/// apart: the image's mixin table assigns row ids in exactly this order, so
-/// a decoded row and the mixin it describes are found at the same position
-/// under either walk.
+/// side (recursively) -- the traversal order `image::encode`/`decode` both
+/// walk the mixin tree in, so an image's code table and its mixin table
+/// always enumerate the same mixins in the same order. Sharing one
+/// definition is what keeps the two from drifting apart: the image's mixin
+/// table assigns row ids in exactly this order, so a decoded row and the
+/// mixin it describes are found at the same position under either walk.
 ///
 /// Recursive, and deliberately so: the trees it walks are either built from
 /// a parsed module (whose nesting depth the parser already bounds) or

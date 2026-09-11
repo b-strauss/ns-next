@@ -13,7 +13,6 @@ pub(crate) mod sends;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::bytecode::{method_key, CompiledModule};
 use crate::dispatch::{self, Lookup};
 use crate::heap::{ActivationHeader, ActivationRef, Heap};
 use crate::types::*;
@@ -34,10 +33,6 @@ pub struct Interpreter {
     /// building it; nothing can reach an `Interpreter` in that state.
     builtin_classes: Vec<ClassRef>,
     platform_singleton: Option<Value>,
-    /// Every compiled body every loaded module runs. `load_module` and
-    /// `image::load` add to it through `install_code`; nothing runs a body
-    /// that is not here.
-    code: CompiledModule,
     /// (mixin identity, superclass application identity) -> behaviour.
     /// Keyed on the superclass's *application*, never on a superclass class
     /// object: a nested superclass has one class object per enclosing
@@ -70,24 +65,12 @@ impl Interpreter {
             heap: Heap::new(),
             builtin_classes: Vec::new(),
             platform_singleton: None,
-            code: CompiledModule::default(),
             applications: HashMap::new(),
             empty_class_sides: HashMap::new(),
             nested_in_progress: Vec::new(),
         };
         interp.builtin_classes = build_builtin_classes(&mut interp);
         interp
-    }
-
-    /// Makes `module`'s compiled bodies runnable, adding them to whatever an
-    /// earlier load installed. `load_module`, where loading and compiling
-    /// are one step, and `image::load` are the callers.
-    pub(crate) fn install_code(&mut self, module: CompiledModule) {
-        self.code.extend(module);
-    }
-
-    pub fn compiled_module(&self) -> &CompiledModule {
-        &self.code
     }
 
     pub fn builtin_class(&self, kind: BuiltinClass) -> ClassRef {
@@ -368,14 +351,7 @@ impl Interpreter {
                 ),
             }));
         }
-        let code = self
-            .code
-            .methods
-            .get(&method_key(&method))
-            .cloned()
-            .unwrap_or_else(|| {
-                panic!("internal: dispatched method has no compiled form (compile_module coverage gap)")
-            });
+        let code = method.code.clone();
         let act = self.heap.push_activation(
             ActivationHeader {
                 receiver,

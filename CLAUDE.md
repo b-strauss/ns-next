@@ -54,7 +54,8 @@ with exit status 0, not a crash.
 **An image is untrusted input.** No byte sequence may cause a panic or a process abort:
 validate every id, tag, count and length before it indexes, allocates or slices, and
 bound any recursion whose depth the input controls. `image::load` also runs two
-structural verification passes before installing the decoded code. See
+structural verification passes, and reconciles every decoded mixin with the bodies
+it carries, before any decoded code can run. See
 `docs/design/image-format.md`'s "Verification" section for the scope of what they
 do and do not guarantee. One thing to keep in mind while decoding: the decoder
 allocates one placeholder object and reified frame per declared record before it
@@ -94,8 +95,8 @@ and activation stack. Never build a `Heap::new()` to stand in for one that is ou
 scope, and never hold a handle across the death of the interpreter that allocated
 it: the index is in range in the other heap too, so the read answers a **different,
 perfectly valid object** rather than failing. Reach the real `Heap` instead:
-`compiler::compile_module` and `compile_initializer` take a `&Heap` parameter for
-exactly this reason, and `ns-cli`'s `cmd_disasm` — which builds its own class object
+`image::encode::encode_code_table` and `image::mixins::plan` take a `&Heap`
+parameter for exactly this reason, and `ns-cli`'s `cmd_disasm` — which builds its own class object
 and so has no parameter to take — reads through `interp.heap_ref()` while that
 interpreter is still alive, before it goes out of scope. A `debug_assertions`-only
 origin guard turns the mistake into a panic at the read, so a debug-build test run
@@ -135,14 +136,15 @@ object** — a nested superclass's class object is itself per-instance, so a cla
 key would never hit and every instance would mint its own application: wrong per §6.2,
 and every call site megamorphic since no two instances would ever share behaviour.
 
-**Compiled code is keyed by mixin, and `Instr::InitSlot`'s `own_index` is mixin-relative.**
-One mixin backs every application of it, so code is compiled once per mixin and reused
-across every application; an absolute field index baked into that shared code would be
-wrong the moment a second application inserts different inherited slots ahead of it. The
-VM resolves `own_index` against the executing activation's `slot_base`
-(`MixinApplication.own_slot_base` for that level) at run time. Getting it wrong is
-silent wrong output under one application and correct output under another;
-`vm_initializer.rs` pins both.
+**Compiled code lives on the mixin, and `Instr::InitSlot`'s `own_index` is
+mixin-relative.** One mixin backs every application of it, so each body is
+compiled once, onto the mixin — a method's onto its `MixinMethod` — and
+shared by every application; an absolute field index baked into that shared
+code would be wrong the moment a second application inserts different
+inherited slots ahead of it. The VM resolves `own_index` against the
+executing activation's `slot_base` (`MixinApplication.own_slot_base` for
+that level) at run time. Getting it wrong is silent wrong output under one
+application and correct output under another; `vm_initializer.rs` pins both.
 
 **`outer` walks the *lexical* declaration chain, never the receiver's dynamic class.**
 The running activation's `current_class` seeds it and `ClassData::declaring_class`

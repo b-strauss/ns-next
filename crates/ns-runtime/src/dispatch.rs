@@ -273,7 +273,10 @@ mod tests {
         let mut methods = HashMap::new();
         methods.insert(
             Symbol::intern(selector.trim_end_matches(':')),
-            Rc::new(MixinMethod::from_decl(Rc::new(method))),
+            Rc::new(MixinMethod::from_decl(
+                Rc::new(method),
+                &Rc::new(HashMap::new()),
+            )),
         );
         // The application chain must be linked wherever the class-object
         // chain is: `next_level` steps both, so a superclass linked on only
