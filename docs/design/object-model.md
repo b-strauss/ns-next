@@ -166,12 +166,14 @@ lookup rules, and reassigning that slot later cannot disturb an already-cached
 nested class. That this falls out of ordinary dispatch is evidence the layering
 is right.
 
-**The accessor lives in `interpreter/`**, as shared orchestration. It evaluates
-Newspeak code — the superclass clause — so it runs that code through the same
-body-execution hook `instantiate` uses. It is deliberately not synthesized
-bytecode: a compiler-side accessor would have to be mirrored in the tree-walker,
-and the two would drift in exactly the way the shared-orchestration rule exists
-to prevent.
+**The accessor lives in `interpreter/`**, beside dispatch. It evaluates Newspeak
+code — the superclass clause, compiled like any other body — and runs it through
+`nested::run_clause_body`, the same path `instantiate` runs the clause's deferred
+message through. It is deliberately not synthesized bytecode: what it does
+around that code — caching the class object per enclosing instance, detecting a
+cyclic definition, applying the mixin — is dispatch-side work, and a
+compiler-side copy of it would drift from the interpreter's in exactly the way
+the rule that `vm.rs` holds no dispatch logic exists to prevent.
 
 ## Module loading
 
@@ -296,7 +298,7 @@ forwarding in a moving collector, and no collector exists yet
   site megamorphic.
 - **The hidden nested-class slot is keyed by mixin, not by name.** Keying by name
   makes an override and the declaration it overrides collide in one slot.
-- **The accessor is interpreted shared orchestration, not synthesized bytecode**,
-  so the two engines cannot drift on it.
+- **The accessor is interpreter code, not synthesized bytecode**, so there is one
+  copy of it for every lowering to reach.
 - **Identity hashes come from a counter, not from addresses**, so identity
   survives a moving collector and a snapshot.

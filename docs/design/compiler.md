@@ -6,8 +6,8 @@
 > (lowering, register allocation, the scope stack), `compiler/control_flow.rs`
 > (inlining). CLI: `ns-next disasm`.
 
-This is the producer side. How the bytecode is then run — activations, the two
-engines, the dispatch loop — is [execution.md](execution.md).
+This is the producer side. How the bytecode is then run — activations, the VM,
+the dispatch loop — is [execution.md](execution.md).
 
 ## The instruction set
 
@@ -33,8 +33,8 @@ that lowering is mostly a transliteration rather than a translation.
   cannot fail".
 - `LoadSelf { dst }`.
 - `LoadBuiltinClass { dst, kind }` — serves the convention that a bare builtin
-  class name has no `Binding`, resolving at compile time what the tree-walker's
-  `eval_ident` resolves in its fallback.
+  class name has no `Binding`: the compiler resolves the name to its builtin
+  class at compile time.
 - `Move { dst, src }`.
 - `StoreLocal { src, slot }` — a `Binding::Local` **write**. A read needs no
   instruction at all: **the local's register *is* its value.** That is the fact
@@ -104,9 +104,11 @@ shape; `kind` tags which. An activation of it is pushed with
 
 `CompiledModule` holds `methods`, `initializers`, `superclass_clauses` and
 `superclass_messages` — the last two because a nested class's superclass clause is
-code too, evaluated by the accessor once per enclosing instance — plus the
-resolver's bindings map, carried so the hooks can pass it to the shared
-orchestration.
+code too, evaluated by the accessor once per enclosing instance. Nothing else:
+lowering turns every resolver binding into an instruction, so no bindings map
+outlives compilation. `CompiledModule::extend` adds one module's bodies to
+another's, which is how the interpreter's single code table grows as modules
+load.
 
 ### Keyed by mixin
 
@@ -121,9 +123,10 @@ different inherited slots ahead of it. The VM resolves `own_index` against the
 executing activation's `slot_base` — the application's `own_slot_base` for that
 level — at run time.
 
-The tree-walker has no compiled `InitSlot` to share, so it resolves the same slot
-by name instead of by index. A bug here shows up as the two engines disagreeing,
-not as a single wrong answer.
+A bug here is silent wrong output under one application and correct output under
+another. `crates/ns-runtime/tests/vm_initializer.rs` applies one mixin to two
+superclasses of different shapes, and initializes a three-level chain, to pin
+both.
 
 Compiled initializers are layout-dependent, so a class-shape change must flush
 them along with every other cache keyed to the class. See
@@ -202,12 +205,13 @@ construction, so its class is always `Block` and there is no receiver ambiguity 
 fall back from; what the guard checks is the **condition block's value** each
 iteration. A non-Boolean condition cannot fall back to re-sending `whileTrue:` to
 a materialized closure, because that would re-run the condition body and duplicate
-its side effects before the native could report anything — an engine-observable
+its side effects before the native could report anything — an observable
 difference. Instead the natives define the behaviour and the inlined form
 reproduces it: both send `mustBeBoolean` to the offending value, an ordinary
-virtual send, and answer its result. No class implements `mustBeBoolean`, so both
-engines produce the identical `doesNotUnderstand:` through the shared path, and a
-user class that does implement it is observed identically under both.
+virtual send, and answer its result. No class implements `mustBeBoolean`, so the
+inlined loop and the native produce the identical `doesNotUnderstand:` through
+the shared path, and a user class that does implement it is observed identically
+by both.
 
 ### Lexical addressing inside an inlined block
 
@@ -234,8 +238,9 @@ an inlined block shares.
 
 Compiles to whatever a `^` at the top of the *enclosing* code would: `Return` in a
 method body, `NonLocalReturn` in a block body. In an instance initializer it
-compiles to `NonLocalReturn`, and nothing catches it — a gap both engines share
-identically.
+compiles to `NonLocalReturn`, and nothing catches it — the same known gap as a
+`^` in a block that runs while its initializer is still running
+([execution.md](execution.md), "Non-local return").
 
 ### Testing the fallbacks
 
@@ -244,6 +249,14 @@ the common case: a non-Boolean receiver must still produce the identical
 `doesNotUnderstand:` a fully virtual send would; a user class that *implements*
 `ifTrue:ifFalse:` must have its method run; a non-Boolean `whileTrue:` condition
 must produce the identical `mustBeBoolean` error.
+
+With no second lowering yet to compare against, those paths are pinned by
+recorded answers: `crates/ns-cli/tests/program_outcomes.rs` holds the exit
+status, stdout and stderr of the non-Boolean receiver, the non-Boolean loop
+condition, a block held in a variable that takes the native loop and a `^` out
+of an inlined loop body; `tests-fixtures/control_flow_fallback.ns` runs a user
+`ifTrue:ifFalse:`; and the compiler's own tests (`compiler/lower.rs`,
+`crates/ns-runtime/tests/compiler.rs`) pin the guarded shape the gate emits.
 
 ## Safepoints and call-site identity
 
@@ -270,15 +283,15 @@ an image format break.
 Compilation is a total, deterministic lowering; a compiler-invariant violation is
 `panic!` or `debug_assert!`, not a program-level error.
 
-A program-level error that the tree-walker raises at evaluation time is therefore
-**deferred to execution**, so both engines report it identically and at the same
-moment. Two literals carry that deferral:
+A program-level error the language raises at evaluation time is therefore
+**deferred to execution**: it is reported when, and only if, execution reaches
+it, so a method that is never run never fails. Two literals carry that deferral:
 
 - `Literal::MalformedInt` — an integer the lexer accepted but the parser rejects,
   such as one out of `i64` range or a fractional radix literal. The compiler
-  lowers it to `MalformedInt`; the VM re-runs the shared `parse_int_literal` when
-  the instruction executes, producing the identical error text the tree-walker
-  does, and only if execution actually reaches it.
+  lowers it to `MalformedInt`; the VM re-runs `parse_int_literal` when the
+  instruction executes and raises its error text, and only if execution actually
+  reaches it.
 - `Literal::UnresolvedIdent`.
 
 ## Reading the output
@@ -303,8 +316,8 @@ arrives with the mechanisms it would observe.
 
 What would change: the compiler gains a second, deliberately naive lowering,
 and every program must behave byte for byte the same under both. It is the
-differential oracle that replaces the tree-walker
-([execution.md](execution.md), "Planned: one engine").
+differential oracle the retired tree-walker used to be
+([execution.md](execution.md), "One engine").
 
 The reference lowering inlines no control flow — `ifTrue:`, `and:`,
 `whileTrue:` and their kin become real sends with real closures — gives every
@@ -320,8 +333,7 @@ stderr cover those.
 One question is open, and must be settled before the trampoline needs the
 answer. The reference lowering activates blocks the optimized one inlines, so a
 recursion-depth limit that counts activations would trip at different points
-under the two — the same problem the tree-walker posed, without its Rust-stack
-half. This lowering's design decides how the limit counts.
+under the two. This lowering's design decides how the limit counts.
 
 ## Follow-up: entry points that reach a class object only to find its mixin
 
@@ -369,7 +381,7 @@ signatures is a design change to this module's interface, not a migration.
   time**, with a fallback to a real send, so virtuality is never actually lost.
 - **`whileTrue:` with a non-Boolean condition sends `mustBeBoolean`** rather than
   falling back to a re-send, because a re-send would duplicate the condition's
-  side effects and the engines would diverge.
+  side effects and the inlined loop would diverge from the native one.
 - **Code is keyed by mixin and `InitSlot` is mixin-relative**, because one mixin
   backs many applications with different inherited layouts.
 - **Call-site slots are emitted inert from the start**, so wiring up inline caches

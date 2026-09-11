@@ -1,8 +1,8 @@
 # ns-next — Design
 
 `ns-next` is a native Rust runtime for [Newspeak](https://newspeaklanguage.org/):
-lexer, parser, resolver, tree-walking interpreter, bytecode compiler and register
-VM, and a versioned image format. Rust 1.98.0, edition 2021.
+lexer, parser, resolver, bytecode compiler and register VM, and a versioned image
+format. Rust 1.98.0, edition 2021.
 
 This folder is the **living description of how the system is designed and how much
 of it exists**. It is updated in place. There is no series of dated design
@@ -36,7 +36,7 @@ that cannot name its code is describing an intention, and should say so.
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | the reference lowering, inline-cache slots wired up |
-| Activations, both engines, the VM loop | [execution.md](execution.md) | Built | one engine, the trampoline, closure conversion, JIT tiers |
+| Activations, the VM loop | [execution.md](execution.md) | Built | the trampoline, closure conversion, JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena and the activation stack are built, nothing reclaims an arena slot | checked roots, a collector |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | Partial | the leaf/callback split |
@@ -50,7 +50,7 @@ plugs into:
 ```
 crates/
   ns-syntax/    lexer, tokens, AST, spans, diagnostics
-  ns-runtime/   resolver, object model, dispatch, both engines, builtins, image
+  ns-runtime/   resolver, object model, dispatch, compiler, VM, builtins, image
   ns-cli/       the `ns-next` binary
 ```
 
@@ -79,13 +79,14 @@ should change for runtime work.
 
 ```
 source bytes
-  -> ns-syntax::lex        Vec<Token>
-  -> ns-syntax::parse      Module (AST + spans)
-  -> ns-runtime::resolve   ResolvedModule (bindings + slot layout)
-  -> Interpreter::load     the module's root class object
-  -> compile               one CompiledCode per body, keyed by mixin
-  -> instantiate           the primary factory, then each level's initializer
-  -> the entry send        whatever the CLI was asked to send
+  -> ns-syntax::lex             Vec<Token>
+  -> ns-syntax::parse           Module (AST + spans)
+  -> ns-runtime::resolve        ResolvedModule (bindings + slot layout)
+  -> Interpreter::load_module   the module's root class object, its code
+                                compiled and installed: one CompiledCode per
+                                body, keyed by mixin
+  -> instantiate                the primary factory, then each level's initializer
+  -> the entry send             whatever the CLI was asked to send
 ```
 
 The two serialization paths branch off this: `snapshot` serializes the world
@@ -103,7 +104,7 @@ These are non-regression gates, not suggestions. Each has caught a real
 regression.
 
 ```bash
-cargo test --workspace          # includes the two-engine differential harness
+cargo test --workspace          # includes the golden program outcomes
 cargo clippy --workspace --all-targets   # must be warning-free
 cargo fmt --all                 # before every commit
 cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 210, failed 0, expected-fail 1, stale 0

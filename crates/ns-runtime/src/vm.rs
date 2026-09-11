@@ -5,7 +5,7 @@
 //! user-defined target. No dispatch logic, no `doesNotUnderstand:`, no
 //! native dispatch, and no error text of its own live here -- dispatch
 //! lives in one place, which the reference lowering and a JIT will share.
-//! See `docs/design/execution.md`, "The VM and the three hooks".
+//! See `docs/design/execution.md`, "The VM".
 
 use std::rc::Rc;
 

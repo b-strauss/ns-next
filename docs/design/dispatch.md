@@ -153,14 +153,15 @@ plausible answer rather than a crash.
 
 ## Shared orchestration
 
-`interpreter/` is not the tree-walker's private code. Send, `doesNotUnderstand:`,
-lexical, super and native dispatch, frame construction and `instantiate` serve
-**both** engines; the engines differ only at three body-execution hooks — method
-body, block body, instance initializer.
+Send, `doesNotUnderstand:`, lexical, super and native dispatch, frame
+construction and `instantiate` live in `interpreter/`, the orchestration every
+way of running code shares: the VM's instruction loop calls them and runs
+whatever body they choose ([execution.md](execution.md), "The VM").
 
 Never copy dispatch logic, lookup logic or error text out of `interpreter/` into
-`vm.rs` or `compiler/`. That is how the two engines drift and stderr stops
-matching. Something needed there is widened to `pub(crate)`, not duplicated.
+`vm.rs` or `compiler/`. The reference lowering and, later, a JIT must reach the
+same dispatch and raise the same errors, and a second copy is how they would
+drift. Something needed there is widened to `pub(crate)`, not duplicated.
 
 An arity check belongs here too: a method activation addresses its arguments and
 temporaries as one run of registers, so a send whose argument count does not
@@ -226,5 +227,5 @@ application, for the same reason the guard is.
   implementation is protected and would otherwise be unreachable.
 - **Unmarked members are protected**, per §6.3.1, which decides public
   reachability rather than only documenting intent.
-- **Dispatch lives in `interpreter/` for both engines.** Duplicating it into the
-  VM is the failure mode this rule exists to prevent.
+- **Dispatch lives in `interpreter/`, once.** Duplicating it into the VM is the
+  failure mode this rule exists to prevent.
