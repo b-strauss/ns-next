@@ -65,6 +65,20 @@ includes the superclass clause's receiver part, which §6.1 evaluates "as if it
 occurred inside an instance method" of the enclosing class — the same mechanism,
 evaluated at a particular time rather than a distinct binding kind.
 
+**Known gap: a `super`-prefixed clause receiver does not dispatch.** For
+`class N = super Foo (...)` the resolver binds the receiver `Foo` as
+`SuperSend` (`resolver::resolve_superclass_clause`), but the lowerer treats a
+`SuperSend`-bound *identifier* like an unbound one: it falls to the
+bare-builtin-name fallback (`LoadBuiltinClass`), and for any other name to the
+deferred `UnresolvedIdent`. So the form works only when `Foo` names a builtin
+class, and then answers that builtin rather than the result of sending `Foo`
+with lookup starting above the declaring class, as §6.1 requires; any other
+`Foo` raises an "unresolved identifier" error when the accessor first runs the
+clause. The clause's activation already carries the declaring class as its
+`current_class`, so the fix is a lowering change;
+`crates/ns-runtime/tests/nested_classes.rs`'s
+`a_super_prefixed_clause_answers_a_class_object` pins today's builtin case.
+
 ### Setter sends
 
 `id:: e` (§5.4.3) desugars to sending the keyword message `id: e` and yielding

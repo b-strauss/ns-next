@@ -1289,14 +1289,15 @@ fn run_one_binary(exe: &Path, file: &Path, send: &str) -> Result<RunOutcome, Str
 /// counts as running only once someone has recorded what running it
 /// produces. Growth is therefore deliberate and a regression is loud.
 ///
-/// Every entry is run from source and checked against the expectation; it is
-/// then run a second way -- built into a stateless binary with
-/// `--entry <row.send>` and loaded with no `--send`, so the recorded entry is
-/// what starts it -- and checked against the same expectation, with stderr
-/// checked against the source run's. A row's `send` doubling as the build's
-/// `--entry` is why `runnable.toml` needs no field of its own for this lane.
-/// Each row still counts once in `ran`/`failed`: the first lane that fails
-/// decides the row.
+/// Every entry is run from source and checked against the expectation: the
+/// recorded exit status and stdout, and -- for a row expected to exit 0 -- an
+/// empty stderr. It is then run a second way -- built into a stateless binary
+/// with `--entry <row.send>` and loaded with no `--send`, so the recorded
+/// entry is what starts it -- and checked against the same exit status and
+/// stdout, with stderr checked against the source run's. A row's `send`
+/// doubling as the build's `--entry` is why `runnable.toml` needs no field of
+/// its own for this lane. Each row still counts once in `ran`/`failed`: the
+/// first lane that fails decides the row.
 ///
 /// What that is worth, stated honestly: with `expected_stdout` empty on
 /// every real row -- no corpus module that currently runs writes to the
@@ -1376,6 +1377,17 @@ fn cmd_run_corpus(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
             eprintln!(
                 "FAIL {}: expected stdout {:?}, got {:?}",
                 entry.file, entry.expected_stdout, source.stdout
+            );
+            continue;
+        }
+        // A successful run writes nothing to stderr. Without this, a warning
+        // or a stray diagnostic that both lanes print identically would pass,
+        // since the binary lane's stderr is compared with this run's only.
+        if entry.expected_status == 0 && !source.stderr.is_empty() {
+            failed += 1;
+            eprintln!(
+                "FAIL {}: expected no stderr, got {:?}",
+                entry.file, source.stderr
             );
             continue;
         }

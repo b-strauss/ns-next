@@ -65,9 +65,9 @@ frame's temporaries and a widowed context needs none of them. ns-next's closures
 read an enclosing activation's locals **by reference**, through
 `captured_frame`, including after that activation has returned — a counter block
 returned from the method that declares `n` goes on writing `n`
-(`tests-fixtures/closure_variables.ns` pins this). So a
-reified frame here keeps its registers when its activation returns ("Pop" below).
-Removing that need is a step of its own, "Planned: closure conversion" below.
+(`tests-fixtures/closure_variables.ns` pins this). So a reified frame here keeps
+its registers when its activation returns ("Pop" below). Removing that need is a
+step of its own, "Planned: closure conversion" below.
 
 ### Representation
 
@@ -156,11 +156,11 @@ the arena `Frame` — receiver, `kind`, `current_class`, `pc`, and `home` when t
 activation is a closure's — marries it to the entry, and records it in
 `entry.reified`; every later call answers the same handle. Its caller is closure
 creation, the VM's `MakeClosure`: directly for the new closure's
-`captured_frame`, and through `home_of` for its `home`. `home_of` passes a closure activation's own `home` on and reifies any
-other activation as its own home. Every block creation reifies the activation
-that creates it, whether or not the block reads one of its variables, because
-`captured_frame` is also where `invoke_closure` reads the block's receiver and
-current class from.
+`captured_frame`, and through `home_of` for its `home`. `home_of` passes a
+closure activation's own `home` on and reifies any other activation as its own
+home. Every block creation reifies the activation that creates it, whether or
+not the block reads one of its variables, because `captured_frame` is also where
+`invoke_closure` reads the block's receiver and current class from.
 
 **Pop.** Every site that pushes pops on *every* exit, error paths included, and
 only the top entry can be popped. If the entry was reified, its frame is
@@ -313,10 +313,10 @@ the target is the activation itself.
 That signal propagates out of `run_code` through every intervening Rust frame,
 native primitives included, until the `invoke_method` or
 `nested::run_clause_body` whose activation is the target catches it, by
-`ActivationRef::same`. Because there is
-one stack, a live target is always below the activation raising the return, and
-nothing is pushed while the signal propagates, so the target's index cannot have
-been reused by the time a catcher compares it.
+`ActivationRef::same`. Because there is one stack, a live target is always below
+the activation raising the return, and nothing is pushed while the signal
+propagates, so the target's index cannot have been reused by the time a catcher
+compares it.
 
 **An initializer home follows the same rule.** A block created during
 initialization — `| blk = [ ^2 ]. |` — whose `^` runs after initialization has
@@ -551,9 +551,9 @@ attribution is an inference from what the change removed; no profile was taken.
 What would change: sends stop recursing on the Rust stack. Every running
 activation already lives on the activation stack; the trampoline makes that stack
 the only place a running computation lives, by turning `run_code` →
-`interp.send` → `invoke_method` → `run_code` into a loop that pushes and pops. This is step
-1b of Milestone 4, and it lands the way the stack did: against a green suite and
-with its own before-and-after measurement.
+`interp.send` → `invoke_method` → `run_code` into a loop that pushes and pops.
+This is step 1b of Milestone 4, and it lands the way the stack did: against a
+green suite and with its own before-and-after measurement.
 
 ### What 1a left for it
 
@@ -581,9 +581,9 @@ other side. Getting there requires splitting `Interpreter::send` so that it
 the nested-class accessor stay in `interpreter/`, unchanged in what they
 produce, but they return a description of what to activate instead of
 activating it. That keeps `vm.rs` free of dispatch logic — what moves into the
-loop is the act of running a body, never the decision of which body. The loop then copies the arguments straight from the
-caller's argument registers into the callee's window, which is where `collect`'s
-vector disappears.
+loop is the act of running a body, never the decision of which body. The loop
+then copies the arguments straight from the caller's argument registers into the
+callee's window, which is where `collect`'s vector disappears.
 
 Two things the trampoline settles on its own:
 
@@ -607,9 +607,10 @@ Two things the trampoline settles on its own:
 target by `ActivationRef`, but it still propagates through Rust `?` until the
 `invoke_method` that owns the target catches it; under the trampoline it becomes
 an unwind of the activation stack to the target entry. The semantics are
-unchanged, and with no differential oracle until the reference lowering lands,
-this is the part of the change the golden outcomes have to be trusted hardest
-on.
+unchanged, and this is the part of the change the golden outcomes have to be
+trusted hardest on: the reference lowering lands first, but it runs on the same
+VM, so it cannot cross-check the trampoline's unwind of `Signal::Return` — both
+ways of running a program would unwind through the same code.
 
 ### What stays recursive, and why that is not a hole
 

@@ -174,8 +174,8 @@ one to measure.
 A file that legitimately cannot parse yet belongs in `corpus/blacklist.toml`. A corpus
 module that runs end to end belongs in `corpus/runnable.toml`, with the entry selector
 to send and the output it produces; `run-corpus` runs every listed module from source
-and as a built binary and fails if either differs from the recorded output. Nothing under `crates/ns-syntax` should change for
-runtime work.
+and as a built binary and fails if either differs from the recorded output. Nothing
+under `crates/ns-syntax` should change for runtime work.
 
 `platform.rs` is widened only on demand: an accessor exists because a module on
 `corpus/runnable.toml` needs it, and the whitelist entry that demanded it is named in the

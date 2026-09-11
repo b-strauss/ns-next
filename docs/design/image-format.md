@@ -304,10 +304,11 @@ the artifact itself.
 
 **One-way only. There is no text format that can be loaded back.** That would
 be a second encoder and decoder pair to keep in step with the binary one — the
-drift shape this project has already paid for in two copies of the tag table. The argument that would justify it is
-hand-authoring test images, and that need is already met differently: the
-untrusted-input tests take real images and corrupt them at located offsets, which
-exercises real structures rather than the ones someone thought to write out.
+drift shape this project has already paid for in two copies of the tag table.
+The argument that would justify it is hand-authoring test images, and that need
+is already met differently: the untrusted-input tests take real images and
+corrupt them at located offsets, which exercises real structures rather than the
+ones someone thought to write out.
 
 **This is not the decompiler**, and the two are easy to confuse:
 
@@ -323,8 +324,8 @@ into it. It is not in it.
 
 `ns-next build <file.ns> <out> [--entry SEL] [--debug-source]` runs the pipeline
 up to installing the compiled code — parse, resolve, bootstrap, compile — and
-then **does not instantiate**. That omission is the point: the artifact never sees a
-platform.
+then **does not instantiate**. That omission is the point: the artifact never
+sees a platform.
 
 **Format delta.** A second header flag, `FLAG_STATELESS`, and an entry-selector
 field encoded as a symbol id, bounds-checked like every other id. The field sits

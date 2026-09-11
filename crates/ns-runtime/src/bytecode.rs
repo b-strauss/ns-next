@@ -239,9 +239,9 @@ pub struct CompiledCode {
 
 /// Every compiled body a module loaded into an `Interpreter` runs, installed
 /// by `Interpreter::install_code`. `methods` is keyed by `Rc` pointer
-/// identity of the *loaded* `MethodDecl` -- the exact `Rc` `dispatch.rs`
-/// hands back -- so no name-based index can drift and no two same-named
-/// methods on different mixins can collide.
+/// identity of the *loaded* `MixinMethod` (`method_key`) -- the exact `Rc`
+/// `dispatch.rs` hands back -- so no name-based index can drift and no two
+/// same-named methods on different mixins can collide.
 ///
 /// `initializers` is keyed by `crate::mixin::mixin_key`, not by class
 /// object: `newspeak-spec.pdf` §6.2 has every application of a mixin share
@@ -272,7 +272,15 @@ pub struct CompiledModule {
 impl CompiledModule {
     /// Adds `other`'s bodies to this module's. Every key is a mixin's or a
     /// method's `Rc` identity, so the bodies of two separately loaded modules
-    /// never collide, and nothing already installed is replaced.
+    /// never collide, and nothing already installed is replaced -- provided
+    /// every `Rc<Mixin>` and `Rc<MixinMethod>` a key was taken from is still
+    /// alive. A key is only an address: once its `Rc` is freed, a later
+    /// allocation can reuse the address, and `HashMap::extend` would then
+    /// overwrite the old entry with the new module's body. Today nothing is
+    /// freed -- the object arena keeps every class object, and with it its
+    /// application and mixin, and the application cache keeps every
+    /// application -- so the precondition holds; a collector has to keep it
+    /// (`docs/design/memory.md`, "Open: what the collector owns").
     pub fn extend(&mut self, other: CompiledModule) {
         self.methods.extend(other.methods);
         self.initializers.extend(other.initializers);

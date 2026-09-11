@@ -178,11 +178,19 @@ the rule that `vm.rs` holds no dispatch logic exists to prevent.
 ## Module loading
 
 Loading is two-stage. `load_module` builds the **mixin tree** — root declaration,
-every nested declaration, every class side — and nothing else. That is pure
-structure with no evaluation, so it stays total. Only the root class is then
-created, as the application of the root mixin to its superclass, with
-`enclosing = nil` (§3.3: a module definition's enclosing object is nil, which is
-why a module has no state of its own).
+every nested declaration, every class side — as pure structure with no
+evaluation. Only the root class is then created, as the application of the root
+mixin to its superclass, with `enclosing = nil` (§3.3: a module definition's
+enclosing object is nil, which is why a module has no state of its own).
+
+Before it returns, `load_module` also compiles the whole mixin tree — every
+method, initializer and superclass clause, nested classes and class sides
+included — and installs that code in the interpreter's code table through
+`install_code` ([execution.md](execution.md), "The VM"), so a class it returns is
+already runnable. Nothing it does evaluates Newspeak code, and compiling a
+resolved module is total — a program-level error is deferred to the execution of
+the body that raises it ([compiler.md](compiler.md), "Compilation cannot fail") —
+so loading stays total.
 
 ## Instantiation
 

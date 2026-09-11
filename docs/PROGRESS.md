@@ -478,7 +478,10 @@ claimed it was an error was wrong, and was corrected.
   source and as a built binary.
 - From the image format: the frame record's pc-kind byte, so the minimum frame
   record is 18 bytes rather than 19. `PC_KIND_*` retired its two numbers,
-  which stay pinned, and a record in the old layout is refused.
+  which stay pinned. A one-frame record in the old layout is refused
+  (`crates/ns-runtime/tests/image.rs`,
+  `a_frame_record_in_the_old_layout_is_refused`); in a multi-frame image the
+  misaligned stream is very likely, but not provably, refused.
 - From the runtime: `Engine`, `set_engine`, `EngineUnavailable`,
   `decoded_from_image`, the AST evaluator, the tree-walk halves of the three
   body-execution hooks, `ClosureBody`, `PcKind`, `run_own_slots` and
@@ -539,6 +542,73 @@ B's starting inventory, none of them a behaviour change:
 - The phrase "shared orchestration" in code comments predates one engine; it
   still names `interpreter/` correctly, but "shared" now means shared with the
   reference lowering and a JIT to come.
+
+The retirement's plan (its "Scope" section) also assigned B these, none of
+which the retirement started:
+
+- Renaming `interpreter/eval.rs`, which evaluates nothing any more: it holds
+  the lexical and super send helpers, local and outer-local access, closure
+  invocation and the errors a deferred literal raises.
+- Passing `Copy` handles (`ObjRef`, `ClassRef`, `FrameRef`, `ActivationRef`)
+  by value rather than by reference, and enabling
+  `clippy::trivially_copy_pass_by_ref` in `[workspace.lints.clippy]` so the
+  warning-free clippy gate keeps it that way. Check what the lint actually
+  covers: its size limit is judged on the layout clippy compiles, and in a
+  debug build every handle carries `origin`, `ActivationRef` a `generation`
+  too, so the larger ones may fall outside it.
+- Pre-interning the selectors the runtime sends itself, instead of
+  `Symbol::intern("...")` at each call site.
+- Splitting `crates/ns-cli/src/main.rs` into one module per command.
+- Rewriting comments that narrate history (Milestone 1, what a function
+  "used to" do) into statements of the current decision.
+- Attaching compiled code to `MixinMethod` instead of looking it up in the
+  `HashMap` keyed by mixin and method on every invocation. **This one is in
+  tension with "B changes no design":** where code lives is a design decision
+  ([compiler.md](design/compiler.md), "Keyed by mixin"), and
+  [execution.md](design/execution.md), "What 1a left for it", assigns removing
+  that lookup to the inline caches, whose entries carry the body. B's plan
+  has to decide whether it belongs in B, with the design document updated to
+  match, or stays with the inline caches.
+
+Found by the retirement's final review, and also B's:
+
+- `crates/ns-cli/tests/run_fixtures.rs` (~49-50) compares each fixture's stdout
+  after `trim_end()`, so a lost or an extra final newline is no longer pinned;
+  the retired differential compared exact bytes.
+- Stale doc comments: `compile_initializer`'s
+  (`crates/ns-runtime/src/compiler/mod.rs` ~62-66) says `ns-cli`'s `disasm`
+  uses it, and `Heap::new`'s (`crates/ns-runtime/src/heap.rs` ~307) says
+  `cmd_disasm` takes a `&Heap` parameter. Neither is true: `cmd_disasm` clones
+  the loaded interpreter's `compiled_module()` and reads through
+  `interp.heap_ref()`. Its own comment (`main.rs` ~845) misspells "resolver's"
+  as "resolver.s". And `compiler/lower.rs` ~406 says the resolver never
+  attaches `SuperSend` to a bare identifier, which a `super`-prefixed
+  superclass-clause receiver does (the known gap under
+  [dispatch.md](design/dispatch.md), "Binding variants").
+- `crates/ns-runtime/tests/image.rs`: `load` (~240) still returns the
+  resolver's bindings, and 14 call sites recompile with
+  `compiler::compile_module` after `load_module` already installed the code;
+  they should start from `interp.compiled_module().clone()`, and `load` then
+  need not return bindings.
+- `crates/ns-runtime/tests/nested_classes.rs` keeps the one-caller helpers that
+  folding the `_under_bytecode` duplicates left behind — `accessor_is_stable()`
+  (~68, called only at ~91) and its siblings — which can fold into the tests
+  that call them. `crates/ns-cli/tests/cli.rs`'s
+  `run_no_longer_accepts_an_engine` (~269-279) tests that clap rejects an
+  undeclared flag, which clap already guarantees.
+- A lead for the `bench_block.ns` profile required before 1b: every block
+  creation and invocation copies `ClosureData`. `MakeClosure`
+  (`crates/ns-runtime/src/vm.rs` ~126-132) builds an `Rc<ClosureData>`, cloning
+  its `params` vector, only for `Interpreter::new_closure`
+  (`interpreter/mod.rs` ~616-619) to deep-clone it into
+  `ObjectData::Closure`. Each `value:` then copies `ClosureData` out of the heap
+  twice — `builtins/block.rs` ~17 and `builtins::call_block` (`builtins/mod.rs`
+  ~119) — and re-wraps it in a new `Rc` (~122). At run time `ClosureData.params`
+  is read only for its length, which duplicates `code.num_args` (the image
+  encoder also records the names, `image/encode.rs` ~865-868). Storing
+  `ObjectData::Closure(Rc<ClosureData>)` would turn those copies into
+  reference-count bumps. It is behaviour-preserving; whether it is the offset
+  the profile is looking for has to be measured, not assumed.
 
 ## Notes
 
