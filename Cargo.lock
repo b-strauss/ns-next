@@ -183,6 +183,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "indoc"
+version = "2.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79cf5c93f93228cf8efb3ba362535fb11199ac548a09ce117c9b1adc3030d706"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "insta"
 version = "1.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -223,6 +232,7 @@ name = "ns-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "indoc",
  "insta",
  "ns-runtime",
  "ns-syntax",
@@ -234,6 +244,7 @@ dependencies = [
 name = "ns-runtime"
 version = "0.1.0"
 dependencies = [
+ "indoc",
  "ns-syntax",
 ]
 
@@ -241,6 +252,7 @@ dependencies = [
 name = "ns-syntax"
 version = "0.1.0"
 dependencies = [
+ "indoc",
  "insta",
  "serde",
  "toml",
@@ -294,6 +306,12 @@ dependencies = [
  "linux-raw-sys",
  "windows-sys",
 ]
+
+[[package]]
+name = "rustversion"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "serde"

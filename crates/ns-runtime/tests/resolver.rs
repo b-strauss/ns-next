@@ -1,3 +1,4 @@
+use indoc::indoc;
 use ns_runtime::{resolve, Binding, SourceOrigin};
 
 fn resolve_source(src: &str) -> ns_runtime::ResolvedModule {
@@ -7,9 +8,14 @@ fn resolve_source(src: &str) -> ns_runtime::ResolvedModule {
 
 #[test]
 fn method_temp_resolves_as_local() {
-    let resolved = resolve_source(
-        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  bar = ( | x | x )\n) : ()",
-    );
+    let resolved = resolve_source(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          bar = ( | x | x )
+        ) : ()
+    "});
     // At least one Local binding exists somewhere in the module (the `x`
     // reference in the method body).
     assert!(resolved
@@ -20,9 +26,15 @@ fn method_temp_resolves_as_local() {
 
 #[test]
 fn self_send_resolves_to_depth_zero() {
-    let resolved = resolve_source(
-        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  bar = ( ^self baz )\n  baz = ( ^1 )\n) : ()",
-    );
+    let resolved = resolve_source(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          bar = ( ^self baz )
+          baz = ( ^1 )
+        ) : ()
+    "});
     assert!(resolved
         .bindings
         .values()
@@ -31,17 +43,31 @@ fn self_send_resolves_to_depth_zero() {
 
 #[test]
 fn super_send_resolves_to_super_send_binding() {
-    let resolved = resolve_source(
-        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  bar = ( ^super baz )\n) : ()",
-    );
+    let resolved = resolve_source(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          bar = ( ^super baz )
+        ) : ()
+    "});
     assert!(resolved.bindings.values().any(|b| *b == Binding::SuperSend));
 }
 
 #[test]
 fn outer_named_send_resolves_to_the_exact_depth() {
-    let resolved = resolve_source(
-        "Newspeak3\n'T'\nclass Outer = Object new (\n) (\n  outerMethod = ( ^1 )\n  public class Inner = Object new (\n  ) (\n    innerMethod = ( ^outer Outer outerMethod )\n  ) : ()\n) : ()",
-    );
+    let resolved = resolve_source(indoc! {"
+        Newspeak3
+        'T'
+        class Outer = Object new (
+        ) (
+          outerMethod = ( ^1 )
+          public class Inner = Object new (
+          ) (
+            innerMethod = ( ^outer Outer outerMethod )
+          ) : ()
+        ) : ()
+    "});
     assert!(resolved
         .bindings
         .values()
@@ -59,7 +85,14 @@ fn outer_named_send_resolves_to_the_exact_depth() {
 /// anywhere").
 #[test]
 fn bare_builtin_class_name_resolves_with_no_binding_at_its_span() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  bar = ( | c | c := OrderedCollection new. ^c )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          bar = ( | c | c := OrderedCollection new. ^c )
+        ) : ()
+    "};
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module.clone(),
@@ -89,9 +122,14 @@ fn bare_builtin_class_name_resolves_with_no_binding_at_its_span() {
 
 #[test]
 fn undeclared_outer_class_name_is_a_resolve_error() {
-    let module = ns_syntax::parse(
-        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  bar = ( ^outer Missing baz )\n) : ()",
-    )
+    let module = ns_syntax::parse(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          bar = ( ^outer Missing baz )
+        ) : ()
+    "})
     .expect("parse");
     let result = resolve(module, "src".into(), SourceOrigin::File("test.ns".into()));
     assert!(result.is_err());

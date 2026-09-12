@@ -1,5 +1,6 @@
 //! What `load_module` compiles onto the declarations it builds.
 
+use indoc::indoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -31,7 +32,15 @@ fn root_mixin(interp: &Interpreter, class: ClassRef) -> Rc<Mixin> {
 
 #[test]
 fn loading_compiles_every_method_and_the_initializer_onto_the_mixin() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n  bar = ( ^2 )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          foo = ( ^1 )
+          bar = ( ^2 )
+        ) : ()
+    "};
     let (interp, class) = load(src);
     let mixin = root_mixin(&interp, class);
     assert_eq!(mixin.methods.len(), 2);
@@ -55,7 +64,14 @@ fn loading_compiles_every_method_and_the_initializer_onto_the_mixin() {
 
 #[test]
 fn the_method_dispatch_finds_carries_its_body() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          foo = ( ^1 )
+        ) : ()
+    "};
     let (interp, class) = load(src);
     // Access-blind: the fixture's unmarked `foo` is protected, which
     // `lookup_public` would not find.
@@ -68,7 +84,15 @@ fn the_method_dispatch_finds_carries_its_body() {
 
 #[test]
 fn the_initializer_lowers_slots_then_init_exprs_with_own_slot_indices() {
-    let src = "Newspeak3\n'T'\nclass Foo x: a = Object new (\n  | p = a. q ::= 5. |\n  q := p.\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo x: a = Object new (
+          | p = a. q ::= 5. |
+          q := p.
+        ) (
+        ) : ()
+    "};
     let (interp, class) = load(src);
     let init = root_mixin(&interp, class)
         .initializer_code
@@ -123,7 +147,14 @@ fn the_initializer_lowers_slots_then_init_exprs_with_own_slot_indices() {
 
 #[test]
 fn an_uninitialized_slot_emits_nothing() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | a. b = 1. |\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | a. b = 1. |
+        ) (
+        ) : ()
+    "};
     let (interp, class) = load(src);
     let init = root_mixin(&interp, class)
         .initializer_code
@@ -144,18 +175,18 @@ fn an_uninitialized_slot_emits_nothing() {
 /// The property that matters: loading compiles the *whole* mixin tree --
 /// nested declarations and class sides, not only the root's own method
 /// table.
-const NESTED_SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    public class Inner = Object new (| v. |) (
-        public value = ( ^v )
+const NESTED_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        public class Inner = Object new (| v. |) (
+            public value = ( ^v )
+        )
+        public classSideMarker = ( ^1 )
+    ) : (
+        public marker = ( ^2 )
     )
-    public classSideMarker = ( ^1 )
-) : (
-    public marker = ( ^2 )
-)
-";
+"};
 
 #[test]
 fn every_mixin_in_the_tree_gets_its_bodies() {

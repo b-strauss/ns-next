@@ -571,6 +571,7 @@ fn destination(instr: &Instr) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indoc::formatdoc;
     use std::path::PathBuf;
 
     /// Compiles instance-side method `index` of `src` under the reference
@@ -590,7 +591,14 @@ mod tests {
     }
 
     fn method(decl: &str) -> String {
-        format!("Newspeak3\n'T'\nclass X = Object new (\n) (\n  {decl}\n) : ()")
+        formatdoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              {decl}
+            ) : ()
+        "}
     }
 
     fn send(selector: &str, receiver_reg: u16, arg_regs: Vec<u16>, dst: u16, id: u16) -> Instr {

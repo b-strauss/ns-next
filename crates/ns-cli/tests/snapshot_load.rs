@@ -1,5 +1,6 @@
 //! `ns-next snapshot` then `ns-next load`, end to end through the binary.
 
+use indoc::indoc;
 mod common;
 use common::{fixture, ns_next, ScratchDir};
 use std::path::Path;
@@ -195,7 +196,16 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
     let src = dir.join("raises.ns");
     std::fs::write(
         &src,
-        "Newspeak3\n'T'\nclass Raises usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\t^nil frobnicate\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class Raises usingPlatform: platform = Object new (
+            ) (
+                public main: p args: a = (
+                    ^nil frobnicate
+                )
+            ) : ()
+        "},
     )
     .expect("write source");
     let (ok, out, err) = assert_snapshot_load_matches_run("raises", &src);
@@ -360,18 +370,19 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         && haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-const TAG_NAMED_HASHES: &str = "Newspeak3
-'Test'
-class TagNamedHashes usingPlatform: p = Object new (
-\t| integerHash = Integer hash. classHash = self class hash. platformHash = p hash. selfHash = self hash. |
-) (
-\tpublic check: q = (
-\t\tq transcript show: (Integer hash = integerHash) printString; newLine.
-\t\tq transcript show: (self class hash = classHash) printString; newLine.
-\t\tq transcript show: (q hash = platformHash) printString; newLine
-\t)
-) : ()
-";
+const TAG_NAMED_HASHES: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class TagNamedHashes usingPlatform: p = Object new (
+        | integerHash = Integer hash. classHash = self class hash. platformHash = p hash. selfHash = self hash. |
+    ) (
+        public check: q = (
+            q transcript show: (Integer hash = integerHash) printString; newLine.
+            q transcript show: (self class hash = classHash) printString; newLine.
+            q transcript show: (q hash = platformHash) printString; newLine
+        )
+    ) : ()
+"};
 
 /// The slot initializers ask a builtin class, the root class and the
 /// platform for their hashes while the world is built; the load answers the

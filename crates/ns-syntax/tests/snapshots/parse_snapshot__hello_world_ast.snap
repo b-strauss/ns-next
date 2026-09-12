@@ -192,6 +192,6 @@ Module {
     },
     span: Span {
         start: 0,
-        end: 182,
+        end: 183,
     },
 }

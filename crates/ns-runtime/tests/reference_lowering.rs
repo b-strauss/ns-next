@@ -3,6 +3,7 @@
 //! lowering's bodies have the shape the design promises, and every corpus
 //! module the resolver accepts compiles under both.
 
+use indoc::indoc;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -35,17 +36,22 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 /// Every construct whose lowering the two differ on: inlined conditionals,
 /// loops and `and:`/`or:`, a `^` out of an inlined block, slot
 /// initializers, a cascade, a chained assignment.
-const PROGRAMS: &str = "Newspeak3\n'T'\nclass Programs = Object new (\n\
-    \t| a = 3. b = a + 4. |\n) (\n\
-    \tfact: n = ( ^n = 0 ifTrue: [1] ifFalse: [n * (self fact: n - 1)] )\n\
-    \tpublic factorial = ( ^self fact: 10 )\n\
-    \tpublic loop = ( | i sum | i := 0. sum := 0. [i < 10] whileTrue: [i := i + 1. sum := sum + i]. ^sum )\n\
-    \tpublic early = ( | c | c := OrderedCollection new. c add: 1; add: 2; add: 3. c do: [:e | e = 2 ifTrue: [^e * 100]]. ^0 )\n\
-    \tpublic logic = ( ^(((3 < 4) and: [4 < 5]) and: [(3 > 4) or: [true]]) ifTrue: [1] ifFalse: [0] )\n\
-    \tpublic slots = ( ^a + b )\n\
-    \tpublic cascade = ( | c n | c := OrderedCollection new. c add: 1; add: 2; add: 3. n := 0. c do: [:e | n := n + e]. ^n )\n\
-    \tpublic chained = ( | t u | u := t := 5. ^t + u )\n\
-    ) : ()";
+const PROGRAMS: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Programs = Object new (
+        | a = 3. b = a + 4. |
+    ) (
+        fact: n = ( ^n = 0 ifTrue: [1] ifFalse: [n * (self fact: n - 1)] )
+        public factorial = ( ^self fact: 10 )
+        public loop = ( | i sum | i := 0. sum := 0. [i < 10] whileTrue: [i := i + 1. sum := sum + i]. ^sum )
+        public early = ( | c | c := OrderedCollection new. c add: 1; add: 2; add: 3. c do: [:e | e = 2 ifTrue: [^e * 100]]. ^0 )
+        public logic = ( ^(((3 < 4) and: [4 < 5]) and: [(3 > 4) or: [true]]) ifTrue: [1] ifFalse: [0] )
+        public slots = ( ^a + b )
+        public cascade = ( | c n | c := OrderedCollection new. c add: 1; add: 2; add: 3. n := 0. c do: [:e | n := n + e]. ^n )
+        public chained = ( | t u | u := t := 5. ^t + u )
+    ) : ()
+"};
 
 /// Each answer is worked out by hand from the program, not recorded from a
 /// run: 10!, 1 + ... + 10, the `^` out of `do:` at the element 2, a true
@@ -82,7 +88,15 @@ fn every_program_answers_the_same_under_both_lowerings() {
 /// and every value in a register of its own.
 #[test]
 fn a_reference_initializer_initializes_each_slot_then_answers_self() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n\t| a = 1. b ::= 2. |\n\ta printString.\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+            | a = 1. b ::= 2. |
+            a printString.
+        ) (
+        ) : ()
+    "};
     let (interp, class) = load(src, Lowering::Reference);
     let mixin = interp
         .heap_ref()

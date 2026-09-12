@@ -5,6 +5,7 @@
 //! and the same two shapes under the reference lowering. Catches accidental
 //! codegen changes.
 
+use indoc::indoc;
 mod common;
 use common::ScratchDir;
 
@@ -109,13 +110,17 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
     let path = dir.join("nested.ns");
     std::fs::write(
         &path,
-        "Newspeak3\n'T'\nclass Outer usingPlatform: p = Object new () (\n\
-         \x20   public class Inner = Object new () (\n\
-         \x20       public value = ( ^42 )\n\
-         \x20   )\n\
-         ) : (\n\
-         \x20   public marker = ( ^2 )\n\
-         )\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class Outer usingPlatform: p = Object new () (
+                public class Inner = Object new () (
+                    public value = ( ^42 )
+                )
+            ) : (
+                public marker = ( ^2 )
+            )
+        "},
     )
     .expect("write temp fixture");
 
@@ -258,9 +263,13 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
     use ns_runtime::{Interpreter, Mixin, SourceOrigin, Symbol};
     use std::rc::Rc;
 
-    let src = "Newspeak3\n'T'\nclass Bare usingPlatform: p = Object new () (\n\
-               \x20   public main: p args: a = ( ^0 )\n\
-               ) : ()\n";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Bare usingPlatform: p = Object new () (
+            public main: p args: a = ( ^0 )
+        ) : ()
+    "};
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(module, Rc::from(src), SourceOrigin::File("bare.ns".into()))
         .expect("resolve");

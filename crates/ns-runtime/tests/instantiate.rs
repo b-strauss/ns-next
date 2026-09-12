@@ -3,6 +3,7 @@
 //! See `docs/design/object-model.md`'s "Instantiation" section for the six
 //! numbered steps this exercises.
 
+use indoc::indoc;
 use ns_runtime::{Interpreter, Signal, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
@@ -37,7 +38,11 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
     // `bar` must be `public` -- an ordinary (explicit-receiver) `send` only
     // reaches `public` members (`newspeak-spec.pdf` §5.5's `lookupPublic`);
     // the default access (no modifier) is `protected`.
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (|x = 42.|) (public bar = (^x)) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (|x = 42.|) (public bar = (^x)) : ()
+    "};
     let (mut interp, class) = load(src);
 
     let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
@@ -86,10 +91,18 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 /// superclass `instantiate` actually walks at runtime.
 #[test]
 fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
-    let sup_src = "Newspeak3\n'T'\nclass Sup = Object new (|a = 10.|) () : ()";
+    let sup_src = indoc! {"
+        Newspeak3
+        'T'
+        class Sup = Object new (|a = 10.|) () : ()
+    "};
     let (mut interp, sup_class) = load(sup_src);
 
-    let sub_src = "Newspeak3\n'T'\nclass Sub = Object new (|b = a.|) (public getB = (^b)) : ()";
+    let sub_src = indoc! {"
+        Newspeak3
+        'T'
+        class Sub = Object new (|b = a.|) (public getB = (^b)) : ()
+    "};
     let sub_module = ns_syntax::parse(sub_src).expect("parse");
     let sub_resolved = ns_runtime::resolve(
         sub_module,
@@ -151,7 +164,11 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
 /// `LexicalSend`, which fails at run time with `doesNotUnderstand: #platform`.
 #[test]
 fn a_factory_parameter_is_visible_in_a_slot_initializer() {
-    let src = "Newspeak3\n'T'\nclass M usingPlatform: platform = Object new (|t = platform.|) (public getT = (^t)) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class M usingPlatform: platform = Object new (|t = platform.|) (public getT = (^t)) : ()
+    "};
     let (mut interp, class) = load(src);
 
     let receiver = expect_ok(
@@ -180,7 +197,11 @@ fn a_factory_parameter_is_visible_in_a_slot_initializer() {
 /// i.e. exactly the path `ns-next run` takes.
 #[test]
 fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
-    let src = "Newspeak3\n'T'\nclass M usingPlatform: p = Object new (|t = p printString.|) (public getT = (^t)) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class M usingPlatform: p = Object new (|t = p printString.|) (public getT = (^t)) : ()
+    "};
     let (mut interp, class) = load(src);
 
     let receiver = expect_ok(
@@ -216,7 +237,11 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
 /// step 5) sees the factory parameters too -- same activation, same scope.
 #[test]
 fn a_factory_parameter_is_visible_in_an_init_expr() {
-    let src = "Newspeak3\n'T'\nclass M usingPlatform: p = Object new (|t.| t:: p.) (public getT = (^t)) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class M usingPlatform: p = Object new (|t.| t:: p.) (public getT = (^t)) : ()
+    "};
     let module = ns_syntax::parse(src).expect("parse");
     assert_eq!(
         module.root_class.instance_side.init_exprs.len(),
@@ -253,7 +278,11 @@ fn a_factory_parameter_is_visible_in_an_init_expr() {
 /// `NewspeakError`.
 #[test]
 fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
-    let src = "Newspeak3\n'T'\nclass M usingPlatform: p ide: q = Object new (|t = q.|) (public getT = (^t)) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class M usingPlatform: p ide: q = Object new (|t = q.|) (public getT = (^t)) : ()
+    "};
     let (mut interp, class) = load(src);
 
     let result = interp.instantiate(class, vec![Value::SmallInt(1)]);
@@ -276,7 +305,11 @@ fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
 
 #[test]
 fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new () () : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new () () : ()
+    "};
     let (mut interp, class) = load(src);
 
     let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
@@ -309,17 +342,17 @@ fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
 /// only resolves to a builtin (`resolve_superclass_receiver`).
 #[test]
 fn a_superclass_factory_message_receives_its_own_arguments() {
-    let src = "\
-Newspeak3
-'Test'
-class SuperclassArgs = Object new () (
-    public class Base withValue: v = Object new (| baseValue ::= v. |) (
-        public base = ( ^baseValue )
-    )
-    public class Derived = Base withValue: 7 () (
-    )
-) : ()
-";
+    let src = indoc! {"
+        Newspeak3
+        'Test'
+        class SuperclassArgs = Object new () (
+            public class Base withValue: v = Object new (| baseValue ::= v. |) (
+                public base = ( ^baseValue )
+            )
+            public class Derived = Base withValue: 7 () (
+            )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let module = expect_ok(
         interp.instantiate(class, vec![]),

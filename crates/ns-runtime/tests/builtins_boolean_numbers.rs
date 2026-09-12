@@ -2,6 +2,7 @@
 //! `Integer`/`Float` native methods, wired through
 //! `crate::builtins::dispatch_native` via `Interpreter::send`.
 
+use indoc::{formatdoc, indoc};
 use ns_runtime::{Heap, Interpreter, Signal, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
@@ -88,9 +89,14 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
         "^true ifTrue: [1] ifFalse: [2]",
         "| t f | t := [1]. f := [2]. ^true ifTrue: t ifFalse: f",
     ] {
-        let src = format!(
-            "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( {body} )\n) : ()"
-        );
+        let src = formatdoc! {"
+            Newspeak3
+            'T'
+            class Foo = Object new (
+            ) (
+              public m = ( {body} )
+            ) : ()
+        "};
         let (mut interp, class) = load(&src);
         let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
         let result = interp.send(receiver, Symbol::intern("m"), vec![]);
@@ -114,9 +120,13 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
         "^true ifTrue: [ x ] ifFalse: [ 0 ]",
         "| t f | t := [ x ]. f := [ 0 ]. ^true ifTrue: t ifFalse: f",
     ] {
-        let src = format!(
-            "Newspeak3\n'T'\nclass Foo = Object new (|x = 5.|) (\n  public m = ( {body} )\n) : ()"
-        );
+        let src = formatdoc! {"
+            Newspeak3
+            'T'
+            class Foo = Object new (|x = 5.|) (
+              public m = ( {body} )
+            ) : ()
+        "};
         let (mut interp, class) = load(&src);
         let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
         let result = interp.send(receiver, Symbol::intern("m"), vec![]);
@@ -148,9 +158,14 @@ fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
         "true and: [^'escaped']. ^'fell through'",
         "| b | b := [^'escaped']. true and: b. ^'fell through'",
     ] {
-        let src = format!(
-            "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( {body} )\n) : ()"
-        );
+        let src = formatdoc! {"
+            Newspeak3
+            'T'
+            class Foo = Object new (
+            ) (
+              public m = ( {body} )
+            ) : ()
+        "};
         let (mut interp, class) = load(&src);
         let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
         let result = interp.send(receiver, Symbol::intern("m"), vec![]);
@@ -174,9 +189,14 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
         "false and: [^'wrongly invoked']. true or: [^'wrongly invoked']. ^'correct'",
         "| b | b := [^'wrongly invoked']. false and: b. true or: b. ^'correct'",
     ] {
-        let src = format!(
-            "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( {body} )\n) : ()"
-        );
+        let src = formatdoc! {"
+            Newspeak3
+            'T'
+            class Foo = Object new (
+            ) (
+              public m = ( {body} )
+            ) : ()
+        "};
         let (mut interp, class) = load(&src);
         let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
         let result = interp.send(receiver, Symbol::intern("m"), vec![]);
@@ -355,7 +375,14 @@ fn a_real_integer_overflow_is_still_reported_as_an_overflow() {
 /// failing with a misleading "integer literal out of i64 range".
 #[test]
 fn a_radix_integer_literal_evaluates() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^16r1F )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m = ( ^16r1F )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let result = interp.send(receiver, Symbol::intern("m"), vec![]);

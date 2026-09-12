@@ -6,6 +6,7 @@
 //! inlined form, which the compiler's own tests and `program_outcomes.rs`
 //! cover.
 
+use indoc::formatdoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -57,7 +58,14 @@ fn string_of(heap: &Heap, v: &Value) -> String {
 }
 
 fn module(body: &str) -> String {
-    format!("Newspeak3\n'T'\nclass X = Object new (\n) (\n  public run = ( {body} )\n) : ()")
+    formatdoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public run = ( {body} )
+        ) : ()
+    "}
 }
 
 #[test]

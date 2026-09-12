@@ -1,5 +1,6 @@
 //! Bytecode execution, every send driven through `Interpreter::send`.
 
+use indoc::indoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -66,7 +67,14 @@ fn int_of(v: &Value) -> i64 {
 
 #[test]
 fn a_user_method_runs_as_bytecode_and_returns_its_value() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public answer = ( ^42 )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public answer = ( ^42 )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let result = expect_ok(send(&mut interp, instance, "answer", vec![]), "answer");
@@ -75,7 +83,14 @@ fn a_user_method_runs_as_bytecode_and_returns_its_value() {
 
 #[test]
 fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public makeBlock = ( ^[ :x | x + 1 ] )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public makeBlock = ( ^[ :x | x + 1 ] )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let block = expect_ok(
@@ -104,7 +119,15 @@ fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
 
 #[test]
 fn temps_implicit_self_sends_and_arithmetic_work() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  helper = ( ^40 )\n  public foo = ( | t | t := helper. ^t + 2 )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          helper = ( ^40 )
+          public foo = ( | t | t := helper. ^t + 2 )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let result = expect_ok(send(&mut interp, instance, "foo", vec![]), "foo");
@@ -113,7 +136,15 @@ fn temps_implicit_self_sends_and_arithmetic_work() {
 
 #[test]
 fn slots_read_and_write_through_lexical_sends() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 1. |\n) (\n  public bump = ( n := n + 1. ^n )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | n ::= 1. |
+        ) (
+          public bump = ( n := n + 1. ^n )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     expect_ok(send(&mut interp, instance, "bump", vec![]), "bump");
@@ -123,7 +154,13 @@ fn slots_read_and_write_through_lexical_sends() {
 
 #[test]
 fn an_unknown_selector_produces_the_shared_does_not_understand_error() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+        ) : ()
+    "};
     let (mut interp, _class) = load(src);
     let err = expect_error(
         send(
@@ -144,7 +181,14 @@ fn an_unknown_selector_produces_the_shared_does_not_understand_error() {
 
 #[test]
 fn a_super_send_falls_through_to_objects_native_print_string() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( ^super printString )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public foo = ( ^super printString )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let result = expect_ok(send(&mut interp, instance, "foo", vec![]), "foo");
@@ -153,7 +197,14 @@ fn a_super_send_falls_through_to_objects_native_print_string() {
 
 #[test]
 fn cascades_and_builtin_instantiation_work() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( | c | c := OrderedCollection new. c add: 1; add: 2. ^c size )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public foo = ( | c | c := OrderedCollection new. c add: 1; add: 2. ^c size )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let result = expect_ok(send(&mut interp, instance, "foo", vec![]), "foo");
@@ -162,7 +213,15 @@ fn cascades_and_builtin_instantiation_work() {
 
 #[test]
 fn a_non_local_return_from_a_natively_invoked_block_unwinds_to_the_bytecode_frame() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  find: target in: coll = ( coll do: [:each | each = target ifTrue: [^'found']]. ^'not found' )\n  public main = ( | c | c := OrderedCollection new. c add: 1; add: 2; add: 3. ^(self find: 2 in: c), (self find: 9 in: c) )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          find: target in: coll = ( coll do: [:each | each = target ifTrue: [^'found']]. ^'not found' )
+          public main = ( | c | c := OrderedCollection new. c add: 1; add: 2; add: 3. ^(self find: 2 in: c), (self find: 9 in: c) )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let result = expect_ok(send(&mut interp, instance, "main", vec![]), "main");
@@ -171,7 +230,14 @@ fn a_non_local_return_from_a_natively_invoked_block_unwinds_to_the_bytecode_fram
 
 #[test]
 fn a_block_writes_an_enclosing_temp_through_store_outer_local() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public sum = ( | n | n := 0. #(1 2 3) do: [:e | n := n + e]. ^n )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public sum = ( | n | n := 0. #(1 2 3) do: [:e | n := n + e]. ^n )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let result = expect_ok(send(&mut interp, instance, "sum", vec![]), "sum");
@@ -180,7 +246,15 @@ fn a_block_writes_an_enclosing_temp_through_store_outer_local() {
 
 #[test]
 fn empty_and_multi_statement_blocks_return_nil_and_the_last_value() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public empty = ( ^[ ] value )\n  public last = ( ^[ 1. 2 ] value )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public empty = ( ^[ ] value )
+          public last = ( ^[ 1. 2 ] value )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let empty = expect_ok(send(&mut interp, instance, "empty", vec![]), "empty");
@@ -191,7 +265,14 @@ fn empty_and_multi_statement_blocks_return_nil_and_the_last_value() {
 
 #[test]
 fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo: b = ( ^b ifTrue: ['yes'] ifFalse: ['no'] )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public foo: b = ( ^b ifTrue: ['yes'] ifFalse: ['no'] )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let yes = expect_ok(
@@ -208,7 +289,15 @@ fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks()
 
 #[test]
 fn a_block_invoked_after_its_home_returned_gets_cannot_return() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  mk = ( ^[ ^1 ] )\n  public run = ( ^mk value )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          mk = ( ^[ ^1 ] )
+          public run = ( ^mk value )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let err = expect_error(send(&mut interp, instance, "run", vec![]), "run");
@@ -217,7 +306,14 @@ fn a_block_invoked_after_its_home_returned_gets_cannot_return() {
 
 #[test]
 fn a_malformed_integer_literal_raises_an_out_of_range_error_when_evaluated() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( ^99999999999999999999 )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public foo = ( ^99999999999999999999 )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let err = expect_error(send(&mut interp, instance, "foo", vec![]), "foo");
@@ -227,7 +323,14 @@ fn a_malformed_integer_literal_raises_an_out_of_range_error_when_evaluated() {
 
 #[test]
 fn a_dynamic_array_literal_evaluates_its_elements() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( | a | a := {1. 2. 3}. ^a )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public foo = ( | a | a := {1. 2. 3}. ^a )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let result = expect_ok(send(&mut interp, instance, "foo", vec![]), "foo");
@@ -246,7 +349,14 @@ fn a_dynamic_array_literal_evaluates_its_elements() {
 
 #[test]
 fn a_method_that_falls_off_its_end_implicitly_returns_self() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( 1 + 1 )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public foo = ( 1 + 1 )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let result = expect_ok(send(&mut interp, instance, "foo", vec![]), "foo");
@@ -258,8 +368,14 @@ fn a_method_that_falls_off_its_end_implicitly_returns_self() {
 /// loaded class whose code was never compiled.
 #[test]
 fn loading_a_module_installs_its_compiled_code() {
-    let src =
-        "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public makeBlock = ( ^[ 1 ] )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public makeBlock = ( ^[ 1 ] )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, class);
     let block = expect_ok(
@@ -282,8 +398,22 @@ fn loading_a_module_installs_its_compiled_code() {
 /// from the first load must keep running.
 #[test]
 fn loading_a_second_module_keeps_the_first_modules_code() {
-    let first = "Newspeak3\n'T'\nclass A = Object new (\n) (\n  public answer = ( ^1 )\n) : ()";
-    let second = "Newspeak3\n'T'\nclass B = Object new (\n) (\n  public answer = ( ^2 )\n) : ()";
+    let first = indoc! {"
+        Newspeak3
+        'T'
+        class A = Object new (
+        ) (
+          public answer = ( ^1 )
+        ) : ()
+    "};
+    let second = indoc! {"
+        Newspeak3
+        'T'
+        class B = Object new (
+        ) (
+          public answer = ( ^2 )
+        ) : ()
+    "};
     let (mut interp, a) = load(first);
     let module = ns_syntax::parse(second).expect("parse");
     let resolved = ns_runtime::resolve(
@@ -311,8 +441,17 @@ fn loading_a_second_module_keeps_the_first_modules_code() {
 /// arguments therefore made register 0
 /// -- `t` -- read back the first surplus argument instead of `Nil`,
 /// silently.
-const ARITY_PROBE: &str = "Newspeak3\n'T'\nclass Probe = Object new (\n) (\n\
-     \tpublic probe = (\n\t\t| t |\n\t\t^nil = t ifTrue: [ 'nil-ok' ] ifFalse: [ 'NOTNIL-BUG' ]\n\t)\n) : ()";
+const ARITY_PROBE: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Probe = Object new (
+    ) (
+        public probe = (
+            | t |
+            ^nil = t ifTrue: [ 'nil-ok' ] ifFalse: [ 'NOTNIL-BUG' ]
+        )
+    ) : ()
+"};
 
 #[test]
 fn a_correctly_sent_method_reads_its_temporary_as_nil() {

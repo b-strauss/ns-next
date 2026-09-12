@@ -2,6 +2,7 @@
 //! explicit return, a bare builtin class name, and non-local return from a
 //! block to a live home and into a dead one.
 
+use indoc::indoc;
 use ns_runtime::{Interpreter, NewspeakError, Signal, Symbol, Value};
 
 /// Loads `src`, instantiates its root class and returns both.
@@ -46,9 +47,14 @@ fn expect_cannot_return(result: Result<Value, Signal>, what: &str) {
 
 #[test]
 fn method_with_no_explicit_return_returns_self() {
-    let (mut interp, receiver) = instance_of(
-        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public bar = ( 1. 2 )\n) : ()",
-    );
+    let (mut interp, receiver) = instance_of(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public bar = ( 1. 2 )
+        ) : ()
+    "});
     let result = expect_ok(interp.send(receiver, Symbol::intern("bar"), vec![]), "bar");
     assert!(
         matches!((&result, &receiver), (Value::Obj(a), Value::Obj(b)) if a.same(*b)),
@@ -58,9 +64,14 @@ fn method_with_no_explicit_return_returns_self() {
 
 #[test]
 fn method_with_explicit_return_returns_the_returned_value() {
-    let (mut interp, receiver) = instance_of(
-        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public answer = ( ^42 )\n) : ()",
-    );
+    let (mut interp, receiver) = instance_of(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public answer = ( ^42 )
+        ) : ()
+    "});
     let result = expect_ok(
         interp.send(receiver, Symbol::intern("answer"), vec![]),
         "answer",
@@ -72,9 +83,14 @@ fn method_with_explicit_return_returns_the_returned_value() {
 /// clause) names the builtin class.
 #[test]
 fn bare_builtin_class_name_reference_produces_a_working_instance() {
-    let (mut interp, receiver) = instance_of(
-        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public bar = ( ^OrderedCollection new )\n) : ()",
-    );
+    let (mut interp, receiver) = instance_of(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public bar = ( ^OrderedCollection new )
+        ) : ()
+    "});
     let result = expect_ok(interp.send(receiver, Symbol::intern("bar"), vec![]), "bar");
     let Value::Obj(obj) = result else {
         panic!("expected an OrderedCollection instance")
@@ -89,9 +105,14 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
 /// from the home: `m` answers 1, and its second statement never runs.
 #[test]
 fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
-    let (mut interp, receiver) = instance_of(
-        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( [ ^1 ] value. ^2 )\n) : ()",
-    );
+    let (mut interp, receiver) = instance_of(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m = ( [ ^1 ] value. ^2 )
+        ) : ()
+    "});
     let result = expect_ok(interp.send(receiver, Symbol::intern("m"), vec![]), "m");
     assert!(matches!(result, Value::SmallInt(1)));
     assert_eq!(interp.heap_ref().activation_depth(), 0);
@@ -101,9 +122,14 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
 /// the spec's `cannotReturn` -- a `NewspeakError`, not a panic.
 #[test]
 fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_not_a_panic() {
-    let (mut interp, receiver) = instance_of(
-        "Newspeak3\n'T'\nclass Foo = Object new (|b.|) (\n  public m = ( b:: [ ^1 ]. ^b value )\n  public again = ( ^b value )\n) : ()",
-    );
+    let (mut interp, receiver) = instance_of(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (|b.|) (
+          public m = ( b:: [ ^1 ]. ^b value )
+          public again = ( ^b value )
+        ) : ()
+    "});
     let first = expect_ok(interp.send(receiver, Symbol::intern("m"), vec![]), "m");
     assert!(matches!(first, Value::SmallInt(1)));
     expect_cannot_return(
@@ -116,9 +142,14 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
 /// an explicit `^`: `capture` stores `[^1]` and falls off the end.
 #[test]
 fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() {
-    let (mut interp, receiver) = instance_of(
-        "Newspeak3\n'T'\nclass Foo = Object new (|b.|) (\n  public capture = ( b:: [^1] )\n  public runIt = ( ^b value )\n) : ()",
-    );
+    let (mut interp, receiver) = instance_of(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (|b.|) (
+          public capture = ( b:: [^1] )
+          public runIt = ( ^b value )
+        ) : ()
+    "});
     expect_ok(
         interp.send(receiver, Symbol::intern("capture"), vec![]),
         "capture",

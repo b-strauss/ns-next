@@ -1164,6 +1164,7 @@ fn build_self_referential_object_class(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indoc::indoc;
     use std::path::PathBuf;
 
     fn load(src: &str) -> (Interpreter, ClassRef) {
@@ -1192,7 +1193,14 @@ mod tests {
     /// value (`docs/design/execution.md`, "Deciding, then running").
     #[test]
     fn deciding_a_send_answers_what_to_run_without_running_it() {
-        let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( ^1 )\n) : ()";
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              public foo = ( ^1 )
+            ) : ()
+        "};
         let (mut interp, class) = load(src);
         let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
         match interp.decide_send(instance, Symbol::intern("foo"), &[]) {
