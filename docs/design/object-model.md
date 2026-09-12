@@ -34,6 +34,16 @@ index-derived hash would break the moment a moving collector relocates the
 object or a `become:` swaps identities, and identity has to be stable across a
 snapshot. See [memory.md](memory.md).
 
+**Planned: the hash is assigned lazily**, drawn from the same counter the first
+time `hash` asks for one, with 0 meaning "not yet assigned" — as Cog/Spur
+(`hashBitsOf:`) and Primordial Soup (`Object_identityHash`) do. Assigned at
+allocation, the hash makes allocation order observable: the reference lowering
+allocates closures the optimized one does not, and closure conversion and a
+JIT's escape analysis will add and remove allocations the same way, so any of
+them would change a program's `hash` values. The encoder writes the stored
+value without assigning one, and the decoder keeps every value, 0 included.
+See [compiler.md](compiler.md), "Keeping it invisible to a program".
+
 `ClosureData { params, code, captured_frame: FrameRef, home: FrameRef }`
 captures its defining frame for closure semantics and its home activation for
 non-local return. A closure object holds it behind an `Rc`, so invoking a block

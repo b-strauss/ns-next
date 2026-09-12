@@ -21,7 +21,8 @@ rather than something the representation forecloses. Layout lives on
 `identity_hash` assigned monotonically at allocation, never derived from its
 address. This is required by identity-keyed collections, by image roots, and by
 `become:`; an address-derived hash would break the moment an object moved or an
-identity was swapped.
+identity was swapped. Assigning it lazily, on the first `hash`, is planned
+([object-model.md](object-model.md)).
 
 **Objects live in an arena and activations on a stack, not in
 `Rc<RefCell<_>>`.** One `Heap` owns `objects: Vec<Object>`, the activation
