@@ -10,26 +10,20 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
 
-M4 is under way, and **the next piece is 1b, the trampoline**, preceded by a
-small fix. Both are planned, on the branch `feature/trampoline`, and their
-open design decisions were settled with the user on 2026-09-12 and recorded
-in the design documents first:
-
-1. [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md)
-   — the image records the identity hashes of the objects it names by tag,
-   closing the regression lazy hashes left ([image-format.md](design/image-format.md),
-   "Planned: the image records tag-named hashes"). Two tasks.
-2. [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md) —
-   1b itself, in eight tasks, starting with the profile of `bench_block.ns`
-   owed below. Its design is [execution.md](design/execution.md), "Planned:
-   the trampoline", now with the control-flow natives as trampoline steps,
-   two depth bounds (100,000 activations, 1,000 re-entries from Rust) and the
-   CLI's interpreter thread.
+M4 is under way, and **the next piece is 1b, the trampoline**, on the branch
+`feature/trampoline`. The small fix that preceded it is done — see "M4 —
+Tag-named identity hashes" below. 1b's own open design decisions were settled
+with the user on 2026-09-12 and recorded in the design documents first:
+[trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), in
+eight tasks, starting with the profile of `bench_block.ns` owed below. Its
+design is [execution.md](design/execution.md), "Planned: the trampoline", now
+with the control-flow natives as trampoline steps, two depth bounds (100,000
+activations, 1,000 re-entries from Rust) and the CLI's interpreter thread.
 
 1b adds
 `SendInlinable` and the recursion-depth counter together, by the rule in
@@ -55,9 +49,9 @@ are done:
   ([compiler.md](design/compiler.md), "The reference lowering"). Every
   recorded program answers alike under both. Probing with it found and fixed
   one defect in the optimized lowering, and lazy identity hashes left one
-  known regression, whose fix waits on a decision from the user: a builtin
-  class, the root class and `platform` do not keep their hash across a
-  snapshot. See "M4 — The reference lowering" below.
+  known regression — a builtin class, the root class and `platform` did not
+  keep their hash across a snapshot — closed by the small fix below. See
+  "M4 — The reference lowering" below.
 
 M4's pieces are one change: the object representation, the activation
 representation and the root discipline each constrain the other two, which is
@@ -849,7 +843,7 @@ the same order every time. Fixing it needs a design decision — a new wire tag
 that records those hashes, or a deterministic hash rule for tag-named
 objects. The user decided on 2026-09-12 to record them
 ([image-format.md](design/image-format.md), "Planned: the image records
-tag-named hashes").
+tag-named hashes"). Fixed; see "M4 — Tag-named identity hashes" below.
 
 **What was deleted:** `Heap::alloc_placeholder_object`, whose callers now use
 `alloc_object`, since every object starts at hash 0;
@@ -933,6 +927,49 @@ ignored; `parse-corpus` reports **parsed 210, failed
 - **The two error messages that name a milestone, `ClosureData.params` and the
   lexical-send slot lookup**, still as listed under "M4 — Cleaning up with one
   engine".
+
+## M4 — Tag-named identity hashes (2026-09-12)
+
+Plan: [ns-next-tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md).
+
+The small fix ahead of 1b, closing the regression left by step C above: a
+builtin class, the module's root class and the `platform` singleton are named
+by tag rather than by record, so nothing about a record carried a hash one of
+them was given, and a hash asked for before a snapshot came back as a fresh
+one after the load ([image-format.md](design/image-format.md), "Identity
+hashes are preserved verbatim").
+
+The graph section now closes, after its roots, with a table of exactly the
+tag-named objects whose stored hash is not 0, each entry a tag from a new
+family — `HASHED_BUILTIN_CLASS` / `HASHED_ROOT_CLASS` / `HASHED_PLATFORM`
+(0/1/2) in `crates/ns-runtime/src/image/opcodes.rs`. `load` restores each
+hash onto the object the bootstrap built, refuses a 0, a duplicate entry or
+`u32::MAX` like any other malformed hash, and advances the identity-hash
+counter past the larger of this table's maximum and the object table's.
+`inspect` reads it as part of the graph section.
+`crates/ns-runtime/tests/fixtures/golden-image.bin` grew by four bytes (1219
+to 1223) — the empty table's own zero count, since none of that fixture's
+tag-named objects had a hash recorded when it was built.
+
+`a_hash_given_to_a_tag_named_object_survives_a_snapshot`
+(`crates/ns-cli/tests/snapshot_load.rs`) pins the fix end to end: a module
+asks a builtin class, its own class and the platform for their hash while
+being instantiated, snapshots, reloads, and asks the same three questions
+again. Checked against the pre-fix parent commit (`1e57a47`, Task 1's own
+parent) in a throwaway worktree: the task brief's literal program passed
+there too, unchanged — its three hash requests happen to be the very first
+the process ever makes, both while snapshotting and again after the load, so
+the stale counter restarts at the same value both times and coincidentally
+redraws the same three numbers, the same accident this document already
+named for the pre-lazy hashes, surviving into this one minimal case even with
+laziness. A fourth, unchecked slot, `selfHash = self hash`, requested last,
+gives the counter an ordinary record to land on after the three tag-named
+draws and turns the coincidence into a real test: with it, the test prints
+`false` three times against the parent commit and `true` three times against
+this fix.
+
+617 tests pass, with one ignored; `parse-corpus` stays at **210/0/1/0** and
+`run-corpus` at **6/0/205**.
 
 ## Notes
 

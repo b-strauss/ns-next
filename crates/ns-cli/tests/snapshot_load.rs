@@ -359,3 +359,49 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         && haystack.len() >= needle.len()
         && haystack.windows(needle.len()).any(|w| w == needle)
 }
+
+const TAG_NAMED_HASHES: &str = "Newspeak3
+'Test'
+class TagNamedHashes usingPlatform: p = Object new (
+\t| integerHash = Integer hash. classHash = self class hash. platformHash = p hash. selfHash = self hash. |
+) (
+\tpublic check: q = (
+\t\tq transcript show: (Integer hash = integerHash) printString; newLine.
+\t\tq transcript show: (self class hash = classHash) printString; newLine.
+\t\tq transcript show: (q hash = platformHash) printString; newLine
+\t)
+) : ()
+";
+
+/// The slot initializers ask a builtin class, the root class and the
+/// platform for their hashes while the world is built; the load answers the
+/// same three questions against the objects it rebuilt from tags. Before the
+/// image recorded tag-named hashes, all three printed `false`.
+///
+/// `selfHash` is asked for and never checked: it exists only to give the
+/// identity-hash counter a fourth, ordinary record to land on after the
+/// three tag-named draws. Without it, this module's three hash requests are
+/// the very first the process ever makes -- both while snapshotting and
+/// again after the load -- so the counter restarts at the same value both
+/// times and the stale bug drew the same numbers back by coincidence
+/// (confirmed against the pre-fix parent commit: with `selfHash` this test
+/// prints `false` three times there, without it it passes anyway). See
+/// "Identity hashes are preserved verbatim" in image-format.md for the
+/// counter this exploits.
+#[test]
+fn a_hash_given_to_a_tag_named_object_survives_a_snapshot() {
+    let dir = ScratchDir::new("tag-named-hashes");
+    let img = dir.join("world.img");
+    let src = dir.join("tag_named_hashes.ns");
+    std::fs::write(&src, TAG_NAMED_HASHES).expect("write source");
+    let (ok, _, err) = ns_next(&["snapshot".as_ref(), src.as_os_str(), img.as_os_str()]);
+    assert!(ok, "{err}");
+    let (ok, out, err) = ns_next(&[
+        "load".as_ref(),
+        img.as_os_str(),
+        "--send".as_ref(),
+        "check:".as_ref(),
+    ]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "true\ntrue\ntrue\n");
+}

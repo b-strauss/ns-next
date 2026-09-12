@@ -155,16 +155,17 @@ the decoder alike rather than repeated as magic numbers on each side.
 share a number, so a renumbering fails the suite at the moment it happens instead
 of surfacing later as an image that no longer means what it said.
 
-The graph section's four tag families live there under the same rule: how a
-`Value` is encoded, an object record's body, how a class reference is named, and
-what a frame was activated for. They were bare literals in the encoder and again
-in the decoder until `inspect` became a third reader of those bytes — and three
-hand-kept copies of one numbering is how a viewer starts quietly disagreeing with
-the loader. A fifth family is *retired*: a frame record once carried a byte
-naming the unit its `pc` counted in, and only instruction indices were ever
-representable, so the byte was removed. Its two numbers, 0 and 1 (`PC_KIND_*`),
-stay assigned and pinned, so a unit field that ever returns cannot give them a
-new meaning.
+The graph section's five tag families live there under the same rule: how a
+`Value` is encoded, an object record's body, how a class reference is named, what
+a frame was activated for, and which tag-named object an entry of the closing
+hash table names (`HASHED_*`, below). They were bare literals in the encoder and
+again in the decoder until `inspect` became a third reader of those bytes — and
+three hand-kept copies of one numbering is how a viewer starts quietly
+disagreeing with the loader. A sixth family is *retired*: a frame record once
+carried a byte naming the unit its `pc` counted in, and only instruction indices
+were ever representable, so the byte was removed. Its two numbers, 0 and 1
+(`PC_KIND_*`), stay assigned and pinned, so a unit field that ever returns cannot
+give them a new meaning.
 
 **Mixin table.** One row per declaration: the name, its own slot names, the
 primary factory selector and arity, the method table as selector → code id, the
@@ -199,28 +200,18 @@ loaded one. A record's 0 means "not yet assigned" and is preserved the same way
 **The exception is an object the image names by tag rather than by record**: a
 builtin class, the module's root class and the `platform` singleton
 (`encode::is_class_tag`, and the platform check beside it in
-`GraphTable::visit_value`). None of them is a record, so nothing carries its
-hash. The bootstrap `load` builds and the root class it rebuilds start at 0 like
-every new object, and one of them that was asked for its hash before the
-snapshot draws a fresh one the first time it is asked after the load. Hashes
-stay unique, since the fresh one is drawn past every loaded hash, but not stable:
-a program that kept such a hash across a snapshot — or, once there are any, a
-hashed collection keyed by one of these objects — sees a different value after
-the load. Before identity hashes were lazy these hashes survived by accident:
-the bootstrap allocated the same objects in the same order every time, so each
-drew the same number again.
-
-### Planned: the image records tag-named hashes
-
-What would change: a hash one of these objects was asked for before a snapshot
-comes back unchanged after the load. Decided on 2026-09-12. The graph section
-ends, after its roots, with a table of the tag-named objects whose stored hash
-is not 0 — the builtin classes in wire-tag order, then the root class, then
-`platform` — each entry a tag from a new family in `opcodes.rs` naming the
-object, and its hash. `load` restores each hash onto the object the bootstrap
-built, refuses a 0, a duplicate entry or `u32::MAX` like any other malformed
-hash, and advances the counter past the largest hash either table carried.
-`inspect` reads the table as part of the graph section.
+`GraphTable::visit_value`). None of them is a record, so nothing about a record
+could carry its hash. Instead the graph section closes, after its roots, with a
+table of exactly the tag-named objects whose stored hash is not 0 — the builtin
+classes in wire-tag order, then the root class, then `platform` — each entry a
+tag from the `HASHED_*` family in `opcodes.rs` naming the object, and its hash
+(`encode::encode_tag_named_hashes`). `load` restores each hash onto the object
+the bootstrap built (`decode::decode_tag_named_hashes`), and refuses a 0, a
+duplicate entry or `u32::MAX` like any other malformed hash. The
+identity-hash counter is then advanced past the larger of this table's maximum
+and the object table's, so a hash assigned afterward never collides with either.
+`inspect` reads the table as part of the graph section
+(`Report::graph_tag_named_hashes`).
 
 That is what Cog and Primordial Soup get without trying: their images carry
 every object, classes included — a Spur class's identity hash is even its index
@@ -233,8 +224,9 @@ stays true when the core library moves into Newspeak
 deterministic hash for each tag-named object from a reserved range, was
 rejected: every tag-named object added later would need a reserved number, and
 the hash would no longer be the one the program was actually given, which is
-what "verbatim" promises for every other object. No test pins the present,
-lossy behaviour.
+what "verbatim" promises for every other object.
+`a_hash_given_to_a_tag_named_object_survives_a_snapshot` in
+`crates/ns-cli/tests/snapshot_load.rs` pins the result end to end.
 
 ## How frames actually get into an image
 
@@ -533,8 +525,7 @@ builtins.
   that would justify it is already met by corrupting real images.
 - **An image records the hashes of the objects it names by tag**, so a hash the
   program was given survives a snapshot like every other; a reserved-range
-  rule was rejected. Planned; see "Planned: the image records tag-named
-  hashes".
+  rule was rejected.
 
 ## Open questions
 

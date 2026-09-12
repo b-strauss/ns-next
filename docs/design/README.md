@@ -38,7 +38,7 @@ that cannot name its code is describing an intention, and should say so.
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | inline-cache slots wired up |
 | Activations, the VM loop | [execution.md](execution.md) | Built | the trampoline, closure conversion, JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena and the activation stack are built, nothing reclaims an arena slot | checked roots, a collector |
-| Serialization, both artifacts | [image-format.md](image-format.md) | Built — except that an object named by tag loses its identity hash across a snapshot (fix planned) | recording tag-named hashes, suspend and resume |
+| Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | Partial | the leaf/callback split |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
 
