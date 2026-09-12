@@ -82,10 +82,10 @@ fn a_zero_argument_factory_no_longer_rejects_instantiation() {
 #[test]
 fn a_zero_argument_factory_reaches_its_public_entry_method() {
     // The same zero-argument-factory shape as `ADummyPush.ns`, end to end,
-    // with a public entry method (the entry send still carries the
-    // platform as its own argument, per `cmd_run`'s `[platform, nil]`
-    // convention -- only the *factory* call is now zero-argument) so the
-    // fix's effect is directly observable on stdout.
+    // with a public entry method (`entry::entry_args` sizes the entry
+    // send's argument list to the selector's arity, so `foo:` still gets
+    // the platform as its one argument -- only the *factory* call is now
+    // zero-argument) so the fix's effect is directly observable on stdout.
     let dir = tempdir_named("zero-arg-factory");
     let f = dir.join("NoPlatform.ns");
     std::fs::write(

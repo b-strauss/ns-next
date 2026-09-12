@@ -590,14 +590,16 @@ commit before it, in its own sitting. Middle medians in ms, `bench_loop.ns` /
 - **Compiled code on the declaration** (see "The VM"): 15.86 / 19.81 / 31.26 →
   16.14 / 19.56 / 30.59. `bench_send.ns` and `bench_block.ns` about 1–2%
   faster, with no overlap, from the hashed lookup of the compiled body that
-  every user-method send no longer does. `bench_loop.ns` did not move: its
-  first three rounds overlapped, and three more put the after-binary lower
-  every time.
+  every user-method send no longer does. `bench_loop.ns`'s first three rounds
+  did not separate the two groups; three more rounds put the after-binary
+  lower each time, not slower.
 - **Handles passed by value**: 15.58 / 18.75 / 29.67 → 15.41 / 19.13 / 29.93.
-  **Nothing moved** beyond noise. `bench_send.ns`'s first three rounds only
-  just overlapped; three more narrowed the gap to 0.17 ms, inside the
-  before-group's own spread. A release build had already inlined the
-  indirection away.
+  **`bench_loop.ns` about 1% faster**: its after-range [15.23, 15.42] lies
+  entirely below its before-range [15.46, 15.70] -- the groups just fail to
+  overlap. `bench_send.ns` and `bench_block.ns` did not move. `bench_send.ns`'s
+  first three rounds only just overlapped; three more narrowed the gap to
+  0.17 ms, inside the before-group's own spread. A release build had already
+  inlined the indirection away.
 
 The per-change figures come from five different sittings, so they are not
 compared with each other or summed into the whole; the whole-step table above

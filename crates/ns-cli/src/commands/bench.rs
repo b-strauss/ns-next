@@ -16,7 +16,7 @@ struct BenchStats {
 
 /// Renders an `instantiate`/`send` failure for `bench`'s purposes. Neither
 /// call site treats it as fatal to the whole process the way `run` does --
-/// `cmd_bench` folds it into its `Result` instead -- so this
+/// `execute` folds it into its `Result` instead -- so this
 /// produces a `String`, not an `ExitCode`.
 fn signal_message(signal: ns_runtime::Signal) -> String {
     match signal {

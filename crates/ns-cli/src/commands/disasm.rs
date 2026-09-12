@@ -59,7 +59,7 @@ fn looks_like_an_artifact(bytes: &[u8]) -> bool {
 }
 
 /// The mixin behind a class object, or the message for the one case where
-/// there is none. Shared by both of `cmd_disasm`'s branches so each can
+/// there is none. Shared by both of `execute`'s branches so each can
 /// read it from its own `class` while that class's interpreter is still
 /// alive, rather than through a `Heap` built after the fact.
 fn root_mixin_of(

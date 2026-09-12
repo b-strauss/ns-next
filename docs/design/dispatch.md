@@ -221,10 +221,11 @@ not a function pointer, because the JIT tiers must be able to recognize the
 primitive and emit it inline: a function pointer can only be called, which
 is the same ceiling a Rust callback imposes ([core-library.md](core-library.md)).
 This is Cog's and Primordial Soup's model: a method's primitive number
-indexes `primitiveTable` in the interpreter and `primitiveGeneratorTable` in
-Cog's JIT, whose generators (`genPrimitiveAdd`) emit machine code, and at the
-send site `genSpecialSelectorArithmetic` emits SmallInteger arithmetic
-inline with a fallback send (`prior-art/opensmalltalk-vm/src/spur64.cog/`,
+indexes an interpreter-side table (Cog's `primitiveTable`; Primordial Soup's
+`Primitives::primitive_table_`) and, in Cog's JIT, `primitiveGeneratorTable`,
+whose generators (`genPrimitiveAdd`) emit machine code, and at the send site
+`genSpecialSelectorArithmetic` emits SmallInteger arithmetic inline with a
+fallback send (`prior-art/opensmalltalk-vm/src/spur64.cog/`,
 `prior-art/primordialsoup/vm/primitives.cc`). SOMns reaches the same result
 through Graal's partial evaluation of its primitive nodes.
 

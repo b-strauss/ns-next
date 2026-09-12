@@ -3590,6 +3590,38 @@ fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_ref
     );
 }
 
+/// The clause's *receiver* side of the same shape: a mixin-table row that
+/// declares a superclass clause, in an image carrying no compiled code for
+/// it, would panic in `eval_superclass_clause` on the first nested-class
+/// access. `verify_mixins` is the only place that sees both halves, so it
+/// refuses.
+#[test]
+fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
+    let (mut interp, class) = load(NESTED_SUPERCLASS_ARGS);
+    let derived = mixin_of(interp.heap_ref(), class)
+        .nested
+        .iter()
+        .find(|n| n.name.as_str() == "Derived")
+        .cloned()
+        .expect("Args declares Derived");
+    assert!(
+        derived.superclass_clause_code.is_some(),
+        "Derived's clause really does compile a clause body"
+    );
+    let doctored = with_nested(mixin_of(interp.heap_ref(), class), "Derived", |d| Mixin {
+        superclass_clause_code: None,
+        ..d
+    });
+    install_mixin(&mut interp, class, doctored);
+    let (_table, decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), class);
+    let err = decode::verify_mixins(&decoded_mixins).expect_err("no clause body");
+    assert_eq!(err, decode::DecodeError::MissingSuperclassClause);
+    assert_eq!(
+        err.to_string(),
+        "the image declares a superclass clause it has no compiled code for"
+    );
+}
+
 /// An image is untrusted input, and `verify_mixins` reconciles a
 /// message body's kind and arity but nothing constrains what it *returns*.
 /// `instantiate` unpacks the argument list out of that value, so a body

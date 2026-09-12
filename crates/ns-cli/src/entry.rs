@@ -35,8 +35,8 @@ fn report_signal(signal: ns_runtime::Signal) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// The argument list `cmd_run`, `cmd_snapshot` and `cmd_load` pass to
-/// `interp.instantiate`,
+/// The argument list `instantiate_root` (used by `run`, `snapshot` and
+/// `load`) and `bench` pass to `interp.instantiate`,
 /// built from the root class's own declared primary factory pattern
 /// (`Mixin::factory`) rather than assumed.
 ///

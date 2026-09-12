@@ -66,10 +66,10 @@ tree-walker" and "M4 — Cleaning up with one engine" below.
 move under the activation stack, although the stack took the block's own
 activation out of the frame arena; what offsets that saving was not known.
 Retiring the tree-walker took about 4% off it, attributed to a smaller closure.
-Step B then followed the lead the retirement's review named: storing a closure
-behind an `Rc`, so that `value:` bumps a reference count instead of copying the
-closure out of the heap, took about 17% off it, measured against its parent
-commit ([execution.md](design/execution.md), "What step B moved"). Whether that
+Step B then followed the lead: storing a closure behind an `Rc`, so that
+`value:` bumps a reference count instead of copying the closure out of the
+heap, took about 17% off it, measured against its parent commit
+([execution.md](design/execution.md), "What step B moved"). Whether that
 copy is what offset the stack's saving is not established, because no profile
 was taken, so the profile is still owed. What it has to explain is smaller:
 measured against `master` in one sitting, `bench_block.ns` cost about 360 ns
@@ -611,7 +611,9 @@ snapshot changed.
 7. **Handles by value.** Every function taking an `ObjRef`, `ClassRef`,
    `FrameRef` or `ActivationRef` takes it by value — 143 sites — and
    `clippy::trivially_copy_pass_by_ref`, sized by a new `clippy.toml` to see
-   the debug-build `ActivationRef` and `pub` functions too, keeps it so.
+   the debug-build `ActivationRef` and `pub` functions too, keeps it so. Four
+   `Option<&_>` parameters remain by reference, outside the lint's reach
+   (`dispatch.rs`, `decode.rs`, `encode.rs` ×2).
 8. **One module per CLI command.** `ns-cli/src/main.rs` keeps the argument
    parser; each command is a module under `commands/`, shared loading is
    `source.rs`, and the entry send is `entry.rs`, whose `instantiate_root`
@@ -654,11 +656,14 @@ on its own against its parent commit, in its own sitting (middle medians,
 - A closure behind an `Rc`: 16.06 / 19.96 / 37.47 → 15.71 / 19.89 / 31.26 —
   `bench_block.ns` about 17% faster, `bench_loop.ns` about 2%.
 - Compiled code on the declaration: 15.86 / 19.81 / 31.26 → 16.14 / 19.56 /
-  30.59 — `bench_send.ns` and `bench_block.ns` 1–2% faster, `bench_loop.ns`
-  unchanged (three extra rounds put the after-binary lower every time).
-- Handles by value: 15.58 / 18.75 / 29.67 → 15.41 / 19.13 / 29.93 — nothing
-  moved beyond noise (three extra `bench_send.ns` rounds narrowed its gap to
-  0.17 ms, inside the before-group's own spread).
+  30.59 — `bench_send.ns` and `bench_block.ns` 1–2% faster; `bench_loop.ns`'s
+  first three rounds did not separate the groups, and three extra rounds put
+  the after-binary lower each time, not slower.
+- Handles by value: 15.58 / 18.75 / 29.67 → 15.41 / 19.13 / 29.93 —
+  `bench_loop.ns` about 1% faster, the groups just failing to overlap;
+  `bench_send.ns` and `bench_block.ns` did not move (three extra
+  `bench_send.ns` rounds narrowed its gap to 0.17 ms, inside the
+  before-group's own spread).
 
 The per-change figures come from different sittings and are not compared with
 each other; [execution.md](design/execution.md), "What step B moved", has

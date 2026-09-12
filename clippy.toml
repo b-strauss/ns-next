@@ -4,5 +4,10 @@
 # build every handle is 4. And by default the lint skips `pub` functions --
 # which is every `Heap` accessor -- to avoid breaking an exported API; ns-next
 # has no external users to break.
+#
+# `avoid-breaking-exported-api` is not scoped to that one lint: it is read by
+# every clippy lint that honours it, so this also applies `pub` items to
+# lints such as `upper_case_acronyms` and `wrong_self_convention` that would
+# otherwise leave them alone.
 trivial-copy-size-limit = 12
 avoid-breaking-exported-api = false
