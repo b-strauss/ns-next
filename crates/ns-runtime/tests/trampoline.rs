@@ -1,7 +1,7 @@
 //! The trampoline (`docs/design/execution.md`, "The trampoline (1b)"): sends
-//! run on the activation stack, not the Rust stack, so recursion depth is no
-//! longer bounded by the native stack -- and, once the bounds arrive, is an
-//! ordinary Newspeak error under both lowerings.
+//! run on the activation stack, not the Rust stack, so recursion depth is
+//! bounded by a count rather than by the native stack, and running past it is
+//! an ordinary Newspeak error under both lowerings.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -45,8 +45,8 @@ const DEPTH: &str = "Newspeak3\n'T'\nclass Depth = Object new (\n) (\n\
     ) : ()";
 
 /// Fifty thousand nested method activations: far past what the Rust stack of
-/// a test thread holds when every send recursed on it, and nothing but
-/// activation-stack entries once none does. Under the optimized lowering no
+/// a test thread would hold if every send recursed on it, and nothing but
+/// activation-stack entries since none does. Under the optimized lowering no
 /// native re-enters Newspeak here, since every control-flow send is inlined.
 #[test]
 fn a_deep_method_recursion_runs_on_the_activation_stack() {
@@ -120,9 +120,9 @@ fn a_return_into_a_running_initializer_escapes_the_runs_below_it() {
 }
 
 /// A recursion through blocks the optimized lowering does *not* inline --
-/// each held in a variable -- runs through the natives, and after this task
-/// none of them calls back into the loop, so fifty thousand levels fit on a
-/// test thread's stack under either lowering.
+/// each held in a variable -- runs through the natives, and none of them
+/// calls back into the loop, so forty thousand levels fit on a test thread's
+/// stack under either lowering.
 const THROUGH_NATIVES: &str = "Newspeak3\n'T'\nclass N = Object new (\n) (\n\
     \tpublic viaValue: n = ( | b | b := [:k | k = 0 ifTrue: [0] ifFalse: [b value: k - 1]]. ^b value: n )\n\
     \tpublic viaIf: n = ( | t f | t := [0]. f := [viaIf: n - 1]. ^n = 0 ifTrue: t ifFalse: f )\n\

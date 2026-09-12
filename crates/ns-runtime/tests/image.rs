@@ -416,7 +416,7 @@ fn every_instr_once() -> CompiledCode {
 }
 
 /// The compiled code of `class`'s method `selector` -- the body the method
-/// `Interpreter::invoke_method` runs carries.
+/// `Interpreter::push_step` activates carries.
 fn method_code(heap: &Heap, class: ClassRef, selector: &str) -> Rc<CompiledCode> {
     let application = heap.class_application(class).expect("not a class");
     application.mixin.methods[&Symbol::intern(selector)]
@@ -1931,7 +1931,7 @@ fn a_well_formed_closure_record_whose_arity_agrees_still_decodes() {
 
 #[test]
 fn a_closure_record_declaring_too_few_parameters_is_a_decode_error() {
-    // `invoke_closure` checks the *call's* arity against `params.len()`
+    // `push_step` checks the *call's* arity against `params.len()`
     // but sizes the register file from the *code* (`num_registers -
     // num_args`), and `locals::read_local` then indexes `temps[i - args.len()]`
     // unchecked. So this section -- otherwise entirely well-formed, as the
@@ -2133,7 +2133,7 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
 // ---------------------------------------------------------------------------
 // `verify_code_table` -- decoding is byte-safe, but a decoded body
 // is not yet *coherent*. Every case below decodes cleanly and would panic
-// (or silently misaddress a register) inside `vm::run_code`.
+// (or silently misaddress a register) inside the VM.
 // ---------------------------------------------------------------------------
 
 /// A `CompiledCode` the compiler would never emit: the verification tests
@@ -2199,7 +2199,7 @@ fn a_jump_target_past_the_end_of_its_body_is_refused() {
 #[test]
 fn every_conditional_jump_target_is_checked_too() {
     // One case per jump-carrying instruction: a check that only covered
-    // `Jump` would leave three unchecked `pc` writes in `run_code`.
+    // `Jump` would leave three unchecked `pc` writes in the VM.
     for instr in [
         Instr::JumpIfNotBoolean { reg: 0, target: 9 },
         Instr::BranchIfFalse { reg: 0, target: 9 },
@@ -2300,7 +2300,7 @@ fn a_register_in_a_send_inlinable_is_checked_too() {
 
 #[test]
 fn a_body_that_runs_past_its_last_instruction_is_refused() {
-    // `run_code` fetches `code.instrs[pc]` after every fall-through, so a
+    // The VM fetches `code.instrs[pc]` after every fall-through, so a
     // body whose last instruction is not a return or a jump indexes one
     // past the end. An empty body indexes past the end immediately.
     for instrs in [vec![], vec![Instr::LoadSelf { dst: 0 }]] {
@@ -2362,7 +2362,7 @@ fn a_make_closure_naming_a_method_body_is_refused() {
 fn a_make_closure_whose_parameters_disagree_with_its_body_is_refused() {
     // The `MakeClosure` mirror of `ClosureArityMismatch`: `params` and the
     // body's `num_args` are separate wire fields here too, and
-    // `invoke_closure` reads one while the frame is sized from the other.
+    // `push_step` reads one while the frame is sized from the other.
     let block = code_with(
         CodeKind::Block,
         1,

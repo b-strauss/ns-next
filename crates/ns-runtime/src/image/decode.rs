@@ -40,7 +40,7 @@ pub enum DecodeError {
         flags: u8,
     },
     /// A frame's `pc` is not an instruction index of the body that runs in
-    /// it. `vm::run_code` stores the index of the instruction it is
+    /// it. The VM stores the index of the instruction it is
     /// executing, so every real activation's `pc` is in range; a crafted
     /// one out of range would be an unchecked index the moment anything
     /// resumed, resumed-through, or reported the frame.
@@ -117,9 +117,9 @@ pub enum DecodeError {
     /// about how many arguments the closure takes. The two are separate
     /// fields on the wire, so only a decode-time reconciliation can catch
     /// a crafted mismatch -- and it must, because the two halves are read
-    /// by different parts of `invoke_closure`: it checks the *call's*
-    /// arity against `params.len()` but sizes the register file from the
-    /// *code* (`num_registers - num_args`). Disagreement leaves
+    /// by different parts of `Interpreter::push_step`: it checks the
+    /// *call's* arity against `params.len()` but sizes the register file
+    /// from the *code* (`num_registers - num_args`). Disagreement leaves
     /// `locals::read_local` computing `temps[i - args.len()]` past the end
     /// of `temps` -- an unchecked index panic from a version-matching
     /// image -- or, the other way round, silently misaddressing temps as
@@ -175,7 +175,7 @@ pub enum DecodeError {
         num_args: u16,
     },
     /// A body with no instructions, or one whose last instruction falls
-    /// through: `run_code` fetches `instrs[pc]` after every fall-through,
+    /// through: the VM fetches `instrs[pc]` after every fall-through,
     /// so either runs off the end of the vector.
     UnterminatedBody,
     /// A register operand outside its own body's register file.
@@ -777,7 +777,7 @@ fn check_code_arity(
 // Structural verification of a decoded code table.
 //
 // Decoding is byte-safe: every id, tag and length is checked as it is read.
-// It does not make the result *coherent*. `vm::run_code` indexes
+// It does not make the result *coherent*. The VM indexes
 // `code.instrs[pc]` directly, and `locals::read_local`/`write_local` index a
 // frame's `args`/`temps` directly, so a jump target, a register operand or
 // an arity that decoded cleanly can still panic the process the first time
@@ -797,7 +797,7 @@ fn code_index(table: &DecodedCodeTable) -> HashMap<usize, usize> {
 }
 
 /// For each body, the body whose `MakeClosure` creates it -- the lexical
-/// parent, and so (`vm::run_code`'s `MakeClosure` arm sets
+/// parent, and so (the VM's `MakeClosure` arm sets
 /// `captured_frame` to the creating activation) the activation one
 /// `LoadOuterLocal` hop out. `None` for a method or initializer body, and
 /// for a block body nothing creates.
@@ -826,7 +826,7 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
                 return Err(DecodeError::WrongCodeKind { expected: "block" });
             }
             // The `MakeClosure` mirror of `decode_closure_record`'s check:
-            // `invoke_closure` validates the call against `params.len()`
+            // `push_step` validates the call against `params.len()`
             // but sizes the register file from the body's `num_args`.
             if params.len() != block.num_args as usize {
                 return Err(DecodeError::ClosureArityMismatch {
@@ -843,7 +843,7 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
     Ok(parents)
 }
 
-/// Every decoded body checked against what `vm::run_code` will do with it:
+/// Every decoded body checked against what the VM will do with it:
 /// its arity fits its register file, it cannot run past its last
 /// instruction, every jump target is one of its own instructions, every
 /// register operand is inside its own register file, and every outer local
@@ -866,7 +866,7 @@ fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
             num_registers: code.num_registers,
         });
     }
-    // `run_code` fetches `instrs[pc]` at the top of the loop and again
+    // The VM fetches `instrs[pc]` at the top of the loop and again
     // after every fall-through, so an empty body -- or one whose last
     // instruction falls through -- indexes past the end of the vector.
     match code.instrs.last() {
@@ -910,7 +910,7 @@ fn own_registers(instr: &Instr) -> Vec<u16> {
         | Instr::LoadBuiltinClass { dst, .. }
         | Instr::MakeClosure { dst, .. } => vec![*dst],
         Instr::Move { dst, src } => vec![*dst, *src],
-        // `slot` is a register index too: `run_code` writes it with
+        // `slot` is a register index too: the VM writes it with
         // `write_local`, exactly as it does a `Move`'s `dst`.
         Instr::StoreLocal { src, slot } => vec![*src, *slot],
         Instr::LoadOuterLocal { dst, .. } => vec![*dst],
@@ -955,7 +955,7 @@ fn own_registers(instr: &Instr) -> Vec<u16> {
 
 /// Exhaustive, like `own_registers` and for the same reason: a new
 /// jump-carrying `Instr` variant must fail to compile here rather than slip
-/// through a wildcard and reach `run_code`'s `pc` unchecked.
+/// through a wildcard and reach the VM's `pc` unchecked.
 fn jump_target(instr: &Instr) -> Option<u32> {
     match instr {
         Instr::Jump { target }
@@ -1009,7 +1009,7 @@ fn verify_outer_locals(
 /// `locals::frame_at_depth`'s static counterpart: the body of the activation
 /// `depth` hops out from an activation of `table.codes[at]`.
 ///
-/// The two agree because `verify_graph` and `vm::run_code` between them
+/// The two agree because `verify_graph` and the VM between them
 /// keep every closure's `captured_frame` an activation of its body's
 /// lexical parent -- created that way at run time, checked on load -- and
 /// because only a block body ever runs in a `FrameKind::Closure`
@@ -2208,7 +2208,7 @@ pub fn verify_graph(
             continue;
         };
         let (pc, num_args, num_temps) = heap.frame_register_shape(*frame);
-        // `vm::run_code` stores the index of the instruction it is
+        // The VM stores the index of the instruction it is
         // executing, and a body with no instructions is already refused
         // (`UnterminatedBody`), so every genuine activation -- including one
         // that has not run a single instruction yet -- satisfies this.

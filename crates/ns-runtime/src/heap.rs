@@ -159,11 +159,11 @@ pub struct ActivationRef {
 }
 
 impl ActivationRef {
-    /// Activation identity: `invoke_method` and `run_clause_body` catch a
-    /// `Signal::Return` by it. Two handles at the same index are the same
-    /// activation because a return only ever unwinds downward -- nothing is
-    /// pushed while a `Signal::Return` propagates, so the target's index
-    /// cannot have been reused by the time a catcher compares it. A debug
+    /// Activation identity: `vm::unwind` finds the activation a
+    /// `Signal::Return` targets by it. Two handles at the same index are the
+    /// same activation because a return only ever unwinds downward -- nothing
+    /// is pushed while a `Signal::Return` propagates, so the target's index
+    /// cannot have been reused by the time the unwind compares it. A debug
     /// build checks that rather than assuming it.
     pub fn same(self, other: ActivationRef) -> bool {
         #[cfg(debug_assertions)]
@@ -1302,7 +1302,7 @@ impl Heap {
         self.stack.entries[act.index as usize].receiver
     }
 
-    /// The receiver and `current_class` together. `dispatch_lexical_send`'s
+    /// The receiver and `current_class` together. `decide_lexical_send`'s
     /// head needs both on every implicit-receiver send; fetching them
     /// separately measured 13% slower on `bench_loop.ns`
     /// (`docs/design/execution.md`, "A 13% regression, found and
@@ -1391,6 +1391,14 @@ impl Heap {
     /// propagates (`ActivationRef::same`), so the target is live exactly
     /// while the stack still reaches its index; a debug build checks that
     /// the entry there is still the one the handle was minted for.
+    ///
+    /// A release build has only the index, so its answer is sound only
+    /// while that holds. Anything that runs code while a signal propagates
+    /// -- an `ensure:`, an `on:do:` handler, any unwind protection -- pushes
+    /// activations at the indices the popped target used, and a release
+    /// build would then take one of them for the target and land the return
+    /// in the wrong activation. Such a mechanism needs a generation in every
+    /// build, not only in a debug one.
     pub fn activation_is_live(&self, act: ActivationRef) -> bool {
         let live = (act.index as usize) < self.stack.entries.len();
         #[cfg(debug_assertions)]
@@ -1947,8 +1955,8 @@ mod tests {
         let _ = other.activation_local(mine, 0);
     }
 
-    /// `ActivationRef::same` is how `invoke_method` and `run_clause_body`
-    /// decide that a `Signal::Return` is theirs, and it is handed two handles
+    /// `ActivationRef::same` is how `vm::unwind` finds the activation a
+    /// `Signal::Return` targets, and it is handed two handles
     /// and no `Heap`, so no accessor guard can reach it. Both handles below
     /// are the first entry of their own heap's stack, so they share an index
     /// and a release build answers "identical".

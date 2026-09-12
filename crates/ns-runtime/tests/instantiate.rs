@@ -60,7 +60,7 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 /// instance initializer) really runs *before* step 4 (this class's own
 /// slots), not merely that both slots end up set eventually.
 ///
-/// `Interpreter::instantiate`'s `run_initializer_level`/`run_own_initializer`
+/// `Interpreter::instantiate`'s `run_initializer_levels`/`run_own_initializer`
 /// step ordering is what this test actually exercises. Linking the two
 /// classes together, though, runs into a real known gap flagged in
 /// `interpreter/instantiate.rs`'s `resolve_superclass_receiver`: a

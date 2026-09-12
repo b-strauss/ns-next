@@ -278,7 +278,7 @@ fn a_superclass_clause_naming_the_wrong_factory_fails() {
     );
 }
 
-/// `and:`'s block value coerces by `truthy_arg`'s rule when the block is a
+/// `and:`'s block value coerces by `truthy`'s rule when the block is a
 /// variable, which takes the native: a non-Boolean is `false`.
 #[test]
 fn a_variable_and_block_coerces_its_value_to_a_boolean() {

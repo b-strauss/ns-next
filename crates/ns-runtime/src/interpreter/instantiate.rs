@@ -16,7 +16,7 @@ use crate::Symbol;
 use super::{EvalResult, Interpreter, Signal};
 
 /// A class body's methods as a mixin's method dictionary: everything a
-/// lookup or `Interpreter::invoke_method` reads is lifted out of the
+/// lookup or `Interpreter::push_step` reads is lifted out of the
 /// declaration here, so that a mixin decoded from an image -- which has no
 /// declaration at all -- answers the same questions from the same fields.
 fn build_methods(

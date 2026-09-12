@@ -327,8 +327,8 @@ fn not_a_class_error(name: Symbol, value: Value) -> Signal {
 /// or any longer cycle through other nested declarations of the same
 /// receiver. §6 makes the accessor evaluate the declaration, so a clause
 /// naming the class being created re-enters the accessor before the cache
-/// slot is filled and would otherwise recurse until the stack is gone --
-/// an abort, not a diagnosable error.
+/// slot is filled and would otherwise recurse until the native-depth bound
+/// stopped it -- a stack overflow that names no class, not a diagnosis.
 ///
 /// This is a cycle in class *creation*, not general user recursion: the
 /// creation of one class object for one receiver happens exactly once, so a

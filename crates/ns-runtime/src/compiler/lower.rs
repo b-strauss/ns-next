@@ -148,7 +148,7 @@ impl<'a> Lowerer<'a> {
     /// expression, then `InitSlot`, which writes the field directly, never
     /// through a setter send. One `statement_pc` entry.
     /// `own_index` is the slot's position among the mixin's own slots
-    /// (declaration order) -- `vm::run_code` turns it into an absolute
+    /// (declaration order) -- the VM turns it into an absolute
     /// field index at run time via the executing frame's `slot_base`.
     pub(crate) fn lower_slot_init(&mut self, init: &Expr, own_index: u32) {
         self.next_scratch = self.base;
@@ -246,7 +246,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Appends the body's terminating instruction if `stmts` (the body just
-    /// lowered) did not already end in one, so `vm::run_code` never has to
+    /// lowered) did not already end in one, so `vm::run` never has to
     /// handle "fell off the end". A method returns `self`; an initializer
     /// always returns `self` (its top-level `^` never emits a return); a
     /// block returns its last statement's value, `nil` if it has none; a
@@ -727,7 +727,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// `builtins::boolean::truthy_arg`'s rule in bytecode: only exactly
+    /// `builtins::boolean::truthy`'s rule in bytecode: only exactly
     /// `Bool(true)` is true; a non-`true` `Bool` or a non-`Bool` is false.
     fn emit_coerce_to_bool(&mut self, src: u16) -> u16 {
         let dst = self.alloc_scratch();
@@ -859,7 +859,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// `and:`/`or:`: the short-circuit arm is the receiver's own Boolean
-    /// value, the other arm the block's value coerced by `truthy_arg`'s rule.
+    /// value, the other arm the block's value coerced by `truthy`'s rule.
     /// The coercion only chooses which literal becomes the send's result, so
     /// `use_` -- what reads that result -- is what reads the block's value.
     fn lower_and_or(

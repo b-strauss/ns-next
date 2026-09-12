@@ -178,7 +178,7 @@ fn run_supports_a_custom_entry_selector_via_send() {
 /// temporary. Handing `--send probe` `[platform, nil]` regardless of arity
 /// would shift `t` onto a surplus argument and print `NOTNIL-BUG` with exit
 /// status 0. Both halves of the defence are needed for this to pass: the
-/// CLI sizes the argument list to the selector, and `invoke_method` refuses
+/// CLI sizes the argument list to the selector, and `push_step` refuses
 /// a mismatch outright if anything ever gets it wrong.
 const UNARY_PROBE: &str = "Newspeak3\n'Test'\nclass Probe usingPlatform: p = Object new (\n\t|\n\t\tprivate plat = p.\n\t|\n) (\n\
      \tpublic probe = (\n\t\t| t |\n\t\tnil = t ifTrue: [ plat transcript show: 'nil-ok'; newLine ]\n\t\t\tifFalse: [ plat transcript show: 'NOTNIL-BUG'; newLine ]\n\t)\n) : ()\n";

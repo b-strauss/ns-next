@@ -103,7 +103,7 @@ pub(crate) fn compile_mixin_bodies(
 /// index, because this one compiled body runs for every application of
 /// `mixin` (it lives on the mixin, not on a class object, per §6.2), and
 /// different applications can legitimately disagree about where the mixin's
-/// own slots start. `vm::run_code` adds the executing frame's `slot_base` --
+/// own slots start. The VM adds the executing frame's `slot_base` --
 /// set per level, at run time, from that level's own real
 /// `MixinApplication.own_slot_base` -- to turn `own_index` into the
 /// absolute index the instance array actually needs.
