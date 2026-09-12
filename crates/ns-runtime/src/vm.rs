@@ -312,25 +312,19 @@ fn send(
 /// `act` has returned `value`: pop it and do what its continuation says. A
 /// value -- the usual case -- goes to the send in the caller, which resumes,
 /// or out of `run` when there is no caller in this run; a control-flow
-/// native's continuation may instead activate the next block, which runs in
-/// the popped activation's place.
+/// native's continuation may instead decide another activation -- a native
+/// loop's next block, or a `mustBeBoolean` method -- which runs in the
+/// popped activation's place. `Interpreter::resume` applies the
+/// continuation and `Interpreter::push_continuation` pushes what it decided,
+/// depth count included; the loop only forwards the popped entry's flag.
 fn finish(interp: &mut Interpreter, act: ActivationRef, value: Value, floor: usize) -> Flow {
     let popped = interp.heap.pop_activation(act);
     let value = match popped.then {
         Continuation::Deliver => value,
-        // A continuation's step never refers to a send's arguments
-        // (`StepArgs::Send` is only answered by a decision about a send, and
-        // the one a continuation makes -- `mustBeBoolean` -- has none), so
-        // `&[]` is always right here.
         then => match interp.resume(then, value) {
             Ok(Step::Value(v)) => v,
             Ok(step) => {
-                // The next block of a native loop is exempt from the depth
-                // count only if the one it follows was, and only if it too
-                // was created by the activation below it -- the loop's
-                // sender.
-                let sender = interp.heap.top_activation();
-                return match interp.push_step(step, &[], sender, !popped.counted) {
+                return match interp.push_continuation(step, popped.counted) {
                     Ok(next) => Flow::Switch {
                         act: next,
                         code: interp.heap.activation_code(next),

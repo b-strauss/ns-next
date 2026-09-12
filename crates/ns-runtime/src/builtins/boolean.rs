@@ -83,7 +83,10 @@ fn block_step(interp: &Interpreter, arg: Value, then: Continuation) -> Step {
     }
     match then {
         Continuation::Truthy => Step::Value(Value::Bool(truthy(arg))),
-        _ => Step::Value(arg),
+        Continuation::Deliver => Step::Value(arg),
+        Continuation::WhileCondition(_) | Continuation::WhileBody(_) => {
+            unreachable!("internal: a Boolean's control-flow native runs no loop")
+        }
     }
 }
 

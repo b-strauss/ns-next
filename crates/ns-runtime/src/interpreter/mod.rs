@@ -539,7 +539,12 @@ impl Interpreter {
 
     /// What a control-flow native does once the block it activated has
     /// returned `value`: the second half of the native, which the run loop
-    /// waits for instead of a Rust frame.
+    /// waits for instead of a Rust frame. `then` is the continuation of the
+    /// block's activation, which the loop has just popped. It answers the
+    /// value for the caller, or another activation to run in the popped
+    /// one's place -- a native loop's next block, or the method a
+    /// non-Boolean condition's `mustBeBoolean` finds -- which the loop hands
+    /// to `push_continuation`.
     pub(crate) fn resume(&mut self, then: Continuation, value: Value) -> Result<Step, Signal> {
         match then {
             Continuation::Deliver => Ok(Step::Value(value)),
@@ -549,8 +554,36 @@ impl Interpreter {
             Continuation::WhileCondition(state) => {
                 crate::builtins::block::after_condition(self, state, value)
             }
-            Continuation::WhileBody(state) => Ok(crate::builtins::block::after_body(self, state)),
+            Continuation::WhileBody(state) => Ok(crate::builtins::block::after_body(state)),
         }
+    }
+
+    /// Pushes the activation a continuation decided (`resume`), in place of
+    /// the one just popped; `replaced_counted` is that one's
+    /// `Popped::counted`. The exemption's rule for a native loop lives here
+    /// rather than in the run loop, which only forwards the flag, so a JIT
+    /// driving continuations reaches the same rule: the next block is exempt
+    /// only if the one it replaces was, and only if it too was created by
+    /// the activation below it -- the loop's sender, now the top of the
+    /// stack -- which `push_step` checks. A method is counted whatever it
+    /// replaces.
+    ///
+    /// It takes the flag rather than the whole `Popped`, whose continuation
+    /// `resume` has consumed by then: a version that took the `Popped` and
+    /// pushed inside `resume` measured about 1.3% slower on a native
+    /// `whileTrue:` loop, and this one level with the rule inline in the
+    /// loop.
+    pub(crate) fn push_continuation(
+        &mut self,
+        step: Step,
+        replaced_counted: bool,
+    ) -> Result<ActivationRef, Signal> {
+        let sender = self.heap.top_activation();
+        // A continuation's step never refers to a send's arguments
+        // (`StepArgs::Send` is only answered by a decision about a send, and
+        // the one a continuation makes -- `mustBeBoolean` -- has none), so
+        // `&[]` is always right here.
+        self.push_step(step, &[], sender, !replaced_counted)
     }
 
     /// Every re-entry of the run loop from Rust: `push` pushes one

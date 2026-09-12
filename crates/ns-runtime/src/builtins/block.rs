@@ -70,7 +70,7 @@ pub(crate) fn after_condition(
 }
 
 /// The body returned: run the condition again.
-pub(crate) fn after_body(_interp: &Interpreter, state: Rc<WhileLoop>) -> Step {
+pub(crate) fn after_body(state: Rc<WhileLoop>) -> Step {
     condition_step(state)
 }
 
