@@ -54,11 +54,11 @@ fn string_concatenation_with_a_non_string_argument_is_a_newspeak_error_not_a_pan
 
 #[test]
 fn concatenating_a_string_with_an_object_is_an_error_not_a_stack_overflow() {
-    // Regression: this message used to `{:?}`-format the argument. A
-    // `Value::Obj` there recurses through `Object`'s self-referential
-    // bootstrap class until the stack gives out, so the process aborted
-    // instead of reporting. Every existing test here passed a `SmallInt`,
-    // which formats harmlessly, which is why the defect survived.
+    // This message must not `{:?}`-format the argument: a `Value::Obj`
+    // there would recurse through `Object`'s self-referential bootstrap
+    // class until the stack gives out, aborting the process instead of
+    // reporting. Every other test here passes a `SmallInt`, which formats
+    // harmlessly and so could not catch it.
     let mut interp = Interpreter::bootstrap();
 
     let a = Value::Obj(interp.new_string("foo".to_string()));

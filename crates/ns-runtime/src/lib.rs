@@ -1,7 +1,7 @@
 #![warn(clippy::all)]
 
 //! Name resolution, object model, bytecode compiler and VM for the
-//! Newspeak3 language (Milestones 1-3), including nested classes, mixin
+//! Newspeak3 language, including nested classes, mixin
 //! applications, and the source-free image format.
 //! See `docs/design/` -- start at its `README.md`.
 

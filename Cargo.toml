@@ -14,7 +14,7 @@ toml = "0.8"
 
 # Link-time optimization across crate boundaries, and a single codegen unit so the
 # optimizer sees the whole picture. Both usually help runtime speed as well as size --
-# the engines and the shared orchestration they call into live in different modules, so
+# the VM and the send machinery it calls into live in different modules, so
 # cross-crate inlining is exactly the case LTO exists for. Release builds get slower;
 # debug builds are unaffected.
 #

@@ -1,8 +1,6 @@
-//! Native ("primitive") method dispatch for the Milestone 1 core library
-//! classes: one module per `BuiltinClass` family -- `object_class` for
-//! `Object` itself, then `boolean`, `numbers`, `text`, `collections` and
-
-//! `block`.
+//! Native ("primitive") method dispatch for the core library classes: one
+//! module per `BuiltinClass` family -- `object_class` for `Object` itself,
+//! then `boolean`, `numbers`, `text`, `collections` and `block`.
 pub mod block;
 pub mod boolean;
 pub mod collections;
@@ -90,7 +88,7 @@ fn wrap_error(result: Result<Value, NewspeakError>) -> EvalResult {
 /// (`boolean.rs`'s `ifTrue:`/`and:`/etc.), collection traversal
 /// (`collections.rs`'s `do:`), and `Block value`/`value:`/... itself
 /// (`block.rs`). Goes straight through `Interpreter::invoke_closure`
-/// rather than a full `send`, since block invocation is a Milestone 1
+/// rather than a full `send`, since block invocation is a
 /// *native* primitive, not a user-overridable method, and must not depend
 /// on `Block`'s own native methods being registered yet in dispatch order.
 ///

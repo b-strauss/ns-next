@@ -21,8 +21,8 @@ pub fn dispatch(
         "doesNotUnderstand:" => {
             // Object's default doesNotUnderstand: (spec §5.5): must be
             // `protected`, always raises a MessageNotUnderstood-shaped
-            // NewspeakError. Milestone 1 has no exception-class hierarchy
-            // (Non-Goal); this produces the NewspeakError value directly
+            // NewspeakError. There is no exception-class hierarchy yet;
+            // this produces the NewspeakError value directly
             // rather than a catchable Newspeak object.
             let msg_selector = extract_dnu_selector(&interp.heap, &args[0]);
             Some(Err(NewspeakError {
@@ -53,8 +53,8 @@ fn identical(a: &Value, b: &Value) -> bool {
 fn identity_hash_of(heap: &Heap, value: &Value) -> u32 {
     match value {
         Value::Obj(obj) => heap.identity_hash(*obj),
-        _ => 0, // primitives are values; Milestone 1 does not give them a
-                // distinct identity hash (revisit if a fixture needs one)
+        _ => 0, // primitives are values and get no distinct identity
+                // hash (revisit if a fixture needs one)
     }
 }
 

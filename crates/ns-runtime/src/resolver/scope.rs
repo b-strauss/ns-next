@@ -1,6 +1,6 @@
 //! Static (activation-chain) local-variable resolution: method/block
-//! temporaries and parameters. See the runtime spec's Resolver section,
-//! step 1.
+//! temporaries and parameters. See `docs/design/dispatch.md`,
+//! "Resolution", step 1.
 
 use std::collections::HashMap;
 

@@ -7,9 +7,11 @@ use crate::Symbol;
 use super::Signal;
 
 /// The program-level error a bare identifier raises when it has no binding
-/// and names no builtin class -- in Milestone 1 and 2 reachable only for a
-/// bare `super`, which `resolver::resolve_ident` deliberately leaves
-/// unbound and which the lexer deliberately does not reserve.
+/// and names no builtin class -- reachable only for a bare `super`, which
+/// `resolver::resolve_ident` deliberately leaves unbound and which the
+/// lexer deliberately does not reserve, and for a `super`-prefixed
+/// superclass-clause receiver that names no builtin class (the known gap in
+/// `docs/design/dispatch.md`, "Binding variants").
 ///
 /// Raised by `vm::make_value` for `bytecode::Literal::UnresolvedIdent`.
 pub(crate) fn unresolved_identifier_error(name: &str, receiver: Value) -> Signal {
@@ -39,9 +41,10 @@ pub(crate) fn malformed_int_error(message: String) -> Signal {
 /// a plain decimal literal (`42`, `-42`), and the Smalltalk/Newspeak radix
 /// literal `<radix>r<digits>` (`16rFF`, `2r1010`, `16r-1F`, `-16rFF`) --
 /// the spec's Source Format section accepts both. `text.parse::<i64>()`
-/// alone rejected every radix literal with a misleading "out of i64 range".
+/// alone would reject every radix literal with a misleading "out of i64
+/// range".
 ///
-/// Milestone 1 gap kept explicit: the lexer also accepts a *fractional*
+/// A gap kept explicit: the lexer also accepts a *fractional*
 /// radix literal (`16r1.8`), which the parser still classifies as an `Int`.
 /// That needs radix-aware float construction; it is rejected here with a
 /// message that says so rather than silently truncating.

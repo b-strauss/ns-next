@@ -1,7 +1,8 @@
-//! `ns-next disasm` snapshot tests -- one per representative code shape
-//! (M2 spec, "Testing": plain keyword method, block with non-local return,
-//! inlined ifTrue:ifFalse:, inlined whileTrue:, the non-inlined fallback
-//! case, an instance initializer). Catches accidental codegen changes.
+//! `ns-next disasm` snapshot tests -- one per representative code shape:
+//! plain keyword method, block with non-local return, inlined
+//! ifTrue:ifFalse:, inlined whileTrue:, the non-inlined fallback case, an
+//! instance initializer (`docs/design/compiler.md`, "Reading the output").
+//! Catches accidental codegen changes.
 
 mod common;
 use common::ScratchDir;

@@ -62,7 +62,7 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 ///
 /// `Interpreter::instantiate`'s `run_initializer_level`/`run_own_initializer`
 /// step ordering is what this test actually exercises. Linking the two
-/// classes together, though, runs into a real Milestone 1 gap flagged in
+/// classes together, though, runs into a real known gap flagged in
 /// `interpreter/instantiate.rs`'s `resolve_superclass_receiver`: a
 /// superclass clause naming a sibling *user-defined* class (as opposed to a
 /// builtin) by name is not resolved there -- only a fixed list of builtin
@@ -142,9 +142,9 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
 }
 
 /// The class's *own* factory parameters are locals
-/// in the instance-initializer activation (the runtime spec's Class
-/// Instantiation section, step 2 -- "the same arguments as the factory
-/// message"), so a slot initializer may reference them. This is the
+/// in the instance-initializer activation (`docs/design/object-model.md`,
+/// "Instantiation", step 2 -- created with the factory message's
+/// arguments), so a slot initializer may reference them. This is the
 /// `class M usingPlatform: platform = Object new (| t = platform ... |)`
 /// idiom every real Newspeak module is built out of. Pushing an empty
 /// `LocalScope` here instead makes `platform` fall through to a
@@ -243,16 +243,14 @@ fn a_factory_parameter_is_visible_in_an_init_expr() {
     }
 }
 
-/// Re-review regression: a class declaring a two-keyword factory pattern
-/// (`usingPlatform:ide:`), instantiated with only one factory argument --
-/// exactly what `ns-cli`'s `cmd_run` does today for any root class, since it
-/// hardcodes a single `usingPlatform:` argument regardless of the class's
-/// actual declared arity. A slot initializer referencing the *second*,
-/// missing parameter resolves (since 1e07dee) to `Binding::Local(1)`, but
-/// `factory_args` here has only one element and the instance-initializer
-/// `Frame`'s `temps` is always empty -- before the fix, `locals.rs`'s
-/// `read_local` indexed straight past both and panicked with "index out of
-/// bounds" instead of returning a clean `NewspeakError`.
+/// A class declaring a two-keyword factory pattern (`usingPlatform:ide:`),
+/// instantiated with only one factory argument. A slot initializer
+/// referencing the *second*, missing parameter resolves to
+/// `Binding::Local(1)`, but `factory_args` here has only one element and
+/// the instance-initializer activation starts with no temporaries -- without
+/// the arity check, `locals.rs`'s `read_local` would index straight past
+/// both and panic with "index out of bounds" instead of returning a clean
+/// `NewspeakError`.
 #[test]
 fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
     let src = "Newspeak3\n'T'\nclass M usingPlatform: p ide: q = Object new (|t = q.|) (public getT = (^t)) : ()";
@@ -299,15 +297,15 @@ fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
 
 /// `newspeak-spec.pdf` §6.2: the instance initializer evaluates the
 /// superclass clause's message and invokes the superclass's initializer
-/// with *those* arguments. Milestone 1 never evaluated the clause's message
-/// and ran every level in the subclass's own activation, so `Base`'s slot
-/// initializer read the *subclass's* (empty) argument list instead of the
-/// `7` its own clause supplies.
+/// with *those* arguments. Running every level in the subclass's own
+/// activation instead would have `Base`'s slot initializer read the
+/// *subclass's* (empty) argument list rather than the `7` its own clause
+/// supplies.
 ///
 /// The two classes are nested inside a module class because that is the
 /// only way a user-defined superclass is linked through the ordinary
 /// pipeline: a nested declaration's clause is evaluated by the accessor
-/// (`interpreter::nested`), while a *root* class's clause receiver still
+/// (`interpreter::nested`), while a *root* class's clause receiver
 /// only resolves to a builtin (`resolve_superclass_receiver`).
 #[test]
 fn a_superclass_factory_message_receives_its_own_arguments() {

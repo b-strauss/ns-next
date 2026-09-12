@@ -41,8 +41,8 @@ fn platform_transcript_show_and_new_line_round_trip() {
         interp.send(transcript, Symbol::intern("show:"), vec![s]),
         "transcript show: 'hi'",
     );
-    // `show:` returns the receiver (the runtime spec's `Transcript`-style
-    // convention, matching `platform.rs`'s doc comment).
+    // `show:` returns the receiver (the `Transcript`-style convention
+    // `platform.rs`'s doc comment describes).
     match (&after_show, &transcript) {
         (Value::Obj(a), Value::Obj(b)) => assert!(a.same(*b)),
         _ => panic!("expected Value::Obj"),

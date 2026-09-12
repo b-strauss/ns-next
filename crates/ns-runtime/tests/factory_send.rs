@@ -140,8 +140,8 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
 
 /// A class object receiving a selector that is *not* its factory selector
 /// still goes through ordinary dispatch (falls through to
-/// `doesNotUnderstand:` here, since class objects have no other native
-/// surface in Milestone 1) -- proves `try_factory_send` only intercepts the
+/// `doesNotUnderstand:` here, since nothing implements the selector) --
+/// proves `try_factory_send` only intercepts the
 /// exact factory selector, not every send to a class object.
 #[test]
 fn a_class_object_receiving_a_non_factory_selector_falls_through_to_ordinary_dispatch() {

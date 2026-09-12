@@ -1,5 +1,5 @@
 //! Canonical, little-endian, self-describing byte encoding for the image
-//! format -- the spec's "Image format" section. Never a memory dump.
+//! format -- see `docs/design/image-format.md`. Never a memory dump.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -15,39 +15,22 @@ use super::opcodes::*;
 use super::{mixins, symbols};
 
 pub const MAGIC: &[u8; 4] = b"NSIM";
-/// Versions the whole layout *and* the compiler's codegen: from the first
-/// image any released build can write, any change to `Instr`, to what the
-/// compiler emits, or to any section of the layout bumps it. A mismatch is
-/// refused on load, never migrated (Milestone 2 Non-Goals).
-///
-/// Version 1 covers the layout as `image::snapshot` finally writes it,
-/// source and `SourceOrigin` sections included. Those two arrived after the
-/// constant did, but within this milestone: until `snapshot` existed no
-/// build wrote a whole image, so no reader can hold a version-1 image
-/// without them and there is nothing for a bump to distinguish.
+/// The format version, refused on load when it does not match and never
+/// migrated. It is not bumped when the layout or the compiler's codegen
+/// changes: the project has no external users, so an image written before
+/// a change is disposable and no migration path is owed to it
+/// (`docs/design/image-format.md`, "Layout"). What has to hold instead is
+/// that an old or corrupt image fails as a `DecodeError`, which comes from
+/// validating every id, tag, count and length before it indexes, allocates
+/// or slices, and from never renumbering or reusing a wire tag
+/// (`opcodes.rs`) -- not from this field.
 ///
 /// The header's flag byte (`FLAG_HAS_SOURCE`) is what carries variation
-/// *within* a version from here on: the source blob is optional, and a
-/// reader distinguishes the two variants by the flag rather than by the
-/// version. A flag bit this build does not know is refused
-/// (`DecodeError::UnknownHeaderFlags`), which is what keeps a future
-/// optional section from being silently skipped by an older reader.
-///
-/// Literal tag 9 (`UnresolvedIdent`) was added by the same reasoning, and
-/// deliberately: it is a pure addition to the literal tag space made
-/// before any released build could write an image, so no version-1 image
-/// in anyone's hands can be misread because of it. The next such change
-/// after a release bumps the version.
-///
-/// Milestone 3's layout changes -- the symbol table, the mixin table that
-/// took the per-mixin sections out of the code table, and the class-object
-/// record that retired the `UserRoot` class tag -- do not bump it either,
-/// by an explicit decision (2026-09-06): the project has no external
-/// users, so images written before them are disposable and no migration path
-/// is owed to them. What still has to hold is that an old or corrupt image
-/// fails as a `DecodeError`, which comes from validating every id, tag,
-/// count and length before it indexes, allocates or slices -- not from this
-/// field.
+/// *within* the format: the source blob is optional, and a reader
+/// distinguishes the two variants by the flag. A flag bit this build does
+/// not know is refused (`DecodeError::UnknownHeaderFlags`), which is what
+/// keeps an optional section from being silently skipped by a reader that
+/// cannot see it.
 pub const FORMAT_VERSION: u32 = 1;
 
 #[derive(Default)]
@@ -551,8 +534,8 @@ fn encode_literal(w: &mut Writer, literal: &Literal, symbols: &mut symbols::Buil
 }
 
 // ---------------------------------------------------------------------------
-// The object table and the frame table (the spec's "Object table", "Frame
-// table" and "Root/special-objects table" bullets).
+// The object table and the frame table (`docs/design/image-format.md`,
+// "Sections").
 // ---------------------------------------------------------------------------
 
 fn is_same_object(a: &Value, b: &Value) -> bool {

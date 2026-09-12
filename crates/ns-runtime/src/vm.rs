@@ -1,6 +1,6 @@
 //! The register VM's run loop -- and nothing else. `run_code` is a `match`
 //! over `Instr`; every `Send*` calls straight back into `interpreter/`'s
-//! shared orchestration (`Interpreter::send`, `dispatch_lexical_send`,
+//! send machinery (`Interpreter::send`, `dispatch_lexical_send`,
 //! `dispatch_super_send`), which re-enters `run_code` for any
 //! user-defined target. No dispatch logic, no `doesNotUnderstand:`, no
 //! native dispatch, and no error text of its own live here -- dispatch
@@ -22,10 +22,9 @@ use crate::interpreter::{EvalResult, Interpreter};
 use crate::types::*;
 
 /// Runs `code` on the live activation `act` until a terminating
-/// instruction. `act` was pushed by the shared orchestration
-/// (`invoke_method`, `invoke_closure`, `instantiate` or
-/// `nested::run_clause_body`) with registers for `code.num_registers`, and
-/// that same orchestration pops it.
+/// instruction. `act` was pushed by the send machinery (`invoke_method`,
+/// `invoke_closure`, `instantiate` or `nested::run_clause_body`) with
+/// registers for `code.num_registers`, and that same caller pops it.
 ///
 /// The activation's `pc` is the safepoint view (`statement_pc` recovers the
 /// statement from it on demand), and it is stored *only by the instructions
@@ -79,8 +78,8 @@ pub fn run_code(
                 receiver_reg,
                 arg_regs,
                 dst,
-                // `call_site` is deliberately ignored in this milestone --
-                // it is the reserved, inert inline-cache slot; no cache is
+                // `call_site` is deliberately ignored -- it is the
+                // reserved, inert inline-cache slot; no cache is
                 // wired up to read or write it yet.
                 ..
             } => {

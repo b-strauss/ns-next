@@ -1,5 +1,5 @@
 //! The three lookup algorithms and the kth-enclosing-object computation.
-//! See the runtime spec's Dispatch section; cites `newspeak-spec.pdf`
+//! See `docs/design/dispatch.md`; cites `newspeak-spec.pdf`
 //! §3.3, §5.5, §5.9, §5.10, §6.3.1.
 
 use std::rc::Rc;
@@ -223,9 +223,9 @@ fn next_level(
 /// application's `slot_index` already carries every inherited slot at its
 /// absolute offset, with an own slot's entry overriding an inherited one of
 /// the same name. There is no access check -- slot access is never
-/// access-controlled the way a method send is in Milestone 1, which is a
-/// known gap. Used by `sends::dispatch_lexical_send`
-/// before falling through to `lookup_defined_for`/`lookup_protected`.
+/// access-controlled the way a method send is, which is a known gap. Used
+/// by `sends::dispatch_lexical_send` before falling through to
+/// `lookup_defined_for`/`lookup_protected`.
 pub fn lookup_slot(heap: &Heap, class: ClassRef, name: Symbol) -> Option<usize> {
     heap.class_application(class)?
         .slot_index

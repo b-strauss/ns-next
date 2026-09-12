@@ -4,8 +4,7 @@
 
 use std::process::ExitCode;
 
-/// Renders the entry send's outcome exactly as Milestone 1's `run` did --
-/// `program_outcomes.rs` pins these strings byte for byte, so they live here
+/// Renders the entry send's outcome -- `program_outcomes.rs` pins these strings byte for byte, so they live here
 /// once and are never duplicated.
 pub(crate) fn report_entry_send(result: Result<ns_runtime::Value, ns_runtime::Signal>) -> ExitCode {
     match result {
@@ -119,13 +118,11 @@ fn selector_arity(selector: &str) -> usize {
 /// The argument list an entry send (`run`/`snapshot`/`load`'s `--send`)
 /// supplies, sized to what the selector actually takes.
 ///
-/// It used to be `[platform, nil]` unconditionally, which is right only
-/// for a two-parameter `main:args:`. Anything else got a frame whose
-/// argument count did not match its declaration -- and a method activation
-/// addresses its arguments and temporaries as one run of registers, so the
-/// surplus silently shifted every temporary rather than failing.
-/// `invoke_method` now refuses a mismatch outright; sizing the list here
-/// is what keeps a legitimate `--send` from tripping that refusal.
+/// A method activation addresses its arguments and temporaries as one run
+/// of registers, so a surplus argument would silently shift every
+/// temporary rather than fail. `invoke_method` refuses the mismatch
+/// outright; sizing the list to the selector here is what keeps a
+/// legitimate `--send` from tripping that refusal.
 ///
 /// The template is the Core Library's `main: platform args: arguments`
 /// convention truncated to the selector's arity: a unary entry point takes

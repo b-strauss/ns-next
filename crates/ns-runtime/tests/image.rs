@@ -1836,7 +1836,7 @@ fn a_closure_capturing_a_block_activation_round_trips() {
 
 #[test]
 fn a_top_level_frame_kind_decodes() {
-    // Nothing in Milestone 2 *builds* a `FrameKind::TopLevel` frame (see
+    // Nothing that runs a program *builds* a `FrameKind::TopLevel` frame (see
     // `types::FrameKind`), so only a hand-written section can reach the
     // decoder's tag-2 branch.
     let mut w = one_frame_prefix();
@@ -3275,10 +3275,10 @@ fn nested_class_of(loaded: &mut image::LoadedImage, receiver: Value, selector: &
 fn a_snapshot_after_a_nested_class_access_round_trips() {
     // The accessor puts a *second* user-defined class object into the world:
     // it is the value of the enclosing instance's hidden cache slot, and the
-    // `.class` of every instance of it. Both used to be refused outright --
-    // the format's class tag named no particular user class, so encoding one
-    // would have decoded it back as the root. Both now round-trip, because a
-    // class object is an ordinary record in the object table.
+    // `.class` of every instance of it. Both must round-trip: a class tag
+    // that named no particular user class would decode one back as the
+    // root. A class object is an ordinary record in the object table, which
+    // is what makes both work.
     let (mut interp, class, platform, outer) = instantiated_world(NESTED_MODULE);
     let inner_class = expect_ok(interp.send(outer, Symbol::intern("Inner"), vec![]), "Inner");
     let Value::Obj(inner_class) = inner_class else {
@@ -3343,9 +3343,10 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
 
 #[test]
 fn a_second_user_class_no_longer_decodes_as_the_root() {
-    // The retired tag named no particular class, so a second user-defined
-    // class object came back as the root: a wrong class silently installed,
-    // with no field count to contradict it, rather than a decode error.
+    // A class tag that named no particular class would bring a second
+    // user-defined class object back as the root: a wrong class silently
+    // installed, with no field count to contradict it, rather than a decode
+    // error.
     let (mut interp, class, platform, outer) = instantiated_world(NESTED_MODULE);
     let _ = expect_ok(interp.send(outer, Symbol::intern("Inner"), vec![]), "Inner");
     let bytes = snapshot_world(
@@ -3380,7 +3381,7 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
     // application (§6.2), and only the second half survives a save -- the
     // applications are rebuilt through `Interpreter::apply_mixin`, whose
     // cache key is content-derived. If the rebuild lost the sharing,
-    // Milestone 4's call sites would go megamorphic after every load, which
+    // the inline caches' call sites would go megamorphic after every load, which
     // is why this is a property test rather than a shape test.
     let (mut interp, class, platform, first) = instantiated_world(NESTED_MODULE);
     let second = expect_ok(interp.instantiate(class, vec![platform]), "a second Outer");
@@ -3664,7 +3665,7 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
 /// The two clause frame kinds share `Initializer`'s shape on the wire (a class
 /// tag) but not its tag, which is what lets `image::decode`'s `frame_body`
 /// resolve each against the code table its own body actually lives in. Nothing
-/// in this milestone leaves such a frame reachable from an image's roots --
+/// leaves such a frame reachable from an image's roots --
 /// a clause body contains no `MakeClosure`, so nothing can capture one -- so
 /// only a hand-written section reaches the decoder's tag-4 and tag-5 branches.
 #[test]
@@ -3762,7 +3763,7 @@ fn a_repeated_selector_is_stored_once() {
 
 /// Overwrites the symbol table's own entry count to claim zero symbols.
 /// `TRIVIAL_MODULE` compiles exactly one method, so its mixin section holds
-/// one real reference to symbol id 0 -- which no longer exists once the
+/// one real reference to symbol id 0 -- which does not exist once the
 /// table it indexes into claims to be empty. Located via the real decode
 /// functions (header, source, origin) rather than a hardcoded byte offset,
 /// so this does not drift if an earlier section's encoding changes shape.
@@ -3833,7 +3834,7 @@ fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywh
 // ---------------------------------------------------------------------------
 // The mixin table. What the image says a declaration *is* -- its
 // name, slots, methods, factory, superclass clause, nesting and class side --
-// no longer comes back by re-parsing the image's own source text.
+// comes back from the table, never by re-parsing the image's own source text.
 // ---------------------------------------------------------------------------
 
 const TABLE_NESTED_SRC: &str = "\
@@ -3998,8 +3999,8 @@ fn a_mixin_table_that_is_not_a_declaration_tree_is_an_error() {
     );
 }
 
-/// The one reader an earlier review found reading the factory selector out
-/// of `Mixin::decl`: `instantiate::eval_superclass_message` checks the
+/// The factory selector must come from the table, not from `Mixin::decl`:
+/// `instantiate::eval_superclass_message` checks the
 /// selector a clause names against the superclass's primary factory
 /// selector. Read off a declaration, a decoded mixin (which has none) would
 /// fall back to `new`, and every class whose superclass has a keyword
@@ -4111,7 +4112,7 @@ fn deepest_parseable_nesting() -> usize {
     panic!("the parser accepted {PROBE_CEILING} levels of class nesting: it has no ceiling to derive the image's from");
 }
 
-/// The boundary the review found: the parser counts only *nested* classes,
+/// The boundary this pins: the parser counts only *nested* classes,
 /// so a module it accepts has one more `Mixin` than its limit says, and a
 /// class side on the innermost class adds one more link again. An image
 /// ceiling set to the parser's own number refuses the two deepest legal
@@ -4385,8 +4386,8 @@ fn a_class_object_whose_own_class_is_another_record_is_refused() {
 
 // ---------------------------------------------------------------------------
 // A source-free load path. `load` decodes the world it is given; it
-// never parses, resolves or compiles, and the source blob it used to depend
-// on is now optional and, when present, purely documentary.
+// never parses, resolves or compiles, and the source blob is optional and,
+// when present, purely documentary.
 // ---------------------------------------------------------------------------
 
 /// A module with a nested class, a method to send after a load, and a
@@ -4710,7 +4711,7 @@ class Probe usingPlatform: aPlatformSlotName = Object new (
 ) : ()
 ";
 
-/// The milestone's headline claim, tested as a property rather than by
+/// The source-free image's headline claim, tested as a property rather than by
 /// spot-checking two needles: **no line of the module's source text
 /// survives anywhere in a source-free image.**
 ///
@@ -4729,8 +4730,8 @@ class Probe usingPlatform: aPlatformSlotName = Object new (
 /// name, because dispatch, slot layout and the nested-class accessor are
 /// all by name at run time. So `mnemosyneSlot` is in a source-free image
 /// and must be. The claim is about source *text* -- the syntax, the
-/// comments, the expression structure, the layout -- which is what the
-/// re-parse needed and what nothing on the load path reads any more.
+/// comments, the expression structure, the layout -- which nothing on the
+/// load path reads.
 #[test]
 fn no_line_of_the_source_survives_in_a_source_free_image() {
     /// See the doc comment above for why 12.
@@ -5179,8 +5180,8 @@ fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
 /// `load` reaches the graph-section boundary before failing. A test that
 /// only checked `is_err()` would keep passing if that boundary check were
 /// deleted and some *other* check downstream happened to reject the same
-/// bytes for an unrelated reason -- see the sibling test below, which is
-/// exactly that failure mode caught in review.
+/// bytes for an unrelated reason -- see the sibling test below, which
+/// guards against exactly that failure mode.
 #[test]
 fn a_binary_with_a_graph_appended_is_refused() {
     let (mut interp, class) = load(ENTRY_SRC);

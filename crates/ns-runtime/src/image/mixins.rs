@@ -3,12 +3,11 @@
 //! A `Mixin` is what a loaded image has to reconstruct before anything can
 //! run -- the method dictionary a send is looked up in, the slot names an
 //! instance is laid out by, the factory selector §6.1 checks a superclass
-//! clause against. Before this section existed those came back only by
-//! re-parsing the image's own source text and rebuilding the tree from the
-//! AST, which made the front end part of the load path and made the image's
-//! own bytes an incomplete description of the world they claim to hold.
-//! This table is what retired that re-parse: `image::load` builds its whole
-//! declaration tree, and its root class, from these rows.
+//! clause against. `image::load` builds its whole declaration tree, and its
+//! root class, from these rows, which is what keeps the front end off the
+//! load path: without them those would come back only by re-parsing the
+//! image's own source text, and the image's own bytes would be an
+//! incomplete description of the world they claim to hold.
 //!
 //! **The tree is flattened, not nested.** Rows are written in
 //! `mixin::preorder` order -- the same order `encode::encode_code_table`

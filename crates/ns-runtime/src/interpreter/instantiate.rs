@@ -41,8 +41,8 @@ fn build_slots(body: &ast::ClassBody) -> Vec<MixinSlot> {
 
 /// The run-time-visible half of a superclass clause. The selector defaults
 /// to `new` for an omitted message, per `newspeak-spec.pdf` §6.1 -- resolved
-/// once, here, rather than at each of the two places that used to re-derive
-/// it from the declaration.
+/// once, here, so no reader of the clause re-derives it from the
+/// declaration.
 fn superclass_clause_of(clause: &ast::SuperclassClause) -> SuperclassClause {
     SuperclassClause {
         selector: super::nested::superclass_clause_message(clause)
@@ -138,10 +138,9 @@ impl Interpreter {
             }),
             superclass: decl.superclass.as_ref().map(superclass_clause_of),
             has_init_exprs: !decl.instance_side.init_exprs.is_empty(),
-            // Class instantiation "must fix" #1: this class's own initExprs,
-            // lowered into the instance initializer by
-            // `compiler::compile_mixin_initializer` (Step 5 of the spec's six
-            // numbered steps).
+            // This class's own initExprs, lowered into the instance
+            // initializer by `compiler::compile_mixin_initializer` (step 5 of
+            // the six in `docs/design/object-model.md`, "Instantiation").
             init_exprs: decl.instance_side.init_exprs.clone(),
             nested,
             class_side,
@@ -157,8 +156,9 @@ impl Interpreter {
 
     /// A class side's own methods, as a `Mixin`. Kept separate from
     /// `build_mixin` and deliberately small: a class side has no factory
-    /// pattern of its own (there is no metaclass to instantiate it through in
-    /// this milestone) and no nested classes of its own to load -- only its
+    /// pattern of its own (its metaclass carries class-side behaviour and
+    /// nothing more -- `docs/design/object-model.md`, "Class sides and
+    /// metaclasses") and no nested classes of its own to load -- only its
     /// instance side's `nested_classes` recurse. `decl` is `None` because a
     /// `ClassBody` is not itself an `ast::ClassDecl`; there is no single
     /// declaration node to keep as provenance for it.
@@ -195,13 +195,14 @@ impl Interpreter {
     /// No user-overridable `new` method is ever registered anywhere to
     /// find (every `BuiltinClass`-tagged placeholder's method table is
     /// empty, and a user class's own `.class` is that same shared
-    /// placeholder -- Milestone 1's "no metaclasses" simplification), so
+    /// placeholder -- there is no reified metaclass hierarchy, see
+    /// `docs/design/object-model.md`, "Class sides and metaclasses"), so
     /// without this check `ClassName new` would unconditionally end in
     /// `doesNotUnderstand:`, for every class, every time.
     ///
     /// No double-dispatch risk against the superclass clause's own factory
     /// message (e.g. `Object new` in `class Foo = Object new (...)`). That
-    /// message is *evaluated* now (`run_initializer_level` below), but it is
+    /// message is *evaluated* (`run_initializer_level` below), but it is
     /// never *sent*: §6.2 has the subclass's initializer invoke the
     /// superclass's instance initializer directly on the same object, so
     /// `run_initializer_level` recurses into itself and never calls
@@ -223,7 +224,7 @@ impl Interpreter {
         let builtin = self.heap.class_builtin(*obj);
         let class_ref = *obj;
         Some(match builtin {
-            // `Array`/`OrderedCollection`'s Milestone 1 representation is
+            // `Array`/`OrderedCollection`'s representation is
             // `ObjectData::Array`, not the generic `instantiate()`'s
             // `ObjectData::Instance` -- `builtins::collections`' dispatch
             // functions pattern-match on `ObjectData::Array`
@@ -247,7 +248,7 @@ impl Interpreter {
         let Some(clause) = &decl.superclass else {
             return Some(self.builtin_class(BuiltinClass::Object));
         };
-        // Milestone 1: only the common case (a builtin class name) is
+        // Only the common case (a builtin class name) is
         // handled -- full lexical/outer-prefixed superclass receivers, and
         // a not-yet-loaded sibling user-defined class referenced by name,
         // need the resolver's class-nesting chain (and/or a multi-class
@@ -261,8 +262,8 @@ impl Interpreter {
         None
     }
 
-    /// The six numbered steps in the runtime spec's Class Instantiation
-    /// section; see `instantiate_unchecked`. Like `send`, it leaves the
+    /// The six numbered steps in `docs/design/object-model.md`,
+    /// "Instantiation"; see `instantiate_unchecked`. Like `send`, it leaves the
     /// activation stack as it found it.
     pub fn instantiate(&mut self, class: ClassRef, factory_args: Vec<Value>) -> EvalResult {
         let depth = self.heap.activation_depth();
@@ -275,8 +276,8 @@ impl Interpreter {
         result
     }
 
-    /// The six numbered steps in the runtime spec's Class Instantiation
-    /// section. Steps 2-5 are `run_initializer_level`, once per level of the
+    /// The six numbered steps in `docs/design/object-model.md`,
+    /// "Instantiation". Steps 2-5 are `run_initializer_level`, once per level of the
     /// superclass chain.
     fn instantiate_unchecked(&mut self, class: ClassRef, factory_args: Vec<Value>) -> EvalResult {
         // Step 1: one instance, every slot nil. The application already
@@ -308,18 +309,18 @@ impl Interpreter {
     ///
     /// One activation per level is the whole point: a superclass's slot
     /// initializers and `initExprs` see the arguments *its* clause supplied,
-    /// not the subclass's. Milestone 1 threaded a single frame up the whole
-    /// chain and never evaluated a clause message at all, so a superclass
-    /// factory parameter read whatever happened to sit at the same index in
-    /// the subclass's argument list -- or panicked when there was none.
+    /// not the subclass's. A single activation threaded up the whole chain
+    /// would let a superclass factory parameter read whatever happens to sit
+    /// at the same index in the subclass's argument list -- or index past its
+    /// end when there is none.
     fn run_initializer_level(
         &mut self,
         class: ClassRef,
         instance: &Value,
         factory_args: Vec<Value>,
     ) -> Result<(), Signal> {
-        // Regression fix (re-review finding A): reject a factory-arity
-        // mismatch as a NewspeakError before pushing this level's activation
+        // Reject a factory-arity mismatch as a NewspeakError before pushing
+        // this level's activation
         // or running any slot initializer / initExpr. A slot initializer or
         // initExpr may reference a factory parameter as `Binding::Local(i)`,
         // resolved against this class's *declared* factory pattern -- but
@@ -329,7 +330,7 @@ impl Interpreter {
         // register window and Rust panics.
         //
         // Checked at *every* level, not just the outermost. A level's
-        // arguments now come from its subclass's clause message, whose
+        // arguments come from its subclass's clause message, whose
         // selector `eval_superclass_message` has already matched against
         // this class's primary factory selector -- which pins the arity too,
         // since a selector's keyword count is its parameter count. This
@@ -581,15 +582,11 @@ fn argument_list(heap: &Heap, class: ClassRef, value: Value) -> Result<Vec<Value
 
 /// `pub(crate)` (rather than private) so `compiler::lower` can reuse this
 /// exact string->`BuiltinClass` mapping for its bare-builtin-name fallback,
-/// instead of duplicating it. Returns `None` for any name that is
-/// not a Milestone 1 builtin class name (an explicit `Object` arm replaces
-/// the old catch-all default of `BuiltinClass::Object`, since a caller
-/// outside this module must be able to tell "unrecognized name" apart from
-/// a genuine `Object` match -- `resolve_superclass_receiver` above used to
-/// guard this call with a separate `BUILTIN_NAMES.contains` check for
-/// exactly that reason; that list is now redundant with this function's own
-/// match arms, so it was folded in here instead of kept as a second,
-/// duplicate source of truth).
+/// instead of duplicating it. Returns `None` for any name that is not a
+/// builtin class name. `Object` has an explicit arm rather than being a
+/// catch-all default, because a caller must be able to tell "unrecognized
+/// name" apart from a genuine `Object` match; the match arms are the one
+/// list of builtin names, so no caller keeps a second one to guard with.
 pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
     Some(match name {
         "Object" => BuiltinClass::Object,

@@ -238,10 +238,10 @@ pub struct MixinApplication {
     /// (`Interpreter::run_initializer_level`, into the frame's `slot_base`)
     /// to turn a compiled `InitSlot`'s mixin-relative `own_index` into this
     /// application's absolute field index: the compiled initializer is
-    /// shared by every application of the mixin (review finding: keying
-    /// code by mixin without this would bake ONE application's offset into
-    /// code every application runs), while this field is computed fresh per
-    /// application, exactly like `slot_index` already was.
+    /// shared by every application of the mixin (keying code by mixin
+    /// without this would bake ONE application's offset into code every
+    /// application runs), while this field is computed fresh per
+    /// application, exactly like `slot_index`.
     pub own_slot_base: usize,
 }
 
@@ -252,9 +252,9 @@ pub struct MixinApplication {
 /// `image::decode::rebuild_applications` builds one link per class record.
 /// The default glue would release the chain recursively and overflow the
 /// stack on a long one, which aborts the process; this releases it in a
-/// loop instead. Objects and frames need no such glue any more -- both are
-/// arena entries with nothing to unwind on drop -- which makes this the
-/// only hand-written iterative `Drop` left in the crate. It is not the only
+/// loop instead. Objects and frames need no such glue -- both are arena
+/// entries with nothing to unwind on drop -- which makes this the only
+/// hand-written iterative `Drop` in the crate. It is not the only
 /// recursive graph: `Mixin`'s `nested` and `class_side` links are also
 /// `Rc` and also drop recursively, but their depth is bounded by the
 /// parser and `image::mixins::decode` refuses anything deeper, so a ceiling

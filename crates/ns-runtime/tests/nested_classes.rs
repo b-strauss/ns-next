@@ -32,7 +32,7 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 }
 
 /// Reads a `Value` known to be a `Str` object. `Value` has no `PartialEq`,
-/// and its `Debug` -- though no longer recursive -- prints only Rust
+/// and its `Debug` -- though not recursive -- prints only Rust
 /// internals (`ObjRef(#42)`, not the string's contents), so a class-side
 /// send's result is compared through this rather than `assert_eq!` on the
 /// `Value` itself.

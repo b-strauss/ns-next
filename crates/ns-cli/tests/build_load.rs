@@ -211,10 +211,8 @@ fn load_send_overrides_the_recorded_entry() {
     // The recorded entry (`return42`) and the `--send` override
     // (`signalError`) must be *different* selectors with observably
     // different outcomes: `return42` exits cleanly, `signalError` sends
-    // `Error signal:` and fails. Using the same selector on both sides (as
-    // an earlier version of this test did) would pass whether or not
-    // `--send` actually takes precedence -- exactly the failure class an
-    // earlier review caught in another file.
+    // `Error signal:` and fails. Using the same selector on both sides
+    // would pass whether or not `--send` actually takes precedence.
     let dir = ScratchDir::new("override");
     let out = dir.join("app.nsb");
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/modules/TestActor.ns");

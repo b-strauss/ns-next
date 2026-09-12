@@ -88,7 +88,7 @@ pub struct ClassData {
     /// The metaclass built from this class's mixin's `class_side`, created
     /// on first use and cached here (`Interpreter::metaclass_of`) so a
     /// repeated class-side send does not rebuild it and so metaclass
-    /// identity stays stable (a later milestone's inline caches key on it).
+    /// identity stays stable (the inline caches will key on it).
     /// Lives on `ClassData`, not as a slot on an *instance*: a class
     /// object's own payload is `ObjectData::Class`, never `Instance`, so it
     /// cannot share the nested-class hidden-slot mechanism (`nested_slot`),
@@ -138,7 +138,7 @@ pub enum Binding {
     /// A captured method/block variable, `depth` activations out.
     OuterLocal { depth: u16, index: u16 },
     /// An implicit-receiver, self, or `outer N` send resolved to lexical
-    /// depth `k` (runtime spec's Resolver section; `newspeak-spec.pdf`
+    /// depth `k` (`docs/design/dispatch.md`, "Resolution"; `newspeak-spec.pdf`
     /// §5.7-5.9). Covers method calls, slot reads/writes, and nested-class
     /// references alike.
     LexicalSend { depth: u16 },
@@ -153,8 +153,8 @@ pub struct ResolvedModule {
     pub origin: SourceOrigin,
     /// Every `Ident` needing resolution, and every `Send`/`Assign` node
     /// recognized as a self/outer/super/implicit send, keyed by its own
-    /// `Span`. See the runtime spec's "AST recognition" note for the exact
-    /// shapes this covers.
+    /// `Span`. See `docs/design/dispatch.md`, "Shapes the resolver must
+    /// recognize", for the exact shapes this covers.
     pub bindings: Rc<HashMap<Span, Binding>>,
 }
 
@@ -169,9 +169,9 @@ pub enum SourceOrigin {
 pub enum FrameKind {
     Method(Rc<crate::mixin::MixinMethod>),
     Closure(Rc<ClosureData>),
-    /// A top-of-chain activation with no method or class of its own. Not
-    /// built by anything in Milestone 2 (an instance initializer is
-    /// `Initializer`); kept for the image format's frame table and a later
+    /// A top-of-chain activation with no method or class of its own.
+    /// Nothing that runs a program builds one (an instance initializer is
+    /// `Initializer`); kept for the image format's frame table and a future
     /// REPL/top-level activation.
     TopLevel,
     /// An instance-initializer activation (Class Instantiation step 2)

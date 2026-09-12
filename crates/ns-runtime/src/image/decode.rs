@@ -1268,7 +1268,7 @@ fn decode_instr(
 /// measured to survive 700 levels and to overflow at 2000 in a debug build,
 /// so 128 keeps a wide margin.
 ///
-/// `parser::MAX_DEPTH` is private to `ns-syntax`, and this milestone leaves
+/// `parser::MAX_DEPTH` is private to `ns-syntax`, and runtime work leaves
 /// that crate untouched, so the number is restated here rather than
 /// imported -- it must track `crates/ns-syntax/src/parser/mod.rs`'s
 /// `MAX_DEPTH`. `the_deepest_literal_array_the_parser_accepts_survives_a_round_trip`

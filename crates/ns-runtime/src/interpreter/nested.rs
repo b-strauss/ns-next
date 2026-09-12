@@ -350,7 +350,7 @@ fn cyclic_definition_error(receiver: &Value, name: Symbol) -> Signal {
 /// A receiver with no hidden slot to cache the nested class in. Reachable
 /// from a real program: a class inheriting `OrderedCollection`'s or
 /// `Array`'s payload representation gets an `ObjectData::Array` instance,
-/// which has no fields -- the same Milestone 1 gap that already makes an
+/// which has no fields -- the same known gap that already makes an
 /// ordinary slot declared on such a class unwritable. Refusing here is what
 /// keeps §6's "subsequent calls on r always return the same class object"
 /// from silently becoming "a fresh class object every call".

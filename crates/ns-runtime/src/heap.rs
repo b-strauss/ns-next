@@ -83,7 +83,8 @@ impl std::fmt::Debug for ObjRef {
 }
 
 /// A class is an `ObjRef` whose `data` is `ObjectData::Class(_)`. Not
-/// enforced by the type system in Milestone 1 (no metaclasses yet).
+/// enforced by the type system: `ClassRef` is an alias, not a distinct
+/// handle type.
 pub type ClassRef = ObjRef;
 
 /// An opaque handle to a *reified* activation: an index into `Heap.frames`.
@@ -125,12 +126,11 @@ impl FrameRef {
     }
 }
 
-/// Prints the arena index and nothing else. Under `Rc` this impl was
-/// hand-written to stop `Debug` walking the sender chain (a closure's
-/// `home` can itself be captured, so that walk had no acyclic guarantee
-/// to lean on); an index has nothing to descend into at all, so the
-/// hazard is gone by construction rather than by discipline. It also can
-/// no longer panic, which is why the `try_borrow` dance is gone.
+/// Prints the arena index and nothing else. A derived `Debug` over a
+/// frame's contents would walk the sender chain, which has no acyclic
+/// guarantee to lean on (a closure's `home` can itself be captured); an
+/// index has nothing to descend into at all, so the hazard is gone by
+/// construction rather than by discipline, and printing one cannot panic.
 impl std::fmt::Debug for FrameRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "FrameRef(#{})", self.index)
@@ -645,7 +645,7 @@ impl Heap {
     }
 
     /// The number of fields in `obj`'s `ObjectData::Instance`, mirroring
-    /// `array_len`. `platform::dispatch` is the only caller: Milestone 1
+    /// `array_len`. `platform::dispatch` is the only caller: it
     /// tells the platform singleton, its stream and its `collections`
     /// namespace apart by field count rather than a builtin variant of
     /// their own (see `platform.rs`'s module doc), so the dispatcher needs
@@ -779,7 +779,7 @@ impl Heap {
     /// Renders a value for a user-facing error message.
     ///
     /// Never `Debug`-format a `Value` instead: `ObjRef`'s hand-written
-    /// `Debug` no longer recurses, but it prints Rust internals such as
+    /// `Debug` does not recurse, but it prints Rust internals such as
     /// `ObjRef(#42)`, which tells a Newspeak programmer nothing. Every
     /// caller of this is building the message of a `NewspeakError`, which
     /// reaches stderr, and that message needs to name what the value *is*
@@ -1258,8 +1258,9 @@ impl Heap {
 
     /// The receiver and `current_class` together. `dispatch_lexical_send`'s
     /// head needs both on every implicit-receiver send; fetching them
-    /// separately was once a measured 13% regression (see
-    /// `docs/design/execution.md`'s measurements section).
+    /// separately measured 13% slower on `bench_loop.ns`
+    /// (`docs/design/execution.md`, "A 13% regression, found and
+    /// recovered").
     pub fn activation_receiver_and_current_class(
         &self,
         act: ActivationRef,
@@ -1491,13 +1492,12 @@ mod tests {
         assert_eq!(heap.object_identity_key(a), heap.object_identity_key(a));
     }
 
-    /// The hole that moving `identity_key` onto `Heap` closes. Keying a
-    /// handle through the wrong heap used to be the one handle operation
-    /// with no origin check: it was handed a handle and no `Heap`, so two
-    /// objects from different arenas produced the same key and collided in
-    /// a caller's map -- `image::encode::GraphTable` would have given one
-    /// object the other's id. Requiring the `Heap` is what makes the check
-    /// possible, and the compiler is what requires it.
+    /// Why `identity_key` lives on `Heap`. A key computed from a handle
+    /// alone could carry no origin check, so two objects from different
+    /// arenas would produce the same key and collide in a caller's map --
+    /// `image::encode::GraphTable` would give one object the other's id.
+    /// Requiring the `Heap` is what makes the check possible, and the
+    /// compiler is what requires it.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "handle belongs to a different heap")]
@@ -1730,8 +1730,9 @@ mod tests {
         assert_eq!(heap.activation_depth(), 0);
     }
 
-    /// The property the whole step exists for: an activation nothing
-    /// reified is gone once it is popped. The arena used to keep every one.
+    /// The property the activation stack exists for: an activation nothing
+    /// reified is gone once it is popped, rather than kept in the frame
+    /// arena, which never reclaims a slot.
     #[test]
     fn an_activation_that_is_never_reified_leaves_nothing_behind() {
         let mut heap = Heap::new();

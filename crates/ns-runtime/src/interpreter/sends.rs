@@ -81,7 +81,7 @@ pub(crate) fn dispatch_lexical_send(
     // *before* the method/native lookups below -- `build_mixin` never puts a
     // slot's implicit getter/setter into the mixin's method table, so
     // `lookup_defined_for`/`lookup_protected` would never find one.
-    // Milestone 1 known gap: unlike a method send, this is never
+    // Known gap: unlike a method send, this is never
     // access-controlled by the slot's own declared modifier -- revisit if a
     // fixture needs it.
     if let Some((name, is_setter)) = slot_selector_shape(selector) {

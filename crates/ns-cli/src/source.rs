@@ -15,8 +15,8 @@ pub(crate) struct LoadedSource {
     pub(crate) resolved: ns_runtime::ResolvedModule,
 }
 
-/// Reads, parses, and resolves `file`, reporting diagnostics exactly as
-/// the Milestone 1 `run` did. `Err` carries the exit code to return.
+/// Reads, parses, and resolves `file`, reporting diagnostics the way every
+/// command does. `Err` carries the exit code to return.
 pub(crate) fn load_source(file: &Path) -> Result<LoadedSource, ExitCode> {
     let source = match std::fs::read_to_string(file) {
         Ok(s) => s,

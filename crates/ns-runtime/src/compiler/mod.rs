@@ -73,7 +73,7 @@ pub(crate) fn compile_mixin_bodies(mixin: &mut Mixin, bindings: &Rc<HashMap<Span
 /// A mixin's instance initializer: each of `mixin`'s own slots with an
 /// initializer (declaration order) as `<expr>; InitSlot`, then each
 /// `initExpr` (a top-level `^` is evaluated and discarded), then
-/// `LoadSelf; ImplicitReturn` -- the spec's "Class instantiation" section.
+/// `LoadSelf; ImplicitReturn` -- `docs/design/object-model.md`, "Instantiation".
 /// `num_args` is `mixin`'s own factory parameter count -- the resolver
 /// scoped this code with exactly those parameters as `Binding::Local`.
 ///

@@ -48,17 +48,18 @@ fn run_sends_main_args_and_prints_via_platform_transcript() {
 
 #[test]
 fn a_zero_argument_factory_no_longer_rejects_instantiation() {
-    // `ADummyPush.ns`'s primary factory is `new`, i.e. zero arguments: until
-    // this fix, `cmd_run` unconditionally supplied `usingPlatform:`'s one
-    // argument, so instantiation failed before `foo` was ever looked up.
-    // `foo` itself carries no access modifier and so defaults to protected
-    // (`newspeak-spec.pdf` §6.3.1) -- unreachable from an ordinary external
-    // send under spec-correct dispatch (§5.5's doesNotUnderstand:/proxy
-    // argument is exactly why that hard stop exists), so the module still
-    // ends in "does not understand #foo". What this fix changes is *when*
-    // it fails: no longer during instantiation with a CLI-level
-    // argument-count mismatch, only afterward, at the entry send, for the
-    // ordinary reason any protected method rejects an outside sender.
+    // `ADummyPush.ns`'s primary factory is `new`, i.e. zero arguments, so
+    // `run` must instantiate it with none: supplying `usingPlatform:`'s one
+    // argument regardless would fail instantiation before `foo` is ever
+    // looked up. `foo` itself carries no access modifier and so defaults to
+    // protected (`newspeak-spec.pdf` §6.3.1) -- unreachable from an ordinary
+    // external send under spec-correct dispatch (§5.5's
+    // doesNotUnderstand:/proxy argument is exactly why that hard stop
+    // exists), so the module still ends in "does not understand #foo". What
+    // this pins is *when* it fails: not during instantiation with a
+    // CLI-level argument-count mismatch, only afterward, at the entry send,
+    // for the ordinary reason any protected method rejects an outside
+    // sender.
     let out = ns_next()
         .arg("run")
         .arg(corpus_module("ADummyPush.ns"))
@@ -173,13 +174,12 @@ fn run_supports_a_custom_entry_selector_via_send() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The probe that exposed the frame-shift defect end to end: a *unary*
-/// entry point with a declared temporary. `--send probe` used to hand it
-/// `[platform, nil]` regardless of arity, which shifted `t` off the
-/// surplus arguments and printed `NOTNIL-BUG` under both engines with exit
-/// status 0. Both halves of the fix are needed for this to pass: the CLI
-/// sizes the argument list to the selector, and `invoke_method` refuses a
-/// mismatch outright if anything ever gets it wrong again.
+/// A frame-shift probe, end to end: a *unary* entry point with a declared
+/// temporary. Handing `--send probe` `[platform, nil]` regardless of arity
+/// would shift `t` onto a surplus argument and print `NOTNIL-BUG` with exit
+/// status 0. Both halves of the defence are needed for this to pass: the
+/// CLI sizes the argument list to the selector, and `invoke_method` refuses
+/// a mismatch outright if anything ever gets it wrong.
 const UNARY_PROBE: &str = "Newspeak3\n'Test'\nclass Probe usingPlatform: p = Object new (\n\t|\n\t\tprivate plat = p.\n\t|\n) (\n\
      \tpublic probe = (\n\t\t| t |\n\t\tnil = t ifTrue: [ plat transcript show: 'nil-ok'; newLine ]\n\t\t\tifFalse: [ plat transcript show: 'NOTNIL-BUG'; newLine ]\n\t)\n) : ()\n";
 

@@ -98,7 +98,7 @@ fn the_initializer_lowers_slots_then_init_exprs_with_own_slot_indices() {
                 src: 1,
                 own_index: 1
             },
-            // `q := p.` -- slot reads/writes are lexical sends, as in M1.
+            // `q := p.` -- slot reads/writes are lexical sends.
             Instr::SendLexical {
                 depth: 0,
                 selector: Symbol::intern("p"),

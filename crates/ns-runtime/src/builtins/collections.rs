@@ -1,16 +1,15 @@
 //! `Array` and `OrderedCollection` native methods.
 //!
-//! Design note (Milestone 1 simplification): `OrderedCollection` needs a
+//! Design note (a deliberate simplification): `OrderedCollection` needs a
 //! mutable, growable payload, but `ObjectData::Array(Vec<Value>)` is shared
 //! by both `Array` and `OrderedCollection` -- the spec's Core Library list
 //! groups them loosely together, and `Vec<Value>` already grows fine either
 //! way (`Heap::array_push` mutates it in place through `&mut self`, no
-//! separate growable representation needed). So for Milestone 1,
-//! `OrderedCollection` is backed by the very same `ObjectData::Array`
-//! variant rather than a second growable-collection payload variant. A real
-//! `OrderedCollection` would grow independently of a literal array's fixed
-//! size; revisit if a later milestone needs the two to diverge (e.g.
-//! `Array` becoming genuinely fixed-size).
+//! separate growable representation needed). So `OrderedCollection` is
+//! backed by the very same `ObjectData::Array` variant rather than a second
+//! growable-collection payload variant. A real `OrderedCollection` would
+//! grow independently of a literal array's fixed size; revisit if the two
+//! ever need to diverge (e.g. `Array` becoming genuinely fixed-size).
 
 use crate::interpreter::{EvalResult, Signal};
 use crate::types::*;

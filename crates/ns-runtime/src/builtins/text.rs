@@ -1,7 +1,7 @@
 //! `String`, `Symbol`, and `Character` native methods.
 //!
-//! `Character` has no dedicated `ObjectData` payload variant in Milestone 1
-//! -- `Interpreter::new_character` represents a character as a one-`char`
+//! `Character` has no dedicated `ObjectData` payload variant --
+//! `Interpreter::new_character` represents a character as a one-`char`
 //! `ObjectData::Str`, tagged with the `BuiltinClass::Character` class so
 //! dispatch still lands here (see that constructor's doc comment). This
 //! module's `dispatch_character` therefore extracts its payload exactly like

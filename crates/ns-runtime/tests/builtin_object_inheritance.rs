@@ -100,7 +100,7 @@ fn a_builtin_receiver_inherits_objects_identity_and_hash() {
     );
 }
 
-/// The load-bearing half of C1: an unimplemented selector on a builtin must
+/// The load-bearing half: an unimplemented selector on a builtin must
 /// route through `builtins::object_class::dispatch`'s real
 /// `doesNotUnderstand:` -- whose message is
 /// "<describe(receiver)> does not understand #<selector>" -- rather than

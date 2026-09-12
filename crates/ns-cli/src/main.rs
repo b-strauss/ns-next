@@ -48,8 +48,8 @@ enum Cmd {
         #[arg(long, default_value = "main:args:")]
         send: String,
     },
-    /// Run a file under the bytecode engine, then serialize the resulting
-    /// (quiesced) world to an image file.
+    /// Run a file, then serialize the resulting (quiesced) world to an
+    /// image file.
     Snapshot {
         file: PathBuf,
         out: PathBuf,
@@ -84,7 +84,7 @@ enum Cmd {
     ///
     /// Only the entry send is timed -- parsing, resolving, bootstrapping,
     /// and compiling all happen once beforehand and are excluded, because
-    /// what Milestone 4's inline caches change is repeated dispatch, not
+    /// what the runtime's optimizations change is repeated dispatch, not
     /// one-time startup. ALWAYS measure with `--release`: a debug build's
     /// numbers are not comparable to anything and this subcommand warns on
     /// stderr when it detects one.

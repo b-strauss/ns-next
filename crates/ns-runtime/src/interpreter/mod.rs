@@ -46,7 +46,7 @@ pub struct Interpreter {
     /// what `applications` keys on: a fresh one per call would give two
     /// class objects that share an instance-side application two *different*
     /// metaclass applications, and the shared-application property is
-    /// exactly what a later milestone's inline caches guard on. It would
+    /// exactly what the inline caches will guard on. It would
     /// also grow `applications` without bound.
     empty_class_sides: HashMap<usize, Rc<crate::mixin::Mixin>>,
     /// The (receiver arena index, declaration identity) pairs whose nested
@@ -84,7 +84,7 @@ impl Interpreter {
     }
 
     /// After `image::load`: never hand out an identity hash a loaded object
-    /// already carries (spec: "Identity hashes").
+    /// already carries (`docs/design/image-format.md`, "Sections").
     ///
     /// `max < u32::MAX` is the caller's guarantee, and an enforced one:
     /// `image::decode` refuses an image carrying `u32::MAX` outright
@@ -240,7 +240,7 @@ impl Interpreter {
     }
 
     /// §5.5's `doesNotUnderstand:` fallback -- access-blind (`lookup_defined_for`),
-    /// per the runtime spec's Dispatch section.
+    /// per `docs/design/dispatch.md`.
     ///
     /// Two cases reach here. A user-overridden `doesNotUnderstand:` arrives
     /// as `Lookup::Method`; `Object`'s own *native* one
@@ -258,10 +258,11 @@ impl Interpreter {
     ) -> EvalResult {
         let class = self.class_of(&receiver);
         let dnu_selector = Symbol::DOES_NOT_UNDERSTAND;
-        // Milestone 1 passes a minimal message-mirror-shaped value: an Array
-        // `{selector. args}` rather than a real MessageMirror object
-        // (mirrors are a later milestone's Non-Goal). Callers relying on a
-        // real `MessageMirror` API are out of scope.
+        // A minimal message-mirror-shaped value: an Array `{selector. args}`
+        // rather than a real MessageMirror object, since mirrors do not
+        // exist yet (`docs/design/liveness-and-reflection.md`, "Mirrors and
+        // MirrorBuilder"). Callers relying on a real `MessageMirror` API are
+        // out of scope.
         match dispatch::lookup_defined_for(&self.heap, class, dnu_selector) {
             Lookup::Method(method, defining_class) => {
                 let selector_value = self.new_symbol(selector);
@@ -456,8 +457,8 @@ impl Interpreter {
     /// cache is: a class object's payload is `ObjectData::Class`, never
     /// `Instance`, so it has no slot vector for `nested_slot` to index into.
     /// Caching on the class object directly also gives every send against
-    /// the same class object the same metaclass identity, which a later
-    /// milestone's inline caches need.
+    /// the same class object the same metaclass identity, which the inline
+    /// caches will need.
     ///
     /// Returns `None` only when neither `class`'s own mixin nor any
     /// ancestor's declares a class side -- a class side is inherited down
@@ -600,7 +601,7 @@ impl Interpreter {
     }
 
     pub fn new_character(&mut self, c: char) -> ObjRef {
-        // Milestone 1 has no dedicated Character payload variant on
+        // There is no dedicated Character payload variant on
         // ObjectData -- represent a character as a one-`char` Rust String
         // wrapped the same way String literals are (Str), consistent with
         // how the language spec itself treats characters as "a special
@@ -617,7 +618,7 @@ impl Interpreter {
         self.new_instance_object(class, ObjectData::Closure(closure))
     }
 
-    /// The `platform` object (runtime spec's Core Library section):
+    /// The `platform` object (`docs/design/core-library.md`):
     /// memoized on first call, so every reference within one interpreter
     /// sees the same object identity.
     pub fn platform(&mut self) -> Value {
@@ -744,7 +745,7 @@ impl Interpreter {
     /// structure" has to hold for the metaclass side too -- otherwise two
     /// class objects that share an instance-side application answer a
     /// class-side send out of two distinct metaclass applications, which is
-    /// the property a later milestone's inline caches guard on.
+    /// the property the inline caches will guard on.
     ///
     /// Keying the cache by `owner`'s address is safe for the same reason
     /// `applications` is: every mixin that reaches here is held for the
@@ -767,13 +768,14 @@ impl Interpreter {
     }
 }
 
-/// Milestone 1 (no metaclasses -- see the runtime spec's "Documented
-/// Deviations") gives every `BuiltinClass` -- including `Object` itself --
-/// the same shared placeholder class object as its own `.class`, tagged
-/// `BuiltinClass::Object`.
+/// Every `BuiltinClass` -- including `Object` itself -- gets the same shared
+/// placeholder class object as its own `.class`, tagged
+/// `BuiltinClass::Object`: there is no reified metaclass hierarchy (the
+/// §3.2 deviation in `docs/design/object-model.md`, "Class sides and
+/// metaclasses").
 ///
 /// Every non-`Object` builtin's superclass below is `Object` directly, a
-/// Milestone 1 simplification of the real class hierarchy
+/// simplification of the real class hierarchy
 /// (`newspeak-spec.pdf` places `Boolean` above `True`/`False`, for
 /// instance): `builtins::boolean` must not rely on `True`/`False`
 /// actually inheriting from a `Boolean` superclass node, since they do not

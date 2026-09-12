@@ -58,9 +58,9 @@ fn a_loaded_world_does_not_rerun_its_instance_initializer() {
 
 /// A world whose hidden nested-class cache slots hold class objects, and
 /// whose `outer` sends resolve two levels out through a declaration chain
-/// that is itself inherited across a nesting boundary. Snapshotting one
-/// used to be refused outright; loading one now has to rebuild every class
-/// object's application and its `declaring_class` link, and `top` four
+/// that is itself inherited across a nesting boundary. Loading one has to
+/// rebuild every class object's application and its `declaring_class`
+/// link, and `top` four
 /// times over is what says both came back right -- `mid` is the decoy a
 /// walk down the receiver's dynamic chain would answer with.
 #[test]
@@ -164,7 +164,7 @@ fn assert_snapshot_load_matches_run(name: &str, src: &Path) -> (bool, String, St
 }
 
 /// Every fixture, snapshotted and reloaded. That is the strongest property
-/// this milestone has -- the image's own bytecode, its own object graph,
+/// the image has -- the image's own bytecode, its own object graph,
 /// and a freshly bootstrapped world reproduce a plain `run` byte for byte
 /// -- and it is asserted per fixture rather than argued.
 #[test]
@@ -259,9 +259,8 @@ fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
 
 /// The image `snapshot` writes by default carries no program text, and the
 /// world in it still runs. `--debug-source` opts the source back in, and
-/// `load --print-source` is what reads it out again -- which is how this
-/// milestone's "an image can be exported back to `.ns`" requirement is met
-/// while no decompiler exists.
+/// `load --print-source` is what reads it out again -- which is how an
+/// image can be exported back to `.ns` while no decompiler exists.
 #[test]
 fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
     let src = fixture("arithmetic.ns");

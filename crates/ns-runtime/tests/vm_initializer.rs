@@ -88,9 +88,9 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
 
 #[test]
 fn a_return_inside_a_block_in_init_exprs_escapes_instantiate() {
-    // M1 gap, deliberately carried forward (spec: "Class instantiation"):
-    // the `Signal::Return` targets the initializer activation, which is
-    // still running, and nothing catches it.
+    // A known gap (`docs/design/execution.md`, "Non-local return"): the
+    // `Signal::Return` targets the initializer activation, which is still
+    // running, and nothing catches it.
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n  | |\n  [ ^1 ] value.\n) (\n) : ()";
     let (mut interp, class) = load(src);
     let result = interp.instantiate(class, vec![]);
@@ -111,8 +111,8 @@ fn a_factory_arity_mismatch_is_still_the_shared_error() {
 }
 
 // ---------------------------------------------------------------------------
-// Review fix round 1: `InitSlot`'s field index must be relative to the
-// mixin, not baked in absolute at compile time.
+// `InitSlot`'s field index must be relative to the mixin, not baked in
+// absolute at compile time.
 // ---------------------------------------------------------------------------
 
 /// A bare `SlotDecl` with no initializer -- only its presence (for the slot
@@ -179,19 +179,18 @@ fn field_at(heap: &ns_runtime::Heap, instance: &Value, index: usize) -> i64 {
 #[test]
 fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_ones_absolute_offset()
 {
-    // The review's finding: `InitSlot` used to carry an ABSOLUTE field
-    // index, baked in at compile time from whichever class the compiler
-    // happened to be called against -- but the compiled initializer is
-    // shared by *every* application of its mixin (it lives on the mixin,
-    // not on a class object, per §6.2). Two applications of the
-    // SAME mixin to superclasses with different slot counts legitimately
-    // disagree about where the mixin's own slot lands; the old scheme could
-    // only be right for one of them. This is a general defect, not a
-    // nested-class-only one -- reproducing it needs one `Rc<Mixin>` applied
-    // to two different superclasses, which today only happens by calling
-    // `Interpreter::apply_mixin` directly (`load_module` always builds a
-    // fresh `Mixin` per module, so two ordinary loaded classes never share
-    // one).
+    // `InitSlot` must not carry an ABSOLUTE field index, baked in at
+    // compile time from whichever class the compiler happens to be called
+    // against: the compiled initializer is shared by *every* application of
+    // its mixin (it lives on the mixin, not on a class object, per §6.2).
+    // Two applications of the SAME mixin to superclasses with different
+    // slot counts legitimately disagree about where the mixin's own slot
+    // lands, so an absolute index could only be right for one of them. The
+    // failure is general, not nested-class-only -- reproducing it needs one
+    // `Rc<Mixin>` applied to two different superclasses, which only happens
+    // by calling `Interpreter::apply_mixin` directly (`load_module` always
+    // builds a fresh `Mixin` per module, so two ordinary loaded classes
+    // never share one).
     //
     // The mixin is the one `load_module` built, so the initializer it
     // compiled for it -- keyed by that mixin -- is the one both hand-made

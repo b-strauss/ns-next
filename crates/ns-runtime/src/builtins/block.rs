@@ -1,5 +1,5 @@
 //! `Block` (closure) native methods -- `value`..`value:value:value:`,
-//! `numArgs`, and (Milestone 2) `whileTrue:`/`whileFalse:`.
+//! `numArgs`, and `whileTrue:`/`whileFalse:`.
 
 use crate::interpreter::EvalResult;
 use crate::types::*;
@@ -32,8 +32,9 @@ pub fn dispatch(
 /// condition value is sent `mustBeBoolean` (an ordinary virtual send --
 /// `doesNotUnderstand:` by default) and that send's result is the loop
 /// expression's value. The bytecode compiler's inlined loop reproduces
-/// exactly this on its guard-failure path (M2 spec, "Control-flow
-/// inlining"), so the two agree without re-running the condition.
+/// exactly this on its guard-failure path (`docs/design/compiler.md`,
+/// "Control-flow inlining"), so the two agree without re-running the
+/// condition.
 fn run_while(interp: &mut Interpreter, cond: &Value, body: &Value, expect: bool) -> EvalResult {
     loop {
         match super::call_block(interp, cond, vec![])? {

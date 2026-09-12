@@ -62,7 +62,7 @@ fn root_class_answers(
     false
 }
 
-/// `ns-next build`: `run`'s pipeline up to engine installation, and then
+/// `ns-next build`: `run`'s pipeline up to loading the module, and then
 /// deliberately no instantiation.
 pub(crate) fn execute(
     file: &Path,

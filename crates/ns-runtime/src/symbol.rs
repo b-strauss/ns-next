@@ -1,10 +1,10 @@
 //! Global symbol interning for selectors, slot names, and class names.
 //!
 //! Interned strings are leaked (`Box::leak`) and live for the process
-//! lifetime. This is an accepted Milestone 1 simplification -- the same
-//! spirit as the heap arena's own accepted growth without bound until a
-//! collector lands (`docs/design/memory.md`). A later milestone's GC would
-//! intern into a proper symbol table instead.
+//! lifetime. This is an accepted simplification -- the same spirit as the
+//! heap arena's own accepted growth without bound until a collector lands
+//! (`docs/design/memory.md`). A collector would intern into a proper
+//! symbol table instead.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

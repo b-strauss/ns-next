@@ -15,20 +15,21 @@ use crate::Symbol;
 /// that keeps only what execution needs. Int/float text is parsed once at
 /// compile time; `Str`/`Sym`/`Char`/`Array` still allocate a fresh heap
 /// object each time they execute (a literal string is a fresh `Object` on
-/// every evaluation, as it was in Milestone 1).
+/// every evaluation).
 ///
 /// `MalformedInt` carries the raw text of an integer literal the lexer
 /// accepted but `interpreter::literals::parse_int_literal` rejects (out of
 /// `i64` range, a fractional radix literal). That is a Newspeak-program
-/// error M1 raises *when the literal is evaluated*; compilation cannot
+/// error the language raises *when the literal is evaluated*; compilation cannot
 /// raise a `NewspeakError`, so the VM re-runs `parse_int_literal` when the
 /// instruction executes and raises the identical error then.
 ///
 /// `UnresolvedIdent` is the same deferral for the other program-level
 /// error a *resolved* module can still carry: an identifier with no
-/// binding that names no builtin class -- in practice a bare `super`,
-/// which `resolver::resolve_ident` leaves unbound and the lexer does not
-/// reserve. Neither variant is a lowered `ast::Literal`; both are payloads
+/// binding that names no builtin class -- a bare `super`, which
+/// `resolver::resolve_ident` leaves unbound and the lexer does not reserve,
+/// or a `super`-prefixed superclass-clause receiver (see
+/// `interpreter::literals::unresolved_identifier_error`). Neither variant is a lowered `ast::Literal`; both are payloads
 /// of a `LoadLiteral` that raises instead of producing a value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
@@ -46,8 +47,9 @@ pub enum Literal {
 }
 
 /// One send instruction's stable identity -- the instruction's own index
-/// into `CompiledCode.instrs`. Reserved for Milestone 4's inline caches;
-/// inert in Milestone 2.
+/// into `CompiledCode.instrs`. Reserved for the inline caches; inert until
+/// they land (`docs/design/compiler.md`, "Safepoints and call-site
+/// identity").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CallSite {
     pub call_site_id: u16,
@@ -65,8 +67,8 @@ pub enum Instr {
     LoadSelf {
         dst: u16,
     },
-    /// M1's "bare builtin class name has no `Binding`" convention, resolved
-    /// at compile time.
+    /// A bare builtin class name, which the resolver leaves without a
+    /// `Binding`, resolved at compile time.
     LoadBuiltinClass {
         dst: u16,
         kind: BuiltinClass,
@@ -143,9 +145,10 @@ pub enum Instr {
     /// level's frame, from that level's own
     /// `MixinApplication.own_slot_base` -- one frame per level, so a frame's
     /// base never describes a level other than its own. Still the one
-    /// layout-dependent instruction (spec: Milestone 3's class-shape-change
-    /// flush must invalidate compiled initializers) -- layout-dependent on
-    /// the mixin's own slot order, not on the whole hierarchy's.
+    /// layout-dependent instruction (a class-shape-change flush must
+    /// invalidate compiled initializers: `docs/design/liveness-and-reflection.md`,
+    /// "Caches and their dependency keys") -- layout-dependent on the
+    /// mixin's own slot order, not on the whole hierarchy's.
     InitSlot {
         src: u16,
         own_index: u32,
@@ -229,7 +232,8 @@ pub struct CompiledCode {
     /// Maps a statement index (a method's/block's `CodeBody.stmts` index;
     /// for an initializer, each slot initializer then each `initExpr`, in
     /// that order) to the half-open instruction range it compiled to --
-    /// the safepoint boundary and the M1-compatible "statement `pc`" view.
+    /// the safepoint boundary, and how an activation's instruction `pc` maps
+    /// back to the statement it is in.
     pub statement_pc: Vec<(usize, Range<usize>)>,
     /// One entry per `Send*` instruction, in instruction order. Inert.
     pub call_sites: Vec<CallSite>,
