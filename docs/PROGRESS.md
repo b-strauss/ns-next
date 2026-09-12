@@ -1153,13 +1153,20 @@ test runs three recursions to 100,000 counted activations under each lowering.
   to test its variant; `doesNotUnderstand:` copies the send's arguments; a
   native loop's body step looks its closure up again every iteration;
   `run_initializer_levels` allocates a list per instantiation — none measured.
-  `boolean.rs`'s `block_step` treats any continuation but `Truthy` as
-  `Deliver`, which a future continuation would have to be matched against
-  explicitly. No test sends `whileTrue:` or `and:` from Rust, where a
-  non-`Deliver` continuation sits at a run's floor; the boundary test does not
-  assert `counted_depth() == 0` after an overflow; the crafted-artifact test
-  does not assert that its mutation produced a `SendInlinable`. `vm::send`
-  carries `#[allow(clippy::too_many_arguments)]`.
+  The argument buffer's stale values and every value a continuation holds
+  (`WhileLoop`) are roots step 2, the root discipline, has to account for.
+  `vm::send` carries `#[allow(clippy::too_many_arguments)]`. `inspect`'s walk
+  bounds the tag-named hash count at one byte per entry where the decoder uses
+  five; it never pre-allocates from the count, so this is only an
+  inconsistency.
+- **The memory bound under a crafted artifact is real but large.** A decoded
+  code table may nest blocks 128 deep, the parser's own limit, so up to 128
+  exempt activations can sit above each counted one: at most 129 × L stack
+  entries, about 1.3 GB of entries at the size measured when this landed
+  ([execution.md](design/execution.md), "Two bounds, not one"). The encoder
+  does not refuse deeper nesting itself — no parsed source can produce it, so
+  only a hand-built `CompiledCode` could write an image the decoder then
+  refuses.
 - **The two error messages that name a milestone, `ClosureData.params` and the
   lexical-send slot lookup** (now in `sends::decide_lexical_send`), still as
   listed under "M4 — Cleaning up with one engine".
