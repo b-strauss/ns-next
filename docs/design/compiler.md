@@ -448,6 +448,13 @@ into `ns_runtime::Lowering` and passed to `source::bootstrap`, which every
 compiling command goes through; `disasm` takes it as an `Option` instead and
 refuses it for an artifact, which carries the code it was built with.
 
+A command that dropped the switch would compare the optimized lowering with
+itself, and no program's output would show it. `crates/ns-cli/tests/lowering.rs`
+therefore reads the code instead: `disasm`'s listing, and `inspect --full` of an
+artifact from `build` and from `snapshot`, have no branch under the reference
+lowering and one under the optimized. `run` writes nothing to read; it is
+covered by handing the switch to the same `source::bootstrap` call.
+
 ### The harness
 
 - `crates/ns-cli/tests/run_fixtures.rs`, `program_outcomes.rs` and
