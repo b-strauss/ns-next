@@ -18,9 +18,9 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 M4 is under way. **1b, the trampoline, is done** — see "M4 — The trampoline"
 below — and **the next piece is step 2, the compiler-checked root
 discipline** ([memory.md](design/memory.md), "The root discipline: checked by
-the compiler, not by convention"). One task of the trampoline's
-[plan](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md) is still owed
-and comes first, with the user: the profile of `bench_block.ns` below.
+the compiler, not by convention"). The profile of `bench_block.ns` that the
+trampoline's [plan](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md)
+owed was taken last, with the user; see below.
 
 Sends run on the activation stack rather than the Rust stack, in one loop that
 pushes, pops and resumes; `value` and the control-flow natives are trampoline
@@ -76,27 +76,21 @@ tree-walker", "M4 — Cleaning up with one engine" and "M4 — The reference
 lowering" below. Then 1b took sends off the Rust stack; see "M4 — The
 trampoline" below.
 
-**The profile of `bench_block.ns` is still owed.** It is the trampoline plan's
-first task, deferred to be taken with the user, since it needs an elevated shell
-and a profiler installed outside the repository. It is to be taken on a binary
-built from the commit 1b started from, `04e5fc0`, in a throwaway worktree: the
-question arose about that binary, and the trampoline has since changed what
-`bench_block.ns` pays for — about 22% less, mostly because `value:` is a push
-where it was a native call and a nested run ([execution.md](design/execution.md),
-"What the trampoline moved"). The question: `bench_block.ns`'s time did not
-move under the activation stack, although the stack took the block's own
-activation out of the frame arena; what offsets that saving was not known.
-Retiring the tree-walker took about 4% off it, attributed to a smaller closure.
-Step B then followed the lead: storing a closure behind an `Rc`, so that
-`value:` bumps a reference count instead of copying the closure out of the
-heap, took about 17% off it, measured against its parent commit
-([execution.md](design/execution.md), "What step B moved"). Whether that
-copy is what offset the stack's saving is not established, because no profile
-was taken, so the profile is still owed. What it has to explain is smaller:
-measured against `master` in one sitting, `bench_block.ns` cost about 360 ns
-per iteration more than `bench_send.ns` before step B and about 218 ns after
-it — roughly the creation, reification, invocation and divorce of one block,
-since both methods otherwise do one `+` apiece.
+**The profile of `bench_block.ns` is taken**
+([execution.md](design/execution.md), "What the profiles show"). The question
+was why `bench_block.ns`'s time did not move under the activation stack,
+although the stack took the block's own activation out of the frame arena. The
+answer is allocation: before the trampoline, a send's argument vector was 16.7%
+of the timed samples, `value` as a native callback 12.1%, reifying the frame
+into an arena that grows by doubling 9.6% and the divorce on return 8.9%; the
+trampoline took the first two. Profiling the trampoline's head as well found
+one cost no measurement had isolated: `Symbol::intern` is 11.9% of
+`bench_send.ns`, because a lexical send with a setter-shaped selector —
+`self tick: sum` — interns its getter name on every send to look for a slot,
+and the method and slot tables hash `Symbol` keys with SipHash. That is the
+lexical-send slot lookup listed as left for the inline caches; a cached getter
+symbol and a hasher for `u32`-shaped keys would take most of it out sooner,
+and are a candidate small step of their own before the caches.
 
 The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
 and all three done, 1b done, everything from step 2 on still ahead — and it is
@@ -1016,7 +1010,9 @@ and recorded in the design documents before the plan.
    interner is thread-local.
 
 **What changed**, in the plan's order. The plan's first task, the profile of
-`bench_block.ns`, is deferred (above).
+`bench_block.ns`, was taken last, with the user, on a binary built from
+`04e5fc0` (above, and [execution.md](design/execution.md), "What the profiles
+show").
 
 1. **`SendInlinable`**, wire tag 20, pinned in `opcode_tags.rs`. The reference
    lowering emits it for exactly the sends `control_flow::recognize` accepts,
@@ -1145,7 +1141,6 @@ test runs three recursions to 100,000 counted activations under each lowering.
 - **Suspending a running computation**: a yield path out of the loop, and a way
   past its re-entries from Rust ([image-format.md](design/image-format.md),
   "Planned: suspend and resume").
-- **The profile of `bench_block.ns`** — above.
 - **Small follow-ups the task reviews deferred.** A nested run's argument
   buffer is dropped when the outer one is given back, so a re-entry with
   arguments allocates once, and a returned buffer keeps its stale values until

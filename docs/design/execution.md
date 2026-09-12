@@ -609,7 +609,8 @@ overlap.
 block, so every iteration still reifies `bump:`'s activation into the frame arena,
 and divorcing it copies its registers into two vectors when it returns. The stack
 took the block's own activation out of the arena, yet the median did not move;
-what offsets that saving has not been attributed, since no profile was taken.
+a profile taken later attributes that to allocation ("What the profiles show"
+below).
 What does show is memory: peak working set over this source fell from 966.9 MB
 to 446.0 MB ([memory.md](memory.md)).
 
@@ -798,6 +799,53 @@ the difference is `crates/ns-runtime/tests/trampoline.rs`, whose boundary test
 runs three recursions to 99,999 and to 100,000 counted activations under each
 lowering, and whose other tests recurse 40,000 and 50,000 deep or run into the
 limit.
+
+### What the profiles show
+
+Two binaries were profiled on 2026-09-12, both release builds with debug
+information: the commit the trampoline started from (`04e5fc0`) and the
+trampoline's head (`641b8d2`). Each ran `ns-next bench` over `bench_block.ns`
+and `bench_send.ns` with 500 iterations under `samply record` (ETW sampling at
+1 kHz, Windows 11). samply resolved the system libraries but not ns-next's own
+frames, which were resolved afterwards against the PDB through `dbghelp`. Only
+samples under the timed entry send (`timed_send`) are counted, because parsing,
+compiling and, above all, dropping the heap at exit also land in a profile — for
+`bench_block.ns` before the trampoline, the drop of the never-reclaimed arena
+was 29% of all samples. The figures are inclusive shares of the timed samples;
+`ntdll` has no public symbol names here, so its time is charged to the nearest
+ns-next caller.
+
+| Where the time goes | `bench_block.ns`, before | `bench_send.ns`, before | `bench_block.ns`, head | `bench_send.ns`, head |
+|---|---|---|---|---|
+| a send's argument vector (`vm::collect`), almost all heap allocation and free | 16.7% | 31.1% | — | — |
+| `value` as a native callback (`builtins::call_block`) | 12.1% | — | — | — |
+| reifying the frame (`Heap::reify`), mostly `RtlCopyMemory` | 9.6% | — | 12.5% | — |
+| popping, including the divorce (`Heap::pop_activation`) | 8.9% | 0.2% | 13.1% | 0.4% |
+| `Symbol::intern` | 7.1% | 9.3% | 5.8% | 11.9% |
+| deciding a send (`Interpreter::decide_send`) | — | — | 10.8% | 16.7% |
+
+**This answers what offset the activation stack's saving on `bench_block.ns`**
+("What the activation stack moved" above): allocation. The stack took the
+block's own activation out of the frame arena, but every send still built an
+argument vector, every block creation still reified its method's activation
+into an arena that grows by doubling — the `RtlCopyMemory` under `reify` is
+that growth copying every frame so far — and every return still divorced the
+frame into two fresh vectors, while `value:` ran through a native callback and
+a nested run. Removing the closure copy in step B took one piece of that; the
+trampoline took the argument vector and the callback.
+
+What is left on `bench_block.ns` is mostly the reification and the divorce —
+about a quarter of the timed samples — which is what closure conversion
+("Planned: closure conversion") and a collector ([memory.md](memory.md)) are
+for. On `bench_send.ns` the profile shows a cost no measurement had
+isolated: `Symbol::intern` is 11.9% of the timed samples. `self tick: sum` is a
+lexical send whose selector has a setter's shape, so
+`sends::decide_lexical_send` interns the getter name `tick` — hashing its text —
+on every send to find out whether the receiver has a slot of that name. The
+method and slot tables add SipHash on `Symbol` keys (`hash_one<Symbol>`, 5.1%
+self). Both are the lexical-send slot lookup PROGRESS.md lists as left for the
+inline caches; a cached getter symbol and a hasher for `u32`-shaped keys would
+remove most of it sooner.
 
 ## The trampoline
 
