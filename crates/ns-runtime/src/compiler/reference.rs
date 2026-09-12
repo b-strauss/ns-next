@@ -12,6 +12,7 @@ use std::rc::Rc;
 use ns_syntax::ast::{self, Expr, Stmt};
 use ns_syntax::Span;
 
+use super::control_flow;
 use super::lower::{lower_literal, selector_of};
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instr, Literal as BcLiteral};
 use crate::mixin::Mixin;
@@ -344,13 +345,16 @@ impl<'a> Body<'a> {
                     call_site,
                 })
             }
-            // An ordinary send, including every one the optimized lowering
-            // inlines. This is where the trampoline emits `SendInlinable` for
-            // the sends `control_flow::recognize` accepts
+            // An ordinary send. The ones the optimized lowering inlines are
+            // marked `SendInlinable`, which only the depth count reads
             // (`docs/design/compiler.md`, "How the limit counts").
             Some(Binding::Local(_) | Binding::OuterLocal { .. }) | None => {
                 let receiver_reg = self.value(&send.receiver);
-                self.public_send(receiver_reg, &send.message)
+                if control_flow::recognize(send).is_some() {
+                    self.inlinable_send(receiver_reg, &send.message)
+                } else {
+                    self.public_send(receiver_reg, &send.message)
+                }
             }
         }
     }
@@ -359,6 +363,18 @@ impl<'a> Body<'a> {
         let selector = selector_of(message);
         let arg_regs = self.values(&message.args);
         self.emit_send(|dst, call_site| Instr::SendPublic {
+            selector,
+            receiver_reg,
+            arg_regs,
+            dst,
+            call_site,
+        })
+    }
+
+    fn inlinable_send(&mut self, receiver_reg: u16, message: &ast::MessageSend) -> u16 {
+        let selector = selector_of(message);
+        let arg_regs = self.values(&message.args);
+        self.emit_send(|dst, call_site| Instr::SendInlinable {
             selector,
             receiver_reg,
             arg_regs,
@@ -505,6 +521,11 @@ fn operands(instr: &Instr) -> Vec<u16> {
             receiver_reg,
             arg_regs,
             ..
+        }
+        | Instr::SendInlinable {
+            receiver_reg,
+            arg_regs,
+            ..
         } => std::iter::once(*receiver_reg)
             .chain(arg_regs.iter().copied())
             .collect(),
@@ -530,6 +551,7 @@ fn destination(instr: &Instr) -> Option<u16> {
         | Instr::LoadOuterLocal { dst, .. }
         | Instr::SendLexical { dst, .. }
         | Instr::SendPublic { dst, .. }
+        | Instr::SendInlinable { dst, .. }
         | Instr::SendSuper { dst, .. }
         | Instr::MakeClosure { dst, .. }
         | Instr::MakeArray { dst, .. } => Some(*dst),
@@ -578,6 +600,86 @@ mod tests {
             arg_regs,
             dst,
             call_site: CallSite { call_site_id: id },
+        }
+    }
+
+    fn inlinable(
+        selector: &str,
+        receiver_reg: u16,
+        arg_regs: Vec<u16>,
+        dst: u16,
+        id: u16,
+    ) -> Instr {
+        Instr::SendInlinable {
+            selector: Symbol::intern(selector),
+            receiver_reg,
+            arg_regs,
+            dst,
+            call_site: CallSite { call_site_id: id },
+        }
+    }
+
+    /// Exactly the sends `control_flow::recognize` accepts are marked, so the
+    /// depth count can exempt the block activations the optimized lowering
+    /// inlines away (`docs/design/compiler.md`, "How the limit counts").
+    #[test]
+    fn a_send_the_optimized_lowering_inlines_is_a_send_inlinable() {
+        let code = compile(&method("foo: x = ( ^x ifTrue: [1] )"), 0);
+        assert!(
+            code.instrs
+                .iter()
+                .any(|i| matches!(i, Instr::SendInlinable { selector, .. } if selector.as_str() == "ifTrue:")),
+            "{code:?}"
+        );
+        assert!(!code
+            .instrs
+            .iter()
+            .any(|i| matches!(i, Instr::SendPublic { .. })));
+    }
+
+    #[test]
+    fn a_send_the_optimized_lowering_does_not_inline_stays_a_send_public() {
+        // A non-literal block argument, and a cascade message: neither is
+        // offered to `recognize` in the optimized lowering.
+        for decl in [
+            "foo: x = ( ^x ifTrue: x )",
+            "foo: x = ( ^x yourself; ifTrue: [1] )",
+        ] {
+            let code = compile(&method(decl), 0);
+            assert!(
+                !code
+                    .instrs
+                    .iter()
+                    .any(|i| matches!(i, Instr::SendInlinable { .. })),
+                "{decl}: {code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_inlinable_selector_is_marked() {
+        for (decl, selector) in [
+            (
+                "foo: x = ( ^x ifTrue: [1] ifFalse: [2] )",
+                "ifTrue:ifFalse:",
+            ),
+            (
+                "foo: x = ( ^x ifFalse: [1] ifTrue: [2] )",
+                "ifFalse:ifTrue:",
+            ),
+            ("foo: x = ( ^x ifFalse: [1] )", "ifFalse:"),
+            ("foo: x = ( ^x and: [x] )", "and:"),
+            ("foo: x = ( ^x or: [x] )", "or:"),
+            ("foo: x = ( ^[x] whileTrue: [x] )", "whileTrue:"),
+            ("foo: x = ( ^[x] whileFalse: [x] )", "whileFalse:"),
+        ] {
+            let code = compile(&method(decl), 0);
+            assert!(
+                code.instrs.iter().any(
+                    |i| matches!(i, Instr::SendInlinable { selector: s, .. } if s.as_str() == selector)
+                ),
+                "{decl}: {code:?}"
+            );
         }
     }
 
@@ -640,7 +742,10 @@ mod tests {
         assert_eq!(code.instrs[0], Instr::Move { dst: 1, src: 0 });
         assert!(matches!(code.instrs[1], Instr::MakeClosure { dst: 2, .. }));
         assert!(matches!(code.instrs[2], Instr::MakeClosure { dst: 3, .. }));
-        assert_eq!(code.instrs[3], send("ifTrue:ifFalse:", 1, vec![2, 3], 4, 3));
+        assert_eq!(
+            code.instrs[3],
+            inlinable("ifTrue:ifFalse:", 1, vec![2, 3], 4, 3)
+        );
         assert_eq!(code.instrs[4], Instr::Return { reg: 4 });
         assert_eq!(
             closure_code(&code.instrs[1]).instrs,
@@ -671,7 +776,7 @@ mod tests {
         assert_eq!(code.instrs[1], Instr::StoreLocal { src: 1, slot: 0 });
         assert!(matches!(code.instrs[2], Instr::MakeClosure { dst: 2, .. }));
         assert!(matches!(code.instrs[3], Instr::MakeClosure { dst: 3, .. }));
-        assert_eq!(code.instrs[4], send("whileTrue:", 2, vec![3], 4, 4));
+        assert_eq!(code.instrs[4], inlinable("whileTrue:", 2, vec![3], 4, 4));
         assert_eq!(code.instrs[5], Instr::Move { dst: 5, src: 0 });
         assert_eq!(code.instrs[6], Instr::Return { reg: 5 });
         assert_eq!(code.statement_pc, vec![(0, 0..2), (1, 2..5), (2, 5..7)]);

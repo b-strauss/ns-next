@@ -120,6 +120,29 @@ pub enum BuiltinClass {
     Platform,
 }
 
+impl BuiltinClass {
+    /// Every builtin class, in declaration order. `Interpreter::builtin_class`
+    /// indexes by discriminant, so the bootstrap builds them in this order,
+    /// and the image's closing hash table writes them in it too -- it is also
+    /// their wire-tag order (`image::encode::builtin_class_tag`).
+    pub const ALL: [BuiltinClass; 14] = [
+        BuiltinClass::Object,
+        BuiltinClass::Boolean,
+        BuiltinClass::True,
+        BuiltinClass::False,
+        BuiltinClass::Integer,
+        BuiltinClass::Float,
+        BuiltinClass::Str,
+        BuiltinClass::Sym,
+        BuiltinClass::Character,
+        BuiltinClass::Array,
+        BuiltinClass::OrderedCollection,
+        BuiltinClass::Nil,
+        BuiltinClass::Block,
+        BuiltinClass::Platform,
+    ];
+}
+
 #[derive(Debug, Clone)]
 pub struct ClosureData {
     /// Shared with the `MakeClosure` instruction that created the closure --
@@ -201,6 +224,34 @@ pub enum FrameKind {
     SuperclassMessage(ClassRef),
 }
 
+/// What the run loop does with an activation's value when it returns
+/// (`docs/design/execution.md`, "The trampoline"). Every activation a
+/// send makes hands its value to that send; the other three are how a builtin
+/// control-flow native finishes its work once the block it activated has
+/// returned, with no Rust frame waiting for it.
+#[derive(Debug, Clone)]
+pub enum Continuation {
+    /// Hand the value to the send that made the activation.
+    Deliver,
+    /// `and:` and `or:`: hand on whether the value is exactly `true`
+    /// (`builtins::boolean::truthy`).
+    Truthy,
+    /// A native `whileTrue:`/`whileFalse:` loop's condition returned.
+    WhileCondition(Rc<WhileLoop>),
+    /// Its body returned.
+    WhileBody(Rc<WhileLoop>),
+}
+
+/// A native `whileTrue:`/`whileFalse:` loop in progress: its condition, its
+/// body -- any value, since a body that is not a block evaluates to itself --
+/// and the condition value that keeps it going.
+#[derive(Debug)]
+pub struct WhileLoop {
+    pub(crate) condition: Rc<ClosureData>,
+    pub(crate) body: Value,
+    pub(crate) expect: bool,
+}
+
 /// A *reified* activation: one a block captured, or one the image decoder
 /// rebuilt. A running activation lives on the `Heap`'s activation stack and
 /// becomes a `Frame` only when `Heap::reify` is asked for one; while it runs,
@@ -239,7 +290,7 @@ pub struct Frame {
     /// class level the activation initializes. The value `InitSlot` reads
     /// while the body runs is the live activation's own `slot_base`
     /// (`Heap::activation_slot_base`), one activation per initializing level
-    /// of the superclass chain (`Interpreter::run_initializer_level`); a
+    /// of the superclass chain (`Interpreter::run_own_initializer`); a
     /// frame carries a copy only if that activation was reified. The image
     /// does not record it -- a decoded frame has 0, since nothing re-activates
     /// one. Set once, where the activation is pushed, and never changed.

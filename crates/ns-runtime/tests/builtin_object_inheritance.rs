@@ -104,7 +104,7 @@ fn a_builtin_receiver_inherits_objects_identity_and_hash() {
 /// route through `builtins::object_class::dispatch`'s real
 /// `doesNotUnderstand:` -- whose message is
 /// "<describe(receiver)> does not understand #<selector>" -- rather than
-/// `Interpreter::does_not_understand`'s internal
+/// `Interpreter::decide_does_not_understand`'s internal
 /// "(native class ... has no doesNotUnderstand: implementation)" fallback.
 #[test]
 fn an_unknown_selector_on_a_builtin_runs_objects_real_does_not_understand() {

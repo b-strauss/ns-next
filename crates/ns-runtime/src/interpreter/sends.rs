@@ -9,12 +9,12 @@ use crate::heap::ActivationRef;
 use crate::types::*;
 use crate::Symbol;
 
-use super::{EvalResult, Interpreter, Signal};
+use super::{Interpreter, Signal, Step, StepArgs};
 
 /// A slot's getter (`x`, no colon) or setter (`x:`, exactly one trailing
 /// colon and no others) shape, per `newspeak-spec.pdf` §6.3.2 -- a slot's
 /// getter/setter are "implicitly defined by the slot declaration", not real
-/// `MethodDecl`s in the class's mixin, so `dispatch_lexical_send` must
+/// `MethodDecl`s in the class's mixin, so `decide_lexical_send` must
 /// recognize and serve them directly rather than relying on method lookup
 /// to ever find them. Returns `None` for a genuine multi-keyword selector
 /// (e.g. `at:put:`), which can never denote a slot access.
@@ -42,7 +42,7 @@ fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
 /// nested case out would make `private class N` unreachable from the class
 /// that declares it while `private n = (...)` is reachable.
 ///
-/// One definition because `dispatch_lexical_send` asks it of two classes --
+/// One definition because `decide_lexical_send` asks it of two classes --
 /// a class object's metaclass and then the receiver's own class.
 fn lexical_lookup(heap: &crate::heap::Heap, class: ClassRef, selector: Symbol) -> Lookup {
     match dispatch::lookup_defined_for(heap, class, selector) {
@@ -63,13 +63,13 @@ fn lexical_lookup(heap: &crate::heap::Heap, class: ClassRef, selector: Symbol) -
 /// dispatch privately (direct, non-virtual) if the target is `private` at
 /// depth `k`, otherwise virtually via `lookup_protected` on `o`'s actual
 /// class -- or, when `o` is a class object, on its metaclass first (§6.3).
-pub(crate) fn dispatch_lexical_send(
+pub(crate) fn decide_lexical_send(
     interp: &mut Interpreter,
     act: ActivationRef,
     depth: u16,
     selector: Symbol,
-    args: Vec<Value>,
-) -> EvalResult {
+    args: &[Value],
+) -> Result<Step, Signal> {
     // The lexical depth counts levels out from the class that *defines* this
     // method, so the walk needs this activation's `current_class`, not the
     // receiver's own class -- see `dispatch::kth_enclosing_object`.
@@ -90,9 +90,9 @@ pub(crate) fn dispatch_lexical_send(
                 if is_setter {
                     let value = args.first().copied().unwrap_or(Value::Nil);
                     interp.heap.set_instance_field(*obj, index, value);
-                    return Ok(o);
+                    return Ok(Step::Value(o));
                 } else if let Some(value) = interp.heap.instance_field(*obj, index) {
-                    return Ok(value);
+                    return Ok(Step::Value(value));
                 }
             }
         }
@@ -121,33 +121,37 @@ pub(crate) fn dispatch_lexical_send(
         .filter(|found| matches!(found, Lookup::Method(..) | Lookup::NestedClass(..)))
         .unwrap_or_else(|| lexical_lookup(&interp.heap, class, selector));
     match lookup {
-        Lookup::Method(method, defining_class) => {
-            interp.invoke_method(o, method, defining_class, args)
-        }
+        Lookup::Method(method, defining_class) => Ok(Step::Method {
+            receiver: o,
+            method,
+            defining_class,
+            args: StepArgs::Send,
+        }),
         Lookup::NestedClass(mixin, declaring_class) => {
             crate::interpreter::nested::nested_class(interp, &o, &mixin, declaring_class)
+                .map(Step::Value)
         }
         Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(interp, kind, o, selector, &args) {
+            match crate::builtins::dispatch_native(interp, kind, o, selector, args) {
                 Some(result) => result,
-                None => interp.send(o, selector, args),
+                None => interp.decide_send(o, selector, args),
             }
         }
-        Lookup::NotFound => interp.send(o, selector, args),
+        Lookup::NotFound => interp.decide_send(o, selector, args),
     }
 }
 
 /// `newspeak-spec.pdf` §5.10: starts at the superclass of the *current
 /// activation's* `current_class`, not `self`'s own class. On success, the
 /// new activation's `current_class` is `definingClass(selector, superclass)`
-/// -- `invoke_method`'s `defining_class` argument (from `lookup_defined_for`)
+/// -- the activation's `defining_class` argument (from `lookup_defined_for`)
 /// already carries that.
-pub(crate) fn dispatch_super_send(
+pub(crate) fn decide_super_send(
     interp: &mut Interpreter,
     act: ActivationRef,
     selector: Symbol,
-    args: Vec<Value>,
-) -> EvalResult {
+    args: &[Value],
+) -> Result<Step, Signal> {
     let Some(current_class) = interp.heap.activation_current_class(act) else {
         return Err(Signal::Error(NewspeakError {
             selector,
@@ -167,9 +171,12 @@ pub(crate) fn dispatch_super_send(
     };
     let self_value = interp.heap.activation_receiver(act);
     match dispatch::lookup_defined_for(&interp.heap, superclass, selector) {
-        Lookup::Method(method, defining_class) => {
-            interp.invoke_method(self_value, method, defining_class, args)
-        }
+        Lookup::Method(method, defining_class) => Ok(Step::Method {
+            receiver: self_value,
+            method,
+            defining_class,
+            args: StepArgs::Send,
+        }),
         // `super N` for a nested class the superclass declares. The
         // receiver stays `self` (§5.10), which is also the enclosing object
         // the accessor caches against -- so `super N` and `N` name the same
@@ -179,13 +186,14 @@ pub(crate) fn dispatch_super_send(
         // (`MixinApplication::nested_slot`), not against its name.
         Lookup::NestedClass(mixin, declaring_class) => {
             crate::interpreter::nested::nested_class(interp, &self_value, &mixin, declaring_class)
+                .map(Step::Value)
         }
         Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(interp, kind, self_value, selector, &args) {
+            match crate::builtins::dispatch_native(interp, kind, self_value, selector, args) {
                 Some(result) => result,
-                None => interp.send(self_value, selector, args),
+                None => interp.decide_send(self_value, selector, args),
             }
         }
-        Lookup::NotFound => interp.send(self_value, selector, args),
+        Lookup::NotFound => interp.decide_send(self_value, selector, args),
     }
 }

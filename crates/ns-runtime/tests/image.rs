@@ -373,6 +373,13 @@ fn every_instr_once() -> CompiledCode {
                 dst: 6,
                 call_site: cs,
             },
+            Instr::SendInlinable {
+                selector: Symbol::intern("+"),
+                receiver_reg: 1,
+                arg_regs: vec![2],
+                dst: 6,
+                call_site: cs,
+            },
             Instr::SendSuper {
                 selector: Symbol::intern("bar"),
                 arg_regs: vec![],
@@ -409,7 +416,7 @@ fn every_instr_once() -> CompiledCode {
 }
 
 /// The compiled code of `class`'s method `selector` -- the body the method
-/// `Interpreter::invoke_method` runs carries.
+/// `Interpreter::push_step` activates carries.
 fn method_code(heap: &Heap, class: ClassRef, selector: &str) -> Rc<CompiledCode> {
     let application = heap.class_application(class).expect("not a class");
     application.mixin.methods[&Symbol::intern(selector)]
@@ -677,14 +684,14 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     w.write_u32(0);
     w.write_u32(0);
     w.write_u32(1); // one instruction ...
-    w.write_u8(20); // ... one past the last real tag
+    w.write_u8(21); // ... one past the last real tag
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut r, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 20
+            tag: 21
         })
     );
 }
@@ -901,6 +908,97 @@ fn a_literal_array_within_the_nesting_limit_still_decodes() {
     ));
 }
 
+/// The code table's other depth: blocks nested `levels` deep in one method.
+/// Body 0 is the innermost block, each later body creates the one before it,
+/// and the last is the method -- the order the encoder writes, every block
+/// before the code that creates it. The innermost block sits `levels`
+/// `MakeClosure` hops below the method. Each level is 37 bytes, so the file
+/// grows linearly with the nesting it asks for.
+fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
+    use ns_runtime::image::opcodes::{OP_MAKE_CLOSURE, OP_RETURN};
+    let body = |w: &mut encode::Writer, kind: u8, creates: Option<usize>| {
+        w.write_u8(kind);
+        w.write_u16(0); // num_args
+        w.write_u16(1); // num_registers
+        w.write_u32(0); // source.start
+        w.write_u32(0); // source.end
+        w.write_u32(0); // no statement_pc entries
+        w.write_u32(0); // no call sites
+        match creates {
+            Some(block) => {
+                w.write_u32(2); // two instructions ...
+                w.write_u8(OP_MAKE_CLOSURE); // ... r0 := the next block in,
+                w.write_u16(0);
+                w.write_u16(0); // taking no parameters,
+                w.write_u32(u32::try_from(block).expect("a test-sized code id"));
+            }
+            None => w.write_u32(1), // the innermost: one instruction ...
+        }
+        w.write_u8(OP_RETURN); // ... then ^r0
+        w.write_u16(0);
+    };
+    let mut w = encode::Writer::new();
+    w.write_u32(u32::try_from(levels + 1).expect("a test-sized code table"));
+    body(&mut w, 1, None); // CodeKind::Block
+    for id in 1..levels {
+        body(&mut w, 1, Some(id - 1));
+    }
+    body(&mut w, 0, Some(levels - 1)); // CodeKind::Method
+    w.into_bytes()
+}
+
+/// A decoded block's nesting is what bounds the exempt activations a
+/// crafted `SendInlinable` chain can stack above one counted activation
+/// (`docs/design/compiler.md`, "How the limit counts"), so the decoder caps it
+/// at the parser's own ceiling: one level past it is refused.
+#[test]
+fn a_block_nested_one_level_past_the_ceiling_is_a_decode_error() {
+    let bytes = code_table_with_nested_blocks(129);
+    let mut r = decode::Reader::new(&bytes);
+    match decode::decode_code_table(&mut r, &symbols::Table::empty()) {
+        Err(e) => assert_eq!(e, decode::DecodeError::BlockNestingTooDeep { limit: 128 }),
+        Ok(table) => panic!(
+            "blocks nested 129 deep decoded, {} bodies",
+            table.codes.len()
+        ),
+    }
+    assert_eq!(
+        decode::DecodeError::BlockNestingTooDeep { limit: 128 }.to_string(),
+        "blocks in image code nest deeper than 128 levels"
+    );
+}
+
+/// The ceiling itself decodes and verifies: it is the parser's limit, and a
+/// program at that limit must round-trip (see
+/// `the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs`).
+#[test]
+fn a_block_nested_at_the_ceiling_decodes_and_verifies() {
+    let bytes = code_table_with_nested_blocks(128);
+    let mut r = decode::Reader::new(&bytes);
+    let table = decode::decode_code_table(&mut r, &symbols::Table::empty())
+        .expect("128 levels is within the ceiling");
+    assert_eq!(table.codes.len(), 129);
+    assert_eq!(decode::verify_code_table(&table), Ok(()));
+}
+
+/// Refused while it is read, not after: a decoded body owns the bodies it
+/// creates through `Rc`s, so dropping a chain of them recurses once per
+/// level. Decoded whole and refused afterwards, a few megabytes of chain
+/// would overflow the stack -- an abort, not an error -- the moment the
+/// refused table was dropped.
+#[test]
+fn a_deeply_nested_block_chain_is_a_decode_error_not_a_stack_overflow() {
+    let bytes = code_table_with_nested_blocks(100_000);
+    let mut r = decode::Reader::new(&bytes);
+    let result = decode::decode_code_table(&mut r, &symbols::Table::empty());
+    let refused = matches!(
+        result,
+        Err(decode::DecodeError::BlockNestingTooDeep { limit: 128 })
+    );
+    drop(result);
+    assert!(refused, "a 100,000-deep chain of blocks must be refused");
+}
+
 /// An image whose mixin table is empty describes no root class, so there is
 /// nothing for `load` to build the world around -- and nothing for the
 /// graph's class tag 1 to name.
@@ -996,6 +1094,101 @@ fn the_deepest_literal_array_the_parser_accepts_survives_a_round_trip() {
     let decoded = &table.codes[*id as usize];
     assert_eq!(**decoded, *original);
     assert_eq!(literal_array_depth(decoded), levels);
+}
+
+/// A module whose one method nests `levels` blocks, each sending `value` to
+/// the next one in, the innermost empty: `[[[] value] value] value`. An empty
+/// block costs the parser no further level, so this is the deepest block
+/// nesting a given parser depth allows.
+fn source_with_nested_blocks(levels: usize) -> String {
+    let mut nest = "[]".to_string();
+    for _ in 1..levels {
+        nest = format!("[{nest} value]");
+    }
+    format!(
+        "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public nest = ( ^{nest} value )\n) : ()"
+    )
+}
+
+/// The deepest block nesting `ns-syntax`'s parser accepts, probed rather than
+/// restated, for the reason `deepest_literal_array_the_parser_accepts` is.
+fn deepest_block_nesting_the_parser_accepts() -> usize {
+    let mut deepest = 0;
+    for levels in 1..1024 {
+        if ns_syntax::parse(&source_with_nested_blocks(levels)).is_ok() {
+            deepest = levels;
+        } else {
+            break;
+        }
+    }
+    assert!(deepest > 0, "the parser accepts at least one block");
+    deepest
+}
+
+/// How many `MakeClosure` hops the deepest block in `code` sits below it.
+fn block_nesting(code: &CompiledCode) -> usize {
+    code.instrs
+        .iter()
+        .filter_map(|instr| match instr {
+            Instr::MakeClosure { code: block, .. } => Some(1 + block_nesting(block)),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// The decoder's block-nesting ceiling (`BlockNestingTooDeep`) must admit
+/// everything the parser does, under either lowering, or a legal program
+/// would build into a binary that cannot be loaded. `[...] value` is not a
+/// control-flow send, so neither lowering inlines a level away: the code
+/// table nests exactly as deep as the source.
+#[test]
+fn the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs() {
+    let levels = deepest_block_nesting_the_parser_accepts();
+    let src = source_with_nested_blocks(levels);
+    for lowering in [
+        ns_runtime::Lowering::Optimized,
+        ns_runtime::Lowering::Reference,
+    ] {
+        let module = ns_syntax::parse(&src).expect("parse");
+        let resolved = ns_runtime::resolve(
+            module,
+            Rc::from(src.as_str()),
+            SourceOrigin::File(PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interp = Interpreter::bootstrap_with(lowering);
+        let class = interp.load_module(&resolved);
+        assert_eq!(
+            block_nesting(&method_code(interp.heap_ref(), class, "nest")),
+            levels,
+            "{lowering:?}: every source level is a block in the code table"
+        );
+        let bytes = image::build(
+            interp.heap_ref(),
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            Symbol::intern("nest"),
+        )
+        .expect("build");
+        let mut loaded = match image::load(&bytes) {
+            Ok(loaded) => loaded,
+            Err(e) => panic!("{lowering:?}: {levels} nested blocks must load: {e}"),
+        };
+        let instance = expect_ok(
+            loaded.interp.instantiate(loaded.root_class, vec![]),
+            "instantiate",
+        );
+        let answer = expect_ok(
+            loaded.interp.send(instance, Symbol::intern("nest"), vec![]),
+            "nest",
+        );
+        assert!(
+            matches!(answer, Value::Nil),
+            "{lowering:?}: `[] value` is nil"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1924,7 +2117,7 @@ fn a_well_formed_closure_record_whose_arity_agrees_still_decodes() {
 
 #[test]
 fn a_closure_record_declaring_too_few_parameters_is_a_decode_error() {
-    // `invoke_closure` checks the *call's* arity against `params.len()`
+    // `push_step` checks the *call's* arity against `params.len()`
     // but sizes the register file from the *code* (`num_registers -
     // num_args`), and `locals::read_local` then indexes `temps[i - args.len()]`
     // unchecked. So this section -- otherwise entirely well-formed, as the
@@ -1980,7 +2173,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
     let max_hash = interp.heap_mut().ensure_identity_hash(*obj(&instance));
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2024,7 +2217,7 @@ fn bytes_after_the_last_section_are_refused_not_ignored() {
     let (mut interp, class) = load(src);
     let platform = interp.platform();
     let mut bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2048,7 +2241,7 @@ fn load_refuses_a_version_mismatch() {
     let (mut interp, class) = load(src);
     let platform = interp.platform();
     let mut bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2104,7 +2297,7 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
     let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2126,7 +2319,7 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
 // ---------------------------------------------------------------------------
 // `verify_code_table` -- decoding is byte-safe, but a decoded body
 // is not yet *coherent*. Every case below decodes cleanly and would panic
-// (or silently misaddress a register) inside `vm::run_code`.
+// (or silently misaddress a register) inside the VM.
 // ---------------------------------------------------------------------------
 
 /// A `CompiledCode` the compiler would never emit: the verification tests
@@ -2192,7 +2385,7 @@ fn a_jump_target_past_the_end_of_its_body_is_refused() {
 #[test]
 fn every_conditional_jump_target_is_checked_too() {
     // One case per jump-carrying instruction: a check that only covered
-    // `Jump` would leave three unchecked `pc` writes in `run_code`.
+    // `Jump` would leave three unchecked `pc` writes in the VM.
     for instr in [
         Instr::JumpIfNotBoolean { reg: 0, target: 9 },
         Instr::BranchIfFalse { reg: 0, target: 9 },
@@ -2266,8 +2459,34 @@ fn a_register_in_a_send_argument_list_is_checked_too() {
 }
 
 #[test]
+fn a_register_in_a_send_inlinable_is_checked_too() {
+    let table = table_of(vec![code_with(
+        CodeKind::Method,
+        0,
+        1,
+        vec![
+            Instr::SendInlinable {
+                selector: Symbol::intern("ifTrue:"),
+                receiver_reg: 0,
+                arg_regs: vec![4],
+                dst: 0,
+                call_site: CallSite { call_site_id: 0 },
+            },
+            Instr::Return { reg: 0 },
+        ],
+    )]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::RegisterOutOfRange {
+            reg: 4,
+            num_registers: 1
+        })
+    );
+}
+
+#[test]
 fn a_body_that_runs_past_its_last_instruction_is_refused() {
-    // `run_code` fetches `code.instrs[pc]` after every fall-through, so a
+    // The VM fetches `code.instrs[pc]` after every fall-through, so a
     // body whose last instruction is not a return or a jump indexes one
     // past the end. An empty body indexes past the end immediately.
     for instrs in [vec![], vec![Instr::LoadSelf { dst: 0 }]] {
@@ -2329,7 +2548,7 @@ fn a_make_closure_naming_a_method_body_is_refused() {
 fn a_make_closure_whose_parameters_disagree_with_its_body_is_refused() {
     // The `MakeClosure` mirror of `ClosureArityMismatch`: `params` and the
     // body's `num_args` are separate wire fields here too, and
-    // `invoke_closure` reads one while the frame is sized from the other.
+    // `push_step` reads one while the frame is sized from the other.
     let block = code_with(
         CodeKind::Block,
         1,
@@ -2771,7 +2990,7 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
     );
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2813,7 +3032,7 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
     );
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2914,7 +3133,7 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
     };
     install_mixin(&mut interp, class, doctored);
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(NEEDS_INITIALIZER),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2969,7 +3188,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         .set_identity_hash(*obj(&instance), u32::MAX - 1);
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3009,7 +3228,7 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
     let assigned = interp.heap_mut().ensure_identity_hash(*obj(&hashed));
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3036,6 +3255,146 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
         "an unassigned hash stays unassigned"
     );
     assert!(heap.ensure_identity_hash(fresh) > assigned);
+}
+
+/// A builtin class, the root class and `platform` are named by tag, not
+/// carried as records, so before the closing hash table nothing recorded a
+/// hash one of them had been given: after the load the bootstrap's fresh
+/// objects drew new ones (`docs/design/image-format.md`, "Identity hashes are
+/// preserved verbatim"). One that nothing asked stays unassigned.
+#[test]
+fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let (mut interp, class) = load(src);
+    let platform = interp.platform();
+    let integer = interp.builtin_class(BuiltinClass::Integer);
+    let integer_hash = interp.heap_mut().ensure_identity_hash(integer);
+    let class_hash = interp.heap_mut().ensure_identity_hash(class);
+    let platform_hash = interp.heap_mut().ensure_identity_hash(*obj(&platform));
+    let bytes = image::snapshot(
+        &interp,
+        None,
+        &Origin::File(PathBuf::from("t.ns")),
+        class,
+        &platform,
+        &[],
+    )
+    .expect("snapshot");
+
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert_eq!(
+        report.graph_tag_named_hashes,
+        vec![
+            format!("Integer hash {integer_hash}"),
+            format!("<root class> hash {class_hash}"),
+            format!("<platform> hash {platform_hash}"),
+        ],
+        "inspect reads the table, in the encoder's fixed order"
+    );
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let loaded_platform = loaded.interp.platform();
+    let loaded_integer = loaded.interp.builtin_class(BuiltinClass::Integer);
+    let loaded_string = loaded.interp.builtin_class(BuiltinClass::Str);
+    let heap = loaded.interp.heap_mut();
+    assert_eq!(heap.identity_hash(loaded_integer), integer_hash);
+    assert_eq!(heap.identity_hash(loaded.root_class), class_hash);
+    assert_eq!(heap.identity_hash(*obj(&loaded_platform)), platform_hash);
+    assert_eq!(
+        heap.identity_hash(loaded_string),
+        0,
+        "a builtin nothing asked for its hash stays unassigned"
+    );
+    let largest = integer_hash.max(class_hash).max(platform_hash);
+    assert!(
+        heap.ensure_identity_hash(loaded_string) > largest,
+        "the counter is advanced past the tag-named hashes too"
+    );
+}
+
+/// The closing table alone, decoded against a freshly loaded world.
+fn decode_tag_named(bytes: &[u8]) -> Result<u32, decode::DecodeError> {
+    let (mut interp, class) = load(EMPTY);
+    let mut r = decode::Reader::new(bytes);
+    decode::decode_tag_named_hashes(&mut r, &mut interp, class)
+}
+
+#[test]
+fn a_tag_named_hash_of_zero_is_refused() {
+    // 0 means unassigned, which the encoder expresses by leaving the entry
+    // out; accepting it would give one world two encodings.
+    let mut w = encode::Writer::new();
+    w.write_u32(1);
+    w.write_u8(image::opcodes::HASHED_ROOT_CLASS);
+    w.write_u32(0);
+    assert_eq!(
+        decode_tag_named(&w.into_bytes()),
+        Err(decode::DecodeError::UnassignedTagNamedHash)
+    );
+}
+
+#[test]
+fn a_tag_named_object_recorded_twice_is_refused() {
+    let mut w = encode::Writer::new();
+    w.write_u32(2);
+    w.write_u8(image::opcodes::HASHED_PLATFORM);
+    w.write_u32(3);
+    w.write_u8(image::opcodes::HASHED_PLATFORM);
+    w.write_u32(4);
+    assert_eq!(
+        decode_tag_named(&w.into_bytes()),
+        Err(decode::DecodeError::DuplicateTagNamedHash)
+    );
+}
+
+#[test]
+fn a_tag_named_hash_at_the_ceiling_is_refused() {
+    let mut w = encode::Writer::new();
+    w.write_u32(1);
+    w.write_u8(image::opcodes::HASHED_BUILTIN_CLASS);
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Integer));
+    w.write_u32(u32::MAX);
+    assert_eq!(
+        decode_tag_named(&w.into_bytes()),
+        Err(decode::DecodeError::IdentityHashExhausted)
+    );
+}
+
+#[test]
+fn an_unknown_tag_named_hash_tag_is_refused() {
+    let mut w = encode::Writer::new();
+    w.write_u32(1);
+    w.write_u8(3);
+    w.write_u32(5);
+    assert_eq!(
+        decode_tag_named(&w.into_bytes()),
+        Err(decode::DecodeError::InvalidTag {
+            what: "tag-named hash",
+            tag: 3
+        })
+    );
+}
+
+#[test]
+fn a_tag_named_hash_count_past_the_remaining_bytes_is_refused() {
+    let mut w = encode::Writer::new();
+    w.write_u32(u32::MAX);
+    assert_eq!(
+        decode_tag_named(&w.into_bytes()),
+        Err(decode::DecodeError::UnexpectedEof)
+    );
+}
+
+#[test]
+fn the_tag_named_hash_table_answers_its_largest_hash() {
+    let mut w = encode::Writer::new();
+    w.write_u32(2);
+    w.write_u8(image::opcodes::HASHED_BUILTIN_CLASS);
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Str));
+    w.write_u32(9);
+    w.write_u8(image::opcodes::HASHED_ROOT_CLASS);
+    w.write_u32(4);
+    assert_eq!(decode_tag_named(&w.into_bytes()), Ok(9));
 }
 
 // ---------------------------------------------------------------------------
@@ -3131,7 +3490,7 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
         "instantiate Outer",
     );
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(NESTED_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3193,7 +3552,7 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
         "instantiate Outer",
     );
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(NESTED_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3254,7 +3613,7 @@ fn snapshot_world(
     roots: &[Value],
 ) -> Vec<u8> {
     image::snapshot(
-        interp.heap_ref(),
+        interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3568,7 +3927,7 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
         "instantiate Args",
     );
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(NESTED_SUPERCLASS_ARGS),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3707,7 +4066,7 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
     // tampered mixin travels through one.
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         None,
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3781,7 +4140,7 @@ fn snapshot_of(src: &str) -> Vec<u8> {
     let (mut interp, class) = load(src);
     let platform = interp.platform();
     image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -4094,7 +4453,7 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
         "instantiate Args",
     );
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(NESTED_SUPERCLASS_ARGS),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -4261,7 +4620,7 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
     );
     let platform = interp.platform();
     let Err(err) = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(TRIVIAL_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -4324,15 +4683,15 @@ fn instance_chain_depth(heap: &Heap, head: &Value) -> u32 {
 
 /// A complete image whose graph section is `graph` verbatim. Everything
 /// before it comes from a real `snapshot` of `EMPTY`, whose own graph
-/// section is exactly the three zero counts at the end of the file -- so
+/// section is exactly the four zero counts at the end of the file -- so
 /// the splice point is found by structure, not by a hardcoded offset.
 fn image_with_graph_section(graph: &[u8]) -> Vec<u8> {
     let mut bytes = snapshot_of(EMPTY);
-    let tail = bytes.len() - 12;
+    let tail = bytes.len() - 16;
     assert_eq!(
         &bytes[tail..],
-        &[0u8; 12],
-        "a rootless snapshot ends in three zero counts: objects, frames, roots"
+        &[0u8; 16],
+        "a rootless snapshot ends in four zero counts: objects, frames, roots, tag-named hashes"
     );
     bytes.truncate(tail);
     bytes.extend_from_slice(graph);
@@ -4361,6 +4720,7 @@ fn superclass_chain_graph(levels: u32) -> Vec<u8> {
     w.write_u8(6); // value tag: class tag
     w.write_u8(2); // class tag: object-table record
     w.write_u32(0);
+    w.write_u32(0); // no tag-named hashes
     w.into_bytes()
 }
 
@@ -4386,6 +4746,7 @@ fn instance_chain_graph(levels: u32) -> Vec<u8> {
     w.write_u32(1); // one root
     w.write_u8(5);
     w.write_u32(0);
+    w.write_u32(0); // no tag-named hashes
     w.into_bytes()
 }
 
@@ -4406,6 +4767,29 @@ fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
         .send(head, Symbol::intern("noSuchThing"), vec![])
         .is_ok();
     assert!(!answered, "no class on the chain declares `noSuchThing`");
+}
+
+#[test]
+fn instantiating_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
+    // `run_initializer_levels` visits every level of the chain -- arity,
+    // clause message, initializer -- and none of these levels has
+    // initializer code, so none pushes an activation or re-enters the loop:
+    // neither depth bound would see a per-level recursion
+    // (`docs/design/execution.md`, "A superclass chain is walked
+    // iteratively"). Recursing once per level would abort here.
+    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
+    let mut loaded = image::load(&bytes).expect("load");
+    let head = loaded.roots[0];
+    assert_eq!(superclass_depth(loaded.interp.heap_ref(), &head), DEEP);
+    let Value::Obj(class) = head else {
+        panic!("the root is a class object");
+    };
+    let instance = expect_ok(loaded.interp.instantiate(class, vec![]), "instantiate");
+    assert!(
+        matches!(instance, Value::Obj(_)),
+        "an instance of the head class"
+    );
+    assert_eq!(loaded.interp.heap_ref().activation_depth(), 0);
 }
 
 #[test]
@@ -4502,7 +4886,7 @@ fn snapshot_module(src: &str, source: Option<&str>, extra_send: Option<&str>) ->
         ));
     }
     image::snapshot(
-        interp.heap_ref(),
+        &interp,
         source,
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -4638,12 +5022,15 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
             current_class: None,
             kind: FrameKind::TopLevel,
             slot_base: 0,
+            code: code_with(CodeKind::Method, 0, 1, vec![Instr::Return { reg: 0 }]),
+            then: ns_runtime::Continuation::Deliver,
+            counted: true,
         },
         &[],
         0,
     );
     let result = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         None,
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -4731,7 +5118,7 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
     forged.uncontinuable = false;
     interp.heap_mut().replace_frame(home, forged);
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         None,
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -4914,7 +5301,7 @@ fn snapshot_of_without_source(src: &str) -> Vec<u8> {
     let platform = interp.platform();
     let instance = expect_ok(interp.instantiate(class, vec![platform]), "instantiate");
     image::snapshot(
-        interp.heap_ref(),
+        &interp,
         None,
         &Origin::File(PathBuf::from("golden.ns")),
         class,
@@ -5036,8 +5423,7 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
         Symbol::intern("main:args:"),
     )
     .expect("build");
-    let img =
-        image::snapshot(interp.heap_ref(), None, &origin, class, &platform, &[]).expect("snapshot");
+    let img = image::snapshot(&interp, None, &origin, class, &platform, &[]).expect("snapshot");
 
     let b = image::inspect::inspect(&binary).expect("inspect binary");
     let i = image::inspect::inspect(&img).expect("inspect image");
@@ -5154,8 +5540,7 @@ fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
     let platform = interp.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let img =
-        image::snapshot(interp.heap_ref(), None, &origin, class, &platform, &[]).expect("snapshot");
+    let img = image::snapshot(&interp, None, &origin, class, &platform, &[]).expect("snapshot");
 
     let loaded = image::load(&img).expect("load a stateful image with no roots");
     assert!(
@@ -5274,7 +5659,7 @@ fn a_binary_with_a_graph_appended_is_refused() {
     )
     .expect("build");
     let image_bytes =
-        image::snapshot(interp.heap_ref(), None, &origin, class, &platform, &[]).expect("snapshot");
+        image::snapshot(&interp, None, &origin, class, &platform, &[]).expect("snapshot");
     // The append below only exercises anything if the image actually
     // extends past where the binary ends -- a snapshot's graph section
     // guarantees that here, but assert it so a future change to either
@@ -5321,7 +5706,7 @@ fn a_relabelled_snapshot_is_refused_for_missing_entry() {
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let mut bytes =
-        image::snapshot(interp.heap_ref(), None, &origin, class, &platform, &[]).expect("snapshot");
+        image::snapshot(&interp, None, &origin, class, &platform, &[]).expect("snapshot");
 
     // Locate the flag byte from the header layout instead of hard-coding an
     // offset, so a header change fails this assertion loudly rather than
@@ -5375,8 +5760,8 @@ class X usingPlatform: p = Object new (
             // graph worth walking -- just without an instance in it.
             Err(_) => Vec::new(),
         };
-        let img = image::snapshot(interp.heap_ref(), None, &origin, class, &platform, &roots)
-            .expect("snapshot");
+        let img =
+            image::snapshot(&interp, None, &origin, class, &platform, &roots).expect("snapshot");
 
         let report = image::inspect::inspect(&img).expect("inspect the image");
         let graph = report

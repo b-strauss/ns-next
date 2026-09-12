@@ -75,7 +75,7 @@ pub(crate) fn home_of(heap: &mut Heap, act: ActivationRef) -> FrameRef {
 /// Writes `value` into instance field `index` on `instance`'s
 /// `ObjectData::Instance` fields -- silently skipped when `instance` is not
 /// an object, or is an object with some other `ObjectData` shape, or
-/// `index` is out of range. `vm::run_code`'s `Instr::InitSlot` arm writes a
+/// `index` is out of range. `vm::execute`'s `Instr::InitSlot` arm writes a
 /// slot initializer's value through it.
 pub(crate) fn store_instance_field(heap: &mut Heap, instance: &Value, index: usize, value: Value) {
     if let Value::Obj(obj) = instance {

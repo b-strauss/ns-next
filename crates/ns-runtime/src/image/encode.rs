@@ -10,6 +10,7 @@ use crate::types::{
     BuiltinClass, ClassData, ClassRef, ClosureData, FrameKind, FrameRef, ObjRef, ObjectData,
     SourceOrigin, Value,
 };
+use crate::Interpreter;
 
 use super::opcodes::*;
 use super::{mixins, symbols};
@@ -417,6 +418,20 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symb
             call_site,
         } => {
             w.write_u8(OP_SEND_PUBLIC);
+            w.write_u32(symbols.intern(selector.as_str()));
+            w.write_u16(*receiver_reg);
+            encode_regs(w, arg_regs);
+            w.write_u16(*dst);
+            encode_call_site(w, *call_site);
+        }
+        Instr::SendInlinable {
+            selector,
+            receiver_reg,
+            arg_regs,
+            dst,
+            call_site,
+        } => {
+            w.write_u8(OP_SEND_INLINABLE);
             w.write_u32(symbols.intern(selector.as_str()));
             w.write_u16(*receiver_reg);
             encode_regs(w, arg_regs);
@@ -1015,4 +1030,49 @@ pub fn encode_graph_section(
     }
     encode_values(w, roots, &ctx);
     Ok(())
+}
+
+/// The graph section's closing table: the identity hash of every object the
+/// image names by tag rather than carries as a record -- each builtin class,
+/// the module's root class, the `platform` singleton -- so that a hash the
+/// program was given survives the load. Only an assigned hash (not 0) is
+/// written, in a fixed order -- the builtin classes in wire-tag order, then
+/// the root class, then `platform` -- so one world encodes to one byte
+/// sequence. See `docs/design/image-format.md`, "Identity hashes are
+/// preserved verbatim".
+///
+/// Every builtin is considered, not only those the graph reaches: a program
+/// can keep `Integer hash` in a slot without keeping `Integer`.
+pub fn encode_tag_named_hashes(
+    w: &mut Writer,
+    interp: &Interpreter,
+    root_class: ClassRef,
+    platform: &Value,
+) {
+    let heap = interp.heap_ref();
+    let mut entries: Vec<(u8, Option<u8>, u32)> = Vec::new();
+    for kind in BuiltinClass::ALL {
+        let hash = heap.identity_hash(interp.builtin_class(kind));
+        if hash != 0 {
+            entries.push((HASHED_BUILTIN_CLASS, Some(builtin_class_tag(kind)), hash));
+        }
+    }
+    let hash = heap.identity_hash(root_class);
+    if hash != 0 {
+        entries.push((HASHED_ROOT_CLASS, None, hash));
+    }
+    if let Value::Obj(platform) = platform {
+        let hash = heap.identity_hash(*platform);
+        if hash != 0 {
+            entries.push((HASHED_PLATFORM, None, hash));
+        }
+    }
+    w.write_u32(u32_field("tag-named hash count", entries.len()));
+    for (tag, builtin, hash) in entries {
+        w.write_u8(tag);
+        if let Some(builtin) = builtin {
+            w.write_u8(builtin);
+        }
+        w.write_u32(hash);
+    }
 }

@@ -1,80 +1,98 @@
-//! `Boolean`/`True`/`False` native methods.
+//! `Boolean`/`True`/`False` native methods. The control-flow ones return the
+//! block to activate as a step instead of calling it, so none of them waits
+//! on a Rust frame for Newspeak code (`docs/design/execution.md`, "The
+//! trampoline").
 
-use crate::interpreter::{EvalResult, Signal};
+use crate::interpreter::{Signal, Step, StepArgs};
 use crate::types::*;
-use crate::{Interpreter, Symbol};
+use crate::Interpreter;
+use crate::Symbol;
 
-pub fn dispatch(
+pub(crate) fn dispatch(
     interp: &mut Interpreter,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
-) -> Option<EvalResult> {
+) -> Option<Result<Step, Signal>> {
     let Value::Bool(b) = receiver else {
         return None;
     };
-    match selector.as_str() {
-        "ifTrue:ifFalse:" => Some(super::call_block(
+    Some(Ok(match selector.as_str() {
+        "ifTrue:ifFalse:" => block_step(
             interp,
-            if b { &args[0] } else { &args[1] },
-            vec![],
-        )),
-        "ifFalse:ifTrue:" => Some(super::call_block(
+            if b { args[0] } else { args[1] },
+            Continuation::Deliver,
+        ),
+        "ifFalse:ifTrue:" => block_step(
             interp,
-            if b { &args[1] } else { &args[0] },
-            vec![],
-        )),
-        "ifTrue:" => Some(if b {
-            super::call_block(interp, &args[0], vec![])
-        } else {
-            Ok(Value::Nil)
-        }),
-        "ifFalse:" => Some(if !b {
-            super::call_block(interp, &args[0], vec![])
-        } else {
-            Ok(Value::Nil)
-        }),
-        "not" => Some(Ok(Value::Bool(!b))),
-        // Explicit `if`/`else` branches rather than `b && truthy_arg(...)`:
-        // a boolean operator would collapse *any* non-`Ok(Value::Bool(true))`
-        // outcome of the block argument -- including a live `Signal::Return`
-        // (`x and: [^expr]`) and a genuine `Signal::Error` -- into plain
-        // `false`, discarding both. The block's own `Result<bool, Signal>`
-        // flows through `.map(Value::Bool)` into this arm's `EvalResult`
-        // instead, and the short circuit still holds: `false and: [...]` /
-        // `true or: [...]` never invoke the block at all.
-        "&" | "and:" => Some(if b {
-            truthy_arg(interp, &args[0]).map(Value::Bool)
-        } else {
-            Ok(Value::Bool(false))
-        }),
-        "|" | "or:" => Some(if b {
-            Ok(Value::Bool(true))
-        } else {
-            truthy_arg(interp, &args[0]).map(Value::Bool)
-        }),
-        "printString" => Some(Ok(Value::Obj(
+            if b { args[1] } else { args[0] },
+            Continuation::Deliver,
+        ),
+        "ifTrue:" => {
+            if b {
+                block_step(interp, args[0], Continuation::Deliver)
+            } else {
+                Step::Value(Value::Nil)
+            }
+        }
+        "ifFalse:" => {
+            if b {
+                Step::Value(Value::Nil)
+            } else {
+                block_step(interp, args[0], Continuation::Deliver)
+            }
+        }
+        "not" => Step::Value(Value::Bool(!b)),
+        // The short circuit holds: `false and: [...]` and `true or: [...]`
+        // never activate the block. Otherwise the block's value is coerced
+        // when it returns (`Continuation::Truthy`), so a `^` out of it or an
+        // error in it passes through untouched.
+        "&" | "and:" => {
+            if b {
+                block_step(interp, args[0], Continuation::Truthy)
+            } else {
+                Step::Value(Value::Bool(false))
+            }
+        }
+        "|" | "or:" => {
+            if b {
+                Step::Value(Value::Bool(true))
+            } else {
+                block_step(interp, args[0], Continuation::Truthy)
+            }
+        }
+        "printString" => Step::Value(Value::Obj(
             interp.new_string(if b { "true" } else { "false" }.to_string()),
-        ))),
-        _ => None,
+        )),
+        _ => return None,
+    }))
+}
+
+/// `arg` activated as a block with no arguments, its value handed to `then`
+/// -- or, when `arg` is not a block, `arg` itself taken as the value, the
+/// reference library's `ifTrue: aValue` convention.
+fn block_step(interp: &Interpreter, arg: Value, then: Continuation) -> Step {
+    if let Value::Obj(obj) = arg {
+        if let Some(closure) = interp.heap_ref().closure_data(obj) {
+            return Step::Block {
+                closure,
+                args: StepArgs::ControlFlow,
+                then,
+            };
+        }
+    }
+    match then {
+        Continuation::Truthy => Step::Value(Value::Bool(truthy(arg))),
+        Continuation::Deliver => Step::Value(arg),
+        Continuation::WhileCondition(_) | Continuation::WhileBody(_) => {
+            unreachable!("internal: a Boolean's control-flow native runs no loop")
+        }
     }
 }
 
-/// `and:`/`or:`/`ifTrue:` etc. take a zero-arg block; invoking it goes
-/// through the shared `call_block` primitive rather than a full
-/// `send`, since these are the language's fundamental control-flow
-/// primitives and must not depend on `Block`'s own native methods being
-/// registered yet in dispatch order.
-///
-/// Returns `Result<bool, Signal>` (not a bare `bool`) so a `Signal::Return`
-/// or `Signal::Error` escaping the block propagates via `?` to `dispatch`'s
-/// `"&"`/`"and:"`/`"|"`/`"or:"` arms above, instead of being silently
-/// collapsed into `false`. A block result that is `Ok` but not exactly
-/// `Value::Bool(true)` (a non-Boolean value, or `Value::Bool(false)`) maps
-/// to plain `Ok(false)`.
-fn truthy_arg(interp: &mut Interpreter, value: &Value) -> Result<bool, Signal> {
-    match super::call_block(interp, value, vec![])? {
-        Value::Bool(true) => Ok(true),
-        _ => Ok(false),
-    }
+/// `and:`/`or:`'s rule, which the compiler's inlined form reproduces in
+/// bytecode (`compiler/lower.rs`, `emit_coerce_to_bool`): only exactly `true`
+/// is true, and a non-Boolean is `false`.
+pub(crate) fn truthy(value: Value) -> bool {
+    matches!(value, Value::Bool(true))
 }

@@ -112,6 +112,19 @@ pub enum Instr {
         dst: u16,
         call_site: CallSite,
     },
+    /// An ordinary explicit-receiver send, exactly `SendPublic`, emitted only
+    /// by the reference lowering and only for the sends the optimized lowering
+    /// inlines (`control_flow::recognize`). The mark is for the depth count: a
+    /// block a builtin control-flow native activates for it is not counted,
+    /// because the optimized lowering never activates that block at all
+    /// (`docs/design/compiler.md`, "How the limit counts").
+    SendInlinable {
+        selector: Symbol,
+        receiver_reg: u16,
+        arg_regs: Vec<u16>,
+        dst: u16,
+        call_site: CallSite,
+    },
     /// `Binding::SuperSend`: receiver is `self`, lookup starts at the
     /// current activation's `current_class`'s superclass.
     SendSuper {
@@ -140,9 +153,9 @@ pub enum Instr {
     /// its mixin (it lives on the mixin, not on a class object -- §6.2),
     /// and different applications legitimately have
     /// different absolute offsets for the same mixin's own slots depending
-    /// on how many slots their own superclass contributes. `vm::run_code`
+    /// on how many slots their own superclass contributes. The VM
     /// resolves the absolute index at run time via `frame.slot_base`, which
-    /// `Interpreter::run_initializer_level` fixes when it builds that
+    /// `Interpreter::run_own_initializer` fixes when it builds that
     /// level's frame, from that level's own
     /// `MixinApplication.own_slot_base` -- one frame per level, so a frame's
     /// base never describes a level other than its own. Still the one
@@ -321,6 +334,17 @@ fn format_instr(instr: &Instr) -> String {
             call_site,
         } => format!(
             "SendPublic r{dst} <- r{receiver_reg} #{selector} ({}) @{}",
+            regs(arg_regs),
+            call_site.call_site_id
+        ),
+        Instr::SendInlinable {
+            selector,
+            receiver_reg,
+            arg_regs,
+            dst,
+            call_site,
+        } => format!(
+            "SendInlinable r{dst} <- r{receiver_reg} #{selector} ({}) @{}",
             regs(arg_regs),
             call_site.call_site_id
         ),

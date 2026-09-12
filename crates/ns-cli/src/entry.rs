@@ -120,7 +120,7 @@ fn selector_arity(selector: &str) -> usize {
 ///
 /// A method activation addresses its arguments and temporaries as one run
 /// of registers, so a surplus argument would silently shift every
-/// temporary rather than fail. `invoke_method` refuses the mismatch
+/// temporary rather than fail. `Interpreter::push_step` refuses the mismatch
 /// outright; sizing the list to the selector here is what keeps a
 /// legitimate `--send` from tripping that refusal.
 ///

@@ -2,7 +2,7 @@
 //! live `ns-next` world, decoded on load (never a memory dump). See
 //! `docs/design/image-format.md`. Layout: header, optional source text,
 //! `SourceOrigin`, symbol table, code table, mixin table, root class, entry
-//! field, object table, frame table, roots.
+//! field, object table, frame table, roots, tag-named hashes.
 //!
 //! **Loading never runs the front end.** `load` decodes the world; it does
 //! not parse, resolve, or compile anything. The symbol table, the mixin
@@ -121,15 +121,18 @@ fn write_describing(
 /// bytes contain no program text -- what a loaded world needs is the code
 /// table, the mixin table and the graph, and none of them quotes the
 /// source. `Some(src)` additionally stores `src` verbatim; `load` hands it
-/// back on `LoadedImage::source` and does nothing else with it.
+/// back on `LoadedImage::source` and does nothing else with it. The graph
+/// closes with the hashes of the objects it names by tag
+/// (`encode::encode_tag_named_hashes`).
 pub fn snapshot(
-    heap: &Heap,
+    interp: &Interpreter,
     source: Option<&str>,
     origin: &SourceOrigin,
     root_class: ClassRef,
     platform: &Value,
     roots: &[Value],
 ) -> Result<Vec<u8>, String> {
+    let heap = interp.heap_ref();
     // A frame married to a running activation keeps its registers and `pc`
     // on the activation stack, and the format has no record for the stack,
     // so encoding one would write a frame with empty registers and succeed.
@@ -158,6 +161,7 @@ pub fn snapshot(
         &d.mixin_ids,
         &mut d.symbols,
     )?;
+    encode::encode_tag_named_hashes(&mut graph_w, interp, root_class, platform);
     let mut w = encode::Writer::new();
     write_describing(&mut w, source, origin, 0, d, root_class, heap)?;
     // `snapshot` never names an entry selector of its own -- a snapshotted
@@ -296,8 +300,10 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         decode::decode_graph_section(&mut r, &mut ctx, &symbols).map_err(|e| e.to_string())?
     };
     if !header.stateless {
+        let tag_named_max = decode::decode_tag_named_hashes(&mut r, &mut interp, root_class)
+            .map_err(|e| e.to_string())?;
         decode::verify_graph(&graph, &table, &interp.heap).map_err(|e| e.to_string())?;
-        interp.advance_identity_hash_past(graph.max_identity_hash);
+        interp.advance_identity_hash_past(graph.max_identity_hash.max(tag_named_max));
     }
     // A byte sequence past the last section is refused, not ignored: with
     // two artifact shapes sharing one format, an unchecked tail would let a

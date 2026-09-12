@@ -41,7 +41,7 @@ pub(crate) fn execute(
         }
     }
     let bytes = match ns_runtime::image::snapshot(
-        interp.heap_ref(),
+        &interp,
         debug_source.then_some(loaded.source.as_str()),
         &loaded.origin,
         class,

@@ -277,3 +277,113 @@ fn a_superclass_clause_naming_the_wrong_factory_fails() {
         "Uncaught Newspeak error: the superclass clause of class Derived sends #new, but the primary factory of class Base is #withBase:\n",
     );
 }
+
+/// `and:`'s block value coerces by `truthy`'s rule when the block is a
+/// variable, which takes the native: a non-Boolean is `false`.
+#[test]
+fn a_variable_and_block_coerces_its_value_to_a_boolean() {
+    assert_outcome(
+        "and-variable-coerces",
+        "Newspeak3\n'T'\nclass AndVar usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\t| three yes |\n\t\tthree := [3].\n\t\tyes := [true].\n\t\tp transcript show: (true and: three) printString; newLine.\n\t\tp transcript show: (true and: yes) printString; newLine.\n\t\tp transcript show: (false or: three) printString; newLine\n\t)\n) : ()\n",
+        0,
+        "false\ntrue\nfalse\n",
+        "",
+    );
+}
+
+/// A native loop whose condition goes non-Boolean after two rounds sends
+/// `mustBeBoolean` to it, after exactly two bodies.
+#[test]
+fn a_variable_while_condition_that_goes_non_boolean_fails_with_must_be_boolean() {
+    assert_outcome(
+        "while-variable-mbb",
+        "Newspeak3\n'T'\nclass WhileVarMbb usingPlatform: platform = Object new (\n\t| n ::= 0. |\n) (\n\tpublic main: p args: a = (\n\t\t| cond body |\n\t\tcond := [n < 2 ifTrue: [true] ifFalse: [n]].\n\t\tbody := [n := n + 1. p transcript show: n printString; newLine].\n\t\tcond whileTrue: body\n\t)\n) : ()\n",
+        1,
+        "1\n2\n",
+        "Uncaught Newspeak error: an object does not understand #mustBeBoolean\n",
+    );
+}
+
+/// A block with a parameter passed where the native activates it with none
+/// is the ordinary wrong-arity error.
+#[test]
+fn an_if_block_that_takes_an_argument_is_a_wrong_arity_error() {
+    assert_outcome(
+        "if-block-arity",
+        "Newspeak3\n'T'\nclass IfArity usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\t| b |\n\t\tb := [:x | x].\n\t\ttrue ifTrue: b\n\t)\n) : ()\n",
+        1,
+        "",
+        "Uncaught Newspeak error: wrong number of block arguments: block takes 1, got 0\n",
+    );
+}
+
+/// `KernelWeakTests.ns`'s `deepStack: 1000`, which Newspeak's own tests expect
+/// to run: 1000 levels through an `ifFalse:` block. Sum of 2n for n = 1..1000.
+#[test]
+fn a_thousand_deep_recursion_runs() {
+    assert_outcome(
+        "deep-stack",
+        "Newspeak3\n'T'\nclass Deep usingPlatform: platform = Object new (\n) (\n\tdeepStack: n = ( ^0 = n ifTrue: [0] ifFalse: [n + (deepStack: n - 1) + n] )\n\tpublic main: p args: a = (\n\t\tp transcript show: (deepStack: 1000) printString; newLine\n\t)\n) : ()\n",
+        0,
+        "1001000\n",
+        "",
+    );
+}
+
+/// Unbounded recursion is an ordinary Newspeak error, not a process abort,
+/// and the same one under both lowerings.
+#[test]
+fn an_unbounded_recursion_is_a_newspeak_error() {
+    assert_outcome(
+        "unbounded-recursion",
+        "Newspeak3\n'T'\nclass Unbounded usingPlatform: platform = Object new (\n) (\n\tdown: n = ( ^1 + (down: n + 1) )\n\tpublic main: p args: a = (\n\t\tp transcript show: 'start'; newLine.\n\t\tdown: 0\n\t)\n) : ()\n",
+        1,
+        "start\n",
+        "Uncaught Newspeak error: stack overflow: recursion too deep\n",
+    );
+}
+
+/// `do:` still re-enters the run loop from Rust for every element, so a
+/// recursion through it is bounded by the second limit -- and ends in its
+/// error, not in a native stack overflow, on the CLI's interpreter thread.
+#[test]
+fn a_recursion_through_do_is_bounded_by_the_native_limit() {
+    assert_outcome(
+        "do-recursion",
+        "Newspeak3\n'T'\nclass DoDeep usingPlatform: platform = Object new (\n) (\n\td: n = ( #(1) do: [:e | d: n + 1] )\n\tpublic main: p args: a = ( d: 0 )\n) : ()\n",
+        1,
+        "",
+        "Uncaught Newspeak error: stack overflow: too many nested native calls\n",
+    );
+}
+
+/// Instantiation re-enters the loop for each initializer level, so a class
+/// whose slot initializer instantiates it again is bounded by the same limit.
+#[test]
+fn a_recursive_instantiation_is_bounded_by_the_native_limit() {
+    assert_outcome(
+        "instantiation-recursion",
+        "Newspeak3\n'T'\nclass Tower usingPlatform: platform = Object new (\n) (\n\tpublic class Floor = Object new (\n\t\t| above = Floor new. |\n\t) (\n\t)\n\tpublic main: p args: a = ( Floor new )\n) : ()\n",
+        1,
+        "",
+        "Uncaught Newspeak error: stack overflow: too many nested native calls\n",
+    );
+}
+
+/// The nested-class accessor runs a superclass clause in a re-entry of the
+/// loop, the first time a class is reached on each enclosing object. `Next`'s
+/// clause, `self deeper`, reaches `Next` again on a fresh `Link`, so every
+/// level is a new enclosing object -- no cyclic-definition error -- and one
+/// more accessor re-entry, until the native limit. `Link` has no slots, so its
+/// instantiation re-enters nothing, and each level counts two activations
+/// against the other limit, the clause and `deeper`, far below it.
+#[test]
+fn a_recursion_through_the_nested_class_accessor_is_bounded_by_the_native_limit() {
+    assert_outcome(
+        "accessor-recursion",
+        "Newspeak3\n'T'\nclass Chain usingPlatform: platform = Object new (\n) (\n\tpublic class Link = Object new (\n\t) (\n\t\tpublic class Next = self deeper (\n\t\t) (\n\t\t)\n\t\tdeeper = ( ^Link new Next )\n\t)\n\tpublic main: p args: a = ( Link new Next )\n) : ()\n",
+        1,
+        "",
+        "Uncaught Newspeak error: stack overflow: too many nested native calls\n",
+    );
+}

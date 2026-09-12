@@ -8,7 +8,7 @@ pub mod numbers;
 pub mod object_class;
 pub mod text;
 
-use crate::interpreter::{EvalResult, Signal};
+use crate::interpreter::{EvalResult, Signal, Step};
 use crate::types::*;
 use crate::{platform, Interpreter, Symbol};
 
@@ -21,27 +21,27 @@ use crate::{platform, Interpreter, Symbol};
 /// `blocks_and_return.ns` fixture depends on this propagating all the way
 /// out to the enclosing method activation rather than being swallowed here.
 ///
-/// Five functions ever invoke a block (`call_block`, below), directly or
-/// transitively, and so are the ones whose own signature must carry
-/// `Signal` rather than just `NewspeakError`: `boolean::dispatch` (`ifTrue:`/
-/// `ifFalse:`/`and:`/`or:`/etc.), `collections::dispatch_common` (the `do:`
-/// arm, shared by both `Array` and `OrderedCollection`),
-/// `collections::dispatch_array` and `collections::dispatch_ordered_collection`
-/// (both fall through to `dispatch_common` for any selector they don't
-/// handle themselves, so `do:` reaches them too -- their own signatures must
-/// match `dispatch_common`'s even though neither has a directly-block-
-/// invoking arm of its own), and `block::dispatch` (`value`/`value:`/...).
-/// The rest (`object_class`, `numbers`, `text::*`, `platform`) never invoke
-/// a block and keep their original `Result<Value, NewspeakError>` signature,
-/// wrapped into `EvalResult` right here at the single point where every arm
-/// of this function's own `match` must agree on one type.
-pub fn dispatch_native(
+/// `boolean::dispatch` and `block::dispatch` answer a `Step` themselves: the
+/// control-flow natives and `value` return the block to activate instead of
+/// calling it (`docs/design/execution.md`, "The trampoline").
+///
+/// Only `do:` still invokes a block from Rust (`call_block`, below), so the
+/// functions it is reached through are the ones whose own signature must
+/// carry `Signal` rather than just `NewspeakError`:
+/// `collections::dispatch_common` (the `do:` arm, shared by both `Array` and
+/// `OrderedCollection`), and `collections::dispatch_array` and
+/// `collections::dispatch_ordered_collection`, which fall through to
+/// `dispatch_common` for any selector they don't handle themselves. The rest
+/// (`object_class`, `numbers`, `text::*`, `platform`) never invoke a block
+/// and keep their `Result<Value, NewspeakError>` signature. Their results are
+/// wrapped into `Step::Value` right here, by `value_step`/`wrap_error`.
+pub(crate) fn dispatch_native(
     interp: &mut Interpreter,
     kind: BuiltinClass,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
-) -> Option<EvalResult> {
+) -> Option<Result<Step, Signal>> {
     match kind {
         BuiltinClass::Object => {
             object_class::dispatch(interp, receiver, selector, args).map(wrap_error)
@@ -64,9 +64,12 @@ pub fn dispatch_native(
         BuiltinClass::Character => {
             text::dispatch_character(interp, receiver, selector, args).map(wrap_error)
         }
-        BuiltinClass::Array => collections::dispatch_array(interp, receiver, selector, args),
+        BuiltinClass::Array => {
+            collections::dispatch_array(interp, receiver, selector, args).map(value_step)
+        }
         BuiltinClass::OrderedCollection => {
             collections::dispatch_ordered_collection(interp, receiver, selector, args)
+                .map(value_step)
         }
         BuiltinClass::Block => block::dispatch(interp, receiver, selector, args),
         BuiltinClass::Platform => {
@@ -76,26 +79,29 @@ pub fn dispatch_native(
     }
 }
 
-/// Lifts a plain-`NewspeakError`-returning native dispatch fn's result into
-/// `EvalResult`, for the (majority of) `BuiltinClass` arms above that never
-/// invoke a block and so can never actually produce a `Signal::Return`.
-fn wrap_error(result: Result<Value, NewspeakError>) -> EvalResult {
-    result.map_err(Signal::Error)
+/// A native's value as the step it is.
+fn value_step(result: EvalResult) -> Result<Step, Signal> {
+    result.map(Step::Value)
 }
 
-/// Invokes a block-shaped `Value` with `args` -- the single shared
-/// closure-invocation entry point used by control-flow primitives
-/// (`boolean.rs`'s `ifTrue:`/`and:`/etc.), collection traversal
-/// (`collections.rs`'s `do:`), and `Block value`/`value:`/... itself
-/// (`block.rs`). Goes straight through `Interpreter::invoke_closure`
-/// rather than a full `send`, since block invocation is a
-/// *native* primitive, not a user-overridable method, and must not depend
-/// on `Block`'s own native methods being registered yet in dispatch order.
+/// Lifts a plain-`NewspeakError`-returning native dispatch fn's result into
+/// the step it is, for the (majority of) `BuiltinClass` arms above that never
+/// invoke a block and so can never actually produce a `Signal::Return`.
+fn wrap_error(result: Result<Value, NewspeakError>) -> Result<Step, Signal> {
+    result.map(Step::Value).map_err(Signal::Error)
+}
+
+/// Invokes a block-shaped `Value` with `args`, from Rust. Its one caller is
+/// `do:` (`collections.rs`): `do:` walks a collection in a Rust loop, so it
+/// cannot hand the block back as a trampoline step the way the control-flow
+/// natives do, and it stays a re-entry of the run loop until it moves to
+/// Newspeak after the inline caches (`docs/design/core-library.md`). Goes
+/// straight through `Interpreter::invoke_closure` rather than a full `send`,
+/// since block invocation is a *native* primitive, not a user-overridable
+/// method.
 ///
-/// A non-closure `Value` (e.g. a control-flow primitive receiving a plain
-/// value instead of a `[...]` literal) is returned as-is, matching the
-/// reference library's convention that `ifTrue: aValue` degrades to
-/// `aValue` when `aValue` isn't a block.
+/// A non-closure `Value` is returned as-is, matching the reference library's
+/// convention that a non-block stands for its own value.
 ///
 /// Returns `EvalResult`, forwarding `invoke_closure`'s own result directly,
 /// so a `Signal::Return` escaping the block passes straight through. It

@@ -4,7 +4,7 @@
 use crate::types::*;
 use crate::{Heap, Interpreter, Symbol};
 
-pub fn dispatch(
+pub(crate) fn dispatch(
     interp: &mut Interpreter,
     receiver: Value,
     selector: Symbol,
@@ -65,7 +65,7 @@ fn describe(_value: &Value, _interp: &Interpreter) -> String {
 }
 
 fn extract_dnu_selector(heap: &Heap, message_mirror_shaped_array: &Value) -> Symbol {
-    // Matches `Interpreter::does_not_understand`'s `{selector. args}` array
+    // Matches `Interpreter::decide_does_not_understand`'s `{selector. args}` array
     // shape.
     if let Value::Obj(obj) = message_mirror_shaped_array {
         if let Some(Value::Obj(sym_obj)) = heap.array_at(*obj, 0) {

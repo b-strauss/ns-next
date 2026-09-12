@@ -108,7 +108,7 @@ fn dispatch_common(
     }
 }
 
-pub fn dispatch_array(
+pub(crate) fn dispatch_array(
     interp: &mut Interpreter,
     receiver: Value,
     selector: Symbol,
@@ -142,7 +142,7 @@ pub fn dispatch_array(
     dispatch_common(interp, receiver, selector, args)
 }
 
-pub fn dispatch_ordered_collection(
+pub(crate) fn dispatch_ordered_collection(
     interp: &mut Interpreter,
     receiver: Value,
     selector: Symbol,

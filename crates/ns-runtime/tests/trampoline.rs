@@ -1,0 +1,450 @@
+//! The trampoline (`docs/design/execution.md`, "The trampoline"): sends
+//! run on the activation stack, not the Rust stack, so recursion depth is
+//! bounded by a count rather than by the native stack, and running past it is
+//! an ordinary Newspeak error under both lowerings.
+
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use ns_runtime::{ClassRef, Interpreter, Lowering, Signal, SourceOrigin, Symbol, Value};
+
+fn load(src: &str, lowering: Lowering) -> (Interpreter, ClassRef) {
+    let module = ns_syntax::parse(src).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        Rc::from(src),
+        SourceOrigin::File(PathBuf::from("t.ns")),
+    )
+    .expect("resolve");
+    let mut interp = Interpreter::bootstrap_with(lowering);
+    let class = interp.load_module(&resolved);
+    (interp, class)
+}
+
+/// `Signal` carries no `Debug` impl, so `Result::expect` is unusable on an
+/// `EvalResult` -- unwrap by hand.
+fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+    match result {
+        Ok(v) => v,
+        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
+        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+    }
+}
+
+fn small_int(v: Value) -> i64 {
+    match v {
+        Value::SmallInt(n) => n,
+        _ => panic!("expected a SmallInteger"),
+    }
+}
+
+const DEPTH: &str = "Newspeak3\n'T'\nclass Depth = Object new (\n) (\n\
+    \tpublic down: n = ( n = 0 ifTrue: [^0]. ^down: n - 1 )\n\
+    \tpublic logic: n = ( ^n = 0 or: [(logic: n - 1) and: [true]] )\n\
+    \tpublic loop: n = ( [n > 0] whileTrue: [^loop: n - 1]. ^0 )\n\
+    ) : ()";
+
+/// Fifty thousand nested method activations: far past what the Rust stack of
+/// a test thread would hold if every send recursed on it, and nothing but
+/// activation-stack entries since none does. Under the optimized lowering no
+/// native re-enters Newspeak here, since every control-flow send is inlined.
+#[test]
+fn a_deep_method_recursion_runs_on_the_activation_stack() {
+    let (mut interp, class) = load(DEPTH, Lowering::Optimized);
+    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    for selector in ["down:", "logic:", "loop:"] {
+        let result = expect_ok(
+            interp.send(
+                instance,
+                Symbol::intern(selector),
+                vec![Value::SmallInt(50_000)],
+            ),
+            selector,
+        );
+        assert!(
+            matches!(result, Value::SmallInt(0) | Value::Bool(true)),
+            "{selector}"
+        );
+        assert_eq!(
+            interp.heap_ref().activation_depth(),
+            0,
+            "{selector}: nothing left behind"
+        );
+    }
+}
+
+/// A `^` out of a method several activations up, through a block, lands on the
+/// method it names and leaves nothing behind it on the stack.
+#[test]
+fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack() {
+    let src = "Newspeak3\n'T'\nclass R = Object new (\n) (\n\
+        \tpublic find = ( self each: [:e | e = 3 ifTrue: [^e * 10]]. ^0 )\n\
+        \teach: blk = ( self to: 5 do: blk )\n\
+        \tto: hi do: blk = ( | i | i := 1. [i <= hi] whileTrue: [blk value: i. i := i + 1] )\n\
+        ) : ()";
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(src, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let result = expect_ok(
+            interp.send(instance, Symbol::intern("find"), vec![]),
+            "find",
+        );
+        assert_eq!(small_int(result), 30, "{lowering:?}");
+        assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
+    }
+}
+
+/// A `^` into an initializer that is still running escapes -- the known gap
+/// in `docs/design/execution.md`, "Non-local return" -- and it escapes as the
+/// signal it always was, not as a panic. The run the initializer belongs to
+/// pops it, so by the time the signal reaches the run of the method that
+/// sent `new`, its target is an activation that has returned: that run must
+/// let the signal pass without reading the target. Closing the gap changes
+/// what this expects; nothing else should.
+#[test]
+fn a_return_into_a_running_initializer_escapes_the_runs_below_it() {
+    let src = "Newspeak3\n'T'\nclass E = Object new (\n) (\n\
+        \tclass Inner = Object new ( | a = [^1] value. | ) ( ) : ()\n\
+        \tpublic make = ( Inner new. ^0 )\n\
+        ) : ()";
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(src, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        match interp.send(instance, Symbol::intern("make"), vec![]) {
+            Err(Signal::Return(..)) => {}
+            Ok(_) => panic!("{lowering:?}: the `^` must escape, not be answered"),
+            Err(Signal::Error(e)) => panic!("{lowering:?}: unexpected error: {}", e.message),
+        }
+        assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
+    }
+}
+
+/// A recursion through blocks the optimized lowering does *not* inline --
+/// each held in a variable -- runs through the natives, and none of them
+/// calls back into the loop, so forty thousand levels fit on a test thread's
+/// stack under either lowering.
+const THROUGH_NATIVES: &str = "Newspeak3\n'T'\nclass N = Object new (\n) (\n\
+    \tpublic viaValue: n = ( | b | b := [:k | k = 0 ifTrue: [0] ifFalse: [b value: k - 1]]. ^b value: n )\n\
+    \tpublic viaIf: n = ( | t f | t := [0]. f := [viaIf: n - 1]. ^n = 0 ifTrue: t ifFalse: f )\n\
+    \tpublic viaOr: n = ( | rest | rest := [(viaOr: n - 1) = 0]. ^(n = 0 or: rest) ifTrue: [0] ifFalse: [1] )\n\
+    \tpublic viaWhile: n = ( | c b | c := [n > 0]. b := [^viaWhile: n - 1]. c whileTrue: b. ^0 )\n\
+    ) : ()";
+
+#[test]
+fn a_deep_recursion_through_native_block_activations_runs_on_the_activation_stack() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(THROUGH_NATIVES, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        for selector in ["viaValue:", "viaIf:", "viaOr:", "viaWhile:"] {
+            let result = expect_ok(
+                interp.send(
+                    instance,
+                    Symbol::intern(selector),
+                    vec![Value::SmallInt(40_000)],
+                ),
+                selector,
+            );
+            assert_eq!(small_int(result), 0, "{selector} under {lowering:?}");
+            assert_eq!(
+                interp.heap_ref().activation_depth(),
+                0,
+                "{selector} under {lowering:?}"
+            );
+        }
+    }
+}
+
+const TOO_DEEP: &str = "stack overflow: recursion too deep";
+
+fn expect_too_deep(result: Result<Value, Signal>, what: &str) {
+    match result {
+        Err(Signal::Error(e)) => assert_eq!(e.message, TOO_DEEP, "{what}"),
+        Err(Signal::Return(..)) => panic!("{what}: a non-local return escaped"),
+        Ok(_) => panic!("{what}: ran past the depth limit"),
+    }
+}
+
+/// The limit is exactly `MAX_ACTIVATION_DEPTH` counted activations, and it
+/// counts alike under both lowerings (`docs/design/compiler.md`, "How the
+/// limit counts"). `down: k` sent from Rust makes k + 1 method activations,
+/// so `down: 99_999` is the deepest that fits and `down: 100_000` one too
+/// many. `logic:` and `loop:` recurse from inside an `or:` block and a
+/// `whileTrue:` body, which the optimized lowering inlines and the reference
+/// lowering activates -- exempt, so the boundary is the same.
+#[test]
+fn the_depth_limit_is_exact_and_counts_alike_under_both_lowerings() {
+    assert_eq!(ns_runtime::interpreter::MAX_ACTIVATION_DEPTH, 100_000);
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(DEPTH, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        for selector in ["down:", "logic:", "loop:"] {
+            let what = format!("{selector} under {lowering:?}");
+            expect_ok(
+                interp.send(
+                    instance,
+                    Symbol::intern(selector),
+                    vec![Value::SmallInt(99_999)],
+                ),
+                &what,
+            );
+            expect_too_deep(
+                interp.send(
+                    instance,
+                    Symbol::intern(selector),
+                    vec![Value::SmallInt(100_000)],
+                ),
+                &what,
+            );
+            assert_eq!(
+                interp.heap_ref().activation_depth(),
+                0,
+                "{what}: nothing left behind"
+            );
+            assert_eq!(
+                interp.heap_ref().counted_depth(),
+                0,
+                "{what}: the unwind uncounted every activation it popped"
+            );
+            // An overflow is an ordinary error: the interpreter goes on.
+            expect_ok(
+                interp.send(
+                    instance,
+                    Symbol::intern(selector),
+                    vec![Value::SmallInt(10)],
+                ),
+                &what,
+            );
+        }
+    }
+}
+
+/// A block activated through `value` is counted like any other activation,
+/// so a recursion through blocks alone ends in the same error.
+#[test]
+fn a_recursion_through_block_values_is_bounded_too() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(THROUGH_NATIVES, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        expect_too_deep(
+            interp.send(
+                instance,
+                Symbol::intern("viaValue:"),
+                vec![Value::SmallInt(250_000)],
+            ),
+            &format!("viaValue: under {lowering:?}"),
+        );
+    }
+}
+
+/// The decoded code table of an artifact, read straight off its bytes: the
+/// symbol table, which the code table follows.
+fn code_table_of(bytes: &[u8]) -> Vec<Rc<ns_runtime::bytecode::CompiledCode>> {
+    use ns_runtime::image;
+    let report = image::inspect::inspect(bytes).expect("inspect");
+    let at = report
+        .sections
+        .iter()
+        .find(|section| section.name == "symbols")
+        .expect("a symbol table")
+        .start;
+    let mut r = image::decode::Reader::new(&bytes[at..]);
+    let symbols = image::symbols::decode(&mut r).expect("symbols");
+    image::decode::decode_code_table(&mut r, &symbols)
+        .expect("code table")
+        .codes
+}
+
+/// A crafted artifact can send `ifTrue:` as a `SendInlinable` with a block
+/// the sending activation did not create -- here the block itself, so it
+/// recurses. The exemption requires the block's captured frame to be the
+/// sender's (`docs/design/compiler.md`, "How the limit counts"), so this is
+/// counted and ends in the depth error; without that condition it would run
+/// two hundred thousand levels uncounted and answer.
+///
+/// Twice: once with a sending block that creates nothing, so its activation
+/// has no frame at all, and once with one that creates a block first, `[0]`,
+/// which reifies its activation. The second is what keeps the condition from
+/// being weakened to "the sender has a frame": its sender has one, just not
+/// the frame the block captured.
+#[test]
+fn a_crafted_send_inlinable_cannot_recurse_uncounted() {
+    for (block, sender_reified) in [
+        ("[n := n + 1. n < 200000 ifTrue: b]", false),
+        ("[[0]. n := n + 1. n < 200000 ifTrue: b]", true),
+    ] {
+        crafted_recursion_is_counted(block, sender_reified);
+    }
+}
+
+fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
+    use ns_runtime::bytecode::{CodeKind, Instr};
+    use ns_runtime::image;
+    use ns_runtime::image::opcodes::{OP_SEND_INLINABLE, OP_SEND_PUBLIC};
+    let src = format!(
+        "Newspeak3\n'T'\nclass Crafted = Object new (\n) (\n\tpublic main = ( | b n | n := 0. b := {block}. ^b value )\n) : ()"
+    );
+    // `n < 200000 ifTrue: b` is not a literal-block send, so even the
+    // reference lowering compiles it to a `SendPublic`, which the mutation
+    // below turns into a `SendInlinable` -- the two share one operand layout.
+    let (interp, class) = load(&src, Lowering::Reference);
+    let mut bytes = image::build(
+        interp.heap_ref(),
+        None,
+        &SourceOrigin::File(PathBuf::from("t.ns")),
+        class,
+        Symbol::intern("main"),
+    )
+    .expect("build");
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let id = report
+        .symbols
+        .iter()
+        .position(|s| s == "ifTrue:")
+        .expect("ifTrue: is interned") as u32;
+    let mut pattern = vec![OP_SEND_PUBLIC];
+    pattern.extend_from_slice(&id.to_le_bytes());
+    let at: Vec<usize> = bytes
+        .windows(pattern.len())
+        .enumerate()
+        .filter(|(_, w)| *w == pattern.as_slice())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(at.len(), 1, "{block}: exactly one `ifTrue:` send to mutate");
+    bytes[at[0]] = OP_SEND_INLINABLE;
+
+    // The mutation hit the instruction it meant to, in the body that recurses.
+    let codes = code_table_of(&bytes);
+    let sender = codes
+        .iter()
+        .find(|code| {
+            code.instrs.iter().any(|instr| {
+                matches!(instr, Instr::SendInlinable { selector, .. }
+                    if selector.as_str() == "ifTrue:")
+            })
+        })
+        .unwrap_or_else(|| panic!("{block}: a `SendInlinable` of `ifTrue:`"));
+    assert_eq!(sender.kind, CodeKind::Block, "{block}: sent from the block");
+    assert_eq!(
+        sender
+            .instrs
+            .iter()
+            .any(|instr| matches!(instr, Instr::MakeClosure { .. })),
+        sender_reified,
+        "{block}: whether the sending block reifies its own activation"
+    );
+
+    let mut loaded = image::load(&bytes).expect("the mutated artifact decodes");
+    let instance = expect_ok(
+        loaded.interp.instantiate(loaded.root_class, vec![]),
+        "instantiate",
+    );
+    expect_too_deep(
+        loaded.interp.send(instance, Symbol::intern("main"), vec![]),
+        &format!("the crafted recursion through {block}"),
+    );
+    assert_eq!(loaded.interp.heap_ref().activation_depth(), 0, "{block}");
+    assert_eq!(loaded.interp.heap_ref().counted_depth(), 0, "{block}");
+}
+
+/// A control-flow native sent from Rust, not from the loop: its block is
+/// pushed at the floor of the run `Interpreter::send` starts, so the
+/// continuation that pops it -- `Truthy`, a loop's `WhileCondition` and
+/// `WhileBody` -- runs with no caller in that run, and a loop's next block
+/// replaces the popped one right at the floor. Each must answer the native's
+/// value and leave both depths where they were.
+#[test]
+fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
+    let src = "Newspeak3\n'T'\nclass Floor = Object new (\n\t| n ::= 0. |\n) (\n\
+        \tpublic below: k = ( ^[n < k] )\n\
+        \tpublic atLeast: k = ( ^[n >= k] )\n\
+        \tpublic step = ( ^[n := n + 1] )\n\
+        \tpublic count = ( ^n )\n\
+        \tpublic constant: v = ( ^[v] )\n\
+        ) : ()";
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(src, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let mut send = |receiver: Value, selector: &str, args: Vec<Value>| {
+            at_the_floor(&mut interp, lowering, receiver, selector, args)
+        };
+        let int = |n: i64| vec![Value::SmallInt(n)];
+        let below_three = expect_ok(send(instance, "below:", int(3)), "below:");
+        let at_least_five = expect_ok(send(instance, "atLeast:", int(5)), "atLeast:");
+        let step = expect_ok(send(instance, "step", vec![]), "step");
+        let three = expect_ok(send(instance, "constant:", int(3)), "constant:");
+        let yes = expect_ok(
+            send(instance, "constant:", vec![Value::Bool(true)]),
+            "constant:",
+        );
+        let answer = expect_ok(send(instance, "constant:", int(42)), "constant:");
+        let what = |selector: &str| format!("{selector} under {lowering:?}");
+
+        // `WhileCondition` and `WhileBody`, each replacing the other.
+        let value = expect_ok(
+            send(below_three, "whileTrue:", vec![step]),
+            &what("whileTrue:"),
+        );
+        assert!(matches!(value, Value::Nil), "{}", what("whileTrue:"));
+        let count = expect_ok(send(instance, "count", vec![]), "count");
+        assert_eq!(small_int(count), 3, "{}", what("whileTrue:"));
+        let value = expect_ok(
+            send(at_least_five, "whileFalse:", vec![step]),
+            &what("whileFalse:"),
+        );
+        assert!(matches!(value, Value::Nil), "{}", what("whileFalse:"));
+        let count = expect_ok(send(instance, "count", vec![]), "count");
+        assert_eq!(small_int(count), 5, "{}", what("whileFalse:"));
+
+        // `Truthy`: only exactly `true` is true.
+        let value = expect_ok(send(Value::Bool(true), "and:", vec![three]), &what("and:"));
+        assert!(matches!(value, Value::Bool(false)), "{}", what("and:"));
+        let value = expect_ok(send(Value::Bool(true), "and:", vec![yes]), &what("and:"));
+        assert!(matches!(value, Value::Bool(true)), "{}", what("and:"));
+        let value = expect_ok(send(Value::Bool(false), "or:", vec![yes]), &what("or:"));
+        assert!(matches!(value, Value::Bool(true)), "{}", what("or:"));
+
+        // `Deliver`, the continuation every other activation has too.
+        let value = expect_ok(
+            send(Value::Bool(true), "ifTrue:", vec![answer]),
+            &what("ifTrue:"),
+        );
+        assert_eq!(small_int(value), 42, "{}", what("ifTrue:"));
+
+        // A condition that answers a non-Boolean: the continuation decides a
+        // `mustBeBoolean` send, which nothing here understands, and the error
+        // leaves the floor as clean as a value does.
+        match send(three, "whileTrue:", vec![step]) {
+            Err(Signal::Error(e)) => assert!(
+                e.message.contains("mustBeBoolean"),
+                "{}: {}",
+                what("whileTrue:"),
+                e.message
+            ),
+            Err(Signal::Return(..)) => panic!("{}: a non-local return escaped", what("whileTrue:")),
+            Ok(_) => panic!("{}: a non-Boolean condition must fail", what("whileTrue:")),
+        }
+    }
+}
+
+/// `receiver selector args`, sent from Rust: whatever it answers, it must
+/// leave the activation stack empty and the counted depth 0.
+fn at_the_floor(
+    interp: &mut Interpreter,
+    lowering: Lowering,
+    receiver: Value,
+    selector: &str,
+    args: Vec<Value>,
+) -> Result<Value, Signal> {
+    let result = interp.send(receiver, Symbol::intern(selector), args);
+    assert_eq!(
+        interp.heap_ref().activation_depth(),
+        0,
+        "{selector} under {lowering:?}"
+    );
+    assert_eq!(
+        interp.heap_ref().counted_depth(),
+        0,
+        "{selector} under {lowering:?}"
+    );
+    result
+}

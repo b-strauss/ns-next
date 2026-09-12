@@ -236,7 +236,7 @@ pub struct MixinApplication {
     pub num_slots: usize,
     /// Where this application's *own* slots start -- `superclass.num_slots`,
     /// or 0 with none. Read at run time
-    /// (`Interpreter::run_initializer_level`, into the frame's `slot_base`)
+    /// (`Interpreter::run_own_initializer`, into the frame's `slot_base`)
     /// to turn a compiled `InitSlot`'s mixin-relative `own_index` into this
     /// application's absolute field index: the compiled initializer is
     /// shared by every application of the mixin (keying code by mixin

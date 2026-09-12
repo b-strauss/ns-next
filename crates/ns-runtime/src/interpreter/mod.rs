@@ -26,6 +26,81 @@ pub enum Signal {
 
 pub type EvalResult = Result<Value, Signal>;
 
+/// L: the most activations that may be live at once, counted by the rule in
+/// `docs/design/compiler.md`, "How the limit counts". It bounds memory, not
+/// the native stack, which the trampoline no longer recurses on: with the
+/// exempt block activations, at most one per level of block nesting above
+/// each counted one, the stack holds at most 129 x L entries -- 128 being
+/// the parser's nesting ceiling, which `image::decode` holds an artifact to
+/// as well (`docs/design/execution.md`, "Two bounds, not one").
+pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
+
+/// N: how deep Rust may re-enter the run loop -- `do:`, instantiation, the
+/// nested-class accessor. It is what bounds the native stack; the CLI sizes
+/// its interpreter thread for it (`docs/design/execution.md`, "Two bounds, not
+/// one").
+pub const MAX_NATIVE_DEPTH: usize = 1_000;
+
+/// What a send decided, before anything runs (`docs/design/execution.md`,
+/// "Deciding, then running"). Deciding is `interpreter/`'s -- lookup,
+/// `doesNotUnderstand:`, the natives, the nested-class accessor -- and running
+/// what was decided is the VM's, which is how `vm.rs` stays free of dispatch
+/// logic once sends stop recursing.
+pub(crate) enum Step {
+    /// The send's value is already known: a native leaf, a slot accessor, a
+    /// nested class, a finished instantiation.
+    Value(Value),
+    /// Activate `method` on `receiver`; `defining_class` becomes the
+    /// activation's current class (§3.6).
+    Method {
+        receiver: Value,
+        method: Rc<crate::mixin::MixinMethod>,
+        defining_class: ClassRef,
+        args: StepArgs,
+    },
+    /// Activate `closure`, and do `then` with its value. A builtin
+    /// control-flow native's block is marked by its `args`,
+    /// `StepArgs::ControlFlow`.
+    Block {
+        closure: Rc<ClosureData>,
+        args: StepArgs,
+        then: Continuation,
+    },
+}
+
+/// Where an activation's arguments come from.
+pub(crate) enum StepArgs {
+    /// The send's own arguments.
+    Send,
+    /// None, for the block a builtin control-flow native activates --
+    /// `ifTrue:` and its three relatives, `and:`, `or:`, `whileTrue:`,
+    /// `whileFalse:` -- which is the activation the optimized lowering
+    /// inlines away, and which `push_step` therefore exempts from the depth
+    /// count when the send was a `SendInlinable`. Only those natives build
+    /// it.
+    ///
+    /// The mark rides on the arguments rather than in a `bool` of its own on
+    /// `Step::Block`. That field measured 4-8% slower on all three
+    /// benchmarks even with nothing reading it, including `bench_loop.ns`,
+    /// which activates nothing in its loop -- presumably because a `bool`
+    /// offers the compiler a niche for `Step`'s discriminant, which changes
+    /// how every decision's `Result<Step, Signal>` is encoded, though
+    /// neither type grew.
+    ControlFlow,
+    /// Arguments the decision built: `doesNotUnderstand:`'s message.
+    Owned(Vec<Value>),
+}
+
+impl StepArgs {
+    pub(crate) fn slice<'a>(&'a self, send: &'a [Value]) -> &'a [Value] {
+        match self {
+            StepArgs::Send => send,
+            StepArgs::ControlFlow => &[],
+            StepArgs::Owned(args) => args,
+        }
+    }
+}
+
 pub struct Interpreter {
     pub(crate) heap: Heap,
     /// Every builtin class object, indexed by `BuiltinClass as usize`.
@@ -62,6 +137,14 @@ pub struct Interpreter {
     /// (`docs/design/compiler.md`, "The reference lowering"). Fixed at
     /// construction, so one interpreter never mixes the two.
     lowering: Lowering,
+    /// The reusable argument buffer the run loop gathers a send's arguments
+    /// into (`vm::send`). Taken while a decision runs and given back
+    /// afterwards, so a decision that re-enters the loop takes a fresh one
+    /// instead of clobbering its caller's.
+    arg_buffer: Vec<Value>,
+    /// How many runs of the loop Rust has re-entered and not yet left
+    /// (`reenter`), checked against `MAX_NATIVE_DEPTH`.
+    native_depth: usize,
 }
 
 impl Interpreter {
@@ -81,6 +164,8 @@ impl Interpreter {
             empty_class_sides: HashMap::new(),
             nested_in_progress: Vec::new(),
             lowering,
+            arg_buffer: Vec::new(),
+            native_depth: 0,
         };
         interp.builtin_classes = build_builtin_classes(&mut interp);
         interp
@@ -117,16 +202,25 @@ impl Interpreter {
     }
 
     /// An ordinary (explicit-receiver) send: `newspeak-spec.pdf` §5.5. See
-    /// `dispatch_send` for the order the cases are tried in.
+    /// `decide_send` for the order the cases are tried in.
     ///
     /// A send leaves the activation stack exactly as it found it: every
     /// activation it pushes is popped on every exit, error paths included.
-    /// Checked here, at every send, because a leaked entry is otherwise
-    /// silent -- a later activation would sit on top of a dead one's
-    /// registers.
+    /// Checked here, at every host-initiated send (`ns-next run --send`,
+    /// `snapshot --send`, `load --send`) -- a leaked entry is otherwise
+    /// silent, a later activation sitting on top of a dead one's registers.
+    /// A `Send*` the VM issues does not run through this check (`vm.rs`
+    /// decides it and pushes what was decided itself, never through `send`),
+    /// but a leak there is still caught: `Heap::pop_activation` itself
+    /// debug-asserts that the activation it is given is the top of the
+    /// stack, which a leaked entry underneath it would violate.
     pub fn send(&mut self, receiver: Value, selector: Symbol, args: Vec<Value>) -> EvalResult {
         let depth = self.heap.activation_depth();
-        let result = self.dispatch_send(receiver, selector, args);
+        let result = match self.decide_send(receiver, selector, &args) {
+            Ok(Step::Value(value)) => Ok(value),
+            Ok(step) => self.reenter(|interp| interp.push_step(step, &args, None, false)),
+            Err(signal) => Err(signal),
+        };
         debug_assert_eq!(
             self.heap.activation_depth(),
             depth,
@@ -135,7 +229,8 @@ impl Interpreter {
         result
     }
 
-    /// `send` without its stack check.
+    /// Decides what an ordinary (explicit-receiver) send would run, without
+    /// running it (`docs/design/execution.md`, "Deciding, then running").
     ///
     /// Checked first, before any lookup: `ClassName new` (or a class's own
     /// non-default factory selector) never has a real method to find --
@@ -146,10 +241,15 @@ impl Interpreter {
     /// (`instantiate.rs`) recognizes the shape and routes to
     /// `instantiate` directly; see its own doc comment for why this can
     /// never double-fire against the superclass clause's own deferred
-    /// factory message (`run_initializer_level` never calls `send`).
-    fn dispatch_send(&mut self, receiver: Value, selector: Symbol, args: Vec<Value>) -> EvalResult {
-        if let Some(result) = self.try_factory_send(&receiver, selector, &args) {
-            return result;
+    /// factory message (`run_initializer_levels` never calls `send`).
+    pub(crate) fn decide_send(
+        &mut self,
+        receiver: Value,
+        selector: Symbol,
+        args: &[Value],
+    ) -> Result<Step, Signal> {
+        if let Some(result) = self.try_factory_send(&receiver, selector, args) {
+            return result.map(Step::Value);
         }
         // §6.3: a class object's class-side methods are reached through its
         // metaclass, consulted before the class object's own (ordinary,
@@ -165,13 +265,19 @@ impl Interpreter {
                 if let Some(metaclass) = self.metaclass_of(*obj) {
                     match dispatch::lookup_public(&self.heap, metaclass, selector) {
                         Lookup::Method(method, defining_class) => {
-                            return self.invoke_method(receiver, method, defining_class, args);
+                            return Ok(Step::Method {
+                                receiver,
+                                method,
+                                defining_class,
+                                args: StepArgs::Send,
+                            });
                         }
                         Lookup::NestedClass(mixin, declaring_class) => {
-                            return nested::nested_class(self, &receiver, &mixin, declaring_class);
+                            return nested::nested_class(self, &receiver, &mixin, declaring_class)
+                                .map(Step::Value);
                         }
                         Lookup::Native(kind) => {
-                            return self.dispatch_native_or_dnu(kind, receiver, selector, args);
+                            return self.decide_native_or_dnu(kind, receiver, selector, args);
                         }
                         Lookup::NotFound => {}
                     }
@@ -180,18 +286,21 @@ impl Interpreter {
         }
         let class = self.class_of(&receiver);
         match dispatch::lookup_public(&self.heap, class, selector) {
-            Lookup::Method(method, defining_class) => {
-                self.invoke_method(receiver, method, defining_class, args)
-            }
+            Lookup::Method(method, defining_class) => Ok(Step::Method {
+                receiver,
+                method,
+                defining_class,
+                args: StepArgs::Send,
+            }),
             // §6: the implicit accessor a nested declaration defines is
             // reached exactly like any other member, and it ignores `args`
             // -- the accessor is unary, so a send that supplied arguments
             // did not name it (`walk` matched on the bare selector).
             Lookup::NestedClass(mixin, declaring_class) => {
-                nested::nested_class(self, &receiver, &mixin, declaring_class)
+                nested::nested_class(self, &receiver, &mixin, declaring_class).map(Step::Value)
             }
-            Lookup::Native(kind) => self.dispatch_native_or_dnu(kind, receiver, selector, args),
-            Lookup::NotFound => self.does_not_understand(receiver, selector, args),
+            Lookup::Native(kind) => self.decide_native_or_dnu(kind, receiver, selector, args),
+            Lookup::NotFound => self.decide_does_not_understand(receiver, selector, args),
         }
     }
 
@@ -221,7 +330,7 @@ impl Interpreter {
         receiver: &Value,
         selector: Symbol,
         args: &[Value],
-    ) -> Option<EvalResult> {
+    ) -> Option<Result<Step, Signal>> {
         if let Some(result) =
             crate::builtins::dispatch_native(self, kind, *receiver, selector, args)
         {
@@ -233,16 +342,16 @@ impl Interpreter {
         crate::builtins::dispatch_native(self, BuiltinClass::Object, *receiver, selector, args)
     }
 
-    fn dispatch_native_or_dnu(
+    fn decide_native_or_dnu(
         &mut self,
         kind: BuiltinClass,
         receiver: Value,
         selector: Symbol,
-        args: Vec<Value>,
-    ) -> EvalResult {
-        match self.dispatch_native_inheriting_object(kind, &receiver, selector, &args) {
+        args: &[Value],
+    ) -> Result<Step, Signal> {
+        match self.dispatch_native_inheriting_object(kind, &receiver, selector, args) {
             Some(result) => result,
-            None => self.does_not_understand(receiver, selector, args),
+            None => self.decide_does_not_understand(receiver, selector, args),
         }
     }
 
@@ -252,17 +361,17 @@ impl Interpreter {
     /// Two cases reach here. A user-overridden `doesNotUnderstand:` arrives
     /// as `Lookup::Method`; `Object`'s own *native* one
     /// (`builtins::object_class::dispatch`) arrives as `Lookup::Native`,
-    /// exactly like `dispatch_native_or_dnu` reaches any other native
+    /// exactly like `decide_native_or_dnu` reaches any other native
     /// method. Without the native arm, `Object`'s builtin
     /// `doesNotUnderstand:` -- which every class inherits, since
     /// `lookup_defined_for` finds `ClassData.builtin` on any class with no
     /// method override -- would never actually run.
-    fn does_not_understand(
+    fn decide_does_not_understand(
         &mut self,
         receiver: Value,
         selector: Symbol,
-        args: Vec<Value>,
-    ) -> EvalResult {
+        args: &[Value],
+    ) -> Result<Step, Signal> {
         let class = self.class_of(&receiver);
         let dnu_selector = Symbol::DOES_NOT_UNDERSTAND;
         // A minimal message-mirror-shaped value: an Array `{selector. args}`
@@ -273,15 +382,20 @@ impl Interpreter {
         match dispatch::lookup_defined_for(&self.heap, class, dnu_selector) {
             Lookup::Method(method, defining_class) => {
                 let selector_value = self.new_symbol(selector);
-                let args_value = Value::Obj(self.new_array(args));
+                let args_value = Value::Obj(self.new_array(args.to_vec()));
                 let message_arg = Value::Obj(self.new_array(vec![selector_value, args_value]));
-                self.invoke_method(receiver, method, defining_class, vec![message_arg])
+                Ok(Step::Method {
+                    receiver,
+                    method,
+                    defining_class,
+                    args: StepArgs::Owned(vec![message_arg]),
+                })
             }
             Lookup::Native(kind) => {
                 let selector_value = self.new_symbol(selector);
-                let args_value = Value::Obj(self.new_array(args));
+                let args_value = Value::Obj(self.new_array(args.to_vec()));
                 let message_arg = Value::Obj(self.new_array(vec![selector_value, args_value]));
-                // Same two-step fallback as `dispatch_native_or_dnu`: `kind`
+                // Same two-step fallback as `decide_native_or_dnu`: `kind`
                 // is whatever builtin class `walk` stopped at, and no
                 // builtin implements `doesNotUnderstand:` itself, so
                 // without the `Object` step this would always miss and fall
@@ -316,111 +430,210 @@ impl Interpreter {
         }
     }
 
-    /// Pushes an activation, runs the method's compiled body, and unwinds a
-    /// matching `Signal::Return` back into an ordinary value.
-    ///
-    /// The activation is popped on *every* path out -- `^`, falling off the
-    /// end, or an unwinding error or return. If a block captured it, popping
-    /// divorces its frame, which is what makes a later `^` from that block
-    /// the spec's `cannotReturn` rather than a return with no live catcher.
-    pub fn invoke_method(
+    pub(crate) fn take_arg_buffer(&mut self) -> Vec<Value> {
+        let mut buffer = std::mem::take(&mut self.arg_buffer);
+        buffer.clear();
+        buffer
+    }
+
+    pub(crate) fn return_arg_buffer(&mut self, buffer: Vec<Value>) {
+        self.arg_buffer = buffer;
+    }
+
+    /// Pushes an activation, refusing one that would take the counted depth
+    /// past `MAX_ACTIVATION_DEPTH`. Every activation in the runtime is pushed
+    /// here, so the count and the check cannot be skipped by a new site.
+    pub(crate) fn push(
         &mut self,
-        receiver: Value,
-        method: Rc<crate::mixin::MixinMethod>,
-        defining_class: ClassRef,
-        args: Vec<Value>,
-    ) -> EvalResult {
-        // An activation's locals are addressed as one run of registers --
-        // the arguments first, the declared temporaries after them -- and
-        // the run is laid out from how many arguments the activation was
-        // *given*, not how many the method declares. A wrong-arity
-        // activation therefore does not fail: it shifts every temporary by
-        // the difference and reads an argument back where a temporary
-        // should be, which no golden output necessarily shows. Silent wrong
-        // output with exit status 0 is the failure mode this repository's
-        // invariants single out, so the mismatch is refused here as an
-        // ordinary Newspeak error -- never a panic, since the caller may be
-        // a host.
-        //
-        // No Newspeak-level send can reach this: the parser builds a
-        // message whose argument count matches its selector by
-        // construction. The reachable callers are host-initiated sends --
-        // `ns-next run --send`, `snapshot --send`, `load --send`, and any
-        // future embedder driving `Interpreter::send` directly.
-        if args.len() != method.num_args {
-            return Err(Signal::Error(NewspeakError {
-                selector: method.selector,
-                receiver,
-                message: format!(
-                    "wrong number of arguments: `{}` takes {}, got {}",
-                    method.selector,
-                    method.num_args,
-                    args.len()
-                ),
-            }));
+        header: ActivationHeader,
+        args: &[Value],
+        temps: usize,
+    ) -> Result<ActivationRef, Signal> {
+        if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
+            return Err(recursion_too_deep(&header));
         }
-        let code = method.code.clone();
-        let act = self.heap.push_activation(
-            ActivationHeader {
+        Ok(self.heap.push_activation(header, args, temps))
+    }
+
+    /// Pushes the activation `step` describes. `send_args` are the arguments
+    /// of the send that decided it, which `StepArgs::Send` refers to;
+    /// `sender` is the activation that sent it, if the run loop did, and
+    /// `inlinable` whether the send was a `SendInlinable` -- the two things
+    /// the depth count's one exemption asks about.
+    pub(crate) fn push_step(
+        &mut self,
+        step: Step,
+        send_args: &[Value],
+        sender: Option<ActivationRef>,
+        inlinable: bool,
+    ) -> Result<ActivationRef, Signal> {
+        match step {
+            Step::Value(_) => unreachable!("internal: a value needs no activation"),
+            Step::Method {
                 receiver,
-                current_class: Some(defining_class),
-                kind: FrameKind::Method(method),
-                slot_base: 0, // a method body never contains InitSlot
-            },
-            &args,
-            (code.num_registers - code.num_args) as usize,
-        );
-        let result = crate::vm::run_code(self, act, &code);
-        self.heap.pop_activation(act);
-        match result {
-            Ok(value) => Ok(value),
-            Err(Signal::Return(target, value)) if target.same(act) => Ok(value),
-            Err(other) => Err(other),
+                method,
+                defining_class,
+                args,
+            } => {
+                let args = args.slice(send_args);
+                check_method_arity(&method, receiver, args.len())?;
+                let code = method.code.clone();
+                let temps = (code.num_registers - code.num_args) as usize;
+                self.push(
+                    ActivationHeader {
+                        receiver,
+                        current_class: Some(defining_class),
+                        kind: FrameKind::Method(method),
+                        slot_base: 0, // a method body never contains InitSlot
+                        code,
+                        then: Continuation::Deliver,
+                        counted: true,
+                    },
+                    args,
+                    temps,
+                )
+            }
+            // A closure activation catches no return: its `^` targets its home.
+            Step::Block {
+                closure,
+                args,
+                then,
+            } => {
+                let control_flow = matches!(args, StepArgs::ControlFlow);
+                let args = args.slice(send_args);
+                check_block_arity(&self.heap, &closure, args.len())?;
+                // Exempt exactly the activation the optimized lowering
+                // inlines away: a block a control-flow native activates for
+                // a `SendInlinable`, and only if the sending activation
+                // created it -- which every block the reference lowering
+                // passes to one is, and which keeps a crafted artifact from
+                // recursing uncounted (`docs/design/compiler.md`, "How the
+                // limit counts"). Asked in this order so that an ordinary
+                // `value` never reads the sender's entry.
+                let created_by_sender = |heap: &Heap| {
+                    sender
+                        .and_then(|sender| heap.activation_reified(sender))
+                        .is_some_and(|frame| frame.same(closure.captured_frame))
+                };
+                let counted = !(inlinable && control_flow && created_by_sender(&self.heap));
+                let receiver = self.heap.frame_receiver(closure.captured_frame);
+                let current_class = self.heap.frame_current_class(closure.captured_frame);
+                let code = closure.code.clone();
+                let temps = (code.num_registers - code.num_args) as usize;
+                self.push(
+                    ActivationHeader {
+                        receiver,
+                        current_class,
+                        kind: FrameKind::Closure(closure),
+                        slot_base: 0, // a closure body never contains InitSlot
+                        code,
+                        then,
+                        counted,
+                    },
+                    args,
+                    temps,
+                )
+            }
         }
     }
 
-    /// Invokes a closure with `args`. Called by `builtins::block` for `value`,
-    /// `value:`, `value:value:` and so on, and by every native that runs a
-    /// block argument, through `builtins::call_block`.
-    ///
-    /// The invoking activation is not passed: a live activation's sender is
-    /// the one below it on the activation stack.
-    pub fn invoke_closure(&mut self, closure: &Rc<ClosureData>, args: Vec<Value>) -> EvalResult {
-        // A wrong argument count is refused before it can reach a register: the
-        // window is laid out from the arguments actually given, so too few would
-        // address registers past its end -- a panic -- and too many would
-        // silently shift every temporary. Never panic on this
-        // Newspeak-program-input path.
-        if args.len() != closure.params.len() {
-            let receiver = self.heap.frame_receiver(closure.captured_frame);
-            return Err(Signal::Error(NewspeakError {
-                selector: Symbol::VALUE,
-                receiver,
-                message: format!(
-                    "wrong number of block arguments: block takes {}, got {}",
-                    closure.params.len(),
-                    args.len()
-                ),
-            }));
+    /// What a control-flow native does once the block it activated has
+    /// returned `value`: the second half of the native, which the run loop
+    /// waits for instead of a Rust frame. `then` is the continuation of the
+    /// block's activation, which the loop has just popped. It answers the
+    /// value for the caller, or another activation to run in the popped
+    /// one's place -- a native loop's next block, or the method a
+    /// non-Boolean condition's `mustBeBoolean` finds -- which the loop hands
+    /// to `push_continuation`.
+    pub(crate) fn resume(&mut self, then: Continuation, value: Value) -> Result<Step, Signal> {
+        match then {
+            Continuation::Deliver => Ok(Step::Value(value)),
+            Continuation::Truthy => Ok(Step::Value(Value::Bool(crate::builtins::boolean::truthy(
+                value,
+            )))),
+            Continuation::WhileCondition(state) => {
+                crate::builtins::block::after_condition(self, state, value)
+            }
+            Continuation::WhileBody(state) => Ok(crate::builtins::block::after_body(state)),
         }
-        let receiver = self.heap.frame_receiver(closure.captured_frame);
-        let current_class = self.heap.frame_current_class(closure.captured_frame);
-        let code = &closure.code;
-        let act = self.heap.push_activation(
-            ActivationHeader {
-                receiver,
-                current_class,
-                kind: FrameKind::Closure(closure.clone()),
-                slot_base: 0, // a closure body never contains InitSlot
-            },
-            &args,
-            (code.num_registers - code.num_args) as usize,
-        );
-        let result = crate::vm::run_code(self, act, code);
-        // Popped on every path out. A closure activation catches no return: its
-        // `^` targets its home.
-        self.heap.pop_activation(act);
+    }
+
+    /// Pushes the activation a continuation decided (`resume`), in place of
+    /// the one just popped; `replaced_counted` is that one's
+    /// `Popped::counted`. The exemption's rule for a native loop lives here
+    /// rather than in the run loop, which only forwards the flag, so a JIT
+    /// driving continuations reaches the same rule: the next block is exempt
+    /// only if the one it replaces was, and only if it too was created by
+    /// the activation below it -- the loop's sender, now the top of the
+    /// stack -- which `push_step` checks. A method is counted whatever it
+    /// replaces.
+    ///
+    /// It takes the flag rather than the whole `Popped`, whose continuation
+    /// `resume` has consumed by then: a version that took the `Popped` and
+    /// pushed inside `resume` measured about 1.3% slower on a native
+    /// `whileTrue:` loop, and this one level with the rule inline in the
+    /// loop.
+    pub(crate) fn push_continuation(
+        &mut self,
+        step: Step,
+        replaced_counted: bool,
+    ) -> Result<ActivationRef, Signal> {
+        let sender = self.heap.top_activation();
+        // A continuation's step never refers to a send's arguments
+        // (`StepArgs::Send` is only answered by a decision about a send, and
+        // the one a continuation makes -- `mustBeBoolean` -- has none), so
+        // `&[]` is always right here.
+        self.push_step(step, &[], sender, !replaced_counted)
+    }
+
+    /// Every re-entry of the run loop from Rust: `push` pushes one
+    /// activation, and the loop runs it and everything it activates and pops
+    /// all of it (`vm::run`). The public `send`, each initializing level of an
+    /// instantiation and its clause message, the nested-class accessor's
+    /// clause, and every native that still calls a block come through here --
+    /// the paths "What stays recursive" in `docs/design/execution.md` names.
+    ///
+    /// Each re-entry costs native stack, so it is counted against
+    /// `MAX_NATIVE_DEPTH`, and one past it is refused before anything is
+    /// pushed.
+    pub(crate) fn reenter(
+        &mut self,
+        push: impl FnOnce(&mut Interpreter) -> Result<ActivationRef, Signal>,
+    ) -> EvalResult {
+        if self.native_depth >= MAX_NATIVE_DEPTH {
+            return Err(too_many_nested_native_calls());
+        }
+        let act = push(self)?;
+        self.native_depth += 1;
+        let result = crate::vm::run(self, act);
+        self.native_depth -= 1;
         result
+    }
+
+    /// Whether a `^` aimed at `act` ends at `act`: a method's does, and a
+    /// superclass clause's or its message's. An initializer catches none -- a
+    /// `^` into a running one escapes, the known gap in
+    /// `docs/design/execution.md`, "Non-local return" -- and a block's `^`
+    /// always targets its home, never the block.
+    pub(crate) fn catches_return(&self, act: ActivationRef) -> bool {
+        matches!(
+            self.heap.activation_kind(act),
+            FrameKind::Method(_) | FrameKind::SuperclassClause(_) | FrameKind::SuperclassMessage(_)
+        )
+    }
+
+    /// Invokes a closure with `args`, from Rust. Only `do:` still does this --
+    /// every other native that runs a block returns it as a step instead
+    /// (`docs/design/execution.md`, "What stays recursive"). It re-enters the
+    /// run loop (`reenter`), which pops the closure's activation, and
+    /// everything it activates, on every path out.
+    pub fn invoke_closure(&mut self, closure: &Rc<ClosureData>, args: Vec<Value>) -> EvalResult {
+        let step = Step::Block {
+            closure: closure.clone(),
+            args: StepArgs::Owned(args),
+            then: Continuation::Deliver,
+        };
+        self.reenter(|interp| interp.push_step(step, &[], None, false))
     }
 
     /// Where a `^` in `act` returns to. A block returns from its home --
@@ -775,6 +988,91 @@ impl Interpreter {
     }
 }
 
+/// Refuses an activation given a different number of arguments than its
+/// method takes.
+///
+/// An activation's locals are addressed as one run of registers -- the
+/// arguments first, the declared temporaries after them -- and the run is
+/// laid out from how many arguments the activation was *given*, not how many
+/// the method declares. A wrong-arity activation therefore does not fail: it
+/// shifts every temporary by the difference and reads an argument back where
+/// a temporary should be, which no golden output necessarily shows. Silent
+/// wrong output with exit status 0 is the failure mode this repository's
+/// invariants single out, so the mismatch is refused here as an ordinary
+/// Newspeak error -- never a panic, since the caller may be a host.
+///
+/// No Newspeak-level send can reach this: the parser builds a message whose
+/// argument count matches its selector by construction. The reachable
+/// callers are host-initiated sends -- `ns-next run --send`, `snapshot
+/// --send`, `load --send`, and any future embedder driving
+/// `Interpreter::send` directly.
+fn check_method_arity(
+    method: &crate::mixin::MixinMethod,
+    receiver: Value,
+    given: usize,
+) -> Result<(), Signal> {
+    if given == method.num_args {
+        return Ok(());
+    }
+    Err(Signal::Error(NewspeakError {
+        selector: method.selector,
+        receiver,
+        message: format!(
+            "wrong number of arguments: `{}` takes {}, got {}",
+            method.selector, method.num_args, given
+        ),
+    }))
+}
+
+/// A block given a different number of arguments than it declares is refused
+/// before it can reach a register: the window is laid out from the arguments
+/// actually given, so too few would address registers past its end -- a panic
+/// -- and too many would silently shift every temporary.
+fn check_block_arity(heap: &Heap, closure: &ClosureData, given: usize) -> Result<(), Signal> {
+    if given == closure.params.len() {
+        return Ok(());
+    }
+    Err(Signal::Error(NewspeakError {
+        selector: Symbol::VALUE,
+        receiver: heap.frame_receiver(closure.captured_frame),
+        message: format!(
+            "wrong number of block arguments: block takes {}, got {}",
+            closure.params.len(),
+            given
+        ),
+    }))
+}
+
+/// L's error, for the activation `header` describes. Neither depth error
+/// names its limit, so that changing one changes no recorded answer. Both are
+/// kept out of line, so that the check on every push is a compare and a
+/// branch and nothing more.
+#[cold]
+#[inline(never)]
+fn recursion_too_deep(header: &ActivationHeader) -> Signal {
+    let selector = match &header.kind {
+        FrameKind::Method(method) => method.selector,
+        FrameKind::Closure(_) => Symbol::VALUE,
+        _ => Symbol::NEW,
+    };
+    Signal::Error(NewspeakError {
+        selector,
+        receiver: header.receiver,
+        message: "stack overflow: recursion too deep".to_string(),
+    })
+}
+
+/// N's error.
+#[cold]
+#[inline(never)]
+fn too_many_nested_native_calls() -> Signal {
+    Signal::Error(NewspeakError {
+        selector: Symbol::UNKNOWN,
+        receiver: Value::Nil,
+        message: "stack overflow: too many nested native calls".to_string(),
+    })
+}
+
 /// Every `BuiltinClass` -- including `Object` itself -- gets the same shared
 /// placeholder class object as its own `.class`, tagged
 /// `BuiltinClass::Object`: there is no reified metaclass hierarchy (the
@@ -801,22 +1099,6 @@ fn build_builtin_classes(interp: &mut Interpreter) -> Vec<ClassRef> {
     // `Object` struct could have made this shadow compile into the wrong
     // construction entirely. Referring to every variant through its
     // `BuiltinClass::` qualifier avoids the collision.
-    let kinds = [
-        BuiltinClass::Object,
-        BuiltinClass::Boolean,
-        BuiltinClass::True,
-        BuiltinClass::False,
-        BuiltinClass::Integer,
-        BuiltinClass::Float,
-        BuiltinClass::Str,
-        BuiltinClass::Sym,
-        BuiltinClass::Character,
-        BuiltinClass::Array,
-        BuiltinClass::OrderedCollection,
-        BuiltinClass::Nil,
-        BuiltinClass::Block,
-        BuiltinClass::Platform,
-    ];
     // A builtin's behaviour is native (`builtins::dispatch_native`), so its
     // mixin declares nothing: the application exists to give the builtin the
     // same shape every other class object has, and -- for the non-`Object`
@@ -825,8 +1107,8 @@ fn build_builtin_classes(interp: &mut Interpreter) -> Vec<ClassRef> {
     let object_application = interp.apply_mixin(&builtin_mixin(BuiltinClass::Object), None);
     let class_of_class =
         build_self_referential_object_class(&mut interp.heap, object_application.clone());
-    let mut classes = Vec::with_capacity(kinds.len());
-    for kind in kinds {
+    let mut classes = Vec::with_capacity(BuiltinClass::ALL.len());
+    for kind in BuiltinClass::ALL {
         // `builtin_class` indexes by discriminant, so the vector must be
         // filled in exactly that order.
         debug_assert_eq!(classes.len(), kind as usize);
@@ -877,4 +1159,54 @@ fn build_self_referential_object_class(
         builtin: Some(BuiltinClass::Object),
         metaclass: None,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn load(src: &str) -> (Interpreter, ClassRef) {
+        let module = ns_syntax::parse(src).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(src),
+            SourceOrigin::File(PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interp = Interpreter::bootstrap();
+        let class = interp.load_module(&resolved);
+        (interp, class)
+    }
+
+    fn expect_ok(result: EvalResult, what: &str) -> Value {
+        match result {
+            Ok(v) => v,
+            Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
+            Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+        }
+    }
+
+    /// Deciding a send runs nothing: a user method comes back as the
+    /// activation to make, with nothing pushed, and a native leaf as its
+    /// value (`docs/design/execution.md`, "Deciding, then running").
+    #[test]
+    fn deciding_a_send_answers_what_to_run_without_running_it() {
+        let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( ^1 )\n) : ()";
+        let (mut interp, class) = load(src);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        match interp.decide_send(instance, Symbol::intern("foo"), &[]) {
+            Ok(Step::Method { method, .. }) => assert_eq!(method.selector.as_str(), "foo"),
+            _ => panic!("a user method is decided as an activation"),
+        }
+        assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
+        match interp.decide_send(
+            Value::SmallInt(3),
+            Symbol::intern("+"),
+            &[Value::SmallInt(4)],
+        ) {
+            Ok(Step::Value(Value::SmallInt(7))) => {}
+            _ => panic!("a native leaf is decided as its value"),
+        }
+    }
 }

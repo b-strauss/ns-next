@@ -20,7 +20,7 @@ method main:args: (args 2, registers 20)
            6   stmt 1  SendPublic r6 <- r4 #+ (r5) @6
            7   stmt 1  SendLexical r7 <- depth 0 #n: (r6) @7
            8        -  ImplicitReturn r6
-   2   stmt 0  SendPublic r4 <- r2 #whileTrue: (r3) @2
+   2   stmt 0  SendInlinable r4 <- r2 #whileTrue: (r3) @2
    3   stmt 1  MakeClosure r5, [] ->
         block block (args 0, registers 3)
            0   stmt 0  SendLexical r0 <- depth 0 #n () @0
@@ -34,7 +34,7 @@ method main:args: (args 2, registers 20)
            2   stmt 0  SendPublic r2 <- r0 #- (r1) @2
            3   stmt 0  SendLexical r3 <- depth 0 #n: (r2) @3
            4        -  ImplicitReturn r2
-   5   stmt 1  SendPublic r7 <- r5 #whileFalse: (r6) @5
+   5   stmt 1  SendInlinable r7 <- r5 #whileFalse: (r6) @5
    6   stmt 2  Move r8, r0
    7   stmt 2  SendPublic r9 <- r8 #transcript () @7
    8   stmt 2  SendLexical r10 <- depth 0 #sum () @8

@@ -83,7 +83,7 @@ fn the_initializer_lowers_slots_then_init_exprs_with_own_slot_indices() {
         init.instrs,
         vec![
             // `p = a.` -- `a` is register 0, written straight into own
-            // slot 0 (`vm::run_code` adds the frame's `slot_base` at run
+            // slot 0 (the VM adds the frame's `slot_base` at run
             // time to get the absolute field index).
             Instr::InitSlot {
                 src: 0,

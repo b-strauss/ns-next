@@ -30,9 +30,18 @@ iterative.
 
 That guarantee is about **decoding**. `load` on a stateless binary instantiates
 and sends the recorded entry with no flag at all, so starting one executes its
-code with the same exposure as running the equivalent source -- recursion depth
-bounded only by the native stack until the VM is trampolined; see
-[execution.md](execution.md), "Planned: the trampoline".
+code with the same exposure as running the equivalent source. Recursion depth
+is bounded by two counted limits, 100,000 activations and 1,000 re-entries of
+the run loop from Rust, each an ordinary Newspeak error rather than a native
+stack overflow, and a crafted `SendInlinable` cannot use the count's one
+exemption to recurse uncounted. Nor can it stack more exempt activations above
+a counted one than source can: that number is bounded by how deeply blocks
+nest, which the decoder caps at the parser's own ceiling ("Verification"
+below); see [execution.md](execution.md), "Two bounds, not one". A mutated
+binary that decodes cleanly can still abort while executing — a native that
+indexes an argument it was not given, for one: the control-flow natives read
+`args[0]` unchecked, and the decoder does not check a send's argument count
+against its selector — and that is not a decoder defect.
 
 ## Two artifacts
 
@@ -155,16 +164,17 @@ the decoder alike rather than repeated as magic numbers on each side.
 share a number, so a renumbering fails the suite at the moment it happens instead
 of surfacing later as an image that no longer means what it said.
 
-The graph section's four tag families live there under the same rule: how a
-`Value` is encoded, an object record's body, how a class reference is named, and
-what a frame was activated for. They were bare literals in the encoder and again
-in the decoder until `inspect` became a third reader of those bytes — and three
-hand-kept copies of one numbering is how a viewer starts quietly disagreeing with
-the loader. A fifth family is *retired*: a frame record once carried a byte
-naming the unit its `pc` counted in, and only instruction indices were ever
-representable, so the byte was removed. Its two numbers, 0 and 1 (`PC_KIND_*`),
-stay assigned and pinned, so a unit field that ever returns cannot give them a
-new meaning.
+The graph section's five tag families live there under the same rule: how a
+`Value` is encoded, an object record's body, how a class reference is named, what
+a frame was activated for, and which tag-named object an entry of the closing
+hash table names (`HASHED_*`, below). They were bare literals in the encoder and
+again in the decoder until `inspect` became a third reader of those bytes — and
+three hand-kept copies of one numbering is how a viewer starts quietly
+disagreeing with the loader. A sixth family is *retired*: a frame record once
+carried a byte naming the unit its `pc` counted in, and only instruction indices
+were ever representable, so the byte was removed. Its two numbers, 0 and 1
+(`PC_KIND_*`), stay assigned and pinned, so a unit field that ever returns cannot
+give them a new meaning.
 
 **Mixin table.** One row per declaration: the name, its own slot names, the
 primary factory selector and arity, the method table as selector → code id, the
@@ -199,23 +209,33 @@ loaded one. A record's 0 means "not yet assigned" and is preserved the same way
 **The exception is an object the image names by tag rather than by record**: a
 builtin class, the module's root class and the `platform` singleton
 (`encode::is_class_tag`, and the platform check beside it in
-`GraphTable::visit_value`). None of them is a record, so nothing carries its
-hash. The bootstrap `load` builds and the root class it rebuilds start at 0 like
-every new object, and one of them that was asked for its hash before the
-snapshot draws a fresh one the first time it is asked after the load. Hashes
-stay unique, since the fresh one is drawn past every loaded hash, but not stable:
-a program that kept such a hash across a snapshot — or, once there are any, a
-hashed collection keyed by one of these objects — sees a different value after
-the load. Before identity hashes were lazy these hashes survived by accident:
-the bootstrap allocated the same objects in the same order every time, so each
-drew the same number again.
+`GraphTable::visit_value`). None of them is a record, so nothing about a record
+could carry its hash. Instead the graph section closes, after its roots, with a
+table of exactly the tag-named objects whose stored hash is not 0 — the builtin
+classes in wire-tag order, then the root class, then `platform` — each entry a
+tag from the `HASHED_*` family in `opcodes.rs` naming the object, and its hash
+(`encode::encode_tag_named_hashes`). `load` restores each hash onto the object
+the bootstrap built (`decode::decode_tag_named_hashes`), and refuses a 0, a
+duplicate entry or `u32::MAX` like any other malformed hash. The
+identity-hash counter is then advanced past the larger of this table's maximum
+and the object table's, so a hash assigned afterward never collides with either.
+`inspect` reads the table as part of the graph section
+(`Report::graph_tag_named_hashes`).
 
-> **Open: stable hashes for tag-named objects.** Two candidate fixes, and the
-> choice between them is pending with the user. Either the graph section records
-> the stored hash of each tag-named object that has one, under a new wire tag,
-> and the decoder restores it; or tag-named objects get a deterministic hash rule
-> of their own, so that a fresh bootstrap and `load` reproduce the same value
-> without the image recording it. No test pins the present, lossy behaviour.
+That is what Cog and Primordial Soup get without trying: their images carry
+every object, classes included — a Spur class's identity hash is even its index
+in the class table (`ensureBehaviorHash`, `enterIntoClassTable`) — so no hash
+is ever rebuilt from anything. ns-next's bootstrap rebuilds these objects
+instead, so the image has to carry what the program observed of them. That
+stays true when the core library moves into Newspeak
+([core-library.md](core-library.md)): the builtins stay out of the image
+("How upstream compares" below), so they stay tag-named. The alternative, a
+deterministic hash for each tag-named object from a reserved range, was
+rejected: every tag-named object added later would need a reserved number, and
+the hash would no longer be the one the program was actually given, which is
+what "verbatim" promises for every other object.
+`a_hash_given_to_a_tag_named_object_survives_a_snapshot` in
+`crates/ns-cli/tests/snapshot_load.rs` pins the result end to end.
 
 ## How frames actually get into an image
 
@@ -268,6 +288,24 @@ The mixin tree's nesting depth is input-controlled, so building it is iterative 
 the "bound any recursion whose depth the input controls" case. Symbol ids, mixin
 ids, class-object references, slot counts and arities are all validated before
 first use.
+
+**How deeply blocks nest is capped while the code table is read.** The table is
+flat on the wire, but a decoded body owns, through `Rc`s, the block bodies its
+`MakeClosure`s create, and the depth of that chain is the artifact's to choose.
+`decode_code_table` measures each body's block nesting from the bodies it
+creates, which precede it, and refuses one past 128 levels
+(`DecodeError::BlockNestingTooDeep`, `MAX_BLOCK_NESTING` in `decode.rs`) — the
+parser's own ceiling, which every program's code table stays within, so the
+cap refuses nothing a lowering produces. Two things rest on it. The depth
+limit's exemption lets a chain of exempt activations stack as high as blocks
+nest ([compiler.md](compiler.md), "How the limit counts"), so without the cap
+the limit would bound no memory for an artifact. And dropping a chain of
+bodies recurses once per level: refused only after decoding, a chain a few
+megabytes long overflows the stack when the refused table is dropped, which is
+why the check runs as each body is read rather than in `verify_code_table`.
+`a_deeply_nested_block_chain_is_a_decode_error_not_a_stack_overflow` and
+`the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs` in
+`crates/ns-runtime/tests/image.rs` pin both sides.
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns
@@ -430,18 +468,17 @@ the new flag, the entry field and the trailing-byte check
 ## Planned: suspend and resume
 
 An image cannot be taken mid-execution, and the obstacle is control flow rather
-than format. A reified `Frame` is fully encoded, and every running activation is
-an entry on the explicit activation stack ([execution.md](execution.md),
-"Activations"), but sends still recurse through the Rust call stack, so the chain
-of running activations exists twice — on the activation stack and implicitly on
-the Rust stack. Only the first can be serialized, by reifying it; only the
-second can be resumed. There is no yield path out of `run_code` and no re-entry
-point that would continue a decoded frame at its `pc`.
-
-The fix is the trampoline ([execution.md](execution.md), "Planned: the
-trampoline"), which makes the activation stack the only copy. Suspending then
-means reifying and divorcing the whole stack, which is the same operation a
-debugger performs on the frames it touches — and the same operation upstream
+than format. A reified `Frame` is fully encoded, every running activation is an
+entry on the explicit activation stack ([execution.md](execution.md),
+"Activations"), and sends no longer recurse through the Rust call stack: the
+trampoline made the activation stack the only copy of a running computation
+([execution.md](execution.md), "The trampoline"), apart from the paths that
+still re-enter the run loop from Rust — `do:`, instantiation and the
+nested-class accessor — each of which holds a Rust frame while it runs. What is
+missing is a yield path out of `vm::run`, a way through or around those Rust
+frames, and a re-entry point that would continue a decoded frame at its `pc`.
+Suspending then means reifying and divorcing the whole stack, which is the same
+operation a debugger performs on the frames it touches — and the same operation upstream
 performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)
 before taking a snapshot. An activation's `pc` being stored only at sends,
 `MakeClosure` and `NonLocalReturn` is *not* an obstacle: those are exactly the
@@ -454,12 +491,11 @@ each frame against, but it never cross-checks `home` against `kind`: a
 crafted image can pair a method-kind frame (`home` meaningful only for
 `FrameKind::Closure`) with a non-nil `home`. Nothing observes the
 mismatch today, because the VM never runs a frame loaded from an image
--- only ever an activation one of the four push sites built.
+-- only ever an activation `Interpreter::push` built.
 A decoded home is only ever consulted as a return target, and a decoded
 frame is never married to a live activation, so a `^` into one is
 `cannotReturn` whatever its record says.
-Trampolined sends,
-suspend-and-resume and live debugging are exactly what would start running
+Suspend-and-resume and live debugging are exactly what would start running
 a decoded frame — at which point this dormant assumption becomes
 load-bearing, and whoever wires up re-entry has to decide, deliberately,
 whether `verify_graph` gains the cross-check or the re-entry path treats a
@@ -512,12 +548,12 @@ builtins.
 - **Artifacts are readable but not writable as text.** A dump serves inspection;
   a loadable text format would be a second codec to keep in step, and the need
   that would justify it is already met by corrupting real images.
+- **An image records the hashes of the objects it names by tag**, so a hash the
+  program was given survives a snapshot like every other; a reserved-range
+  rule was rejected.
 
 ## Open questions
 
-- **How a tag-named object keeps its identity hash across a snapshot** — a new
-  wire tag that records it, or a deterministic hash rule. Lazy identity hashes
-  made it a known regression; see "Identity hashes are preserved verbatim".
 - **The decompiler** that is to provide export back to `.ns`. Mitigated by the
   debug source blob, unwritten.
 - **Whether upstream strips source at packaging time.** A measurement of four

@@ -76,11 +76,12 @@ bounded that way. `docs/design/memory.md` has the breakdown.
 
 That guarantee covers **decoding**. `ns-next load` on a stateless binary instantiates
 and sends the recorded entry with no flag at all, so loading one *runs its code* --
-with the same exposure as running the equivalent source, including that recursion
-depth is bounded only by the native stack until the VM is trampolined (see
-`docs/design/execution.md`, "Planned: the trampoline"). A mutated binary that
-decodes cleanly can still abort while executing, and that is not a decoder
-defect.
+with the same exposure as running the equivalent source. Recursion depth is bounded
+by two counted limits -- 100,000 activations and 1,000 re-entries of the run loop
+from Rust -- each an ordinary Newspeak error, not a native stack overflow (see
+`docs/design/execution.md`, "Two bounds, not one"). A mutated binary that decodes
+cleanly can still abort while executing -- a native indexing `args` it was not
+given, for one -- and that is not a decoder defect.
 
 **A wire tag is assigned once and never renumbered or reused.** Every instruction,
 literal and graph-section tag is declared in `crates/ns-runtime/src/image/opcodes.rs`
@@ -114,8 +115,8 @@ reuses the index, so a handle kept past its pop reads a different, perfectly
 valid activation. `ClosureData`, `Frame` and every image record take a
 `FrameRef` (get one with `Heap::reify`), so storing an `ActivationRef` is a
 compile error; a `debug_assertions`-only generation check turns a stale
-read into a panic. Every site that pushes an activation pops it on every
-exit, error paths included -- `Interpreter::send` and `instantiate`
+read into a panic. The run loop pops every activation it runs, on every exit,
+error paths included (`vm::run`) -- `Interpreter::send` and `instantiate`
 debug-assert that the stack is balanced. A reified frame is married to its
 live entry and divorced on pop, which copies its registers out, because a
 block reads its method's variables by reference

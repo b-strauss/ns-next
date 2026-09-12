@@ -224,7 +224,7 @@ fn next_level(
 /// absolute offset, with an own slot's entry overriding an inherited one of
 /// the same name. There is no access check -- slot access is never
 /// access-controlled the way a method send is, which is a known gap. Used
-/// by `sends::dispatch_lexical_send` before falling through to
+/// by `sends::decide_lexical_send` before falling through to
 /// `lookup_defined_for`/`lookup_protected`.
 pub fn lookup_slot(heap: &Heap, class: ClassRef, name: Symbol) -> Option<usize> {
     heap.class_application(class)?

@@ -53,7 +53,7 @@ fn type_mismatch(
     }
 }
 
-pub fn dispatch_integer(
+pub(crate) fn dispatch_integer(
     interp: &mut Interpreter,
     receiver: Value,
     selector: Symbol,
@@ -126,7 +126,7 @@ pub fn dispatch_integer(
     }
 }
 
-pub fn dispatch_float(
+pub(crate) fn dispatch_float(
     interp: &mut Interpreter,
     receiver: Value,
     selector: Symbol,
