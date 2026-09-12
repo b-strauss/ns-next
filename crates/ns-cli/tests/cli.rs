@@ -196,7 +196,7 @@ fn run_corpus_fails_when_the_recorded_stdout_no_longer_matches() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("ran 1, failed 1"), "{stdout}");
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("expected stdout"),
+        String::from_utf8_lossy(&out.stderr).contains("FAIL Talkative.ns: source: expected stdout"),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );

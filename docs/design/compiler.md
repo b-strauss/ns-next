@@ -258,8 +258,8 @@ the common case: a non-Boolean receiver must still produce the identical
 `ifTrue:ifFalse:` must have its method run; a non-Boolean `whileTrue:` condition
 must produce the identical `mustBeBoolean` error.
 
-With no second lowering yet to compare against, those paths are pinned by
-recorded answers: `crates/ns-cli/tests/program_outcomes.rs` holds the exit
+Those paths are pinned by recorded answers, which both lowerings must produce:
+`crates/ns-cli/tests/program_outcomes.rs` holds the exit
 status, stdout and stderr of the non-Boolean receiver, the non-Boolean loop
 condition, a block held in a variable that takes the native loop and a `^` out
 of an inlined loop body; `tests-fixtures/control_flow_fallback.ns` runs a user
@@ -437,10 +437,16 @@ refuses it for an artifact, which carries the code it was built with.
   under each lowering — with no switch, because a gate must not be optional. A
   row fails if any of the four differs, and the report names which. The gate's
   counts stay per row.
-- A new test loads every corpus module the resolver accepts, under both
-  lowerings, compiling without running. It exercises "Compilation cannot fail"
-  and the reference lowering's shape assertions over the whole corpus rather
-  than over the six modules that run.
+- `crates/ns-runtime/tests/reference_lowering.rs` loads every corpus module the
+  resolver accepts, under both lowerings, compiling without running. It
+  exercises "Compilation cannot fail" and the reference lowering's shape
+  assertions over the whole corpus rather than over the six modules that run.
+
+Suite running time (`cargo test --workspace`, debug build): 6.43 s before this
+task, 9.09 s after (`target/c-measurements.md`, "Task 4"). The increase is
+every fixture, golden outcome and build/load pair now running twice, and
+`run-corpus`'s rows running four ways instead of two -- more process spawns,
+not a slower lowering.
 
 While every program the suites run has a recorded answer, "both produce the
 recorded answer" is the comparison. Comparing the two runs directly with each
@@ -544,7 +550,7 @@ sooner. The suites recurse at most six levels
 2. **`compiler/reference.rs`, `Lowering` and the CLI switch.** — done. The
    optimized path is untouched, which byte identity of every `build` and
    `snapshot` artifact against the parent commit proves.
-3. **The harness**, with the suite's running time recorded before and after.
+3. **The harness** — done, with the suite's running time recorded before and after.
 4. **The documents**: this section becomes a description of what exists.
 
 ## Follow-up: entry points that reach a class object only to find its mixin

@@ -53,18 +53,116 @@ struct RunOutcome {
     stderr: String,
 }
 
+/// One way of running a row. Every row runs all four: from source and as a
+/// built binary, under each lowering -- the optimized one every program runs
+/// under, and the reference lowering it is checked against
+/// (`docs/design/compiler.md`, "The reference lowering"). No switch selects
+/// them, because a gate must not be optional.
+struct Lane {
+    name: &'static str,
+    lowering: &'static str,
+    binary: bool,
+}
+
+const LANES: [Lane; 4] = [
+    Lane {
+        name: "source",
+        lowering: "optimized",
+        binary: false,
+    },
+    Lane {
+        name: "binary",
+        lowering: "optimized",
+        binary: true,
+    },
+    Lane {
+        name: "reference source",
+        lowering: "reference",
+        binary: false,
+    },
+    Lane {
+        name: "reference binary",
+        lowering: "reference",
+        binary: true,
+    },
+];
+
+/// Runs `entry` every way `LANES` lists and checks each against the row's
+/// recorded outcome: the exit status and stdout, and stderr -- empty for a
+/// row expected to exit 0, and in every later lane equal to the first lane's.
+/// The first lane that disagrees decides the row, and the message names it.
+/// `executed` is set once the first lane's module has run at all, which is
+/// what `ran` counts.
+fn check_row(
+    exe: &Path,
+    file: &Path,
+    entry: &RunnableEntry,
+    executed: &mut bool,
+) -> Result<(), String> {
+    let mut first_stderr: Option<String> = None;
+    for lane in &LANES {
+        let outcome = if lane.binary {
+            run_one_binary(exe, file, &entry.send, lane.lowering)
+        } else {
+            run_one(exe, file, &entry.send, lane.lowering)
+        }
+        .map_err(|e| format!("{}: {e}", lane.name))?;
+        *executed = true;
+        if outcome.status != Some(entry.expected_status) {
+            return Err(format!(
+                "{}: expected exit {}, got {} (stderr: {})",
+                lane.name,
+                entry.expected_status,
+                match outcome.status {
+                    Some(c) => c.to_string(),
+                    None => "signal".to_string(),
+                },
+                outcome.stderr.trim_end()
+            ));
+        }
+        if outcome.stdout != entry.expected_stdout {
+            return Err(format!(
+                "{}: expected stdout {:?}, got {:?}",
+                lane.name, entry.expected_stdout, outcome.stdout
+            ));
+        }
+        match &first_stderr {
+            // A successful run writes nothing to stderr. Without this, a
+            // warning every lane prints identically would pass, since later
+            // lanes are compared only with the first.
+            None if entry.expected_status == 0 && !outcome.stderr.is_empty() => {
+                return Err(format!(
+                    "{}: expected no stderr, got {:?}",
+                    lane.name, outcome.stderr
+                ));
+            }
+            None => first_stderr = Some(outcome.stderr),
+            Some(first) if *first != outcome.stderr => {
+                return Err(format!(
+                    "{}: stderr differs from the {} run's: {:?}, against {:?}",
+                    lane.name, LANES[0].name, outcome.stderr, first
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
 /// Runs one module through a *child* `ns-next run`.
 ///
 /// A child process rather than an in-process call on purpose: the module's
 /// stdout, which Newspeak code writes straight to the process's stdout
 /// through `platform transcript`, is what gets compared, and running it in
 /// this process would interleave it with the gate's own output.
-fn run_one(exe: &Path, file: &Path, send: &str) -> Result<RunOutcome, String> {
+fn run_one(exe: &Path, file: &Path, send: &str, lowering: &str) -> Result<RunOutcome, String> {
     let out = std::process::Command::new(exe)
         .arg("run")
         .arg(file)
         .arg("--send")
         .arg(send)
+        .arg("--lowering")
+        .arg(lowering)
         .output()
         .map_err(|e| format!("could not run {}: {e}", exe.display()))?;
     Ok(RunOutcome {
@@ -123,7 +221,12 @@ impl Drop for ScratchDir {
 /// `corpus/`, so a `run-corpus` invocation leaves the working tree exactly
 /// as it found it; `ScratchDir`'s `Drop` removes it once this row is done
 /// whether the row passed or failed.
-fn run_one_binary(exe: &Path, file: &Path, send: &str) -> Result<RunOutcome, String> {
+fn run_one_binary(
+    exe: &Path,
+    file: &Path,
+    send: &str,
+    lowering: &str,
+) -> Result<RunOutcome, String> {
     let stem = file
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -137,6 +240,8 @@ fn run_one_binary(exe: &Path, file: &Path, send: &str) -> Result<RunOutcome, Str
         .arg(&artifact)
         .arg("--entry")
         .arg(send)
+        .arg("--lowering")
+        .arg(lowering)
         .output()
         .map_err(|e| format!("could not build {}: {e}", exe.display()))?;
     if !build.status.success() {
@@ -164,15 +269,13 @@ fn run_one_binary(exe: &Path, file: &Path, send: &str) -> Result<RunOutcome, Str
 /// counts as running only once someone has recorded what running it
 /// produces. Growth is therefore deliberate and a regression is loud.
 ///
-/// Every entry is run from source and checked against the expectation: the
-/// recorded exit status and stdout, and -- for a row expected to exit 0 -- an
-/// empty stderr. It is then run a second way -- built into a stateless binary
-/// with `--entry <row.send>` and loaded with no `--send`, so the recorded
-/// entry is what starts it -- and checked against the same exit status and
-/// stdout, with stderr checked against the source run's. A row's `send`
-/// doubling as the build's `--entry` is why `runnable.toml` needs no field of
-/// its own for this lane. Each row still counts once in `ran`/`failed`: the
-/// first lane that fails decides the row.
+/// Every entry runs the four ways `LANES` lists -- from source and as a built
+/// binary, under each lowering -- and each is checked against the recorded
+/// exit status and stdout; stderr is empty for a row expected to exit 0 and
+/// identical across lanes. A row's `send` doubles as the build's `--entry`,
+/// which is why `runnable.toml` needs no field of its own for the binary
+/// lanes. Each row still counts once in `ran`/`failed`: the first lane that
+/// fails decides the row.
 ///
 /// What that is worth, stated honestly: with `expected_stdout` empty on
 /// every real row -- no corpus module that currently runs writes to the
@@ -224,85 +327,14 @@ pub(crate) fn execute(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
             eprintln!("FAIL {}: no such file under {}", entry.file, dir.display());
             continue;
         }
-        let source = match run_one(&exe, &file, &entry.send) {
-            Ok(o) => o,
-            Err(e) => {
-                failed += 1;
-                eprintln!("FAIL {}: {e}", entry.file);
-                continue;
-            }
-        };
-        ran += 1;
-        if source.status != Some(entry.expected_status) {
-            failed += 1;
-            eprintln!(
-                "FAIL {}: expected exit {}, got {} (stderr: {})",
-                entry.file,
-                entry.expected_status,
-                match source.status {
-                    Some(c) => c.to_string(),
-                    None => "signal".to_string(),
-                },
-                source.stderr.trim_end()
-            );
-            continue;
+        let mut executed = false;
+        let result = check_row(&exe, &file, entry, &mut executed);
+        if executed {
+            ran += 1;
         }
-        if source.stdout != entry.expected_stdout {
+        if let Err(e) = result {
             failed += 1;
-            eprintln!(
-                "FAIL {}: expected stdout {:?}, got {:?}",
-                entry.file, entry.expected_stdout, source.stdout
-            );
-            continue;
-        }
-        // A successful run writes nothing to stderr. Without this, a warning
-        // or a stray diagnostic that both lanes print identically would pass,
-        // since the binary lane's stderr is compared with this run's only.
-        if entry.expected_status == 0 && !source.stderr.is_empty() {
-            failed += 1;
-            eprintln!(
-                "FAIL {}: expected no stderr, got {:?}",
-                entry.file, source.stderr
-            );
-            continue;
-        }
-
-        let binary = match run_one_binary(&exe, &file, &entry.send) {
-            Ok(o) => o,
-            Err(e) => {
-                failed += 1;
-                eprintln!("FAIL {}: binary: {e}", entry.file);
-                continue;
-            }
-        };
-        if binary.status != Some(entry.expected_status) {
-            failed += 1;
-            eprintln!(
-                "FAIL {}: binary: expected exit {}, got {} (stderr: {})",
-                entry.file,
-                entry.expected_status,
-                match binary.status {
-                    Some(c) => c.to_string(),
-                    None => "signal".to_string(),
-                },
-                binary.stderr.trim_end()
-            );
-            continue;
-        }
-        if binary.stdout != entry.expected_stdout {
-            failed += 1;
-            eprintln!(
-                "FAIL {}: binary: expected stdout {:?}, got {:?}",
-                entry.file, entry.expected_stdout, binary.stdout
-            );
-            continue;
-        }
-        if binary.stderr != source.stderr {
-            failed += 1;
-            eprintln!(
-                "FAIL {}: binary: stderr differs from the source run's: binary {:?}, source {:?}",
-                entry.file, binary.stderr, source.stderr
-            );
+            eprintln!("FAIL {}: {e}", entry.file);
         }
     }
     println!("ran {ran}, failed {failed}, skipped {skipped}");

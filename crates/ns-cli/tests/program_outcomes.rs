@@ -2,33 +2,46 @@
 //! of programs that cannot be fixtures, because they exit non-zero or pin an
 //! exact message. Every expectation here is a recorded answer
 //! (`docs/design/execution.md`, "One engine"), pinned so that a later change
-//! cannot move it quietly. Until the reference lowering lands there is no
-//! second way to run a program and compare: a change that alters one of
-//! these is a behaviour change and has to be justified as one.
+//! cannot move it quietly. Every program runs under both lowerings, the
+//! optimized one and the reference lowering it is checked against
+//! (`docs/design/compiler.md`, "The reference lowering"), and each must
+//! produce the recorded answer: a change that alters one of these is a
+//! behaviour change and has to be justified as one.
 
 mod common;
 
 use common::ScratchDir;
 
-/// Runs `src` with `ns-next run` and asserts all three streams exactly.
+/// Runs `src` with `ns-next run` under each lowering and asserts all three
+/// streams exactly.
 fn assert_outcome(name: &str, src: &str, exit: i32, stdout: &str, stderr: &str) {
     let dir = ScratchDir::new(name);
     let path = dir.join(&format!("{name}.ns"));
     std::fs::write(&path, src).expect("write source");
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ns-next"))
-        .arg("run")
-        .arg(&path)
-        .output()
-        .expect("run ns-next");
-    let actual_stdout = String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n");
-    let actual_stderr = String::from_utf8_lossy(&output.stderr).replace("\r\n", "\n");
-    assert_eq!(
-        output.status.code(),
-        Some(exit),
-        "{name}: exit status (stderr: {actual_stderr})"
-    );
-    assert_eq!(actual_stdout, stdout, "{name}: stdout");
-    assert_eq!(actual_stderr, stderr, "{name}: stderr");
+    for lowering in ["optimized", "reference"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ns-next"))
+            .arg("run")
+            .arg(&path)
+            .arg("--lowering")
+            .arg(lowering)
+            .output()
+            .expect("run ns-next");
+        let actual_stdout = String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n");
+        let actual_stderr = String::from_utf8_lossy(&output.stderr).replace("\r\n", "\n");
+        assert_eq!(
+            output.status.code(),
+            Some(exit),
+            "{name} under the {lowering} lowering: exit status (stderr: {actual_stderr})"
+        );
+        assert_eq!(
+            actual_stdout, stdout,
+            "{name} under the {lowering} lowering: stdout"
+        );
+        assert_eq!(
+            actual_stderr, stderr,
+            "{name} under the {lowering} lowering: stderr"
+        );
+    }
 }
 
 #[test]

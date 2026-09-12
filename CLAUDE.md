@@ -24,9 +24,9 @@ These are not style preferences. Each one has already produced a real defect in 
 repository; the reasoning behind them is in the design documents under
 `docs/design/`.
 
-**Program outcomes are pinned, not re-derived.** Until the reference lowering lands
-(`docs/design/compiler.md`, "The reference lowering") there is no second way to
-run a program and compare against. What protects behaviour is recorded answers: every
+**Program outcomes are pinned, not re-derived.** The reference lowering
+(`docs/design/compiler.md`, "The reference lowering") is a second way to run
+every program, and both are held to recorded answers: every
 `tests-fixtures/*.ns` against its `.expected` stdout and an empty stderr, the golden exit
 status, stdout and stderr in `crates/ns-cli/tests/program_outcomes.rs`, and `run-corpus`.
 A change that alters one is a behaviour change: establish that the new output is right
@@ -177,8 +177,8 @@ one to measure.
 A file that legitimately cannot parse yet belongs in `corpus/blacklist.toml`. A corpus
 module that runs end to end belongs in `corpus/runnable.toml`, with the entry selector
 to send and the output it produces; `run-corpus` runs every listed module from source
-and as a built binary and fails if either differs from the recorded output. Nothing
-under `crates/ns-syntax` should change for runtime work.
+and as a built binary, under both lowerings, and fails if any of the four differs from
+the recorded output. Nothing under `crates/ns-syntax` should change for runtime work.
 
 `platform.rs` is widened only on demand: an accessor exists because a module on
 `corpus/runnable.toml` needs it, and the whitelist entry that demanded it is named in the

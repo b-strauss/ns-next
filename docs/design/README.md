@@ -112,7 +112,7 @@ cargo test --workspace          # includes the golden program outcomes
 cargo clippy --workspace --all-targets   # must be warning-free
 cargo fmt --all                 # before every commit
 cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 210, failed 0, expected-fail 1, stale 0
-cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 205
+cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 205 -- every row under both lowerings
 ```
 
 Never judge performance from a debug build; `cargo build --workspace --release`

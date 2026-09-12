@@ -26,9 +26,8 @@ The oracle was also blind to defects in the orchestration the two shared: four
 of the six silent defects Milestone 3's review found were identically wrong
 under both.
 
-Until the reference lowering lands there is no second way to run a program and
-compare against, so behaviour is protected by recorded answers: every
-`tests-fixtures/*.ns` against its `.expected` stdout and an empty stderr
+Behaviour is protected by recorded answers, which both lowerings must produce:
+every `tests-fixtures/*.ns` against its `.expected` stdout and an empty stderr
 (`crates/ns-cli/tests/run_fixtures.rs`), the golden exit status, stdout and
 stderr of the programs that cannot be fixtures
 (`crates/ns-cli/tests/program_outcomes.rs`), and `run-corpus` over the runnable
@@ -36,7 +35,7 @@ corpus. The answers recorded before the retirement are verdicts the oracle and
 the VM agreed on. A change that alters one is a behaviour change, to be
 justified as one — never recorded because the code now produces it. The
 reference lowering ([compiler.md](compiler.md), "The reference
-lowering") is the planned differential oracle.
+lowering") is the differential oracle that replaced it.
 
 ## Activations
 
@@ -797,8 +796,8 @@ binds it is that no native code may ever enter an image.
 ## Decisions
 
 - **One engine.** The tree-walker was retired because it could not represent a
-  suspended computation; golden outcomes protect behaviour until the reference
-  lowering becomes the differential oracle.
+  suspended computation; golden outcomes protect behaviour, and the reference
+  lowering is the differential oracle.
 - **`vm.rs` holds no dispatch logic.** Every observable error comes from shared
   code, so the reference lowering and a JIT share it. Splitting `send` into a
   decision and an activation preserves this: the decision does not move.
