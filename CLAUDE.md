@@ -48,9 +48,11 @@ deferred to execution instead (see `Literal::MalformedInt` and
 
 **An expression's value register must still hold that value when its consumer executes.**
 A named local's register is live storage. `lower_operand` copies it when anything lowered
-afterwards can write it; `lower_expr_consumed_immediately` is the counterpart for the
-positions where nothing is lowered afterwards. Getting this wrong is silent wrong output
-with exit status 0, not a crash.
+afterwards can write it. An assignment through a setter copies it too, even when the very
+next instruction reads the assignment's value: the setter send runs user code first, and
+that code can write the local through a closure. `lower_expr_for` skips that copy only
+where its caller states that nothing reads the value (`ValueUse::Discarded`). Getting this
+wrong is silent wrong output with exit status 0, not a crash.
 
 **An image is untrusted input.** No byte sequence may cause a panic or a process abort:
 validate every id, tag, count and length before it indexes, allocates or slices, and

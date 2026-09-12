@@ -190,6 +190,55 @@ fn an_operand_written_by_a_callee_keeps_its_evaluated_value() {
     );
 }
 
+/// `x := e` answers the value of `e` (`docs/design/dispatch.md`, "Setter
+/// sends"), even when the setter it sends writes the local `e` read, through a
+/// closure built earlier. One case per position that reads an assignment's
+/// value after its setter send has run: a `^`, a `^` inside a block, a block's
+/// last statement, the last statement of an inlined branch, of an inlined
+/// `and:` block and of an inlined loop condition, and a slot initializer. Each
+/// line is the value `e` had before the setter ran: `1`, `true` for the
+/// `and:`, and one loop iteration, since the second test finds `false`.
+#[test]
+fn an_assignment_through_a_setter_answers_the_value_before_the_setter_ran() {
+    assert_outcome(
+        "setter-value",
+        "Newspeak3\n'T'\nclass SetterValue usingPlatform: platform = Object new (\n\
+         \t| blk ::= nil. |\n) (\n\
+         \tpublic class Init new: n = Object new (\n\
+         \t\t| hook = [n := 99]. answer = (x := n). |\n\
+         \t) (\n\
+         \t\tx: v = ( hook value )\n\
+         \t\tpublic result = ( ^answer )\n\
+         \t)\n\
+         \tx: v = ( blk value )\n\
+         \treturned = ( | y | y := 1. blk := [y := 99]. ^x := y )\n\
+         \treturnedFromABlock = ( [ | z | z := 1. blk := [z := 99]. ^x := z ] value. ^0 )\n\
+         \tblockValue = ( ^[ | z | z := 1. blk := [z := 99]. x := z ] value )\n\
+         \tinlinedBranch: c = ( | y | y := 1. blk := [y := 99]. ^c ifTrue: [x := y] ifFalse: [0] )\n\
+         \tinlinedAnd = ( | y | y := true. blk := [y := false]. ^true and: [x := y] )\n\
+         \tinlinedCondition = (\n\
+         \t\t| y count |\n\
+         \t\ty := true.\n\
+         \t\tcount := 0.\n\
+         \t\tblk := [y := false].\n\
+         \t\t[x := y] whileTrue: [count := count + 1].\n\
+         \t\t^count\n\
+         \t)\n\
+         \tpublic main: p args: a = (\n\
+         \t\tp transcript show: self returned printString; newLine.\n\
+         \t\tp transcript show: self returnedFromABlock printString; newLine.\n\
+         \t\tp transcript show: self blockValue printString; newLine.\n\
+         \t\tp transcript show: (self inlinedBranch: true) printString; newLine.\n\
+         \t\tp transcript show: self inlinedAnd printString; newLine.\n\
+         \t\tp transcript show: self inlinedCondition printString; newLine.\n\
+         \t\tp transcript show: (Init new: 1) result printString; newLine\n\
+         \t)\n) : ()\n",
+        0,
+        "1\n1\n1\n1\ntrue\n1\n1\n",
+        "",
+    );
+}
+
 /// A bare `super` parses and resolves but has no binding, so it is a
 /// program-level error raised where it is evaluated.
 #[test]

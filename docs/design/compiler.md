@@ -173,11 +173,27 @@ executes.** This follows directly from "a read of a local needs no instruction":
 because a named local's register *is* its value, that register is live storage,
 not scratch, and anything that writes the local writes the expression's value too.
 
-`lower_operand` copies when anything lowered afterwards can write the register;
-`lower_expr_consumed_immediately` is the counterpart for positions where nothing
-is lowered afterwards. Getting this wrong is silent wrong output with exit status
-0, not a crash — which is why it is an invariant in `CLAUDE.md` rather than a
-comment.
+`lower_operand` copies when anything lowered afterwards can write the register.
+An assignment through a setter copies the local its value was read from even
+when the consumer is the very next instruction, because the setter send itself
+runs user code before that consumer reads — code that can write the local
+through a closure that captured the frame. `^x := y`, with a setter that assigns
+`y`, would otherwise answer `y`'s new value, where the language answers the
+value `y` had ([dispatch.md](dispatch.md), "Setter sends").
+
+The copy is skipped only where nothing reads the value at all, and every
+position says which it is rather than inferring it: `lower_expr_for` takes a
+`ValueUse`, and is the one place that acts on it. An instruction reads the
+value of a `^`, of a slot initializer (`InitSlot`), of a block's last statement
+(its `ImplicitReturn`) and of an inlined block's last statement — a branch of
+`ifTrue:` and its relatives, the block of `and:`/`or:`, a loop condition — when
+the inlined form's own value is read; an inlined form in a discarded position
+passes that on to its blocks, and a loop body is never read. Every other
+statement is discarded, including every statement of a method or an
+initializer, which fall off their end answering `self`, and an initializer's
+top-level `^`, which returns nothing. Getting this wrong is silent wrong
+output with exit status 0, not a crash — which is why it is an invariant in
+`CLAUDE.md` rather than a comment.
 
 ## Control-flow inlining
 

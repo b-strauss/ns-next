@@ -67,10 +67,7 @@ pub fn compile_method(
         bindings,
         vec![],
     );
-    for stmt in &method.body.stmts {
-        lowerer.lower_statement(stmt);
-    }
-    lowerer.finish_body(&method.body.stmts);
+    lowerer.lower_body(&method.body.stmts);
     lowerer.finish(method.span)
 }
 
@@ -122,10 +119,9 @@ fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>
         }
     }
     for stmt in &mixin.init_exprs {
-        lowerer.lower_statement(stmt);
         source = Some(merge_span(source, stmt_span(stmt)));
     }
-    lowerer.finish_body(&mixin.init_exprs);
+    lowerer.lower_body(&mixin.init_exprs);
     lowerer.finish(source.unwrap_or(Span::new(0, 0)))
 }
 
@@ -149,10 +145,7 @@ fn compile_superclass_clause(
         crate::interpreter::nested::superclass_clause_expr(clause),
     )];
     let mut lowerer = Lowerer::new(CodeKind::SuperclassClause, 0, 0, bindings, vec![]);
-    for stmt in &stmts {
-        lowerer.lower_statement(stmt);
-    }
-    lowerer.finish_body(&stmts);
+    lowerer.lower_body(&stmts);
     Some(lowerer.finish(clause.span))
 }
 
@@ -181,10 +174,7 @@ fn compile_superclass_message(
     let num_args = factory_num_args(mixin);
     let stmts = vec![Stmt::Return(args)];
     let mut lowerer = Lowerer::new(CodeKind::SuperclassMessage, num_args, 0, bindings, vec![]);
-    for stmt in &stmts {
-        lowerer.lower_statement(stmt);
-    }
-    lowerer.finish_body(&stmts);
+    lowerer.lower_body(&stmts);
     Some(lowerer.finish(clause.span))
 }
 
