@@ -607,19 +607,21 @@ impl Heap {
         obj.index as usize
     }
 
-    /// Overwrites `obj`'s identity hash. `tests/image.rs`'s
-    /// `an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating` is
-    /// the only caller: it forces a live object's hash to one below the
-    /// ceiling by hand, which is the only way to reach
-    /// `advance_identity_hash_past`'s overflow guard without actually
-    /// hashing four billion objects first.
+    /// Overwrites `obj`'s identity hash. Two legitimate callers:
+    /// `image::decode::decode_tag_named_hashes`, which puts a recorded hash
+    /// back onto a builtin class, the root class or `platform` -- none of
+    /// them a record, so nothing else could restore what the image
+    /// remembered for one -- and `tests/image.rs`'s
+    /// `an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating`,
+    /// which forces a live object's hash to one below the ceiling by hand,
+    /// the only way to reach `advance_identity_hash_past`'s overflow guard
+    /// without actually hashing four billion objects first.
     ///
-    /// Calling this on anything but that one object under test is a raw,
-    /// unchecked overwrite of the one value identity-keyed lookups,
-    /// `become:` and a loaded image's roots all rest on: it can leave two
-    /// live objects sharing a hash, and every identity-keyed collection and
-    /// `become:`'s stability guarantee then silently breaks, with nothing
-    /// anywhere raising an error to say so.
+    /// Calling this on anything else is a raw, unchecked overwrite of the one
+    /// value identity-keyed lookups, `become:` and a loaded image's roots all
+    /// rest on: it can leave two live objects sharing a hash, and every
+    /// identity-keyed collection and `become:`'s stability guarantee then
+    /// silently breaks, with nothing anywhere raising an error to say so.
     pub fn set_identity_hash(&mut self, obj: ObjRef, hash: u32) {
         self.check_object_origin(obj);
         self.objects[obj.index as usize].identity_hash = hash;

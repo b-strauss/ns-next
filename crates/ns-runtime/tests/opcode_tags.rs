@@ -143,13 +143,17 @@ fn graph_section_tags_are_fixed() {
 
     assert_eq!(PC_KIND_TREE_WALK, 0);
     assert_eq!(PC_KIND_BYTECODE, 1);
+
+    assert_eq!(HASHED_BUILTIN_CLASS, 0);
+    assert_eq!(HASHED_ROOT_CLASS, 1);
+    assert_eq!(HASHED_PLATFORM, 2);
 }
 
 /// Within each family a number means one thing. Nothing but a copy-paste
 /// stops two constants sharing one, and the compiler would not object.
 #[test]
 fn no_two_graph_tags_in_a_family_share_a_number() {
-    let families: [&[u8]; 5] = [
+    let families: [&[u8]; 6] = [
         &[
             VAL_NIL,
             VAL_FALSE,
@@ -178,6 +182,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             FRAME_SUPERCLASS_MESSAGE,
         ],
         &[PC_KIND_TREE_WALK, PC_KIND_BYTECODE],
+        &[HASHED_BUILTIN_CLASS, HASHED_ROOT_CLASS, HASHED_PLATFORM],
     ];
     for family in families {
         let mut seen = family.to_vec();

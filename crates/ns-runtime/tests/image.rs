@@ -1980,7 +1980,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
     let max_hash = interp.heap_mut().ensure_identity_hash(*obj(&instance));
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2024,7 +2024,7 @@ fn bytes_after_the_last_section_are_refused_not_ignored() {
     let (mut interp, class) = load(src);
     let platform = interp.platform();
     let mut bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2048,7 +2048,7 @@ fn load_refuses_a_version_mismatch() {
     let (mut interp, class) = load(src);
     let platform = interp.platform();
     let mut bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2104,7 +2104,7 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
     let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2771,7 +2771,7 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
     );
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2813,7 +2813,7 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
     );
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2914,7 +2914,7 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
     };
     install_mixin(&mut interp, class, doctored);
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(NEEDS_INITIALIZER),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -2969,7 +2969,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         .set_identity_hash(*obj(&instance), u32::MAX - 1);
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3009,7 +3009,7 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
     let assigned = interp.heap_mut().ensure_identity_hash(*obj(&hashed));
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3036,6 +3036,146 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
         "an unassigned hash stays unassigned"
     );
     assert!(heap.ensure_identity_hash(fresh) > assigned);
+}
+
+/// A builtin class, the root class and `platform` are named by tag, not
+/// carried as records, so before the closing hash table nothing recorded a
+/// hash one of them had been given: after the load the bootstrap's fresh
+/// objects drew new ones (`docs/design/image-format.md`, "Identity hashes are
+/// preserved verbatim"). One that nothing asked stays unassigned.
+#[test]
+fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let (mut interp, class) = load(src);
+    let platform = interp.platform();
+    let integer = interp.builtin_class(BuiltinClass::Integer);
+    let integer_hash = interp.heap_mut().ensure_identity_hash(integer);
+    let class_hash = interp.heap_mut().ensure_identity_hash(class);
+    let platform_hash = interp.heap_mut().ensure_identity_hash(*obj(&platform));
+    let bytes = image::snapshot(
+        &interp,
+        None,
+        &Origin::File(PathBuf::from("t.ns")),
+        class,
+        &platform,
+        &[],
+    )
+    .expect("snapshot");
+
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert_eq!(
+        report.graph_tag_named_hashes,
+        vec![
+            format!("Integer hash {integer_hash}"),
+            format!("<root class> hash {class_hash}"),
+            format!("<platform> hash {platform_hash}"),
+        ],
+        "inspect reads the table, in the encoder's fixed order"
+    );
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let loaded_platform = loaded.interp.platform();
+    let loaded_integer = loaded.interp.builtin_class(BuiltinClass::Integer);
+    let loaded_string = loaded.interp.builtin_class(BuiltinClass::Str);
+    let heap = loaded.interp.heap_mut();
+    assert_eq!(heap.identity_hash(loaded_integer), integer_hash);
+    assert_eq!(heap.identity_hash(loaded.root_class), class_hash);
+    assert_eq!(heap.identity_hash(*obj(&loaded_platform)), platform_hash);
+    assert_eq!(
+        heap.identity_hash(loaded_string),
+        0,
+        "a builtin nothing asked for its hash stays unassigned"
+    );
+    let largest = integer_hash.max(class_hash).max(platform_hash);
+    assert!(
+        heap.ensure_identity_hash(loaded_string) > largest,
+        "the counter is advanced past the tag-named hashes too"
+    );
+}
+
+/// The closing table alone, decoded against a freshly loaded world.
+fn decode_tag_named(bytes: &[u8]) -> Result<u32, decode::DecodeError> {
+    let (mut interp, class) = load(EMPTY);
+    let mut r = decode::Reader::new(bytes);
+    decode::decode_tag_named_hashes(&mut r, &mut interp, class)
+}
+
+#[test]
+fn a_tag_named_hash_of_zero_is_refused() {
+    // 0 means unassigned, which the encoder expresses by leaving the entry
+    // out; accepting it would give one world two encodings.
+    let mut w = encode::Writer::new();
+    w.write_u32(1);
+    w.write_u8(image::opcodes::HASHED_ROOT_CLASS);
+    w.write_u32(0);
+    assert_eq!(
+        decode_tag_named(&w.into_bytes()),
+        Err(decode::DecodeError::UnassignedTagNamedHash)
+    );
+}
+
+#[test]
+fn a_tag_named_object_recorded_twice_is_refused() {
+    let mut w = encode::Writer::new();
+    w.write_u32(2);
+    w.write_u8(image::opcodes::HASHED_PLATFORM);
+    w.write_u32(3);
+    w.write_u8(image::opcodes::HASHED_PLATFORM);
+    w.write_u32(4);
+    assert_eq!(
+        decode_tag_named(&w.into_bytes()),
+        Err(decode::DecodeError::DuplicateTagNamedHash)
+    );
+}
+
+#[test]
+fn a_tag_named_hash_at_the_ceiling_is_refused() {
+    let mut w = encode::Writer::new();
+    w.write_u32(1);
+    w.write_u8(image::opcodes::HASHED_BUILTIN_CLASS);
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Integer));
+    w.write_u32(u32::MAX);
+    assert_eq!(
+        decode_tag_named(&w.into_bytes()),
+        Err(decode::DecodeError::IdentityHashExhausted)
+    );
+}
+
+#[test]
+fn an_unknown_tag_named_hash_tag_is_refused() {
+    let mut w = encode::Writer::new();
+    w.write_u32(1);
+    w.write_u8(3);
+    w.write_u32(5);
+    assert_eq!(
+        decode_tag_named(&w.into_bytes()),
+        Err(decode::DecodeError::InvalidTag {
+            what: "tag-named hash",
+            tag: 3
+        })
+    );
+}
+
+#[test]
+fn a_tag_named_hash_count_past_the_remaining_bytes_is_refused() {
+    let mut w = encode::Writer::new();
+    w.write_u32(u32::MAX);
+    assert_eq!(
+        decode_tag_named(&w.into_bytes()),
+        Err(decode::DecodeError::UnexpectedEof)
+    );
+}
+
+#[test]
+fn the_tag_named_hash_table_answers_its_largest_hash() {
+    let mut w = encode::Writer::new();
+    w.write_u32(2);
+    w.write_u8(image::opcodes::HASHED_BUILTIN_CLASS);
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Str));
+    w.write_u32(9);
+    w.write_u8(image::opcodes::HASHED_ROOT_CLASS);
+    w.write_u32(4);
+    assert_eq!(decode_tag_named(&w.into_bytes()), Ok(9));
 }
 
 // ---------------------------------------------------------------------------
@@ -3131,7 +3271,7 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
         "instantiate Outer",
     );
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(NESTED_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3193,7 +3333,7 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
         "instantiate Outer",
     );
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(NESTED_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3254,7 +3394,7 @@ fn snapshot_world(
     roots: &[Value],
 ) -> Vec<u8> {
     image::snapshot(
-        interp.heap_ref(),
+        interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3568,7 +3708,7 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
         "instantiate Args",
     );
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(NESTED_SUPERCLASS_ARGS),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3707,7 +3847,7 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
     // tampered mixin travels through one.
     let platform = interp.platform();
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         None,
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -3781,7 +3921,7 @@ fn snapshot_of(src: &str) -> Vec<u8> {
     let (mut interp, class) = load(src);
     let platform = interp.platform();
     image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -4094,7 +4234,7 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
         "instantiate Args",
     );
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(NESTED_SUPERCLASS_ARGS),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -4261,7 +4401,7 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
     );
     let platform = interp.platform();
     let Err(err) = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         Some(TRIVIAL_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -4324,15 +4464,15 @@ fn instance_chain_depth(heap: &Heap, head: &Value) -> u32 {
 
 /// A complete image whose graph section is `graph` verbatim. Everything
 /// before it comes from a real `snapshot` of `EMPTY`, whose own graph
-/// section is exactly the three zero counts at the end of the file -- so
+/// section is exactly the four zero counts at the end of the file -- so
 /// the splice point is found by structure, not by a hardcoded offset.
 fn image_with_graph_section(graph: &[u8]) -> Vec<u8> {
     let mut bytes = snapshot_of(EMPTY);
-    let tail = bytes.len() - 12;
+    let tail = bytes.len() - 16;
     assert_eq!(
         &bytes[tail..],
-        &[0u8; 12],
-        "a rootless snapshot ends in three zero counts: objects, frames, roots"
+        &[0u8; 16],
+        "a rootless snapshot ends in four zero counts: objects, frames, roots, tag-named hashes"
     );
     bytes.truncate(tail);
     bytes.extend_from_slice(graph);
@@ -4361,6 +4501,7 @@ fn superclass_chain_graph(levels: u32) -> Vec<u8> {
     w.write_u8(6); // value tag: class tag
     w.write_u8(2); // class tag: object-table record
     w.write_u32(0);
+    w.write_u32(0); // no tag-named hashes
     w.into_bytes()
 }
 
@@ -4386,6 +4527,7 @@ fn instance_chain_graph(levels: u32) -> Vec<u8> {
     w.write_u32(1); // one root
     w.write_u8(5);
     w.write_u32(0);
+    w.write_u32(0); // no tag-named hashes
     w.into_bytes()
 }
 
@@ -4502,7 +4644,7 @@ fn snapshot_module(src: &str, source: Option<&str>, extra_send: Option<&str>) ->
         ));
     }
     image::snapshot(
-        interp.heap_ref(),
+        &interp,
         source,
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -4643,7 +4785,7 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
         0,
     );
     let result = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         None,
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -4731,7 +4873,7 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
     forged.uncontinuable = false;
     interp.heap_mut().replace_frame(home, forged);
     let bytes = image::snapshot(
-        interp.heap_ref(),
+        &interp,
         None,
         &Origin::File(PathBuf::from("t.ns")),
         class,
@@ -4914,7 +5056,7 @@ fn snapshot_of_without_source(src: &str) -> Vec<u8> {
     let platform = interp.platform();
     let instance = expect_ok(interp.instantiate(class, vec![platform]), "instantiate");
     image::snapshot(
-        interp.heap_ref(),
+        &interp,
         None,
         &Origin::File(PathBuf::from("golden.ns")),
         class,
@@ -5036,8 +5178,7 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
         Symbol::intern("main:args:"),
     )
     .expect("build");
-    let img =
-        image::snapshot(interp.heap_ref(), None, &origin, class, &platform, &[]).expect("snapshot");
+    let img = image::snapshot(&interp, None, &origin, class, &platform, &[]).expect("snapshot");
 
     let b = image::inspect::inspect(&binary).expect("inspect binary");
     let i = image::inspect::inspect(&img).expect("inspect image");
@@ -5154,8 +5295,7 @@ fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
     let platform = interp.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let img =
-        image::snapshot(interp.heap_ref(), None, &origin, class, &platform, &[]).expect("snapshot");
+    let img = image::snapshot(&interp, None, &origin, class, &platform, &[]).expect("snapshot");
 
     let loaded = image::load(&img).expect("load a stateful image with no roots");
     assert!(
@@ -5274,7 +5414,7 @@ fn a_binary_with_a_graph_appended_is_refused() {
     )
     .expect("build");
     let image_bytes =
-        image::snapshot(interp.heap_ref(), None, &origin, class, &platform, &[]).expect("snapshot");
+        image::snapshot(&interp, None, &origin, class, &platform, &[]).expect("snapshot");
     // The append below only exercises anything if the image actually
     // extends past where the binary ends -- a snapshot's graph section
     // guarantees that here, but assert it so a future change to either
@@ -5321,7 +5461,7 @@ fn a_relabelled_snapshot_is_refused_for_missing_entry() {
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let mut bytes =
-        image::snapshot(interp.heap_ref(), None, &origin, class, &platform, &[]).expect("snapshot");
+        image::snapshot(&interp, None, &origin, class, &platform, &[]).expect("snapshot");
 
     // Locate the flag byte from the header layout instead of hard-coding an
     // offset, so a header change fails this assertion loudly rather than
@@ -5375,8 +5515,8 @@ class X usingPlatform: p = Object new (
             // graph worth walking -- just without an instance in it.
             Err(_) => Vec::new(),
         };
-        let img = image::snapshot(interp.heap_ref(), None, &origin, class, &platform, &roots)
-            .expect("snapshot");
+        let img =
+            image::snapshot(&interp, None, &origin, class, &platform, &roots).expect("snapshot");
 
         let report = image::inspect::inspect(&img).expect("inspect the image");
         let graph = report

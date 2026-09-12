@@ -110,3 +110,13 @@ pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
 /// that a pc-unit field, if one ever returns, cannot give them a new meaning.
 pub const PC_KIND_TREE_WALK: u8 = 0;
 pub const PC_KIND_BYTECODE: u8 = 1;
+
+/// Which tag-named object an entry of the graph section's closing hash table
+/// names. The three are exactly the objects `CLS_BUILTIN`, `CLS_USER_ROOT`
+/// and `VAL_PLATFORM` name: none of them is a record, so without this table
+/// nothing in an image would carry a hash one of them was given
+/// (`docs/design/image-format.md`, "Identity hashes are preserved verbatim").
+/// A builtin-class entry is followed by its builtin class tag.
+pub const HASHED_BUILTIN_CLASS: u8 = 0;
+pub const HASHED_ROOT_CLASS: u8 = 1;
+pub const HASHED_PLATFORM: u8 = 2;

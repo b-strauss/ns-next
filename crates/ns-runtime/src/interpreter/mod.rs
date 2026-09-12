@@ -801,22 +801,6 @@ fn build_builtin_classes(interp: &mut Interpreter) -> Vec<ClassRef> {
     // `Object` struct could have made this shadow compile into the wrong
     // construction entirely. Referring to every variant through its
     // `BuiltinClass::` qualifier avoids the collision.
-    let kinds = [
-        BuiltinClass::Object,
-        BuiltinClass::Boolean,
-        BuiltinClass::True,
-        BuiltinClass::False,
-        BuiltinClass::Integer,
-        BuiltinClass::Float,
-        BuiltinClass::Str,
-        BuiltinClass::Sym,
-        BuiltinClass::Character,
-        BuiltinClass::Array,
-        BuiltinClass::OrderedCollection,
-        BuiltinClass::Nil,
-        BuiltinClass::Block,
-        BuiltinClass::Platform,
-    ];
     // A builtin's behaviour is native (`builtins::dispatch_native`), so its
     // mixin declares nothing: the application exists to give the builtin the
     // same shape every other class object has, and -- for the non-`Object`
@@ -825,8 +809,8 @@ fn build_builtin_classes(interp: &mut Interpreter) -> Vec<ClassRef> {
     let object_application = interp.apply_mixin(&builtin_mixin(BuiltinClass::Object), None);
     let class_of_class =
         build_self_referential_object_class(&mut interp.heap, object_application.clone());
-    let mut classes = Vec::with_capacity(kinds.len());
-    for kind in kinds {
+    let mut classes = Vec::with_capacity(BuiltinClass::ALL.len());
+    for kind in BuiltinClass::ALL {
         // `builtin_class` indexes by discriminant, so the vector must be
         // filled in exactly that order.
         debug_assert_eq!(classes.len(), kind as usize);

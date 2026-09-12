@@ -230,6 +230,12 @@ pub enum DecodeError {
     /// overflow to the counter's own `+= 1`. Refusing the image
     /// is the only answer that neither panics nor collides.
     IdentityHashExhausted,
+    /// A tag-named hash of 0. 0 means "not yet assigned", which the encoder
+    /// expresses by leaving the object out; accepting a 0 would give one world
+    /// two encodings.
+    UnassignedTagNamedHash,
+    /// One tag-named object listed twice in the closing hash table.
+    DuplicateTagNamedHash,
     /// Bytes remain after the last section. Refused rather than ignored: with
     /// two artifact shapes in one format, silently accepting a tail means a
     /// binary with a graph appended -- or an image truncated to a binary and
@@ -384,6 +390,14 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "an image object's identity hash is {}, leaving no hash for a loaded world to allocate next",
                 u32::MAX
+            ),
+            DecodeError::UnassignedTagNamedHash => write!(
+                f,
+                "an image records identity hash 0 for an object it names by tag; an unassigned hash is recorded by leaving the object out"
+            ),
+            DecodeError::DuplicateTagNamedHash => write!(
+                f,
+                "an image records the identity hash of one tag-named object twice"
             ),
             DecodeError::TrailingBytes { count } => {
                 write!(f, "{count} trailing byte(s) after the last section")
@@ -1617,6 +1631,10 @@ const MIN_OBJECT_RECORD_BYTES: usize = 6;
 /// `uncontinuable` (1). Every other frame kind is larger.
 const MIN_FRAME_RECORD_BYTES: usize = 18;
 
+/// The smallest entry of the closing hash table: a tag (1) and a hash (4). A
+/// builtin-class entry carries one more byte.
+const MIN_TAG_NAMED_HASH_BYTES: usize = 5;
+
 /// A record count read from an untrusted stream, refused before it is used
 /// to *allocate*. The bytes still unread bound how many records can really
 /// follow: at `bytes_per_record` apiece, a count above
@@ -1978,6 +1996,51 @@ pub fn decode_graph_section(
         objects,
         frames,
     })
+}
+
+/// The inverse of `encode::encode_tag_named_hashes`: puts each recorded hash
+/// back onto the object the bootstrap -- or `build_root_class` -- built, and
+/// answers the largest one, which `load` advances the counter past together
+/// with the graph's own maximum. A 0, a repeated object and `u32::MAX` are
+/// refused, each for the reason its `DecodeError` gives.
+pub fn decode_tag_named_hashes(
+    r: &mut Reader,
+    interp: &mut Interpreter,
+    root_class: ClassRef,
+) -> Result<u32, DecodeError> {
+    let count = bounded_count(r.read_u32()? as usize, MIN_TAG_NAMED_HASH_BYTES, r)?;
+    let mut restored: Vec<ObjRef> = Vec::new();
+    let mut max = 0;
+    for _ in 0..count {
+        let target = match r.read_u8()? {
+            HASHED_BUILTIN_CLASS => interp.builtin_class(read_builtin_class(r)?),
+            HASHED_ROOT_CLASS => root_class,
+            HASHED_PLATFORM => match interp.platform() {
+                Value::Obj(platform) => platform,
+                _ => unreachable!("the platform singleton is always an object"),
+            },
+            tag => {
+                return Err(DecodeError::InvalidTag {
+                    what: "tag-named hash",
+                    tag,
+                })
+            }
+        };
+        let hash = r.read_u32()?;
+        if hash == 0 {
+            return Err(DecodeError::UnassignedTagNamedHash);
+        }
+        if hash == u32::MAX {
+            return Err(DecodeError::IdentityHashExhausted);
+        }
+        if restored.iter().any(|seen| seen.same(target)) {
+            return Err(DecodeError::DuplicateTagNamedHash);
+        }
+        restored.push(target);
+        interp.heap.set_identity_hash(target, hash);
+        max = max.max(hash);
+    }
+    Ok(max)
 }
 
 /// The inverse of `encode::encode_class_record`: the mixin-table row this

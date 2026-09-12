@@ -120,6 +120,29 @@ pub enum BuiltinClass {
     Platform,
 }
 
+impl BuiltinClass {
+    /// Every builtin class, in declaration order. `Interpreter::builtin_class`
+    /// indexes by discriminant, so the bootstrap builds them in this order,
+    /// and the image's closing hash table writes them in it too -- it is also
+    /// their wire-tag order (`image::encode::builtin_class_tag`).
+    pub const ALL: [BuiltinClass; 14] = [
+        BuiltinClass::Object,
+        BuiltinClass::Boolean,
+        BuiltinClass::True,
+        BuiltinClass::False,
+        BuiltinClass::Integer,
+        BuiltinClass::Float,
+        BuiltinClass::Str,
+        BuiltinClass::Sym,
+        BuiltinClass::Character,
+        BuiltinClass::Array,
+        BuiltinClass::OrderedCollection,
+        BuiltinClass::Nil,
+        BuiltinClass::Block,
+        BuiltinClass::Platform,
+    ];
+}
+
 #[derive(Debug, Clone)]
 pub struct ClosureData {
     /// Shared with the `MakeClosure` instruction that created the closure --

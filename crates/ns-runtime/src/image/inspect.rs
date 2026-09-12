@@ -54,6 +54,9 @@ pub struct Report {
     pub graph_objects: Vec<String>,
     pub graph_frames: Vec<String>,
     pub graph_roots: Vec<String>,
+    /// The identity hashes the graph section records for the objects it
+    /// names by tag. Rendered only by `render_full`.
+    pub graph_tag_named_hashes: Vec<String>,
     pub entry: Option<String>,
     pub total_len: usize,
 }
@@ -166,6 +169,7 @@ struct GraphView {
     objects: Vec<String>,
     frames: Vec<String>,
     roots: Vec<String>,
+    tag_named: Vec<String>,
 }
 
 fn read_class_tag(r: &mut decode::Reader) -> Result<String, decode::DecodeError> {
@@ -314,10 +318,29 @@ fn walk_graph(
     }
 
     let roots = read_values(r)?;
+
+    let count = decode::bounded_count(r.read_u32()? as usize, 1, r)?;
+    let mut tag_named = Vec::new();
+    for _ in 0..count {
+        let who = match r.read_u8()? {
+            opcodes::HASHED_BUILTIN_CLASS => format!("{:?}", decode::read_builtin_class(r)?),
+            opcodes::HASHED_ROOT_CLASS => "<root class>".to_string(),
+            opcodes::HASHED_PLATFORM => "<platform>".to_string(),
+            tag => {
+                return Err(decode::DecodeError::InvalidTag {
+                    what: "tag-named hash",
+                    tag,
+                })
+            }
+        };
+        tag_named.push(format!("{who} hash {}", r.read_u32()?));
+    }
+
     Ok(GraphView {
         objects,
         frames,
         roots,
+        tag_named,
     })
 }
 
@@ -473,6 +496,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         objects: Vec::new(),
         frames: Vec::new(),
         roots: Vec::new(),
+        tag_named: Vec::new(),
     };
     if !header.stateless {
         graph = walk_graph(&mut r, &symbol_table).map_err(|e| e.to_string())?;
@@ -484,10 +508,11 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
             // last byte is what `graph_walk_consumes_the_whole_section` pins.
             end: r.pos(),
             detail: format!(
-                "{} objects, {} frames, {} roots",
+                "{} objects, {} frames, {} roots, {} tag-named hashes",
                 graph.objects.len(),
                 graph.frames.len(),
-                graph.roots.len()
+                graph.roots.len(),
+                graph.tag_named.len()
             ),
         });
     }
@@ -506,6 +531,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         graph_objects: graph.objects,
         graph_frames: graph.frames,
         graph_roots: graph.roots,
+        graph_tag_named_hashes: graph.tag_named,
         entry: entry.map(|s| s.to_string()),
         total_len: bytes.len(),
     })
@@ -593,7 +619,10 @@ pub fn render_full(report: &Report) -> String {
     // Only an image has one. A binary's whole point is that it does not, so
     // printing an empty heading there would invite the reader to look for
     // state that is deliberately absent.
-    if !report.graph_objects.is_empty() || !report.graph_frames.is_empty() {
+    if !report.graph_objects.is_empty()
+        || !report.graph_frames.is_empty()
+        || !report.graph_tag_named_hashes.is_empty()
+    {
         let _ = writeln!(out, "\ngraph");
         let _ = writeln!(out, "  objects ({})", report.graph_objects.len());
         for (i, o) in report.graph_objects.iter().enumerate() {
@@ -604,6 +633,11 @@ pub fn render_full(report: &Report) -> String {
             let _ = writeln!(out, "    {i:>4} {f}");
         }
         let _ = writeln!(out, "  roots  {}", report.graph_roots.join(", "));
+        let _ = writeln!(
+            out,
+            "  tag-named hashes  {}",
+            report.graph_tag_named_hashes.join(", ")
+        );
     }
 
     let _ = writeln!(out, "\nbodies ({})", report.bodies.len());
