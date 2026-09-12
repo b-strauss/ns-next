@@ -28,7 +28,11 @@ pub type EvalResult = Result<Value, Signal>;
 
 /// L: the most activations that may be live at once, counted by the rule in
 /// `docs/design/compiler.md`, "How the limit counts". It bounds memory, not
-/// the native stack, which the trampoline no longer recurses on.
+/// the native stack, which the trampoline no longer recurses on: with the
+/// exempt block activations, at most one per level of block nesting above
+/// each counted one, the stack holds at most 129 x L entries -- 128 being
+/// the parser's nesting ceiling, which `image::decode` holds an artifact to
+/// as well (`docs/design/execution.md`, "Two bounds, not one").
 pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
 
 /// N: how deep Rust may re-enter the run loop -- `do:`, instantiation, the

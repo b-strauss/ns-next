@@ -908,6 +908,97 @@ fn a_literal_array_within_the_nesting_limit_still_decodes() {
     ));
 }
 
+/// The code table's other depth: blocks nested `levels` deep in one method.
+/// Body 0 is the innermost block, each later body creates the one before it,
+/// and the last is the method -- the order the encoder writes, every block
+/// before the code that creates it. The innermost block sits `levels`
+/// `MakeClosure` hops below the method. Each level is 37 bytes, so the file
+/// grows linearly with the nesting it asks for.
+fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
+    use ns_runtime::image::opcodes::{OP_MAKE_CLOSURE, OP_RETURN};
+    let body = |w: &mut encode::Writer, kind: u8, creates: Option<usize>| {
+        w.write_u8(kind);
+        w.write_u16(0); // num_args
+        w.write_u16(1); // num_registers
+        w.write_u32(0); // source.start
+        w.write_u32(0); // source.end
+        w.write_u32(0); // no statement_pc entries
+        w.write_u32(0); // no call sites
+        match creates {
+            Some(block) => {
+                w.write_u32(2); // two instructions ...
+                w.write_u8(OP_MAKE_CLOSURE); // ... r0 := the next block in,
+                w.write_u16(0);
+                w.write_u16(0); // taking no parameters,
+                w.write_u32(u32::try_from(block).expect("a test-sized code id"));
+            }
+            None => w.write_u32(1), // the innermost: one instruction ...
+        }
+        w.write_u8(OP_RETURN); // ... then ^r0
+        w.write_u16(0);
+    };
+    let mut w = encode::Writer::new();
+    w.write_u32(u32::try_from(levels + 1).expect("a test-sized code table"));
+    body(&mut w, 1, None); // CodeKind::Block
+    for id in 1..levels {
+        body(&mut w, 1, Some(id - 1));
+    }
+    body(&mut w, 0, Some(levels - 1)); // CodeKind::Method
+    w.into_bytes()
+}
+
+/// A decoded block's nesting is what bounds the exempt activations a
+/// crafted `SendInlinable` chain can stack above one counted activation
+/// (`docs/design/compiler.md`, "How the limit counts"), so the decoder caps it
+/// at the parser's own ceiling: one level past it is refused.
+#[test]
+fn a_block_nested_one_level_past_the_ceiling_is_a_decode_error() {
+    let bytes = code_table_with_nested_blocks(129);
+    let mut r = decode::Reader::new(&bytes);
+    match decode::decode_code_table(&mut r, &symbols::Table::empty()) {
+        Err(e) => assert_eq!(e, decode::DecodeError::BlockNestingTooDeep { limit: 128 }),
+        Ok(table) => panic!(
+            "blocks nested 129 deep decoded, {} bodies",
+            table.codes.len()
+        ),
+    }
+    assert_eq!(
+        decode::DecodeError::BlockNestingTooDeep { limit: 128 }.to_string(),
+        "blocks in image code nest deeper than 128 levels"
+    );
+}
+
+/// The ceiling itself decodes and verifies: it is the parser's limit, and a
+/// program at that limit must round-trip (see
+/// `the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs`).
+#[test]
+fn a_block_nested_at_the_ceiling_decodes_and_verifies() {
+    let bytes = code_table_with_nested_blocks(128);
+    let mut r = decode::Reader::new(&bytes);
+    let table = decode::decode_code_table(&mut r, &symbols::Table::empty())
+        .expect("128 levels is within the ceiling");
+    assert_eq!(table.codes.len(), 129);
+    assert_eq!(decode::verify_code_table(&table), Ok(()));
+}
+
+/// Refused while it is read, not after: a decoded body owns the bodies it
+/// creates through `Rc`s, so dropping a chain of them recurses once per
+/// level. Decoded whole and refused afterwards, a few megabytes of chain
+/// would overflow the stack -- an abort, not an error -- the moment the
+/// refused table was dropped.
+#[test]
+fn a_deeply_nested_block_chain_is_a_decode_error_not_a_stack_overflow() {
+    let bytes = code_table_with_nested_blocks(100_000);
+    let mut r = decode::Reader::new(&bytes);
+    let result = decode::decode_code_table(&mut r, &symbols::Table::empty());
+    let refused = matches!(
+        result,
+        Err(decode::DecodeError::BlockNestingTooDeep { limit: 128 })
+    );
+    drop(result);
+    assert!(refused, "a 100,000-deep chain of blocks must be refused");
+}
+
 /// An image whose mixin table is empty describes no root class, so there is
 /// nothing for `load` to build the world around -- and nothing for the
 /// graph's class tag 1 to name.
@@ -1003,6 +1094,101 @@ fn the_deepest_literal_array_the_parser_accepts_survives_a_round_trip() {
     let decoded = &table.codes[*id as usize];
     assert_eq!(**decoded, *original);
     assert_eq!(literal_array_depth(decoded), levels);
+}
+
+/// A module whose one method nests `levels` blocks, each sending `value` to
+/// the next one in, the innermost empty: `[[[] value] value] value`. An empty
+/// block costs the parser no further level, so this is the deepest block
+/// nesting a given parser depth allows.
+fn source_with_nested_blocks(levels: usize) -> String {
+    let mut nest = "[]".to_string();
+    for _ in 1..levels {
+        nest = format!("[{nest} value]");
+    }
+    format!(
+        "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public nest = ( ^{nest} value )\n) : ()"
+    )
+}
+
+/// The deepest block nesting `ns-syntax`'s parser accepts, probed rather than
+/// restated, for the reason `deepest_literal_array_the_parser_accepts` is.
+fn deepest_block_nesting_the_parser_accepts() -> usize {
+    let mut deepest = 0;
+    for levels in 1..1024 {
+        if ns_syntax::parse(&source_with_nested_blocks(levels)).is_ok() {
+            deepest = levels;
+        } else {
+            break;
+        }
+    }
+    assert!(deepest > 0, "the parser accepts at least one block");
+    deepest
+}
+
+/// How many `MakeClosure` hops the deepest block in `code` sits below it.
+fn block_nesting(code: &CompiledCode) -> usize {
+    code.instrs
+        .iter()
+        .filter_map(|instr| match instr {
+            Instr::MakeClosure { code: block, .. } => Some(1 + block_nesting(block)),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// The decoder's block-nesting ceiling (`BlockNestingTooDeep`) must admit
+/// everything the parser does, under either lowering, or a legal program
+/// would build into a binary that cannot be loaded. `[...] value` is not a
+/// control-flow send, so neither lowering inlines a level away: the code
+/// table nests exactly as deep as the source.
+#[test]
+fn the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs() {
+    let levels = deepest_block_nesting_the_parser_accepts();
+    let src = source_with_nested_blocks(levels);
+    for lowering in [
+        ns_runtime::Lowering::Optimized,
+        ns_runtime::Lowering::Reference,
+    ] {
+        let module = ns_syntax::parse(&src).expect("parse");
+        let resolved = ns_runtime::resolve(
+            module,
+            Rc::from(src.as_str()),
+            SourceOrigin::File(PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interp = Interpreter::bootstrap_with(lowering);
+        let class = interp.load_module(&resolved);
+        assert_eq!(
+            block_nesting(&method_code(interp.heap_ref(), class, "nest")),
+            levels,
+            "{lowering:?}: every source level is a block in the code table"
+        );
+        let bytes = image::build(
+            interp.heap_ref(),
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            Symbol::intern("nest"),
+        )
+        .expect("build");
+        let mut loaded = match image::load(&bytes) {
+            Ok(loaded) => loaded,
+            Err(e) => panic!("{lowering:?}: {levels} nested blocks must load: {e}"),
+        };
+        let instance = expect_ok(
+            loaded.interp.instantiate(loaded.root_class, vec![]),
+            "instantiate",
+        );
+        let answer = expect_ok(
+            loaded.interp.send(instance, Symbol::intern("nest"), vec![]),
+            "nest",
+        );
+        assert!(
+            matches!(answer, Value::Nil),
+            "{lowering:?}: `[] value` is nil"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -552,7 +552,9 @@ emits, for exactly the sends `control_flow::recognize` accepts.
 - **Depth stays bounded.** A literal block can run again only if the body
   enclosing it runs again, so every recursive cycle contains a counted
   activation, and the uncounted activations per counted one are bounded by the
-  source's static nesting depth.
+  source's static nesting depth — at most 128, the parser's ceiling, so the
+  stack holds at most 129 entries per counted activation
+  ([execution.md](execution.md), "Two bounds, not one").
 - **The optimized lowering pays nothing** beyond the counter every rule needs,
   since it never emits `SendInlinable`.
 - **A crafted artifact cannot use the exemption to recurse without bound.**
@@ -564,8 +566,10 @@ emits, for exactly the sends `control_flow::recognize` accepts.
   reference lowering passes to a `SendInlinable` is a literal created right
   before the send, so the condition holds for every program either lowering
   compiles, and a chain of exempt activations is then bounded by how deeply
-  code is nested in the artifact. A block that fails the condition is counted
-  like any other.
+  blocks nest in the artifact — which the decoder caps at the parser's
+  ceiling of 128 ([image-format.md](image-format.md), "Verification"), so an
+  artifact stacks no more exempt activations above a counted one than source
+  can. A block that fails the condition is counted like any other.
 
 So the oracle compares even an overflow byte for byte — the output up to it,
 the error and the exit status. Two alternatives were rejected. Counting

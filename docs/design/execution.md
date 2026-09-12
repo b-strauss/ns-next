@@ -880,7 +880,18 @@ and CPython bound them:
 The two are `MAX_ACTIVATION_DEPTH` and `MAX_NATIVE_DEPTH` in
 `crates/ns-runtime/src/interpreter/mod.rs`. L bounds memory: an activation is a
 stack entry and a window of registers in two `Vec`s, so L can be far larger
-than any native stack would allow. N bounds the native stack, and is the only
+than any native stack would allow. It bounds it with a factor. Above each
+counted activation sit at most as many exempt ones as blocks nest — each exempt
+block was created by the activation below it, so a chain of them descends the
+lexical nesting — and blocks nest at most 128 deep: the parser's ceiling in
+source, and the decoder's, derived from it, in an artifact
+([image-format.md](image-format.md), "Verification"). So the stack holds at
+most 129 × L entries, 12.9 million, whose entries alone take about 1.3 GB in a
+release build (104 bytes each, before their registers). Only code that carries
+`SendInlinable` gets there — the reference lowering's, or an artifact's —
+recursing through 128 nested control-flow blocks at every level; the optimized
+lowering never emits it, so under it the stack holds at most L entries. N
+bounds the native stack, and is the only
 bound that depends on it. Both agree under both lowerings, because the
 control-flow natives are trampoline steps, so no Rust re-entry happens under
 one lowering and not the other. Neither error text names its number, as Lua's,

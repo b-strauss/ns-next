@@ -34,8 +34,10 @@ code with the same exposure as running the equivalent source. Recursion depth
 is bounded by two counted limits, 100,000 activations and 1,000 re-entries of
 the run loop from Rust, each an ordinary Newspeak error rather than a native
 stack overflow, and a crafted `SendInlinable` cannot use the count's one
-exemption to recurse uncounted; see [execution.md](execution.md), "Two bounds,
-not one". A mutated
+exemption to recurse uncounted. Nor can it stack more exempt activations above
+a counted one than source can: that number is bounded by how deeply blocks
+nest, which the decoder caps at the parser's own ceiling ("Verification"
+below); see [execution.md](execution.md), "Two bounds, not one". A mutated
 binary that decodes cleanly can still abort while executing — a native that
 indexes an argument it was not given, for one: the control-flow natives read
 `args[0]` unchecked, and the decoder does not check a send's argument count
@@ -286,6 +288,24 @@ The mixin tree's nesting depth is input-controlled, so building it is iterative 
 the "bound any recursion whose depth the input controls" case. Symbol ids, mixin
 ids, class-object references, slot counts and arities are all validated before
 first use.
+
+**How deeply blocks nest is capped while the code table is read.** The table is
+flat on the wire, but a decoded body owns, through `Rc`s, the block bodies its
+`MakeClosure`s create, and the depth of that chain is the artifact's to choose.
+`decode_code_table` measures each body's block nesting from the bodies it
+creates, which precede it, and refuses one past 128 levels
+(`DecodeError::BlockNestingTooDeep`, `MAX_BLOCK_NESTING` in `decode.rs`) — the
+parser's own ceiling, which every program's code table stays within, so the
+cap refuses nothing a lowering produces. Two things rest on it. The depth
+limit's exemption lets a chain of exempt activations stack as high as blocks
+nest ([compiler.md](compiler.md), "How the limit counts"), so without the cap
+the limit would bound no memory for an artifact. And dropping a chain of
+bodies recurses once per level: refused only after decoding, a chain a few
+megabytes long overflows the stack when the refused table is dropped, which is
+why the check runs as each body is read rather than in `verify_code_table`.
+`a_deeply_nested_block_chain_is_a_decode_error_not_a_stack_overflow` and
+`the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs` in
+`crates/ns-runtime/tests/image.rs` pin both sides.
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns

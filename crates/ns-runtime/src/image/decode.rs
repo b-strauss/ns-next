@@ -60,6 +60,19 @@ pub enum DecodeError {
         what: &'static str,
         limit: usize,
     },
+    /// A body in the code table creates blocks nested deeper than the
+    /// parser lets source nest them (`MAX_BLOCK_NESTING`). The table is flat
+    /// on the wire, so nothing recurses while it is read; the depth matters
+    /// afterwards, twice over. The depth count exempts a block a
+    /// control-flow native activates for a `SendInlinable` when the
+    /// activation below created it, so the exempt activations stacked above
+    /// one counted activation are bounded by exactly this nesting
+    /// (`docs/design/compiler.md`, "How the limit counts") -- unbounded, the
+    /// depth limit would bound nothing. And a decoded body owns the bodies
+    /// it creates, so dropping one recurses once per level.
+    BlockNestingTooDeep {
+        limit: usize,
+    },
     BadCodeId(u32),
     BadObjectId(u32),
     BadFrameId(u32),
@@ -269,6 +282,9 @@ impl std::fmt::Display for DecodeError {
             }
             DecodeError::NestingTooDeep { what, limit } => {
                 write!(f, "{what} in image nests deeper than {limit} levels")
+            }
+            DecodeError::BlockNestingTooDeep { limit } => {
+                write!(f, "blocks in image code nest deeper than {limit} levels")
             }
             DecodeError::BadCodeId(id) => write!(f, "code id {id} out of range"),
             DecodeError::BadObjectId(id) => write!(f, "object id {id} out of range"),
@@ -614,11 +630,68 @@ pub fn decode_code_table(
 ) -> Result<DecodedCodeTable, DecodeError> {
     let count = r.read_u32()? as usize;
     let mut codes: Vec<Rc<CompiledCode>> = reserve_for(count, r);
+    // How deep the blocks under each body already read nest, keyed like
+    // `code_index`.
+    let mut nesting: HashMap<usize, usize> = HashMap::new();
     for _ in 0..count {
-        let code = decode_code(r, &codes, symbols)?;
-        codes.push(Rc::new(code));
+        let code = Rc::new(decode_code(r, &codes, symbols)?);
+        let depth = block_nesting(&code, &nesting)?;
+        nesting.insert(Rc::as_ptr(&code) as usize, depth);
+        codes.push(code);
     }
     Ok(DecodedCodeTable { codes })
+}
+
+/// `ns-syntax`'s own nesting ceiling, which bounds how deeply a program's
+/// blocks nest: `parser::MAX_DEPTH` in `crates/ns-syntax/src/parser/mod.rs`,
+/// 128, private to that crate and so restated here, as `MAX_LITERAL_DEPTH`
+/// restates it. Every block literal is one `parse_primary`, one level of
+/// that count, and neither lowering compiles a block into anything but one
+/// `MakeClosure` of one body -- the optimized lowering only inlines some away
+/// -- so no program the parser accepts nests deeper than this in a code
+/// table. A lower ceiling would refuse to load a binary built from a legal
+/// program; `the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs`
+/// in `tests/image.rs` probes the parser's real limit and fails if it moves
+/// past this one.
+///
+/// It is what makes the depth limit bound memory for an artifact as it does
+/// for source: the exempt activations above one counted activation are
+/// bounded by the static block nesting (`DecodeError::BlockNestingTooDeep`).
+const MAX_BLOCK_NESTING: usize = 128;
+
+/// How many `MakeClosure` hops the deepest block `code` creates sits below
+/// it, from the depths of the bodies it creates -- already decoded, since a
+/// block precedes the code that creates it, so one pass over the table
+/// measures every body.
+///
+/// Refused here, as each body is read, rather than by `verify_code_table`
+/// afterwards: `code` owns the bodies it creates through their `Rc`s, so a
+/// chain of them is dropped by a recursion as deep as the chain. Measured
+/// on the way in, no chain longer than the ceiling is ever built, and
+/// dropping a refused table stays shallow. Accepted whole, the 100,000-deep
+/// chain of `a_deeply_nested_block_chain_is_a_decode_error_not_a_stack_overflow`
+/// (`tests/image.rs`) overflows the stack when it is dropped.
+fn block_nesting(
+    code: &CompiledCode,
+    nesting: &HashMap<usize, usize>,
+) -> Result<usize, DecodeError> {
+    let mut depth = 0;
+    for instr in &code.instrs {
+        if let Instr::MakeClosure { code: block, .. } = instr {
+            // `decode_instr` resolved the id against the bodies already
+            // read, and every one of them was measured.
+            let below = nesting
+                .get(&(Rc::as_ptr(block) as usize))
+                .ok_or(DecodeError::CodeNotInTable)?;
+            depth = depth.max(below + 1);
+        }
+    }
+    if depth > MAX_BLOCK_NESTING {
+        return Err(DecodeError::BlockNestingTooDeep {
+            limit: MAX_BLOCK_NESTING,
+        });
+    }
+    Ok(depth)
 }
 
 /// `Vec::with_capacity` for a count read from an untrusted stream: every
