@@ -346,8 +346,8 @@ compiling excluded — and reports the median of ten timed runs after a discarde
 warm-up. Its three fixtures each run a 50,000-iteration `whileTrue:` loop, which
 the compiler inlines: `bench_loop.ns` sums the counter, `bench_send.ns` adds a
 user-method send per iteration and `bench_block.ns` a method that creates and
-invokes a block. On a release build, on 2026-09-11, their medians were about
-16.5, 20.5 and 38 ms.
+invokes a block. On a release build, on 2026-09-12, their medians were about
+15.3, 19.1 and 29.9 ms.
 
 Never judge performance from a debug build.
 
@@ -439,8 +439,9 @@ moved onto the declaration it belongs to (see "The VM").
 Routing every `Object`/`Frame` access through `Heap` (`docs/design/memory.md`,
 "The seam") was designed to cost nothing: `--release` inlines an accessor
 call away, and each one does the same borrow-clone-drop the call site did
-before. Migrating `interpreter/eval.rs` broke that measurably: `bench_loop.ns`
-went from 20.07 ms to 22.77 ms, about 13% (13.45%).
+before. Migrating the lexical-send helper (`dispatch_lexical_send`) broke
+that measurably: `bench_loop.ns` went from 20.07 ms to 22.77 ms, about 13%
+(13.45%).
 
 The cause was `dispatch_lexical_send`'s head, which every implicit-receiver
 send runs. Before the migration it took one `RefCell` borrow and read both
@@ -546,6 +547,62 @@ bindings map or a body enum, so creating one no longer clones a shared `Rc` and
 invoking one no longer matches on the body, and the closure object it allocates
 is smaller — an `Object` went from 64 to 56 bytes in a release build. That
 attribution is an inference from what the change removed; no profile was taken.
+
+### What step B moved
+
+Step B, the behaviour-preserving cleanup that followed the retirement
+([clean-up-with-one-engine](../superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md)),
+was measured whole against its merge-base in one sitting, on 2026-09-12, the
+same way: the before-binary built in a throwaway worktree, `ns-next bench` over
+the three fixtures, three rounds, alternating the binaries within each round.
+Bytecode medians in ms:
+
+| Source | Before, rounds 1–3 | After, rounds 1–3 | ns/iteration |
+|---|---|---|---|
+| `bench_loop.ns` | 16.08, 16.17, 16.12 | 15.31, 15.32, 15.49 | 322.3 → 306.4 |
+| `bench_send.ns` | 20.55, 20.28, 19.95 | 18.65, 19.06, 19.15 | 405.6 → 381.2 |
+| `bench_block.ns` | 37.38, 38.29, 38.68 | 29.94, 29.74, 30.02 | 765.8 → 598.8 |
+
+On every source the after-group lies entirely below the before-group.
+`bench_loop.ns` got about 5% faster, `bench_send.ns` about 6%, and
+**`bench_block.ns` about 22%**, from ~38.3 ms to ~29.9 ms. Every image the
+fixtures build or snapshot is byte-identical between the two binaries (44
+artifacts), as a change that preserves behaviour requires.
+
+Each change that touched a hot path was also measured on its own, against the
+commit before it, in its own sitting. Middle medians in ms, `bench_loop.ns` /
+`bench_send.ns` / `bench_block.ns`:
+
+- **Builtin classes indexed by discriminant** (a `Vec` indexed by
+  `BuiltinClass` instead of a hashed map): 16.59 / 20.70 / 38.93 → 16.04 /
+  19.90 / 37.44. Faster on all three, by 3–4%, with no overlap between the
+  groups: a send to an integer or a boolean finds its class through that
+  accessor, and so does every closure allocation.
+- **The runtime's own symbols interned once, as constants**: 15.95 / 20.16 /
+  37.46 → 16.03 / 20.07 / 37.71. **Nothing moved**; the groups overlap on every
+  source, because none of the three fixtures reaches a changed site inside the
+  timed send.
+- **A closure behind an `Rc`**: 16.06 / 19.96 / 37.47 → 15.71 / 19.89 / 31.26.
+  **`bench_block.ns` about 17% faster**: `value:` bumps a reference count
+  where it used to copy `ClosureData` out of the heap and wrap it in a fresh
+  `Rc`, and `MakeClosure` shares its parameter names instead of cloning them.
+  `bench_loop.ns` moved about 2%; `bench_send.ns` did not move.
+- **Compiled code on the declaration** (see "The VM"): 15.86 / 19.81 / 31.26 →
+  16.14 / 19.56 / 30.59. `bench_send.ns` and `bench_block.ns` about 1–2%
+  faster, with no overlap, from the hashed lookup of the compiled body that
+  every user-method send no longer does. `bench_loop.ns` did not move: its
+  first three rounds overlapped, and three more put the after-binary lower
+  every time.
+- **Handles passed by value**: 15.58 / 18.75 / 29.67 → 15.41 / 19.13 / 29.93.
+  **Nothing moved** beyond noise. `bench_send.ns`'s first three rounds only
+  just overlapped; three more narrowed the gap to 0.17 ms, inside the
+  before-group's own spread. A release build had already inlined the
+  indirection away.
+
+The per-change figures come from five different sittings, so they are not
+compared with each other or summed into the whole; the whole-step table above
+is the one comparison in a single sitting. The per-change attributions are
+inferences from what each change removed; no profile was taken.
 
 ## Planned: the trampoline
 

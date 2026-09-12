@@ -354,8 +354,9 @@ perform, so each also needs a `&Heap` parameter purely to make that one hop.
 Taking the root mixin directly instead would remove the need for a `Heap` there —
 there is nothing else on the class object either of them reads.
 
-`ns-cli`'s `cmd_disasm` has the identical shape but not the identical fix: it
-takes no `ClassRef` parameter to narrow, since it builds a class object itself
+`ns-cli`'s `disasm` (`crates/ns-cli/src/commands/disasm.rs`) has the identical
+shape but not the identical fix: it takes no `ClassRef` parameter to narrow,
+since it builds a class object itself
 (from source, or from a loaded artifact) and reaches the mixin through its own
 `root_mixin_of` helper, needing a `Heap` for the same reason. It reads through
 `interp.heap_ref()` inside the lifetime of the interpreter that built the class

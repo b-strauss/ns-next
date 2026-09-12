@@ -14,7 +14,7 @@ ObjRef = a 32-bit index into the `Heap`'s object arena; ClassRef is an alias
 Object { class: ClassRef, identity_hash: u32, data: ObjectData }
 
 ObjectData = Instance(Vec<Value>) | Str(String) | Sym(Symbol)
-           | Array(Vec<Value>) | Closure(ClosureData) | Class(ClassData)
+           | Array(Vec<Value>) | Closure(Rc<ClosureData>) | Class(ClassData)
 ```
 
 `nil`, `true`, `false` and small integers are `Value` variants rather than heap
@@ -34,9 +34,11 @@ index-derived hash would break the moment a moving collector relocates the
 object or a `become:` swaps identities, and identity has to be stable across a
 snapshot. See [memory.md](memory.md).
 
-`ClosureData { params, captured_frame: FrameRef, body, home: FrameRef }`
+`ClosureData { params, code, captured_frame: FrameRef, home: FrameRef }`
 captures its defining frame for closure semantics and its home activation for
-non-local return. **`home` is a `FrameRef`, not an `ObjRef`** — it names the
+non-local return. A closure object holds it behind an `Rc`, so invoking a block
+bumps a reference count rather than copying it, and `params` is shared with the
+`MakeClosure` instruction that made it. **`home` is a `FrameRef`, not an `ObjRef`** — it names the
 lexically enclosing *method* or initializer activation, which is what
 `raise_return` walks to. `types.rs` carries the same warning at the field,
 because the enclosing *object* is the tempting misreading and both are handles.
