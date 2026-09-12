@@ -295,8 +295,10 @@ activations from its callers'.
   when the popped activation was `base`, the loop leaves `run` with it. The
   continuations the control-flow natives use are applied by
   `Interpreter::resume`, which calls into `builtins/`; it may answer a value,
-  or the next block to activate, which is pushed in the popped activation's
-  place ("The trampoline" below).
+  or another activation — a native loop's next block, or the method a
+  non-Boolean condition's `mustBeBoolean` send finds — which
+  `Interpreter::push_continuation` pushes in the popped activation's place
+  ("The trampoline" below).
 - **A signal** — a Newspeak error, or a non-local return — goes to
   `vm::unwind`, which pops what it has to and either returns from the
   non-local return's target or leaves `run` with the signal ("Non-local
@@ -727,12 +729,12 @@ inferences from what each change removed, and no profile was taken.
 
 - **Deciding before running, still recursive.** Splitting every send into a
   decision (`Step`, `decide_send` and its two relatives) and a run first made
-  every source 6–22% slower: each `Send*` arm made two out-of-line calls where
+  every source 6–11% slower: each `Send*` arm made two out-of-line calls where
   it had made one. Answering a `Step::Value` in place, with only the method
   case behind a call, recovered part of it. Middle medians in ms,
   `bench_loop.ns` / `bench_send.ns` / `bench_block.ns`: 15.50 / 19.17 / 30.89
   before, 17.18 / 21.14 / 32.67 split, 16.67 / 20.11 / 31.72 with the value
-  answered in place — still 1–10% slower, accepted as the cost of a shape the
+  answered in place — still 3–8% slower, accepted as the cost of a shape the
   loop was about to consume.
 - **The loop.** Against the commit before the split and against its own
   parent: 15.76 / 19.22 / 30.26 and 16.81 / 20.34 / 31.69 → 11.57 / 14.38 /
@@ -749,7 +751,7 @@ inferences from what each change removed, and no profile was taken.
   outside both groups' spread but not explained by anything removed from their
   paths — code layout, most likely, and not something to bank on.
 - **The two bounds.** The first version marked a control-flow native's block
-  with a `bool` field on `Step::Block`, and measured 3–8% slower on every
+  with a `bool` field on `Step::Block`, and measured 4–8% slower on every
   source, `bench_loop.ns` included, whose loop activates nothing. Taking the
   pieces out one at a time found the field itself to be the cause, with
   nothing reading it; the counting logic, the counted flag on a stack entry,
@@ -880,21 +882,21 @@ and CPython bound them:
 The two are `MAX_ACTIVATION_DEPTH` and `MAX_NATIVE_DEPTH` in
 `crates/ns-runtime/src/interpreter/mod.rs`. L bounds memory: an activation is a
 stack entry and a window of registers in two `Vec`s, so L can be far larger
-than any native stack would allow. It bounds it with a factor. Above each
-counted activation sit at most as many exempt ones as blocks nest — each exempt
-block was created by the activation below it, so a chain of them descends the
-lexical nesting — and blocks nest at most 128 deep: the parser's ceiling in
-source, and the decoder's, derived from it, in an artifact
+than any native stack would allow. It bounds it up to a factor: above each
+counted activation sit at most as many exempt ones as blocks nest — each
+exempt block was created by the activation below it, so a chain of them
+descends the lexical nesting — and blocks nest at most 128 deep, the parser's
+ceiling in source and the decoder's, derived from it, in an artifact
 ([image-format.md](image-format.md), "Verification"). So the stack holds at
 most 129 × L entries, 12.9 million, whose entries alone take about 1.3 GB in a
 release build (104 bytes each, before their registers). Only code that carries
 `SendInlinable` gets there — the reference lowering's, or an artifact's —
 recursing through 128 nested control-flow blocks at every level; the optimized
 lowering never emits it, so under it the stack holds at most L entries. N
-bounds the native stack, and is the only
-bound that depends on it. Both agree under both lowerings, because the
-control-flow natives are trampoline steps, so no Rust re-entry happens under
-one lowering and not the other. Neither error text names its number, as Lua's,
+bounds the native stack, and is the only bound that depends on it. Both agree
+under both lowerings, because the control-flow natives are trampoline steps, so
+no Rust re-entry happens under one lowering and not the other. Neither error
+text names its number, as Lua's,
 CPython's, V8's and Nova's do not, so that changing a value later changes no
 recorded answer. Both unwind to the entry send like every other Newspeak error;
 nothing catches them yet.
@@ -904,15 +906,20 @@ nothing catches them yet.
   `Heap::counted_depth` has reached the limit. The heap keeps that count as a
   running total on push and pop, so an error path — which pops through
   `vm::unwind` like any other — leaves it exact. Whether an activation counts
-  is decided in `Interpreter::push_step` and recorded on its stack entry.
+  is recorded on its stack entry. Only the block arm of
+  `Interpreter::push_step` ever records an exemption; a method, an
+  initializer level (`run_own_initializer`) and a superclass clause or its
+  message (`nested::run_clause_body`) are counted by construction.
 - **The exemption is marked by the arguments.** A block a control-flow native
   activates carries `StepArgs::ControlFlow` — it has no arguments, and only
   those natives build that variant — and `push_step` exempts it when the send
   was a `SendInlinable` and the block's `captured_frame` is the reified frame
   of the activation that sent it ([compiler.md](compiler.md), "How the limit
-  counts"). A native loop's next block is exempt only if the one it replaces
-  was. The mark rides on the arguments rather than in a field of its own
-  because the field measured 3–8% slower ("What the trampoline moved" above);
+  counts"). A native loop's next block goes through
+  `Interpreter::push_continuation`, which exempts it only if the one it
+  replaces was; the loop forwards that entry's flag and decides nothing. The
+  mark rides on the arguments rather than in a field of its own
+  because the field measured 4–8% slower ("What the trampoline moved" above);
   so a future native that activates a block with no arguments for any other
   reason must not build `ControlFlow`. `&` and `|` share `and:`'s and `or:`'s
   native and so carry the mark too, which is harmless: no lowering emits a

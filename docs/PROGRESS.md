@@ -851,8 +851,8 @@ those hashes survived only because the bootstrap allocated the same objects in
 the same order every time. Fixing it needs a design decision — a new wire tag
 that records those hashes, or a deterministic hash rule for tag-named
 objects. The user decided on 2026-09-12 to record them
-([image-format.md](design/image-format.md), "Planned: the image records
-tag-named hashes"). Fixed; see "M4 — Tag-named identity hashes" below.
+([image-format.md](design/image-format.md), "Identity hashes are preserved
+verbatim"). Fixed; see "M4 — Tag-named identity hashes" below.
 
 **What was deleted:** `Heap::alloc_placeholder_object`, whose callers now use
 `alloc_object`, since every object starts at hash 0;
@@ -1026,7 +1026,7 @@ and recorded in the design documents before the plan.
 2. **Deciding before running.** Every send is split into a decision —
    `Interpreter::decide_send`, `sends::decide_lexical_send` and
    `sends::decide_super_send`, answering a `Step` — and running what was
-   decided. On its own, still recursive, the split measured 6–22% slower;
+   decided. On its own, still recursive, the split measured 6–11% slower;
    answering a `Step::Value` in place recovered part of that, and the rest was
    accepted as the cost of a shape the loop was about to consume.
 3. **The loop.** `vm::run` runs an activation and everything it pushes, and
@@ -1052,21 +1052,23 @@ and recorded in the design documents before the plan.
    the behaviour it had to keep.
 5. **The two bounds.** `MAX_ACTIVATION_DEPTH` and `MAX_NATIVE_DEPTH`;
    `Interpreter::push` is the one checked push, the heap keeps the counted
-   depth, `push_step` decides the exemption, `reenter` counts N. **A
+   depth, `push_step` decides the exemption — through `push_continuation` for
+   a native loop's next block — and `reenter` counts N. **A
    deviation:** the mark of a control-flow native's block is
    `StepArgs::ControlFlow`, not a `bool` field on `Step::Block` as the plan had
-   it — the field measured 3–8% slower on every benchmark even with nothing
+   it — the field measured 4–8% slower on every benchmark even with nothing
    reading it. `&` and `|`, which share `and:`'s and `or:`'s native, carry the
    mark too, harmlessly: nothing emits a `SendInlinable` for them. The
    superclass chain is walked iteratively (`run_initializer_levels`, with
    `run_own_initializer` per level). The CLI's thread has 32 MiB, from
    measured debug-build re-entry costs of 9,280 bytes through `do:`, 8,256
    through instantiation and 6,816 through the nested-class accessor.
-   `crates/ns-runtime/tests/trampoline.rs`, seven tests over the branch, pins
+   `crates/ns-runtime/tests/trampoline.rs`, eight tests over the branch, pins
    deep recursion on the stack, the unwind, the exact boundary under both
-   lowerings and the crafted artifact; four golden outcomes pin a
-   thousand-deep recursion, an unbounded one, and recursion to N through `do:`
-   and through instantiation. Every new answer was derived from the rule, not
+   lowerings, the crafted artifact and the continuations at the floor of a
+   run; five golden outcomes pin a thousand-deep recursion, an unbounded one,
+   and recursion to N through `do:`, through instantiation and through the
+   nested-class accessor. Every new answer was derived from the rule, not
    recorded from a run.
 6. **Caching the running activation's register base in the loop** — measured
    over six rounds, no source faster and none slower, so it was reverted by its
@@ -1074,6 +1076,16 @@ and recorded in the design documents before the plan.
    trampoline moved").
 7. **The documents**, and a sweep of the comments that still named functions
    the branch removed or renamed.
+8. **The whole-branch review's fixes.** The decoder caps how deeply a code
+   table's blocks nest at the parser's own ceiling of 128
+   (`DecodeError::BlockNestingTooDeep`): the exempt activations above a
+   counted one are bounded by that nesting, which nothing capped in an
+   artifact, and dropping a deep chain of decoded bodies overflowed the stack
+   ([image-format.md](design/image-format.md), "Verification"). The run loop
+   no longer decides a native loop's exemption itself
+   (`Interpreter::push_continuation`). New tests pin the iterative superclass
+   walk under instantiation, the crafted artifact with a reified sender, and
+   the continuations at a run's floor.
 
 **What was deleted:** `vm::run_code` and its `collect`, `Interpreter::run_step`
 and `invoke_method`, `Heap::grow_activation_temps` (every activation is pushed
@@ -1109,7 +1121,7 @@ Suite running time (`cargo test --workspace`, debug build) went from 9.36 s to
 12.82 s, 3.1 s of it `crates/ns-runtime/tests/trampoline.rs`, whose boundary
 test runs three recursions to 100,000 counted activations under each lowering.
 
-637 tests pass, with one ignored (617 before); `parse-corpus` stays at
+644 tests pass, with one ignored (617 before); `parse-corpus` stays at
 **210/0/1/0** and `run-corpus` at **6/0/205**.
 
 **Left, deliberately:**

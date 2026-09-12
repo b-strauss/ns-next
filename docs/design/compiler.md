@@ -584,15 +584,20 @@ by memory and Nova by a fixed count of contexts ([execution.md](execution.md),
 "How other systems bound recursion depth"); none has two lowerings that must
 agree, so this rule is ns-next's own.
 
-**Where it is decided.** `Interpreter::push_step`
-(`crates/ns-runtime/src/interpreter/mod.rs`) decides whether an activation
-counts, and records it on the stack entry; `Interpreter::push` refuses a
-counted push at the limit. A block is exempt when it carries
+**Where it is decided.** The block arm of `Interpreter::push_step`
+(`crates/ns-runtime/src/interpreter/mod.rs`) is the one place an activation is
+exempted. Every other push is counted by construction: `push_step`'s method arm,
+an initializer level's (`run_own_initializer`) and a superclass clause's or
+message's (`nested::run_clause_body`) each record `counted: true`. The flag
+rides on the stack entry, and `Interpreter::push` refuses a counted push at the
+limit. A block is exempt when it carries
 `StepArgs::ControlFlow` — the arguments only the control-flow natives build —
 the send that led to it was a `SendInlinable`, and its `captured_frame` is the
 sending activation's reified frame. The VM decides a `SendInlinable` exactly as
-it does a `SendPublic` and only hands `push_step` the fact that it was one; a
-native loop's next block is exempt only if the one it replaces was. `&` and
+it does a `SendPublic` and only hands `push_step` the fact that it was one. A
+native loop's next block is pushed by `Interpreter::push_continuation`, which
+exempts it only if the one it replaces was; the VM forwards the popped entry's
+flag and decides nothing. `&` and
 `|` share `and:`'s and `or:`'s native, so their block carries the mark as
 well, but no lowering emits a `SendInlinable` for them, since `recognize` does
 not accept them ([execution.md](execution.md), "Two bounds, not one").

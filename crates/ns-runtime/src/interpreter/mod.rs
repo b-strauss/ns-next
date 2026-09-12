@@ -80,7 +80,7 @@ pub(crate) enum StepArgs {
     /// it.
     ///
     /// The mark rides on the arguments rather than in a `bool` of its own on
-    /// `Step::Block`. That field measured 3-8% slower on all three
+    /// `Step::Block`. That field measured 4-8% slower on all three
     /// benchmarks even with nothing reading it, including `bench_loop.ns`,
     /// which activates nothing in its loop -- presumably because a `bool`
     /// offers the compiler a niche for `Step`'s discriminant, which changes
