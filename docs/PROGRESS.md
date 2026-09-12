@@ -15,9 +15,23 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-M4 is under way, and **the next piece is 1b, the trampoline.** No plan is
-written for it yet; its design is [execution.md](design/execution.md),
-"Planned: the trampoline", which also lists what 1a left for it. 1b adds
+M4 is under way, and **the next piece is 1b, the trampoline**, preceded by a
+small fix. Both are planned, on the branch `feature/trampoline`, and their
+open design decisions were settled with the user on 2026-09-12 and recorded
+in the design documents first:
+
+1. [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md)
+   — the image records the identity hashes of the objects it names by tag,
+   closing the regression lazy hashes left ([image-format.md](design/image-format.md),
+   "Planned: the image records tag-named hashes"). Two tasks.
+2. [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md) —
+   1b itself, in eight tasks, starting with the profile of `bench_block.ns`
+   owed below. Its design is [execution.md](design/execution.md), "Planned:
+   the trampoline", now with the control-flow natives as trampoline steps,
+   two depth bounds (100,000 activations, 1,000 re-entries from Rust) and the
+   CLI's interpreter thread.
+
+1b adds
 `SendInlinable` and the recursion-depth counter together, by the rule in
 [compiler.md](design/compiler.md), "How the limit counts": the limit counts
 every activation except a block activation a builtin control-flow native
@@ -123,7 +137,8 @@ so nothing is lost by it going second.
      counted by the rule in [compiler.md](design/compiler.md), "How the limit
      counts", with `SendInlinable` and the counter added together. Designed in
      [execution.md](design/execution.md), "Planned: the trampoline", which
-     also lists what 1a left for it; no plan is written yet.
+     also lists what 1a left for it; planned in
+     [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md).
 2. **A compiler-checked root discipline** — [memory.md](design/memory.md). Nova's
    `GcScope`/`NoGcScope`, where holding an unrooted handle across a collection
    safepoint is a type error rather than corruption found later under collection
