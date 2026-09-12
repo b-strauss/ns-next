@@ -8,7 +8,7 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
-use crate::heap::{ActivationHeader, ActivationRef, Heap};
+use crate::heap::{ActivationHeader, Heap};
 use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
 use crate::types::*;
 use crate::Symbol;
@@ -326,10 +326,11 @@ impl Interpreter {
         // or running any slot initializer / initExpr. A slot initializer or
         // initExpr may reference a factory parameter as `Binding::Local(i)`,
         // resolved against this class's *declared* factory pattern -- but
-        // the activation pushed below starts with no temporaries, so if
-        // fewer arguments were supplied than the pattern declares, `locals.rs`'s
-        // `read_local`/`write_local` index straight past the end of its
-        // register window and Rust panics.
+        // the activation pushed below lays its registers out from the
+        // arguments actually supplied, so a wrong count would shift every
+        // temporary, and too few would leave `locals.rs`'s
+        // `read_local`/`write_local` indexing past the end of its register
+        // window.
         //
         // Checked at *every* level, not just the outermost. A level's
         // arguments come from its subclass's clause message, whose
@@ -367,8 +368,8 @@ impl Interpreter {
         }
 
         // Step 2, built here rather than above it: a level with no slots and
-        // no `initExprs` runs no code at all (see
-        // `run_own_initializer`), so its activation could never be observed
+        // no `initExprs` runs no code at all -- such a mixin may carry no
+        // initializer at all -- so its activation could never be observed
         // -- and every chain ends at a builtin, which is exactly such a
         // level. Building it only where something runs in it keeps one
         // activation per *initializing* level rather than one per level.
@@ -382,26 +383,38 @@ impl Interpreter {
         if !class_has_initializer_code(&self.heap, class) {
             return Ok(());
         }
-        let act = self.heap.push_activation(
-            ActivationHeader {
-                receiver: *instance,
-                current_class: Some(class),
-                kind: FrameKind::Initializer(class),
-                slot_base: self
-                    .heap
-                    .class_application(class)
-                    .map_or(0, |a| a.own_slot_base),
-            },
-            &factory_args,
-            0,
-        );
+        let application = self
+            .heap
+            .class_application(class)
+            .expect("internal: class_has_initializer_code confirmed this is a class object");
+        let code = application.mixin.initializer_code.clone().unwrap_or_else(|| {
+            panic!("internal: class needs an instance initializer and its mixin carries none (a mixin built from source always does; verify_mixins refuses a decoded one)")
+        });
+        // `InitSlot`'s `own_index` is relative to the mixin's own slots, not
+        // an absolute field index, because the compiled body is shared by
+        // every application of the mixin. This level's own
+        // `MixinApplication.own_slot_base`, taken as the activation's
+        // `slot_base`, turns it into an absolute index at run time.
+        let slot_base = application.own_slot_base;
+        let temps = (code.num_registers - code.num_args) as usize;
 
         // Steps 4-5: this class's own slot clauses (declaration order), then
-        // its own initExprs. Popped on every path out, like every
-        // activation.
-        let result = self.run_own_initializer(class, act);
-        self.heap.pop_activation(act);
-        result
+        // its own initExprs, on an activation pushed with the body's whole
+        // register file. The loop pops it on every path out.
+        self.reenter(|interp| {
+            Ok(interp.heap.push_activation(
+                ActivationHeader {
+                    receiver: *instance,
+                    current_class: Some(class),
+                    kind: FrameKind::Initializer(class),
+                    slot_base,
+                    code,
+                },
+                &factory_args,
+                temps,
+            ))
+        })
+        .map(|_| ())
     }
 
     /// Step 3's first half: `newspeak-spec.pdf` §6.2's "the superclass
@@ -471,40 +484,6 @@ impl Interpreter {
             code,
         )?;
         argument_list(&self.heap, class, value)
-    }
-
-    /// Class Instantiation steps 4-5 for one level of the chain: this class's
-    /// compiled instance initializer -- its own slot initializers, then its
-    /// own `initExprs` -- on that level's own activation, after growing the
-    /// activation's register file to fit the body.
-    ///
-    /// `InitSlot`'s `own_index` is relative to the mixin's own slots, not an
-    /// absolute field index, because the compiled body is shared by every
-    /// application of the mixin. The activation's `slot_base` turns it into
-    /// an absolute index at run time; `run_initializer_level` sets it once,
-    /// from this level's own `MixinApplication.own_slot_base`, which the
-    /// assertion below states.
-    fn run_own_initializer(&mut self, class: ClassRef, act: ActivationRef) -> Result<(), Signal> {
-        // A builtin, or any class with nothing to run: such a mixin may carry
-        // no initializer at all, so there is nothing to reach for.
-        if !class_has_initializer_code(&self.heap, class) {
-            return Ok(());
-        }
-        let application = self
-            .heap
-            .class_application(class)
-            .expect("internal: class_has_initializer_code confirmed this is a class object");
-        let code = application.mixin.initializer_code.clone().unwrap_or_else(|| {
-            panic!("internal: class needs an instance initializer and its mixin carries none (a mixin built from source always does; verify_mixins refuses a decoded one)")
-        });
-        debug_assert_eq!(
-            self.heap.activation_slot_base(act),
-            application.own_slot_base,
-            "an initializer activation must be built for the level it runs"
-        );
-        self.heap
-            .grow_activation_temps(act, (code.num_registers - code.num_args) as usize);
-        crate::vm::run_code(self, act, &code).map(|_| ())
     }
 }
 
@@ -650,7 +629,7 @@ pub(crate) fn class_has_initializer_code(heap: &Heap, class: ClassRef) -> bool {
 ///
 /// `pub(crate)` for `image::decode::verify_mixins`, which must refuse
 /// an image that has no compiled initializer for a mixin that needs one
-/// rather than let `run_own_initializer` above panic on the invariant --
+/// rather than let `run_initializer_level` above panic on the invariant --
 /// checked per mixin, since every mixin of the tree carries its own.
 pub(crate) fn mixin_needs_initializer_code(mixin: &crate::mixin::Mixin) -> bool {
     !mixin.slots.is_empty() || mixin.has_init_exprs

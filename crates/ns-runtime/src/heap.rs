@@ -198,6 +198,9 @@ pub struct ActivationHeader {
     pub kind: FrameKind,
     /// See `Frame::slot_base`.
     pub slot_base: usize,
+    /// The body the activation runs. The run loop reads it back to resume a
+    /// caller once the activation above it returns.
+    pub code: std::rc::Rc<crate::bytecode::CompiledCode>,
 }
 
 /// One live activation. Its registers are `values[base..]` up to the next
@@ -211,6 +214,7 @@ struct StackEntry {
     num_args: u32,
     pc: usize,
     slot_base: usize,
+    code: std::rc::Rc<crate::bytecode::CompiledCode>,
     /// The frame `Heap::reify` created for this activation, married to it
     /// until the entry is popped.
     reified: Option<FrameRef>,
@@ -1005,8 +1009,7 @@ impl Heap {
     /// frame's registers are its live entry's window, so it cannot grow here:
     /// edit-and-continue has to reify and divorce a running activation first
     /// (`docs/design/execution.md`, "How this meets the liveness
-    /// requirements"). The top live activation grows in place through
-    /// `grow_activation_temps`.
+    /// requirements").
     pub fn frame_grow_temps(&mut self, frame: FrameRef, needed: usize) {
         self.check_frame_origin(frame);
         debug_assert!(
@@ -1166,6 +1169,7 @@ impl Heap {
             num_args,
             pc: 0,
             slot_base: header.slot_base,
+            code: header.code,
             reified: None,
             #[cfg(debug_assertions)]
             generation,
@@ -1307,22 +1311,68 @@ impl Heap {
         }
     }
 
-    /// Grows the top activation's temporaries to `needed`, filling with
-    /// nil. The initializer path builds its activation before it knows the
-    /// compiled body's register count. Only the top entry can grow: any
-    /// other's window ends where the next one's begins.
-    pub fn grow_activation_temps(&mut self, act: ActivationRef, needed: usize) {
+    /// The body `act` runs.
+    pub fn activation_code(
+        &self,
+        act: ActivationRef,
+    ) -> std::rc::Rc<crate::bytecode::CompiledCode> {
         self.check_activation(act);
-        debug_assert_eq!(
-            act.index as usize + 1,
-            self.stack.entries.len(),
-            "only the top activation's register file can grow"
-        );
-        let entry = &self.stack.entries[act.index as usize];
-        let end = entry.base as usize + entry.num_args as usize + needed;
-        if self.stack.values.len() < end {
-            self.stack.values.resize(end, Value::Nil);
+        self.stack.entries[act.index as usize].code.clone()
+    }
+
+    /// The `pc` last stored for `act` -- at a send, the send's own index, which
+    /// is where the run loop resumes it from when its callee returns.
+    pub fn activation_pc(&self, act: ActivationRef) -> usize {
+        self.check_activation(act);
+        self.stack.entries[act.index as usize].pc
+    }
+
+    /// The innermost live activation, if any.
+    pub fn top_activation(&self) -> Option<ActivationRef> {
+        let len = self.stack.entries.len();
+        (len > 0).then(|| self.activation_handle((len - 1) as u32))
+    }
+
+    /// How many activations are below `act` -- its depth, counted from the
+    /// bottom of the stack. The run loop compares a non-local return's target
+    /// against the depth it started at to tell its own activations from its
+    /// callers'.
+    pub fn activation_position(&self, act: ActivationRef) -> usize {
+        self.check_activation(act);
+        act.index as usize
+    }
+
+    /// Whether `act` is still on the stack -- the one question that may be
+    /// asked of a handle whose activation has returned. A non-local return
+    /// into an activation that catches none (an initializer) pops its target
+    /// on its way out and goes on naming it, and each run the signal leaves
+    /// asks this before reading the target. Nothing is pushed while a signal
+    /// propagates (`ActivationRef::same`), so the target is live exactly
+    /// while the stack still reaches its index; a debug build checks that
+    /// the entry there is still the one the handle was minted for.
+    pub fn activation_is_live(&self, act: ActivationRef) -> bool {
+        let live = (act.index as usize) < self.stack.entries.len();
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(
+                act.origin, self.heap_id,
+                "handle belongs to a different heap (handle from heap {}, read through heap {})",
+                act.origin, self.heap_id
+            );
+            if live {
+                assert_eq!(
+                    self.stack.entries[act.index as usize].generation, act.generation,
+                    "stale activation handle: its index was reused while it was still named"
+                );
+            }
         }
+        live
+    }
+
+    /// What `act` was activated for.
+    pub fn activation_kind(&self, act: ActivationRef) -> FrameKind {
+        self.check_activation(act);
+        self.stack.entries[act.index as usize].kind.clone()
     }
 
     /// A register of a reified frame: the live stack slot while its
@@ -1686,7 +1736,21 @@ mod tests {
             current_class: None,
             kind: FrameKind::TopLevel,
             slot_base: 0,
+            code: trivial_code(),
         }
+    }
+
+    /// A body that returns its first register: no test here runs it.
+    fn trivial_code() -> std::rc::Rc<crate::bytecode::CompiledCode> {
+        std::rc::Rc::new(crate::bytecode::CompiledCode {
+            kind: crate::bytecode::CodeKind::Method,
+            instrs: vec![crate::bytecode::Instr::Return { reg: 0 }],
+            num_args: 0,
+            num_registers: 1,
+            statement_pc: Vec::new(),
+            call_sites: Vec::new(),
+            source: ns_syntax::Span::new(0, 0),
+        })
     }
 
     #[test]
@@ -1875,6 +1939,21 @@ mod tests {
         let _ = first.same(second);
     }
 
+    /// `activation_is_live` is the one accessor a popped handle may reach:
+    /// an escaping non-local return goes on naming the target it popped.
+    #[test]
+    fn a_popped_activation_is_no_longer_live() {
+        let mut heap = Heap::new();
+        let outer = heap.push_activation(header(), &[], 1);
+        let inner = heap.push_activation(header(), &[], 1);
+        assert!(heap.activation_is_live(inner));
+        heap.pop_activation(inner);
+        assert!(!heap.activation_is_live(inner));
+        assert!(heap.activation_is_live(outer));
+        heap.pop_activation(outer);
+        assert!(!heap.activation_is_live(outer));
+    }
+
     /// Popping below the top would truncate the registers of every
     /// activation above it while their handles still look valid.
     #[test]
@@ -1950,6 +2029,7 @@ mod tests {
                 current_class: None,
                 kind: FrameKind::Closure(std::rc::Rc::new(closure_data)),
                 slot_base: 0,
+                code: trivial_code(),
             },
             &[],
             0,

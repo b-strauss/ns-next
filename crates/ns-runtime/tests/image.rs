@@ -4813,6 +4813,7 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
             current_class: None,
             kind: FrameKind::TopLevel,
             slot_base: 0,
+            code: code_with(CodeKind::Method, 0, 1, vec![Instr::Return { reg: 0 }]),
         },
         &[],
         0,

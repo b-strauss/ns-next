@@ -268,9 +268,10 @@ fn eval_superclass_clause(
     )
 }
 
-/// One per-mixin clause body, compiled, in a fresh activation. Everything
-/// around the body -- the activation, the receiver, the `Signal::Return`
-/// catch -- is the same shape as `Interpreter::invoke_method`'s.
+/// One per-mixin clause body, compiled, in a fresh activation the run loop
+/// runs and pops (`Interpreter::reenter`). Everything around the body -- the
+/// activation, the receiver, the `^` it catches -- is the same shape as a
+/// method activation's.
 ///
 /// Shared with `instantiate`, which runs the same clause's *deferred
 /// message arguments* through it one level down. The two differ only in
@@ -282,7 +283,7 @@ fn eval_superclass_clause(
 ///
 /// Both kinds are return targets for `home_of`/`raise_return`, so a `^`
 /// inside a block written in the clause unwinds to this activation rather
-/// than escaping into the caller.
+/// than escaping into the caller (`Interpreter::catches_return`).
 pub(super) fn run_clause_body(
     interp: &mut Interpreter,
     receiver: &Value,
@@ -291,23 +292,20 @@ pub(super) fn run_clause_body(
     kind: FrameKind,
     code: Rc<crate::bytecode::CompiledCode>,
 ) -> EvalResult {
-    let act = interp.heap.push_activation(
-        ActivationHeader {
-            receiver: *receiver,
-            current_class: Some(current_class),
-            kind,
-            slot_base: 0, // no clause body ever contains InitSlot
-        },
-        &args,
-        (code.num_registers - code.num_args) as usize,
-    );
-    let result = crate::vm::run_code(interp, act, &code);
-    interp.heap.pop_activation(act);
-    match result {
-        Ok(value) => Ok(value),
-        Err(Signal::Return(target, value)) if target.same(act) => Ok(value),
-        Err(other) => Err(other),
-    }
+    let temps = (code.num_registers - code.num_args) as usize;
+    interp.reenter(|interp| {
+        Ok(interp.heap.push_activation(
+            ActivationHeader {
+                receiver: *receiver,
+                current_class: Some(current_class),
+                kind,
+                slot_base: 0, // no clause body ever contains InitSlot
+                code,
+            },
+            &args,
+            temps,
+        ))
+    })
 }
 
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if ec does not evaluate

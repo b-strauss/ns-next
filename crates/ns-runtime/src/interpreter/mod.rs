@@ -98,6 +98,11 @@ pub struct Interpreter {
     /// (`docs/design/compiler.md`, "The reference lowering"). Fixed at
     /// construction, so one interpreter never mixes the two.
     lowering: Lowering,
+    /// The reusable argument buffer the run loop gathers a send's arguments
+    /// into (`vm::send`). Taken while a decision runs and given back
+    /// afterwards, so a decision that re-enters the loop takes a fresh one
+    /// instead of clobbering its caller's.
+    arg_buffer: Vec<Value>,
 }
 
 impl Interpreter {
@@ -117,6 +122,7 @@ impl Interpreter {
             empty_class_sides: HashMap::new(),
             nested_in_progress: Vec::new(),
             lowering,
+            arg_buffer: Vec::new(),
         };
         interp.builtin_classes = build_builtin_classes(&mut interp);
         interp
@@ -162,14 +168,15 @@ impl Interpreter {
     /// `block.rs`'s `mustBeBoolean` fallback) -- a leaked entry is otherwise
     /// silent, a later activation sitting on top of a dead one's registers.
     /// A `Send*` the VM issues does not run through this check (`vm.rs`
-    /// calls `decide_send`/`run_step` directly, never `send`), but a leak
-    /// there is still caught: `Heap::pop_activation` itself debug-asserts
-    /// that the activation it is given is the top of the stack, which a
-    /// leaked entry underneath it would violate.
+    /// decides it and pushes what was decided itself, never through `send`),
+    /// but a leak there is still caught: `Heap::pop_activation` itself
+    /// debug-asserts that the activation it is given is the top of the
+    /// stack, which a leaked entry underneath it would violate.
     pub fn send(&mut self, receiver: Value, selector: Symbol, args: Vec<Value>) -> EvalResult {
         let depth = self.heap.activation_depth();
         let result = match self.decide_send(receiver, selector, &args) {
-            Ok(step) => self.run_step(step, &args),
+            Ok(Step::Value(value)) => Ok(value),
+            Ok(step) => self.reenter(|interp| interp.push_step(step, &args)),
             Err(signal) => Err(signal),
         };
         debug_assert_eq!(
@@ -381,74 +388,81 @@ impl Interpreter {
         }
     }
 
-    /// Runs what `decide_send` (or a lexical or `super` decision) answered.
-    /// A value is the send's result, answered in place with nothing else
-    /// called; a method activation is pushed, run and popped on every path
-    /// out, in `run_method_step` below.
-    ///
-    /// Kept deliberately tiny and `#[inline(always)]` -- unlike the method
-    /// arm, the value arm is the *common* case (every native leaf, every
-    /// slot access, every nested-class accessor) and every `Send*` in
-    /// `vm.rs` reaches it once per send. Inlining the whole push/run/pop
-    /// body here instead would only bloat `run_code`'s frame -- it is
-    /// mutually recursive with `run_code` through `run_method_step`, so it
-    /// can never itself be inlined into the loop, and marking it `#[inline]`
-    /// bought nothing (measured): the cost was never the *size* of the value
-    /// this answered, it was `vm.rs` paying for a second out-of-line call on
-    /// every send, including a pure native leaf that has no method-body work
-    /// to hide it behind.
-    #[inline(always)]
-    pub(crate) fn run_step(&mut self, step: Step, send_args: &[Value]) -> EvalResult {
+    pub(crate) fn take_arg_buffer(&mut self) -> Vec<Value> {
+        let mut buffer = std::mem::take(&mut self.arg_buffer);
+        buffer.clear();
+        buffer
+    }
+
+    pub(crate) fn return_arg_buffer(&mut self, buffer: Vec<Value>) {
+        self.arg_buffer = buffer;
+    }
+
+    /// Pushes the activation `step` describes. `send_args` are the arguments
+    /// of the send that decided it, which `StepArgs::Send` refers to.
+    pub(crate) fn push_step(
+        &mut self,
+        step: Step,
+        send_args: &[Value],
+    ) -> Result<ActivationRef, Signal> {
         match step {
-            Step::Value(value) => Ok(value),
+            Step::Value(_) => unreachable!("internal: a value needs no activation"),
             Step::Method {
                 receiver,
                 method,
                 defining_class,
                 args,
-            } => self.run_method_step(receiver, method, defining_class, args, send_args),
+            } => {
+                let args = args.slice(send_args);
+                check_method_arity(&method, receiver, args.len())?;
+                let code = method.code.clone();
+                let temps = (code.num_registers - code.num_args) as usize;
+                Ok(self.heap.push_activation(
+                    ActivationHeader {
+                        receiver,
+                        current_class: Some(defining_class),
+                        kind: FrameKind::Method(method),
+                        slot_base: 0, // a method body never contains InitSlot
+                        code,
+                    },
+                    args,
+                    temps,
+                ))
+            }
         }
     }
 
-    /// The method-activation arm of `run_step`, split out so the common
-    /// value-answering arm above can be `#[inline(always)]` without also
-    /// forcing this much larger push/run/pop body -- which calls back into
-    /// `run_code`, so LLVM could never inline it into the instruction loop
-    /// anyway -- into every `Send*` call site.
-    #[inline(never)]
-    fn run_method_step(
+    /// Every re-entry of the run loop from Rust: `push` pushes one
+    /// activation, and the loop runs it and everything it activates and pops
+    /// all of it (`vm::run`). The public `send`, each initializing level of an
+    /// instantiation and its clause message, the nested-class accessor's
+    /// clause, and every native that still calls a block come through here --
+    /// the paths "What stays recursive" in `docs/design/execution.md` names.
+    pub(crate) fn reenter(
         &mut self,
-        receiver: Value,
-        method: Rc<crate::mixin::MixinMethod>,
-        defining_class: ClassRef,
-        args: StepArgs,
-        send_args: &[Value],
+        push: impl FnOnce(&mut Interpreter) -> Result<ActivationRef, Signal>,
     ) -> EvalResult {
-        let args = args.slice(send_args);
-        check_method_arity(&method, receiver, args.len())?;
-        let code = method.code.clone();
-        let act = self.heap.push_activation(
-            ActivationHeader {
-                receiver,
-                current_class: Some(defining_class),
-                kind: FrameKind::Method(method),
-                slot_base: 0, // a method body never contains InitSlot
-            },
-            args,
-            (code.num_registers - code.num_args) as usize,
-        );
-        let result = crate::vm::run_code(self, act, &code);
-        self.heap.pop_activation(act);
-        match result {
-            Ok(value) => Ok(value),
-            Err(Signal::Return(target, value)) if target.same(act) => Ok(value),
-            Err(other) => Err(other),
-        }
+        let act = push(self)?;
+        crate::vm::run(self, act)
+    }
+
+    /// Whether a `^` aimed at `act` ends at `act`: a method's does, and a
+    /// superclass clause's or its message's. An initializer catches none -- a
+    /// `^` into a running one escapes, the known gap in
+    /// `docs/design/execution.md`, "Non-local return" -- and a block's `^`
+    /// always targets its home, never the block.
+    pub(crate) fn catches_return(&self, act: ActivationRef) -> bool {
+        matches!(
+            self.heap.activation_kind(act),
+            FrameKind::Method(_) | FrameKind::SuperclassClause(_) | FrameKind::SuperclassMessage(_)
+        )
     }
 
     /// Invokes a closure with `args`. Called by `builtins::block` for `value`,
     /// `value:`, `value:value:` and so on, and by every native that runs a
-    /// block argument, through `builtins::call_block`.
+    /// block argument, through `builtins::call_block`. It re-enters the run
+    /// loop (`reenter`), which pops the closure's activation, and everything
+    /// it activates, on every path out.
     ///
     /// The invoking activation is not passed: a live activation's sender is
     /// the one below it on the activation stack.
@@ -472,22 +486,22 @@ impl Interpreter {
         }
         let receiver = self.heap.frame_receiver(closure.captured_frame);
         let current_class = self.heap.frame_current_class(closure.captured_frame);
-        let code = &closure.code;
-        let act = self.heap.push_activation(
-            ActivationHeader {
-                receiver,
-                current_class,
-                kind: FrameKind::Closure(closure.clone()),
-                slot_base: 0, // a closure body never contains InitSlot
-            },
-            &args,
-            (code.num_registers - code.num_args) as usize,
-        );
-        let result = crate::vm::run_code(self, act, code);
-        // Popped on every path out. A closure activation catches no return: its
-        // `^` targets its home.
-        self.heap.pop_activation(act);
-        result
+        let code = closure.code.clone();
+        let temps = (code.num_registers - code.num_args) as usize;
+        // A closure activation catches no return: its `^` targets its home.
+        self.reenter(|interp| {
+            Ok(interp.heap.push_activation(
+                ActivationHeader {
+                    receiver,
+                    current_class,
+                    kind: FrameKind::Closure(closure.clone()),
+                    slot_base: 0, // a closure body never contains InitSlot
+                    code,
+                },
+                &args,
+                temps,
+            ))
+        })
     }
 
     /// Where a `^` in `act` returns to. A block returns from its home --

@@ -1,17 +1,17 @@
-//! The register VM's run loop -- and nothing else. `run_code` is a `match`
-//! over `Instr`; every `Send*` first asks `interpreter/`'s send machinery
-//! (`Interpreter::decide_send`, `decide_lexical_send`, `decide_super_send`)
-//! for a `Step` -- what to run, decided but not yet running -- and only then
-//! runs it, through `Interpreter::run_step`, which re-enters `run_code` for
-//! any user-defined target. No dispatch logic, no `doesNotUnderstand:`, no
-//! native dispatch, and no error text of its own live here -- dispatch
-//! lives in one place, which the reference lowering and a JIT will share.
-//! See `docs/design/execution.md`, "The VM" and "The trampoline (1b)".
+//! The register VM's run loop -- and nothing else. `run` executes one
+//! activation and everything it activates, on the `Heap`'s activation stack,
+//! without recursing on the Rust stack: a send asks `interpreter/` what it
+//! means (`Interpreter::decide_send`, `sends::decide_lexical_send`,
+//! `sends::decide_super_send`) and, when the answer is an activation, pushes
+//! it and runs it here; a return pops it and resumes the caller. No dispatch
+//! logic, no `doesNotUnderstand:`, no native dispatch and no error text of its
+//! own live here -- dispatch lives in one place, which the reference lowering
+//! and a JIT share. See `docs/design/execution.md`, "The VM".
 
 use std::rc::Rc;
 
 use crate::bytecode::{CompiledCode, Instr, Literal};
-use crate::heap::{ActivationRef, Heap};
+use crate::heap::ActivationRef;
 use crate::interpreter::literals::{
     malformed_int_error, parse_int_literal, unresolved_identifier_error,
 };
@@ -19,195 +19,338 @@ use crate::interpreter::locals::{
     home_of, read_local, read_outer_local, store_instance_field, write_local, write_outer_local,
 };
 use crate::interpreter::sends::{decide_lexical_send, decide_super_send};
-use crate::interpreter::{EvalResult, Interpreter};
+use crate::interpreter::{EvalResult, Interpreter, Signal, Step};
 use crate::types::*;
 
-/// Runs `code` on the live activation `act` until a terminating
-/// instruction. `act` was pushed by the send machinery (`run_step`,
-/// `invoke_closure`, `instantiate` or `nested::run_clause_body`) with
-/// registers for `code.num_registers`, and that same caller pops it.
+/// What the loop does after one instruction.
+enum Flow {
+    Next,
+    Jump(usize),
+    /// Run another activation from `pc`: a callee a send pushed (from 0), or
+    /// a caller a return resumed (from the instruction after its send).
+    Switch {
+        act: ActivationRef,
+        code: Rc<CompiledCode>,
+        pc: usize,
+    },
+    /// The activation `run` was given is done, and so is everything it
+    /// activated.
+    Exit(EvalResult),
+}
+
+/// Runs `base` -- the top of the activation stack, pushed by the caller --
+/// and every activation it pushes, until `base` is done, and pops them all,
+/// `base` included, on every path out: a return, an error, or a non-local
+/// return aimed below `base`. The stack is exactly as deep afterwards as it
+/// was before `base` was pushed.
 ///
-/// The activation's `pc` is the safepoint view (`statement_pc` recovers the
-/// statement from it on demand), and it is stored *only by the instructions
-/// that can hand the activation to an observer*: every `Send*` (a nested
-/// activation runs above this one), `MakeClosure` (it reifies this
-/// activation, so the frame `reify` builds starts from the `pc` stored just
-/// before), and `NonLocalReturn` (control leaves with a signal). Each store
-/// goes to the stack entry and keeps the activation's `pc` current; a frame
-/// divorced when the activation returns records the last one stored, which
-/// is often a later send's rather than the `MakeClosure`'s. Nothing can read
-/// `pc` while a straight-line instruction executes, because `run_code` never
-/// yields between them.
-pub fn run_code(
-    interp: &mut Interpreter,
-    act: ActivationRef,
-    code: &Rc<CompiledCode>,
-) -> EvalResult {
+/// An activation's `pc` is stored only by the instructions that can hand it
+/// to an observer: every send (a callee runs above it, and the loop resumes
+/// it from that `pc`), `MakeClosure` (it reifies the activation, so the frame
+/// starts from the `pc` stored just before), and `NonLocalReturn` (control
+/// leaves with a signal). Nothing reads `pc` while a straight-line
+/// instruction executes.
+pub fn run(interp: &mut Interpreter, base: ActivationRef) -> EvalResult {
+    let floor = interp.heap.activation_position(base);
+    let mut act = base;
+    let mut code = interp.heap.activation_code(act);
     let mut pc = 0usize;
     loop {
-        match &code.instrs[pc] {
-            Instr::LoadLiteral { dst, literal } => {
-                let v = make_value(interp, act, literal)?;
-                write_local(&mut interp.heap, act, *dst, v);
+        match execute(interp, act, &code, pc, floor) {
+            Flow::Next => {
+                pc += 1;
+                debug_assert!(
+                    pc < code.instrs.len(),
+                    "internal: pc ran past the end of a CompiledCode with no terminating return"
+                );
             }
-            Instr::LoadSelf { dst } => {
-                let v = interp.heap.activation_receiver(act);
-                write_local(&mut interp.heap, act, *dst, v);
-            }
-            Instr::LoadBuiltinClass { dst, kind } => {
-                let v = Value::Obj(interp.builtin_class(*kind));
-                write_local(&mut interp.heap, act, *dst, v);
-            }
-            Instr::Move { dst, src } => {
-                let v = read_local(&interp.heap, act, *src);
-                write_local(&mut interp.heap, act, *dst, v);
-            }
-            Instr::StoreLocal { src, slot } => {
-                let v = read_local(&interp.heap, act, *src);
-                write_local(&mut interp.heap, act, *slot, v);
-            }
-            Instr::LoadOuterLocal { dst, depth, index } => {
-                let v = read_outer_local(&interp.heap, act, *depth, *index);
-                write_local(&mut interp.heap, act, *dst, v);
-            }
-            Instr::StoreOuterLocal { src, depth, index } => {
-                let v = read_local(&interp.heap, act, *src);
-                write_outer_local(&mut interp.heap, act, *depth, *index, v);
-            }
-            Instr::SendPublic {
-                selector,
-                receiver_reg,
-                arg_regs,
-                dst,
-                // `call_site` is deliberately ignored -- it is the
-                // reserved, inert inline-cache slot; no cache is
-                // wired up to read or write it yet.
-                ..
-            }
-            // `SendInlinable` is `SendPublic` with a mark only the depth
-            // count reads (Task 6 of the trampoline plan); until then it
-            // runs identically.
-            | Instr::SendInlinable {
-                selector,
-                receiver_reg,
-                arg_regs,
-                dst,
-                ..
+            Flow::Jump(target) => pc = target,
+            Flow::Switch {
+                act: next,
+                code: next_code,
+                pc: next_pc,
             } => {
-                let receiver = read_local(&interp.heap, act, *receiver_reg);
-                let args = collect(&interp.heap, act, arg_regs);
-                interp.heap.set_activation_pc(act, pc);
-                let step = interp.decide_send(receiver, *selector, &args)?;
-                let result = interp.run_step(step, &args)?;
-                write_local(&mut interp.heap, act, *dst, result);
+                act = next;
+                code = next_code;
+                pc = next_pc;
             }
-            Instr::SendLexical {
-                depth,
-                selector,
-                arg_regs,
-                dst,
-                ..
-            } => {
-                let args = collect(&interp.heap, act, arg_regs);
-                interp.heap.set_activation_pc(act, pc);
-                let step = decide_lexical_send(interp, act, *depth, *selector, &args)?;
-                let result = interp.run_step(step, &args)?;
-                write_local(&mut interp.heap, act, *dst, result);
-            }
-            Instr::SendSuper {
-                selector,
-                arg_regs,
-                dst,
-                ..
-            } => {
-                let args = collect(&interp.heap, act, arg_regs);
-                interp.heap.set_activation_pc(act, pc);
-                let step = decide_super_send(interp, act, *selector, &args)?;
-                let result = interp.run_step(step, &args)?;
-                write_local(&mut interp.heap, act, *dst, result);
-            }
-            Instr::MakeClosure {
-                dst,
-                params,
-                code: block,
-            } => {
-                // Stored before reifying, so the frame `reify` builds
-                // starts from this pc. The store keeps the activation's pc
-                // current; the frame records whichever pc was stored last
-                // when `pop_activation` divorces it.
-                interp.heap.set_activation_pc(act, pc);
-                let captured_frame = interp.heap.reify(act);
-                let home = home_of(&mut interp.heap, act);
-                let closure = Rc::new(ClosureData {
-                    params: params.clone(),
-                    code: block.clone(),
-                    captured_frame,
-                    home,
-                });
-                let v = Value::Obj(interp.new_closure(closure));
-                write_local(&mut interp.heap, act, *dst, v);
-            }
-            Instr::MakeArray { dst, elem_regs } => {
-                let values = collect(&interp.heap, act, elem_regs);
-                let v = Value::Obj(interp.new_array(values));
-                write_local(&mut interp.heap, act, *dst, v);
-            }
-            Instr::InitSlot { src, own_index } => {
-                // Through `store_instance_field`: a direct field write on
-                // `self`, silently skipped for a non-instance receiver.
-                // `own_index` is relative to the executing mixin's own
-                // slots (the same compiled body runs for every application
-                // of that mixin); the activation's `slot_base` -- set once,
-                // when `Interpreter::run_initializer_level` pushes this
-                // level's activation, from that level's own
-                // `MixinApplication.own_slot_base` -- is what turns it into
-                // this instance's actual absolute field index.
-                let v = read_local(&interp.heap, act, *src);
-                let receiver = interp.heap.activation_receiver(act);
-                let base = interp.heap.activation_slot_base(act);
-                store_instance_field(&mut interp.heap, &receiver, base + *own_index as usize, v);
-            }
-            Instr::Return { reg } | Instr::ImplicitReturn { reg } => {
-                return Ok(read_local(&interp.heap, act, *reg));
-            }
-            Instr::NonLocalReturn { reg } => {
-                let v = read_local(&interp.heap, act, *reg);
-                interp.heap.set_activation_pc(act, pc);
-                return Err(interp.raise_return(act, v));
-            }
-            Instr::Jump { target } => {
-                pc = *target as usize;
-                continue;
-            }
-            Instr::JumpIfNotBoolean { reg, target } => {
-                if !matches!(read_local(&interp.heap, act, *reg), Value::Bool(_)) {
-                    pc = *target as usize;
-                    continue;
-                }
-            }
-            Instr::BranchIfFalse { reg, target } => {
-                if matches!(read_local(&interp.heap, act, *reg), Value::Bool(false)) {
-                    pc = *target as usize;
-                    continue;
-                }
-            }
-            Instr::BranchIfTrue { reg, target } => {
-                if matches!(read_local(&interp.heap, act, *reg), Value::Bool(true)) {
-                    pc = *target as usize;
-                    continue;
-                }
-            }
+            Flow::Exit(result) => return result,
         }
-        pc += 1;
-        debug_assert!(
-            pc < code.instrs.len(),
-            "internal: pc ran past the end of a CompiledCode with no terminating return"
-        );
     }
 }
 
-fn collect(heap: &Heap, act: ActivationRef, regs: &[u16]) -> Vec<Value> {
-    regs.iter().map(|r| read_local(heap, act, *r)).collect()
+/// One instruction of `code`, running in `act`.
+#[inline(always)]
+fn execute(
+    interp: &mut Interpreter,
+    act: ActivationRef,
+    code: &CompiledCode,
+    pc: usize,
+    floor: usize,
+) -> Flow {
+    match &code.instrs[pc] {
+        Instr::LoadLiteral { dst, literal } => match make_value(interp, act, literal) {
+            Ok(v) => {
+                write_local(&mut interp.heap, act, *dst, v);
+                Flow::Next
+            }
+            Err(signal) => unwind(interp, signal, floor),
+        },
+        Instr::LoadSelf { dst } => {
+            let v = interp.heap.activation_receiver(act);
+            write_local(&mut interp.heap, act, *dst, v);
+            Flow::Next
+        }
+        Instr::LoadBuiltinClass { dst, kind } => {
+            let v = Value::Obj(interp.builtin_class(*kind));
+            write_local(&mut interp.heap, act, *dst, v);
+            Flow::Next
+        }
+        Instr::Move { dst, src } | Instr::StoreLocal { src, slot: dst } => {
+            let v = read_local(&interp.heap, act, *src);
+            write_local(&mut interp.heap, act, *dst, v);
+            Flow::Next
+        }
+        Instr::LoadOuterLocal { dst, depth, index } => {
+            let v = read_outer_local(&interp.heap, act, *depth, *index);
+            write_local(&mut interp.heap, act, *dst, v);
+            Flow::Next
+        }
+        Instr::StoreOuterLocal { src, depth, index } => {
+            let v = read_local(&interp.heap, act, *src);
+            write_outer_local(&mut interp.heap, act, *depth, *index, v);
+            Flow::Next
+        }
+        Instr::SendPublic {
+            selector,
+            receiver_reg,
+            arg_regs,
+            dst,
+            // `call_site` is the reserved, inert inline-cache slot; nothing
+            // reads or writes it yet.
+            ..
+        }
+        | Instr::SendInlinable {
+            selector,
+            receiver_reg,
+            arg_regs,
+            dst,
+            ..
+        } => {
+            let receiver = read_local(&interp.heap, act, *receiver_reg);
+            send(interp, act, pc, arg_regs, *dst, floor, |interp, args| {
+                interp.decide_send(receiver, *selector, args)
+            })
+        }
+        Instr::SendLexical {
+            depth,
+            selector,
+            arg_regs,
+            dst,
+            ..
+        } => send(interp, act, pc, arg_regs, *dst, floor, |interp, args| {
+            decide_lexical_send(interp, act, *depth, *selector, args)
+        }),
+        Instr::SendSuper {
+            selector,
+            arg_regs,
+            dst,
+            ..
+        } => send(interp, act, pc, arg_regs, *dst, floor, |interp, args| {
+            decide_super_send(interp, act, *selector, args)
+        }),
+        Instr::MakeClosure {
+            dst,
+            params,
+            code: block,
+        } => {
+            // Stored before reifying, so the frame `reify` builds starts
+            // from this pc.
+            interp.heap.set_activation_pc(act, pc);
+            let captured_frame = interp.heap.reify(act);
+            let home = home_of(&mut interp.heap, act);
+            let closure = Rc::new(ClosureData {
+                params: params.clone(),
+                code: block.clone(),
+                captured_frame,
+                home,
+            });
+            let v = Value::Obj(interp.new_closure(closure));
+            write_local(&mut interp.heap, act, *dst, v);
+            Flow::Next
+        }
+        Instr::MakeArray { dst, elem_regs } => {
+            let values = elem_regs
+                .iter()
+                .map(|r| read_local(&interp.heap, act, *r))
+                .collect();
+            let v = Value::Obj(interp.new_array(values));
+            write_local(&mut interp.heap, act, *dst, v);
+            Flow::Next
+        }
+        Instr::InitSlot { src, own_index } => {
+            // `own_index` is relative to the executing mixin's own slots; the
+            // activation's `slot_base`, set when this level's activation was
+            // pushed, turns it into this instance's absolute field index.
+            let v = read_local(&interp.heap, act, *src);
+            let receiver = interp.heap.activation_receiver(act);
+            let base = interp.heap.activation_slot_base(act);
+            store_instance_field(&mut interp.heap, &receiver, base + *own_index as usize, v);
+            Flow::Next
+        }
+        Instr::Return { reg } | Instr::ImplicitReturn { reg } => {
+            let value = read_local(&interp.heap, act, *reg);
+            finish(interp, act, value, floor)
+        }
+        Instr::NonLocalReturn { reg } => {
+            let value = read_local(&interp.heap, act, *reg);
+            interp.heap.set_activation_pc(act, pc);
+            let signal = interp.raise_return(act, value);
+            unwind(interp, signal, floor)
+        }
+        Instr::Jump { target } => Flow::Jump(*target as usize),
+        Instr::JumpIfNotBoolean { reg, target } => {
+            if matches!(read_local(&interp.heap, act, *reg), Value::Bool(_)) {
+                Flow::Next
+            } else {
+                Flow::Jump(*target as usize)
+            }
+        }
+        Instr::BranchIfFalse { reg, target } => {
+            if matches!(read_local(&interp.heap, act, *reg), Value::Bool(false)) {
+                Flow::Jump(*target as usize)
+            } else {
+                Flow::Next
+            }
+        }
+        Instr::BranchIfTrue { reg, target } => {
+            if matches!(read_local(&interp.heap, act, *reg), Value::Bool(true)) {
+                Flow::Jump(*target as usize)
+            } else {
+                Flow::Next
+            }
+        }
+    }
+}
+
+/// A send: the arguments gathered from the caller's registers into the
+/// interpreter's reusable buffer, `pc` stored, the decision asked for, and
+/// what was decided run -- a value written to `dst`, or an activation pushed
+/// and switched to, its window filled straight from the buffer. No vector is
+/// allocated once the buffer has grown to the widest send.
+fn send(
+    interp: &mut Interpreter,
+    act: ActivationRef,
+    pc: usize,
+    arg_regs: &[u16],
+    dst: u16,
+    floor: usize,
+    decide: impl FnOnce(&mut Interpreter, &[Value]) -> Result<Step, Signal>,
+) -> Flow {
+    let mut args = interp.take_arg_buffer();
+    args.extend(arg_regs.iter().map(|r| read_local(&interp.heap, act, *r)));
+    interp.heap.set_activation_pc(act, pc);
+    let flow = match decide(interp, &args) {
+        Ok(Step::Value(v)) => {
+            write_local(&mut interp.heap, act, dst, v);
+            Flow::Next
+        }
+        Ok(step) => match interp.push_step(step, &args) {
+            Ok(callee) => Flow::Switch {
+                act: callee,
+                code: interp.heap.activation_code(callee),
+                pc: 0,
+            },
+            Err(signal) => unwind(interp, signal, floor),
+        },
+        Err(signal) => unwind(interp, signal, floor),
+    };
+    interp.return_arg_buffer(args);
+    flow
+}
+
+/// `act` has returned `value`: pop it and hand the value on -- to the send in
+/// its caller, which resumes, or out of `run` when `act` was the activation
+/// `run` was given.
+fn finish(interp: &mut Interpreter, act: ActivationRef, value: Value, floor: usize) -> Flow {
+    interp.heap.pop_activation(act);
+    if interp.heap.activation_depth() == floor {
+        return Flow::Exit(Ok(value));
+    }
+    let caller = interp
+        .heap
+        .top_activation()
+        .expect("internal: an activation above the run's floor has a caller");
+    resume_caller(interp, caller, value)
+}
+
+/// Writes a callee's value into the send `caller` is stopped at, and resumes
+/// `caller` after it.
+fn resume_caller(interp: &mut Interpreter, caller: ActivationRef, value: Value) -> Flow {
+    let code = interp.heap.activation_code(caller);
+    let pc = interp.heap.activation_pc(caller);
+    write_local(
+        &mut interp.heap,
+        caller,
+        send_destination(&code.instrs[pc]),
+        value,
+    );
+    Flow::Switch {
+        act: caller,
+        code,
+        pc: pc + 1,
+    }
+}
+
+/// A signal leaving the running activation. A non-local return whose target
+/// is one of this run's activations and catches a return (a method, or a
+/// superclass clause or its message -- `Interpreter::catches_return`) ends
+/// there: everything above the target is popped and the target returns the
+/// value. Anything else pops every activation of this run, `base` included,
+/// and leaves `run` with the signal, for the Rust frame that re-entered the
+/// loop to pass on.
+///
+/// A target that catches no return is popped with the rest, and the signal
+/// goes on naming it; the runs below this one see a target that has
+/// returned, which is why liveness is asked first.
+fn unwind(interp: &mut Interpreter, signal: Signal, floor: usize) -> Flow {
+    if let Signal::Return(target, value) = &signal {
+        let (target, value) = (*target, *value);
+        if interp.heap.activation_is_live(target)
+            && interp.heap.activation_position(target) >= floor
+            && interp.catches_return(target)
+        {
+            while let Some(top) = interp.heap.top_activation() {
+                if top.same(target) {
+                    break;
+                }
+                interp.heap.pop_activation(top);
+            }
+            return finish(interp, target, value, floor);
+        }
+    }
+    while interp.heap.activation_depth() > floor {
+        let top = interp
+            .heap
+            .top_activation()
+            .expect("internal: a stack deeper than the floor has a top");
+        interp.heap.pop_activation(top);
+    }
+    Flow::Exit(Err(signal))
+}
+
+/// The register a send writes its value to: where a callee's value goes when
+/// the loop resumes the caller.
+fn send_destination(instr: &Instr) -> u16 {
+    match instr {
+        Instr::SendPublic { dst, .. }
+        | Instr::SendInlinable { dst, .. }
+        | Instr::SendLexical { dst, .. }
+        | Instr::SendSuper { dst, .. } => *dst,
+        other => unreachable!(
+            "internal: a caller resumed at an instruction that is not a send: {other:?}"
+        ),
+    }
 }
 
 /// Materializes a literal -- including the two deferred error cases,
