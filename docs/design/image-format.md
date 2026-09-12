@@ -474,9 +474,12 @@ entry on the explicit activation stack ([execution.md](execution.md),
 trampoline made the activation stack the only copy of a running computation
 ([execution.md](execution.md), "The trampoline"), apart from the paths that
 still re-enter the run loop from Rust — `do:`, instantiation and the
-nested-class accessor — each of which holds a Rust frame while it runs. What is
+nested-class accessor — each of which holds a Rust frame while it runs. Step 2a
+of Milestone 4 makes all three trampoline steps ([execution.md](execution.md),
+"Planned: no re-entry from Rust"), which removes those frames. What is
 missing is a yield path out of `vm::run`, a way through or around those Rust
-frames, and a re-entry point that would continue a decoded frame at its `pc`.
+frames until then, and a re-entry point that would continue a decoded frame at
+its `pc`.
 Suspending then means reifying and divorcing the whole stack, which is the same
 operation a debugger performs on the frames it touches — and the same operation upstream
 performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)

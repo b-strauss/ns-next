@@ -36,8 +36,8 @@ that cannot name its code is describing an intention, and should say so.
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | inline-cache slots wired up |
-| Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline | closure conversion, JIT tiers |
-| Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena and the activation stack are built, nothing reclaims an arena slot | checked roots, a collector |
+| Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline | no re-entry from Rust, closure conversion, JIT tiers |
+| Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena and the activation stack are built, nothing reclaims an arena slot | checked roots (designed: safepoints in the run loop, a lifetime brand, a stress mode), a collector |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | Partial | the leaf/callback split |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |

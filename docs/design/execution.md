@@ -898,8 +898,9 @@ Three things the trampoline settles on its own:
   costs native stack per level under the reference lowering only, growing with
   the static nesting of `and:` and `while` blocks, so no fixed native stack
   would guarantee that the count trips before the native stack under both
-  lowerings. `do:` stays a callback until it moves to Newspeak
-  ([core-library.md](core-library.md)).
+  lowerings. `do:` is still a callback; it becomes a step of the same kind in
+  "Planned: no re-entry from Rust" below, and moves to Newspeak after the
+  inline caches ([core-library.md](core-library.md)).
 - **Recursion depth is a checkable limit and an ordinary Newspeak error**
   instead of a native stack overflow that aborts the process. That closes the
   exposure [image-format.md](image-format.md) records against a loaded
@@ -1064,13 +1065,13 @@ back into Newspeak, through `builtins::call_block` and
 `Interpreter::invoke_closure`; instantiation, whose initializer levels and
 clause messages each run in a nested run of the loop; and the nested-class
 accessor, which runs a superclass clause in one. Each re-entry goes through
-`Interpreter::reenter` and is counted against N. `do:` is a barrier for a
-future JIT rather than a correctness problem, and it is addressed by moving it
-out of Rust rather than by trampolining around it; see
-[core-library.md](core-library.md). Instantiation and the accessor could become
-trampoline steps later — both run Newspeak code in a fixed order a continuation
-could drive — but nothing needs that yet. Their Rust-held values are what the
-scope discipline [memory.md](memory.md) plans will have to cover.
+`Interpreter::reenter` and is counted against N. None of the three is a
+correctness problem today. What makes them go is the root discipline: a Rust
+frame below a nested run of the loop holds values across that run's
+safepoints, where a moving collector could not see or rewrite them
+([memory.md](memory.md), "No Rust frame is live below a safepoint"). All
+three run Newspeak code in a fixed order that a continuation can drive, so all
+three become trampoline steps; see "Planned: no re-entry from Rust" below.
 
 ### How this meets the liveness requirements
 
@@ -1093,6 +1094,86 @@ decoded frame ([image-format.md](image-format.md), "Planned: suspend and
 resume"). The document already accepts that entering the debugger forces the
 frames it touches out of their fast representation; this is the same step, one
 level below the JIT.
+
+## Planned: no re-entry from Rust
+
+What would change: Rust would enter the run loop only as its outermost caller —
+the host's `send` and `instantiate`, and a stateless binary's entry — and never
+from inside a running computation. `do:`, instantiation and the nested-class
+accessor, the three paths in "What stays recursive" above, become trampoline
+steps. This is step 2a of Milestone 4, decided 2026-09-13, and it is what the
+root discipline stands on ([memory.md](memory.md), "Planned: checked roots and
+a collector"): at a safepoint no Rust frame then holds a value.
+
+All three follow the pattern `whileTrue:` set: a decision answers an activation
+together with a `Continuation`, the continuation rides on the activation's
+stack entry, and `Interpreter::resume` applies it when the activation returns.
+The semantics and the order of every observable effect stay exactly as they
+are.
+
+- **`do:`** keeps its snapshot of the elements. An empty collection, or an
+  argument that is not a block, answers the receiver at once: a non-block stands
+  for its own value, so today's call per element observes nothing. Otherwise the
+  native answers `Step::Block` for the first element with
+  `Continuation::DoElement`, whose state carries the receiver, the block, the
+  snapshot and the next index; `resume` activates the block for the next element
+  or answers the receiver. The block's activation is counted, as it is today;
+  a `^` in it unwinds like any other activation's, and its arity is checked by
+  the same `check_block_arity`. Without a nested run per element this should
+  make `do:` faster rather than slower. It removes the callback without writing
+  Newspeak, and it does not make the later move to Newspeak harder: a
+  trampoline step maps onto a primitive as `Closure>>value`'s does
+  ([core-library.md](core-library.md)).
+- **Instantiation** becomes a state machine behind `Continuation::Instantiate`.
+  Its state is the instance, the levels gathered so far and the phase — upward
+  with a level and its arguments, or downward with an index — the walk "A
+  superclass chain is walked iteratively" above describes, unchanged.
+  `Interpreter::advance_instantiation` does the synchronous parts itself — each
+  level's arity check, the clause selector check, a level with no code — and
+  answers an activation as soon as code must run: a clause message's arguments,
+  or a level's initializer. Such a body is neither a method nor a block, so
+  `Step` gains a third variant, `Step::Body`, for an initializer, a superclass
+  clause or a superclass message; it is counted, as those are today. The last
+  step answers the instance. `try_factory_send` becomes an ordinary decision,
+  and the public `instantiate` becomes a host entry shaped like `send`: decide,
+  and push and run the loop if the decision needs it.
+- **The nested-class accessor** answers the clause's activation with
+  `Continuation::NestedClass`, whose state is the receiver, its cache index,
+  the declaration and the declaring class; `resume` does steps 3 to 5 — the
+  application, the class object, the cache — and answers the class.
+  `nested_in_progress` stays a stack but records an `ObjRef` instead of the
+  arena index it records today, which would be silently wrong under a moving
+  collector. Its entry is removed when the continuation runs or when
+  `vm::unwind` throws the activation away: `interpreter/` gains
+  `Interpreter::abandon`, the counterpart of `resume` for an abandoned
+  continuation, which `unwind` calls for every entry it pops, forwarding and
+  deciding nothing — the way `vm::finish` forwards to `resume`.
+
+What goes: `reenter`, `invoke_closure`, `builtins::call_block`, `native_depth`,
+`MAX_NATIVE_DEPTH` and its error. No decision runs code any more, so `vm::send`
+no longer needs a fresh argument buffer for a decision that re-enters. That
+`vm::run` is never nested is a debug assertion in step 2a and becomes structure
+in step 2c, where nothing a native can reach offers `run` at all
+([memory.md](memory.md), "The brand").
+
+**One bound, not two.** With nothing re-entering the loop from Rust, N has
+nothing to count, and each of the recursions it bounded is made only of
+counted activations, so each ends at L like any other recursion. Three golden
+outcomes in `crates/ns-cli/tests/program_outcomes.rs` — `do-recursion`,
+`instantiation-recursion` and `accessor-recursion` — end today in `stack
+overflow: too many nested native calls`, and will end in `stack overflow:
+recursion too deep`. That is a behaviour change, and it is right because the
+limit the old text reported no longer exists; it is not recorded because the
+code produces it. `INTERPRETER_STACK_BYTES` was sized from N's measured
+native cost, so it is re-derived from what still recurses on the Rust stack —
+the parser, the resolver and the compiler, whose depth the parser's nesting
+ceiling bounds. The thread itself stays, because the symbol interner is
+thread-local.
+
+**Gates.** The golden outcomes, the fixtures and `run-corpus` under both
+lowerings, with only the three changes above; and a before-and-after
+measurement of the three benchmarks on a release build in one sitting, in which
+no source may be slower.
 
 ## Planned: closure conversion
 
@@ -1190,3 +1271,8 @@ binds it is that no native code may ever enter an image.
   native would make the reference lowering's native stack grow with source
   nesting, and a single bound would tie the language's depth to Rust frame
   sizes.
+- **Rust is not to re-enter the run loop** (decided 2026-09-13, "Planned: no
+  re-entry from Rust"): `do:`, instantiation and the nested-class accessor
+  become trampoline steps, so that no Rust frame is live below a safepoint and
+  the root discipline has nothing to root but the host's values. N goes with
+  them.

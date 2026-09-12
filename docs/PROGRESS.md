@@ -17,9 +17,15 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 M4 is under way. **1b, the trampoline, is done** — see "M4 — The trampoline"
 below — and **the next piece is step 2, the compiler-checked root
-discipline** ([memory.md](design/memory.md), "The root discipline: checked by
-the compiler, not by convention"). The profile of `bench_block.ns` that the
-trampoline's [plan](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md)
+discipline**, designed on 2026-09-13 ([memory.md](design/memory.md), "Planned:
+checked roots and a collector"). It lands in three parts, **2a first**: take
+every re-entry of the run loop from Rust away — `do:`, instantiation and the
+nested-class accessor become trampoline steps ([execution.md](design/execution.md),
+"Planned: no re-entry from Rust"). Then 2b, the safepoint, the tracing, host
+roots and the stress mode; then 2c, the lifetime brand. Each gets its own plan
+under `docs/superpowers/plans/` once the one before it has merged, so that it
+is written against the code as it then is. The profile of `bench_block.ns` that
+the trampoline's [plan](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md)
 owed was taken last, with the user; see below.
 
 Sends run on the activation stack rather than the Rust stack, in one loop that
@@ -135,10 +141,25 @@ so nothing is lost by it going second.
      `SendInlinable` and the counter added together. `bench_loop.ns` fell by
      about 32%, `bench_send.ns` 31% and `bench_block.ns` 22%; see "M4 — The
      trampoline" below.
-2. **A compiler-checked root discipline. Next.** [memory.md](design/memory.md). Nova's
-   `GcScope`/`NoGcScope`, where holding an unrooted handle across a collection
-   safepoint is a type error rather than corruption found later under collection
-   pressure. Free at run time; the ergonomic cost is accepted deliberately.
+2. **A compiler-checked root discipline. Next.** [memory.md](design/memory.md),
+   "Planned: checked roots and a collector". Designed on 2026-09-13, from how
+   Cog, Nova, CPython, piccolo, V8, HotSpot, Primordial Soup and SOMns place
+   their collections: a collection only ever at a safepoint in the run loop,
+   never in an allocation; no Rust frame live below one; and a lifetime brand in
+   the style of gc-arena, which makes holding a handle across a safepoint a
+   compile error. That replaced the earlier plan of Nova's
+   `GcScope`/`NoGcScope`, whose scopes would root the re-entry paths rather
+   than remove them. Free at run time; the ergonomic cost is accepted
+   deliberately. Split in three, each landing green and measured on its own:
+   - **2a — no re-entry from Rust. Next.** `do:`, instantiation and the
+     nested-class accessor become trampoline steps, and N goes
+     ([execution.md](design/execution.md), "Planned: no re-entry from Rust").
+   - **2b — the safepoint, the tracing, host roots and the stress mode.** Every
+     place a handle is stored enumerated, `Rc<ClosureData>` split so that no
+     handle sits behind a shared `Rc`, and a debug-build mode that moves every
+     object at every safepoint, under which the whole suite must pass.
+   - **2c — the brand.** `Value<'gc>` and every movable handle, obtainable only
+     inside `Interpreter::enter`; the host holds values only as `Root`s.
 3. **Inline caches** — [dispatch.md](design/dispatch.md). The call-site slots are
    already emitted and inert, so no bytecode format break. A cache must guard on
    the **mixin application**, not on the class object; the obvious key is the
@@ -163,12 +184,13 @@ Newspeak. It is required eventually, because a Rust native that calls back into
 Newspeak is a permanent barrier to optimization
 ([core-library.md](design/core-library.md)), but doing it before the steps above
 makes the numbers worse and after them costs nothing. M4 owes it only that the
-rewrite not deepen the investment in Rust callbacks.
+rewrite not deepen the investment in Rust callbacks — and step 2a takes the
+callback away earlier, as a trampoline step rather than as Newspeak.
 
 What M4 unlocks beyond speed is recorded where it applies: suspending a running
 computation and serializing it needed the trampoline, which is built, and still
 needs a yield path out of the run loop and a way past the paths that re-enter it
-from Rust ([image-format.md](design/image-format.md), "Planned: suspend and
+from Rust, which step 2a removes ([image-format.md](design/image-format.md), "Planned: suspend and
 resume"), and so does the debugger; `become:`-based class mutation waits on
 the collector ([liveness-and-reflection.md](design/liveness-and-reflection.md)).
 

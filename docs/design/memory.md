@@ -5,7 +5,8 @@
 > the same `Heap` and reach the frame arena only when a block captures one.
 > Identity, layout ownership and the seam that routes every access through
 > `Heap` are built. Nothing reclaims an arena slot: there is no collector,
-> and no root discipline for one to use.
+> and no root discipline for one to use; the discipline is designed, in
+> "Planned: checked roots and a collector".
 > **Code:** `crates/ns-runtime/src/heap.rs` (the arenas, the activation
 > stack, the handle types, every accessor), `types.rs` (`Value`, `Object`,
 > `Frame`), `mixin.rs` (layout, and the one remaining iterative `Drop`).
@@ -247,8 +248,16 @@ file next starts from a list rather than from rediscovery.
 
 ## Planned: checked roots and a collector
 
-The arena and the activation stack are built. Two pieces of the representation
-change are not: the root discipline, and the collector that needs it.
+What would change: a collection could run — only at a safepoint in the run
+loop — and move objects, and every handle the runtime holds would be either
+where the collector can find and rewrite it or a compile error. Designed on
+2026-09-13 as step 2 of Milestone 4, in three parts that each land green and
+measured on their own: **2a** removes every re-entry of the run loop from Rust
+([execution.md](execution.md), "Planned: no re-entry from Rust"); **2b** adds
+the safepoint, the enumeration of everything the collector traces, host roots
+and a stress mode that moves every object at every safepoint; **2c** brands
+every movable handle with a lifetime, so that holding one across a safepoint
+is a compile error. The collector itself is step 5.
 
 **The collector has to move objects.** `become:`-style identity swap and object
 forwarding are requirements, not conveniences: adding an instance variable to a
@@ -257,32 +266,183 @@ atomically swaps identity. That rules out a conservative non-moving collector,
 which makes `become:` hard. A copying or compacting collector can implement it,
 and MMTk supports object forwarding.
 
-### The root discipline: checked by the compiler, not by convention
-
 A moving collector must not only *find* every root but *update* it, and roots
-held in Rust locals across a collection safepoint are the hard case: under `Rc`
-those references kept their objects alive and never needed updating, and under a
+held in Rust locals across a collection are the hard case: under `Rc` those
+references kept their objects alive and never needed updating, and under a
 moving collector they are roots the collector cannot see and indices it cannot
-rewrite.
+rewrite. The design answers that in three layers: where a collection may
+happen, what may be on the Rust stack when it does, and what the compiler
+checks.
 
-The mechanism is Nova's `GcScope`/`NoGcScope`: a handle carries a lifetime that
-must match the current scope, `NoGcScope` is the proof that no collection can
-happen in a region, and a value that must survive a safepoint is scoped
-explicitly. Holding an unrooted handle across a safepoint is then a **compile
-error** rather than heap corruption that only appears under collection pressure.
-It costs nothing at run time — the lifetimes are gone after monomorphization —
-and its price is ergonomic: Nova's own experience report is largely a complaint
-about the resulting `unbind()` noise. That price is accepted deliberately.
+### Where a collection can happen: only at a safepoint in the run loop
 
-This is what lets the Rust code that holds values keep its present shape. The VM
-keeps a running activation's values in its registers, on the activation stack,
-but not every value: a send's arguments are gathered into the interpreter's
-reusable argument buffer (`vm::send`) and held there while the send is decided,
-which can allocate; a native loop's continuation holds its condition and body
-on a stack entry, outside any register; and every native in `builtins/` that
-holds values across an allocation holds them in Rust locals. Under a checked
-scope discipline that is expressible and verified, rather than a discipline
-that has to be re-established by hand on every later change.
+An allocation will never collect. It will count what it allocates and, past a
+threshold, *request* a collection, which runs at the next safepoint of the run
+loop. `vm::run` reaches one at every switch to another activation — a push, or
+a caller resumed — and at every backward jump, so every call and every loop
+iteration passes one. Between two instructions `run` holds the running
+`ActivationRef`, its `Rc<CompiledCode>` and its `pc`, and no handle the
+collector would move; every live value is in a register on the activation
+stack or in one of the places "What the collector traces" below lists. The
+interpreter's reusable argument buffer is empty there — a send gathers into
+it, decides and pushes within one instruction — so it is not a root, and a
+debug assertion at the safepoint says so.
+
+The first four systems below chose this placement; the last four collect
+elsewhere, and their right-hand column is what that costs their runtime code:
+
+| System | Where a collection can happen | What its runtime code does about the handles it holds |
+|---|---|---|
+| Cog/Spur | Allocation past `scavengeThreshold` only sets `needGCFlag` and forces an interrupt check, and goes on into eden's reserve; the scavenge runs at the next interrupt check, a send or a backward jump. `forceInterruptCheck` sets `stackLimit` to all ones, so the stack check every frame build already makes is the poll (`src/spur64.cog/cointerp.c`). | Little: no primitive calls back into Smalltalk. |
+| Nova | `Vm::inner_execute` checks `agent.check_gc()` at the top of the instruction loop (`nova_vm/src/engine/bytecode/vm.rs`); an allocation only adds to `alloc_counter`. | `GcScope`/`NoGcScope` lifetimes and `Scoped` roots, because nearly every builtin can call JavaScript (`GARBAGE_COLLECTOR.md`). |
+| CPython ≥ 3.12 (not in `prior-art/`) | Moved its cycle collector from allocation to the eval breaker (gh-97922), because collecting at an allocation ran it where the VM was inconsistent. | Reference counts. |
+| piccolo on gc-arena (not in `prior-art/`) | Only outside `Arena::mutate`. The whole VM is stackless — a Rust callback returns a `Sequence` rather than calling Lua — so control returns outside `mutate` between steps. | Nothing to root: a generative `'gc` lifetime makes a pointer that outlives `mutate` a compile error. |
+| V8 (not in `prior-art/`) | Any allocation. | `Handle<T>` through a `HandleScope`, checked by the `gcmole` static analysis and by debug-only `DisallowGarbageCollection` scopes; now moving to direct handles, which require conservative stack scanning. |
+| HotSpot (not in `prior-art/`) | Safepoint polls between bytecodes, at compiled code's method entry and exit and non-counted back-edges, and allocation slow paths — precise because the JIT emits an oop map at each. | The VM's own C++ holds oops in `Handle`s under a `HandleMark`, with a debug-only `NoSafepointVerifier`. |
+| Primordial Soup | Any allocation: `Heap::AllocateNormal` scavenges when new space is full (`vm/heap.cc`). | An eight-slot `HandleScope` (`vm/heap.h`), by convention; no primitive calls back into Newspeak. |
+| SOMns | The JVM's safepoints. | Nothing: Java references are precise through the JIT's stack maps. |
+
+Allocation as a collection point is rejected. Every allocating Rust path — each
+native, the compiler, the image decoder with its maps of placeholders — would
+have to root what it holds across every allocation, which is the burden V8 and
+HotSpot's runtime carry with handles and verifiers; and a JIT would need a
+stack map at every inline allocation and could not keep a handle in a register
+across one. HotSpot affords it for Java code only because its JIT emits the
+maps, and ns-next's Rust code has none. What the run-loop placement costs is
+overshoot: a request made during a step waits for the next safepoint, so the
+heap can pass its threshold by what one step allocates. A large object going
+straight to a large-object space and a small reserve absorb that, as they do in
+Cog and Primordial Soup.
+
+The poll will be one compare of a flag the heap owns. If a measurement shows
+its price on the send path, Cog's trick is the fallback: a request lowers the
+limit `Interpreter::push` already compares the activation depth against, so a
+send pays nothing it does not pay today.
+
+### No Rust frame is live below a safepoint
+
+The run loop is re-entered from Rust today, on four paths: the host's `send`,
+`do:`, instantiation's initializer levels and clause messages, and the
+nested-class accessor's clause ([execution.md](execution.md), "What stays
+recursive"). A Rust frame below a nested run holds values across that run's
+safepoints, and rooting them is what Nova's `Scoped` values are for. ns-next
+removes the frames instead (step 2a): `do:`, instantiation and the accessor
+become trampoline steps with continuations, as `whileTrue:` already is, and
+Rust enters the loop only as its outermost caller, the host. At every
+safepoint the Rust stack then holds the run loop and the host and nothing
+else — piccolo's property — and what is left to root is only what the host
+keeps.
+
+### The brand: checked by the compiler, not by convention
+
+Step 2c. Every handle a collector can move — `ObjRef`, `ClassRef`, `FrameRef`,
+and so `Value` and every type that contains one (`ObjectData`, `ClassData`,
+`Frame`, `FrameKind`, `Continuation`, `Step`, `Signal`, `NewspeakError`) — will
+carry a lifetime `'gc`, invariant so that it can be neither shortened nor
+extended. The only way to obtain one is `Interpreter::enter`, which runs a
+closure generic over `'gc` — `for<'gc> FnOnce(&mut Mutator<'gc>) -> R`,
+gc-arena's `mutate` — whose result type cannot name `'gc`, so nothing branded
+leaves it. `Mutator<'gc>` offers everything a step does: heap access,
+allocation, the send decisions, the natives, the compiler, the image codec. It
+offers nothing that reaches a safepoint: `vm::run` and the safepoint exist only
+on `Interpreter`, outside every `enter`, and each instruction the loop executes
+is one `enter`. What the loop carries from one instruction to the next names
+no brand — the running `ActivationRef`, its code and its `pc` — and the value
+a run ends with leaves it as a host `Root` (below). Two mistakes then fail to
+compile rather than corrupt the heap under collection pressure: holding a
+handle across a safepoint, and a native re-entering the run loop.
+`compile_fail` doctests pin both, and a third: storing a branded handle in a
+host's own field.
+
+`ActivationRef` stays unbranded: the collector moves no stack entry, and its
+generation check already covers an index reused after a pop.
+
+The heap stores the brand-erased form. Rebranding a handle copies its `u32`,
+and a payload is copied into the arena when it is allocated; both conversions
+are private to `heap.rs`, and there is **no public `unbind`** — which is where
+Nova's discipline leaves a hole that its own documentation closes by
+convention ("NEVER unbind a `Value` into a local variable"). `heap.rs` stays
+free of `unsafe`. Should a payload conversion measure as a cost, the fallback is
+one audited lifetime cast of the kind Nova's `Bindable` makes, decided by that
+measurement.
+
+It costs nothing at run time: the lifetimes are gone after monomorphization,
+and `enter` is a call through a thin wrapper around `&mut Interpreter` that
+should inline away — a before-and-after measurement of all three benchmarks is
+a gate of step 2c. Its price is ergonomic, and that price is accepted. The
+stress mode below keeps running under it: the brand covers what Rust holds,
+the stress mode what the tracer knows.
+
+### Host roots
+
+A host keeps values across runs: `ns-next bench` sends to the same instance 22
+times, and `snapshot` encodes after its send. The heap will keep a root table
+the collector traces. A `Root` is an `Rc`-shared slot the table also holds —
+gc-arena's `DynamicRootSet` model — so a root whose last handle outside the
+table is dropped is swept at the next collection, and releasing one needs no
+access to the heap. `Interpreter::send`, `instantiate` and `image::load` take
+and answer `Root`s, a Newspeak error reaches the host with its receiver as a
+`Root`, and a host reads through `enter`; `heap_ref()` and `heap_mut()` go.
+Step 2b adds the table and converts the CLI and the tests to it, checked by the
+stress mode below; step 2c makes it the only way a host can hold a value.
+
+### What the collector traces
+
+- The bootstrap: `builtin_classes` and `platform_singleton`.
+- The activation stack: each entry's receiver, registers, `current_class`, the
+  `ClassRef` its `FrameKind` names, and the state its continuation carries.
+- Every arena record: an object's class and payload, a frame's fields.
+- `nested_in_progress`, whose entries become `ObjRef`s rather than the arena
+  indices they are today (step 2a).
+- The host root table.
+
+A reified frame is not a root of its own: it is reached through the closure
+that captured it, or through the live entry it is married to.
+
+**A handle lives only where the tracer can rewrite it in place**: in an arena
+record, in a stack entry, in a continuation that one stack entry owns, or in an
+interpreter root — never behind a shared `Rc`. `Rc<ClosureData>` breaks that
+today. Its `captured_frame` and `home` are `FrameRef`s, and the same `Rc` hangs
+off the closure object, off `FrameKind::Closure` on every activation of the
+closure, and off `WhileLoop.condition`. Step 2b splits it: the shared part keeps
+`params` and `code`, the two handles move into the closure object's own
+payload, and `FrameKind::Closure` and `WhileLoop` refer to the closure object.
+
+### Checking the roots before a collector exists: the stress mode
+
+Step 2b. The brand checks what Rust locals hold; it cannot check that the list
+above is complete. A debug-build stress mode, switched on by an environment
+variable so that the whole existing suite runs under it unchanged, requests a
+move at every safepoint. A move reorders both arenas by a permutation with no
+fixed point and rewrites every traced handle: a compacting collection that
+treats everything as live. Every handle also carries, in a debug build and
+beside the origin it already carries, the heap's move epoch, and every accessor
+compares the two, so a handle the tracer missed panics at its first read
+instead of perhaps printing a wrong answer. The permutation checks the
+forwarding; the epoch checks the completeness. It builds the tracing and
+forwarding the collector will need first, under the suite that pins every
+program's outcome. V8's `--stress-compaction`, SpiderMonkey's compacting GC
+zeal mode and HotSpot's `ScavengeALot` exist for the same reason.
+
+Step 2b's gates are the ordinary suite, the same suite with the stress mode on
+(`cargo test --workspace` under the variable), `run-corpus` under it with both
+lowerings, and a before-and-after measurement of the three benchmarks on a
+release build for the poll, which is the only part a release build contains.
+The stress run joins the commands `CLAUDE.md` requires.
+
+### Considered and rejected: Nova's scopes
+
+Nova's `GcScope`/`NoGcScope` with `Scoped` roots was this section's plan until
+2026-09-13. It roots what a Rust frame holds across a call that can collect, and
+it would have covered the four re-entry paths without removing them. It was
+rejected because the paths are to go anyway — core-library's rule that a native
+must not call back into Newspeak, and suspension and the debugger, need them
+gone ([core-library.md](core-library.md), [image-format.md](image-format.md),
+"Planned: suspend and resume") — and once they are gone Nova's machinery is
+left standing with nothing to root, its `unbind` a hole in the static guarantee.
+A `Scoped` value is also retained for the whole call, past its last use, which
+the brand never does. Engineering effort was not the constraint, so the brand is
+built directly rather than after it.
 
 ### Considered and rejected: conservative stack scanning
 
@@ -296,13 +456,14 @@ signal about how much of the difficulty is hidden.
 
 ### What this leaves for the collector itself
 
-With the arena in place and roots checked, the collector's own root set is two
-things: the bootstrap, standing in for upstream's object store, and the
-activation stack ([execution.md](execution.md), "Activations") — a contiguous,
-precisely typed pair of arrays rather than a pointer-chased chain of
-individually allocated frames. A reified frame is not a root of its own: it is
-reached through the closure that captured it, or through the live entry it is
-married to.
+With the arena in place and roots checked, the collector's own root set is the
+list in "What the collector traces" above. Most of it is two things: the
+bootstrap, standing in for upstream's object store, and the activation stack
+([execution.md](execution.md), "Activations") — a contiguous, precisely typed
+pair of arrays rather than a pointer-chased chain of individually allocated
+frames. Step 2b leaves the collector the safepoint, the tracing and the
+forwarding; what it adds is liveness, reclamation, the allocation counter that
+requests a collection, and the spaces — a nursery, a large-object space.
 
 Closure conversion ([execution.md](execution.md), "Planned: closure
 conversion") is scheduled directly before the collector for the collector's
@@ -428,6 +589,15 @@ its variables. After it, a surviving block holds exactly what it captured.
   because every re-application mints a fresh entry that nothing evicts. That is
   the same knot as `Mixin`'s lack of interior mutability; see
   [liveness-and-reflection.md](liveness-and-reflection.md).
+- **MMTk, or a collector built here.** `mmtk-core` is the one Rust collector
+  framework that moves objects — SemiSpace, Immix, GenImmix — and it has
+  bindings for OpenJDK, Julia and Ruby. It works on addresses
+  (`ObjectReference`), so adopting it would replace the arena of 32-bit indices,
+  and the runtime would supply the object model and root scanning through its
+  binding trait. The Rust crates that do not move (gc-arena, safe-gc, rust-gc,
+  the reference-counting ones) are no candidates, because `become:` needs
+  forwarding. The root discipline is the same under either answer; the
+  question is step 5's.
 
 ## Decisions
 
@@ -455,5 +625,18 @@ its variables. After it, a surviving block holds exactly what it captured.
   bounded — the `Mixin` declaration tree, capped by the parser — a ceiling is
   the right answer and `image/mixins.rs` uses one. Objects and activations need
   neither: an arena entry holds indices, so there is nothing to unwind.
-- **The root discipline is enforced by the type system**, not by convention, and
-  the ergonomic cost of that is accepted rather than traded away.
+- **A collection happens only at a safepoint in the run loop**, never inside an
+  allocation (decided 2026-09-13), so no allocating Rust path roots anything
+  and a JIT keeps its freedom across allocations. Cog, Nova, CPython and
+  piccolo put it there; V8 and HotSpot's runtime pay for the alternative with
+  handles and verifiers.
+- **No Rust frame is live below a safepoint**: nothing re-enters the run loop
+  from Rust, so there is nothing to root but what the host keeps. Chosen over
+  rooting those frames with Nova's `Scoped` values, because the re-entries are
+  to go anyway.
+- **The root discipline is enforced by the type system**, not by convention: a
+  generative lifetime brand, gc-arena's rather than Nova's scopes, with no
+  public `unbind`. The ergonomic cost is accepted rather than traded away.
+- **The roots' completeness is checked by moving everything**, in a debug-build
+  stress mode, before a collector exists, because the brand cannot see a handle
+  stored somewhere the tracer does not know about.

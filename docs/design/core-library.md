@@ -94,10 +94,15 @@ through `builtins::call_block`:
 | `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler for a literal block, with the native kept as the guarded fallback. The native is a trampoline step: it returns the block to activate instead of calling it, with a continuation for what `and:` and `or:` do with its value ([execution.md](execution.md), "The trampoline") |
 | `whileTrue:`, `whileFalse:` | The same, both halves: the native is a trampoline step that returns the condition block, and its continuation activates the body or ends the loop |
 | `value`, `value:`, … | A trampoline step that returns the block to activate: activating a closure is what the activation stack does. See [execution.md](execution.md) |
-| `do:` | Still a Rust loop that calls the block for each element and so re-enters the run loop; it is to be written in Newspeak |
+| `do:` | Still a Rust loop that calls the block for each element and so re-enters the run loop. Planned: a trampoline step with a continuation per element, as `whileTrue:` is, in step 2a of Milestone 4; written in Newspeak after the inline caches |
 
 So exactly one method still calls back, and it is the one that moves to
-Newspeak. Everything else in `builtins/` — `size`, `at:`, `class`, `hash`,
+Newspeak. It stops calling back before that: the root discipline needs no Rust
+frame to be live below a safepoint ([memory.md](memory.md), "No Rust frame is
+live below a safepoint"), so step 2a of Milestone 4 makes `do:` a trampoline
+step ([execution.md](execution.md), "Planned: no re-entry from Rust"). That
+removes the callback without writing any Newspeak, and it does not make the
+move harder, for the reason the end of this section gives. Everything else in `builtins/` — `size`, `at:`, `class`, `hash`,
 `printString`, the arithmetic, the comparisons, `asString`, `asSymbol` — is a
 leaf, and its computation stays in Rust.
 
@@ -136,7 +141,9 @@ binary measured in the same sitting ([execution.md](execution.md), "What the
 activation stack moved"), and the per-call lookup the inline caches remove is
 still in it. A regression today, so the move happens *after* the caches, not
 before. What Milestone 4 owes this section is only that it not deepen the
-investment in Rust callbacks while it is rewriting the code around them.
+investment in Rust callbacks while it is rewriting the code around them; step
+2a goes further and takes the last callback away, as a trampoline step rather
+than as Newspeak, which leaves this ordering as it is.
 
 A related item, same cause: native dispatch selects with `match
 selector.as_str()`, a string-comparison chain on the hot path that is not a
