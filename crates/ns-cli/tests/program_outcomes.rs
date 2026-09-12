@@ -277,3 +277,42 @@ fn a_superclass_clause_naming_the_wrong_factory_fails() {
         "Uncaught Newspeak error: the superclass clause of class Derived sends #new, but the primary factory of class Base is #withBase:\n",
     );
 }
+
+/// `and:`'s block value coerces by `truthy_arg`'s rule when the block is a
+/// variable, which takes the native: a non-Boolean is `false`.
+#[test]
+fn a_variable_and_block_coerces_its_value_to_a_boolean() {
+    assert_outcome(
+        "and-variable-coerces",
+        "Newspeak3\n'T'\nclass AndVar usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\t| three yes |\n\t\tthree := [3].\n\t\tyes := [true].\n\t\tp transcript show: (true and: three) printString; newLine.\n\t\tp transcript show: (true and: yes) printString; newLine.\n\t\tp transcript show: (false or: three) printString; newLine\n\t)\n) : ()\n",
+        0,
+        "false\ntrue\nfalse\n",
+        "",
+    );
+}
+
+/// A native loop whose condition goes non-Boolean after two rounds sends
+/// `mustBeBoolean` to it, after exactly two bodies.
+#[test]
+fn a_variable_while_condition_that_goes_non_boolean_fails_with_must_be_boolean() {
+    assert_outcome(
+        "while-variable-mbb",
+        "Newspeak3\n'T'\nclass WhileVarMbb usingPlatform: platform = Object new (\n\t| n ::= 0. |\n) (\n\tpublic main: p args: a = (\n\t\t| cond body |\n\t\tcond := [n < 2 ifTrue: [true] ifFalse: [n]].\n\t\tbody := [n := n + 1. p transcript show: n printString; newLine].\n\t\tcond whileTrue: body\n\t)\n) : ()\n",
+        1,
+        "1\n2\n",
+        "Uncaught Newspeak error: an object does not understand #mustBeBoolean\n",
+    );
+}
+
+/// A block with a parameter passed where the native activates it with none
+/// is the ordinary wrong-arity error.
+#[test]
+fn an_if_block_that_takes_an_argument_is_a_wrong_arity_error() {
+    assert_outcome(
+        "if-block-arity",
+        "Newspeak3\n'T'\nclass IfArity usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\t| b |\n\t\tb := [:x | x].\n\t\ttrue ifTrue: b\n\t)\n) : ()\n",
+        1,
+        "",
+        "Uncaught Newspeak error: wrong number of block arguments: block takes 1, got 0\n",
+    );
+}

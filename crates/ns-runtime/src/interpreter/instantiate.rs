@@ -409,6 +409,7 @@ impl Interpreter {
                     kind: FrameKind::Initializer(class),
                     slot_base,
                     code,
+                    then: Continuation::Deliver,
                 },
                 &factory_args,
                 temps,

@@ -1,7 +1,10 @@
 //! `Block` (closure) native methods -- `value`..`value:value:value:`,
-//! `numArgs`, and `whileTrue:`/`whileFalse:`.
+//! `numArgs`, and `whileTrue:`/`whileFalse:`. Each returns the block to
+//! activate as a step; the loops continue through `Continuation`s.
 
-use crate::interpreter::EvalResult;
+use std::rc::Rc;
+
+use crate::interpreter::{Signal, Step, StepArgs};
 use crate::types::*;
 use crate::{Interpreter, Symbol};
 
@@ -10,39 +13,78 @@ pub(crate) fn dispatch(
     receiver: Value,
     selector: Symbol,
     args: &[Value],
-) -> Option<EvalResult> {
+) -> Option<Result<Step, Signal>> {
     let Value::Obj(obj) = &receiver else {
         return None;
     };
-    let closure = interp.heap.closure_data(*obj)?;
-    match selector.as_str() {
-        "value" | "value:" | "value:value:" | "value:value:value:" => {
-            Some(super::call_block(interp, &receiver, args.to_vec()))
-        }
-        "numArgs" => Some(Ok(Value::SmallInt(closure.params.len() as i64))),
-        "whileTrue:" => Some(run_while(interp, &receiver, &args[0], true)),
-        "whileFalse:" => Some(run_while(interp, &receiver, &args[0], false)),
-        _ => None,
+    let closure = interp.heap_ref().closure_data(*obj)?;
+    Some(Ok(match selector.as_str() {
+        "value" | "value:" | "value:value:" | "value:value:value:" => Step::Block {
+            closure,
+            args: StepArgs::Send,
+            then: Continuation::Deliver,
+        },
+        "numArgs" => Step::Value(Value::SmallInt(closure.params.len() as i64)),
+        "whileTrue:" => condition_step(Rc::new(WhileLoop {
+            condition: closure,
+            body: args[0],
+            expect: true,
+        })),
+        "whileFalse:" => condition_step(Rc::new(WhileLoop {
+            condition: closure,
+            body: args[0],
+            expect: false,
+        })),
+        _ => return None,
+    }))
+}
+
+// `whileTrue:` (`expect == true`) / `whileFalse:` (`expect == false`):
+// evaluate the condition; while its value is `Bool(expect)`, evaluate the
+// body and repeat; a `Bool(!expect)` ends the loop with `nil`; a non-Boolean
+// condition value is sent `mustBeBoolean`, and that send's result is the
+// loop's value. The inlined loop reproduces exactly this on its guard-failure
+// path (`docs/design/compiler.md`, "Control-flow inlining"). Condition and
+// body replace each other on the activation stack: each one's continuation
+// says what runs next.
+
+fn condition_step(state: Rc<WhileLoop>) -> Step {
+    Step::Block {
+        closure: state.condition.clone(),
+        args: StepArgs::Empty,
+        then: Continuation::WhileCondition(state),
     }
 }
 
-/// `whileTrue:` (`expect == true`) / `whileFalse:` (`expect == false`):
-/// evaluate `cond`; while its value is `Bool(expect)`, evaluate `body` and
-/// repeat; a `Bool(!expect)` ends the loop with `nil`. A non-Boolean
-/// condition value is sent `mustBeBoolean` (an ordinary virtual send --
-/// `doesNotUnderstand:` by default) and that send's result is the loop
-/// expression's value. The bytecode compiler's inlined loop reproduces
-/// exactly this on its guard-failure path (`docs/design/compiler.md`,
-/// "Control-flow inlining"), so the two agree without re-running the
-/// condition.
-fn run_while(interp: &mut Interpreter, cond: &Value, body: &Value, expect: bool) -> EvalResult {
-    loop {
-        match super::call_block(interp, cond, vec![])? {
-            Value::Bool(b) if b == expect => {
-                super::call_block(interp, body, vec![])?;
-            }
-            Value::Bool(_) => return Ok(Value::Nil),
-            other => return interp.send(other, Symbol::MUST_BE_BOOLEAN, vec![]),
+/// The condition returned `value`.
+pub(crate) fn after_condition(
+    interp: &mut Interpreter,
+    state: Rc<WhileLoop>,
+    value: Value,
+) -> Result<Step, Signal> {
+    match value {
+        Value::Bool(b) if b == state.expect => Ok(body_step(interp, state)),
+        Value::Bool(_) => Ok(Step::Value(Value::Nil)),
+        other => interp.decide_send(other, Symbol::MUST_BE_BOOLEAN, &[]),
+    }
+}
+
+/// The body returned: run the condition again.
+pub(crate) fn after_body(_interp: &Interpreter, state: Rc<WhileLoop>) -> Step {
+    condition_step(state)
+}
+
+/// The body, activated -- or, when it is not a block, taken as its own value,
+/// so the condition runs again straight away.
+fn body_step(interp: &Interpreter, state: Rc<WhileLoop>) -> Step {
+    if let Value::Obj(obj) = state.body {
+        if let Some(body) = interp.heap_ref().closure_data(obj) {
+            return Step::Block {
+                closure: body,
+                args: StepArgs::Empty,
+                then: Continuation::WhileBody(state),
+            };
         }
     }
+    condition_step(state)
 }

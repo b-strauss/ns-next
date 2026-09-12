@@ -43,12 +43,20 @@ pub(crate) enum Step {
         defining_class: ClassRef,
         args: StepArgs,
     },
+    /// Activate `closure`, and do `then` with its value.
+    Block {
+        closure: Rc<ClosureData>,
+        args: StepArgs,
+        then: Continuation,
+    },
 }
 
 /// Where an activation's arguments come from.
 pub(crate) enum StepArgs {
     /// The send's own arguments.
     Send,
+    /// None: a control-flow native activates a block with no arguments.
+    Empty,
     /// Arguments the decision built: `doesNotUnderstand:`'s message.
     Owned(Vec<Value>),
 }
@@ -57,6 +65,7 @@ impl StepArgs {
     pub(crate) fn slice<'a>(&'a self, send: &'a [Value]) -> &'a [Value] {
         match self {
             StepArgs::Send => send,
+            StepArgs::Empty => &[],
             StepArgs::Owned(args) => args,
         }
     }
@@ -164,8 +173,7 @@ impl Interpreter {
     /// A send leaves the activation stack exactly as it found it: every
     /// activation it pushes is popped on every exit, error paths included.
     /// Checked here, at every host-initiated send (`ns-next run --send`,
-    /// `snapshot --send`, `load --send`) and the rare native send (e.g.
-    /// `block.rs`'s `mustBeBoolean` fallback) -- a leaked entry is otherwise
+    /// `snapshot --send`, `load --send`) -- a leaked entry is otherwise
     /// silent, a later activation sitting on top of a dead one's registers.
     /// A `Send*` the VM issues does not run through this check (`vm.rs`
     /// decides it and pushes what was decided itself, never through `send`),
@@ -424,11 +432,53 @@ impl Interpreter {
                         kind: FrameKind::Method(method),
                         slot_base: 0, // a method body never contains InitSlot
                         code,
+                        then: Continuation::Deliver,
                     },
                     args,
                     temps,
                 ))
             }
+            // A closure activation catches no return: its `^` targets its home.
+            Step::Block {
+                closure,
+                args,
+                then,
+            } => {
+                let args = args.slice(send_args);
+                check_block_arity(&self.heap, &closure, args.len())?;
+                let receiver = self.heap.frame_receiver(closure.captured_frame);
+                let current_class = self.heap.frame_current_class(closure.captured_frame);
+                let code = closure.code.clone();
+                let temps = (code.num_registers - code.num_args) as usize;
+                Ok(self.heap.push_activation(
+                    ActivationHeader {
+                        receiver,
+                        current_class,
+                        kind: FrameKind::Closure(closure),
+                        slot_base: 0, // a closure body never contains InitSlot
+                        code,
+                        then,
+                    },
+                    args,
+                    temps,
+                ))
+            }
+        }
+    }
+
+    /// What a control-flow native does once the block it activated has
+    /// returned `value`: the second half of the native, which the run loop
+    /// waits for instead of a Rust frame.
+    pub(crate) fn resume(&mut self, then: Continuation, value: Value) -> Result<Step, Signal> {
+        match then {
+            Continuation::Deliver => Ok(Step::Value(value)),
+            Continuation::Truthy => Ok(Step::Value(Value::Bool(crate::builtins::boolean::truthy(
+                value,
+            )))),
+            Continuation::WhileCondition(state) => {
+                crate::builtins::block::after_condition(self, state, value)
+            }
+            Continuation::WhileBody(state) => Ok(crate::builtins::block::after_body(self, state)),
         }
     }
 
@@ -458,50 +508,18 @@ impl Interpreter {
         )
     }
 
-    /// Invokes a closure with `args`. Called by `builtins::block` for `value`,
-    /// `value:`, `value:value:` and so on, and by every native that runs a
-    /// block argument, through `builtins::call_block`. It re-enters the run
-    /// loop (`reenter`), which pops the closure's activation, and everything
-    /// it activates, on every path out.
-    ///
-    /// The invoking activation is not passed: a live activation's sender is
-    /// the one below it on the activation stack.
+    /// Invokes a closure with `args`, from Rust. Only `do:` still does this --
+    /// every other native that runs a block returns it as a step instead
+    /// (`docs/design/execution.md`, "What stays recursive"). It re-enters the
+    /// run loop (`reenter`), which pops the closure's activation, and
+    /// everything it activates, on every path out.
     pub fn invoke_closure(&mut self, closure: &Rc<ClosureData>, args: Vec<Value>) -> EvalResult {
-        // A wrong argument count is refused before it can reach a register: the
-        // window is laid out from the arguments actually given, so too few would
-        // address registers past its end -- a panic -- and too many would
-        // silently shift every temporary. Never panic on this
-        // Newspeak-program-input path.
-        if args.len() != closure.params.len() {
-            let receiver = self.heap.frame_receiver(closure.captured_frame);
-            return Err(Signal::Error(NewspeakError {
-                selector: Symbol::VALUE,
-                receiver,
-                message: format!(
-                    "wrong number of block arguments: block takes {}, got {}",
-                    closure.params.len(),
-                    args.len()
-                ),
-            }));
-        }
-        let receiver = self.heap.frame_receiver(closure.captured_frame);
-        let current_class = self.heap.frame_current_class(closure.captured_frame);
-        let code = closure.code.clone();
-        let temps = (code.num_registers - code.num_args) as usize;
-        // A closure activation catches no return: its `^` targets its home.
-        self.reenter(|interp| {
-            Ok(interp.heap.push_activation(
-                ActivationHeader {
-                    receiver,
-                    current_class,
-                    kind: FrameKind::Closure(closure.clone()),
-                    slot_base: 0, // a closure body never contains InitSlot
-                    code,
-                },
-                &args,
-                temps,
-            ))
-        })
+        let step = Step::Block {
+            closure: closure.clone(),
+            args: StepArgs::Owned(args),
+            then: Continuation::Deliver,
+        };
+        self.reenter(|interp| interp.push_step(step, &[]))
     }
 
     /// Where a `^` in `act` returns to. A block returns from its home --
@@ -888,6 +906,25 @@ fn check_method_arity(
         message: format!(
             "wrong number of arguments: `{}` takes {}, got {}",
             method.selector, method.num_args, given
+        ),
+    }))
+}
+
+/// A block given a different number of arguments than it declares is refused
+/// before it can reach a register: the window is laid out from the arguments
+/// actually given, so too few would address registers past its end -- a panic
+/// -- and too many would silently shift every temporary.
+fn check_block_arity(heap: &Heap, closure: &ClosureData, given: usize) -> Result<(), Signal> {
+    if given == closure.params.len() {
+        return Ok(());
+    }
+    Err(Signal::Error(NewspeakError {
+        selector: Symbol::VALUE,
+        receiver: heap.frame_receiver(closure.captured_frame),
+        message: format!(
+            "wrong number of block arguments: block takes {}, got {}",
+            closure.params.len(),
+            given
         ),
     }))
 }

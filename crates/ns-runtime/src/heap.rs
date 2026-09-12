@@ -201,6 +201,14 @@ pub struct ActivationHeader {
     /// The body the activation runs. The run loop reads it back to resume a
     /// caller once the activation above it returns.
     pub code: std::rc::Rc<crate::bytecode::CompiledCode>,
+    /// What the run loop does with the activation's value when it returns.
+    pub then: Continuation,
+}
+
+/// What popping an activation hands back to the run loop.
+pub struct Popped {
+    /// The popped activation's continuation.
+    pub then: Continuation,
 }
 
 /// One live activation. Its registers are `values[base..]` up to the next
@@ -215,6 +223,7 @@ struct StackEntry {
     pc: usize,
     slot_base: usize,
     code: std::rc::Rc<crate::bytecode::CompiledCode>,
+    then: Continuation,
     /// The frame `Heap::reify` created for this activation, married to it
     /// until the entry is popped.
     reified: Option<FrameRef>,
@@ -1170,6 +1179,7 @@ impl Heap {
             pc: 0,
             slot_base: header.slot_base,
             code: header.code,
+            then: header.then,
             reified: None,
             #[cfg(debug_assertions)]
             generation,
@@ -1180,8 +1190,9 @@ impl Heap {
     /// Pops the top activation. If it was reified, its frame is divorced:
     /// the registers move into the frame, which is dead from then on --
     /// uncontinuable, and with no sender, as a returned Smalltalk context
-    /// has none.
-    pub fn pop_activation(&mut self, act: ActivationRef) {
+    /// has none. Answers the activation's continuation, which the run loop
+    /// applies to its value.
+    pub fn pop_activation(&mut self, act: ActivationRef) -> Popped {
         self.check_activation(act);
         debug_assert_eq!(
             act.index as usize + 1,
@@ -1206,6 +1217,7 @@ impl Heap {
             slot.live = None;
         }
         self.stack.values.truncate(base);
+        Popped { then: entry.then }
     }
 
     /// The arena frame for a live activation, created married to it on the
@@ -1737,6 +1749,7 @@ mod tests {
             kind: FrameKind::TopLevel,
             slot_base: 0,
             code: trivial_code(),
+            then: Continuation::Deliver,
         }
     }
 
@@ -2030,6 +2043,7 @@ mod tests {
                 kind: FrameKind::Closure(std::rc::Rc::new(closure_data)),
                 slot_base: 0,
                 code: trivial_code(),
+                then: Continuation::Deliver,
             },
             &[],
             0,

@@ -301,6 +301,7 @@ pub(super) fn run_clause_body(
                 kind,
                 slot_base: 0, // no clause body ever contains InitSlot
                 code,
+                then: Continuation::Deliver,
             },
             &args,
             temps,

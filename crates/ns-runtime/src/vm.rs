@@ -269,11 +269,34 @@ fn send(
     flow
 }
 
-/// `act` has returned `value`: pop it and hand the value on -- to the send in
-/// its caller, which resumes, or out of `run` when `act` was the activation
-/// `run` was given.
+/// `act` has returned `value`: pop it and do what its continuation says. A
+/// value -- the usual case -- goes to the send in the caller, which resumes,
+/// or out of `run` when there is no caller in this run; a control-flow
+/// native's continuation may instead activate the next block, which runs in
+/// the popped activation's place.
 fn finish(interp: &mut Interpreter, act: ActivationRef, value: Value, floor: usize) -> Flow {
-    interp.heap.pop_activation(act);
+    let popped = interp.heap.pop_activation(act);
+    let value = match popped.then {
+        Continuation::Deliver => value,
+        // A continuation's step never refers to a send's arguments
+        // (`StepArgs::Send` is only answered by a decision about a send, and
+        // the one a continuation makes -- `mustBeBoolean` -- has none), so
+        // `&[]` is always right here.
+        then => match interp.resume(then, value) {
+            Ok(Step::Value(v)) => v,
+            Ok(step) => {
+                return match interp.push_step(step, &[]) {
+                    Ok(next) => Flow::Switch {
+                        act: next,
+                        code: interp.heap.activation_code(next),
+                        pc: 0,
+                    },
+                    Err(signal) => unwind(interp, signal, floor),
+                };
+            }
+            Err(signal) => return unwind(interp, signal, floor),
+        },
+    };
     if interp.heap.activation_depth() == floor {
         return Flow::Exit(Ok(value));
     }

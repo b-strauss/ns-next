@@ -118,3 +118,38 @@ fn a_return_into_a_running_initializer_escapes_the_runs_below_it() {
         assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
     }
 }
+
+/// A recursion through blocks the optimized lowering does *not* inline --
+/// each held in a variable -- runs through the natives, and after this task
+/// none of them calls back into the loop, so fifty thousand levels fit on a
+/// test thread's stack under either lowering.
+const THROUGH_NATIVES: &str = "Newspeak3\n'T'\nclass N = Object new (\n) (\n\
+    \tpublic viaValue: n = ( | b | b := [:k | k = 0 ifTrue: [0] ifFalse: [b value: k - 1]]. ^b value: n )\n\
+    \tpublic viaIf: n = ( | t f | t := [0]. f := [viaIf: n - 1]. ^n = 0 ifTrue: t ifFalse: f )\n\
+    \tpublic viaOr: n = ( | rest | rest := [(viaOr: n - 1) = 0]. ^(n = 0 or: rest) ifTrue: [0] ifFalse: [1] )\n\
+    \tpublic viaWhile: n = ( | c b | c := [n > 0]. b := [^viaWhile: n - 1]. c whileTrue: b. ^0 )\n\
+    ) : ()";
+
+#[test]
+fn a_deep_recursion_through_native_block_activations_runs_on_the_activation_stack() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(THROUGH_NATIVES, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        for selector in ["viaValue:", "viaIf:", "viaOr:", "viaWhile:"] {
+            let result = expect_ok(
+                interp.send(
+                    instance,
+                    Symbol::intern(selector),
+                    vec![Value::SmallInt(40_000)],
+                ),
+                selector,
+            );
+            assert_eq!(small_int(result), 0, "{selector} under {lowering:?}");
+            assert_eq!(
+                interp.heap_ref().activation_depth(),
+                0,
+                "{selector} under {lowering:?}"
+            );
+        }
+    }
+}
