@@ -669,9 +669,9 @@ target by `ActivationRef`, but it still propagates through Rust `?` until the
 `invoke_method` that owns the target catches it; under the trampoline it becomes
 an unwind of the activation stack to the target entry. The semantics are
 unchanged, and this is the part of the change the golden outcomes have to be
-trusted hardest on: the reference lowering lands first, but it runs on the same
-VM, so it cannot cross-check the trampoline's unwind of `Signal::Return` — both
-ways of running a program would unwind through the same code.
+trusted hardest on: the reference lowering runs on the same VM, so it cannot
+cross-check the trampoline's unwind of `Signal::Return` — both ways of running
+a program would unwind through the same code.
 
 ### How other systems bound recursion depth
 

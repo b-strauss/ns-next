@@ -1352,7 +1352,7 @@ pub struct DecodeContext<'a> {
 pub struct DecodedGraph {
     pub roots: Vec<Value>,
     /// The largest identity hash of any decoded object -- `load` advances
-    /// the interpreter's allocation counter past it.
+    /// the interpreter's identity-hash counter past it.
     pub max_identity_hash: u32,
     /// The two decoded tables themselves, in image order. The roots reach
     /// most of them, but `verify_graph` must see *every* record -- a frame

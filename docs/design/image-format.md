@@ -190,9 +190,9 @@ temps, `pc` — an instruction index into the frame's compiled body — `sender`
 Frames and objects reference each other freely, so both tables are
 placeholder-allocated before either is filled.
 
-**Identity hashes are preserved verbatim.** After a load the allocation counter
-is advanced past the largest hash the image contained, so newly allocated objects
-never collide with loaded ones. A record's 0 means "not yet assigned" and is
+**Identity hashes are preserved verbatim.** After a load the identity-hash
+counter is advanced past the largest hash the image contained, so a hash assigned
+afterwards never collides with a loaded one. A record's 0 means "not yet assigned" and is
 preserved the same way ([object-model.md](object-model.md)).
 
 ## How frames actually get into an image

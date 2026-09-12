@@ -5,7 +5,8 @@ resolver, bytecode compiler and register VM, and a versioned image format.
 Rust 1.98.0, edition 2021, three crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`.
-- `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`),
+- `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
+  with the reference lowering it is checked against in `compiler/reference.rs`),
   the VM (`vm.rs`) and the send machinery it calls (`interpreter/`), core library
   (`builtins/`), image format (`image/`). Objects live in an arena owned by one
   `Heap` (`heap.rs`) and are addressed by 32-bit handles; activations live on an

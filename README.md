@@ -10,8 +10,9 @@ world can be serialized to a versioned image and loaded back.
 ## Status
 
 Working today: the full frontend, Newspeak's real name resolution, nested classes and
-mixins with a class object per enclosing instance, the bytecode compiler and VM, and a
-source-free image format. Every `.ns` file in the vendored corpus parses but one.
+mixins with a class object per enclosing instance, the bytecode compiler and VM, a
+second, deliberately naive lowering the compiler is checked against, and a source-free
+image format. Every `.ns` file in the vendored corpus parses but one.
 
 Not built yet, and the limits worth knowing before trying it on real code:
 
@@ -63,8 +64,10 @@ redistributable on the machine that runs it.
 
 Every fixture is checked against its recorded `.expected` stdout and an empty stderr,
 and `crates/ns-cli/tests/program_outcomes.rs` pins the exit status, stdout and stderr
-of programs that cannot be fixtures, byte for byte. The corpus is a vendored set of real
-Newspeak modules, kept as a non-regression gate for the parser.
+of programs that cannot be fixtures, byte for byte — each under both lowerings, the
+optimized one and the reference lowering it is checked against. The corpus is a
+vendored set of real Newspeak modules, kept as a non-regression gate for the parser;
+the six on `corpus/runnable.toml` also run end to end, under both lowerings.
 
 ## Usage
 
@@ -74,6 +77,8 @@ cargo run -p ns-cli -- run tests-fixtures/hello.ns
 ```
 
 The entry selector defaults to `main:args:`; `--send <selector>` picks another one.
+`--lowering reference` compiles with the naive reference lowering instead of the
+optimized one; `run`, `snapshot`, `build` and `disasm` take it.
 
 ```bash
 # print one compiled body; nothing is instantiated or run. Takes a .ns file,

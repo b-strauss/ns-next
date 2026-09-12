@@ -1,6 +1,6 @@
 # Compiler — AST to bytecode
 
-> **Status:** built.
+> **Status:** built, including the reference lowering it is checked against.
 > **Code:** `crates/ns-runtime/src/bytecode.rs` (the instruction set and the
 > compiled-code shapes), `compiler/mod.rs` (entry points), `compiler/lower.rs`
 > (lowering, register allocation, the scope stack), `compiler/control_flow.rs`
@@ -442,11 +442,10 @@ refuses it for an artifact, which carries the code it was built with.
   exercises "Compilation cannot fail" and the reference lowering's shape
   assertions over the whole corpus rather than over the six modules that run.
 
-Suite running time (`cargo test --workspace`, debug build): 6.43 s before this
-task, 9.09 s after (`target/c-measurements.md`, "Task 4"). The increase is
-every fixture, golden outcome and build/load pair now running twice, and
-`run-corpus`'s rows running four ways instead of two -- more process spawns,
-not a slower lowering.
+Running every program under both lowerings took the suite (`cargo test
+--workspace`, debug build) from 6.43 s to 9.09 s: every fixture, golden outcome
+and build/load pair runs twice, and `run-corpus`'s rows four ways instead of
+two — more process spawns and compiles, not a slower lowering.
 
 While every program the suites run has a recorded answer, "both produce the
 recorded answer" is the comparison. Comparing the two runs directly with each
@@ -463,15 +462,15 @@ Nothing the reference lowering does differently may be observable. Two things
 were, and each is settled in the design of the aspect it belongs to rather than
 by exempting it from the comparison:
 
-- **The identity hash.** `hash` answers an allocation counter, and the reference
-  lowering allocates a closure for every `ifTrue:` the optimized one inlines, so
-  every later object's hash would shift. Identity hashes are lazily assigned,
-  as in Cog/Spur (`hashBitsOf:`, which calls `newHashBitsOf:` when the bits are
-  0) and Primordial Soup (`Object_identityHash`, which sets `header_hash` when it
-  is 0): an object draws its number from the counter when it is first asked for
-  one. That makes allocation order unobservable in general, which closure
-  conversion and a JIT's escape analysis need as well. See
-  [object-model.md](object-model.md).
+- **The identity hash.** Were it drawn from its counter at allocation, the
+  closure the reference lowering allocates for every `ifTrue:` the optimized one
+  inlines would shift every later object's hash. Identity hashes are lazily
+  assigned, as in Cog/Spur (`hashBitsOf:`, which calls `newHashBitsOf:` when the
+  bits are 0) and Primordial Soup (`Object_identityHash`, which sets
+  `header_hash` when it is 0): an object draws its number from the counter when
+  it is first asked for one. That makes allocation order unobservable in
+  general, which closure conversion and a JIT's escape analysis need as well.
+  See [object-model.md](object-model.md).
 - **The recursion-depth limit**, below.
 
 Everything else was checked and agrees: all eight inlined forms exist as natives
@@ -481,8 +480,9 @@ a block the optimized lowering inlines is a `Return` there and a
 `NonLocalReturn` that `invoke_method` catches here, with the same result, and
 `cannotReturn` and the initializer gap behave alike; and a real block nested
 inside such a block has one more frame in its chain here, which holds no
-variables, since the inlining gate admits none, and the same `home`. A snapshot's bytes differ by construction, because its code table
-holds different code: what is compared is program outcomes, never artifacts.
+variables, since the inlining gate admits none, and the same `home`. A
+snapshot's bytes differ by construction, because its code table holds different
+code: what is compared is program outcomes, never artifacts.
 
 ### How the limit counts
 
@@ -541,17 +541,14 @@ native stack than under the optimized one, and a deep enough recursion aborts
 sooner. The suites recurse at most six levels
 (`tests-fixtures/nonlocal_return_depth.ns`), well inside either.
 
-### Order of work
+### Status
 
-1. **Lazy identity hashes** — done, a behaviour change of its own, measured
-   because it touches allocation. It also removes the discarded `Object`
-   allocation in `build_builtin_classes`, which was kept only because it
-   shifted every later hash.
-2. **`compiler/reference.rs`, `Lowering` and the CLI switch.** — done. The
-   optimized path is untouched, which byte identity of every `build` and
-   `snapshot` artifact against the parent commit proves.
-3. **The harness** — done, with the suite's running time recorded before and after.
-4. **The documents**: this section becomes a description of what exists.
+Built, in the four commits of its
+[plan](../superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md):
+lazy identity hashes, `compiler/reference.rs` with `Lowering`, the CLI switch,
+and the harness. Every recorded program answers alike under both lowerings.
+What "How the limit counts" needs — `SendInlinable` and the depth counter that
+is its only consumer — arrives with the trampoline.
 
 ## Follow-up: entry points that reach a class object only to find its mixin
 
@@ -597,7 +594,7 @@ signatures is a design change to the image module's interface, not a migration.
   is not a format break.
 - **The reference lowering is an independent module, not a mode of `Lowerer`**,
   so that it checks everything a lowering decides and no optimization can switch
-  it off by forgetting a guard. Planned.
+  it off by forgetting a guard.
 - **The recursion-depth limit exempts exactly the activations inlining
   removes**, marked by `SendInlinable`, so that it counts the same under both
   lowerings and the oracle compares an overflow too. Planned.

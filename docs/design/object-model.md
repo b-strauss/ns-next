@@ -37,8 +37,8 @@ snapshot; see [memory.md](memory.md). Assigning it lazily, as Cog/Spur
 (`hashBitsOf:`) and Primordial Soup (`Object_identityHash`) do, keeps
 allocation order unobservable: the reference lowering allocates closures the
 optimized one does not, and closure conversion and a JIT's escape analysis will
-add and remove allocations the same way, so a hash assigned at allocation would
-change a program's `hash` values under any of them. The encoder writes the
+add and remove allocations the same way, so a hash drawn when the object is
+allocated would change a program's `hash` values under any of them. The encoder writes the
 stored value without assigning one, and the decoder keeps every value, 0
 included.
 
