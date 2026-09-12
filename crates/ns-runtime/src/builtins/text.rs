@@ -40,7 +40,7 @@ fn quote_string(s: &str) -> String {
     out
 }
 
-pub fn dispatch_string(
+pub(crate) fn dispatch_string(
     interp: &mut Interpreter,
     receiver: Value,
     selector: Symbol,
@@ -72,7 +72,7 @@ pub fn dispatch_string(
     }
 }
 
-pub fn dispatch_symbol(
+pub(crate) fn dispatch_symbol(
     interp: &mut Interpreter,
     receiver: Value,
     selector: Symbol,
@@ -95,7 +95,7 @@ pub fn dispatch_symbol(
     }
 }
 
-pub fn dispatch_character(
+pub(crate) fn dispatch_character(
     interp: &mut Interpreter,
     receiver: Value,
     selector: Symbol,

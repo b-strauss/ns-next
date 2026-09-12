@@ -4,7 +4,7 @@
 use crate::types::*;
 use crate::{Heap, Interpreter, Symbol};
 
-pub fn dispatch(
+pub(crate) fn dispatch(
     interp: &mut Interpreter,
     receiver: Value,
     selector: Symbol,

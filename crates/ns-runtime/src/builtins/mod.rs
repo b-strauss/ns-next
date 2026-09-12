@@ -8,7 +8,7 @@ pub mod numbers;
 pub mod object_class;
 pub mod text;
 
-use crate::interpreter::{EvalResult, Signal};
+use crate::interpreter::{EvalResult, Signal, Step};
 use crate::types::*;
 use crate::{platform, Interpreter, Symbol};
 
@@ -32,22 +32,27 @@ use crate::{platform, Interpreter, Symbol};
 /// match `dispatch_common`'s even though neither has a directly-block-
 /// invoking arm of its own), and `block::dispatch` (`value`/`value:`/...).
 /// The rest (`object_class`, `numbers`, `text::*`, `platform`) never invoke
-/// a block and keep their original `Result<Value, NewspeakError>` signature,
-/// wrapped into `EvalResult` right here at the single point where every arm
-/// of this function's own `match` must agree on one type.
-pub fn dispatch_native(
+/// a block and keep their original `Result<Value, NewspeakError>` signature.
+/// Every arm's result is wrapped into a `Step` right here, at the single
+/// point where this function's own `match` must agree on one type -- a
+/// native's own body never changes: it still answers a plain value, which
+/// `value_step`/`wrap_error` turn into `Step::Value`
+/// (`docs/design/execution.md`, "The trampoline (1b)"). No native here
+/// answers `Step::Method` yet; the control-flow natives that will are a
+/// later task.
+pub(crate) fn dispatch_native(
     interp: &mut Interpreter,
     kind: BuiltinClass,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
-) -> Option<EvalResult> {
+) -> Option<Result<Step, Signal>> {
     match kind {
         BuiltinClass::Object => {
             object_class::dispatch(interp, receiver, selector, args).map(wrap_error)
         }
         BuiltinClass::Boolean | BuiltinClass::True | BuiltinClass::False => {
-            boolean::dispatch(interp, receiver, selector, args)
+            boolean::dispatch(interp, receiver, selector, args).map(value_step)
         }
         BuiltinClass::Integer => {
             numbers::dispatch_integer(interp, receiver, selector, args).map(wrap_error)
@@ -64,11 +69,14 @@ pub fn dispatch_native(
         BuiltinClass::Character => {
             text::dispatch_character(interp, receiver, selector, args).map(wrap_error)
         }
-        BuiltinClass::Array => collections::dispatch_array(interp, receiver, selector, args),
+        BuiltinClass::Array => {
+            collections::dispatch_array(interp, receiver, selector, args).map(value_step)
+        }
         BuiltinClass::OrderedCollection => {
             collections::dispatch_ordered_collection(interp, receiver, selector, args)
+                .map(value_step)
         }
-        BuiltinClass::Block => block::dispatch(interp, receiver, selector, args),
+        BuiltinClass::Block => block::dispatch(interp, receiver, selector, args).map(value_step),
         BuiltinClass::Platform => {
             platform::dispatch(interp, receiver, selector, args).map(wrap_error)
         }
@@ -76,11 +84,16 @@ pub fn dispatch_native(
     }
 }
 
+/// A native's value as the step it is.
+fn value_step(result: EvalResult) -> Result<Step, Signal> {
+    result.map(Step::Value)
+}
+
 /// Lifts a plain-`NewspeakError`-returning native dispatch fn's result into
-/// `EvalResult`, for the (majority of) `BuiltinClass` arms above that never
+/// the step it is, for the (majority of) `BuiltinClass` arms above that never
 /// invoke a block and so can never actually produce a `Signal::Return`.
-fn wrap_error(result: Result<Value, NewspeakError>) -> EvalResult {
-    result.map_err(Signal::Error)
+fn wrap_error(result: Result<Value, NewspeakError>) -> Result<Step, Signal> {
+    result.map(Step::Value).map_err(Signal::Error)
 }
 
 /// Invokes a block-shaped `Value` with `args` -- the single shared

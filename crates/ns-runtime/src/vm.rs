@@ -1,11 +1,12 @@
 //! The register VM's run loop -- and nothing else. `run_code` is a `match`
-//! over `Instr`; every `Send*` calls straight back into `interpreter/`'s
-//! send machinery (`Interpreter::send`, `dispatch_lexical_send`,
-//! `dispatch_super_send`), which re-enters `run_code` for any
-//! user-defined target. No dispatch logic, no `doesNotUnderstand:`, no
+//! over `Instr`; every `Send*` first asks `interpreter/`'s send machinery
+//! (`Interpreter::decide_send`, `decide_lexical_send`, `decide_super_send`)
+//! for a `Step` -- what to run, decided but not yet running -- and only then
+//! runs it, through `Interpreter::run_step`, which re-enters `run_code` for
+//! any user-defined target. No dispatch logic, no `doesNotUnderstand:`, no
 //! native dispatch, and no error text of its own live here -- dispatch
 //! lives in one place, which the reference lowering and a JIT will share.
-//! See `docs/design/execution.md`, "The VM".
+//! See `docs/design/execution.md`, "The VM" and "The trampoline (1b)".
 
 use std::rc::Rc;
 
@@ -17,12 +18,12 @@ use crate::interpreter::literals::{
 use crate::interpreter::locals::{
     home_of, read_local, read_outer_local, store_instance_field, write_local, write_outer_local,
 };
-use crate::interpreter::sends::{dispatch_lexical_send, dispatch_super_send};
+use crate::interpreter::sends::{decide_lexical_send, decide_super_send};
 use crate::interpreter::{EvalResult, Interpreter};
 use crate::types::*;
 
 /// Runs `code` on the live activation `act` until a terminating
-/// instruction. `act` was pushed by the send machinery (`invoke_method`,
+/// instruction. `act` was pushed by the send machinery (`run_step`,
 /// `invoke_closure`, `instantiate` or `nested::run_clause_body`) with
 /// registers for `code.num_registers`, and that same caller pops it.
 ///
@@ -96,7 +97,8 @@ pub fn run_code(
                 let receiver = read_local(&interp.heap, act, *receiver_reg);
                 let args = collect(&interp.heap, act, arg_regs);
                 interp.heap.set_activation_pc(act, pc);
-                let result = interp.send(receiver, *selector, args)?;
+                let step = interp.decide_send(receiver, *selector, &args)?;
+                let result = interp.run_step(step, &args)?;
                 write_local(&mut interp.heap, act, *dst, result);
             }
             Instr::SendLexical {
@@ -108,7 +110,8 @@ pub fn run_code(
             } => {
                 let args = collect(&interp.heap, act, arg_regs);
                 interp.heap.set_activation_pc(act, pc);
-                let result = dispatch_lexical_send(interp, act, *depth, *selector, args)?;
+                let step = decide_lexical_send(interp, act, *depth, *selector, &args)?;
+                let result = interp.run_step(step, &args)?;
                 write_local(&mut interp.heap, act, *dst, result);
             }
             Instr::SendSuper {
@@ -119,7 +122,8 @@ pub fn run_code(
             } => {
                 let args = collect(&interp.heap, act, arg_regs);
                 interp.heap.set_activation_pc(act, pc);
-                let result = dispatch_super_send(interp, act, *selector, args)?;
+                let step = decide_super_send(interp, act, *selector, &args)?;
+                let result = interp.run_step(step, &args)?;
                 write_local(&mut interp.heap, act, *dst, result);
             }
             Instr::MakeClosure {
