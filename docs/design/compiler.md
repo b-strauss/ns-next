@@ -419,11 +419,16 @@ is lowered twice.
     `lower.rs`.
 
 Its `finish` checks that shape in a debug build, which is what the test suite
-runs (`check_shape`): no branch instruction, since only inlining emits one, and
-every scratch register written by exactly one instruction. The two ceilings —
-at most `u16::MAX` registers and `u16::MAX` instructions in a body — are
-checked in every build (`fresh`, `emit_send`), because an index that wrapped
-would be silently wrong code.
+runs (`check_shape`): no branch instruction, since only inlining emits one;
+every scratch register written by exactly one instruction; a named local
+written only by `StoreLocal`; and a named local read only by `Move`, every other
+operand being a scratch register — rule 3, the property that keeps a value from
+changing under its consumer. The ceilings — at most `u16::MAX` temporaries,
+block parameters, named locals, registers and instructions in a body — are
+checked in every build (`Body::new` and its callers, `fresh`, `emit_send`),
+because an index that wrapped would be silently wrong code. A method's or a
+factory's parameter count comes from the shared `num_args_of` and
+`factory_num_args`, whose narrowing rests on the parser's bound instead.
 
 ### Selecting it
 

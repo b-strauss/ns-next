@@ -24,7 +24,8 @@ pub(crate) fn compile_method(method: &ast::MethodDecl, bindings: &Bindings) -> C
     let mut body = Body::new(
         CodeKind::Method,
         super::num_args_of(&method.pattern),
-        method.body.temps.len() as u16,
+        u16::try_from(method.body.temps.len())
+            .expect("internal: more than u16::MAX temporaries in one method"),
         bindings,
     );
     body.statements_and_end(&method.body.stmts);
@@ -112,7 +113,11 @@ struct Body<'a> {
 
 impl<'a> Body<'a> {
     fn new(kind: CodeKind, num_args: u16, num_temps: u16, bindings: &'a Bindings) -> Self {
-        let first_scratch = num_args + num_temps;
+        // Checked in every build, like `fresh`: a wrapped sum would place
+        // scratch registers on top of the named locals.
+        let first_scratch = num_args
+            .checked_add(num_temps)
+            .expect("internal: more than u16::MAX named locals in one body");
         Body {
             bindings,
             kind,
@@ -379,8 +384,10 @@ impl<'a> Body<'a> {
             .collect();
         let mut inner = Body::new(
             CodeKind::Block,
-            params.len() as u16,
-            block.body.temps.len() as u16,
+            u16::try_from(params.len())
+                .expect("internal: more than u16::MAX parameters in one block"),
+            u16::try_from(block.body.temps.len())
+                .expect("internal: more than u16::MAX temporaries in one block"),
             self.bindings,
         );
         inner.statements_and_end(&block.body.stmts);
@@ -426,10 +433,14 @@ impl<'a> Body<'a> {
 
 /// The shape the reference lowering promises (`docs/design/compiler.md`,
 /// "What it emits"), checked on every body in a debug build, which is what
-/// the test suite runs: no branch, since only inlining emits one, and every
-/// register above the named locals written by exactly one instruction. A
-/// named local is written only by `StoreLocal`, which `destination` does not
-/// count.
+/// the test suite runs: no branch, since only inlining emits one; every
+/// register above the named locals written by exactly one instruction; a
+/// named local written only by `StoreLocal`, which `destination` does not
+/// count; and a named local read only by `Move`, every other operand being a
+/// scratch register. The last is rule 3, "every read of a local is copied",
+/// which is what keeps a value from changing under its consumer -- the
+/// property the optimized lowering has to earn with copies of its own
+/// ("The value-register invariant").
 fn check_shape(instrs: &[Instr], first_scratch: u16) {
     let mut written = HashSet::new();
     for instr in instrs {
@@ -453,6 +464,58 @@ fn check_shape(instrs: &[Instr], first_scratch: u16) {
                 "internal: the reference lowering wrote r{dst} twice"
             );
         }
+        if let Instr::StoreLocal { slot, .. } = instr {
+            assert!(
+                *slot < first_scratch,
+                "internal: the reference lowering stored into scratch register r{slot}: {instr:?}"
+            );
+        }
+        for operand in operands(instr) {
+            match instr {
+                Instr::Move { .. } => assert!(
+                    operand < first_scratch,
+                    "internal: the reference lowering copied scratch register r{operand}: {instr:?}"
+                ),
+                _ => assert!(
+                    operand >= first_scratch,
+                    "internal: the reference lowering read named local r{operand} without copying it: {instr:?}"
+                ),
+            }
+        }
+    }
+}
+
+/// The registers of this body that `instr` reads. Exhaustive on purpose, like
+/// `destination`: a new instruction has to decide here what it reads. The
+/// `index` of an outer-local access names a register of another frame, so it
+/// is not one of them.
+fn operands(instr: &Instr) -> Vec<u16> {
+    match instr {
+        Instr::Move { src, .. }
+        | Instr::StoreLocal { src, .. }
+        | Instr::StoreOuterLocal { src, .. }
+        | Instr::InitSlot { src, .. } => vec![*src],
+        Instr::Return { reg }
+        | Instr::ImplicitReturn { reg }
+        | Instr::NonLocalReturn { reg }
+        | Instr::JumpIfNotBoolean { reg, .. }
+        | Instr::BranchIfFalse { reg, .. }
+        | Instr::BranchIfTrue { reg, .. } => vec![*reg],
+        Instr::SendPublic {
+            receiver_reg,
+            arg_regs,
+            ..
+        } => std::iter::once(*receiver_reg)
+            .chain(arg_regs.iter().copied())
+            .collect(),
+        Instr::SendLexical { arg_regs, .. } | Instr::SendSuper { arg_regs, .. } => arg_regs.clone(),
+        Instr::MakeArray { elem_regs, .. } => elem_regs.clone(),
+        Instr::LoadLiteral { .. }
+        | Instr::LoadSelf { .. }
+        | Instr::LoadBuiltinClass { .. }
+        | Instr::LoadOuterLocal { .. }
+        | Instr::MakeClosure { .. }
+        | Instr::Jump { .. } => vec![],
     }
 }
 
@@ -695,6 +758,47 @@ mod tests {
                 send("bar", 1, vec![], 3, 2),
                 Instr::Return { reg: 3 },
             ]
+        );
+    }
+
+    /// `check_shape` itself: each rule refuses a body that breaks it. One
+    /// named local (`r0`), so `r1` is the first scratch register.
+    #[test]
+    #[should_panic(expected = "read named local r0 without copying it")]
+    fn the_shape_check_refuses_a_named_local_read_other_than_by_move() {
+        check_shape(&[Instr::Return { reg: 0 }], 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "copied scratch register r1")]
+    fn the_shape_check_refuses_a_move_out_of_a_scratch_register() {
+        check_shape(
+            &[Instr::LoadSelf { dst: 1 }, Instr::Move { dst: 2, src: 1 }],
+            1,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "stored into scratch register r1")]
+    fn the_shape_check_refuses_a_store_into_a_scratch_register() {
+        check_shape(
+            &[
+                Instr::LoadSelf { dst: 2 },
+                Instr::StoreLocal { src: 2, slot: 1 },
+            ],
+            1,
+        );
+    }
+
+    #[test]
+    fn the_shape_check_accepts_a_copied_read_of_a_named_local() {
+        check_shape(
+            &[
+                Instr::Move { dst: 1, src: 0 },
+                Instr::StoreLocal { src: 1, slot: 0 },
+                Instr::Return { reg: 1 },
+            ],
+            1,
         );
     }
 
