@@ -14,7 +14,7 @@ method main:args: (args 2, registers 21)
         block block (args 0, registers 1)
            0   stmt 0  LoadLiteral r0, 'fell back'
            1        -  ImplicitReturn r0
-   5   stmt 0  SendPublic r7 <- r4 #ifTrue:ifFalse: (r5, r6) @5
+   5   stmt 0  SendInlinable r7 <- r4 #ifTrue:ifFalse: (r5, r6) @5
    6   stmt 0  SendPublic r8 <- r3 #show: (r7) @6
    7   stmt 0  SendPublic r9 <- r3 #newLine () @7
    8   stmt 1  Move r10, r0
@@ -30,7 +30,7 @@ method main:args: (args 2, registers 21)
         block block (args 0, registers 1)
            0   stmt 0  LoadLiteral r0, '?'
            1        -  ImplicitReturn r0
-  15   stmt 1  SendPublic r17 <- r14 #ifTrue:ifFalse: (r15, r16) @15
+  15   stmt 1  SendInlinable r17 <- r14 #ifTrue:ifFalse: (r15, r16) @15
   16   stmt 1  SendPublic r18 <- r11 #show: (r17) @16
   17   stmt 1  SendPublic r19 <- r11 #newLine () @17
   18        -  LoadSelf r20

@@ -38,6 +38,7 @@ fn instruction_tags_are_fixed() {
     assert_eq!(OP_JUMP_IF_NOT_BOOLEAN, 17);
     assert_eq!(OP_BRANCH_IF_FALSE, 18);
     assert_eq!(OP_BRANCH_IF_TRUE, 19);
+    assert_eq!(OP_SEND_INLINABLE, 20);
 }
 
 #[test]
@@ -81,6 +82,7 @@ fn no_two_tags_share_a_number() {
         OP_JUMP_IF_NOT_BOOLEAN,
         OP_BRANCH_IF_FALSE,
         OP_BRANCH_IF_TRUE,
+        OP_SEND_INLINABLE,
     ];
     let mut sorted = ops;
     sorted.sort_unstable();

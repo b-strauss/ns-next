@@ -424,6 +424,20 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symb
             w.write_u16(*dst);
             encode_call_site(w, *call_site);
         }
+        Instr::SendInlinable {
+            selector,
+            receiver_reg,
+            arg_regs,
+            dst,
+            call_site,
+        } => {
+            w.write_u8(OP_SEND_INLINABLE);
+            w.write_u32(symbols.intern(selector.as_str()));
+            w.write_u16(*receiver_reg);
+            encode_regs(w, arg_regs);
+            w.write_u16(*dst);
+            encode_call_site(w, *call_site);
+        }
         Instr::SendSuper {
             selector,
             arg_regs,

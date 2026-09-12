@@ -925,6 +925,12 @@ fn own_registers(instr: &Instr) -> Vec<u16> {
             arg_regs,
             dst,
             ..
+        }
+        | Instr::SendInlinable {
+            receiver_reg,
+            arg_regs,
+            dst,
+            ..
         } => {
             let mut regs = arg_regs.clone();
             regs.push(*receiver_reg);
@@ -965,6 +971,7 @@ fn jump_target(instr: &Instr) -> Option<u32> {
         | Instr::StoreOuterLocal { .. }
         | Instr::SendLexical { .. }
         | Instr::SendPublic { .. }
+        | Instr::SendInlinable { .. }
         | Instr::SendSuper { .. }
         | Instr::MakeClosure { .. }
         | Instr::MakeArray { .. }
@@ -1179,6 +1186,19 @@ fn decode_instr(
             let arg_regs = decode_regs(r)?;
             let dst = r.read_u16()?;
             Instr::SendPublic {
+                selector,
+                receiver_reg,
+                arg_regs,
+                dst,
+                call_site: decode_call_site(r)?,
+            }
+        }
+        OP_SEND_INLINABLE => {
+            let selector = decode_symbol(r, symbols)?;
+            let receiver_reg = r.read_u16()?;
+            let arg_regs = decode_regs(r)?;
+            let dst = r.read_u16()?;
+            Instr::SendInlinable {
                 selector,
                 receiver_reg,
                 arg_regs,

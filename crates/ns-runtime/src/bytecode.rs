@@ -112,6 +112,19 @@ pub enum Instr {
         dst: u16,
         call_site: CallSite,
     },
+    /// An ordinary explicit-receiver send, exactly `SendPublic`, emitted only
+    /// by the reference lowering and only for the sends the optimized lowering
+    /// inlines (`control_flow::recognize`). The mark is for the depth count: a
+    /// block a builtin control-flow native activates for it is not counted,
+    /// because the optimized lowering never activates that block at all
+    /// (`docs/design/compiler.md`, "How the limit counts").
+    SendInlinable {
+        selector: Symbol,
+        receiver_reg: u16,
+        arg_regs: Vec<u16>,
+        dst: u16,
+        call_site: CallSite,
+    },
     /// `Binding::SuperSend`: receiver is `self`, lookup starts at the
     /// current activation's `current_class`'s superclass.
     SendSuper {
@@ -321,6 +334,17 @@ fn format_instr(instr: &Instr) -> String {
             call_site,
         } => format!(
             "SendPublic r{dst} <- r{receiver_reg} #{selector} ({}) @{}",
+            regs(arg_regs),
+            call_site.call_site_id
+        ),
+        Instr::SendInlinable {
+            selector,
+            receiver_reg,
+            arg_regs,
+            dst,
+            call_site,
+        } => format!(
+            "SendInlinable r{dst} <- r{receiver_reg} #{selector} ({}) @{}",
             regs(arg_regs),
             call_site.call_site_id
         ),

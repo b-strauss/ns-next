@@ -373,6 +373,13 @@ fn every_instr_once() -> CompiledCode {
                 dst: 6,
                 call_site: cs,
             },
+            Instr::SendInlinable {
+                selector: Symbol::intern("+"),
+                receiver_reg: 1,
+                arg_regs: vec![2],
+                dst: 6,
+                call_site: cs,
+            },
             Instr::SendSuper {
                 selector: Symbol::intern("bar"),
                 arg_regs: vec![],
@@ -677,14 +684,14 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     w.write_u32(0);
     w.write_u32(0);
     w.write_u32(1); // one instruction ...
-    w.write_u8(20); // ... one past the last real tag
+    w.write_u8(21); // ... one past the last real tag
     let bytes = w.into_bytes();
     let mut r = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut r, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 20
+            tag: 21
         })
     );
 }
@@ -2250,6 +2257,32 @@ fn a_register_in_a_send_argument_list_is_checked_too() {
                 selector: Symbol::intern("foo:"),
                 receiver_reg: 0,
                 arg_regs: vec![0, 4],
+                dst: 0,
+                call_site: CallSite { call_site_id: 0 },
+            },
+            Instr::Return { reg: 0 },
+        ],
+    )]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::RegisterOutOfRange {
+            reg: 4,
+            num_registers: 1
+        })
+    );
+}
+
+#[test]
+fn a_register_in_a_send_inlinable_is_checked_too() {
+    let table = table_of(vec![code_with(
+        CodeKind::Method,
+        0,
+        1,
+        vec![
+            Instr::SendInlinable {
+                selector: Symbol::intern("ifTrue:"),
+                receiver_reg: 0,
+                arg_regs: vec![4],
                 dst: 0,
                 call_site: CallSite { call_site_id: 0 },
             },

@@ -82,6 +82,16 @@ pub fn run_code(
                 // reserved, inert inline-cache slot; no cache is
                 // wired up to read or write it yet.
                 ..
+            }
+            // `SendInlinable` is `SendPublic` with a mark only the depth
+            // count reads (Task 6 of the trampoline plan); until then it
+            // runs identically.
+            | Instr::SendInlinable {
+                selector,
+                receiver_reg,
+                arg_regs,
+                dst,
+                ..
             } => {
                 let receiver = read_local(&interp.heap, act, *receiver_reg);
                 let args = collect(&interp.heap, act, arg_regs);

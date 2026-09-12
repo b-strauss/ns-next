@@ -18,7 +18,7 @@
 //! instead of being noticed later by an image that no longer means what it
 //! said.
 
-// Instructions. Next free number: 20.
+// Instructions. Next free number: 21.
 pub const OP_LOAD_LITERAL: u8 = 0;
 pub const OP_LOAD_SELF: u8 = 1;
 pub const OP_LOAD_BUILTIN_CLASS: u8 = 2;
@@ -39,6 +39,7 @@ pub const OP_JUMP: u8 = 16;
 pub const OP_JUMP_IF_NOT_BOOLEAN: u8 = 17;
 pub const OP_BRANCH_IF_FALSE: u8 = 18;
 pub const OP_BRANCH_IF_TRUE: u8 = 19;
+pub const OP_SEND_INLINABLE: u8 = 20;
 
 // Literals, carried by `OP_LOAD_LITERAL` and nested inside `LIT_ARRAY`.
 // Next free number: 10.
