@@ -930,10 +930,10 @@ nothing catches them yet.
   program uses is backed by memory. The whole command runs there, not only its
   sends, because the symbol interner is thread-local (`symbol.rs`) and every
   symbol a command interns must be interned on the thread that uses it. The
-  goldens at N (`do-recursion` and `instantiation-recursion`, run in a debug
-  build) pin that the error, not an abort, is what a program sees; the
-  accessor path, the cheapest of the three, was checked by hand. An embedder
-  driving `Interpreter` directly owes its thread the same stack.
+  goldens at N, one per path — `do-recursion`, `instantiation-recursion` and
+  `accessor-recursion`, run in a debug build — pin that the error, not an
+  abort, is what a program sees. An embedder driving `Interpreter` directly
+  owes its thread the same stack.
 
 Why not one count sized against the native stack: every counted activation can
 also be a `do:` re-entry, so L would have to fit L re-entries into the native

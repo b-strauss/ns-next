@@ -602,9 +602,14 @@ boundary under both lowerings: `down:`, `logic:` and `loop:` — a plain
 recursion, one through an `or:` block and one through a `whileTrue:` body, the
 last two inlined by one lowering and activated, exempt, by the other — run at
 99,999 and fail at 100,000, leave the activation stack empty, and leave the
-interpreter usable. A recursion through `value` alone ends in the same error,
-and so does a crafted artifact whose self-recursive `ifTrue:` is rewritten into
-a `SendInlinable`, which the captured-frame condition counts. The golden
+interpreter usable, with the counted depth back at 0. A recursion through
+`value` alone ends in the same error, and so does a crafted artifact whose
+self-recursive `ifTrue:` is rewritten into a `SendInlinable`, which the
+captured-frame condition counts — whether or not the sending block's own
+activation is reified, so the condition cannot be weakened to "the sender has
+a frame". The control-flow natives sent from Rust, where their continuation
+runs at the floor of the run, answer what they should and leave both depths at
+0. The golden
 outcomes `deep-stack` and `unbounded-recursion`
 (`crates/ns-cli/tests/program_outcomes.rs`) pin a thousand-deep recursion
 through an `ifFalse:` block and the overflow's output, exit status and error

@@ -369,3 +369,21 @@ fn a_recursive_instantiation_is_bounded_by_the_native_limit() {
         "Uncaught Newspeak error: stack overflow: too many nested native calls\n",
     );
 }
+
+/// The nested-class accessor runs a superclass clause in a re-entry of the
+/// loop, the first time a class is reached on each enclosing object. `Next`'s
+/// clause, `self deeper`, reaches `Next` again on a fresh `Link`, so every
+/// level is a new enclosing object -- no cyclic-definition error -- and one
+/// more accessor re-entry, until the native limit. `Link` has no slots, so its
+/// instantiation re-enters nothing, and each level counts two activations
+/// against the other limit, the clause and `deeper`, far below it.
+#[test]
+fn a_recursion_through_the_nested_class_accessor_is_bounded_by_the_native_limit() {
+    assert_outcome(
+        "accessor-recursion",
+        "Newspeak3\n'T'\nclass Chain usingPlatform: platform = Object new (\n) (\n\tpublic class Link = Object new (\n\t) (\n\t\tpublic class Next = self deeper (\n\t\t) (\n\t\t)\n\t\tdeeper = ( ^Link new Next )\n\t)\n\tpublic main: p args: a = ( Link new Next )\n) : ()\n",
+        1,
+        "",
+        "Uncaught Newspeak error: stack overflow: too many nested native calls\n",
+    );
+}

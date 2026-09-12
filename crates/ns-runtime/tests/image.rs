@@ -4770,6 +4770,29 @@ fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
 }
 
 #[test]
+fn instantiating_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
+    // `run_initializer_levels` visits every level of the chain -- arity,
+    // clause message, initializer -- and none of these levels has
+    // initializer code, so none pushes an activation or re-enters the loop:
+    // neither depth bound would see a per-level recursion
+    // (`docs/design/execution.md`, "A superclass chain is walked
+    // iteratively"). Recursing once per level would abort here.
+    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
+    let mut loaded = image::load(&bytes).expect("load");
+    let head = loaded.roots[0];
+    assert_eq!(superclass_depth(loaded.interp.heap_ref(), &head), DEEP);
+    let Value::Obj(class) = head else {
+        panic!("the root is a class object");
+    };
+    let instance = expect_ok(loaded.interp.instantiate(class, vec![]), "instantiate");
+    assert!(
+        matches!(instance, Value::Obj(_)),
+        "an instance of the head class"
+    );
+    assert_eq!(loaded.interp.heap_ref().activation_depth(), 0);
+}
+
+#[test]
 fn dropping_a_loaded_world_whose_root_heads_a_long_class_chain_does_not_blow_the_stack() {
     // `load` has already released the decoded object table, which pins
     // every record and so drops shallowly. What survives into `LoadedImage`
