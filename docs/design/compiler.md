@@ -434,7 +434,11 @@ block parameters, named locals, registers and instructions in a body — are
 checked in every build (`Body::new` and its callers, `fresh`, `emit_send`),
 because an index that wrapped would be silently wrong code. A method's or a
 factory's parameter count comes from the shared `num_args_of` and
-`factory_num_args`, whose narrowing rests on the parser's bound instead.
+`factory_num_args`, whose narrowing rests on the parser's bound instead. The
+optimized lowering is not yet as strict: `lower.rs`'s `alloc_scratch` adds
+without a check, and `next_call_site` guards the call-site id with a
+`debug_assert!` only, so a body past either ceiling is silently wrong in a
+release build. Aligning it with `fresh` and `emit_send` is open.
 
 ### Selecting it
 
