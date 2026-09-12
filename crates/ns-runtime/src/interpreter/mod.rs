@@ -54,7 +54,6 @@ pub(crate) enum StepArgs {
 }
 
 impl StepArgs {
-    #[inline]
     pub(crate) fn slice<'a>(&'a self, send: &'a [Value]) -> &'a [Value] {
         match self {
             StepArgs::Send => send,
@@ -158,9 +157,15 @@ impl Interpreter {
     ///
     /// A send leaves the activation stack exactly as it found it: every
     /// activation it pushes is popped on every exit, error paths included.
-    /// Checked here, at every send, because a leaked entry is otherwise
-    /// silent -- a later activation would sit on top of a dead one's
-    /// registers.
+    /// Checked here, at every host-initiated send (`ns-next run --send`,
+    /// `snapshot --send`, `load --send`) and the rare native send (e.g.
+    /// `block.rs`'s `mustBeBoolean` fallback) -- a leaked entry is otherwise
+    /// silent, a later activation sitting on top of a dead one's registers.
+    /// A `Send*` the VM issues does not run through this check (`vm.rs`
+    /// calls `decide_send`/`run_step` directly, never `send`), but a leak
+    /// there is still caught: `Heap::pop_activation` itself debug-asserts
+    /// that the activation it is given is the top of the stack, which a
+    /// leaked entry underneath it would violate.
     pub fn send(&mut self, receiver: Value, selector: Symbol, args: Vec<Value>) -> EvalResult {
         let depth = self.heap.activation_depth();
         let result = match self.decide_send(receiver, selector, &args) {
@@ -377,9 +382,22 @@ impl Interpreter {
     }
 
     /// Runs what `decide_send` (or a lexical or `super` decision) answered.
-    /// A value is the send's result; a method activation is pushed, run and
-    /// popped on every path out, and a `^` aimed at it ends there.
-    #[inline]
+    /// A value is the send's result, answered in place with nothing else
+    /// called; a method activation is pushed, run and popped on every path
+    /// out, in `run_method_step` below.
+    ///
+    /// Kept deliberately tiny and `#[inline(always)]` -- unlike the method
+    /// arm, the value arm is the *common* case (every native leaf, every
+    /// slot access, every nested-class accessor) and every `Send*` in
+    /// `vm.rs` reaches it once per send. Inlining the whole push/run/pop
+    /// body here instead would only bloat `run_code`'s frame -- it is
+    /// mutually recursive with `run_code` through `run_method_step`, so it
+    /// can never itself be inlined into the loop, and marking it `#[inline]`
+    /// bought nothing (measured): the cost was never the *size* of the value
+    /// this answered, it was `vm.rs` paying for a second out-of-line call on
+    /// every send, including a pure native leaf that has no method-body work
+    /// to hide it behind.
+    #[inline(always)]
     pub(crate) fn run_step(&mut self, step: Step, send_args: &[Value]) -> EvalResult {
         match step {
             Step::Value(value) => Ok(value),
@@ -388,28 +406,43 @@ impl Interpreter {
                 method,
                 defining_class,
                 args,
-            } => {
-                let args = args.slice(send_args);
-                check_method_arity(&method, receiver, args.len())?;
-                let code = method.code.clone();
-                let act = self.heap.push_activation(
-                    ActivationHeader {
-                        receiver,
-                        current_class: Some(defining_class),
-                        kind: FrameKind::Method(method),
-                        slot_base: 0, // a method body never contains InitSlot
-                    },
-                    args,
-                    (code.num_registers - code.num_args) as usize,
-                );
-                let result = crate::vm::run_code(self, act, &code);
-                self.heap.pop_activation(act);
-                match result {
-                    Ok(value) => Ok(value),
-                    Err(Signal::Return(target, value)) if target.same(act) => Ok(value),
-                    Err(other) => Err(other),
-                }
-            }
+            } => self.run_method_step(receiver, method, defining_class, args, send_args),
+        }
+    }
+
+    /// The method-activation arm of `run_step`, split out so the common
+    /// value-answering arm above can be `#[inline(always)]` without also
+    /// forcing this much larger push/run/pop body -- which calls back into
+    /// `run_code`, so LLVM could never inline it into the instruction loop
+    /// anyway -- into every `Send*` call site.
+    #[inline(never)]
+    fn run_method_step(
+        &mut self,
+        receiver: Value,
+        method: Rc<crate::mixin::MixinMethod>,
+        defining_class: ClassRef,
+        args: StepArgs,
+        send_args: &[Value],
+    ) -> EvalResult {
+        let args = args.slice(send_args);
+        check_method_arity(&method, receiver, args.len())?;
+        let code = method.code.clone();
+        let act = self.heap.push_activation(
+            ActivationHeader {
+                receiver,
+                current_class: Some(defining_class),
+                kind: FrameKind::Method(method),
+                slot_base: 0, // a method body never contains InitSlot
+            },
+            args,
+            (code.num_registers - code.num_args) as usize,
+        );
+        let result = crate::vm::run_code(self, act, &code);
+        self.heap.pop_activation(act);
+        match result {
+            Ok(value) => Ok(value),
+            Err(Signal::Return(target, value)) if target.same(act) => Ok(value),
+            Err(other) => Err(other),
         }
     }
 
@@ -810,7 +843,7 @@ impl Interpreter {
 }
 
 /// Refuses an activation given a different number of arguments than its
-/// method takes -- see the reasoning `run_step` used to carry, kept here.
+/// method takes.
 ///
 /// An activation's locals are addressed as one run of registers -- the
 /// arguments first, the declared temporaries after them -- and the run is
