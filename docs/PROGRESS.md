@@ -10,34 +10,36 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
 
-M4 is under way, and **the next piece is B, cleaning up with one engine. Its
-detailed plan is written first**, before any code changes. The bytecode VM is
-now the only engine ([execution.md](design/execution.md), "One engine"): step
-A retired the tree-walker on 2026-09-11, because designing 1b, the trampoline,
-showed that a recursive AST evaluator cannot take part in what the trampoline
-exists for — suspending a running computation, the debugger, edit-and-continue
-on a live activation. Three steps come before 1b, each landing on its own:
+M4 is under way, and **the next piece is C, the reference lowering. Its design
+is written first** ([compiler.md](design/compiler.md), "Planned: the reference
+lowering"), before any plan or code, and it has to settle how a recursion-depth
+limit counts: the reference lowering activates blocks the optimized one
+inlines, so a limit that counts activations would trip at different points
+under the two, and 1b needs the answer. The bytecode VM is the only engine
+([execution.md](design/execution.md), "One engine"): step A retired the
+tree-walker on 2026-09-11, because designing 1b, the trampoline, showed that a
+recursive AST evaluator cannot take part in what the trampoline exists for —
+suspending a running computation, the debugger, edit-and-continue on a live
+activation. Three steps come before 1b, each landing on its own:
 
 - **A — Retire the tree-walker. Done.** Its verdicts were harvested into golden
   outcomes first, then everything that existed only because there were two
   engines was removed; see "M4 — Retiring the tree-walker" below.
-- **B — Clean up with one engine. Next; its plan is written first.**
-  Behaviour-preserving refactoring and more idiomatic Rust, now that no code has
-  to serve a second engine — measured wherever it touches a hot path, with the
-  golden outcomes as the guard, so a golden that changes means B changed
-  behaviour and went too far. B changes no design, so nothing under
-  `docs/design/` describes it: this entry is its brief, and the items the
-  retirement left behind, listed under "M4 — Retiring the tree-walker" below,
-  are its starting inventory.
-- **C — The reference lowering**, the differential oracle the retired
-  tree-walker used to be ([compiler.md](design/compiler.md), "Planned: the
-  reference lowering"). Its design has to settle how a recursion-depth limit
-  counts before 1b needs one.
+- **B — Clean up with one engine. Done.** Behaviour-preserving refactoring,
+  measured wherever it touched a hot path, with the golden outcomes and the
+  image bytes as the guard; see "M4 — Cleaning up with one engine" below.
+- **C — The reference lowering. Next; its design is written first.** The
+  differential oracle the retired tree-walker used to be: a second,
+  deliberately naive lowering, under which every program must behave byte for
+  byte as it does under the optimized one ([compiler.md](design/compiler.md),
+  "Planned: the reference lowering"). How the prior art bounds recursion depth
+  is recorded in [execution.md](design/execution.md), "How other systems bound
+  recursion depth".
 
 M4's pieces are one change: the object representation, the activation
 representation and the root discipline each constrain the other two, which is
@@ -45,7 +47,7 @@ why the object and activation representations were converted together rather
 than one at a time. Each piece is designed in the document for its own aspect;
 those documents are the authority, and this is only the map to them.
 
-**Four pieces are done.** The heap seam routes every object and activation
+**Five pieces are done.** The heap seam routes every object and activation
 access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
 it replaced `Rc<RefCell<_>>`: an `ObjRef` or a `FrameRef` is a 32-bit index
 into a `Vec` the `Heap` owns, with a private field so the compiler enforces the
@@ -57,17 +59,27 @@ see "M4 — The activation stack" below. **Nothing reclaims an arena slot** —
 every object and every reified frame is kept for the life of the process. That
 is a deliberate interim cost. The activation stack bounded it for activations
 nothing captures, and step 5, the collector, is what ends it. Then step A
-retired the tree-walker; see "M4 — Retiring the tree-walker" below.
+retired the tree-walker and step B cleaned up after it; see "M4 — Retiring the
+tree-walker" and "M4 — Cleaning up with one engine" below.
 
 **Before 1b fixes its baseline, profile `bench_block.ns`.** Its time did not
 move under the activation stack, although the stack took the block's own
-activation out of the frame arena; what offsets that saving is not known.
-Retiring the tree-walker took about 4% off it — attributed, without a profile,
-to a smaller closure — which does not answer that question.
+activation out of the frame arena; what offsets that saving was not known.
+Retiring the tree-walker took about 4% off it, attributed to a smaller closure.
+Step B then followed the lead: storing a closure behind an `Rc`, so that
+`value:` bumps a reference count instead of copying the closure out of the
+heap, took about 17% off it, measured against its parent commit
+([execution.md](design/execution.md), "What step B moved"). Whether that
+copy is what offset the stack's saving is not established, because no profile
+was taken, so the profile is still owed. What it has to explain is smaller:
+measured against `master` in one sitting, `bench_block.ns` cost about 360 ns
+per iteration more than `bench_send.ns` before step B and about 218 ns after
+it — roughly the creation, reification, invocation and divorce of one block,
+since both methods otherwise do one `+` apiece.
 
 The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
-with A done, everything from 1b on still ahead — and it is not the order the
-milestone was originally sketched in. Two things settled the order of the
+with A and B done, everything from 1b on still ahead — and it is not the order
+the milestone was originally sketched in. Two things settled the order of the
 numbered steps, neither of them a preference.
 
 The first is a measurement. On a release build, before the arena, a
@@ -111,7 +123,10 @@ so nothing is lost by it going second.
 3. **Inline caches** — [dispatch.md](design/dispatch.md). The call-site slots are
    already emitted and inert, so no bytecode format break. A cache must guard on
    the **mixin application**, not on the class object; the obvious key is the
-   wrong one and would never hit.
+   wrong one and would never hit. A native entry carries an enumerated
+   primitive, not a selector or a function pointer, so a hit costs the guard and
+   an indexed jump and the JIT can emit the primitive inline
+   ([dispatch.md](design/dispatch.md)).
 4. **Closure conversion** — [execution.md](design/execution.md). Blocks copy the
    variables they only read and share a box for the ones they write, instead of
    reaching them through their method's frame. That ends 1a's divorce copy and
@@ -524,91 +539,164 @@ record also lower the image decoder's worst-case amplification, from ~17.8x to
 583 tests pass, with one ignored; `parse-corpus` stays at **210/0/1/0** and
 `run-corpus` at **6/0/205**.
 
-**Left for B**, found during the retirement and deliberately not fixed in it —
-B's starting inventory, none of them a behaviour change:
+What the retirement left for step B — its inventory of leftovers, the items its
+plan assigned B, and what its final review found — step B cleared, except the
+four items listed under "M4 — Cleaning up with one engine" as "Left,
+deliberately".
 
-- Comments that still speak of an engine choice or of past milestones:
-  `ns-cli/src/main.rs`'s `snapshot` help ("under the bytecode engine") and
-  `cmd_build` doc ("up to engine installation"); `image/inspect.rs`'s module
-  doc ("installs an engine"); `interpreter/eval.rs`'s
-  `unresolved_identifier_error` doc ("in Milestone 1 and 2").
-- `interpreter/mod.rs`: `raise_return_pub` is now a wrapper with no reason to
-  exist, and `invoke_method`'s arity comment says "silently" twice.
-- Tests: leftover `_under_bytecode` names in `crates/ns-runtime/tests/vm.rs`
-  and `vm_initializer.rs`; `vm.rs`'s malformed-integer test no longer pins the
-  error's selector `parse`; `tests/image.rs` has a dead
-  `let module = interp.compiled_module(); let _ = module;` and doc comments
-  left over-long or ragged by the reflow.
-- The phrase "shared orchestration" in code comments predates one engine; it
-  still names `interpreter/` correctly, but "shared" now means shared with the
-  reference lowering and a JIT to come.
+## M4 — Cleaning up with one engine (2026-09-12)
 
-The retirement's plan (its "Scope" section) also assigned B these, none of
-which the retirement started:
+Plan: [ns-next-clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md).
 
-- Renaming `interpreter/eval.rs`, which evaluates nothing any more: it holds
-  the lexical and super send helpers, local and outer-local access, closure
-  invocation and the errors a deferred literal raises.
-- Passing `Copy` handles (`ObjRef`, `ClassRef`, `FrameRef`, `ActivationRef`)
-  by value rather than by reference, and enabling
-  `clippy::trivially_copy_pass_by_ref` in `[workspace.lints.clippy]` so the
-  warning-free clippy gate keeps it that way. Check what the lint actually
-  covers: its size limit is judged on the layout clippy compiles, and in a
-  debug build every handle carries `origin`, `ActivationRef` a `generation`
-  too, so the larger ones may fall outside it.
-- Pre-interning the selectors the runtime sends itself, instead of
-  `Symbol::intern("...")` at each call site.
-- Splitting `crates/ns-cli/src/main.rs` into one module per command.
-- Rewriting comments that narrate history (Milestone 1, what a function
-  "used to" do) into statements of the current decision.
-- Attaching compiled code to `MixinMethod` instead of looking it up in the
-  `HashMap` keyed by mixin and method on every invocation. **This one is in
-  tension with "B changes no design":** where code lives is a design decision
-  ([compiler.md](design/compiler.md), "Keyed by mixin"), and
-  [execution.md](design/execution.md), "What 1a left for it", assigns removing
-  that lookup to the inline caches, whose entries carry the body. B's plan
-  has to decide whether it belongs in B, with the design document updated to
-  match, or stays with the inline caches.
+Step B of the three inserted ahead of 1b: behaviour-preserving cleanup now that
+no code serves a second engine, three measured hot-path changes, and one design
+change. No `.expected` fixture, golden outcome, `corpus/runnable.toml` row or
+snapshot changed.
 
-Found by the retirement's final review, and also B's:
+**Two decisions**, settled with the user on 2026-09-11 and grounded in
+`prior-art/`:
 
-- `crates/ns-cli/tests/run_fixtures.rs` (~49-50) compares each fixture's stdout
-  after `trim_end()`, so a lost or an extra final newline is no longer pinned;
-  the retired differential compared exact bytes.
-- Stale doc comments: `compile_initializer`'s
-  (`crates/ns-runtime/src/compiler/mod.rs` ~62-66) says `ns-cli`'s `disasm`
-  uses it, and `Heap::new`'s (`crates/ns-runtime/src/heap.rs` ~307) says
-  `cmd_disasm` takes a `&Heap` parameter. Neither is true: `cmd_disasm` clones
-  the loaded interpreter's `compiled_module()` and reads through
-  `interp.heap_ref()`. Its own comment (`main.rs` ~845) misspells "resolver's"
-  as "resolver.s". And `compiler/lower.rs` ~406 says the resolver never
-  attaches `SuperSend` to a bare identifier, which a `super`-prefixed
-  superclass-clause receiver does (the known gap under
-  [dispatch.md](design/dispatch.md), "Binding variants").
-- `crates/ns-runtime/tests/image.rs`: `load` (~240) still returns the
-  resolver's bindings, and 14 call sites recompile with
-  `compiler::compile_module` after `load_module` already installed the code;
-  they should start from `interp.compiled_module().clone()`, and `load` then
-  need not return bindings.
-- `crates/ns-runtime/tests/nested_classes.rs` keeps the one-caller helpers that
-  folding the `_under_bytecode` duplicates left behind — `accessor_is_stable()`
-  (~68, called only at ~91) and its siblings — which can fold into the tests
-  that call them. `crates/ns-cli/tests/cli.rs`'s
-  `run_no_longer_accepts_an_engine` (~269-279) tests that clap rejects an
-  undeclared flag, which clap already guarantees.
-- A lead for the `bench_block.ns` profile required before 1b: every block
-  creation and invocation copies `ClosureData`. `MakeClosure`
-  (`crates/ns-runtime/src/vm.rs` ~126-132) builds an `Rc<ClosureData>`, cloning
-  its `params` vector, only for `Interpreter::new_closure`
-  (`interpreter/mod.rs` ~616-619) to deep-clone it into
-  `ObjectData::Closure`. Each `value:` then copies `ClosureData` out of the heap
-  twice — `builtins/block.rs` ~17 and `builtins::call_block` (`builtins/mod.rs`
-  ~119) — and re-wraps it in a new `Rc` (~122). At run time `ClosureData.params`
-  is read only for its length, which duplicates `code.num_args` (the image
-  encoder also records the names, `image/encode.rs` ~865-868). Storing
-  `ObjectData::Closure(Rc<ClosureData>)` would turn those copies into
-  reference-count bumps. It is behaviour-preserving; whether it is the offset
-  the profile is looking for has to be measured, not assumed.
+1. **Compiled code lives on the declaration it belongs to** — a method's on its
+   `MixinMethod`, an initializer's and a superclass clause's on the `Mixin` —
+   instead of in the interpreter's `HashMap`s keyed by `Rc` address. Every
+   system in `prior-art/` keeps a method's code on the method: Primordial Soup's
+   `Method::bytecode()`, SOMns's `SInvokable.invokable`, Squeak's
+   `CompiledMethod` in the method dictionary. It removed a hashed lookup from
+   every user-method send and every initializing level of an instantiation,
+   the collector hazard of a table keyed by `Rc` address, and the possibility
+   of a method with no compiled body. This one is a design change, made with
+   its documents ([compiler.md](design/compiler.md), "Compiled code").
+2. **A native is bound as an enumerated primitive, not a function pointer** —
+   decided here, built with the inline caches. Native dispatch keeps its
+   `match selector.as_str()` until then; a lookup that reaches a native will
+   bind a Rust enum naming the operation, a native inline-cache entry will
+   carry it, and the JIT can emit it inline, where a function pointer could
+   only be called — the ceiling a Rust callback imposes. That is Cog's and
+   Primordial Soup's model: a method's primitive number indexes the
+   interpreter's primitive table and Cog's `primitiveGeneratorTable`, whose
+   generators (`genPrimitiveAdd`) emit machine code, and
+   `genSpecialSelectorArithmetic` emits SmallInteger arithmetic inline at the
+   send site. So B pre-interned only the symbols the runtime names in its own
+   code. Recorded in [dispatch.md](design/dispatch.md), "Planned: inline
+   caches", and [core-library.md](design/core-library.md).
+
+**What changed**, in the plan's order:
+
+1. **Tests pin exact output.** Each fixture's stdout is compared byte for byte,
+   not after `trim_end()`; the retirement's leftover `_under_bytecode` names,
+   dead code and one-caller helpers are gone, and the malformed-integer test
+   pins its error's selector again.
+2. **`interpreter/` without the tree-walker's leftovers.** `eval.rs` is split
+   by what it held into `sends.rs` (lexical and super sends), `locals.rs`
+   (local and outer-local access) and `literals.rs` (the errors a deferred
+   literal raises); `invoke_closure` is an `Interpreter` method.
+3. **Builtin classes by index.** A `Vec` indexed by `BuiltinClass`
+   replaces a hashed map; measured faster on all three benchmarks.
+4. **The runtime's own symbols interned once**, as `Symbol` constants seeded
+   into the interner, instead of an intern at every call site; measured
+   unchanged, since no benchmark reaches those sites in its timed send.
+5. **A closure behind an `Rc`.** `ObjectData::Closure` holds an
+   `Rc<ClosureData>`, and its parameter names are shared with the instruction
+   that made it, so invoking a block bumps a reference count instead of
+   copying the closure; `bench_block.ns` about 17% faster. Two encoders that
+   could never fail, `encode_closure_record` and `encode_frame`, lost their
+   `Result`. `Object` stayed 56 bytes in a release build (80 in a debug one),
+   so the image decoder's amplification figures stand.
+6. **Compiled code on the declaration** (decision 1). Decoding an image
+   attaches each body a mixin-table row names, and `image::decode::verify_mixins`
+   refuses a declaration whose body is missing or the wrong shape before
+   anything is built on the code. Its review found a panic reachable from a
+   crafted artifact: `disasm --initializer` on an artifact whose root row names
+   no initializer now refuses with an error, pinned by a CLI test.
+7. **Handles by value.** Every function taking an `ObjRef`, `ClassRef`,
+   `FrameRef` or `ActivationRef` takes it by value — 143 sites — and
+   `clippy::trivially_copy_pass_by_ref`, sized by a new `clippy.toml` to see
+   the debug-build `ActivationRef` and `pub` functions too, keeps it so. Four
+   `Option<&_>` parameters remain by reference, outside the lint's reach
+   (`dispatch.rs`, `decode.rs`, `encode.rs` ×2).
+8. **One module per CLI command.** `ns-cli/src/main.rs` keeps the argument
+   parser; each command is a module under `commands/`, shared loading is
+   `source.rs`, and the entry send is `entry.rs`, whose `instantiate_root`
+   replaces three copies of the same instantiation.
+9. **Comments state decisions, not history.** A sweep over `ns-runtime`,
+   `ns-cli` and `Cargo.toml` took 127 lines that narrated milestones, reviews
+   or what code used to do down to 8 deliberate keeps (two error strings a
+   program observes, a
+   retired tag's name and its pins, a citation, a Newspeak slot name, and one
+   "used to" meaning "used in order to"). `Cargo.toml`'s release-profile
+   comment now gives LTO's real reason: `ns-cli` calls into two other crates.
+
+**What was deleted:** `interpreter/eval.rs`, `raise_return_pub`,
+`Interpreter::new` (and `Default`), `CompiledModule`, `method_key`,
+`compile_module`, `compile_initializer`, `install_code`, `build_module`, and
+three tests whose property is now structural — two image tests of a method
+without a body and `bytecode.rs`'s test of the `Rc`-address key.
+
+Measured against `master` in one sitting on a release build, the "before"
+built from the branch's merge-base in a throwaway worktree: three rounds of
+`ns-next bench` over the three fixtures, alternating the two binaries within
+each round. Bytecode medians in ms, rounds 1–3:
+
+| Source | Before | After |
+|---|---|---|
+| `bench_loop.ns` | 16.08, 16.17, 16.12 | 15.31, 15.32, 15.49 |
+| `bench_send.ns` | 20.55, 20.28, 19.95 | 18.65, 19.06, 19.15 |
+| `bench_block.ns` | 37.38, 38.29, 38.68 | 29.94, 29.74, 30.02 |
+
+On every source the after-group lies entirely below the before-group:
+`bench_loop.ns` about 5% faster, `bench_send.ns` about 6%, **`bench_block.ns`
+about 22%**, from ~38.3 ms to ~29.9 ms. Each hot-path change was also measured
+on its own against its parent commit, in its own sitting (middle medians,
+`bench_loop.ns` / `bench_send.ns` / `bench_block.ns`, in ms):
+
+- Builtin classes by index: 16.59 / 20.70 / 38.93 → 16.04 / 19.90 / 37.44 —
+  3–4% faster on all three.
+- Symbols interned once: 15.95 / 20.16 / 37.46 → 16.03 / 20.07 / 37.71 —
+  nothing moved.
+- A closure behind an `Rc`: 16.06 / 19.96 / 37.47 → 15.71 / 19.89 / 31.26 —
+  `bench_block.ns` about 17% faster, `bench_loop.ns` about 2%.
+- Compiled code on the declaration: 15.86 / 19.81 / 31.26 → 16.14 / 19.56 /
+  30.59 — `bench_send.ns` and `bench_block.ns` 1–2% faster; `bench_loop.ns`'s
+  first three rounds did not separate the groups, and three extra rounds put
+  the after-binary lower each time, not slower.
+- Handles by value: 15.58 / 18.75 / 29.67 → 15.41 / 19.13 / 29.93 —
+  `bench_loop.ns` about 1% faster, the groups just failing to overlap;
+  `bench_send.ns` and `bench_block.ns` did not move (three extra
+  `bench_send.ns` rounds narrowed its gap to 0.17 ms, inside the
+  before-group's own spread).
+
+The per-change figures come from different sittings and are not compared with
+each other; [execution.md](design/execution.md), "What step B moved", has
+them with what each change removed.
+
+**Byte identity.** The two binaries of that sitting build and snapshot every
+fixture to identical bytes: `compared 44 artifacts, 0 differing`. The closure
+change and the code-on-declaration change, which alter what the encoder and
+decoder read, were each checked the same way against their parent commit, with
+the same result.
+
+581 tests pass, with one ignored; `parse-corpus` stays at **210/0/1/0** and
+`run-corpus` at **6/0/205**.
+
+**Left, deliberately** — each is outside a behaviour-preserving cleanup:
+
+- **Two error messages that name a milestone.** `builtins/numbers.rs`'s
+  `type_mismatch` ("... (Milestone 1 has no Integer/Float coercion) ...") and
+  `interpreter/literals.rs`'s `parse_int_literal` ("fractional radix literals
+  are not supported in Milestone 1"). A program observes them on stderr, so
+  rewording them is a behaviour change that needs its own decision.
+- **The discarded `Object` allocation in `build_builtin_classes`.** Its loop
+  allocates a class object for `BuiltinClass::Object` and then discards it in
+  favour of `class_of_class`. Removing it would shift every later identity hash
+  by one, which a program and an image both observe.
+- **`ClosureData.params` duplicating `code.num_args`.** At run time only the
+  count is read, but the image's closure record carries the names, so dropping
+  them is a wire change. Step B shares the vector instead of copying it.
+- **The lexical-send slot lookup.** `dispatch_lexical_send` interns the getter
+  name for every setter-shaped selector and hashes the name into the
+  application's `slot_index` for every lexical send. A lexical-send inline-cache
+  entry that records the slot's index removes both
+  ([dispatch.md](design/dispatch.md), "Planned: inline caches").
 
 ## Notes
 

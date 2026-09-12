@@ -44,15 +44,10 @@ fn expect_error(
     }
 }
 
-/// Builds a bare `OrderedCollection` instance directly -- Milestone 1 has no
-/// wiring yet from an ordinary `OrderedCollection new` message send through
-/// to a real `ObjectData::Array`-backed instance (that requires both a
-/// global-name binding for `OrderedCollection` from Newspeak source, and a
-/// builtin-aware `new` that special-cases the collection classes instead of
-/// `Interpreter::instantiate`'s generic `ObjectData::Instance`, and neither
-/// exists yet). Constructing the object directly, the same way
-/// `Interpreter::new_array` does internally, is sufficient to exercise
-/// `dispatch_ordered_collection`.
+/// Builds a bare `OrderedCollection` instance directly: an
+/// `ObjectData::Array` payload tagged with the `OrderedCollection` class,
+/// the shape `try_factory_send` gives `OrderedCollection new`. Constructing
+/// it without a send is sufficient to exercise `dispatch_ordered_collection`.
 fn new_ordered_collection(interp: &mut Interpreter) -> Value {
     let class = interp.builtin_class(BuiltinClass::OrderedCollection);
     Value::Obj(
@@ -175,12 +170,11 @@ fn ordered_collection_at_out_of_range_is_a_newspeak_error_not_a_panic() {
 
 #[test]
 fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
-    // Regression: `not_an_integer`'s message used to `{:?}`-format the
-    // argument. A `Value::Obj` there recurses through `Object`'s
-    // self-referential bootstrap class until the stack gives out, so the
-    // process aborted instead of reporting. Every existing `at:` test here
-    // passed a `SmallInt` index, which formats harmlessly, which is why the
-    // defect survived.
+    // `not_an_integer`'s message must not `{:?}`-format the argument: a
+    // `Value::Obj` there would recurse through `Object`'s self-referential
+    // bootstrap class until the stack gives out, aborting the process
+    // instead of reporting. Every other `at:` test here passes a `SmallInt`
+    // index, which formats harmlessly and so could not catch it.
     let mut interp = Interpreter::bootstrap();
     let receiver = Value::Obj(interp.new_array(vec![Value::SmallInt(1)]));
     let index = Value::Obj(interp.new_string("not an integer".to_string()));

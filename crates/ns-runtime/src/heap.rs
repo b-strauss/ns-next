@@ -13,7 +13,7 @@
 //! choice: almost every call site borrows, clones one field and drops the
 //! borrow, and a reference-returning accessor would be unusable at the
 //! sites that call back into the interpreter while holding one -- which is
-//! most of `interpreter/eval.rs`.
+//! most of `interpreter/locals.rs`.
 
 use crate::types::*;
 use crate::Symbol;
@@ -59,7 +59,7 @@ impl ObjRef {
     /// two unrelated objects that happen to share an index would be reported
     /// identical. `check_object_origin` covers every read; this covers the
     /// one operation that reads nothing.
-    pub fn same(&self, other: &ObjRef) -> bool {
+    pub fn same(self, other: ObjRef) -> bool {
         #[cfg(debug_assertions)]
         debug_assert_eq!(
             self.origin, other.origin,
@@ -83,7 +83,8 @@ impl std::fmt::Debug for ObjRef {
 }
 
 /// A class is an `ObjRef` whose `data` is `ObjectData::Class(_)`. Not
-/// enforced by the type system in Milestone 1 (no metaclasses yet).
+/// enforced by the type system: `ClassRef` is an alias, not a distinct
+/// handle type.
 pub type ClassRef = ObjRef;
 
 /// An opaque handle to a *reified* activation: an index into `Heap.frames`.
@@ -114,7 +115,7 @@ impl FrameRef {
     /// `Signal::Return` names its target by `ActivationRef`, not by frame, so
     /// nothing in the runtime compares frames: the callers are the image
     /// round-trip tests (`tests/image.rs`) and this module's unit tests.
-    pub fn same(&self, other: &FrameRef) -> bool {
+    pub fn same(self, other: FrameRef) -> bool {
         #[cfg(debug_assertions)]
         debug_assert_eq!(
             self.origin, other.origin,
@@ -125,12 +126,11 @@ impl FrameRef {
     }
 }
 
-/// Prints the arena index and nothing else. Under `Rc` this impl was
-/// hand-written to stop `Debug` walking the sender chain (a closure's
-/// `home` can itself be captured, so that walk had no acyclic guarantee
-/// to lean on); an index has nothing to descend into at all, so the
-/// hazard is gone by construction rather than by discipline. It also can
-/// no longer panic, which is why the `try_borrow` dance is gone.
+/// Prints the arena index and nothing else. A derived `Debug` over a
+/// frame's contents would walk the sender chain, which has no acyclic
+/// guarantee to lean on (a closure's `home` can itself be captured); an
+/// index has nothing to descend into at all, so the hazard is gone by
+/// construction rather than by discipline, and printing one cannot panic.
 impl std::fmt::Debug for FrameRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "FrameRef(#{})", self.index)
@@ -165,7 +165,7 @@ impl ActivationRef {
     /// pushed while a `Signal::Return` propagates, so the target's index
     /// cannot have been reused by the time a catcher compares it. A debug
     /// build checks that rather than assuming it.
-    pub fn same(&self, other: &ActivationRef) -> bool {
+    pub fn same(self, other: ActivationRef) -> bool {
         #[cfg(debug_assertions)]
         {
             debug_assert_eq!(
@@ -304,10 +304,10 @@ impl Heap {
     /// before indexing, so reading through the wrong heap panics at the read
     /// rather than answering. That check compiles out of a release build --
     /// there the second case is exactly as silent as it sounds, which is why
-    /// `compile_initializer`, `compile_module` and `cmd_disasm` take a real
-    /// `&Heap` parameter instead of building one on the spot, and why
-    /// running the test suite in debug is what catches the mistake if it
-    /// recurs.
+    /// `encode_code_table` and `mixins::plan` take a real `&Heap` parameter
+    /// and `ns-cli`'s `disasm` reads through the interpreter that built its
+    /// class object, instead of building one on the spot, and why running
+    /// the test suite in debug is what catches the mistake if it recurs.
     pub fn new() -> Heap {
         Heap {
             next_identity_hash: 1,
@@ -495,7 +495,7 @@ impl Heap {
     /// got built -- usually a `Heap::new()` standing in for one that is out
     /// of scope.
     #[inline]
-    fn check_object_origin(&self, obj: &ObjRef) {
+    fn check_object_origin(&self, obj: ObjRef) {
         #[cfg(debug_assertions)]
         assert_eq!(
             obj.origin, self.heap_id,
@@ -506,7 +506,7 @@ impl Heap {
     }
 
     #[inline]
-    fn check_frame_origin(&self, frame: &FrameRef) {
+    fn check_frame_origin(&self, frame: FrameRef) {
         #[cfg(debug_assertions)]
         assert_eq!(
             frame.origin, self.heap_id,
@@ -520,7 +520,7 @@ impl Heap {
     /// stack handle needs: that its entry is still the one it was minted
     /// for. Compiles to nothing in a release build.
     #[inline]
-    fn check_activation(&self, act: &ActivationRef) {
+    fn check_activation(&self, act: ActivationRef) {
         #[cfg(debug_assertions)]
         {
             assert_eq!(
@@ -576,7 +576,7 @@ impl Heap {
     // ties every accessor's result to the `Heap` it read from -- the same
     // discipline `docs/design/memory.md` describes for the frame arena.
 
-    pub fn identity_hash(&self, obj: &ObjRef) -> u32 {
+    pub fn identity_hash(&self, obj: ObjRef) -> u32 {
         self.check_object_origin(obj);
         self.objects[obj.index as usize].identity_hash
     }
@@ -603,7 +603,7 @@ impl Heap {
     /// widening it to carry a heap tag, say -- has to check their callers
     /// even though the field itself is private. They all treat the result as
     /// an opaque key, which is what keeps that a check rather than a rewrite.
-    pub(crate) fn object_identity_key(&self, obj: &ObjRef) -> usize {
+    pub(crate) fn object_identity_key(&self, obj: ObjRef) -> usize {
         self.check_object_origin(obj);
         obj.index as usize
     }
@@ -621,22 +621,22 @@ impl Heap {
     /// live objects sharing a hash, and every identity-keyed collection and
     /// `become:`'s stability guarantee then silently breaks, with nothing
     /// anywhere raising an error to say so.
-    pub fn set_identity_hash(&mut self, obj: &ObjRef, hash: u32) {
+    pub fn set_identity_hash(&mut self, obj: ObjRef, hash: u32) {
         self.check_object_origin(obj);
         self.objects[obj.index as usize].identity_hash = hash;
     }
 
-    pub fn class_of_obj(&self, obj: &ObjRef) -> ClassRef {
+    pub fn class_of_obj(&self, obj: ObjRef) -> ClassRef {
         self.check_object_origin(obj);
         self.objects[obj.index as usize].class
     }
 
-    pub fn is_class(&self, obj: &ObjRef) -> bool {
+    pub fn is_class(&self, obj: ObjRef) -> bool {
         self.check_object_origin(obj);
         matches!(self.objects[obj.index as usize].data, ObjectData::Class(_))
     }
 
-    pub fn array_len(&self, obj: &ObjRef) -> Option<usize> {
+    pub fn array_len(&self, obj: ObjRef) -> Option<usize> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Array(items) => Some(items.len()),
@@ -645,12 +645,12 @@ impl Heap {
     }
 
     /// The number of fields in `obj`'s `ObjectData::Instance`, mirroring
-    /// `array_len`. `platform::dispatch` is the only caller: Milestone 1
+    /// `array_len`. `platform::dispatch` is the only caller: it
     /// tells the platform singleton, its stream and its `collections`
     /// namespace apart by field count rather than a builtin variant of
     /// their own (see `platform.rs`'s module doc), so the dispatcher needs
     /// the count itself, not any one field's value.
-    pub fn instance_field_count(&self, obj: &ObjRef) -> Option<usize> {
+    pub fn instance_field_count(&self, obj: ObjRef) -> Option<usize> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Instance(fields) => Some(fields.len()),
@@ -658,7 +658,7 @@ impl Heap {
         }
     }
 
-    pub fn array_elements(&self, obj: &ObjRef) -> Option<Vec<Value>> {
+    pub fn array_elements(&self, obj: ObjRef) -> Option<Vec<Value>> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Array(items) => Some(items.clone()),
@@ -666,7 +666,7 @@ impl Heap {
         }
     }
 
-    pub fn array_at(&self, obj: &ObjRef, index: usize) -> Option<Value> {
+    pub fn array_at(&self, obj: ObjRef, index: usize) -> Option<Value> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Array(items) => items.get(index).copied(),
@@ -678,7 +678,7 @@ impl Heap {
     /// out-of-range index is a caller's concern -- the natives that reach
     /// here have already produced their own Newspeak error for it -- so
     /// this reports rather than panics.
-    pub fn array_set(&mut self, obj: &ObjRef, index: usize, value: Value) -> bool {
+    pub fn array_set(&mut self, obj: ObjRef, index: usize, value: Value) -> bool {
         self.check_object_origin(obj);
         if let ObjectData::Array(items) = &mut self.objects[obj.index as usize].data {
             if index < items.len() {
@@ -689,7 +689,7 @@ impl Heap {
         false
     }
 
-    pub fn array_push(&mut self, obj: &ObjRef, value: Value) -> bool {
+    pub fn array_push(&mut self, obj: ObjRef, value: Value) -> bool {
         self.check_object_origin(obj);
         if let ObjectData::Array(items) = &mut self.objects[obj.index as usize].data {
             items.push(value);
@@ -701,7 +701,7 @@ impl Heap {
     /// The instance field at `index`, or `None` when `obj`'s payload is not
     /// `ObjectData::Instance` or `index` is out of range -- the same
     /// total-rather-than-panicking shape as the array accessors above.
-    pub fn instance_field(&self, obj: &ObjRef, index: usize) -> Option<Value> {
+    pub fn instance_field(&self, obj: ObjRef, index: usize) -> Option<Value> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Instance(fields) => fields.get(index).copied(),
@@ -710,7 +710,7 @@ impl Heap {
     }
 
     /// Answers whether the write happened, mirroring `array_set`.
-    pub fn set_instance_field(&mut self, obj: &ObjRef, index: usize, value: Value) -> bool {
+    pub fn set_instance_field(&mut self, obj: ObjRef, index: usize, value: Value) -> bool {
         self.check_object_origin(obj);
         if let ObjectData::Instance(fields) = &mut self.objects[obj.index as usize].data {
             if index < fields.len() {
@@ -721,7 +721,7 @@ impl Heap {
         false
     }
 
-    pub fn str_value(&self, obj: &ObjRef) -> Option<String> {
+    pub fn str_value(&self, obj: ObjRef) -> Option<String> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Str(s) => Some(s.clone()),
@@ -729,7 +729,7 @@ impl Heap {
         }
     }
 
-    pub fn sym_value(&self, obj: &ObjRef) -> Option<Symbol> {
+    pub fn sym_value(&self, obj: ObjRef) -> Option<Symbol> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Sym(s) => Some(*s),
@@ -737,7 +737,8 @@ impl Heap {
         }
     }
 
-    pub fn closure_data(&self, obj: &ObjRef) -> Option<ClosureData> {
+    /// An `Rc` bump, not a copy: a closure is immutable once made.
+    pub fn closure_data(&self, obj: ObjRef) -> Option<std::rc::Rc<ClosureData>> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
             ObjectData::Closure(c) => Some(c.clone()),
@@ -754,7 +755,7 @@ impl Heap {
     /// it clones `data` in full, which is a real cost for a large `Array`
     /// or `Instance`, acceptable here because the encoder visits every
     /// object exactly once regardless.
-    pub fn object_snapshot(&self, obj: &ObjRef) -> Object {
+    pub fn object_snapshot(&self, obj: ObjRef) -> Object {
         self.check_object_origin(obj);
         self.objects[obj.index as usize].clone()
     }
@@ -770,7 +771,7 @@ impl Heap {
     /// that object's already-verified invariants with unverified ones: no
     /// error, and no way for verification to notice, because verification
     /// has already finished.
-    pub fn replace_object(&mut self, obj: &ObjRef, filled: Object) {
+    pub fn replace_object(&mut self, obj: ObjRef, filled: Object) {
         self.check_object_origin(obj);
         self.objects[obj.index as usize] = filled;
     }
@@ -778,7 +779,7 @@ impl Heap {
     /// Renders a value for a user-facing error message.
     ///
     /// Never `Debug`-format a `Value` instead: `ObjRef`'s hand-written
-    /// `Debug` no longer recurses, but it prints Rust internals such as
+    /// `Debug` does not recurse, but it prints Rust internals such as
     /// `ObjRef(#42)`, which tells a Newspeak programmer nothing. Every
     /// caller of this is building the message of a `NewspeakError`, which
     /// reaches stderr, and that message needs to name what the value *is*
@@ -790,7 +791,7 @@ impl Heap {
             Value::SmallInt(n) => n.to_string(),
             Value::Float(f) => f.to_string(),
             Value::Obj(obj) => {
-                self.check_object_origin(obj);
+                self.check_object_origin(*obj);
                 match &self.objects[obj.index as usize].data {
                     ObjectData::Str(s) => format!("the String {s:?}"),
                     ObjectData::Sym(s) => format!("the Symbol #{s}"),
@@ -839,7 +840,7 @@ impl Heap {
     /// re-derive the borrow-and-match itself.
     pub fn class_application(
         &self,
-        class: &ClassRef,
+        class: ClassRef,
     ) -> Option<std::rc::Rc<crate::mixin::MixinApplication>> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
@@ -848,7 +849,7 @@ impl Heap {
         }
     }
 
-    pub fn class_enclosing(&self, class: &ClassRef) -> Option<ObjRef> {
+    pub fn class_enclosing(&self, class: ClassRef) -> Option<ObjRef> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.enclosing,
@@ -856,7 +857,7 @@ impl Heap {
         }
     }
 
-    pub fn class_declaring(&self, class: &ClassRef) -> Option<ClassRef> {
+    pub fn class_declaring(&self, class: ClassRef) -> Option<ClassRef> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.declaring_class,
@@ -864,7 +865,7 @@ impl Heap {
         }
     }
 
-    pub fn class_superclass(&self, class: &ClassRef) -> Option<ClassRef> {
+    pub fn class_superclass(&self, class: ClassRef) -> Option<ClassRef> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.superclass,
@@ -872,7 +873,7 @@ impl Heap {
         }
     }
 
-    pub fn class_builtin(&self, class: &ClassRef) -> Option<BuiltinClass> {
+    pub fn class_builtin(&self, class: ClassRef) -> Option<BuiltinClass> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.builtin,
@@ -885,7 +886,7 @@ impl Heap {
     /// stepped onto one through `next_level`'s unverified class-object chain.
     pub fn class_lookup_step(
         &self,
-        class: &ClassRef,
+        class: ClassRef,
     ) -> Option<(Option<BuiltinClass>, Option<ClassRef>)> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
@@ -894,7 +895,7 @@ impl Heap {
         }
     }
 
-    pub fn class_metaclass(&self, class: &ClassRef) -> Option<ClassRef> {
+    pub fn class_metaclass(&self, class: ClassRef) -> Option<ClassRef> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.metaclass,
@@ -911,7 +912,7 @@ impl Heap {
     /// instead of hitting the cache, and metaclass identity would stop being
     /// stable, which is what inline caches are meant to key on. The caller
     /// turns a `false` into an `unreachable!` rather than swallowing it.
-    pub fn set_class_metaclass(&mut self, class: &ClassRef, metaclass: ClassRef) -> bool {
+    pub fn set_class_metaclass(&mut self, class: ClassRef, metaclass: ClassRef) -> bool {
         self.check_object_origin(class);
         if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
             data.metaclass = Some(metaclass);
@@ -929,7 +930,7 @@ impl Heap {
     /// list of builtin names (`resolve_superclass_receiver`), so linking a
     /// subclass to an already-loaded sibling *user-defined* class has to
     /// happen by hand on the class-object chain `super`/`instantiate` walk.
-    pub fn set_class_superclass(&mut self, class: &ClassRef, superclass: ClassRef) -> bool {
+    pub fn set_class_superclass(&mut self, class: ClassRef, superclass: ClassRef) -> bool {
         self.check_object_origin(class);
         if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
             data.superclass = Some(superclass);
@@ -940,13 +941,15 @@ impl Heap {
 
     /// Answers whether the write happened, mirroring `array_set` and
     /// `set_instance_field`. `image::decode::rebuild_applications` is the
-    /// only caller, and it only ever calls this on an object it filled in
-    /// as a class record two lines above -- a wrong-shape `class` here would
-    /// be a decoder bug, not an untrusted-input case, so the caller turns a
-    /// `false` into an `unreachable!` rather than a `DecodeError`.
+    /// only caller in the runtime, and it only ever calls this on an object
+    /// it filled in as a class record two lines above -- a wrong-shape
+    /// `class` here would be a decoder bug, not an untrusted-input case, so
+    /// that caller turns a `false` into an `unreachable!` rather than a
+    /// `DecodeError`. Tests also call it, to swap a doctored mixin onto a
+    /// live class (`install_mixin` in `tests/image.rs`).
     pub fn set_class_application(
         &mut self,
-        class: &ClassRef,
+        class: ClassRef,
         application: std::rc::Rc<crate::mixin::MixinApplication>,
     ) -> bool {
         self.check_object_origin(class);
@@ -980,19 +983,19 @@ impl Heap {
     /// `FrameRef` as a `HashMap` key rather than a comparison --
     /// `image::encode::GraphTable`'s frame-id map is the only caller. On
     /// `Heap`, and guarded, for the reason `object_identity_key` gives.
-    pub(crate) fn frame_identity_key(&self, frame: &FrameRef) -> usize {
+    pub(crate) fn frame_identity_key(&self, frame: FrameRef) -> usize {
         self.check_frame_origin(frame);
         frame.index as usize
     }
 
     /// A reified frame's receiver. Fixed when the frame is created, so it
     /// needs no redirect while the frame is married.
-    pub fn frame_receiver(&self, frame: &FrameRef) -> Value {
+    pub fn frame_receiver(&self, frame: FrameRef) -> Value {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.receiver
     }
 
-    pub fn frame_current_class(&self, frame: &FrameRef) -> Option<ClassRef> {
+    pub fn frame_current_class(&self, frame: FrameRef) -> Option<ClassRef> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.current_class
     }
@@ -1003,7 +1006,7 @@ impl Heap {
     /// (`docs/design/execution.md`, "How this meets the liveness
     /// requirements"). The top live activation grows in place through
     /// `grow_activation_temps`.
-    pub fn frame_grow_temps(&mut self, frame: &FrameRef, needed: usize) {
+    pub fn frame_grow_temps(&mut self, frame: FrameRef, needed: usize) {
         self.check_frame_origin(frame);
         debug_assert!(
             self.frames[frame.index as usize].live.is_none(),
@@ -1019,7 +1022,7 @@ impl Heap {
     /// synthetic paused `pc` before a snapshot. The runtime stores a running
     /// activation's `pc` on its stack entry (`set_activation_pc`), and the
     /// divorce copies it here.
-    pub fn set_frame_pc(&mut self, frame: &FrameRef, pc: usize) {
+    pub fn set_frame_pc(&mut self, frame: FrameRef, pc: usize) {
         self.check_frame_origin(frame);
         debug_assert!(
             self.frames[frame.index as usize].live.is_none(),
@@ -1029,7 +1032,7 @@ impl Heap {
         self.frames[frame.index as usize].frame.pc = pc;
     }
 
-    pub fn frame_home(&self, frame: &FrameRef) -> Option<FrameRef> {
+    pub fn frame_home(&self, frame: FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.home
     }
@@ -1039,14 +1042,14 @@ impl Heap {
     /// a returned activation has none -- so it can be set only on a frame the
     /// image decoder rebuilt from a record that carries one. Test and format
     /// level: only tests read it.
-    pub fn frame_sender(&self, frame: &FrameRef) -> Option<FrameRef> {
+    pub fn frame_sender(&self, frame: FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.sender
     }
 
     /// The frame a closure activation captured, or `None` for any other
-    /// kind. `eval::frame_at_depth` walks this.
-    pub fn frame_captured(&self, frame: &FrameRef) -> Option<FrameRef> {
+    /// kind. `locals::frame_at_depth` walks this.
+    pub fn frame_captured(&self, frame: FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
         match &self.frames[frame.index as usize].frame.kind {
             FrameKind::Closure(closure) => Some(closure.captured_frame),
@@ -1059,7 +1062,7 @@ impl Heap {
     /// it answers whatever the file said. It is not liveness --
     /// `raise_return` treats every decoded frame as dead, because it
     /// decides by `frame_activation`, and a decoded frame is never married.
-    pub fn frame_is_uncontinuable(&self, frame: &FrameRef) -> bool {
+    pub fn frame_is_uncontinuable(&self, frame: FrameRef) -> bool {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.uncontinuable
     }
@@ -1071,7 +1074,7 @@ impl Heap {
     /// `SuperclassClause`/`SuperclassMessage` a frame carries a class for
     /// (`frame_body`), and once to check that a class-carrying kind's class
     /// is itself a class reference (`check_class_references`).
-    pub fn frame_kind(&self, frame: &FrameRef) -> FrameKind {
+    pub fn frame_kind(&self, frame: FrameRef) -> FrameKind {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.kind.clone()
     }
@@ -1080,7 +1083,7 @@ impl Heap {
     /// read together through one slice index rather than three.
     /// `image::decode::verify_graph` checks all three against the shape of
     /// the compiled body it reconciles every decoded frame against.
-    pub fn frame_register_shape(&self, frame: &FrameRef) -> (usize, usize, usize) {
+    pub fn frame_register_shape(&self, frame: FrameRef) -> (usize, usize, usize) {
         self.check_frame_origin(frame);
         debug_assert!(
             self.frames[frame.index as usize].live.is_none(),
@@ -1100,7 +1103,7 @@ impl Heap {
     /// Only for a dead frame, which is also the encoder's precondition: it
     /// only ever runs between sends, when nothing is live, and
     /// `image::snapshot` refuses to start otherwise.
-    pub fn frame_snapshot(&self, frame: &FrameRef) -> Frame {
+    pub fn frame_snapshot(&self, frame: FrameRef) -> Frame {
         self.check_frame_origin(frame);
         debug_assert!(
             self.frames[frame.index as usize].live.is_none(),
@@ -1119,7 +1122,7 @@ impl Heap {
     /// replaces that frame's already-verified `pc`/register-file shape with
     /// an unverified one: no error, and no way for `verify_graph` to
     /// notice, because it has already finished.
-    pub fn replace_frame(&mut self, frame: &FrameRef, filled: Frame) {
+    pub fn replace_frame(&mut self, frame: FrameRef, filled: Frame) {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame = filled;
     }
@@ -1173,7 +1176,7 @@ impl Heap {
     /// the registers move into the frame, which is dead from then on --
     /// uncontinuable, and with no sender, as a returned Smalltalk context
     /// has none.
-    pub fn pop_activation(&mut self, act: &ActivationRef) {
+    pub fn pop_activation(&mut self, act: ActivationRef) {
         self.check_activation(act);
         debug_assert_eq!(
             act.index as usize + 1,
@@ -1202,7 +1205,7 @@ impl Heap {
 
     /// The arena frame for a live activation, created married to it on the
     /// first call and answered again on every later one.
-    pub fn reify(&mut self, act: &ActivationRef) -> FrameRef {
+    pub fn reify(&mut self, act: ActivationRef) -> FrameRef {
         self.check_activation(act);
         let i = act.index as usize;
         if let Some(frame) = self.stack.entries[i].reified {
@@ -1237,54 +1240,55 @@ impl Heap {
         self.stack.entries.len()
     }
 
-    pub fn activation_local(&self, act: &ActivationRef, index: u16) -> Value {
+    pub fn activation_local(&self, act: ActivationRef, index: u16) -> Value {
         self.check_activation(act);
         self.stack.values[self.register_slot(act.index, index)]
     }
 
-    pub fn activation_set_local(&mut self, act: &ActivationRef, index: u16, value: Value) {
+    pub fn activation_set_local(&mut self, act: ActivationRef, index: u16, value: Value) {
         self.check_activation(act);
         let slot = self.register_slot(act.index, index);
         self.stack.values[slot] = value;
     }
 
-    pub fn activation_receiver(&self, act: &ActivationRef) -> Value {
+    pub fn activation_receiver(&self, act: ActivationRef) -> Value {
         self.check_activation(act);
         self.stack.entries[act.index as usize].receiver
     }
 
     /// The receiver and `current_class` together. `dispatch_lexical_send`'s
     /// head needs both on every implicit-receiver send; fetching them
-    /// separately was once a measured 13% regression (see
-    /// `docs/design/execution.md`'s measurements section).
+    /// separately measured 13% slower on `bench_loop.ns`
+    /// (`docs/design/execution.md`, "A 13% regression, found and
+    /// recovered").
     pub fn activation_receiver_and_current_class(
         &self,
-        act: &ActivationRef,
+        act: ActivationRef,
     ) -> (Value, Option<ClassRef>) {
         self.check_activation(act);
         let entry = &self.stack.entries[act.index as usize];
         (entry.receiver, entry.current_class)
     }
 
-    pub fn activation_current_class(&self, act: &ActivationRef) -> Option<ClassRef> {
+    pub fn activation_current_class(&self, act: ActivationRef) -> Option<ClassRef> {
         self.check_activation(act);
         self.stack.entries[act.index as usize].current_class
     }
 
     /// See `Frame::slot_base`.
-    pub fn activation_slot_base(&self, act: &ActivationRef) -> usize {
+    pub fn activation_slot_base(&self, act: ActivationRef) -> usize {
         self.check_activation(act);
         self.stack.entries[act.index as usize].slot_base
     }
 
-    pub fn set_activation_pc(&mut self, act: &ActivationRef, pc: usize) {
+    pub fn set_activation_pc(&mut self, act: ActivationRef, pc: usize) {
         self.check_activation(act);
         self.stack.entries[act.index as usize].pc = pc;
     }
 
     /// A closure activation's return target -- its closure's `home` -- and
     /// `None` for every other kind, which is its own return target.
-    pub fn activation_home(&self, act: &ActivationRef) -> Option<FrameRef> {
+    pub fn activation_home(&self, act: ActivationRef) -> Option<FrameRef> {
         self.check_activation(act);
         match &self.stack.entries[act.index as usize].kind {
             FrameKind::Closure(closure) => Some(closure.home),
@@ -1293,8 +1297,8 @@ impl Heap {
     }
 
     /// The frame a closure activation's closure captured, or `None` for any
-    /// other kind. The first hop of `eval::frame_at_depth`.
-    pub fn activation_captured(&self, act: &ActivationRef) -> Option<FrameRef> {
+    /// other kind. The first hop of `locals::frame_at_depth`.
+    pub fn activation_captured(&self, act: ActivationRef) -> Option<FrameRef> {
         self.check_activation(act);
         match &self.stack.entries[act.index as usize].kind {
             FrameKind::Closure(closure) => Some(closure.captured_frame),
@@ -1306,7 +1310,7 @@ impl Heap {
     /// nil. The initializer path builds its activation before it knows the
     /// compiled body's register count. Only the top entry can grow: any
     /// other's window ends where the next one's begins.
-    pub fn grow_activation_temps(&mut self, act: &ActivationRef, needed: usize) {
+    pub fn grow_activation_temps(&mut self, act: ActivationRef, needed: usize) {
         self.check_activation(act);
         debug_assert_eq!(
             act.index as usize + 1,
@@ -1324,7 +1328,7 @@ impl Heap {
     /// activation runs, the frame's own copy after it has returned. This is
     /// the path a block takes to its method's variables, and the only
     /// register access that branches.
-    pub fn frame_local(&self, frame: &FrameRef, index: u16) -> Value {
+    pub fn frame_local(&self, frame: FrameRef, index: u16) -> Value {
         self.check_frame_origin(frame);
         let slot = &self.frames[frame.index as usize];
         match slot.live {
@@ -1341,7 +1345,7 @@ impl Heap {
         }
     }
 
-    pub fn frame_set_local(&mut self, frame: &FrameRef, index: u16, value: Value) {
+    pub fn frame_set_local(&mut self, frame: FrameRef, index: u16, value: Value) {
         self.check_frame_origin(frame);
         // Copied out first, so neither arm below holds a borrow of `frames`
         // while it writes.
@@ -1368,7 +1372,7 @@ impl Heap {
     /// activation has returned -- and for every frame the image decoder
     /// built, since none of those ever ran here. `raise_return` uses it to
     /// tell a live home from a dead one.
-    pub fn frame_activation(&self, frame: &FrameRef) -> Option<ActivationRef> {
+    pub fn frame_activation(&self, frame: FrameRef) -> Option<ActivationRef> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize]
             .live
@@ -1419,7 +1423,7 @@ mod tests {
 
         // In range for `other` -- which is exactly why this is silent
         // without the guard.
-        let _ = other.str_value(&obj);
+        let _ = other.str_value(obj);
     }
 
     /// The sibling case, and the one an accessor guard cannot reach:
@@ -1442,7 +1446,7 @@ mod tests {
 
         // Both are the second object their own heap allocated, so both
         // carry the same index: without the guard this answers `true`.
-        let _ = mine.same(&theirs);
+        let _ = mine.same(theirs);
     }
 
     /// The same hole for reified frames. `FrameRef::same` is what the image
@@ -1461,7 +1465,7 @@ mod tests {
         let mut other = Heap::new();
         let theirs = other.alloc_frame(bare_frame());
 
-        let _ = mine.same(&theirs);
+        let _ = mine.same(theirs);
     }
 
     /// Why `object_identity_key` exists at all, rather than callers keying
@@ -1481,20 +1485,19 @@ mod tests {
         let a = heap.alloc_placeholder_object(class, ObjectData::Instance(Vec::new()));
         let b = heap.alloc_placeholder_object(class, ObjectData::Instance(Vec::new()));
 
-        assert_eq!(heap.identity_hash(&a), 0);
-        assert_eq!(heap.identity_hash(&a), heap.identity_hash(&b));
-        assert_ne!(heap.object_identity_key(&a), heap.object_identity_key(&b));
+        assert_eq!(heap.identity_hash(a), 0);
+        assert_eq!(heap.identity_hash(a), heap.identity_hash(b));
+        assert_ne!(heap.object_identity_key(a), heap.object_identity_key(b));
         // Stable for one handle, which is what every caller relies on.
-        assert_eq!(heap.object_identity_key(&a), heap.object_identity_key(&a));
+        assert_eq!(heap.object_identity_key(a), heap.object_identity_key(a));
     }
 
-    /// The hole that moving `identity_key` onto `Heap` closes. Keying a
-    /// handle through the wrong heap used to be the one handle operation
-    /// with no origin check: it was handed a handle and no `Heap`, so two
-    /// objects from different arenas produced the same key and collided in
-    /// a caller's map -- `image::encode::GraphTable` would have given one
-    /// object the other's id. Requiring the `Heap` is what makes the check
-    /// possible, and the compiler is what requires it.
+    /// Why `identity_key` lives on `Heap`. A key computed from a handle
+    /// alone could carry no origin check, so two objects from different
+    /// arenas would produce the same key and collide in a caller's map --
+    /// `image::encode::GraphTable` would give one object the other's id.
+    /// Requiring the `Heap` is what makes the check possible, and the
+    /// compiler is what requires it.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "handle belongs to a different heap")]
@@ -1510,8 +1513,8 @@ mod tests {
         // Both are the second object their own heap allocated, so both
         // carry the same index: without the guard these two keys are equal.
         assert_ne!(
-            origin.object_identity_key(&mine),
-            origin.object_identity_key(&theirs)
+            origin.object_identity_key(mine),
+            origin.object_identity_key(theirs)
         );
     }
 
@@ -1542,7 +1545,7 @@ mod tests {
         // otherwise still pass this test.
         heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
         let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
-        assert!(heap.class_of_obj(&class).same(&class));
+        assert!(heap.class_of_obj(class).same(class));
     }
 
     fn top_level_frame() -> Frame {
@@ -1586,8 +1589,8 @@ mod tests {
         for _ in 0..1000 {
             heap.alloc_frame(top_level_frame());
         }
-        assert!(matches!(heap.frame_receiver(&first), Value::Nil));
-        assert_eq!(heap.frame_register_shape(&first), (3, 2, 1));
+        assert!(matches!(heap.frame_receiver(first), Value::Nil));
+        assert_eq!(heap.frame_register_shape(first), (3, 2, 1));
     }
 
     /// Frame identity is what the image round trip checks sharing by -- a
@@ -1600,8 +1603,8 @@ mod tests {
         let mut heap = Heap::new();
         let a = heap.alloc_frame(top_level_frame());
         let b = heap.alloc_frame(top_level_frame());
-        assert!(!a.same(&b));
-        assert!(a.same(&a.clone()));
+        assert!(!a.same(b));
+        assert!(a.same(a));
     }
 
     /// The object counterpart of the frame test above: a handle must stay
@@ -1618,11 +1621,11 @@ mod tests {
         for _ in 0..1000 {
             heap.alloc_object(class, ObjectData::Str("filler".to_string()));
         }
-        assert_eq!(heap.str_value(&first).as_deref(), Some("first"));
-        assert!(heap.class_of_obj(&first).same(&class));
+        assert_eq!(heap.str_value(first).as_deref(), Some("first"));
+        assert!(heap.class_of_obj(first).same(class));
 
         let twin = heap.alloc_object(class, ObjectData::Str("first".to_string()));
-        assert!(!first.same(&twin));
+        assert!(!first.same(twin));
     }
 
     /// A minimal class object real enough for `describe` to read a mixin
@@ -1688,12 +1691,12 @@ mod tests {
     fn an_activation_addresses_its_arguments_before_its_temporaries() {
         let mut heap = Heap::new();
         let act = heap.push_activation(header(), &[Value::SmallInt(1), Value::SmallInt(2)], 2);
-        assert!(matches!(heap.activation_local(&act, 0), Value::SmallInt(1)));
-        assert!(matches!(heap.activation_local(&act, 1), Value::SmallInt(2)));
-        assert!(matches!(heap.activation_local(&act, 2), Value::Nil));
-        heap.activation_set_local(&act, 3, Value::SmallInt(9));
-        assert!(matches!(heap.activation_local(&act, 3), Value::SmallInt(9)));
-        heap.pop_activation(&act);
+        assert!(matches!(heap.activation_local(act, 0), Value::SmallInt(1)));
+        assert!(matches!(heap.activation_local(act, 1), Value::SmallInt(2)));
+        assert!(matches!(heap.activation_local(act, 2), Value::Nil));
+        heap.activation_set_local(act, 3, Value::SmallInt(9));
+        assert!(matches!(heap.activation_local(act, 3), Value::SmallInt(9)));
+        heap.pop_activation(act);
     }
 
     /// Two live activations share one `values` vector; neither may see the
@@ -1703,38 +1706,39 @@ mod tests {
         let mut heap = Heap::new();
         let outer = heap.push_activation(header(), &[Value::SmallInt(1)], 1);
         let inner = heap.push_activation(header(), &[Value::SmallInt(2)], 1);
-        heap.activation_set_local(&inner, 1, Value::SmallInt(20));
-        heap.activation_set_local(&outer, 1, Value::SmallInt(10));
+        heap.activation_set_local(inner, 1, Value::SmallInt(20));
+        heap.activation_set_local(outer, 1, Value::SmallInt(10));
         assert!(matches!(
-            heap.activation_local(&outer, 0),
+            heap.activation_local(outer, 0),
             Value::SmallInt(1)
         ));
         assert!(matches!(
-            heap.activation_local(&outer, 1),
+            heap.activation_local(outer, 1),
             Value::SmallInt(10)
         ));
         assert!(matches!(
-            heap.activation_local(&inner, 0),
+            heap.activation_local(inner, 0),
             Value::SmallInt(2)
         ));
         assert!(matches!(
-            heap.activation_local(&inner, 1),
+            heap.activation_local(inner, 1),
             Value::SmallInt(20)
         ));
         assert_eq!(heap.activation_depth(), 2);
-        heap.pop_activation(&inner);
-        heap.pop_activation(&outer);
+        heap.pop_activation(inner);
+        heap.pop_activation(outer);
         assert_eq!(heap.activation_depth(), 0);
     }
 
-    /// The property the whole step exists for: an activation nothing
-    /// reified is gone once it is popped. The arena used to keep every one.
+    /// The property the activation stack exists for: an activation nothing
+    /// reified is gone once it is popped, rather than kept in the frame
+    /// arena, which never reclaims a slot.
     #[test]
     fn an_activation_that_is_never_reified_leaves_nothing_behind() {
         let mut heap = Heap::new();
         for _ in 0..1000 {
             let act = heap.push_activation(header(), &[Value::SmallInt(1)], 3);
-            heap.pop_activation(&act);
+            heap.pop_activation(act);
         }
         assert_eq!(heap.frames.len(), 0);
         assert_eq!(heap.stack.values.len(), 0);
@@ -1745,11 +1749,11 @@ mod tests {
     fn reifying_an_activation_twice_answers_the_same_frame() {
         let mut heap = Heap::new();
         let act = heap.push_activation(header(), &[], 1);
-        let first = heap.reify(&act);
-        let second = heap.reify(&act);
-        assert!(first.same(&second));
+        let first = heap.reify(act);
+        let second = heap.reify(act);
+        assert!(first.same(second));
         assert_eq!(heap.frames.len(), 1);
-        heap.pop_activation(&act);
+        heap.pop_activation(act);
     }
 
     /// While its activation runs, a reified frame is a view of the live
@@ -1759,15 +1763,15 @@ mod tests {
     fn a_married_frame_reads_and_writes_the_live_registers() {
         let mut heap = Heap::new();
         let act = heap.push_activation(header(), &[Value::SmallInt(1)], 1);
-        let frame = heap.reify(&act);
-        heap.activation_set_local(&act, 1, Value::SmallInt(5));
-        assert!(matches!(heap.frame_local(&frame, 1), Value::SmallInt(5)));
-        heap.frame_set_local(&frame, 1, Value::SmallInt(7));
-        assert!(matches!(heap.activation_local(&act, 1), Value::SmallInt(7)));
+        let frame = heap.reify(act);
+        heap.activation_set_local(act, 1, Value::SmallInt(5));
+        assert!(matches!(heap.frame_local(frame, 1), Value::SmallInt(5)));
+        heap.frame_set_local(frame, 1, Value::SmallInt(7));
+        assert!(matches!(heap.activation_local(act, 1), Value::SmallInt(7)));
         assert!(heap
-            .frame_activation(&frame)
-            .is_some_and(|live| live.same(&act)));
-        heap.pop_activation(&act);
+            .frame_activation(frame)
+            .is_some_and(|live| live.same(act)));
+        heap.pop_activation(act);
     }
 
     /// Popping a reified activation hands its registers to the frame, which
@@ -1777,20 +1781,20 @@ mod tests {
     fn popping_a_reified_activation_divorces_its_frame() {
         let mut heap = Heap::new();
         let act = heap.push_activation(header(), &[Value::SmallInt(1)], 1);
-        heap.set_activation_pc(&act, 4);
-        let frame = heap.reify(&act);
+        heap.set_activation_pc(act, 4);
+        let frame = heap.reify(act);
         // Written after reification: it must survive the divorce.
-        heap.activation_set_local(&act, 1, Value::SmallInt(3));
-        heap.pop_activation(&act);
+        heap.activation_set_local(act, 1, Value::SmallInt(3));
+        heap.pop_activation(act);
 
-        assert!(heap.frame_activation(&frame).is_none());
-        assert!(matches!(heap.frame_local(&frame, 0), Value::SmallInt(1)));
-        assert!(matches!(heap.frame_local(&frame, 1), Value::SmallInt(3)));
-        assert_eq!(heap.frame_register_shape(&frame), (4, 1, 1));
-        assert!(heap.frame_is_uncontinuable(&frame));
-        assert!(heap.frame_sender(&frame).is_none());
-        heap.frame_set_local(&frame, 1, Value::SmallInt(8));
-        assert!(matches!(heap.frame_local(&frame, 1), Value::SmallInt(8)));
+        assert!(heap.frame_activation(frame).is_none());
+        assert!(matches!(heap.frame_local(frame, 0), Value::SmallInt(1)));
+        assert!(matches!(heap.frame_local(frame, 1), Value::SmallInt(3)));
+        assert_eq!(heap.frame_register_shape(frame), (4, 1, 1));
+        assert!(heap.frame_is_uncontinuable(frame));
+        assert!(heap.frame_sender(frame).is_none());
+        heap.frame_set_local(frame, 1, Value::SmallInt(8));
+        assert!(matches!(heap.frame_local(frame, 1), Value::SmallInt(8)));
     }
 
     /// The next activation at the same depth reuses the stack slots. A
@@ -1799,14 +1803,14 @@ mod tests {
     fn a_divorced_frame_is_untouched_by_the_next_activation_at_its_depth() {
         let mut heap = Heap::new();
         let first = heap.push_activation(header(), &[], 2);
-        heap.activation_set_local(&first, 1, Value::SmallInt(3));
-        let frame = heap.reify(&first);
-        heap.pop_activation(&first);
+        heap.activation_set_local(first, 1, Value::SmallInt(3));
+        let frame = heap.reify(first);
+        heap.pop_activation(first);
 
         let second = heap.push_activation(header(), &[], 2);
-        heap.activation_set_local(&second, 1, Value::SmallInt(99));
-        assert!(matches!(heap.frame_local(&frame, 1), Value::SmallInt(3)));
-        heap.pop_activation(&second);
+        heap.activation_set_local(second, 1, Value::SmallInt(99));
+        assert!(matches!(heap.frame_local(frame, 1), Value::SmallInt(3)));
+        heap.pop_activation(second);
     }
 
     /// An `ActivationRef` kept past its pop names whatever activation reuses
@@ -1818,9 +1822,9 @@ mod tests {
     fn reading_through_a_popped_activation_handle_panics() {
         let mut heap = Heap::new();
         let first = heap.push_activation(header(), &[], 1);
-        heap.pop_activation(&first);
+        heap.pop_activation(first);
         let _second = heap.push_activation(header(), &[], 1);
-        let _ = heap.activation_local(&first, 0);
+        let _ = heap.activation_local(first, 0);
     }
 
     #[test]
@@ -1831,7 +1835,7 @@ mod tests {
         let mine = origin.push_activation(header(), &[], 1);
         let mut other = Heap::new();
         let _theirs = other.push_activation(header(), &[], 1);
-        let _ = other.activation_local(&mine, 0);
+        let _ = other.activation_local(mine, 0);
     }
 
     /// `ActivationRef::same` is how `invoke_method` and `run_clause_body`
@@ -1847,7 +1851,7 @@ mod tests {
         let mine = origin.push_activation(header(), &[], 1);
         let mut other = Heap::new();
         let theirs = other.push_activation(header(), &[], 1);
-        let _ = mine.same(&theirs);
+        let _ = mine.same(theirs);
     }
 
     /// The comparison `same`'s doc comment argues cannot happen: a catcher
@@ -1864,9 +1868,9 @@ mod tests {
     fn comparing_a_popped_activation_handle_with_its_successor_panics() {
         let mut heap = Heap::new();
         let first = heap.push_activation(header(), &[], 1);
-        heap.pop_activation(&first);
+        heap.pop_activation(first);
         let second = heap.push_activation(header(), &[], 1);
-        let _ = first.same(&second);
+        let _ = first.same(second);
     }
 
     /// Popping below the top would truncate the registers of every
@@ -1878,14 +1882,14 @@ mod tests {
         let mut heap = Heap::new();
         let outer = heap.push_activation(header(), &[], 1);
         let _inner = heap.push_activation(header(), &[], 1);
-        heap.pop_activation(&outer);
+        heap.pop_activation(outer);
     }
 
     /// Every test above pushes `FrameKind::TopLevel`, which is `None` on
     /// both `activation_home` and `activation_captured` by construction --
     /// closure creation is the only reason either exists. `raise_return`
     /// picks a non-local return's target off `activation_home`, and the
-    /// outer-local walk (`eval::frame_at_depth`) starts every hop off
+    /// outer-local walk (`locals::frame_at_depth`) starts every hop off
     /// `activation_captured`/`frame_captured`, so a closure activation that
     /// answered `None` for either would silently misroute a `^` or a
     /// captured-variable read rather than fail loudly. This also exercises
@@ -1897,10 +1901,10 @@ mod tests {
     fn a_closure_activations_home_and_captured_frame_are_its_closures() {
         let mut heap = Heap::new();
         let method_act = heap.push_activation(header(), &[], 0);
-        let home_frame = heap.reify(&method_act);
+        let home_frame = heap.reify(method_act);
 
         let closure_data = ClosureData {
-            params: vec![],
+            params: std::rc::Rc::new(vec![]),
             code: std::rc::Rc::new(crate::bytecode::CompiledCode {
                 kind: crate::bytecode::CodeKind::Block,
                 instrs: vec![crate::bytecode::Instr::ImplicitReturn { reg: 0 }],
@@ -1924,21 +1928,21 @@ mod tests {
             0,
         );
 
-        assert!(heap.activation_home(&method_act).is_none());
-        assert!(heap.activation_captured(&method_act).is_none());
+        assert!(heap.activation_home(method_act).is_none());
+        assert!(heap.activation_captured(method_act).is_none());
         assert!(heap
-            .activation_home(&closure_act)
-            .is_some_and(|h| h.same(&home_frame)));
+            .activation_home(closure_act)
+            .is_some_and(|h| h.same(home_frame)));
         assert!(heap
-            .activation_captured(&closure_act)
-            .is_some_and(|c| c.same(&home_frame)));
+            .activation_captured(closure_act)
+            .is_some_and(|c| c.same(home_frame)));
 
-        let closure_frame = heap.reify(&closure_act);
+        let closure_frame = heap.reify(closure_act);
         assert!(heap
-            .frame_home(&closure_frame)
-            .is_some_and(|h| h.same(&home_frame)));
+            .frame_home(closure_frame)
+            .is_some_and(|h| h.same(home_frame)));
 
-        heap.pop_activation(&closure_act);
-        heap.pop_activation(&method_act);
+        heap.pop_activation(closure_act);
+        heap.pop_activation(method_act);
     }
 }

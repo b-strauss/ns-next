@@ -22,7 +22,6 @@ pub mod mixins;
 pub mod opcodes;
 pub mod symbols;
 
-use crate::bytecode::CompiledModule;
 use crate::heap::Heap;
 use crate::types::{ClassRef, SourceOrigin, Value};
 use crate::{Interpreter, Symbol};
@@ -61,19 +60,15 @@ struct Describing {
 /// the way. Shared by `snapshot` and `build`: both need the same two tables,
 /// and both need them encoded before the (still-open) symbol table can be
 /// written, since it is the table's *contents* that fill it.
-fn encode_describing(
-    root_class: &ClassRef,
-    module: &CompiledModule,
-    heap: &Heap,
-) -> Result<Describing, String> {
+fn encode_describing(root_class: ClassRef, heap: &Heap) -> Result<Describing, String> {
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
-    let ids = encode::encode_code_table(&mut code, heap, module, root_class, &mut symbols)?;
+    let ids = encode::encode_code_table(&mut code, heap, root_class, &mut symbols)?;
     // After the code table, whose ids its rows name; before the graph (or the
     // entry field), whose class objects and selector respectively might name
     // its rows.
     let mut mixin_w = encode::Writer::new();
-    let mixin_ids = mixins::encode(&mut mixin_w, heap, root_class, module, &mut symbols, &ids)?;
+    let mixin_ids = mixins::encode(&mut mixin_w, heap, root_class, &mut symbols, &ids)?;
     Ok(Describing {
         symbols,
         code,
@@ -91,7 +86,7 @@ fn write_describing(
     origin: &SourceOrigin,
     flags: u8,
     d: Describing,
-    root_class: &ClassRef,
+    root_class: ClassRef,
     heap: &Heap,
 ) -> Result<(), String> {
     encode::write_header(
@@ -131,8 +126,7 @@ pub fn snapshot(
     heap: &Heap,
     source: Option<&str>,
     origin: &SourceOrigin,
-    root_class: &ClassRef,
-    module: &CompiledModule,
+    root_class: ClassRef,
     platform: &Value,
     roots: &[Value],
 ) -> Result<Vec<u8>, String> {
@@ -148,7 +142,7 @@ pub fn snapshot(
                 .to_string(),
         );
     }
-    let mut d = encode_describing(root_class, module, heap)?;
+    let mut d = encode_describing(root_class, heap)?;
     // The graph section is encoded into its own buffer, against the same
     // `symbols` builder the describing sections used, before `write_describing`
     // consumes `d` -- the graph needs the mixin table's row ids, and those
@@ -186,11 +180,10 @@ pub fn build(
     heap: &Heap,
     source: Option<&str>,
     origin: &SourceOrigin,
-    root_class: &ClassRef,
-    module: &CompiledModule,
+    root_class: ClassRef,
     entry: Symbol,
 ) -> Result<Vec<u8>, String> {
-    let mut d = encode_describing(root_class, module, heap)?;
+    let mut d = encode_describing(root_class, heap)?;
     // Interned before `write_describing` writes the table below: an id
     // assigned after the table is on the wire is an id the table does not
     // contain, which the decoder reports as an out-of-range symbol id.
@@ -210,7 +203,8 @@ pub fn build(
 }
 
 pub struct LoadedImage {
-    /// Bootstrapped, with the image's own code table installed.
+    /// Bootstrapped. The image's code lives on the declarations its mixin
+    /// table rebuilt.
     pub interp: Interpreter,
     pub root_class: ClassRef,
     pub roots: Vec<Value>,
@@ -233,9 +227,9 @@ pub struct LoadedImage {
 }
 
 /// Decodes an artifact: symbols, code table, mixin table, root class, entry,
-/// then -- for an image, never a binary -- the object graph. Installs
-/// the code table and, for an image, advances the identity-hash counter
-/// past the graph's maximum.
+/// then -- for an image, never a binary -- the object graph. Verifies the
+/// decoded declarations against their code and, for an image, advances the
+/// identity-hash counter past the graph's maximum.
 ///
 /// Nothing here parses, resolves or compiles. The root class is rebuilt
 /// from mixin-table row 0 (`decode::build_root_class`), which is what makes
@@ -250,11 +244,10 @@ pub struct LoadedImage {
 /// later looks for something to send.
 ///
 /// Both verification passes run before anything the image describes can be
-/// executed: `verify_code_table` between decoding and installing the code
-/// table, `verify_graph` (image only) once the module exists to resolve
-/// each frame's body against. A corrupt but version-matching artifact is an
-/// `Err` here,
-/// never a panic in the VM later.
+/// executed: `verify_code_table` and `verify_mixins` before anything is
+/// built on the code, `verify_graph` (image only) resolving each frame's
+/// body off the decoded mixins that carry it. A corrupt but version-matching
+/// artifact is an `Err` here, never a panic in the VM later.
 pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let mut r = decode::Reader::new(bytes);
     let header = decode::read_header(&mut r).map_err(|e| e.to_string())?;
@@ -269,7 +262,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let table = decode::decode_code_table(&mut r, &symbols).map_err(|e| e.to_string())?;
     decode::verify_code_table(&table).map_err(|e| e.to_string())?;
     let mixins = mixins::decode(&mut r, &symbols, &table.codes).map_err(|e| e.to_string())?;
-    let module = decode::build_module(&table, &mixins).map_err(|e| e.to_string())?;
+    decode::verify_mixins(&mixins).map_err(|e| e.to_string())?;
     let root_superclass =
         decode::decode_root_superclass(&mut r, &interp).map_err(|e| e.to_string())?;
     let root_class = decode::build_root_class(&mut interp, &mixins, root_superclass)
@@ -303,7 +296,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         decode::decode_graph_section(&mut r, &mut ctx, &symbols).map_err(|e| e.to_string())?
     };
     if !header.stateless {
-        decode::verify_graph(&graph, &table, &module, &interp.heap).map_err(|e| e.to_string())?;
+        decode::verify_graph(&graph, &table, &interp.heap).map_err(|e| e.to_string())?;
         interp.advance_identity_hash_past(graph.max_identity_hash);
     }
     // A byte sequence past the last section is refused, not ignored: with
@@ -316,7 +309,6 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         }
         .to_string());
     }
-    interp.install_code(module);
     Ok(LoadedImage {
         interp,
         root_class,

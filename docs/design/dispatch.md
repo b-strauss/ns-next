@@ -165,12 +165,12 @@ receiver's own class. Using the receiver's class instead silently resolves
 `outer` to the wrong enclosing object — the kind of defect that produces a
 plausible answer rather than a crash.
 
-## Shared orchestration
+## The send machinery
 
 Send, `doesNotUnderstand:`, lexical, super and native dispatch, frame
-construction and `instantiate` live in `interpreter/`, the orchestration every
-way of running code shares: the VM's instruction loop calls them and runs
-whatever body they choose ([execution.md](execution.md), "The VM").
+construction and `instantiate` live in `interpreter/`, the send machinery the VM
+calls: its instruction loop calls them and runs whatever body they choose
+([execution.md](execution.md), "The VM").
 
 Never copy dispatch logic, lookup logic or error text out of `interpreter/` into
 `vm.rs` or `compiler/`. The reference lowering and, later, a JIT must reach the
@@ -211,14 +211,38 @@ This is recorded here rather than derived later because the obvious key — the
 class object — is the wrong one, and picking it would produce a cache that
 never hits.
 
+**A native send binds an enumerated primitive.** Native dispatch today
+selects with `match selector.as_str()` after the lookup found
+`Lookup::Native(kind)`. The caches do not keep that shape. A lookup that
+reaches a native binds an *enumerated primitive* — a Rust enum naming the
+operation, `IntAdd` rather than a selector — and a native cache entry
+carries it, so a hit costs the guard and an indexed jump. An enumeration,
+not a function pointer, because the JIT tiers must be able to recognize the
+primitive and emit it inline: a function pointer can only be called, which
+is the same ceiling a Rust callback imposes ([core-library.md](core-library.md)).
+This is Cog's and Primordial Soup's model: a method's primitive number
+indexes an interpreter-side table (Cog's `primitiveTable`; Primordial Soup's
+`Primitives::primitive_table_`) and, in Cog's JIT, `primitiveGeneratorTable`,
+whose generators (`genPrimitiveAdd`) emit machine code, and at the send site
+`genSpecialSelectorArithmetic` emits SmallInteger arithmetic inline with a
+fallback send (`prior-art/opensmalltalk-vm/src/spur64.cog/`,
+`prior-art/primordialsoup/vm/primitives.cc`). SOMns reaches the same result
+through Graal's partial evaluation of its primitive nodes.
+
+**A lexical send to a slot is cached too.** `dispatch_lexical_send` checks
+for a slot before any method lookup: it interns the getter name for every
+setter-shaped selector (`sends::slot_selector_shape`) and hashes the name
+into the application's `slot_index` for every lexical send. A lexical-send
+cache entry that records the slot's index removes both.
+
 **Caches come after the representation change, not before it.** A cache removes
-the lookup and can carry the compiled body along with it, retiring the per-call
-`HashMap` lookup in `invoke_method`. It does not touch what an activation costs
-to build, which was measured at ~68 ns — about 41% of a user-method send — on
-the pre-arena representation; see [execution.md](execution.md)'s measurements.
-Wiring caches up first would optimize the half of a send that sits on top of a
-fixed cost the same milestone removes anyway, so the representation goes first
-and the caches land on the cheaper one.
+the lookup; the method it records carries its compiled body. It does not touch
+what an activation costs to build, which was measured at ~68 ns — about 41% of a
+user-method send — on the pre-arena representation; see
+[execution.md](execution.md)'s measurements. Wiring caches up first would
+optimize the half of a send that sits on top of a fixed cost the same milestone
+removes anyway, so the representation goes first and the caches land on the
+cheaper one.
 
 That representation change has happened. The arena replaced `Rc<RefCell<_>>`,
 worth about 15% of the benchmark ([memory.md](memory.md)). The activation stack
@@ -226,8 +250,7 @@ means an activation nothing captures allocates nothing: no arena entry and none
 of the two `Vec`s every activation used to take. A captured one still pays for
 its reified frame and, when it returns, two vectors for the divorce. Against the
 arena, a user-method send fell from ~146 ns to ~91 ns
-([execution.md](execution.md), "What the activation stack moved"). The per-call
-`HashMap` lookup is still there, and it is the caches' to remove. Each cache
+([execution.md](execution.md), "What the activation stack moved"). Each cache
 also carries a dependency key, per
 [liveness-and-reflection.md](liveness-and-reflection.md); the key is the
 application, for the same reason the guard is.

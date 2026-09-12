@@ -1,8 +1,8 @@
 //! `Integer` (`i64`) and `Float` (`f64`) native methods.
 //!
-//! # Milestone 1 known gap: no numeric tower
+//! # Known gap: no numeric tower
 //!
-//! Milestone 1 implements no coercion between `Integer` and `Float`. There
+//! There is no coercion between `Integer` and `Float`. There
 //! is no `Number` protocol, no `generality`/`coerce:` pair, and no promotion
 //! of a mixed operation to the wider type:
 //!
@@ -26,9 +26,9 @@
 //!
 //! Implementing the tower means widening the whole `Value` numeric domain
 //! (`LargeInteger`/`Fraction` belong in the same change) and is out of scope
-//! here. Until then these operations fail loudly rather than silently: an
-//! earlier version reported a mixed-type argument as an "Integer overflow",
-//! which was actively misleading.
+//! here. Until then these operations fail loudly rather than silently, and
+//! with a type-mismatch message of their own: reporting a mixed-type
+//! argument as an "Integer overflow" would be actively misleading.
 
 use crate::types::*;
 use crate::{Heap, Interpreter, Symbol};
@@ -83,7 +83,7 @@ pub fn dispatch_integer(
         Some(m) => f(n, m).map(Value::SmallInt).ok_or_else(|| overflow(op)),
     };
     // Ordering comparisons: an argument of the wrong type is an error, not a
-    // silent `false` (which is what an earlier version answered).
+    // silent `false`.
     let compare = |op: &str, f: fn(i64, i64) -> bool| match arg_int() {
         None => Err(mismatch(op)),
         Some(m) => Ok(Value::Bool(f(n, m))),
@@ -136,8 +136,8 @@ pub fn dispatch_float(
         return None;
     };
     // An `Integer` argument widens losslessly; anything else is a type
-    // mismatch (previously: a silent `NaN` result for arithmetic, a silent
-    // `false` for comparisons).
+    // mismatch, never a silent `NaN` result for arithmetic or a silent
+    // `false` for comparisons.
     let arg_float = || match args.first() {
         Some(Value::Float(y)) => Some(*y),
         Some(Value::SmallInt(y)) => Some(*y as f64),

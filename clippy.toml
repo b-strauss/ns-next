@@ -1,0 +1,13 @@
+# `trivially_copy_pass_by_ref` must see every handle. In the build clippy
+# checks, `ActivationRef` carries its debug-only `origin` and `generation`
+# fields and is 12 bytes, past the lint's default 8-byte limit; in a release
+# build every handle is 4. And by default the lint skips `pub` functions --
+# which is every `Heap` accessor -- to avoid breaking an exported API; ns-next
+# has no external users to break.
+#
+# `avoid-breaking-exported-api` is not scoped to that one lint: it is read by
+# every clippy lint that honours it, so this also applies `pub` items to
+# lints such as `upper_case_acronyms` and `wrong_self_convention` that would
+# otherwise leave them alone.
+trivial-copy-size-limit = 12
+avoid-breaking-exported-api = false

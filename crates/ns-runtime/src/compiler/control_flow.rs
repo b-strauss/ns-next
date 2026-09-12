@@ -1,7 +1,7 @@
 //! Compile-time recognition of the standard Smalltalk control-flow
 //! "special selectors" for inlining. Pure recognition only -- no bytecode
 //! emission lives here (see `lower.rs`'s `lower_if`/`lower_and_or`/
-//! `lower_while`). M2 spec, "Control-flow inlining".
+//! `lower_while`). See `docs/design/compiler.md`, "Control-flow inlining".
 
 use ns_syntax::ast;
 
@@ -24,9 +24,9 @@ pub(crate) enum InlineForm<'a> {
 
 /// The gate's per-block condition: a syntactic block literal with no
 /// parameters and no temporaries. A block with temporaries gets a fresh
-/// activation (and fresh temps) per invocation in M1, which a closure
-/// created inside a loop body could observe; a register cannot reproduce
-/// that, so such blocks keep M1's real-send semantics.
+/// activation (and fresh temps) per invocation, which a closure created
+/// inside a loop body could observe; a register cannot reproduce that, so
+/// such blocks keep their real-send semantics.
 fn as_inlinable_block(expr: &ast::Expr) -> Option<&ast::BlockExpr> {
     match expr {
         ast::Expr::Block(b) if b.params.is_empty() && b.body.temps.is_empty() => Some(b),

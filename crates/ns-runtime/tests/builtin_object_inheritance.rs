@@ -22,7 +22,7 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 fn as_string(heap: &Heap, value: &Value) -> String {
     match value {
         Value::Obj(obj) => heap
-            .str_value(obj)
+            .str_value(*obj)
             .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
         other => panic!("expected Value::Obj, got {}", heap.describe(other)),
     }
@@ -39,7 +39,7 @@ fn a_builtin_receiver_inherits_objects_native_class() {
 
     match expect_ok(result, "3 class") {
         Value::Obj(obj) => assert!(
-            obj.same(&expected),
+            obj.same(expected),
             "`3 class` must yield the Integer class object"
         ),
         other => panic!(
@@ -100,7 +100,7 @@ fn a_builtin_receiver_inherits_objects_identity_and_hash() {
     );
 }
 
-/// The load-bearing half of C1: an unimplemented selector on a builtin must
+/// The load-bearing half: an unimplemented selector on a builtin must
 /// route through `builtins::object_class::dispatch`'s real
 /// `doesNotUnderstand:` -- whose message is
 /// "<describe(receiver)> does not understand #<selector>" -- rather than

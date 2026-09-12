@@ -1,15 +1,15 @@
 //! A read-only structural view of an artifact: where each section starts and
 //! ends, what the symbol and mixin tables hold, and how much graph there is.
 //!
-//! This exists because an artifact was otherwise opaque. `disasm` shows one
-//! compiled body; nothing showed the file. Two things need that. A failed
+//! This exists because an artifact is otherwise opaque. `disasm` shows one
+//! compiled body; nothing else shows the file. Two things need that. A failed
 //! prefix-equality check between a `build` and a `snapshot` of the same source
 //! reports a differing byte offset, which says nothing on its own and
 //! everything once the offset is attributed to a section. And the claim that
 //! the platform is cut out of an artifact -- the reason an image is kilobytes
-//! rather than megabytes -- was checkable only by reading the encoder.
+//! rather than megabytes -- is otherwise checkable only by reading the encoder.
 //!
-//! Nothing here installs an engine, allocates a class object, or runs
+//! Nothing here bootstraps an interpreter, allocates a class object, or runs
 //! anything -- inspecting a hostile file exercises only the decoders below,
 //! never `Interpreter::bootstrap`.
 

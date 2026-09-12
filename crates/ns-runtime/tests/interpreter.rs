@@ -51,7 +51,7 @@ fn method_with_no_explicit_return_returns_self() {
     );
     let result = expect_ok(interp.send(receiver, Symbol::intern("bar"), vec![]), "bar");
     assert!(
-        matches!((&result, &receiver), (Value::Obj(a), Value::Obj(b)) if a.same(b)),
+        matches!((&result, &receiver), (Value::Obj(a), Value::Obj(b)) if a.same(*b)),
         "a method with no explicit return must yield the receiver, not the last expression's value"
     );
 }
@@ -80,7 +80,7 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
         panic!("expected an OrderedCollection instance")
     };
     assert!(matches!(
-        interp.heap_ref().array_elements(&obj),
+        interp.heap_ref().array_elements(obj),
         Some(elements) if elements.is_empty()
     ));
 }

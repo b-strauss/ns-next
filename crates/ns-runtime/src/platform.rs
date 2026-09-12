@@ -1,9 +1,8 @@
 //! The minimal `platform` object: exposes the Core Library classes by name
-//! plus a `Transcript`-style stdout stream. See the runtime spec's Core
-//! Library section. Milestone 1 surface only: `transcript`, a handful of
-//! class-name accessors, and the stream's `show:`/`newLine` -- nothing else
-//! (collections, files, etc. all come from the classes themselves, not from
-//! `platform`, per the spec's Core Library / platform split).
+//! plus a `Transcript`-style stdout stream. See `docs/design/core-library.md`.
+//! The surface is widened only on demand ("The on-demand rule" there):
+//! `transcript`, a handful of class-name accessors, the `collections`
+//! namespace, and the stream's `show:`/`newLine` -- nothing else.
 
 use std::io::Write;
 
@@ -12,11 +11,9 @@ use crate::{Interpreter, Symbol};
 
 /// The `platform` singleton, its `transcript` stream, and its
 /// `collections` namespace all share `BuiltinClass::Platform` as their
-/// `.class` tag (Milestone 1 had no second builtin-class slot to spare for
-/// a stream-only class, and adding one now would renumber the image wire
-/// format's builtin-class table for no behavioural gain) -- told apart
-/// here by payload shape: the platform singleton is built with a
-/// zero-field `ObjectData::Instance` (see `Interpreter::platform`), the
+/// `.class` tag (a builtin class of their own would buy no behaviour), and
+/// are told apart here by payload shape: the platform singleton is built
+/// with a zero-field `ObjectData::Instance` (see `Interpreter::platform`), the
 /// stream with a one-field one (see `Interpreter::new_stream_object`), the
 /// namespace with a two-field one (see
 /// `Interpreter::new_collections_namespace`). None ever holds real slot
@@ -32,7 +29,7 @@ pub fn dispatch(
     };
     // The `?` below is unreachable: every `BuiltinClass::Platform`-classed
     // object is built by one of the three constructors named above.
-    let tag = interp.heap_ref().instance_field_count(obj)?;
+    let tag = interp.heap_ref().instance_field_count(*obj)?;
     if tag == 2 {
         return dispatch_collections(interp, selector);
     }
@@ -43,7 +40,7 @@ pub fn dispatch(
         "transcript" => Some(Ok(Value::Obj(interp.new_stream_object()))),
         // Class accessors: some real corpus modules reach the Core Library
         // classes directly off `platform` rather than a named sub-module --
-        // Milestone 1 supports the Core Library names only.
+        // only the Core Library names are supported.
         "Object" => Some(Ok(Value::Obj(interp.builtin_class(BuiltinClass::Object)))),
         "Array" => Some(Ok(Value::Obj(interp.builtin_class(BuiltinClass::Array)))),
         "OrderedCollection" => Some(Ok(Value::Obj(
@@ -71,8 +68,8 @@ pub fn dispatch(
 /// `IdentityMap`, `IdentitySet`, `WeakArray`, and `Collection`; those name
 /// classes the runtime does not have, and inventing them (or aliasing them
 /// onto `OrderedCollection`, which is not a dictionary and not a set)
-/// would be a collections library this milestone deliberately does not
-/// build. Modules needing them stay off the whitelist.
+/// would be a collections library of its own, which is deliberately not
+/// built. Modules needing them stay off the whitelist.
 fn dispatch_collections(
     interp: &mut Interpreter,
     selector: Symbol,
@@ -94,7 +91,7 @@ fn dispatch_stream(
     match selector.as_str() {
         "show:" => {
             if let Some(Value::Obj(s)) = args.first() {
-                if let Some(text) = interp.heap_ref().str_value(s) {
+                if let Some(text) = interp.heap_ref().str_value(*s) {
                     print!("{text}");
                     let _ = std::io::stdout().flush();
                 }

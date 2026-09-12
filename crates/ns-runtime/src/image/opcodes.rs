@@ -52,7 +52,7 @@ pub const LIT_CHAR: u8 = 6;
 pub const LIT_ARRAY: u8 = 7;
 /// An integer the lexer accepted and the parser rejects. Carried as its
 /// original text because the error it raises is produced at execution time, by
-/// `interpreter::eval::malformed_int_error`.
+/// `interpreter::literals::malformed_int_error`.
 pub const LIT_MALFORMED_INT: u8 = 8;
 pub const LIT_UNRESOLVED_IDENT: u8 = 9;
 

@@ -31,7 +31,7 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 fn as_string(heap: &Heap, value: &Value) -> String {
     match value {
         Value::Obj(obj) => heap
-            .str_value(obj)
+            .str_value(*obj)
             .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
         other => panic!("expected Value::Obj, got {}", heap.describe(other)),
     }
@@ -130,16 +130,15 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
     }
 }
 
-/// Controller review fix (second pass): `and:`'s block argument invocation
-/// used to go through `truthy_arg`, which collapsed *any* non-`Ok(Bool(true))`
-/// outcome -- including a live `Signal::Return` -- into plain `false`. A
-/// non-local return inside an `and:` block must actually unwind past the
-/// `and:` send, not get swallowed. `m`'s body sends `true and: [^'escaped']`
-/// as a bare statement (its value discarded either way) followed by a
-/// second, distinguishing statement `^'fell through'` -- if the bug were
-/// still present, `and:` would silently evaluate to `false`, execution
-/// would fall through to the second statement, and `m` would return
-/// `'fell through'`; with the fix, the block's `^'escaped'` must unwind
+/// A non-local return inside an `and:` block must actually unwind past the
+/// `and:` send, not get swallowed: collapsing *any* non-`Ok(Bool(true))`
+/// outcome of the block -- including a live `Signal::Return` -- into plain
+/// `false` is the failure this guards against. `m`'s body sends
+/// `true and: [^'escaped']` as a bare statement (its value discarded either
+/// way) followed by a second, distinguishing statement `^'fell through'` --
+/// were the return swallowed, `and:` would silently evaluate to `false`,
+/// execution would fall through to the second statement, and `m` would
+/// return `'fell through'`. Instead the block's `^'escaped'` must unwind
 /// `m`'s own activation directly (the block's home, since the block literal
 /// is evaluated directly inside `m`'s own frame), so `m` returns `'escaped'`
 /// and the second statement never runs at all.
@@ -163,9 +162,9 @@ fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
     }
 }
 
-/// Quick sanity check (controller review, second pass): the fix above must
-/// not regress `and:`/`or:`'s short-circuit behavior -- the untaken block
-/// argument must still never be invoked at all. Uses the same
+/// The counterpart to the test above: propagating the block's outcome must
+/// not cost `and:`/`or:` their short circuit -- the untaken block argument
+/// must never be invoked at all. Uses the same
 /// distinguishing-statement technique: if the short-circuited block *were*
 /// wrongly invoked, its `^'wrongly invoked'` would unwind `m` directly and
 /// this test would see that value instead of `'correct'`.
@@ -189,11 +188,11 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
     }
 }
 
-/// Milestone 1 has no Integer/Float coercion. That
-/// is a documented gap, but it used to fail *dishonestly*: `1 + 1.5` went
-/// through `arg_int()`, which only accepts `Value::SmallInt`, and reported
-/// the resulting `None` as an "Integer overflow". The gap stays; the message
-/// now says what actually happened.
+/// There is no Integer/Float coercion. That is a documented gap, but it must
+/// fail *honestly*: `1 + 1.5` goes through `arg_int()`, which only accepts
+/// `Value::SmallInt`, and reporting the resulting `None` as an "Integer
+/// overflow" would name a failure that did not happen. The message has to
+/// say what actually happened.
 #[test]
 fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
     let mut interp = Interpreter::bootstrap();
@@ -225,12 +224,12 @@ fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
     }
 }
 
-/// Regression: `type_mismatch`'s message builds off `heap.describe_arg`,
-/// but every existing type-mismatch test above drives a `Value::Float`
-/// into it, which formats harmlessly either way. A `Value::Obj` there would
-/// recurse through `Object`'s self-referential bootstrap class until the
-/// stack gives out if this ever regressed to `{:?}`-formatting the
-/// argument directly, so this drives one in -- the same shape as
+/// `type_mismatch`'s message builds off `heap.describe_arg`, but every
+/// type-mismatch test above drives a `Value::Float` into it, which formats
+/// harmlessly either way. A `Value::Obj` there would recurse through
+/// `Object`'s self-referential bootstrap class until the stack gives out if
+/// the message ever `{:?}`-formatted the argument directly, so this drives
+/// one in -- the same shape as
 /// `builtins_text.rs`'s `concatenating_a_string_with_an_object_is_an_error_not_a_stack_overflow`
 /// and `builtins_collections_block.rs`'s
 /// `array_at_with_an_object_index_is_an_error_not_a_stack_overflow`.
@@ -258,8 +257,8 @@ fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow()
     }
 }
 
-/// Same finding, the comparison half: an ordering comparison against a
-/// type-mismatched argument used to answer a silent `false`.
+/// The comparison half of the same gap: an ordering comparison against a
+/// type-mismatched argument must be an error, not a silent `false`.
 #[test]
 fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
     let mut interp = Interpreter::bootstrap();
@@ -284,8 +283,8 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
 }
 
 /// `=` is the deliberate exception: a type-mismatched argument is `false`,
-/// never an error (Object's own `=` convention). This pins that the I7
-/// change did not turn equality into an error too.
+/// never an error (Object's own `=` convention). This pins that making
+/// ordering comparisons strict did not turn equality into an error too.
 #[test]
 fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
     let mut interp = Interpreter::bootstrap();
@@ -305,7 +304,7 @@ fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
     }
 }
 
-/// The one direction Milestone 1 *does* widen: `Float`'s own arithmetic
+/// The one direction the runtime *does* widen: `Float`'s own arithmetic
 /// accepts an `Integer` argument (lossless), and must keep doing so.
 #[test]
 fn float_arithmetic_still_widens_an_integer_argument() {

@@ -83,8 +83,8 @@ source bytes
   -> ns-syntax::parse           Module (AST + spans)
   -> ns-runtime::resolve        ResolvedModule (bindings + slot layout)
   -> Interpreter::load_module   the module's root class object, its code
-                                compiled and installed: one CompiledCode per
-                                body, keyed by mixin
+                                compiled onto the declarations: one
+                                CompiledCode per body, on its mixin
   -> instantiate                the primary factory, then each level's initializer
   -> the entry send             whatever the CLI was asked to send
 ```
@@ -96,7 +96,11 @@ See [image-format.md](image-format.md).
 ### The `ns-next` binary
 
 `parse`, `parse-corpus`, `run-corpus`, `run`, `snapshot`, `load`, `bench`,
-`disasm`, `inspect`, `build`.
+`disasm`, `inspect`, `build` — one module each under
+`crates/ns-cli/src/commands/`. `main.rs` holds only the argument parser and the
+dispatch to them; loading a source file, and instantiating the root class and
+sending the entry, which several commands share, live in `source.rs` and
+`entry.rs`.
 
 ## Gates
 

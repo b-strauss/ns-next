@@ -242,11 +242,11 @@ serializes reified frames only, and is taken when nothing is running
 
 ## The VM
 
-`Interpreter` carries one code table, a `CompiledModule`, holding every compiled
-body every loaded module runs; `load_module` and `image::load` add to it
-(`install_code`), and nothing runs a body that is not there. Everything in
-`interpreter/` decides *what* to run. Four places run a body, each by pushing an
-activation, calling `run_code` and popping it on every exit:
+Every body a program runs hangs off the declaration it belongs to — a method's
+off its `MixinMethod`, an initializer's and a superclass clause's off the
+`Mixin` — so what dispatch finds is what runs; nothing looks code up beside it.
+Everything in `interpreter/` decides *what* to run. Four places run a body, each
+by pushing an activation, calling `run_code` and popping it on every exit:
 
 1. **Method body** — `invoke_method`, which also catches a `^` that targets its
    own activation.
@@ -256,8 +256,8 @@ activation, calling `run_code` and popping it on every exit:
 3. **Instance initializer** — `run_initializer_level`, `instantiate`'s per-level
    step, which runs that level's compiled initializer: its own slot initializers
    and initializer expressions. A class with no compiled initializer and no
-   slots is a no-op; a user class missing from the table is a
-   compilation-coverage bug and panics.
+   slots is a no-op; a user class whose mixin carries no initializer is refused
+   on load and panics if built any other way.
 4. **Superclass clause and its message arguments** — `nested::run_clause_body`,
    for the nested-class accessor and for `instantiate`'s deferred clause message.
 
@@ -346,8 +346,8 @@ compiling excluded — and reports the median of ten timed runs after a discarde
 warm-up. Its three fixtures each run a 50,000-iteration `whileTrue:` loop, which
 the compiler inlines: `bench_loop.ns` sums the counter, `bench_send.ns` adds a
 user-method send per iteration and `bench_block.ns` a method that creates and
-invokes a block. On a release build, on 2026-09-11, their medians were about
-16.5, 20.5 and 38 ms.
+invokes a block. On a release build, on 2026-09-12, their medians were about
+15.3, 19.1 and 29.9 ms.
 
 Never judge performance from a debug build.
 
@@ -431,15 +431,17 @@ What did **not** move was the rest of the activation cost. `Frame.args` and
 arguments or temporaries, the `HashMap` lookup per invocation that finds the
 compiled body survived, and building an activation was still an allocation rather
 than an index bump. The activation stack took the two vectors and the allocation;
-see "What the activation stack moved" below. The lookup is still there.
+see "What the activation stack moved" below. The lookup went when compiled code
+moved onto the declaration it belongs to (see "The VM").
 
 ### A 13% regression, found and recovered
 
 Routing every `Object`/`Frame` access through `Heap` (`docs/design/memory.md`,
 "The seam") was designed to cost nothing: `--release` inlines an accessor
 call away, and each one does the same borrow-clone-drop the call site did
-before. Migrating `interpreter/eval.rs` broke that measurably: `bench_loop.ns`
-went from 20.07 ms to 22.77 ms, about 13% (13.45%).
+before. Migrating the lexical-send helper (`dispatch_lexical_send`) broke
+that measurably: `bench_loop.ns` went from 20.07 ms to 22.77 ms, about 13%
+(13.45%).
 
 The cause was `dispatch_lexical_send`'s head, which every implicit-receiver
 send runs. Before the migration it took one `RefCell` borrow and read both
@@ -546,6 +548,64 @@ invoking one no longer matches on the body, and the closure object it allocates
 is smaller — an `Object` went from 64 to 56 bytes in a release build. That
 attribution is an inference from what the change removed; no profile was taken.
 
+### What step B moved
+
+Step B, the behaviour-preserving cleanup that followed the retirement
+([clean-up-with-one-engine](../superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md)),
+was measured whole against its merge-base in one sitting, on 2026-09-12, the
+same way: the before-binary built in a throwaway worktree, `ns-next bench` over
+the three fixtures, three rounds, alternating the binaries within each round.
+Bytecode medians in ms:
+
+| Source | Before, rounds 1–3 | After, rounds 1–3 | ns/iteration |
+|---|---|---|---|
+| `bench_loop.ns` | 16.08, 16.17, 16.12 | 15.31, 15.32, 15.49 | 322.3 → 306.4 |
+| `bench_send.ns` | 20.55, 20.28, 19.95 | 18.65, 19.06, 19.15 | 405.6 → 381.2 |
+| `bench_block.ns` | 37.38, 38.29, 38.68 | 29.94, 29.74, 30.02 | 765.8 → 598.8 |
+
+On every source the after-group lies entirely below the before-group.
+`bench_loop.ns` got about 5% faster, `bench_send.ns` about 6%, and
+**`bench_block.ns` about 22%**, from ~38.3 ms to ~29.9 ms. Every image the
+fixtures build or snapshot is byte-identical between the two binaries (44
+artifacts), as a change that preserves behaviour requires.
+
+Each change that touched a hot path was also measured on its own, against the
+commit before it, in its own sitting. Middle medians in ms, `bench_loop.ns` /
+`bench_send.ns` / `bench_block.ns`:
+
+- **Builtin classes indexed by discriminant** (a `Vec` indexed by
+  `BuiltinClass` instead of a hashed map): 16.59 / 20.70 / 38.93 → 16.04 /
+  19.90 / 37.44. Faster on all three, by 3–4%, with no overlap between the
+  groups: a send to an integer or a boolean finds its class through that
+  accessor, and so does every closure allocation.
+- **The runtime's own symbols interned once, as constants**: 15.95 / 20.16 /
+  37.46 → 16.03 / 20.07 / 37.71. **Nothing moved**; the groups overlap on every
+  source, because none of the three fixtures reaches a changed site inside the
+  timed send.
+- **A closure behind an `Rc`**: 16.06 / 19.96 / 37.47 → 15.71 / 19.89 / 31.26.
+  **`bench_block.ns` about 17% faster**: `value:` bumps a reference count
+  where it used to copy `ClosureData` out of the heap and wrap it in a fresh
+  `Rc`, and `MakeClosure` shares its parameter names instead of cloning them.
+  `bench_loop.ns` moved about 2%; `bench_send.ns` did not move.
+- **Compiled code on the declaration** (see "The VM"): 15.86 / 19.81 / 31.26 →
+  16.14 / 19.56 / 30.59. `bench_send.ns` and `bench_block.ns` about 1–2%
+  faster, with no overlap, from the hashed lookup of the compiled body that
+  every user-method send no longer does. `bench_loop.ns`'s first three rounds
+  did not separate the two groups; three more rounds put the after-binary
+  lower each time, not slower.
+- **Handles passed by value**: 15.58 / 18.75 / 29.67 → 15.41 / 19.13 / 29.93.
+  **`bench_loop.ns` about 1% faster**: its after-range [15.23, 15.42] lies
+  entirely below its before-range [15.46, 15.70] -- the groups just fail to
+  overlap. `bench_send.ns` and `bench_block.ns` did not move. `bench_send.ns`'s
+  first three rounds only just overlapped; three more narrowed the gap to
+  0.17 ms, inside the before-group's own spread. A release build had already
+  inlined the indirection away.
+
+The per-change figures come from five different sittings, so they are not
+compared with each other or summed into the whole; the whole-step table above
+is the one comparison in a single sitting. The per-change attributions are
+inferences from what each change removed; no profile was taken.
+
 ## Planned: the trampoline
 
 What would change: sends stop recursing on the Rust stack. Every running
@@ -567,9 +627,6 @@ green suite and with its own before-and-after measurement.
   goes through `Heap::activation_local`/`activation_set_local`, which read the
   entry's `base` again. Caching it belongs to the loop the trampoline builds,
   which owns the activation it runs.
-- **The `HashMap` lookup** that finds a compiled body per invocation stays too,
-  but it is not the trampoline's: the inline caches ([dispatch.md](dispatch.md))
-  remove it, since a cache entry carries the body.
 
 ### The trampoline (1b)
 

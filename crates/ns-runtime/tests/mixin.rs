@@ -120,11 +120,11 @@ fn a_class_object_carries_identity_and_its_application_carries_layout() {
     let (interp, class, _resolved) = load(src);
     let application = interp
         .heap_ref()
-        .class_application(&class)
+        .class_application(class)
         .unwrap_or_else(|| panic!("load_module must produce a class object"));
     assert_eq!(application.num_slots, 2);
     assert!(
-        interp.heap_ref().class_enclosing(&class).is_none(),
+        interp.heap_ref().class_enclosing(class).is_none(),
         "a module's enclosing object is nil"
     );
     assert_eq!(
@@ -152,7 +152,7 @@ fn the_mixin_tree_contains_nested_and_class_side_declarations() {
     let (interp, class, _resolved) = load(NESTED_SRC);
     let application = interp
         .heap_ref()
-        .class_application(&class)
+        .class_application(class)
         .unwrap_or_else(|| panic!("expected a class object"));
     let mixin = &application.mixin;
     assert_eq!(mixin.nested.len(), 1, "Inner must be in the mixin tree");
@@ -168,7 +168,7 @@ fn a_nested_declaration_reserves_a_hidden_cache_slot() {
     let (interp, class, _resolved) = load(NESTED_SRC);
     let app = interp
         .heap_ref()
-        .class_application(&class)
+        .class_application(class)
         .unwrap_or_else(|| panic!("expected a class object"));
     assert_eq!(app.num_slots, 1, "Outer declares no slots but nests Inner");
     let inner = &app.mixin.nested[0];

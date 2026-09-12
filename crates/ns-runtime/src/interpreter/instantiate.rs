@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ns_syntax::ast;
+use ns_syntax::Span;
 
 use crate::heap::{ActivationHeader, ActivationRef, Heap};
 use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
@@ -18,11 +19,14 @@ use super::{EvalResult, Interpreter, Signal};
 /// lookup or `Interpreter::invoke_method` reads is lifted out of the
 /// declaration here, so that a mixin decoded from an image -- which has no
 /// declaration at all -- answers the same questions from the same fields.
-fn build_methods(body: &ast::ClassBody) -> HashMap<Symbol, Rc<MixinMethod>> {
+fn build_methods(
+    body: &ast::ClassBody,
+    bindings: &Rc<HashMap<Span, Binding>>,
+) -> HashMap<Symbol, Rc<MixinMethod>> {
     body.methods
         .iter()
         .map(|m| {
-            let method = MixinMethod::from_decl(Rc::new(m.clone()));
+            let method = MixinMethod::from_decl(Rc::new(m.clone()), bindings);
             (method.selector, Rc::new(method))
         })
         .collect()
@@ -37,14 +41,12 @@ fn build_slots(body: &ast::ClassBody) -> Vec<MixinSlot> {
 
 /// The run-time-visible half of a superclass clause. The selector defaults
 /// to `new` for an omitted message, per `newspeak-spec.pdf` §6.1 -- resolved
-/// once, here, rather than at each of the two places that used to re-derive
-/// it from the declaration.
+/// once, here, so no reader of the clause re-derives it from the
+/// declaration.
 fn superclass_clause_of(clause: &ast::SuperclassClause) -> SuperclassClause {
     SuperclassClause {
-        selector: super::nested::superclass_clause_message(clause).map_or_else(
-            || Symbol::intern("new"),
-            crate::compiler::lower::selector_of,
-        ),
+        selector: super::nested::superclass_clause_message(clause)
+            .map_or(Symbol::NEW, crate::compiler::lower::selector_of),
         has_args: super::nested::superclass_clause_message_args_expr(clause).is_some(),
     }
 }
@@ -64,13 +66,12 @@ impl Interpreter {
     /// mixin gets its own application when something actually materializes
     /// it (the accessor); until then it is pure, unapplied structure.
     ///
-    /// It also compiles the whole mixin tree and installs the code, adding it
-    /// to whatever an earlier load installed: a class this returns is already
-    /// runnable, so nothing can send to a loaded class whose code was never
-    /// compiled.
+    /// Every method and every per-mixin body is compiled onto the
+    /// declaration it belongs to as the tree is built, so a class this
+    /// returns is already runnable.
     pub fn load_module(&mut self, resolved: &ResolvedModule) -> ClassRef {
         let decl = &resolved.module.root_class;
-        let mixin = self.build_mixin(decl);
+        let mixin = self.build_mixin(decl, &resolved.bindings);
         let superclass = self.resolve_superclass_receiver(decl);
         // The slot layout is the application's job, not the class object's:
         // `apply_mixin` offsets this class's own slots past every inherited
@@ -78,16 +79,13 @@ impl Interpreter {
         // computes -- or can disagree about -- an instance's shape.
         let super_application = superclass
             .as_ref()
-            .and_then(|superclass| self.heap.class_application(superclass));
+            .and_then(|superclass| self.heap.class_application(*superclass));
         let application = self.apply_mixin(&mixin, super_application.as_ref());
         // `enclosing`/`declaring_class` are both `None` -- the module's root
         // class is the outermost level, so no object encloses it and no
         // declaration contains it. Every other class object in the system
         // comes from `interpreter::nested`, which passes both.
-        let class = self.new_class_object(application, None, None, superclass);
-        let code = crate::compiler::compile_module(&self.heap, &class, &resolved.bindings);
-        self.install_code(code);
-        class
+        self.new_class_object(application, None, None, superclass)
     }
 
     /// Builds the mixin for `decl`, recursively including its nested
@@ -101,20 +99,24 @@ impl Interpreter {
     /// built) -- a nested mixin has no class object of its own until
     /// something materializes it (the accessor), and a class side until
     /// `Interpreter::metaclass_of` builds the metaclass that applies it.
-    fn build_mixin(&mut self, decl: &ast::ClassDecl) -> Rc<Mixin> {
-        let methods = build_methods(&decl.instance_side);
+    fn build_mixin(
+        &mut self,
+        decl: &ast::ClassDecl,
+        bindings: &Rc<HashMap<Span, Binding>>,
+    ) -> Rc<Mixin> {
+        let methods = build_methods(&decl.instance_side, bindings);
         let slots = build_slots(&decl.instance_side);
         let nested = decl
             .instance_side
             .nested_classes
             .iter()
-            .map(|n| self.build_mixin(n))
+            .map(|n| self.build_mixin(n, bindings))
             .collect();
         let class_side = decl
             .class_side
             .as_ref()
-            .map(|side| self.build_class_side(side));
-        Rc::new(Mixin {
+            .map(|side| self.build_class_side(side, bindings));
+        let mut mixin = Mixin {
             name: Symbol::intern(&decl.name.name),
             access: crate::dispatch::effective_access(decl.access),
             methods,
@@ -130,40 +132,51 @@ impl Interpreter {
                     num_args: pattern_param_count(pattern),
                 },
                 None => Factory {
-                    selector: Symbol::intern("new"),
+                    selector: Symbol::NEW,
                     num_args: 0,
                 },
             }),
             superclass: decl.superclass.as_ref().map(superclass_clause_of),
             has_init_exprs: !decl.instance_side.init_exprs.is_empty(),
-            // Class instantiation "must fix" #1: this class's own initExprs,
-            // lowered into the instance initializer by
-            // `compiler::compile_mixin_initializer` (Step 5 of the spec's six
-            // numbered steps).
+            // This class's own initExprs, lowered into the instance
+            // initializer by `compiler::compile_mixin_initializer` (step 5 of
+            // the six in `docs/design/object-model.md`, "Instantiation").
             init_exprs: decl.instance_side.init_exprs.clone(),
             nested,
             class_side,
             span: decl.span,
             decl: Some(Rc::new(decl.clone())),
-        })
+            initializer_code: None,
+            superclass_clause_code: None,
+            superclass_message_code: None,
+        };
+        crate::compiler::compile_mixin_bodies(&mut mixin, bindings);
+        Rc::new(mixin)
     }
 
     /// A class side's own methods, as a `Mixin`. Kept separate from
     /// `build_mixin` and deliberately small: a class side has no factory
-    /// pattern of its own (there is no metaclass to instantiate it through in
-    /// this milestone) and no nested classes of its own to load -- only its
+    /// pattern of its own (its metaclass carries class-side behaviour and
+    /// nothing more -- `docs/design/object-model.md`, "Class sides and
+    /// metaclasses") and no nested classes of its own to load -- only its
     /// instance side's `nested_classes` recurse. `decl` is `None` because a
     /// `ClassBody` is not itself an `ast::ClassDecl`; there is no single
     /// declaration node to keep as provenance for it.
-    fn build_class_side(&mut self, side: &ast::ClassBody) -> Rc<Mixin> {
-        Rc::new(Mixin {
-            methods: build_methods(side),
+    fn build_class_side(
+        &mut self,
+        side: &ast::ClassBody,
+        bindings: &Rc<HashMap<Span, Binding>>,
+    ) -> Rc<Mixin> {
+        let mut mixin = Mixin {
+            methods: build_methods(side, bindings),
             slots: build_slots(side),
             has_init_exprs: !side.init_exprs.is_empty(),
             init_exprs: side.init_exprs.clone(),
             span: side.span,
-            ..Mixin::empty(Symbol::intern("class side"))
-        })
+            ..Mixin::empty(Symbol::CLASS_SIDE)
+        };
+        crate::compiler::compile_mixin_bodies(&mut mixin, bindings);
+        Rc::new(mixin)
     }
 
     /// Intercepts an ordinary explicit-receiver send (`Interpreter::send`'s
@@ -182,13 +195,14 @@ impl Interpreter {
     /// No user-overridable `new` method is ever registered anywhere to
     /// find (every `BuiltinClass`-tagged placeholder's method table is
     /// empty, and a user class's own `.class` is that same shared
-    /// placeholder -- Milestone 1's "no metaclasses" simplification), so
+    /// placeholder -- there is no reified metaclass hierarchy, see
+    /// `docs/design/object-model.md`, "Class sides and metaclasses"), so
     /// without this check `ClassName new` would unconditionally end in
     /// `doesNotUnderstand:`, for every class, every time.
     ///
     /// No double-dispatch risk against the superclass clause's own factory
     /// message (e.g. `Object new` in `class Foo = Object new (...)`). That
-    /// message is *evaluated* now (`run_initializer_level` below), but it is
+    /// message is *evaluated* (`run_initializer_level` below), but it is
     /// never *sent*: §6.2 has the subclass's initializer invoke the
     /// superclass's instance initializer directly on the same object, so
     /// `run_initializer_level` recurses into itself and never calls
@@ -203,14 +217,14 @@ impl Interpreter {
         let Value::Obj(obj) = receiver else {
             return None;
         };
-        let factory_selector = primary_factory_selector(&self.heap, obj)?;
+        let factory_selector = primary_factory_selector(&self.heap, *obj)?;
         if selector != factory_selector {
             return None;
         }
-        let builtin = self.heap.class_builtin(obj);
+        let builtin = self.heap.class_builtin(*obj);
         let class_ref = *obj;
         Some(match builtin {
-            // `Array`/`OrderedCollection`'s Milestone 1 representation is
+            // `Array`/`OrderedCollection`'s representation is
             // `ObjectData::Array`, not the generic `instantiate()`'s
             // `ObjectData::Instance` -- `builtins::collections`' dispatch
             // functions pattern-match on `ObjectData::Array`
@@ -234,7 +248,7 @@ impl Interpreter {
         let Some(clause) = &decl.superclass else {
             return Some(self.builtin_class(BuiltinClass::Object));
         };
-        // Milestone 1: only the common case (a builtin class name) is
+        // Only the common case (a builtin class name) is
         // handled -- full lexical/outer-prefixed superclass receivers, and
         // a not-yet-loaded sibling user-defined class referenced by name,
         // need the resolver's class-nesting chain (and/or a multi-class
@@ -248,9 +262,9 @@ impl Interpreter {
         None
     }
 
-    /// The six numbered steps in the runtime spec's Class Instantiation
-    /// section; see `instantiate_unchecked`. Like `send`, it leaves the
-    /// activation stack as it found it.
+    /// The six numbered steps in `docs/design/object-model.md`,
+    /// "Instantiation"; see `instantiate_unchecked`. Like `send`, it leaves
+    /// the activation stack as it found it.
     pub fn instantiate(&mut self, class: ClassRef, factory_args: Vec<Value>) -> EvalResult {
         let depth = self.heap.activation_depth();
         let result = self.instantiate_unchecked(class, factory_args);
@@ -262,16 +276,16 @@ impl Interpreter {
         result
     }
 
-    /// The six numbered steps in the runtime spec's Class Instantiation
-    /// section. Steps 2-5 are `run_initializer_level`, once per level of the
-    /// superclass chain.
+    /// The six numbered steps in `docs/design/object-model.md`,
+    /// "Instantiation". Steps 2-5 are `run_initializer_level`, once per
+    /// level of the superclass chain.
     fn instantiate_unchecked(&mut self, class: ClassRef, factory_args: Vec<Value>) -> EvalResult {
         // Step 1: one instance, every slot nil. The application already
         // knows the whole layout, inherited slots included -- summing the
         // chain here again would be a second answer to the same question.
         let slot_count = self
             .heap
-            .class_application(&class)
+            .class_application(class)
             .map_or(0, |a| a.num_slots);
         let instance =
             self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil; slot_count]));
@@ -279,7 +293,7 @@ impl Interpreter {
 
         // Steps 2-5, for this class and then, recursively, for every level
         // above it.
-        self.run_initializer_level(&class, &receiver, factory_args)?;
+        self.run_initializer_level(class, &receiver, factory_args)?;
 
         // Step 6.
         Ok(receiver)
@@ -295,28 +309,28 @@ impl Interpreter {
     ///
     /// One activation per level is the whole point: a superclass's slot
     /// initializers and `initExprs` see the arguments *its* clause supplied,
-    /// not the subclass's. Milestone 1 threaded a single frame up the whole
-    /// chain and never evaluated a clause message at all, so a superclass
-    /// factory parameter read whatever happened to sit at the same index in
-    /// the subclass's argument list -- or panicked when there was none.
+    /// not the subclass's. A single activation threaded up the whole chain
+    /// would let a superclass factory parameter read whatever happens to sit
+    /// at the same index in the subclass's argument list -- or index past its
+    /// end when there is none.
     fn run_initializer_level(
         &mut self,
-        class: &ClassRef,
+        class: ClassRef,
         instance: &Value,
         factory_args: Vec<Value>,
     ) -> Result<(), Signal> {
-        // Regression fix (re-review finding A): reject a factory-arity
-        // mismatch as a NewspeakError before pushing this level's activation
+        // Reject a factory-arity mismatch as a NewspeakError before pushing
+        // this level's activation
         // or running any slot initializer / initExpr. A slot initializer or
         // initExpr may reference a factory parameter as `Binding::Local(i)`,
         // resolved against this class's *declared* factory pattern -- but
         // the activation pushed below starts with no temporaries, so if
-        // fewer arguments were supplied than the pattern declares, `eval.rs`'s
+        // fewer arguments were supplied than the pattern declares, `locals.rs`'s
         // `read_local`/`write_local` index straight past the end of its
         // register window and Rust panics.
         //
         // Checked at *every* level, not just the outermost. A level's
-        // arguments now come from its subclass's clause message, whose
+        // arguments come from its subclass's clause message, whose
         // selector `eval_superclass_message` has already matched against
         // this class's primary factory selector -- which pins the arity too,
         // since a selector's keyword count is its parameter count. This
@@ -329,8 +343,8 @@ impl Interpreter {
         if let Some(declared_arity) = declared_arity {
             if factory_args.len() != declared_arity {
                 return Err(Signal::Error(NewspeakError {
-                    selector: Symbol::intern("new"),
-                    receiver: Value::Obj(*class),
+                    selector: Symbol::NEW,
+                    receiver: Value::Obj(class),
                     message: format!(
                         "wrong number of factory arguments: factory takes {}, got {}",
                         declared_arity,
@@ -346,8 +360,8 @@ impl Interpreter {
         let superclass = self.heap.class_superclass(class);
         if let Some(superclass) = superclass {
             let super_args =
-                self.eval_superclass_message(class, &superclass, instance, &factory_args)?;
-            self.run_initializer_level(&superclass, instance, super_args)?;
+                self.eval_superclass_message(class, superclass, instance, &factory_args)?;
+            self.run_initializer_level(superclass, instance, super_args)?;
         }
 
         // Step 2, built here rather than above it: a level with no slots and
@@ -369,8 +383,8 @@ impl Interpreter {
         let act = self.heap.push_activation(
             ActivationHeader {
                 receiver: *instance,
-                current_class: Some(*class),
-                kind: FrameKind::Initializer(*class),
+                current_class: Some(class),
+                kind: FrameKind::Initializer(class),
                 slot_base: self
                     .heap
                     .class_application(class)
@@ -383,8 +397,8 @@ impl Interpreter {
         // Steps 4-5: this class's own slot clauses (declaration order), then
         // its own initExprs. Popped on every path out, like every
         // activation.
-        let result = self.run_own_initializer(class, &act);
-        self.heap.pop_activation(&act);
+        let result = self.run_own_initializer(class, act);
+        self.heap.pop_activation(act);
         result
     }
 
@@ -404,14 +418,14 @@ impl Interpreter {
     /// side effects.
     fn eval_superclass_message(
         &mut self,
-        class: &ClassRef,
-        superclass: &ClassRef,
+        class: ClassRef,
+        superclass: ClassRef,
         instance: &Value,
         factory_args: &[Value],
     ) -> Result<Vec<Value>, Signal> {
         // One lookup of the application for both questions below: the clause
         // this class was declared with, and the mixin its compiled message
-        // body is keyed by.
+        // body lives on.
         let application = self.heap.class_application(class);
         let clause = application
             .as_ref()
@@ -424,7 +438,7 @@ impl Interpreter {
         // class whose superclass has a keyword factory would raise a
         // spurious "not the primary factory message" error on the first
         // instantiation after a load.
-        let selector = clause.map_or_else(|| Symbol::intern("new"), |clause| clause.selector);
+        let selector = clause.map_or(Symbol::NEW, |clause| clause.selector);
         let expected = primary_factory_selector(&self.heap, superclass);
         if Some(selector) != expected {
             return Err(not_the_primary_factory_error(
@@ -438,14 +452,9 @@ impl Interpreter {
         }
         let code = application
             .as_ref()
-            .and_then(|application| {
-                self.code
-                    .superclass_messages
-                    .get(&crate::mixin::mixin_key(&application.mixin))
-                    .cloned()
-            })
+            .and_then(|application| application.mixin.superclass_message_code.clone())
             .unwrap_or_else(|| {
-                panic!("internal: mixin whose superclass clause message takes arguments has no compiled form for it (compile_module coverage gap)")
+                panic!("internal: mixin whose superclass clause message takes arguments carries no compiled form for it (a mixin built from source always does; verify_mixins refuses a decoded one)")
             });
         // The message is evaluated on the instance being initialized and
         // with *this* level's factory arguments -- §6.2's "in the context of
@@ -456,7 +465,7 @@ impl Interpreter {
             instance,
             factory_args.to_vec(),
             class,
-            FrameKind::SuperclassMessage(*class),
+            FrameKind::SuperclassMessage(class),
             code,
         )?;
         argument_list(&self.heap, class, value)
@@ -473,9 +482,9 @@ impl Interpreter {
     /// an absolute index at run time; `run_initializer_level` sets it once,
     /// from this level's own `MixinApplication.own_slot_base`, which the
     /// assertion below states.
-    fn run_own_initializer(&mut self, class: &ClassRef, act: &ActivationRef) -> Result<(), Signal> {
-        // A builtin, or any class with nothing to run: `compile_module` emits
-        // no initializer for such a mixin, so there is nothing to look up.
+    fn run_own_initializer(&mut self, class: ClassRef, act: ActivationRef) -> Result<(), Signal> {
+        // A builtin, or any class with nothing to run: such a mixin may carry
+        // no initializer at all, so there is nothing to reach for.
         if !class_has_initializer_code(&self.heap, class) {
             return Ok(());
         }
@@ -483,14 +492,9 @@ impl Interpreter {
             .heap
             .class_application(class)
             .expect("internal: class_has_initializer_code confirmed this is a class object");
-        let code = self
-            .code
-            .initializers
-            .get(&crate::mixin::mixin_key(&application.mixin))
-            .cloned()
-            .unwrap_or_else(|| {
-                panic!("internal: class has no compiled instance initializer (compile_module coverage gap)")
-            });
+        let code = application.mixin.initializer_code.clone().unwrap_or_else(|| {
+            panic!("internal: class needs an instance initializer and its mixin carries none (a mixin built from source always does; verify_mixins refuses a decoded one)")
+        });
         debug_assert_eq!(
             self.heap.activation_slot_base(act),
             application.own_slot_base,
@@ -510,19 +514,17 @@ impl Interpreter {
 /// incoming send *is* the factory message) and `eval_superclass_message`
 /// (which decides whether a superclass clause names it) -- `newspeak-spec.pdf`
 /// §6.1 makes those the same question asked from two sides.
-pub(crate) fn primary_factory_selector(heap: &Heap, class: &ClassRef) -> Option<Symbol> {
+pub(crate) fn primary_factory_selector(heap: &Heap, class: ClassRef) -> Option<Symbol> {
     heap.class_application(class)
         .map(|application| match &application.mixin.factory {
             Some(factory) => factory.selector,
-            None => Symbol::intern("new"),
+            None => Symbol::NEW,
         })
 }
 
-fn class_name(heap: &Heap, class: &ClassRef) -> Symbol {
-    heap.class_application(class).map_or_else(
-        || Symbol::intern("an object"),
-        |application| application.mixin.name,
-    )
+fn class_name(heap: &Heap, class: ClassRef) -> Symbol {
+    heap.class_application(class)
+        .map_or(Symbol::AN_OBJECT, |application| application.mixin.name)
 }
 
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if the message
@@ -530,8 +532,8 @@ fn class_name(heap: &Heap, class: &ClassRef) -> Symbol {
 /// of C."
 fn not_the_primary_factory_error(
     heap: &Heap,
-    class: &ClassRef,
-    superclass: &ClassRef,
+    class: ClassRef,
+    superclass: ClassRef,
     selector: Symbol,
     expected: Option<Symbol>,
 ) -> Signal {
@@ -546,7 +548,7 @@ fn not_the_primary_factory_error(
     };
     Signal::Error(NewspeakError {
         selector,
-        receiver: Value::Obj(*superclass),
+        receiver: Value::Obj(superclass),
         message: format!(
             "the superclass clause of class {subclass_name} sends #{selector}, \
              but the primary factory of class {superclass_name} is {expected}"
@@ -559,16 +561,16 @@ fn not_the_primary_factory_error(
 ///
 /// A `NewspeakError` rather than a `panic!` on the wrong shape: the compiled
 /// body that produced this value can come off the wire, where
-/// `image::decode::build_module` reconciles its kind and arity but nothing
+/// `image::decode::verify_mixins` reconciles its kind and arity but nothing
 /// constrains what it returns. An image is untrusted input.
-fn argument_list(heap: &Heap, class: &ClassRef, value: Value) -> Result<Vec<Value>, Signal> {
+fn argument_list(heap: &Heap, class: ClassRef, value: Value) -> Result<Vec<Value>, Signal> {
     if let Value::Obj(obj) = &value {
-        if let Some(items) = heap.array_elements(obj) {
+        if let Some(items) = heap.array_elements(*obj) {
             return Ok(items);
         }
     }
     Err(Signal::Error(NewspeakError {
-        selector: Symbol::intern("new"),
+        selector: Symbol::NEW,
         receiver: value,
         message: format!(
             "the superclass clause of class {} did not evaluate its message \
@@ -580,15 +582,11 @@ fn argument_list(heap: &Heap, class: &ClassRef, value: Value) -> Result<Vec<Valu
 
 /// `pub(crate)` (rather than private) so `compiler::lower` can reuse this
 /// exact string->`BuiltinClass` mapping for its bare-builtin-name fallback,
-/// instead of duplicating it. Returns `None` for any name that is
-/// not a Milestone 1 builtin class name (an explicit `Object` arm replaces
-/// the old catch-all default of `BuiltinClass::Object`, since a caller
-/// outside this module must be able to tell "unrecognized name" apart from
-/// a genuine `Object` match -- `resolve_superclass_receiver` above used to
-/// guard this call with a separate `BUILTIN_NAMES.contains` check for
-/// exactly that reason; that list is now redundant with this function's own
-/// match arms, so it was folded in here instead of kept as a second,
-/// duplicate source of truth).
+/// instead of duplicating it. Returns `None` for any name that is not a
+/// builtin class name. `Object` has an explicit arm rather than being a
+/// catch-all default, because a caller must be able to tell "unrecognized
+/// name" apart from a genuine `Object` match; the match arms are the one
+/// list of builtin names, so no caller keeps a second one to guard with.
 pub(crate) fn builtin_kind_from_name(name: &str) -> Option<BuiltinClass> {
     Some(match name {
         "Object" => BuiltinClass::Object,
@@ -641,18 +639,17 @@ pub(crate) fn pattern_param_count(pattern: &ast::MessagePattern) -> usize {
 /// every `BuiltinClass` and for a non-class object. Delegates to
 /// `mixin_needs_initializer_code`, the one definition of "needs initializer
 /// code" a class-level and a mixin-level caller both share.
-pub(crate) fn class_has_initializer_code(heap: &Heap, class: &ClassRef) -> bool {
+pub(crate) fn class_has_initializer_code(heap: &Heap, class: ClassRef) -> bool {
     heap.class_application(class)
         .is_some_and(|application| mixin_needs_initializer_code(&application.mixin))
 }
 
 /// Whether `mixin` declares any slot or `initExpr` at all.
 ///
-/// `pub(crate)` for `image::decode::build_module`, which must refuse
+/// `pub(crate)` for `image::decode::verify_mixins`, which must refuse
 /// an image that has no compiled initializer for a mixin that needs one
 /// rather than let `run_own_initializer` above panic on the invariant --
-/// checked per mixin now that a code table covers the whole tree, not only
-/// the root.
+/// checked per mixin, since every mixin of the tree carries its own.
 pub(crate) fn mixin_needs_initializer_code(mixin: &crate::mixin::Mixin) -> bool {
     !mixin.slots.is_empty() || mixin.has_init_exprs
 }

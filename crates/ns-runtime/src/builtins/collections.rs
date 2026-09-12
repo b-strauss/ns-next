@@ -1,16 +1,15 @@
 //! `Array` and `OrderedCollection` native methods.
 //!
-//! Design note (Milestone 1 simplification): `OrderedCollection` needs a
+//! Design note (a deliberate simplification): `OrderedCollection` needs a
 //! mutable, growable payload, but `ObjectData::Array(Vec<Value>)` is shared
 //! by both `Array` and `OrderedCollection` -- the spec's Core Library list
 //! groups them loosely together, and `Vec<Value>` already grows fine either
 //! way (`Heap::array_push` mutates it in place through `&mut self`, no
-//! separate growable representation needed). So for Milestone 1,
-//! `OrderedCollection` is backed by the very same `ObjectData::Array`
-//! variant rather than a second growable-collection payload variant. A real
-//! `OrderedCollection` would grow independently of a literal array's fixed
-//! size; revisit if a later milestone needs the two to diverge (e.g.
-//! `Array` becoming genuinely fixed-size).
+//! separate growable representation needed). So `OrderedCollection` is
+//! backed by the very same `ObjectData::Array` variant rather than a second
+//! growable-collection payload variant. A real `OrderedCollection` would
+//! grow independently of a literal array's fixed size; revisit if the two
+//! ever need to diverge (e.g. `Array` becoming genuinely fixed-size).
 
 use crate::interpreter::{EvalResult, Signal};
 use crate::types::*;
@@ -58,16 +57,16 @@ fn dispatch_common(
     match selector.as_str() {
         "size" => interp
             .heap
-            .array_len(obj)
+            .array_len(*obj)
             .map(|len| Ok(Value::SmallInt(len as i64))),
         "at:" => {
-            let len = interp.heap.array_len(obj)?;
+            let len = interp.heap.array_len(*obj)?;
             Some(match args.first() {
                 Some(Value::SmallInt(index)) => {
                     if *index >= 1 && (*index as usize) <= len {
                         Ok(interp
                             .heap
-                            .array_at(obj, (*index as usize) - 1)
+                            .array_at(*obj, (*index as usize) - 1)
                             .unwrap_or(Value::Nil))
                     } else {
                         Err(Signal::Error(out_of_range(
@@ -90,7 +89,7 @@ fn dispatch_common(
         // return type must be able to carry `Signal`, not just
         // `NewspeakError`, and this arm's `?` does exactly that.
         "do:" => {
-            let items = interp.heap.array_elements(obj)?;
+            let items = interp.heap.array_elements(*obj)?;
             let Some(block) = args.first().copied() else {
                 return Some(Err(Signal::Error(NewspeakError {
                     selector,
@@ -119,7 +118,7 @@ pub fn dispatch_array(
         let Value::Obj(obj) = &receiver else {
             return None;
         };
-        let len = interp.heap.array_len(obj)?;
+        let len = interp.heap.array_len(*obj)?;
         let index = match args.first() {
             Some(Value::SmallInt(index)) => *index,
             other => {
@@ -137,7 +136,7 @@ pub fn dispatch_array(
             ))));
         }
         let value = args.get(1).copied().unwrap_or(Value::Nil);
-        interp.heap.array_set(obj, (index as usize) - 1, value);
+        interp.heap.array_set(*obj, (index as usize) - 1, value);
         return Some(Ok(receiver));
     }
     dispatch_common(interp, receiver, selector, args)
@@ -153,11 +152,11 @@ pub fn dispatch_ordered_collection(
         let Value::Obj(obj) = &receiver else {
             return None;
         };
-        interp.heap.array_len(obj)?;
+        interp.heap.array_len(*obj)?;
         // Matches the reference library's convention: `add:` returns the
         // argument, not the receiver.
         let value = args.first().copied().unwrap_or(Value::Nil);
-        interp.heap.array_push(obj, value);
+        interp.heap.array_push(*obj, value);
         return Some(Ok(value));
     }
     dispatch_common(interp, receiver, selector, args)

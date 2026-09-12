@@ -3,18 +3,17 @@
 //! A `Mixin` is what a loaded image has to reconstruct before anything can
 //! run -- the method dictionary a send is looked up in, the slot names an
 //! instance is laid out by, the factory selector §6.1 checks a superclass
-//! clause against. Before this section existed those came back only by
-//! re-parsing the image's own source text and rebuilding the tree from the
-//! AST, which made the front end part of the load path and made the image's
-//! own bytes an incomplete description of the world they claim to hold.
-//! This table is what retired that re-parse: `image::load` builds its whole
-//! declaration tree, and its root class, from these rows.
+//! clause against. `image::load` builds its whole declaration tree, and its
+//! root class, from these rows, which is what keeps the front end off the
+//! load path: without them those would come back only by re-parsing the
+//! image's own source text, and the image's own bytes would be an
+//! incomplete description of the world they claim to hold.
 //!
 //! **The tree is flattened, not nested.** Rows are written in
-//! `mixin::preorder` order -- the same order `compiler::compile_module`
-//! walks the tree in, which is what lets `decode::build_module` pair a row
-//! with its own compiled bodies -- and a row names its nested declarations
-//! and its class side by row id. Nothing in the byte
+//! `mixin::preorder` order -- the same order `encode::encode_code_table`
+//! collects the bodies in, so a row's code ids follow the rows -- and a row
+//! names its nested declarations and its class side by row id, and each of
+//! its bodies by code-table id. Nothing in the byte
 //! stream is nested inside anything else, so decoding is a loop over rows
 //! and never a recursion on a depth the image controls. The one structural
 //! recursion left in the runtime (`mixin::preorder`) is protected by
@@ -27,7 +26,7 @@ use std::rc::Rc;
 use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
 
-use crate::bytecode::{method_key, CompiledCode, CompiledModule};
+use crate::bytecode::CompiledCode;
 use crate::heap::Heap;
 use crate::mixin::{mixin_key, Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
 use crate::types::ClassRef;
@@ -83,9 +82,8 @@ const MAX_MIXIN_DEPTH: usize = PARSER_MAX_NESTED_CLASS_DEPTH + 2;
 // Encoding
 // ---------------------------------------------------------------------------
 
-/// One declaration's row, with its children already resolved to row ids and
-/// its code already resolved to the `CompiledCode` the code table will
-/// assign an id to.
+/// One declaration's row, with its children already resolved to row ids.
+/// Its code is read off `mixin` and `methods` themselves, which carry it.
 pub struct Row {
     pub mixin: Rc<Mixin>,
     pub nested: Vec<u32>,
@@ -93,30 +91,18 @@ pub struct Row {
     /// Sorted by selector text: the mixin's method table is a `HashMap`, and
     /// sorting is what makes the row canonical rather than dependent on that
     /// map's iteration order.
-    pub methods: Vec<(Rc<MixinMethod>, Rc<CompiledCode>)>,
-    pub initializer: Option<Rc<CompiledCode>>,
-    pub superclass_clause: Option<Rc<CompiledCode>>,
-    pub superclass_message: Option<Rc<CompiledCode>>,
+    pub methods: Vec<Rc<MixinMethod>>,
 }
 
 /// Flattens the tree under `root_class` into rows, in `mixin::preorder`
-/// order, resolving each declaration's compiled code out of `module`.
-///
-/// A method a mixin holds but the `CompiledModule` has no code for is an
-/// `Err`, not a panic: a method added to a live class after `compile_module`
-/// ran is exactly what the liveness spec's Req. 1 anticipates, so it is a
-/// refusal to snapshot this world.
+/// order.
 ///
 /// Called by both `encode::encode_code_table` (which needs the rows to know
 /// which `CompiledCode` is reachable, and in what order) and `encode` below
 /// (which needs them to write the table). Recomputing it is one walk of the
 /// tree and one `HashMap`; sharing a cached copy between the two would trade
 /// that for a lifetime that has to thread through `snapshot`.
-pub fn plan(
-    heap: &Heap,
-    root_class: &ClassRef,
-    module: &CompiledModule,
-) -> Result<Vec<Row>, String> {
+pub fn plan(heap: &Heap, root_class: ClassRef) -> Result<Vec<Row>, String> {
     let root_mixin = heap.class_application(root_class).map(|a| a.mixin.clone());
     // Not a class object: no declarations to describe, so the table is
     // empty rather than an error -- `encode_code_table` has always tolerated
@@ -133,21 +119,8 @@ pub fn plan(
         .collect();
     let mut rows = Vec::with_capacity(order.len());
     for mixin in &order {
-        let mut methods: Vec<(Rc<MixinMethod>, Rc<CompiledCode>)> = mixin
-            .methods
-            .values()
-            .map(|method| {
-                let code = module.methods.get(&method_key(method)).ok_or_else(|| {
-                    format!(
-                        "image encoding has no compiled code for method #{} \
-                         (it was added to the class after the module was compiled)",
-                        method.selector
-                    )
-                })?;
-                Ok((method.clone(), code.clone()))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        methods.sort_by(|a, b| a.0.selector.as_str().cmp(b.0.selector.as_str()));
+        let mut methods: Vec<Rc<MixinMethod>> = mixin.methods.values().cloned().collect();
+        methods.sort_by(|a, b| a.selector.as_str().cmp(b.selector.as_str()));
         rows.push(Row {
             mixin: mixin.clone(),
             // Every child is in `order` -- `preorder` put it there -- so the
@@ -159,9 +132,6 @@ pub fn plan(
                 .collect(),
             class_side: mixin.class_side.as_ref().map(|side| ids[&mixin_key(side)]),
             methods,
-            initializer: module.initializers.get(&mixin_key(mixin)).cloned(),
-            superclass_clause: module.superclass_clauses.get(&mixin_key(mixin)).cloned(),
-            superclass_message: module.superclass_messages.get(&mixin_key(mixin)).cloned(),
         });
     }
     // Refused here, not left for the reader: an image nested past the
@@ -236,12 +206,11 @@ pub(crate) type MixinIds = HashMap<usize, u32>;
 pub fn encode(
     w: &mut Writer,
     heap: &Heap,
-    root_class: &ClassRef,
-    module: &CompiledModule,
+    root_class: ClassRef,
     symbols: &mut symbols::Builder,
     codes: &CodeIds,
 ) -> Result<MixinIds, String> {
-    let rows = plan(heap, root_class, module)?;
+    let rows = plan(heap, root_class)?;
     w.write_u32(u32_field("mixin table entry count", rows.len()));
     for row in &rows {
         let mixin = &row.mixin;
@@ -271,20 +240,32 @@ pub fn encode(
             None => w.write_bool(false),
         }
         w.write_u32(u32_field("mixin's method count", row.methods.len()));
-        for (method, code) in &row.methods {
+        for method in &row.methods {
             w.write_u32(symbols.intern(method.selector.as_str()));
             w.write_u8(access_tag(method.access));
             w.write_u16(u16_arity("method", method.num_args));
-            w.write_u32(codes.id_of(code));
+            w.write_u32(codes.id_of(&method.code));
         }
         w.write_u32(u32_field("mixin's nested count", row.nested.len()));
         for id in &row.nested {
             w.write_u32(*id);
         }
         write_optional_id(w, row.class_side);
-        write_optional_id(w, row.initializer.as_ref().map(|c| codes.id_of(c)));
-        write_optional_id(w, row.superclass_clause.as_ref().map(|c| codes.id_of(c)));
-        write_optional_id(w, row.superclass_message.as_ref().map(|c| codes.id_of(c)));
+        write_optional_id(w, mixin.initializer_code.as_ref().map(|c| codes.id_of(c)));
+        write_optional_id(
+            w,
+            mixin
+                .superclass_clause_code
+                .as_ref()
+                .map(|c| codes.id_of(c)),
+        );
+        write_optional_id(
+            w,
+            mixin
+                .superclass_message_code
+                .as_ref()
+                .map(|c| codes.id_of(c)),
+        );
     }
     Ok(rows
         .iter()
@@ -320,10 +301,11 @@ fn write_optional_id(w: &mut Writer, id: Option<u32>) {
 // Decoding
 // ---------------------------------------------------------------------------
 
-/// One decoded row's *code* half: which compiled body belongs to which of
-/// the mixin's members. Kept beside the rebuilt `Mixin` rather than on it,
-/// because a `Mixin` is a description of a declaration and a code-table id
-/// is a fact about one image.
+/// One decoded row's *code* half as the row said it: the code-table id of
+/// each of the mixin's members' bodies. The bodies themselves are on the
+/// decoded mixin; the ids are kept beside it, because a code-table id is a
+/// fact about one image rather than about a declaration, and `inspect`
+/// attributes each code-table entry to its owner by them.
 #[derive(Debug, PartialEq)]
 pub struct MixinCode {
     /// `(selector, code id)`, sorted by selector exactly as encoded.
@@ -409,7 +391,7 @@ pub fn decode(
     }
     check_ids(&raw)?;
     check_preorder(&raw)?;
-    Ok(build(raw))
+    Ok(build(raw, codes))
 }
 
 fn read_row(
@@ -450,10 +432,10 @@ fn read_row(
         let num_args = r.read_u16()? as usize;
         let code = read_code_id(r, codes)?;
         // A row that names one selector twice would build a method
-        // dictionary with fewer entries than its code list has, and
-        // `decode::build_module` pairs the two up entry by entry. The
-        // encoder writes each selector once, sorted, so this is only
-        // reachable from a crafted image.
+        // dictionary with fewer entries than its code list has, silently
+        // dropping one of the two bodies it names. The encoder writes each
+        // selector once, sorted, so this is only reachable from a crafted
+        // image.
         if methods.iter().any(|(existing, ..)| *existing == selector) {
             return Err(DecodeError::DuplicateSelector(
                 selector.as_str().to_string(),
@@ -579,14 +561,21 @@ fn check_preorder(raw: &[RawRow]) -> Result<(), DecodeError> {
 /// Builds the `Rc<Mixin>`s back to front. `check_preorder` established that
 /// every child's row id is greater than its parent's, so a row's children
 /// are already built by the time the loop reaches it.
-fn build(raw: Vec<RawRow>) -> Decoded {
+///
+/// Each method and each per-mixin body is handed the code-table entry its
+/// row names -- `read_row` range-checked every id against `codes` already.
+/// Nothing here reconciles a body with what it is attached to:
+/// `decode::verify_mixins` does, on the load path only, so `inspect` can
+/// still display an artifact whose halves disagree.
+fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
+    let code_at = |id: u32| codes[id as usize].clone();
     let mut built: Vec<Option<Rc<Mixin>>> = vec![None; raw.len()];
     let mut code: Vec<Option<MixinCode>> = (0..raw.len()).map(|_| None).collect();
     for (i, row) in raw.into_iter().enumerate().rev() {
         let methods = row
             .methods
             .iter()
-            .map(|&(selector, access, num_args, _)| {
+            .map(|&(selector, access, num_args, id)| {
                 (
                     selector,
                     Rc::new(MixinMethod {
@@ -594,10 +583,11 @@ fn build(raw: Vec<RawRow>) -> Decoded {
                         access,
                         num_args,
                         // No declaration to point at, and none invented:
-                        // the compiled body in the code table is what this
+                        // the compiled body the row names is what this
                         // method runs, and nothing reads a declaration at
                         // run time.
                         decl: None,
+                        code: code_at(id),
                     }),
                 )
             })
@@ -643,6 +633,9 @@ fn build(raw: Vec<RawRow>) -> Decoded {
             class_side,
             span: row.span,
             decl: None,
+            initializer_code: row.initializer.map(code_at),
+            superclass_clause_code: row.superclass_clause.map(code_at),
+            superclass_message_code: row.superclass_message.map(code_at),
         });
         built[i] = Some(mixin);
     }

@@ -1,10 +1,10 @@
 //! Canonical, little-endian, self-describing byte encoding for the image
-//! format -- the spec's "Image format" section. Never a memory dump.
+//! format -- see `docs/design/image-format.md`. Never a memory dump.
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::bytecode::{CallSite, CodeKind, CompiledCode, CompiledModule, Instr, Literal};
+use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instr, Literal};
 use crate::heap::Heap;
 use crate::types::{
     BuiltinClass, ClassData, ClassRef, ClosureData, FrameKind, FrameRef, ObjRef, ObjectData,
@@ -15,39 +15,22 @@ use super::opcodes::*;
 use super::{mixins, symbols};
 
 pub const MAGIC: &[u8; 4] = b"NSIM";
-/// Versions the whole layout *and* the compiler's codegen: from the first
-/// image any released build can write, any change to `Instr`, to what the
-/// compiler emits, or to any section of the layout bumps it. A mismatch is
-/// refused on load, never migrated (Milestone 2 Non-Goals).
-///
-/// Version 1 covers the layout as `image::snapshot` finally writes it,
-/// source and `SourceOrigin` sections included. Those two arrived after the
-/// constant did, but within this milestone: until `snapshot` existed no
-/// build wrote a whole image, so no reader can hold a version-1 image
-/// without them and there is nothing for a bump to distinguish.
+/// The format version, refused on load when it does not match and never
+/// migrated. It is not bumped when the layout or the compiler's codegen
+/// changes: the project has no external users, so an image written before
+/// a change is disposable and no migration path is owed to it
+/// (`docs/design/image-format.md`, "Layout"). What has to hold instead is
+/// that an old or corrupt image fails as a `DecodeError`, which comes from
+/// validating every id, tag, count and length before it indexes, allocates
+/// or slices, and from never renumbering or reusing a wire tag
+/// (`opcodes.rs`) -- not from this field.
 ///
 /// The header's flag byte (`FLAG_HAS_SOURCE`) is what carries variation
-/// *within* a version from here on: the source blob is optional, and a
-/// reader distinguishes the two variants by the flag rather than by the
-/// version. A flag bit this build does not know is refused
-/// (`DecodeError::UnknownHeaderFlags`), which is what keeps a future
-/// optional section from being silently skipped by an older reader.
-///
-/// Literal tag 9 (`UnresolvedIdent`) was added by the same reasoning, and
-/// deliberately: it is a pure addition to the literal tag space made
-/// before any released build could write an image, so no version-1 image
-/// in anyone's hands can be misread because of it. The next such change
-/// after a release bumps the version.
-///
-/// Milestone 3's layout changes -- the symbol table, the mixin table that
-/// took the per-mixin sections out of the code table, and the class-object
-/// record that retired the `UserRoot` class tag -- do not bump it either,
-/// by an explicit decision (2026-09-06): the project has no external
-/// users, so images written before them are disposable and no migration path
-/// is owed to them. What still has to hold is that an old or corrupt image
-/// fails as a `DecodeError`, which comes from validating every id, tag,
-/// count and length before it indexes, allocates or slices -- not from this
-/// field.
+/// *within* the format: the source blob is optional, and a reader
+/// distinguishes the two variants by the flag. A flag bit this build does
+/// not know is refused (`DecodeError::UnknownHeaderFlags`), which is what
+/// keeps an optional section from being silently skipped by a reader that
+/// cannot see it.
 pub const FORMAT_VERSION: u32 = 1;
 
 #[derive(Default)]
@@ -190,7 +173,7 @@ pub struct CodeIds {
 impl CodeIds {
     pub fn id_of(&self, code: &Rc<CompiledCode>) -> u32 {
         *self.ids.get(&(Rc::as_ptr(code) as usize)).expect(
-            "every CompiledCode reachable from the module was assigned an id by encode_code_table",
+            "every CompiledCode reachable from the mixin tree was assigned an id by encode_code_table",
         )
     }
 }
@@ -232,7 +215,7 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
 /// is refused here rather than written wrongly; extending
 /// `resolve_superclass_receiver` is what would make it representable, and
 /// that extension is where this format would grow with it.
-pub fn encode_root_class(w: &mut Writer, heap: &Heap, root_class: &ClassRef) -> Result<(), String> {
+pub fn encode_root_class(w: &mut Writer, heap: &Heap, root_class: ClassRef) -> Result<(), String> {
     if !heap.is_class(root_class) {
         return Err("image encoding's root object is not a class".to_string());
     }
@@ -240,7 +223,7 @@ pub fn encode_root_class(w: &mut Writer, heap: &Heap, root_class: &ClassRef) -> 
     match superclass {
         None => w.write_bool(false),
         Some(superclass) => {
-            let builtin = heap.class_builtin(&superclass);
+            let builtin = heap.class_builtin(superclass);
             let Some(kind) = builtin else {
                 return Err(
                     "image encoding cannot serialize a root class whose superclass is a \
@@ -274,41 +257,35 @@ pub fn encode_entry(w: &mut Writer, entry: Option<u32>) {
     }
 }
 
-/// The code table: every `CompiledCode` reachable from `module` -- every
-/// mixin's methods, every mixin's initializer, every superclass clause and
-/// clause-message body, and every nested block body -- with nested block
-/// code *before* the code that creates it. Flat and unnamed: *which* body
-/// belongs to which declaration is the mixin table's business
-/// (`image::mixins`), which addresses this table by id.
+/// The code table: every `CompiledCode` reachable from the mixin tree under
+/// `root_class` -- every mixin's methods, every mixin's initializer, every
+/// superclass clause and clause-message body, and every nested block body --
+/// with nested block code *before* the code that creates it. Flat and
+/// unnamed: *which* body belongs to which declaration is the mixin table's
+/// business (`image::mixins`), which addresses this table by id.
 ///
-/// Collected in `mixin::preorder` order -- the same order `compile_module`
-/// compiled in and the same order the mixin table's rows are written in --
-/// so the same module always encodes to the same bytes.
-///
-/// A method a mixin holds but the `CompiledModule` has no code for is an
-/// `Err`, not a panic: a method added to a live class after `compile_module`
-/// ran is exactly what the liveness spec's Req. 1 anticipates, so it is a
-/// refusal to snapshot this world.
+/// Collected in `mixin::preorder` order -- the same order the mixin table's
+/// rows are written in -- so the same module always encodes to the same
+/// bytes.
 pub fn encode_code_table(
     w: &mut Writer,
     heap: &Heap,
-    module: &CompiledModule,
-    root_class: &ClassRef,
+    root_class: ClassRef,
     symbols: &mut symbols::Builder,
 ) -> Result<CodeIds, String> {
     let mut order: Vec<Rc<CompiledCode>> = Vec::new();
     let mut ids = CodeIds {
         ids: HashMap::new(),
     };
-    let rows = mixins::plan(heap, root_class, module)?;
+    let rows = mixins::plan(heap, root_class)?;
     for row in &rows {
-        for (_, code) in &row.methods {
-            collect_code(code, &mut order, &mut ids);
+        for method in &row.methods {
+            collect_code(&method.code, &mut order, &mut ids);
         }
         for code in [
-            &row.initializer,
-            &row.superclass_clause,
-            &row.superclass_message,
+            &row.mixin.initializer_code,
+            &row.mixin.superclass_clause_code,
+            &row.mixin.superclass_message_code,
         ]
         .into_iter()
         .flatten()
@@ -361,7 +338,7 @@ fn encode_code(w: &mut Writer, code: &CompiledCode, ids: &CodeIds, symbols: &mut
     }
     w.write_u32(u32_field("call site count", code.call_sites.len()));
     for site in &code.call_sites {
-        encode_call_site(w, site);
+        encode_call_site(w, *site);
     }
     w.write_u32(u32_field("instruction count", code.instrs.len()));
     for instr in &code.instrs {
@@ -369,7 +346,7 @@ fn encode_code(w: &mut Writer, code: &CompiledCode, ids: &CodeIds, symbols: &mut
     }
 }
 
-fn encode_call_site(w: &mut Writer, site: &CallSite) {
+fn encode_call_site(w: &mut Writer, site: CallSite) {
     w.write_u16(site.call_site_id);
 }
 
@@ -430,7 +407,7 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symb
             w.write_u32(symbols.intern(selector.as_str()));
             encode_regs(w, arg_regs);
             w.write_u16(*dst);
-            encode_call_site(w, call_site);
+            encode_call_site(w, *call_site);
         }
         Instr::SendPublic {
             selector,
@@ -444,7 +421,7 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symb
             w.write_u16(*receiver_reg);
             encode_regs(w, arg_regs);
             w.write_u16(*dst);
-            encode_call_site(w, call_site);
+            encode_call_site(w, *call_site);
         }
         Instr::SendSuper {
             selector,
@@ -456,7 +433,7 @@ fn encode_instr(w: &mut Writer, instr: &Instr, ids: &CodeIds, symbols: &mut symb
             w.write_u32(symbols.intern(selector.as_str()));
             encode_regs(w, arg_regs);
             w.write_u16(*dst);
-            encode_call_site(w, call_site);
+            encode_call_site(w, *call_site);
         }
         Instr::MakeClosure { dst, params, code } => {
             w.write_u8(OP_MAKE_CLOSURE);
@@ -557,12 +534,12 @@ fn encode_literal(w: &mut Writer, literal: &Literal, symbols: &mut symbols::Buil
 }
 
 // ---------------------------------------------------------------------------
-// The object table and the frame table (the spec's "Object table", "Frame
-// table" and "Root/special-objects table" bullets).
+// The object table and the frame table (`docs/design/image-format.md`,
+// "Sections").
 // ---------------------------------------------------------------------------
 
 fn is_same_object(a: &Value, b: &Value) -> bool {
-    matches!((a, b), (Value::Obj(x), Value::Obj(y)) if x.same(y))
+    matches!((a, b), (Value::Obj(x), Value::Obj(y)) if x.same(*y))
 }
 
 /// One entry of `GraphTable::build`'s explicit work stack: the traversal
@@ -591,7 +568,7 @@ fn class_refs(data: &ClassData) -> impl Iterator<Item = ObjRef> + '_ {
 /// the graph says so, so neither is a record. Every other class object is.
 /// The mirror of `decode::is_prebuilt_class`, including its explicit,
 /// today-redundant `is_class` guard -- see that function's doc comment.
-fn is_class_tag(heap: &Heap, obj: &ObjRef, root_class: &ClassRef) -> bool {
+fn is_class_tag(heap: &Heap, obj: ObjRef, root_class: ClassRef) -> bool {
     heap.is_class(obj) && (heap.class_builtin(obj).is_some() || obj.same(root_class))
 }
 
@@ -620,7 +597,7 @@ impl GraphTable {
         heap: &Heap,
         roots: &[Value],
         platform: &Value,
-        root_class: &ClassRef,
+        root_class: ClassRef,
     ) -> GraphTable {
         let mut table = GraphTable {
             objects: Vec::new(),
@@ -632,7 +609,7 @@ impl GraphTable {
         while let Some(pending) = stack.pop() {
             match pending {
                 Pending::Value(v) => table.visit_value(heap, &v, platform, root_class, &mut stack),
-                Pending::Frame(f) => table.visit_frame(heap, &f, &mut stack),
+                Pending::Frame(f) => table.visit_frame(heap, f, &mut stack),
             }
         }
         table
@@ -643,14 +620,14 @@ impl GraphTable {
         heap: &Heap,
         v: &Value,
         platform: &Value,
-        root_class: &ClassRef,
+        root_class: ClassRef,
         stack: &mut Vec<Pending>,
     ) {
         let Value::Obj(obj) = v else { return };
-        if is_same_object(v, platform) || is_class_tag(heap, obj, root_class) {
+        if is_same_object(v, platform) || is_class_tag(heap, *obj, root_class) {
             return;
         }
-        let key = heap.object_identity_key(obj);
+        let key = heap.object_identity_key(*obj);
         if self.object_ids.contains_key(&key) {
             return;
         }
@@ -659,7 +636,7 @@ impl GraphTable {
         self.objects.push(*obj);
         let before = stack.len();
         {
-            let record = heap.object_snapshot(obj);
+            let record = heap.object_snapshot(*obj);
             // An object's own class is a reference like every other: now
             // that a class object can be a record, reaching one only
             // through whatever values happen to point at it would leave
@@ -686,14 +663,14 @@ impl GraphTable {
         stack[before..].reverse();
     }
 
-    fn visit_frame(&mut self, heap: &Heap, frame: &FrameRef, stack: &mut Vec<Pending>) {
+    fn visit_frame(&mut self, heap: &Heap, frame: FrameRef, stack: &mut Vec<Pending>) {
         let key = heap.frame_identity_key(frame);
         if self.frame_ids.contains_key(&key) {
             return;
         }
         self.frame_ids
             .insert(key, u32_field("frame table id", self.frames.len()));
-        self.frames.push(*frame);
+        self.frames.push(frame);
         let before = stack.len();
         {
             let f = heap.frame_snapshot(frame);
@@ -733,14 +710,14 @@ impl GraphTable {
         stack[before..].reverse();
     }
 
-    pub fn object_id(&self, heap: &Heap, obj: &ObjRef) -> u32 {
+    pub fn object_id(&self, heap: &Heap, obj: ObjRef) -> u32 {
         *self
             .object_ids
             .get(&heap.object_identity_key(obj))
             .expect("object was visited by build()")
     }
 
-    pub fn frame_id(&self, heap: &Heap, frame: &FrameRef) -> u32 {
+    pub fn frame_id(&self, heap: &Heap, frame: FrameRef) -> u32 {
         *self
             .frame_ids
             .get(&heap.frame_identity_key(frame))
@@ -784,7 +761,7 @@ pub struct EncodeContext<'a> {
 /// enclosing instance's hidden cache slot and the `.class` of every
 /// instance of it, and there is one per enclosing instance, so no tag that
 /// names a class only by its position in the source could tell them apart.
-fn encode_class_tag(w: &mut Writer, class: &ClassRef, ctx: &EncodeContext) {
+fn encode_class_tag(w: &mut Writer, class: ClassRef, ctx: &EncodeContext) {
     if !ctx.heap.is_class(class) {
         panic!("internal: a class reference does not point at a class object");
     }
@@ -794,7 +771,7 @@ fn encode_class_tag(w: &mut Writer, class: &ClassRef, ctx: &EncodeContext) {
             w.write_u8(CLS_BUILTIN);
             w.write_u8(builtin_class_tag(kind));
         }
-        None if class.same(ctx.root_class) => w.write_u8(CLS_USER_ROOT),
+        None if class.same(*ctx.root_class) => w.write_u8(CLS_USER_ROOT),
         None => {
             w.write_u8(CLS_RECORD);
             w.write_u32(ctx.table.object_id(ctx.heap, class));
@@ -806,7 +783,7 @@ fn encode_optional_class(w: &mut Writer, class: Option<&ClassRef>, ctx: &EncodeC
     match class {
         Some(c) => {
             w.write_bool(true);
-            encode_class_tag(w, c, ctx);
+            encode_class_tag(w, *c, ctx);
         }
         None => w.write_bool(false),
     }
@@ -829,13 +806,13 @@ fn encode_value(w: &mut Writer, v: &Value, ctx: &EncodeContext) {
         w.write_u8(VAL_PLATFORM);
         return;
     }
-    if ctx.heap.is_class(obj) {
+    if ctx.heap.is_class(*obj) {
         w.write_u8(VAL_CLASS_TAG);
-        encode_class_tag(w, obj, ctx);
+        encode_class_tag(w, *obj, ctx);
         return;
     }
     w.write_u8(VAL_OBJECT_ID);
-    w.write_u32(ctx.table.object_id(ctx.heap, obj));
+    w.write_u32(ctx.table.object_id(ctx.heap, *obj));
 }
 
 fn encode_values(w: &mut Writer, values: &[Value], ctx: &EncodeContext) {
@@ -849,7 +826,7 @@ fn encode_frame_ref(w: &mut Writer, heap: &Heap, frame: Option<&FrameRef>, table
     match frame {
         Some(f) => {
             w.write_bool(true);
-            w.write_u32(table.frame_id(heap, f));
+            w.write_u32(table.frame_id(heap, *f));
         }
         None => w.write_bool(false),
     }
@@ -861,15 +838,14 @@ fn encode_closure_record(
     closure: &ClosureData,
     ctx: &EncodeContext,
     symbols: &mut symbols::Builder,
-) -> Result<(), String> {
+) {
     w.write_u16(u16_field("closure parameter count", closure.params.len()));
-    for p in &closure.params {
+    for p in closure.params.iter() {
         w.write_u32(symbols.intern(p.as_str()));
     }
     w.write_u32(ctx.code_ids.id_of(&closure.code));
-    w.write_u32(ctx.table.frame_id(ctx.heap, &closure.captured_frame));
-    w.write_u32(ctx.table.frame_id(ctx.heap, &closure.home));
-    Ok(())
+    w.write_u32(ctx.table.frame_id(ctx.heap, closure.captured_frame));
+    w.write_u32(ctx.table.frame_id(ctx.heap, closure.home));
 }
 
 /// A class object's record: which declaration it applies, and the three
@@ -928,12 +904,12 @@ fn encode_class_record(
 
 fn encode_object(
     w: &mut Writer,
-    obj: &ObjRef,
+    obj: ObjRef,
     ctx: &EncodeContext,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let record = ctx.heap.object_snapshot(obj);
-    encode_class_tag(w, &record.class, ctx);
+    encode_class_tag(w, record.class, ctx);
     w.write_u32(record.identity_hash);
     match &record.data {
         ObjectData::Instance(fields) => {
@@ -954,7 +930,7 @@ fn encode_object(
         }
         ObjectData::Closure(c) => {
             w.write_u8(OBJ_CLOSURE);
-            encode_closure_record(w, c, ctx, symbols)?;
+            encode_closure_record(w, c, ctx, symbols);
         }
         ObjectData::Class(data) => {
             w.write_u8(OBJ_CLASS);
@@ -966,10 +942,10 @@ fn encode_object(
 
 fn encode_frame(
     w: &mut Writer,
-    frame: &FrameRef,
+    frame: FrameRef,
     ctx: &EncodeContext,
     symbols: &mut symbols::Builder,
-) -> Result<(), String> {
+) {
     let f = ctx.heap.frame_snapshot(frame);
     encode_value(w, &f.receiver, ctx);
     encode_values(w, &f.args, ctx);
@@ -987,24 +963,23 @@ fn encode_frame(
         }
         FrameKind::Closure(c) => {
             w.write_u8(FRAME_CLOSURE);
-            encode_closure_record(w, c, ctx, symbols)?;
+            encode_closure_record(w, c, ctx, symbols);
         }
         FrameKind::TopLevel => w.write_u8(FRAME_TOP_LEVEL),
         FrameKind::Initializer(class) => {
             w.write_u8(FRAME_INITIALIZER);
-            encode_class_tag(w, class, ctx);
+            encode_class_tag(w, *class, ctx);
         }
         FrameKind::SuperclassClause(class) => {
             w.write_u8(FRAME_SUPERCLASS_CLAUSE);
-            encode_class_tag(w, class, ctx);
+            encode_class_tag(w, *class, ctx);
         }
         FrameKind::SuperclassMessage(class) => {
             w.write_u8(FRAME_SUPERCLASS_MESSAGE);
-            encode_class_tag(w, class, ctx);
+            encode_class_tag(w, *class, ctx);
         }
     }
     w.write_bool(f.uncontinuable);
-    Ok(())
 }
 
 /// The object table, the frame table, and the roots. Both counts come
@@ -1017,7 +992,7 @@ pub fn encode_graph_section(
     roots: &[Value],
     platform: &Value,
     code_ids: &CodeIds,
-    root_class: &ClassRef,
+    root_class: ClassRef,
     mixin_ids: &HashMap<usize, u32>,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
@@ -1026,17 +1001,17 @@ pub fn encode_graph_section(
         table: &table,
         code_ids,
         platform,
-        root_class,
+        root_class: &root_class,
         mixin_ids,
         heap,
     };
     w.write_u32(u32_field("object table entry count", table.objects().len()));
     w.write_u32(u32_field("frame table entry count", table.frames().len()));
     for obj in table.objects() {
-        encode_object(w, obj, &ctx, symbols)?;
+        encode_object(w, *obj, &ctx, symbols)?;
     }
     for frame in table.frames() {
-        encode_frame(w, frame, &ctx, symbols)?;
+        encode_frame(w, *frame, &ctx, symbols);
     }
     encode_values(w, roots, &ctx);
     Ok(())

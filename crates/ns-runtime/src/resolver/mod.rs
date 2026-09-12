@@ -41,9 +41,8 @@ pub fn resolve(
 }
 
 /// Own + statically-inherited member names, per class declaration identity
-/// (keyed by the class's own name -- sufficient for Milestone 1, where
-/// nested classes are not renamed/shadowed across a single module in ways
-/// that would collide two same-named classes at different nesting depths
+/// (keyed by the class's own name, which assumes no module declares two
+/// same-named classes at different nesting depths that would collide
 /// within one compile; revisit with a real `ClassId` if that ever bites).
 fn build_member_sets(root: &ast::ClassDecl) -> HashMap<Symbol, HashSet<Symbol>> {
     let mut sets = HashMap::new();
@@ -57,7 +56,7 @@ fn collect_member_sets(decl: &ast::ClassDecl, sets: &mut HashMap<Symbol, HashSet
         .superclass
         .as_ref()
         .map(|clause| Symbol::intern(&clause.receiver.name))
-        .unwrap_or_else(|| Symbol::intern("Object"));
+        .unwrap_or(Symbol::OBJECT);
     // Inherit the superclass's member set if we've already computed it
     // (nested classes are declared textually after their enclosing class,
     // and Object/builtins are the fixed base case -- their own instance
@@ -121,8 +120,8 @@ impl Resolver {
 
         // The superclass clause's receiver (e.g. `Object` in `Object new`)
         // is evaluated "as if it occurred inside an instance method of the
-        // enclosing class" (runtime spec's Resolver section, "No separate
-        // 'class value' binding" note) -- so it is resolved against the
+        // enclosing class" (`newspeak-spec.pdf` §6.1; `docs/design/dispatch.md`,
+        // "Binding variants") -- so it is resolved against the
         // chain of classes *enclosing* this declaration, not against this
         // class's own not-yet-existing member set.
         if let Some(clause) = &decl.superclass {
@@ -139,11 +138,11 @@ impl Resolver {
             }
         }
         // Slot initializers and initExprs execute in the instance
-        // initializer's activation (the runtime spec's Class Instantiation
-        // section, step 2: that activation has "the same arguments as the
-        // factory message"), so this class's *own* factory parameters are
-        // locals there -- exactly the way a method's own parameters are
-        // locals in its body. `| t = platform transcript. |` inside
+        // initializer's activation (`docs/design/object-model.md`,
+        // "Instantiation", step 2: that activation is created with the
+        // factory message's arguments), so this class's *own* factory
+        // parameters are locals there -- exactly the way a method's own
+        // parameters are locals in its body. `| t = platform transcript. |` inside
         // `class M usingPlatform: platform = Object new (...)` is the
         // single most common real Newspeak module idiom and depends on it.
         //
@@ -367,8 +366,8 @@ impl Resolver {
     }
 
     /// The `id` in `id:: e` (`Expr::Assign { target, .. }`) resolves
-    /// exactly like an implicit-receiver keyword send to `id:` -- see the
-    /// runtime spec's "Setter sends" note. Locals win first (a local
+    /// exactly like an implicit-receiver keyword send to `id:` -- see
+    /// `docs/design/dispatch.md`, "Setter sends". Locals win first (a local
     /// temp/param can be reassigned directly); otherwise it is a
     /// `LexicalSend` at the depth found for the plain slot name (the
     /// setter and getter share one declared name -- see
@@ -390,13 +389,13 @@ impl Resolver {
     }
 
     /// Resolves a superclass clause's `receiver` (e.g. `Object` in
-    /// `Object new`) -- see the runtime spec's Resolver design notes on
-    /// superclass clauses. `prefix` is handled the same way an explicit
+    /// `Object new`) -- see `docs/design/dispatch.md`, "Binding variants".
+    /// `prefix` is handled the same way an explicit
     /// self/super/outer receiver would be in an ordinary send; a bare
     /// receiver is looked up as a member name (a nested class is referenced
     /// through its auto-generated accessor, so it is already present in
     /// `own_member_names`) against `enclosing_chain`. Builtin class names
-    /// (`Object` and the rest of the Milestone 1 core library) have no
+    /// (`Object` and the rest of the core library) have no
     /// lexical declaration to find -- that is the base case that lets a
     /// class hierarchy bottom out, so only a name that is *neither* found
     /// lexically *nor* a known builtin is a `ResolveError`.
@@ -440,7 +439,7 @@ impl Resolver {
                     None if classes::is_builtin_class_name(name) => {
                         // No lexical declaration and none needed -- this is
                         // the base case that lets the hierarchy bottom out
-                        // at a Milestone 1 core-library class.
+                        // at a core-library class.
                     }
                     None => self.errors.push(ResolveError {
                         span: clause.receiver.span,

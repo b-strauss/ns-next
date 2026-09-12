@@ -116,7 +116,12 @@ shape a compiler can specialize either. It is part of what one native `+` costs
 on the activation stack, ~53 ns: `bench_send.ns` minus the send decomposition's
 row two. The arena binary's figure for the same difference, ~84 ns, also carries
 a temporaries allocation, so it overstates the native send
-([execution.md](execution.md), "What the activation stack moved").
+([execution.md](execution.md), "What the activation stack moved"). The fix
+lives with the inline caches, not in a faster `match`: a lookup that reaches a
+native binds an enumerated primitive, a native inline-cache entry carries it,
+and the JIT emits it inline ([dispatch.md](dispatch.md), "Planned: inline
+caches"). A leaf such as `+` additionally gets an inlined fast path in compiled
+code, guarded like the control-flow inlining, as Cog's `bytecodePrimAdd` does.
 
 ## Decisions
 
@@ -125,6 +130,8 @@ a temporaries allocation, so it overstates the native send
   narrows the earlier "native Rust rather than Newspeak source" decision rather
   than reversing it: the reasons for that decision — artifact size and the trust
   boundary — apply to leaves, which are almost all of the library.
+- **A native is bound as an enumerated primitive, not a function pointer**, so
+  the JIT can emit it inline.
 - **The platform grows only against a whitelisted module**, so every capability
   has a test that would notice it breaking.
 - **`i64` with an error on overflow**, rather than silent wraparound or a bignum

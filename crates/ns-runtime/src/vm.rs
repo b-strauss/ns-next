@@ -1,6 +1,6 @@
 //! The register VM's run loop -- and nothing else. `run_code` is a `match`
 //! over `Instr`; every `Send*` calls straight back into `interpreter/`'s
-//! shared orchestration (`Interpreter::send`, `dispatch_lexical_send`,
+//! send machinery (`Interpreter::send`, `dispatch_lexical_send`,
 //! `dispatch_super_send`), which re-enters `run_code` for any
 //! user-defined target. No dispatch logic, no `doesNotUnderstand:`, no
 //! native dispatch, and no error text of its own live here -- dispatch
@@ -11,19 +11,20 @@ use std::rc::Rc;
 
 use crate::bytecode::{CompiledCode, Instr, Literal};
 use crate::heap::{ActivationRef, Heap};
-use crate::interpreter::eval::{
-    dispatch_lexical_send, dispatch_super_send, home_of, malformed_int_error, parse_int_literal,
-    read_local, read_outer_local, store_instance_field, unresolved_identifier_error, write_local,
-    write_outer_local,
+use crate::interpreter::literals::{
+    malformed_int_error, parse_int_literal, unresolved_identifier_error,
 };
+use crate::interpreter::locals::{
+    home_of, read_local, read_outer_local, store_instance_field, write_local, write_outer_local,
+};
+use crate::interpreter::sends::{dispatch_lexical_send, dispatch_super_send};
 use crate::interpreter::{EvalResult, Interpreter};
 use crate::types::*;
 
 /// Runs `code` on the live activation `act` until a terminating
-/// instruction. `act` was pushed by the shared orchestration
-/// (`invoke_method`, `invoke_closure`, `instantiate` or
-/// `nested::run_clause_body`) with registers for `code.num_registers`, and
-/// that same orchestration pops it.
+/// instruction. `act` was pushed by the send machinery (`invoke_method`,
+/// `invoke_closure`, `instantiate` or `nested::run_clause_body`) with
+/// registers for `code.num_registers`, and that same caller pops it.
 ///
 /// The activation's `pc` is the safepoint view (`statement_pc` recovers the
 /// statement from it on demand), and it is stored *only by the instructions
@@ -38,7 +39,7 @@ use crate::types::*;
 /// yields between them.
 pub fn run_code(
     interp: &mut Interpreter,
-    act: &ActivationRef,
+    act: ActivationRef,
     code: &Rc<CompiledCode>,
 ) -> EvalResult {
     let mut pc = 0usize;
@@ -77,8 +78,8 @@ pub fn run_code(
                 receiver_reg,
                 arg_regs,
                 dst,
-                // `call_site` is deliberately ignored in this milestone --
-                // it is the reserved, inert inline-cache slot; no cache is
+                // `call_site` is deliberately ignored -- it is the
+                // reserved, inert inline-cache slot; no cache is
                 // wired up to read or write it yet.
                 ..
             } => {
@@ -124,7 +125,7 @@ pub fn run_code(
                 let captured_frame = interp.heap.reify(act);
                 let home = home_of(&mut interp.heap, act);
                 let closure = Rc::new(ClosureData {
-                    params: (**params).clone(),
+                    params: params.clone(),
                     code: block.clone(),
                     captured_frame,
                     home,
@@ -158,7 +159,7 @@ pub fn run_code(
             Instr::NonLocalReturn { reg } => {
                 let v = read_local(&interp.heap, act, *reg);
                 interp.heap.set_activation_pc(act, pc);
-                return Err(interp.raise_return_pub(act, v));
+                return Err(interp.raise_return(act, v));
             }
             Instr::Jump { target } => {
                 pc = *target as usize;
@@ -191,15 +192,15 @@ pub fn run_code(
     }
 }
 
-fn collect(heap: &Heap, act: &ActivationRef, regs: &[u16]) -> Vec<Value> {
+fn collect(heap: &Heap, act: ActivationRef, regs: &[u16]) -> Vec<Value> {
     regs.iter().map(|r| read_local(heap, act, *r)).collect()
 }
 
 /// Materializes a literal -- including the two deferred error cases,
-/// `MalformedInt` and `UnresolvedIdent`. Both raise through `eval.rs`'s own
+/// `MalformedInt` and `UnresolvedIdent`. Both raise through `literals.rs`'s own
 /// constructors rather than rebuilding the error here: error text lives in
 /// `interpreter/`, never in the VM.
-fn make_value(interp: &mut Interpreter, act: &ActivationRef, literal: &Literal) -> EvalResult {
+fn make_value(interp: &mut Interpreter, act: ActivationRef, literal: &Literal) -> EvalResult {
     Ok(match literal {
         Literal::Nil => Value::Nil,
         Literal::Bool(b) => Value::Bool(*b),

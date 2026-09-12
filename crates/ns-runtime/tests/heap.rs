@@ -11,29 +11,29 @@ fn array_accessors_read_and_write_through_the_seam() {
     let mut interp = Interpreter::bootstrap();
     let obj = interp.new_array(vec![Value::SmallInt(1), Value::SmallInt(2)]);
 
-    assert_eq!(interp.heap_ref().array_len(&obj), Some(2));
+    assert_eq!(interp.heap_ref().array_len(obj), Some(2));
     assert!(matches!(
-        interp.heap_ref().array_at(&obj, 0),
+        interp.heap_ref().array_at(obj, 0),
         Some(Value::SmallInt(1))
     ));
 
-    assert!(interp.heap_mut().array_set(&obj, 0, Value::SmallInt(9)));
+    assert!(interp.heap_mut().array_set(obj, 0, Value::SmallInt(9)));
     assert!(matches!(
-        interp.heap_ref().array_at(&obj, 0),
+        interp.heap_ref().array_at(obj, 0),
         Some(Value::SmallInt(9))
     ));
 
-    assert!(interp.heap_mut().array_push(&obj, Value::SmallInt(3)));
-    assert_eq!(interp.heap_ref().array_len(&obj), Some(3));
+    assert!(interp.heap_mut().array_push(obj, Value::SmallInt(3)));
+    assert_eq!(interp.heap_ref().array_len(obj), Some(3));
 }
 
 #[test]
 fn an_array_accessor_on_a_non_array_answers_none_rather_than_panicking() {
     let mut interp = Interpreter::bootstrap();
     let obj = interp.new_string("not an array".to_string());
-    assert_eq!(interp.heap_ref().array_len(&obj), None);
-    assert!(interp.heap_ref().array_at(&obj, 0).is_none());
-    assert!(!interp.heap_mut().array_push(&obj, Value::Nil));
+    assert_eq!(interp.heap_ref().array_len(obj), None);
+    assert!(interp.heap_ref().array_at(obj, 0).is_none());
+    assert!(!interp.heap_mut().array_push(obj, Value::Nil));
 }
 
 #[test]
@@ -41,16 +41,16 @@ fn an_out_of_range_index_answers_none_or_false_rather_than_panicking() {
     let mut interp = Interpreter::bootstrap();
     let obj = interp.new_array(vec![Value::SmallInt(1), Value::SmallInt(2)]);
 
-    assert!(interp.heap_ref().array_at(&obj, 99).is_none());
-    assert!(!interp.heap_mut().array_set(&obj, 99, Value::SmallInt(9)));
+    assert!(interp.heap_ref().array_at(obj, 99).is_none());
+    assert!(!interp.heap_mut().array_set(obj, 99, Value::SmallInt(9)));
 }
 
 #[test]
 fn string_and_symbol_accessors_answer_only_for_their_own_shape() {
     let mut interp = Interpreter::bootstrap();
     let s = interp.new_string("hello".to_string());
-    assert_eq!(interp.heap_ref().str_value(&s), Some("hello".to_string()));
-    assert_eq!(interp.heap_ref().sym_value(&s), None);
+    assert_eq!(interp.heap_ref().str_value(s), Some("hello".to_string()));
+    assert_eq!(interp.heap_ref().sym_value(s), None);
 }
 
 #[test]
@@ -58,8 +58,8 @@ fn is_class_distinguishes_a_class_object_from_an_instance() {
     let mut interp = Interpreter::bootstrap();
     let s = interp.new_string("x".to_string());
     let class = interp.class_of(&Value::Obj(s));
-    assert!(!interp.heap_ref().is_class(&s));
-    assert!(interp.heap_ref().is_class(&class));
+    assert!(!interp.heap_ref().is_class(s));
+    assert!(interp.heap_ref().is_class(class));
 }
 
 /// `describe` is the only sanctioned way to put a `Value` into an error
@@ -114,9 +114,9 @@ fn describe_arg_some_matches_describe_of_the_same_value() {
 fn class_accessors_answer_none_for_an_instance() {
     let mut interp = Interpreter::bootstrap();
     let s = interp.new_string("x".to_string());
-    assert!(interp.heap_ref().class_application(&s).is_none());
-    assert!(interp.heap_ref().class_superclass(&s).is_none());
-    assert!(interp.heap_ref().class_builtin(&s).is_none());
+    assert!(interp.heap_ref().class_application(s).is_none());
+    assert!(interp.heap_ref().class_superclass(s).is_none());
+    assert!(interp.heap_ref().class_builtin(s).is_none());
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn a_builtin_class_reports_its_kind_through_the_seam() {
     let mut interp = Interpreter::bootstrap();
     let s = interp.new_string("x".to_string());
     let class = interp.class_of(&Value::Obj(s));
-    assert!(interp.heap_ref().class_builtin(&class).is_some());
+    assert!(interp.heap_ref().class_builtin(class).is_some());
 }
 
 fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {

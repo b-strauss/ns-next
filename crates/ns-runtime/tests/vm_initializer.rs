@@ -52,13 +52,13 @@ const FACTORY_PARAM: &str = "Newspeak3\n'T'\nclass Foo x: a = Object new (\n  | 
 const INIT_EXPRS: &str = "Newspeak3\n'T'\nclass Foo = Object new (\n  | q ::= 5. r ::= 0. |\n  r := q + 1.\n) (\n  public r2 = ( ^r )\n) : ()";
 
 #[test]
-fn a_slot_initializer_reads_a_factory_parameter_under_bytecode() {
+fn a_slot_initializer_reads_a_factory_parameter() {
     let v = instantiate_and_get(FACTORY_PARAM, vec![Value::SmallInt(7)], "p2");
     assert_eq!(int_of(&v), 7);
 }
 
 #[test]
-fn init_exprs_run_after_slot_initializers_under_bytecode() {
+fn init_exprs_run_after_slot_initializers() {
     let v = instantiate_and_get(INIT_EXPRS, vec![], "r2");
     assert_eq!(int_of(&v), 6);
 }
@@ -77,20 +77,20 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
     };
     let closure = interp
         .heap_ref()
-        .closure_data(obj)
+        .closure_data(*obj)
         .unwrap_or_else(|| panic!("expected a closure"));
     assert_eq!(closure.code.num_args, 0);
     assert!(matches!(
-        interp.heap_ref().frame_kind(&closure.home),
+        interp.heap_ref().frame_kind(closure.home),
         FrameKind::Initializer(_)
     ));
 }
 
 #[test]
 fn a_return_inside_a_block_in_init_exprs_escapes_instantiate() {
-    // M1 gap, deliberately carried forward (spec: "Class instantiation"):
-    // the `Signal::Return` targets the initializer activation, which is
-    // still running, and nothing catches it.
+    // A known gap (`docs/design/execution.md`, "Non-local return"): the
+    // `Signal::Return` targets the initializer activation, which is still
+    // running, and nothing catches it.
     let src = "Newspeak3\n'T'\nclass Foo = Object new (\n  | |\n  [ ^1 ] value.\n) (\n) : ()";
     let (mut interp, class) = load(src);
     let result = interp.instantiate(class, vec![]);
@@ -111,8 +111,8 @@ fn a_factory_arity_mismatch_is_still_the_shared_error() {
 }
 
 // ---------------------------------------------------------------------------
-// Review fix round 1: `InitSlot`'s field index must be relative to the
-// mixin, not baked in absolute at compile time.
+// `InitSlot`'s field index must be relative to the mixin, not baked in
+// absolute at compile time.
 // ---------------------------------------------------------------------------
 
 /// A bare `SlotDecl` with no initializer -- only its presence (for the slot
@@ -169,7 +169,7 @@ fn field_at(heap: &ns_runtime::Heap, instance: &Value, index: usize) -> i64 {
     let Value::Obj(obj) = instance else {
         panic!("expected an instance")
     };
-    match heap.instance_field(obj, index) {
+    match heap.instance_field(*obj, index) {
         Some(Value::SmallInt(n)) => n,
         Some(_) => panic!("expected field {index} to hold a SmallInt"),
         None => panic!("expected an Instance payload"),
@@ -179,19 +179,18 @@ fn field_at(heap: &ns_runtime::Heap, instance: &Value, index: usize) -> i64 {
 #[test]
 fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_ones_absolute_offset()
 {
-    // The review's finding: `InitSlot` used to carry an ABSOLUTE field
-    // index, baked in at compile time from whichever class `compile_module`
-    // happened to be called against -- but the compiled initializer is
-    // shared by *every* application of its mixin (`compile_module` keys by
-    // `mixin_key`, not by class object, per §6.2). Two applications of the
-    // SAME mixin to superclasses with different slot counts legitimately
-    // disagree about where the mixin's own slot lands; the old scheme could
-    // only be right for one of them. This is a general defect, not a
-    // nested-class-only one -- reproducing it needs one `Rc<Mixin>` applied
-    // to two different superclasses, which today only happens by calling
-    // `Interpreter::apply_mixin` directly (`load_module` always builds a
-    // fresh `Mixin` per module, so two ordinary loaded classes never share
-    // one).
+    // `InitSlot` must not carry an ABSOLUTE field index, baked in at
+    // compile time from whichever class the compiler happens to be called
+    // against: the compiled initializer is shared by *every* application of
+    // its mixin (it lives on the mixin, not on a class object, per §6.2).
+    // Two applications of the SAME mixin to superclasses with different
+    // slot counts legitimately disagree about where the mixin's own slot
+    // lands, so an absolute index could only be right for one of them. The
+    // failure is general, not nested-class-only -- reproducing it needs one
+    // `Rc<Mixin>` applied to two different superclasses, which only happens
+    // by calling `Interpreter::apply_mixin` directly (`load_module` always
+    // builds a fresh `Mixin` per module, so two ordinary loaded classes
+    // never share one).
     //
     // The mixin is the one `load_module` built, so the initializer it
     // compiled for it -- keyed by that mixin -- is the one both hand-made
@@ -200,7 +199,7 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     let (mut interp, loaded) = load(src);
     let shared_mixin = interp
         .heap_ref()
-        .class_application(&loaded)
+        .class_application(loaded)
         .expect("a class object")
         .mixin
         .clone();

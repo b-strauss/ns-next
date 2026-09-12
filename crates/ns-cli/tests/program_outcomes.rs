@@ -1,11 +1,10 @@
 //! The observable outcome -- exit status, stdout and stderr, byte for byte --
 //! of programs that cannot be fixtures, because they exit non-zero or pin an
-//! exact message. Every expectation here is a verdict the tree-walker and the
-//! bytecode VM agreed on before the tree-walker was retired
-//! (`docs/design/execution.md`), recorded so that a later change cannot move
-//! it quietly. Until the reference lowering lands there is no second way to
-//! run a program and compare: a change that alters one of these is a
-//! behaviour change and has to be justified as one.
+//! exact message. Every expectation here is a recorded answer
+//! (`docs/design/execution.md`, "One engine"), pinned so that a later change
+//! cannot move it quietly. Until the reference lowering lands there is no
+//! second way to run a program and compare: a change that alters one of
+//! these is a behaviour change and has to be justified as one.
 
 mod common;
 

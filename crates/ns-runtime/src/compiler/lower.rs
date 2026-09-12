@@ -12,7 +12,7 @@ use ns_syntax::Span;
 
 use super::control_flow::{self, InlineForm};
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instr, Literal as BcLiteral};
-use crate::interpreter::eval::parse_int_literal;
+use crate::interpreter::literals::parse_int_literal;
 use crate::types::Binding;
 
 /// One entry of the compile-time scope stack. The resolver counts every
@@ -152,7 +152,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// What a `^` means here -- the spec's per-code-kind table. `None` is
+    /// What a `^` means here, per code kind. `None` is
     /// "evaluate and discard" (a top-level `^` in `initExprs`, which has no
     /// method to return from). Inside an inlined block (`scopes.last()
     /// == Inlined`) an initializer's `^` must instead raise the
@@ -226,7 +226,7 @@ impl<'a> Lowerer<'a> {
     /// Compiles a block literal into its own `CompiledCode` with a nested
     /// `Lowerer` that inherits this one's whole scope stack, and emits
     /// `MakeClosure`. `captured_frame`/`home`/`bindings` are supplied by the
-    /// VM at run time (spec: "Blocks and closures").
+    /// VM at run time (`docs/design/execution.md`, "Activations").
     fn lower_block_literal(&mut self, block: &ast::BlockExpr) -> u16 {
         let params: Vec<crate::Symbol> = block
             .params
@@ -312,7 +312,8 @@ impl<'a> Lowerer<'a> {
     /// may have built and stored it), so every send counts.
     ///
     /// Conservative in one direction only: answering `true` costs one
-    /// `Move`, answering `false` when a write can happen is the C1 defect.
+    /// `Move`, answering `false` when a write can happen breaks the
+    /// value-register invariant (`docs/design/compiler.md`).
     fn may_clobber_locals(&self, expr: &Expr) -> bool {
         match expr {
             // `LoadLiteral` and `MakeClosure` allocate; neither runs user
@@ -403,9 +404,11 @@ impl<'a> Lowerer<'a> {
                 let depth = *depth;
                 self.emit_lexical_send(depth, crate::Symbol::intern(&id.name), vec![])
             }
-            // M1's resolver never attaches `SuperSend` to a bare identifier (only to
-            // a `super m` send's own span) -- grouped with `None` here because both
-            // fall to the same builtin-name fallback.
+            // The resolver attaches `SuperSend` to a bare identifier in one
+            // place: a `super`-prefixed superclass-clause receiver (the known
+            // gap in `docs/design/dispatch.md`, "Binding variants"). It is
+            // grouped with `None` because both fall to the same builtin-name
+            // fallback.
             Some(Binding::SuperSend) | None => {
                 match crate::interpreter::instantiate::builtin_kind_from_name(&id.name) {
                     Some(kind) => {
@@ -416,11 +419,11 @@ impl<'a> Lowerer<'a> {
                     // Not a compiler-invariant violation: `resolve_ident`
                     // deliberately records no binding for `super`, and the
                     // lexer deliberately does not reserve it, so `^super`
-                    // is a program M1 accepts and rejects at *evaluation*
-                    // time. Compilation cannot raise a `NewspeakError`, so
-                    // the error is deferred exactly like `MalformedInt`:
-                    // the VM raises `eval`'s own error when the
-                    // instruction executes.
+                    // is a program the language accepts and rejects at
+                    // *evaluation* time. Compilation cannot raise a
+                    // `NewspeakError`, so the error is deferred exactly like
+                    // `MalformedInt`: the VM raises `literals`' own error
+                    // when the instruction executes.
                     None => {
                         let dst = self.alloc_scratch();
                         self.emit(Instr::LoadLiteral {
@@ -492,20 +495,21 @@ impl<'a> Lowerer<'a> {
                 target.name
             ),
         }
-        // An assignment's own value is `value`'s value (runtime spec's
-        // "Setter sends" note) -- already sitting in register `v`.
+        // An assignment's own value is `value`'s value
+        // (`docs/design/dispatch.md`, "Setter sends") -- already sitting in
+        // register `v`.
         v
     }
 
     /// One `Send*` instruction's `CallSite`: the instruction's own
     /// about-to-be-pushed index, always in sync with `instrs`.
     fn next_call_site(&self) -> CallSite {
-        // `call_site_id` is `u16` -- spec-mandated, Milestone 4's
-        // inline-cache slot -- so a body of more than 65535 instructions
-        // would silently alias two call sites onto the same id. Inlining
-        // raises instructions-per-body, so this is no longer purely
-        // theoretical; make the ceiling an explicit assertion rather than a
-        // silent truncation.
+        // `call_site_id` is `u16` -- the inline caches' reserved slot -- so
+        // a body of more than 65535 instructions would silently alias two
+        // call sites onto the same id. Inlining raises
+        // instructions-per-body, so this is not purely theoretical; make
+        // the ceiling an explicit assertion rather than a silent
+        // truncation.
         debug_assert!(
             self.instrs.len() <= u16::MAX as usize,
             "internal: more than {} instructions in one body -- call_site_id (u16) would alias",
@@ -583,10 +587,10 @@ impl<'a> Lowerer<'a> {
             }
             _ => {
                 // The inlining gate: only an ordinary explicit-receiver send
-                // is ever offered to `recognize` (M2 spec, "Control-flow
-                // inlining"). Every recognized form still keeps a runtime
-                // guard whose failure path is a real virtual send, so
-                // inlining stays a pure optimization.
+                // is ever offered to `recognize` (`docs/design/compiler.md`,
+                // "Control-flow inlining"). Every recognized form still keeps
+                // a runtime guard whose failure path is a real virtual send,
+                // so inlining stays a pure optimization.
                 if let Some(form) = control_flow::recognize(send) {
                     return match form {
                         InlineForm::IfTrueIfFalse(t, f) => self.lower_if(send, Some(t), Some(f)),
@@ -702,7 +706,7 @@ impl<'a> Lowerer<'a> {
     /// The guard-failure path of an inlined loop: what the native
     /// `whileTrue:`/`whileFalse:` does with a non-Boolean condition value.
     fn emit_must_be_boolean(&mut self, reg: u16) -> u16 {
-        let selector = crate::Symbol::intern("mustBeBoolean");
+        let selector = crate::Symbol::MUST_BE_BOOLEAN;
         self.emit_send(|dst, call_site| Instr::SendPublic {
             selector,
             receiver_reg: reg,
@@ -905,9 +909,10 @@ pub(crate) fn selector_of(message: &ast::MessageSend) -> crate::Symbol {
 
 fn lower_literal(lit: &ast::Literal) -> BcLiteral {
     match lit {
-        // Parsed once, here, with the shared M1 parser. A literal it rejects
-        // is a Newspeak-program error M1 raises at evaluation time, so it is
-        // deferred (`MalformedInt`), never a compile-time panic.
+        // Parsed once, here, with `parse_int_literal`, the parser the VM
+        // re-runs for a `MalformedInt`. A literal it rejects is a
+        // Newspeak-program error the language raises at evaluation time, so
+        // it is deferred (`MalformedInt`), never a compile-time panic.
         ast::Literal::Int { text, .. } => match parse_int_literal(text) {
             Ok(n) => BcLiteral::SmallInt(n),
             Err(_) => BcLiteral::MalformedInt(text.clone()),
@@ -921,7 +926,7 @@ fn lower_literal(lit: &ast::Literal) -> BcLiteral {
         ast::Literal::Array { elements, .. } => {
             BcLiteral::Array(elements.iter().map(lower_literal).collect())
         }
-        ast::Literal::Pattern { .. } => BcLiteral::Nil, // Non-Goal: typechecker/patterns (M1 spec)
+        ast::Literal::Pattern { .. } => BcLiteral::Nil, // patterns are not implemented (no typechecker)
     }
 }
 
@@ -1014,10 +1019,10 @@ mod tests {
         assert_eq!(code.num_args, 1);
     }
 
-    /// The C1 invariant: the register `lower_expr` returns must still hold
-    /// that value when its consumer executes. A named local's own register
-    /// is live storage, so an operand that has to survive an argument which
-    /// can write it is copied into a scratch first.
+    /// The value-register invariant: the register `lower_expr` returns must
+    /// still hold that value when its consumer executes. A named local's own
+    /// register is live storage, so an operand that has to survive an
+    /// argument which can write it is copied into a scratch first.
     #[test]
     fn an_operand_that_a_later_argument_can_write_is_copied_out_of_its_local() {
         let (method, bindings) = resolve_method(
@@ -1083,9 +1088,9 @@ mod tests {
         );
     }
 
-    /// C2: a bare `super` is a program-level error M1 raises at evaluation
-    /// time, not a compiler-invariant violation, so it must lower to the
-    /// deferred literal rather than panic.
+    /// A bare `super` is a program-level error the language raises at
+    /// evaluation time, not a compiler-invariant violation, so it must lower
+    /// to the deferred literal rather than panic.
     #[test]
     fn a_bare_super_lowers_to_a_deferred_error_literal_not_a_panic() {
         let (method, bindings) = resolve_method(
@@ -1605,10 +1610,9 @@ mod tests {
 
     #[test]
     fn an_empty_inlined_block_yields_nil() {
-        // No existing test lowers a literally empty inlined block --
-        // `lower_inline_block_body`'s "no statements" path (`result` stays
-        // `None`, falling back to `emit_nil`) was previously exercised only
-        // indirectly.
+        // A literally empty inlined block: `lower_inline_block_body`'s "no
+        // statements" path (`result` stays `None`, falling back to
+        // `emit_nil`), which no other test reaches directly.
         let code = compile_foo("x ifTrue: [] ifFalse: [2]");
         assert!(has(&code, |i| matches!(
             i,

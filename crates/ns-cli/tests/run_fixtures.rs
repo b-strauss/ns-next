@@ -12,9 +12,8 @@ fn normalize_newlines(s: &str) -> String {
     s.replace("\r\n", "\n")
 }
 
-/// Every fixture succeeds, prints exactly its `.expected` stdout and writes
-/// nothing to stderr -- the three streams the engine differential used to
-/// compare, pinned against a recorded answer instead.
+/// Every fixture succeeds, prints exactly its `.expected` stdout -- every
+/// byte, the final newline included -- and writes nothing to stderr.
 #[test]
 fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
@@ -46,8 +45,8 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(
-            normalize_newlines(stdout.trim_end()),
-            normalize_newlines(expected.trim_end()),
+            normalize_newlines(&stdout),
+            normalize_newlines(&expected),
             "{} produced unexpected stdout",
             path.display()
         );

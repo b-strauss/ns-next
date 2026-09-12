@@ -15,7 +15,7 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 fn as_string(heap: &Heap, value: &Value) -> String {
     match value {
         Value::Obj(obj) => heap
-            .str_value(obj)
+            .str_value(*obj)
             .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
         other => panic!("expected Value::Obj, got {}", heap.describe(other)),
     }
@@ -54,11 +54,11 @@ fn string_concatenation_with_a_non_string_argument_is_a_newspeak_error_not_a_pan
 
 #[test]
 fn concatenating_a_string_with_an_object_is_an_error_not_a_stack_overflow() {
-    // Regression: this message used to `{:?}`-format the argument. A
-    // `Value::Obj` there recurses through `Object`'s self-referential
-    // bootstrap class until the stack gives out, so the process aborted
-    // instead of reporting. Every existing test here passed a `SmallInt`,
-    // which formats harmlessly, which is why the defect survived.
+    // This message must not `{:?}`-format the argument: a `Value::Obj`
+    // there would recurse through `Object`'s self-referential bootstrap
+    // class until the stack gives out, aborting the process instead of
+    // reporting. Every other test here passes a `SmallInt`, which formats
+    // harmlessly and so could not catch it.
     let mut interp = Interpreter::bootstrap();
 
     let a = Value::Obj(interp.new_string("foo".to_string()));
@@ -134,7 +134,7 @@ fn symbol_round_trips_through_as_string_and_as_symbol() {
         "'foo:bar:' asSymbol",
     );
     match &back_to_symbol {
-        Value::Obj(obj) => match interp.heap_ref().sym_value(obj) {
+        Value::Obj(obj) => match interp.heap_ref().sym_value(*obj) {
             Some(s) => assert_eq!(s, Symbol::intern("foo:bar:")),
             None => panic!(
                 "expected ObjectData::Sym, got {}",

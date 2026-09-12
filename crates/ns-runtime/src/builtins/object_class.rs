@@ -21,8 +21,8 @@ pub fn dispatch(
         "doesNotUnderstand:" => {
             // Object's default doesNotUnderstand: (spec §5.5): must be
             // `protected`, always raises a MessageNotUnderstood-shaped
-            // NewspeakError. Milestone 1 has no exception-class hierarchy
-            // (Non-Goal); this produces the NewspeakError value directly
+            // NewspeakError. There is no exception-class hierarchy yet;
+            // this produces the NewspeakError value directly
             // rather than a catchable Newspeak object.
             let msg_selector = extract_dnu_selector(&interp.heap, &args[0]);
             Some(Err(NewspeakError {
@@ -45,16 +45,16 @@ fn identical(a: &Value, b: &Value) -> bool {
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::SmallInt(x), Value::SmallInt(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => x.to_bits() == y.to_bits(),
-        (Value::Obj(x), Value::Obj(y)) => x.same(y),
+        (Value::Obj(x), Value::Obj(y)) => x.same(*y),
         _ => false,
     }
 }
 
 fn identity_hash_of(heap: &Heap, value: &Value) -> u32 {
     match value {
-        Value::Obj(obj) => heap.identity_hash(obj),
-        _ => 0, // primitives are values; Milestone 1 does not give them a
-                // distinct identity hash (revisit if a fixture needs one)
+        Value::Obj(obj) => heap.identity_hash(*obj),
+        _ => 0, // primitives are values and get no distinct identity
+                // hash (revisit if a fixture needs one)
     }
 }
 
@@ -68,11 +68,11 @@ fn extract_dnu_selector(heap: &Heap, message_mirror_shaped_array: &Value) -> Sym
     // Matches `Interpreter::does_not_understand`'s `{selector. args}` array
     // shape.
     if let Value::Obj(obj) = message_mirror_shaped_array {
-        if let Some(Value::Obj(sym_obj)) = heap.array_at(obj, 0) {
-            if let Some(s) = heap.sym_value(&sym_obj) {
+        if let Some(Value::Obj(sym_obj)) = heap.array_at(*obj, 0) {
+            if let Some(s) = heap.sym_value(sym_obj) {
                 return s;
             }
         }
     }
-    Symbol::intern("unknown")
+    Symbol::UNKNOWN
 }

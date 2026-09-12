@@ -1,16 +1,18 @@
 //! Sends, method invocation, and the `Signal` non-local-return/error channel,
-//! shared by everything that runs Newspeak code. Send helpers and
-//! local-variable access are in `eval.rs`; the bootstrap and class
-//! instantiation in `instantiate.rs`.
+//! shared by everything that runs Newspeak code. Implicit-receiver and
+//! `super` sends are in `sends.rs`, register and outer-local access in
+//! `locals.rs`, the errors a deferred literal raises in `literals.rs`; the
+//! bootstrap and class instantiation are in `instantiate.rs`.
 
-pub mod eval;
 pub mod instantiate;
+pub(crate) mod literals;
+pub(crate) mod locals;
 pub(crate) mod nested;
+pub(crate) mod sends;
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::bytecode::{method_key, CompiledModule};
 use crate::dispatch::{self, Lookup};
 use crate::heap::{ActivationHeader, ActivationRef, Heap};
 use crate::types::*;
@@ -25,12 +27,12 @@ pub type EvalResult = Result<Value, Signal>;
 
 pub struct Interpreter {
     pub(crate) heap: Heap,
-    builtin_classes: Option<HashMap<BuiltinClass, ClassRef>>,
+    /// Every builtin class object, indexed by `BuiltinClass as usize`.
+    /// Indexed rather than hashed because `class_of` asks for one on every
+    /// send to a primitive receiver. Empty only while `bootstrap` is
+    /// building it; nothing can reach an `Interpreter` in that state.
+    builtin_classes: Vec<ClassRef>,
     platform_singleton: Option<Value>,
-    /// Every compiled body every loaded module runs. `load_module` and
-    /// `image::load` add to it through `install_code`; nothing runs a body
-    /// that is not here.
-    code: CompiledModule,
     /// (mixin identity, superclass application identity) -> behaviour.
     /// Keyed on the superclass's *application*, never on a superclass class
     /// object: a nested superclass has one class object per enclosing
@@ -44,7 +46,7 @@ pub struct Interpreter {
     /// what `applications` keys on: a fresh one per call would give two
     /// class objects that share an instance-side application two *different*
     /// metaclass applications, and the shared-application property is
-    /// exactly what a later milestone's inline caches guard on. It would
+    /// exactly what the inline caches will guard on. It would
     /// also grow `applications` without bound.
     empty_class_sides: HashMap<usize, Rc<crate::mixin::Mixin>>,
     /// The (receiver arena index, declaration identity) pairs whose nested
@@ -57,57 +59,22 @@ pub struct Interpreter {
     nested_in_progress: Vec<(usize, usize)>,
 }
 
-impl Default for Interpreter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Interpreter {
-    pub fn new() -> Interpreter {
-        Interpreter {
-            heap: Heap::new(),
-            builtin_classes: None,
-            platform_singleton: None,
-            code: CompiledModule::default(),
-            applications: HashMap::new(),
-            empty_class_sides: HashMap::new(),
-            nested_in_progress: Vec::new(),
-        }
-    }
-
     pub fn bootstrap() -> Interpreter {
         let mut interp = Interpreter {
             heap: Heap::new(),
-            builtin_classes: None,
+            builtin_classes: Vec::new(),
             platform_singleton: None,
-            code: CompiledModule::default(),
             applications: HashMap::new(),
             empty_class_sides: HashMap::new(),
             nested_in_progress: Vec::new(),
         };
-        interp.builtin_classes = Some(build_builtin_classes(&mut interp));
+        interp.builtin_classes = build_builtin_classes(&mut interp);
         interp
     }
 
-    /// Makes `module`'s compiled bodies runnable, adding them to whatever an
-    /// earlier load installed. `load_module`, where loading and compiling
-    /// are one step, and `image::load` are the callers.
-    pub(crate) fn install_code(&mut self, module: CompiledModule) {
-        self.code.extend(module);
-    }
-
-    pub fn compiled_module(&self) -> &CompiledModule {
-        &self.code
-    }
-
     pub fn builtin_class(&self, kind: BuiltinClass) -> ClassRef {
-        *self
-            .builtin_classes
-            .as_ref()
-            .expect("bootstrap() must run before builtin_class()")
-            .get(&kind)
-            .expect("every BuiltinClass variant is registered by build_builtin_classes")
+        self.builtin_classes[kind as usize]
     }
 
     /// A thin delegate; see `Heap::alloc_identity_hash`'s doc comment for why
@@ -117,7 +84,7 @@ impl Interpreter {
     }
 
     /// After `image::load`: never hand out an identity hash a loaded object
-    /// already carries (spec: "Identity hashes").
+    /// already carries (`docs/design/image-format.md`, "Sections").
     ///
     /// `max < u32::MAX` is the caller's guarantee, and an enforced one:
     /// `image::decode` refuses an image carrying `u32::MAX` outright
@@ -186,15 +153,15 @@ impl Interpreter {
         // second `doesNotUnderstand:` path, only a second class to try
         // `lookup_public` against first.
         if let Value::Obj(obj) = &receiver {
-            let is_class = self.heap.is_class(obj);
+            let is_class = self.heap.is_class(*obj);
             if is_class {
-                if let Some(metaclass) = self.metaclass_of(obj) {
-                    match dispatch::lookup_public(&self.heap, &metaclass, selector) {
+                if let Some(metaclass) = self.metaclass_of(*obj) {
+                    match dispatch::lookup_public(&self.heap, metaclass, selector) {
                         Lookup::Method(method, defining_class) => {
                             return self.invoke_method(receiver, method, defining_class, args);
                         }
                         Lookup::NestedClass(mixin, declaring_class) => {
-                            return nested::nested_class(self, &receiver, &mixin, &declaring_class);
+                            return nested::nested_class(self, &receiver, &mixin, declaring_class);
                         }
                         Lookup::Native(kind) => {
                             return self.dispatch_native_or_dnu(kind, receiver, selector, args);
@@ -205,7 +172,7 @@ impl Interpreter {
             }
         }
         let class = self.class_of(&receiver);
-        match dispatch::lookup_public(&self.heap, &class, selector) {
+        match dispatch::lookup_public(&self.heap, class, selector) {
             Lookup::Method(method, defining_class) => {
                 self.invoke_method(receiver, method, defining_class, args)
             }
@@ -214,7 +181,7 @@ impl Interpreter {
             // -- the accessor is unary, so a send that supplied arguments
             // did not name it (`walk` matched on the bare selector).
             Lookup::NestedClass(mixin, declaring_class) => {
-                nested::nested_class(self, &receiver, &mixin, &declaring_class)
+                nested::nested_class(self, &receiver, &mixin, declaring_class)
             }
             Lookup::Native(kind) => self.dispatch_native_or_dnu(kind, receiver, selector, args),
             Lookup::NotFound => self.does_not_understand(receiver, selector, args),
@@ -273,7 +240,7 @@ impl Interpreter {
     }
 
     /// §5.5's `doesNotUnderstand:` fallback -- access-blind (`lookup_defined_for`),
-    /// per the runtime spec's Dispatch section.
+    /// per `docs/design/dispatch.md`.
     ///
     /// Two cases reach here. A user-overridden `doesNotUnderstand:` arrives
     /// as `Lookup::Method`; `Object`'s own *native* one
@@ -290,12 +257,13 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> EvalResult {
         let class = self.class_of(&receiver);
-        let dnu_selector = Symbol::intern("doesNotUnderstand:");
-        // Milestone 1 passes a minimal message-mirror-shaped value: an Array
-        // `{selector. args}` rather than a real MessageMirror object
-        // (mirrors are a later milestone's Non-Goal). Callers relying on a
-        // real `MessageMirror` API are out of scope.
-        match dispatch::lookup_defined_for(&self.heap, &class, dnu_selector) {
+        let dnu_selector = Symbol::DOES_NOT_UNDERSTAND;
+        // A minimal message-mirror-shaped value: an Array `{selector. args}`
+        // rather than a real MessageMirror object, since mirrors do not
+        // exist yet (`docs/design/liveness-and-reflection.md`, "Mirrors and
+        // MirrorBuilder"). Callers relying on a real `MessageMirror` API are
+        // out of scope.
+        match dispatch::lookup_defined_for(&self.heap, class, dnu_selector) {
             Lookup::Method(method, defining_class) => {
                 let selector_value = self.new_symbol(selector);
                 let args_value = Value::Obj(self.new_array(args));
@@ -359,14 +327,13 @@ impl Interpreter {
         // the arguments first, the declared temporaries after them -- and
         // the run is laid out from how many arguments the activation was
         // *given*, not how many the method declares. A wrong-arity
-        // activation therefore does not fail; it silently shifts every
-        // temporary by the difference and reads arguments back where a
-        // temporary should be, silently, which no golden output necessarily
-        // shows.
-        // Silent wrong output with exit status 0 is the failure mode this
-        // repository's invariants single out, so the mismatch is refused
-        // here, in the shared orchestration, as an ordinary Newspeak error
-        // -- never a panic, since the caller may be a host.
+        // activation therefore does not fail: it shifts every temporary by
+        // the difference and reads an argument back where a temporary
+        // should be, which no golden output necessarily shows. Silent wrong
+        // output with exit status 0 is the failure mode this repository's
+        // invariants single out, so the mismatch is refused here as an
+        // ordinary Newspeak error -- never a panic, since the caller may be
+        // a host.
         //
         // No Newspeak-level send can reach this: the parser builds a
         // message whose argument count matches its selector by
@@ -385,14 +352,7 @@ impl Interpreter {
                 ),
             }));
         }
-        let code = self
-            .code
-            .methods
-            .get(&method_key(&method))
-            .cloned()
-            .unwrap_or_else(|| {
-                panic!("internal: dispatched method has no compiled form (compile_module coverage gap)")
-            });
+        let code = method.code.clone();
         let act = self.heap.push_activation(
             ActivationHeader {
                 receiver,
@@ -403,13 +363,57 @@ impl Interpreter {
             &args,
             (code.num_registers - code.num_args) as usize,
         );
-        let result = crate::vm::run_code(self, &act, &code);
-        self.heap.pop_activation(&act);
+        let result = crate::vm::run_code(self, act, &code);
+        self.heap.pop_activation(act);
         match result {
             Ok(value) => Ok(value),
-            Err(Signal::Return(target, value)) if target.same(&act) => Ok(value),
+            Err(Signal::Return(target, value)) if target.same(act) => Ok(value),
             Err(other) => Err(other),
         }
+    }
+
+    /// Invokes a closure with `args`. Called by `builtins::block` for `value`,
+    /// `value:`, `value:value:` and so on, and by every native that runs a
+    /// block argument, through `builtins::call_block`.
+    ///
+    /// The invoking activation is not passed: a live activation's sender is
+    /// the one below it on the activation stack.
+    pub fn invoke_closure(&mut self, closure: &Rc<ClosureData>, args: Vec<Value>) -> EvalResult {
+        // A wrong argument count is refused before it can reach a register: the
+        // window is laid out from the arguments actually given, so too few would
+        // address registers past its end -- a panic -- and too many would
+        // silently shift every temporary. Never panic on this
+        // Newspeak-program-input path.
+        if args.len() != closure.params.len() {
+            let receiver = self.heap.frame_receiver(closure.captured_frame);
+            return Err(Signal::Error(NewspeakError {
+                selector: Symbol::VALUE,
+                receiver,
+                message: format!(
+                    "wrong number of block arguments: block takes {}, got {}",
+                    closure.params.len(),
+                    args.len()
+                ),
+            }));
+        }
+        let receiver = self.heap.frame_receiver(closure.captured_frame);
+        let current_class = self.heap.frame_current_class(closure.captured_frame);
+        let code = &closure.code;
+        let act = self.heap.push_activation(
+            ActivationHeader {
+                receiver,
+                current_class,
+                kind: FrameKind::Closure(closure.clone()),
+                slot_base: 0, // a closure body never contains InitSlot
+            },
+            &args,
+            (code.num_registers - code.num_args) as usize,
+        );
+        let result = crate::vm::run_code(self, act, code);
+        // Popped on every path out. A closure activation catches no return: its
+        // `^` targets its home.
+        self.heap.pop_activation(act);
+        result
     }
 
     /// Where a `^` in `act` returns to. A block returns from its home --
@@ -418,14 +422,14 @@ impl Interpreter {
     /// to a live stack entry exactly until the activation returns, and a
     /// frame the image decoder built never is. A dead home is §7.2's
     /// `cannotReturn`. Every other activation's `^` returns from itself.
-    fn raise_return(&mut self, act: &ActivationRef, value: Value) -> Signal {
+    pub(crate) fn raise_return(&mut self, act: ActivationRef, value: Value) -> Signal {
         let target = match self.heap.activation_home(act) {
-            None => *act,
-            Some(home) => match self.heap.frame_activation(&home) {
+            None => act,
+            Some(home) => match self.heap.frame_activation(home) {
                 Some(live) => live,
                 None => {
                     return Signal::Error(NewspeakError {
-                        selector: Symbol::intern("^"),
+                        selector: Symbol::CARET,
                         receiver: value,
                         message:
                             "cannotReturn: the enclosing method activation has already returned"
@@ -437,13 +441,9 @@ impl Interpreter {
         Signal::Return(target, value)
     }
 
-    pub(crate) fn raise_return_pub(&mut self, act: &ActivationRef, value: Value) -> Signal {
-        self.raise_return(act, value)
-    }
-
     pub fn class_of(&self, value: &Value) -> ClassRef {
         match value {
-            Value::Obj(obj) => self.heap.class_of_obj(obj),
+            Value::Obj(obj) => self.heap.class_of_obj(*obj),
             // Nil/Bool/SmallInt/Float classes are wired up by the bootstrap
             // into interpreter-held globals, read from there via
             // `Interpreter::builtin_class(kind)`.
@@ -457,8 +457,8 @@ impl Interpreter {
     /// cache is: a class object's payload is `ObjectData::Class`, never
     /// `Instance`, so it has no slot vector for `nested_slot` to index into.
     /// Caching on the class object directly also gives every send against
-    /// the same class object the same metaclass identity, which a later
-    /// milestone's inline caches need.
+    /// the same class object the same metaclass identity, which the inline
+    /// caches will need.
     ///
     /// Returns `None` only when neither `class`'s own mixin nor any
     /// ancestor's declares a class side -- a class side is inherited down
@@ -495,22 +495,22 @@ impl Interpreter {
     /// decoded graph whose superclass links form a cycle, and no other
     /// construction site can build one (a superclass is fixed before the
     /// class object that inherits it exists).
-    pub fn metaclass_of(&mut self, class: &ClassRef) -> Option<ClassRef> {
+    pub fn metaclass_of(&mut self, class: ClassRef) -> Option<ClassRef> {
         // Walk out to the first level that already answers -- a cached
         // metaclass, a non-class object, or the end of the chain -- pushing
         // each level that still has to be built. `chain` is nearest-first,
         // so the build below runs it in reverse.
         let mut chain: Vec<ClassRef> = Vec::new();
         let mut super_metaclass: Option<ClassRef> = None;
-        let mut level = *class;
+        let mut level = class;
         loop {
             // Not a class object: it has no metaclass, and nothing below it
             // can inherit one through this level.
-            if !self.heap.is_class(&level) {
+            if !self.heap.is_class(level) {
                 break;
             }
-            let cached = self.heap.class_metaclass(&level);
-            let superclass = self.heap.class_superclass(&level);
+            let cached = self.heap.class_metaclass(level);
+            let superclass = self.heap.class_superclass(level);
             if cached.is_some() {
                 super_metaclass = cached;
                 break;
@@ -522,11 +522,11 @@ impl Interpreter {
         for level in chain.iter().rev() {
             let own_application = self
                 .heap
-                .class_application(level)
+                .class_application(*level)
                 .expect("only class objects are pushed onto the chain");
             let own_mixin = own_application.mixin.clone();
-            let enclosing = self.heap.class_enclosing(level);
-            let declaring_class = self.heap.class_declaring(level);
+            let enclosing = self.heap.class_enclosing(*level);
+            let declaring_class = self.heap.class_declaring(*level);
             let class_side = own_mixin.class_side.clone();
             let class_side_mixin = match class_side {
                 Some(mixin) => mixin,
@@ -546,7 +546,7 @@ impl Interpreter {
             };
             let super_application = super_metaclass
                 .as_ref()
-                .and_then(|metaclass| self.heap.class_application(metaclass));
+                .and_then(|metaclass| self.heap.class_application(*metaclass));
             let application = self.apply_mixin(&class_side_mixin, super_application.as_ref());
             // §6.3.1: a class side is written inside the same class
             // declaration its instance side is, and `resolver::resolve_class`
@@ -557,7 +557,7 @@ impl Interpreter {
             // starting a new, empty one.
             let metaclass =
                 self.new_class_object(application, enclosing, declaring_class, super_metaclass);
-            if !self.heap.set_class_metaclass(level, metaclass) {
+            if !self.heap.set_class_metaclass(*level, metaclass) {
                 unreachable!("only class objects are pushed onto the chain");
             }
             super_metaclass = Some(metaclass);
@@ -601,7 +601,7 @@ impl Interpreter {
     }
 
     pub fn new_character(&mut self, c: char) -> ObjRef {
-        // Milestone 1 has no dedicated Character payload variant on
+        // There is no dedicated Character payload variant on
         // ObjectData -- represent a character as a one-`char` Rust String
         // wrapped the same way String literals are (Str), consistent with
         // how the language spec itself treats characters as "a special
@@ -615,10 +615,10 @@ impl Interpreter {
 
     pub fn new_closure(&mut self, closure: Rc<ClosureData>) -> ObjRef {
         let class = self.builtin_class(BuiltinClass::Block);
-        self.new_instance_object(class, ObjectData::Closure((*closure).clone()))
+        self.new_instance_object(class, ObjectData::Closure(closure))
     }
 
-    /// The `platform` object (runtime spec's Core Library section):
+    /// The `platform` object (`docs/design/core-library.md`):
     /// memoized on first call, so every reference within one interpreter
     /// sees the same object identity.
     pub fn platform(&mut self) -> Value {
@@ -745,7 +745,7 @@ impl Interpreter {
     /// structure" has to hold for the metaclass side too -- otherwise two
     /// class objects that share an instance-side application answer a
     /// class-side send out of two distinct metaclass applications, which is
-    /// the property a later milestone's inline caches guard on.
+    /// the property the inline caches will guard on.
     ///
     /// Keying the cache by `owner`'s address is safe for the same reason
     /// `applications` is: every mixin that reaches here is held for the
@@ -768,19 +768,20 @@ impl Interpreter {
     }
 }
 
-/// Milestone 1 (no metaclasses -- see the runtime spec's "Documented
-/// Deviations") gives every `BuiltinClass` -- including `Object` itself --
-/// the same shared placeholder class object as its own `.class`, tagged
-/// `BuiltinClass::Object`.
+/// Every `BuiltinClass` -- including `Object` itself -- gets the same shared
+/// placeholder class object as its own `.class`, tagged
+/// `BuiltinClass::Object`: there is no reified metaclass hierarchy (the
+/// §3.2 deviation in `docs/design/object-model.md`, "Class sides and
+/// metaclasses").
 ///
 /// Every non-`Object` builtin's superclass below is `Object` directly, a
-/// Milestone 1 simplification of the real class hierarchy
+/// simplification of the real class hierarchy
 /// (`newspeak-spec.pdf` places `Boolean` above `True`/`False`, for
 /// instance): `builtins::boolean` must not rely on `True`/`False`
 /// actually inheriting from a `Boolean` superclass node, since they do not
 /// yet. Fix this only if a corpus module or fixture test needs real
 /// `Boolean`/`True`/`False` inheritance to observe correct behavior.
-fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, ClassRef> {
+fn build_builtin_classes(interp: &mut Interpreter) -> Vec<ClassRef> {
     // NOTE: deliberately *not* `use BuiltinClass::*;` here --
     // `BuiltinClass::Object` and `crate::types::Object`
     // (the object-model struct, brought into scope by `use crate::types::*;`
@@ -817,7 +818,7 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
     let object_application = interp.apply_mixin(&builtin_mixin(BuiltinClass::Object), None);
     let class_of_class =
         build_self_referential_object_class(&mut interp.heap, object_application.clone());
-    let mut map = HashMap::new();
+    let mut classes = Vec::with_capacity(kinds.len());
     for kind in kinds {
         let (superclass, application) = if kind == BuiltinClass::Object {
             (None, object_application.clone())
@@ -838,10 +839,20 @@ fn build_builtin_classes(interp: &mut Interpreter) -> HashMap<BuiltinClass, Clas
                 metaclass: None,
             }),
         );
-        map.insert(kind, obj);
+        // `builtin_class` indexes by discriminant, so the vector must be
+        // filled in exactly that order.
+        debug_assert_eq!(classes.len(), kind as usize);
+        // `Object`'s entry is the self-referential class every builtin has as
+        // its `.class`; the object this iteration allocated for it is never
+        // used, and is kept only because removing it would shift every later
+        // identity hash.
+        classes.push(if kind == BuiltinClass::Object {
+            class_of_class
+        } else {
+            obj
+        });
     }
-    map.insert(BuiltinClass::Object, class_of_class);
-    map
+    classes
 }
 
 /// The empty mixin behind one `BuiltinClass`. A fresh `Rc` per call, so the
