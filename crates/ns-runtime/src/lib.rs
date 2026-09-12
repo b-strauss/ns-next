@@ -19,6 +19,7 @@ pub mod symbol;
 pub mod types;
 pub mod vm;
 
+pub use compiler::Lowering;
 pub use heap::{ActivationHeader, ActivationRef, ClassRef, FrameRef, Heap, ObjRef};
 pub use interpreter::{Interpreter, Signal};
 pub use mixin::{Mixin, MixinApplication};

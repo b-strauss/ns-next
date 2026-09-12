@@ -35,7 +35,7 @@ stderr of the programs that cannot be fixtures
 corpus. The answers recorded before the retirement are verdicts the oracle and
 the VM agreed on. A change that alters one is a behaviour change, to be
 justified as one — never recorded because the code now produces it. The
-reference lowering ([compiler.md](compiler.md), "Planned: the reference
+reference lowering ([compiler.md](compiler.md), "The reference
 lowering") is the planned differential oracle.
 
 ## Activations

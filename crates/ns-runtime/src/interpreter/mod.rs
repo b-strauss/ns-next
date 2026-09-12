@@ -13,6 +13,7 @@ pub(crate) mod sends;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::compiler::Lowering;
 use crate::dispatch::{self, Lookup};
 use crate::heap::{ActivationHeader, ActivationRef, Heap};
 use crate::types::*;
@@ -57,10 +58,21 @@ pub struct Interpreter {
     /// a linear scan beats hashing and allocates nothing in the common
     /// case.
     nested_in_progress: Vec<(usize, usize)>,
+    /// The lowering every module this interpreter loads is compiled with
+    /// (`docs/design/compiler.md`, "The reference lowering"). Fixed at
+    /// construction, so one interpreter never mixes the two.
+    lowering: Lowering,
 }
 
 impl Interpreter {
     pub fn bootstrap() -> Interpreter {
+        Interpreter::bootstrap_with(Lowering::Optimized)
+    }
+
+    /// An interpreter whose `load_module` compiles with `lowering`. The
+    /// reference lowering is for checking the optimized one against it; an
+    /// artifact decoded into either runs the code it carries.
+    pub fn bootstrap_with(lowering: Lowering) -> Interpreter {
         let mut interp = Interpreter {
             heap: Heap::new(),
             builtin_classes: Vec::new(),
@@ -68,6 +80,7 @@ impl Interpreter {
             applications: HashMap::new(),
             empty_class_sides: HashMap::new(),
             nested_in_progress: Vec::new(),
+            lowering,
         };
         interp.builtin_classes = build_builtin_classes(&mut interp);
         interp

@@ -16,7 +16,7 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 ## Where the next session starts
 
 M4 is under way, and **the next piece is C, the reference lowering. Its design
-is written first** ([compiler.md](design/compiler.md), "Planned: the reference
+is written first** ([compiler.md](design/compiler.md), "The reference
 lowering"), before any plan or code, and it has to settle how a recursion-depth
 limit counts: the reference lowering activates blocks the optimized one
 inlines, so a limit that counts activations would trip at different points
@@ -37,7 +37,7 @@ activation. Three steps come before 1b, each landing on its own:
   differential oracle the retired tree-walker used to be: a second,
   deliberately naive lowering, under which every program must behave byte for
   byte as it does under the optimized one ([compiler.md](design/compiler.md),
-  "Planned: the reference lowering"). How the prior art bounds recursion depth
+  "The reference lowering"). How the prior art bounds recursion depth
   is recorded in [execution.md](design/execution.md), "How other systems bound
   recursion depth".
 

@@ -22,11 +22,12 @@ use super::{EvalResult, Interpreter, Signal};
 fn build_methods(
     body: &ast::ClassBody,
     bindings: &Rc<HashMap<Span, Binding>>,
+    lowering: crate::compiler::Lowering,
 ) -> HashMap<Symbol, Rc<MixinMethod>> {
     body.methods
         .iter()
         .map(|m| {
-            let method = MixinMethod::from_decl(Rc::new(m.clone()), bindings);
+            let method = MixinMethod::from_decl(Rc::new(m.clone()), bindings, lowering);
             (method.selector, Rc::new(method))
         })
         .collect()
@@ -68,7 +69,8 @@ impl Interpreter {
     ///
     /// Every method and every per-mixin body is compiled onto the
     /// declaration it belongs to as the tree is built, so a class this
-    /// returns is already runnable.
+    /// returns is already runnable. It is compiled with the lowering this
+    /// interpreter was bootstrapped with.
     pub fn load_module(&mut self, resolved: &ResolvedModule) -> ClassRef {
         let decl = &resolved.module.root_class;
         let mixin = self.build_mixin(decl, &resolved.bindings);
@@ -104,7 +106,7 @@ impl Interpreter {
         decl: &ast::ClassDecl,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Rc<Mixin> {
-        let methods = build_methods(&decl.instance_side, bindings);
+        let methods = build_methods(&decl.instance_side, bindings, self.lowering);
         let slots = build_slots(&decl.instance_side);
         let nested = decl
             .instance_side
@@ -150,7 +152,7 @@ impl Interpreter {
             superclass_clause_code: None,
             superclass_message_code: None,
         };
-        crate::compiler::compile_mixin_bodies(&mut mixin, bindings);
+        crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);
         Rc::new(mixin)
     }
 
@@ -168,14 +170,14 @@ impl Interpreter {
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Rc<Mixin> {
         let mut mixin = Mixin {
-            methods: build_methods(side, bindings),
+            methods: build_methods(side, bindings, self.lowering),
             slots: build_slots(side),
             has_init_exprs: !side.init_exprs.is_empty(),
             init_exprs: side.init_exprs.clone(),
             span: side.span,
             ..Mixin::empty(Symbol::CLASS_SIDE)
         };
-        crate::compiler::compile_mixin_bodies(&mut mixin, bindings);
+        crate::compiler::compile_mixin_bodies(&mut mixin, bindings, self.lowering);
         Rc::new(mixin)
     }
 

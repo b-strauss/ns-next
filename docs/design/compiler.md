@@ -4,7 +4,8 @@
 > **Code:** `crates/ns-runtime/src/bytecode.rs` (the instruction set and the
 > compiled-code shapes), `compiler/mod.rs` (entry points), `compiler/lower.rs`
 > (lowering, register allocation, the scope stack), `compiler/control_flow.rs`
-> (inlining). CLI: `ns-next disasm`.
+> (inlining), `compiler/reference.rs` (the reference lowering). CLI: `ns-next
+> disasm`.
 
 This is the producer side. How the bytecode is then run — activations, the VM,
 the dispatch loop — is [execution.md](execution.md).
@@ -319,9 +320,9 @@ These are the first pieces of the VM's own introspection tooling, the equivalent
 of `d8`; the rest, inline-cache transition traces and deoptimization reasons,
 arrives with the mechanisms it would observe.
 
-## Planned: the reference lowering
+## The reference lowering
 
-What would change: the compiler gains a second, deliberately naive lowering,
+The compiler has a second, deliberately naive lowering, `compiler/reference.rs`,
 and every program must behave byte for byte the same under both. It is the
 differential oracle the retired tree-walker used to be
 ([execution.md](execution.md), "One engine"), and it is meant to stay. Every
@@ -401,10 +402,12 @@ is lowered twice.
 10. `statement_pc`, `call_sites` and `num_registers` follow the same rules as in
     `lower.rs`.
 
-Its `finish` debug-asserts that shape: no branch instruction, since only
-inlining emits one; every scratch register written by exactly one instruction;
-and at most `u16::MAX` registers in a body, the same kind of ceiling the
-call-site id already asserts.
+Its `finish` checks that shape in a debug build, which is what the test suite
+runs (`check_shape`): no branch instruction, since only inlining emits one, and
+every scratch register written by exactly one instruction. The two ceilings —
+at most `u16::MAX` registers and `u16::MAX` instructions in a body — are
+checked in every build (`fresh`, `emit_send`), because an index that wrapped
+would be silently wrong code.
 
 ### Selecting it
 

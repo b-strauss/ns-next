@@ -276,6 +276,7 @@ mod tests {
             Rc::new(MixinMethod::from_decl(
                 Rc::new(method),
                 &Rc::new(HashMap::new()),
+                crate::compiler::Lowering::Optimized,
             )),
         );
         // The application chain must be linked wherever the class-object

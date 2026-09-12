@@ -25,7 +25,7 @@ repository; the reasoning behind them is in the design documents under
 `docs/design/`.
 
 **Program outcomes are pinned, not re-derived.** Until the reference lowering lands
-(`docs/design/compiler.md`, "Planned: the reference lowering") there is no second way to
+(`docs/design/compiler.md`, "The reference lowering") there is no second way to
 run a program and compare against. What protects behaviour is recorded answers: every
 `tests-fixtures/*.ns` against its `.expected` stdout and an empty stderr, the golden exit
 status, stdout and stderr in `crates/ns-cli/tests/program_outcomes.rs`, and `run-corpus`.

@@ -907,7 +907,7 @@ pub(crate) fn selector_of(message: &ast::MessageSend) -> crate::Symbol {
     }
 }
 
-fn lower_literal(lit: &ast::Literal) -> BcLiteral {
+pub(super) fn lower_literal(lit: &ast::Literal) -> BcLiteral {
     match lit {
         // Parsed once, here, with `parse_int_literal`, the parser the VM
         // re-runs for a `MalformedInt`. A literal it rejects is a
