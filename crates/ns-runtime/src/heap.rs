@@ -203,12 +203,19 @@ pub struct ActivationHeader {
     pub code: std::rc::Rc<crate::bytecode::CompiledCode>,
     /// What the run loop does with the activation's value when it returns.
     pub then: Continuation,
+    /// Whether the activation counts against the depth limit -- every one
+    /// does, except a block a control-flow native activates for a
+    /// `SendInlinable` (`Interpreter::push_step`).
+    pub counted: bool,
 }
 
 /// What popping an activation hands back to the run loop.
 pub struct Popped {
     /// The popped activation's continuation.
     pub then: Continuation,
+    /// Whether the popped activation counted against the depth limit: the
+    /// next block of a native loop may be exempt only if this one was.
+    pub counted: bool,
 }
 
 /// One live activation. Its registers are `values[base..]` up to the next
@@ -224,6 +231,8 @@ struct StackEntry {
     slot_base: usize,
     code: std::rc::Rc<crate::bytecode::CompiledCode>,
     then: Continuation,
+    /// See `ActivationHeader::counted`.
+    counted: bool,
     /// The frame `Heap::reify` created for this activation, married to it
     /// until the entry is popped.
     reified: Option<FrameRef>,
@@ -238,6 +247,9 @@ struct StackEntry {
 struct ActivationStack {
     values: Vec<Value>,
     entries: Vec<StackEntry>,
+    /// How many of `entries` count against the depth limit. Kept as a
+    /// running total, since the limit is checked on every push.
+    counted: usize,
     #[cfg(debug_assertions)]
     next_generation: u32,
 }
@@ -1165,6 +1177,7 @@ impl Heap {
         self.stack.values.extend_from_slice(args);
         let end = self.stack.values.len() + temp_count;
         self.stack.values.resize(end, Value::Nil);
+        self.stack.counted += usize::from(header.counted);
         #[cfg(debug_assertions)]
         let generation = {
             self.stack.next_generation = self.stack.next_generation.wrapping_add(1);
@@ -1180,6 +1193,7 @@ impl Heap {
             slot_base: header.slot_base,
             code: header.code,
             then: header.then,
+            counted: header.counted,
             reified: None,
             #[cfg(debug_assertions)]
             generation,
@@ -1217,7 +1231,11 @@ impl Heap {
             slot.live = None;
         }
         self.stack.values.truncate(base);
-        Popped { then: entry.then }
+        self.stack.counted -= usize::from(entry.counted);
+        Popped {
+            then: entry.then,
+            counted: entry.counted,
+        }
     }
 
     /// The arena frame for a live activation, created married to it on the
@@ -1255,6 +1273,17 @@ impl Heap {
     /// found it.
     pub fn activation_depth(&self) -> usize {
         self.stack.entries.len()
+    }
+
+    /// How many live activations count against the depth limit.
+    pub fn counted_depth(&self) -> usize {
+        self.stack.counted
+    }
+
+    /// The frame `act` was reified into, if a block has captured it.
+    pub fn activation_reified(&self, act: ActivationRef) -> Option<FrameRef> {
+        self.check_activation(act);
+        self.stack.entries[act.index as usize].reified
     }
 
     pub fn activation_local(&self, act: ActivationRef, index: u16) -> Value {
@@ -1750,6 +1779,7 @@ mod tests {
             slot_base: 0,
             code: trivial_code(),
             then: Continuation::Deliver,
+            counted: true,
         }
     }
 
@@ -2044,6 +2074,7 @@ mod tests {
                 slot_base: 0,
                 code: trivial_code(),
                 then: Continuation::Deliver,
+                counted: true,
             },
             &[],
             0,

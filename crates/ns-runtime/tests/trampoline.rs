@@ -153,3 +153,131 @@ fn a_deep_recursion_through_native_block_activations_runs_on_the_activation_stac
         }
     }
 }
+
+const TOO_DEEP: &str = "stack overflow: recursion too deep";
+
+fn expect_too_deep(result: Result<Value, Signal>, what: &str) {
+    match result {
+        Err(Signal::Error(e)) => assert_eq!(e.message, TOO_DEEP, "{what}"),
+        Err(Signal::Return(..)) => panic!("{what}: a non-local return escaped"),
+        Ok(_) => panic!("{what}: ran past the depth limit"),
+    }
+}
+
+/// The limit is exactly `MAX_ACTIVATION_DEPTH` counted activations, and it
+/// counts alike under both lowerings (`docs/design/compiler.md`, "How the
+/// limit counts"). `down: k` sent from Rust makes k + 1 method activations,
+/// so `down: 99_999` is the deepest that fits and `down: 100_000` one too
+/// many. `logic:` and `loop:` recurse from inside an `or:` block and a
+/// `whileTrue:` body, which the optimized lowering inlines and the reference
+/// lowering activates -- exempt, so the boundary is the same.
+#[test]
+fn the_depth_limit_is_exact_and_counts_alike_under_both_lowerings() {
+    assert_eq!(ns_runtime::interpreter::MAX_ACTIVATION_DEPTH, 100_000);
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(DEPTH, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        for selector in ["down:", "logic:", "loop:"] {
+            let what = format!("{selector} under {lowering:?}");
+            expect_ok(
+                interp.send(
+                    instance,
+                    Symbol::intern(selector),
+                    vec![Value::SmallInt(99_999)],
+                ),
+                &what,
+            );
+            expect_too_deep(
+                interp.send(
+                    instance,
+                    Symbol::intern(selector),
+                    vec![Value::SmallInt(100_000)],
+                ),
+                &what,
+            );
+            assert_eq!(
+                interp.heap_ref().activation_depth(),
+                0,
+                "{what}: nothing left behind"
+            );
+            // An overflow is an ordinary error: the interpreter goes on.
+            expect_ok(
+                interp.send(
+                    instance,
+                    Symbol::intern(selector),
+                    vec![Value::SmallInt(10)],
+                ),
+                &what,
+            );
+        }
+    }
+}
+
+/// A block activated through `value` is counted like any other activation,
+/// so a recursion through blocks alone ends in the same error.
+#[test]
+fn a_recursion_through_block_values_is_bounded_too() {
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(THROUGH_NATIVES, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        expect_too_deep(
+            interp.send(
+                instance,
+                Symbol::intern("viaValue:"),
+                vec![Value::SmallInt(250_000)],
+            ),
+            &format!("viaValue: under {lowering:?}"),
+        );
+    }
+}
+
+/// A crafted artifact can send `ifTrue:` as a `SendInlinable` with a block
+/// the sending activation did not create -- here the block itself, so it
+/// recurses. The exemption requires the block's captured frame to be the
+/// sender's (`docs/design/compiler.md`, "How the limit counts"), so this is
+/// counted and ends in the depth error; without that condition it would run
+/// uncounted until memory ran out.
+#[test]
+fn a_crafted_send_inlinable_cannot_recurse_uncounted() {
+    use ns_runtime::image;
+    use ns_runtime::image::opcodes::{OP_SEND_INLINABLE, OP_SEND_PUBLIC};
+    let src = "Newspeak3\n'T'\nclass Crafted = Object new (\n) (\n\tpublic main = ( | b | b := [true ifTrue: b]. ^b value )\n) : ()";
+    // `true ifTrue: b` is not a literal-block send, so even the reference
+    // lowering compiles it to a `SendPublic`, which the mutation below turns
+    // into a `SendInlinable` -- the two share one operand layout.
+    let (interp, class) = load(src, Lowering::Reference);
+    let mut bytes = image::build(
+        interp.heap_ref(),
+        None,
+        &SourceOrigin::File(PathBuf::from("t.ns")),
+        class,
+        Symbol::intern("main"),
+    )
+    .expect("build");
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let id = report
+        .symbols
+        .iter()
+        .position(|s| s == "ifTrue:")
+        .expect("ifTrue: is interned") as u32;
+    let mut pattern = vec![OP_SEND_PUBLIC];
+    pattern.extend_from_slice(&id.to_le_bytes());
+    let at: Vec<usize> = bytes
+        .windows(pattern.len())
+        .enumerate()
+        .filter(|(_, w)| *w == pattern.as_slice())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(at.len(), 1, "exactly one `ifTrue:` send to mutate");
+    bytes[at[0]] = OP_SEND_INLINABLE;
+
+    let mut loaded = image::load(&bytes).expect("the mutated artifact decodes");
+    let instance = expect_ok(
+        loaded.interp.instantiate(loaded.root_class, vec![]),
+        "instantiate",
+    );
+    expect_too_deep(
+        loaded.interp.send(instance, Symbol::intern("main"), vec![]),
+        "the crafted recursion",
+    );
+}

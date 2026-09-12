@@ -294,7 +294,7 @@ pub(super) fn run_clause_body(
 ) -> EvalResult {
     let temps = (code.num_registers - code.num_args) as usize;
     interp.reenter(|interp| {
-        Ok(interp.heap.push_activation(
+        interp.push(
             ActivationHeader {
                 receiver: *receiver,
                 current_class: Some(current_class),
@@ -302,10 +302,11 @@ pub(super) fn run_clause_body(
                 slot_base: 0, // no clause body ever contains InitSlot
                 code,
                 then: Continuation::Deliver,
+                counted: true,
             },
             &args,
             temps,
-        ))
+        )
     })
 }
 

@@ -76,7 +76,7 @@ fn block_step(interp: &Interpreter, arg: Value, then: Continuation) -> Step {
         if let Some(closure) = interp.heap_ref().closure_data(obj) {
             return Step::Block {
                 closure,
-                args: StepArgs::Empty,
+                args: StepArgs::ControlFlow,
                 then,
             };
         }

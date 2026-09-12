@@ -51,7 +51,7 @@ pub(crate) fn dispatch(
 fn condition_step(state: Rc<WhileLoop>) -> Step {
     Step::Block {
         closure: state.condition.clone(),
-        args: StepArgs::Empty,
+        args: StepArgs::ControlFlow,
         then: Continuation::WhileCondition(state),
     }
 }
@@ -81,7 +81,7 @@ fn body_step(interp: &Interpreter, state: Rc<WhileLoop>) -> Step {
         if let Some(body) = interp.heap_ref().closure_data(obj) {
             return Step::Block {
                 closure: body,
-                args: StepArgs::Empty,
+                args: StepArgs::ControlFlow,
                 then: Continuation::WhileBody(state),
             };
         }

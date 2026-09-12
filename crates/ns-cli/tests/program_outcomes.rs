@@ -316,3 +316,56 @@ fn an_if_block_that_takes_an_argument_is_a_wrong_arity_error() {
         "Uncaught Newspeak error: wrong number of block arguments: block takes 1, got 0\n",
     );
 }
+
+/// `KernelWeakTests.ns`'s `deepStack: 1000`, which Newspeak's own tests expect
+/// to run: 1000 levels through an `ifFalse:` block. Sum of 2n for n = 1..1000.
+#[test]
+fn a_thousand_deep_recursion_runs() {
+    assert_outcome(
+        "deep-stack",
+        "Newspeak3\n'T'\nclass Deep usingPlatform: platform = Object new (\n) (\n\tdeepStack: n = ( ^0 = n ifTrue: [0] ifFalse: [n + (deepStack: n - 1) + n] )\n\tpublic main: p args: a = (\n\t\tp transcript show: (deepStack: 1000) printString; newLine\n\t)\n) : ()\n",
+        0,
+        "1001000\n",
+        "",
+    );
+}
+
+/// Unbounded recursion is an ordinary Newspeak error, not a process abort,
+/// and the same one under both lowerings.
+#[test]
+fn an_unbounded_recursion_is_a_newspeak_error() {
+    assert_outcome(
+        "unbounded-recursion",
+        "Newspeak3\n'T'\nclass Unbounded usingPlatform: platform = Object new (\n) (\n\tdown: n = ( ^1 + (down: n + 1) )\n\tpublic main: p args: a = (\n\t\tp transcript show: 'start'; newLine.\n\t\tdown: 0\n\t)\n) : ()\n",
+        1,
+        "start\n",
+        "Uncaught Newspeak error: stack overflow: recursion too deep\n",
+    );
+}
+
+/// `do:` still re-enters the run loop from Rust for every element, so a
+/// recursion through it is bounded by the second limit -- and ends in its
+/// error, not in a native stack overflow, on the CLI's interpreter thread.
+#[test]
+fn a_recursion_through_do_is_bounded_by_the_native_limit() {
+    assert_outcome(
+        "do-recursion",
+        "Newspeak3\n'T'\nclass DoDeep usingPlatform: platform = Object new (\n) (\n\td: n = ( #(1) do: [:e | d: n + 1] )\n\tpublic main: p args: a = ( d: 0 )\n) : ()\n",
+        1,
+        "",
+        "Uncaught Newspeak error: stack overflow: too many nested native calls\n",
+    );
+}
+
+/// Instantiation re-enters the loop for each initializer level, so a class
+/// whose slot initializer instantiates it again is bounded by the same limit.
+#[test]
+fn a_recursive_instantiation_is_bounded_by_the_native_limit() {
+    assert_outcome(
+        "instantiation-recursion",
+        "Newspeak3\n'T'\nclass Tower usingPlatform: platform = Object new (\n) (\n\tpublic class Floor = Object new (\n\t\t| above = Floor new. |\n\t) (\n\t)\n\tpublic main: p args: a = ( Floor new )\n) : ()\n",
+        1,
+        "",
+        "Uncaught Newspeak error: stack overflow: too many nested native calls\n",
+    );
+}

@@ -26,6 +26,17 @@ pub enum Signal {
 
 pub type EvalResult = Result<Value, Signal>;
 
+/// L: the most activations that may be live at once, counted by the rule in
+/// `docs/design/compiler.md`, "How the limit counts". It bounds memory, not
+/// the native stack, which the trampoline no longer recurses on.
+pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
+
+/// N: how deep Rust may re-enter the run loop -- `do:`, instantiation, the
+/// nested-class accessor. It is what bounds the native stack; the CLI sizes
+/// its interpreter thread for it (`docs/design/execution.md`, "Two bounds, not
+/// one").
+pub const MAX_NATIVE_DEPTH: usize = 1_000;
+
 /// What a send decided, before anything runs (`docs/design/execution.md`,
 /// "The trampoline (1b)"). Deciding is `interpreter/`'s -- lookup,
 /// `doesNotUnderstand:`, the natives, the nested-class accessor -- and running
@@ -43,7 +54,9 @@ pub(crate) enum Step {
         defining_class: ClassRef,
         args: StepArgs,
     },
-    /// Activate `closure`, and do `then` with its value.
+    /// Activate `closure`, and do `then` with its value. A builtin
+    /// control-flow native's block is marked by its `args`,
+    /// `StepArgs::ControlFlow`.
     Block {
         closure: Rc<ClosureData>,
         args: StepArgs,
@@ -55,8 +68,21 @@ pub(crate) enum Step {
 pub(crate) enum StepArgs {
     /// The send's own arguments.
     Send,
-    /// None: a control-flow native activates a block with no arguments.
-    Empty,
+    /// None, for the block a builtin control-flow native activates --
+    /// `ifTrue:` and its three relatives, `and:`, `or:`, `whileTrue:`,
+    /// `whileFalse:` -- which is the activation the optimized lowering
+    /// inlines away, and which `push_step` therefore exempts from the depth
+    /// count when the send was a `SendInlinable`. Only those natives build
+    /// it.
+    ///
+    /// The mark rides on the arguments rather than in a `bool` of its own on
+    /// `Step::Block`. That field measured 3-8% slower on all three
+    /// benchmarks even with nothing reading it, including `bench_loop.ns`,
+    /// which activates nothing in its loop -- presumably because a `bool`
+    /// offers the compiler a niche for `Step`'s discriminant, which changes
+    /// how every decision's `Result<Step, Signal>` is encoded, though
+    /// neither type grew.
+    ControlFlow,
     /// Arguments the decision built: `doesNotUnderstand:`'s message.
     Owned(Vec<Value>),
 }
@@ -65,7 +91,7 @@ impl StepArgs {
     pub(crate) fn slice<'a>(&'a self, send: &'a [Value]) -> &'a [Value] {
         match self {
             StepArgs::Send => send,
-            StepArgs::Empty => &[],
+            StepArgs::ControlFlow => &[],
             StepArgs::Owned(args) => args,
         }
     }
@@ -112,6 +138,9 @@ pub struct Interpreter {
     /// afterwards, so a decision that re-enters the loop takes a fresh one
     /// instead of clobbering its caller's.
     arg_buffer: Vec<Value>,
+    /// How many runs of the loop Rust has re-entered and not yet left
+    /// (`reenter`), checked against `MAX_NATIVE_DEPTH`.
+    native_depth: usize,
 }
 
 impl Interpreter {
@@ -132,6 +161,7 @@ impl Interpreter {
             nested_in_progress: Vec::new(),
             lowering,
             arg_buffer: Vec::new(),
+            native_depth: 0,
         };
         interp.builtin_classes = build_builtin_classes(&mut interp);
         interp
@@ -184,7 +214,7 @@ impl Interpreter {
         let depth = self.heap.activation_depth();
         let result = match self.decide_send(receiver, selector, &args) {
             Ok(Step::Value(value)) => Ok(value),
-            Ok(step) => self.reenter(|interp| interp.push_step(step, &args)),
+            Ok(step) => self.reenter(|interp| interp.push_step(step, &args, None, false)),
             Err(signal) => Err(signal),
         };
         debug_assert_eq!(
@@ -207,7 +237,7 @@ impl Interpreter {
     /// (`instantiate.rs`) recognizes the shape and routes to
     /// `instantiate` directly; see its own doc comment for why this can
     /// never double-fire against the superclass clause's own deferred
-    /// factory message (`run_initializer_level` never calls `send`).
+    /// factory message (`run_initializer_levels` never calls `send`).
     pub(crate) fn decide_send(
         &mut self,
         receiver: Value,
@@ -406,12 +436,32 @@ impl Interpreter {
         self.arg_buffer = buffer;
     }
 
+    /// Pushes an activation, refusing one that would take the counted depth
+    /// past `MAX_ACTIVATION_DEPTH`. Every activation in the runtime is pushed
+    /// here, so the count and the check cannot be skipped by a new site.
+    pub(crate) fn push(
+        &mut self,
+        header: ActivationHeader,
+        args: &[Value],
+        temps: usize,
+    ) -> Result<ActivationRef, Signal> {
+        if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
+            return Err(recursion_too_deep(&header));
+        }
+        Ok(self.heap.push_activation(header, args, temps))
+    }
+
     /// Pushes the activation `step` describes. `send_args` are the arguments
-    /// of the send that decided it, which `StepArgs::Send` refers to.
+    /// of the send that decided it, which `StepArgs::Send` refers to;
+    /// `sender` is the activation that sent it, if the run loop did, and
+    /// `inlinable` whether the send was a `SendInlinable` -- the two things
+    /// the depth count's one exemption asks about.
     pub(crate) fn push_step(
         &mut self,
         step: Step,
         send_args: &[Value],
+        sender: Option<ActivationRef>,
+        inlinable: bool,
     ) -> Result<ActivationRef, Signal> {
         match step {
             Step::Value(_) => unreachable!("internal: a value needs no activation"),
@@ -425,7 +475,7 @@ impl Interpreter {
                 check_method_arity(&method, receiver, args.len())?;
                 let code = method.code.clone();
                 let temps = (code.num_registers - code.num_args) as usize;
-                Ok(self.heap.push_activation(
+                self.push(
                     ActivationHeader {
                         receiver,
                         current_class: Some(defining_class),
@@ -433,10 +483,11 @@ impl Interpreter {
                         slot_base: 0, // a method body never contains InitSlot
                         code,
                         then: Continuation::Deliver,
+                        counted: true,
                     },
                     args,
                     temps,
-                ))
+                )
             }
             // A closure activation catches no return: its `^` targets its home.
             Step::Block {
@@ -444,13 +495,28 @@ impl Interpreter {
                 args,
                 then,
             } => {
+                let control_flow = matches!(args, StepArgs::ControlFlow);
                 let args = args.slice(send_args);
                 check_block_arity(&self.heap, &closure, args.len())?;
+                // Exempt exactly the activation the optimized lowering
+                // inlines away: a block a control-flow native activates for
+                // a `SendInlinable`, and only if the sending activation
+                // created it -- which every block the reference lowering
+                // passes to one is, and which keeps a crafted artifact from
+                // recursing uncounted (`docs/design/compiler.md`, "How the
+                // limit counts"). Asked in this order so that an ordinary
+                // `value` never reads the sender's entry.
+                let created_by_sender = |heap: &Heap| {
+                    sender
+                        .and_then(|sender| heap.activation_reified(sender))
+                        .is_some_and(|frame| frame.same(closure.captured_frame))
+                };
+                let counted = !(inlinable && control_flow && created_by_sender(&self.heap));
                 let receiver = self.heap.frame_receiver(closure.captured_frame);
                 let current_class = self.heap.frame_current_class(closure.captured_frame);
                 let code = closure.code.clone();
                 let temps = (code.num_registers - code.num_args) as usize;
-                Ok(self.heap.push_activation(
+                self.push(
                     ActivationHeader {
                         receiver,
                         current_class,
@@ -458,10 +524,11 @@ impl Interpreter {
                         slot_base: 0, // a closure body never contains InitSlot
                         code,
                         then,
+                        counted,
                     },
                     args,
                     temps,
-                ))
+                )
             }
         }
     }
@@ -488,12 +555,22 @@ impl Interpreter {
     /// instantiation and its clause message, the nested-class accessor's
     /// clause, and every native that still calls a block come through here --
     /// the paths "What stays recursive" in `docs/design/execution.md` names.
+    ///
+    /// Each re-entry costs native stack, so it is counted against
+    /// `MAX_NATIVE_DEPTH`, and one past it is refused before anything is
+    /// pushed.
     pub(crate) fn reenter(
         &mut self,
         push: impl FnOnce(&mut Interpreter) -> Result<ActivationRef, Signal>,
     ) -> EvalResult {
+        if self.native_depth >= MAX_NATIVE_DEPTH {
+            return Err(too_many_nested_native_calls());
+        }
         let act = push(self)?;
-        crate::vm::run(self, act)
+        self.native_depth += 1;
+        let result = crate::vm::run(self, act);
+        self.native_depth -= 1;
+        result
     }
 
     /// Whether a `^` aimed at `act` ends at `act`: a method's does, and a
@@ -519,7 +596,7 @@ impl Interpreter {
             args: StepArgs::Owned(args),
             then: Continuation::Deliver,
         };
-        self.reenter(|interp| interp.push_step(step, &[]))
+        self.reenter(|interp| interp.push_step(step, &[], None, false))
     }
 
     /// Where a `^` in `act` returns to. A block returns from its home --
@@ -927,6 +1004,36 @@ fn check_block_arity(heap: &Heap, closure: &ClosureData, given: usize) -> Result
             given
         ),
     }))
+}
+
+/// L's error, for the activation `header` describes. Neither depth error
+/// names its limit, so that changing one changes no recorded answer. Both are
+/// kept out of line, so that the check on every push is a compare and a
+/// branch and nothing more.
+#[cold]
+#[inline(never)]
+fn recursion_too_deep(header: &ActivationHeader) -> Signal {
+    let selector = match &header.kind {
+        FrameKind::Method(method) => method.selector,
+        FrameKind::Closure(_) => Symbol::VALUE,
+        _ => Symbol::NEW,
+    };
+    Signal::Error(NewspeakError {
+        selector,
+        receiver: header.receiver,
+        message: "stack overflow: recursion too deep".to_string(),
+    })
+}
+
+/// N's error.
+#[cold]
+#[inline(never)]
+fn too_many_nested_native_calls() -> Signal {
+    Signal::Error(NewspeakError {
+        selector: Symbol::UNKNOWN,
+        receiver: Value::Nil,
+        message: "stack overflow: too many nested native calls".to_string(),
+    })
 }
 
 /// Every `BuiltinClass` -- including `Object` itself -- gets the same shared

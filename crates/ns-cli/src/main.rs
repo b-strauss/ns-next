@@ -173,8 +173,32 @@ enum Cmd {
     },
 }
 
+/// The native stack the interpreter runs on. Sends no longer recurse on it,
+/// but the paths that re-enter the run loop from Rust -- `do:`, instantiation,
+/// the nested-class accessor -- still do, up to
+/// `ns_runtime::interpreter::MAX_NATIVE_DEPTH` deep. This is that many
+/// re-entries at the cost measured for a debug build, twice over
+/// (`docs/design/execution.md`, "Two bounds, not one"). Reserved, not
+/// committed: only what a program uses is backed by memory.
+const INTERPRETER_STACK_BYTES: usize = 32 * 1024 * 1024;
+
 fn main() -> ExitCode {
-    match Cli::parse().command {
+    let command = Cli::parse().command;
+    // The whole command runs on the interpreter's thread, not only its sends:
+    // the symbol interner is thread-local, so every symbol a command interns
+    // has to be interned where it is used.
+    let worker = std::thread::Builder::new()
+        .name("ns-next".to_string())
+        .stack_size(INTERPRETER_STACK_BYTES)
+        .spawn(move || execute(command))
+        .expect("spawn the interpreter thread");
+    // A panic on that thread has already been reported by the panic hook;
+    // exit with the status a panic on the main thread would have had.
+    worker.join().unwrap_or_else(|_| ExitCode::from(101))
+}
+
+fn execute(command: Cmd) -> ExitCode {
+    match command {
         Cmd::Parse { file, ast } => commands::parse::execute(&file, ast),
         Cmd::ParseCorpus { dir, blacklist } => {
             commands::parse_corpus::execute(&dir, blacklist.as_deref())

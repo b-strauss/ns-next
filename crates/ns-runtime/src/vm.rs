@@ -129,8 +129,23 @@ fn execute(
             // `call_site` is the reserved, inert inline-cache slot; nothing
             // reads or writes it yet.
             ..
+        } => {
+            let receiver = read_local(&interp.heap, act, *receiver_reg);
+            send(
+                interp,
+                act,
+                pc,
+                arg_regs,
+                *dst,
+                floor,
+                false,
+                |interp, args| interp.decide_send(receiver, *selector, args),
+            )
         }
-        | Instr::SendInlinable {
+        // Decided exactly as `SendPublic` is; only the depth count treats
+        // the block a control-flow native activates for it differently
+        // (`Interpreter::push_step`).
+        Instr::SendInlinable {
             selector,
             receiver_reg,
             arg_regs,
@@ -138,9 +153,16 @@ fn execute(
             ..
         } => {
             let receiver = read_local(&interp.heap, act, *receiver_reg);
-            send(interp, act, pc, arg_regs, *dst, floor, |interp, args| {
-                interp.decide_send(receiver, *selector, args)
-            })
+            send(
+                interp,
+                act,
+                pc,
+                arg_regs,
+                *dst,
+                floor,
+                true,
+                |interp, args| interp.decide_send(receiver, *selector, args),
+            )
         }
         Instr::SendLexical {
             depth,
@@ -148,17 +170,31 @@ fn execute(
             arg_regs,
             dst,
             ..
-        } => send(interp, act, pc, arg_regs, *dst, floor, |interp, args| {
-            decide_lexical_send(interp, act, *depth, *selector, args)
-        }),
+        } => send(
+            interp,
+            act,
+            pc,
+            arg_regs,
+            *dst,
+            floor,
+            false,
+            |interp, args| decide_lexical_send(interp, act, *depth, *selector, args),
+        ),
         Instr::SendSuper {
             selector,
             arg_regs,
             dst,
             ..
-        } => send(interp, act, pc, arg_regs, *dst, floor, |interp, args| {
-            decide_super_send(interp, act, *selector, args)
-        }),
+        } => send(
+            interp,
+            act,
+            pc,
+            arg_regs,
+            *dst,
+            floor,
+            false,
+            |interp, args| decide_super_send(interp, act, *selector, args),
+        ),
         Instr::MakeClosure {
             dst,
             params,
@@ -237,7 +273,10 @@ fn execute(
 /// interpreter's reusable buffer, `pc` stored, the decision asked for, and
 /// what was decided run -- a value written to `dst`, or an activation pushed
 /// and switched to, its window filled straight from the buffer. No vector is
-/// allocated once the buffer has grown to the widest send.
+/// allocated once the buffer has grown to the widest send. `inlinable` says
+/// whether the instruction was a `SendInlinable`, which `push_step` hands to
+/// the depth count along with the sender, `act`.
+#[allow(clippy::too_many_arguments)]
 fn send(
     interp: &mut Interpreter,
     act: ActivationRef,
@@ -245,6 +284,7 @@ fn send(
     arg_regs: &[u16],
     dst: u16,
     floor: usize,
+    inlinable: bool,
     decide: impl FnOnce(&mut Interpreter, &[Value]) -> Result<Step, Signal>,
 ) -> Flow {
     let mut args = interp.take_arg_buffer();
@@ -255,7 +295,7 @@ fn send(
             write_local(&mut interp.heap, act, dst, v);
             Flow::Next
         }
-        Ok(step) => match interp.push_step(step, &args) {
+        Ok(step) => match interp.push_step(step, &args, Some(act), inlinable) {
             Ok(callee) => Flow::Switch {
                 act: callee,
                 code: interp.heap.activation_code(callee),
@@ -285,7 +325,12 @@ fn finish(interp: &mut Interpreter, act: ActivationRef, value: Value, floor: usi
         then => match interp.resume(then, value) {
             Ok(Step::Value(v)) => v,
             Ok(step) => {
-                return match interp.push_step(step, &[]) {
+                // The next block of a native loop is exempt from the depth
+                // count only if the one it follows was, and only if it too
+                // was created by the activation below it -- the loop's
+                // sender.
+                let sender = interp.heap.top_activation();
+                return match interp.push_step(step, &[], sender, !popped.counted) {
                     Ok(next) => Flow::Switch {
                         act: next,
                         code: interp.heap.activation_code(next),
