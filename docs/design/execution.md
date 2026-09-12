@@ -641,12 +641,31 @@ loop is the act of running a body, never the decision of which body. The loop
 then copies the arguments straight from the caller's argument registers into the
 callee's window, which is where `collect`'s vector disappears.
 
-Two things the trampoline settles on its own:
+Three things the trampoline settles on its own:
 
 - **`Block value` stops being a callback.** It is a native today that calls
   `invoke_closure`, which re-enters `run_code`. Once the loop owns the stack,
   activating a closure is what the loop already does, so the Rust frame in the
   middle disappears without anything being rewritten in Newspeak.
+- **The control-flow natives stop being callbacks too** (decided 2026-09-12).
+  `ifTrue:`, `ifFalse:`, `ifTrue:ifFalse:` and `ifFalse:ifTrue:` on a Boolean
+  return the block to activate, exactly as `value` does, and its value is the
+  send's. `and:` and `or:` do the same with a continuation that coerces the
+  block's value by `truthy_arg`'s rule when it returns; `whileTrue:` and
+  `whileFalse:` on a block return the condition block with a continuation that,
+  when it returns, activates the body or ends the loop, and the body's
+  continuation activates the condition again. The continuation rides on the
+  block activation, so a loop's condition and body replace each other on the
+  stack instead of nesting. This is Primordial Soup's model with one activation
+  fewer: there `True>>ifTrue: then = (^then value)` is a Newspeak method whose
+  `value` is primitive 156, `ActivateClosure`, which pushes a frame and returns
+  to `Interpret` (`vm/interpreter.cc`), so nothing in that VM ever re-enters the
+  interpreter from C. What decided it is the depth rule below: a callback native
+  costs native stack per level under the reference lowering only, growing with
+  the static nesting of `and:` and `while` blocks, so no fixed native stack
+  would guarantee that the count trips before the native stack under both
+  lowerings. `do:` stays a callback until it moves to Newspeak
+  ([core-library.md](core-library.md)).
 - **Recursion depth becomes a checkable limit and an ordinary Newspeak error**
   instead of a native stack overflow that aborts the process. That closes the
   exposure [image-format.md](image-format.md) records against a loaded artifact.
@@ -656,13 +675,49 @@ Two things the trampoline settles on its own:
   the count agree under both lowerings at every point of every program, so the
   reference lowering checks an overflow too ([compiler.md](compiler.md), "How
   the limit counts"). The trampoline adds `SendInlinable` and the counter
-  together, and decides the limit's value, its error text, and whether the
-  control-flow natives become trampoline steps or the native stack is sized for
-  the extra Rust frames they cost under the reference lowering. Measured on
-  Windows's 1 MB main-thread stack
-  before any of this, the recursion depth reachable today is 818 for recursion
-  inside an `ifFalse:` block (release build), and 307 through `do:` — below the
-  1000 that Newspeak's own `KernelWeakTests.ns` (`deepStack: 1000`) expects.
+  together. Measured on Windows's 1 MB main-thread stack before any of this, the
+  recursion depth reachable today is 818 for recursion inside an `ifFalse:`
+  block (release build), and 307 through `do:` — below the 1000 that
+  Newspeak's own `KernelWeakTests.ns` (`deepStack: 1000`) expects.
+
+**Two bounds, not one** (decided 2026-09-12). Once sends and the control-flow
+natives no longer recurse, two resources can still run out, and they are
+bounded separately, the way Lua and CPython bound them:
+
+| Bound | Counts | Value | Error text |
+|---|---|---|---|
+| L | activations, by the rule in [compiler.md](compiler.md), "How the limit counts" | 100,000 | `stack overflow: recursion too deep` |
+| N | re-entries of the run loop from Rust — the paths in "What stays recursive" below | 1,000 | `stack overflow: too many nested native calls` |
+
+L bounds memory: an activation is a stack entry and a window of registers in
+two `Vec`s, so L can be far larger than any native stack would allow. N bounds
+the native stack, and is the only bound that depends on it. Both agree under
+both lowerings, because once the control-flow natives are trampoline steps no
+Rust re-entry happens under one lowering and not the other. Neither error text
+names its number, as Lua's, CPython's, V8's and Nova's do not, so that changing
+a value later changes no recorded answer. The CLI runs the interpreter on a
+thread it spawns with an explicit stack size (`std::thread::Builder`), chosen
+from the measured native cost of one re-entry in a debug build, N times over,
+with margin; a test at N in a debug build pins that the error, not an abort,
+is what a program sees. An embedder driving `Interpreter` directly owes the same
+stack.
+
+Why not one count sized against the native stack: every counted activation can
+also be a `do:` re-entry, so L would have to fit L re-entries into the native
+stack — about 10,000 at most, with a reservation of over 100 MB in a debug
+build — and the guarantee would hang on Rust frame sizes that change with every
+refactoring and compiler release. Why not a memory bound, as Cog and Primordial
+Soup have, or a stack-pointer check, as V8 and HotSpot have: both trip at
+different depths under the two lowerings, whose activations differ in number
+and size, and the second also between a debug and a release build.
+
+**A superclass chain is walked iteratively.** `run_initializer_level` recurses
+once per level of the superclass chain today, and a level with no initializer
+code pushes no activation, so neither bound would see a long chain of such
+levels — and its length is an image's to choose, the same exposure
+`metaclass_of` and `dispatch::walk` were made iterative for. The trampoline
+walks it with an explicit list: the chain's clause messages from the class
+upward, each level's arguments kept, then the initializers from the top down.
 
 `Signal::Return` needs re-implementing against the stack. It already names its
 target by `ActivationRef`, but it still propagates through Rust `?` until the
@@ -684,6 +739,9 @@ that outgrows its stack:
 | Cog | Stack pages. `handleStackOverflow` (`src/spur64.stack/interp.c`) moves frames to the next page, first divorcing that page's frames into heap contexts if it is in use (`divorceFramesIn`). | None. Depth is bounded by memory. |
 | Nova | Recursive on the Rust stack. `Agent::check_call_depth` (`nova_vm/src/ecmascript/execution/agent.rs`) counts execution contexts. | 3500 — "experimental number that caused stack overflow on local machine" — then a `RangeError`. |
 | SOMns | A Truffle AST interpreter, recursive on the Java stack. | None. A `StackOverflowError` is a JVM failure; one of its test scripts raises the thread stack (`-Xss4096k`). |
+| Lua 5.4 (not in `prior-art/`) | Lua-to-Lua calls run in the VM loop without recursing in C; C functions and metamethods re-enter it. | Two: the Lua stack at 1,000,000 slots (`LUAI_MAXSTACK`), and nested C calls at 200 (`LUAI_MAXCCALLS`) — "stack overflow" and "C stack overflow". |
+| CPython ≥ 3.12 (not in `prior-art/`) | Since 3.11 a Python-to-Python call consumes no C stack. | Two: `sys.setrecursionlimit` (default 1000) counts Python frames only, and C recursion — builtins, extensions — is guarded separately; `RecursionError`. |
+| V8, HotSpot | Frames on the native stack. | The stack pointer against a limit (V8's `--stack-size`, HotSpot's `-Xss`), so the reachable depth depends on frame sizes and the compilation tier. |
 
 Newspeak's own tests assume the Smalltalk behaviour: `KernelWeakTests.ns`'s
 `deepStack: 1000` exists to overflow Primordial Soup's frame stack and force a
@@ -697,20 +755,28 @@ numerous and hold more registers — and the reference lowering is meant to chec
 an overflow too. What the count includes is decided in
 [compiler.md](compiler.md), "How the limit counts". A fixed count like Nova's is
 otherwise what a runtime falls back on when the stack its evaluator recurses on
-cannot grow. After 1b some paths still recurse on the Rust stack — the natives
-that call back into Newspeak, instantiation, the nested-class accessor ("What
-stays recursive" below) — and each level of them still costs native stack:
-derived from the depth reachable on a 1 MB stack before the trampoline,
-recursion through `do:` cost roughly 3.4 KB of native stack per Newspeak level
-in a release build and 13.4 KB in a debug one. Those paths need either a bounded
-depth or a native stack sized for the count.
+cannot grow. The systems that took their calls off the native stack — Lua,
+CPython from 3.11 — separate the two resources that can then run out, with a
+generous bound on the language's own depth and a tight one on native
+re-entries; Primordial Soup and Cog need no second bound only because nothing
+in them re-enters the interpreter from native code. After 1b some paths still
+recurse on the Rust stack ("What stays recursive" below), and each level of
+them still costs native stack: derived from the depth reachable on a 1 MB stack
+before the trampoline, recursion through `do:` cost roughly 3.4 KB of native
+stack per Newspeak level in a release build and 13.4 KB in a debug one. N, in
+"The trampoline (1b)" above, is what bounds them.
 
 ### What stays recursive, and why that is not a hole
 
-The natives that call back into Newspeak — `builtins::call_block`'s callers —
-keep their Rust frames for now. That is a barrier for a future JIT rather than a
-correctness problem, and it is addressed by moving them out of Rust rather than
-by trampolining around them; see [core-library.md](core-library.md). Their
+Three paths keep their Rust frames after 1b: `do:`, the one native that still
+calls back into Newspeak through `builtins::call_block`; instantiation, whose
+initializer levels and clause messages each run in a nested loop; and the
+nested-class accessor, which runs a superclass clause in one. Each re-entry is
+counted against N. `do:` is a barrier for a future JIT rather than a correctness
+problem, and it is addressed by moving it out of Rust rather than by
+trampolining around it; see [core-library.md](core-library.md). Instantiation
+and the accessor could become trampoline steps later — both run Newspeak code in
+a fixed order a continuation could drive — but nothing needs that yet. Their
 Rust-held values are covered by the scope discipline in
 [memory.md](memory.md).
 
@@ -824,3 +890,8 @@ binds it is that no native code may ever enter an image.
   lands**, and a reified frame keeps its registers when its activation returns
   to allow it. The reification mechanism itself is permanent: `^` and the
   debugger need it with or without conversion.
+- **Under the trampoline, the control-flow natives are trampoline steps and
+  depth has two bounds** — L = 100,000 activations, N = 1,000 re-entries from
+  Rust — because a callback native would make the reference lowering's native
+  stack grow with source nesting, and a single bound would tie the language's
+  depth to Rust frame sizes. Planned, with 1b.

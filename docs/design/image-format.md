@@ -210,12 +210,31 @@ the load. Before identity hashes were lazy these hashes survived by accident:
 the bootstrap allocated the same objects in the same order every time, so each
 drew the same number again.
 
-> **Open: stable hashes for tag-named objects.** Two candidate fixes, and the
-> choice between them is pending with the user. Either the graph section records
-> the stored hash of each tag-named object that has one, under a new wire tag,
-> and the decoder restores it; or tag-named objects get a deterministic hash rule
-> of their own, so that a fresh bootstrap and `load` reproduce the same value
-> without the image recording it. No test pins the present, lossy behaviour.
+### Planned: the image records tag-named hashes
+
+What would change: a hash one of these objects was asked for before a snapshot
+comes back unchanged after the load. Decided on 2026-09-12. The graph section
+ends, after its roots, with a table of the tag-named objects whose stored hash
+is not 0 — the builtin classes in wire-tag order, then the root class, then
+`platform` — each entry a tag from a new family in `opcodes.rs` naming the
+object, and its hash. `load` restores each hash onto the object the bootstrap
+built, refuses a 0, a duplicate entry or `u32::MAX` like any other malformed
+hash, and advances the counter past the largest hash either table carried.
+`inspect` reads the table as part of the graph section.
+
+That is what Cog and Primordial Soup get without trying: their images carry
+every object, classes included — a Spur class's identity hash is even its index
+in the class table (`ensureBehaviorHash`, `enterIntoClassTable`) — so no hash
+is ever rebuilt from anything. ns-next's bootstrap rebuilds these objects
+instead, so the image has to carry what the program observed of them. That
+stays true when the core library moves into Newspeak
+([core-library.md](core-library.md)): the builtins stay out of the image
+("How upstream compares" below), so they stay tag-named. The alternative, a
+deterministic hash for each tag-named object from a reserved range, was
+rejected: every tag-named object added later would need a reserved number, and
+the hash would no longer be the one the program was actually given, which is
+what "verbatim" promises for every other object. No test pins the present,
+lossy behaviour.
 
 ## How frames actually get into an image
 
@@ -512,12 +531,13 @@ builtins.
 - **Artifacts are readable but not writable as text.** A dump serves inspection;
   a loadable text format would be a second codec to keep in step, and the need
   that would justify it is already met by corrupting real images.
+- **An image records the hashes of the objects it names by tag**, so a hash the
+  program was given survives a snapshot like every other; a reserved-range
+  rule was rejected. Planned; see "Planned: the image records tag-named
+  hashes".
 
 ## Open questions
 
-- **How a tag-named object keeps its identity hash across a snapshot** — a new
-  wire tag that records it, or a deterministic hash rule. Lazy identity hashes
-  made it a known regression; see "Identity hashes are preserved verbatim".
 - **The decompiler** that is to provide export back to `.ns`. Mitigated by the
   debug source blob, unwritten.
 - **Whether upstream strips source at packaging time.** A measurement of four

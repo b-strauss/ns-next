@@ -91,14 +91,42 @@ fast path instead. Today ten selectors call back, through
 
 | Selector | Destination |
 |---|---|
-| `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler, with the native kept as the guarded fallback — already how it works for the literal-block case |
-| `whileTrue:`, `whileFalse:` | The same, and already done |
+| `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler, with the native kept as the guarded fallback — already how it works for the literal-block case. The trampoline turns the fallback native into a trampoline step that returns the block to activate instead of calling it ([execution.md](execution.md), "The trampoline (1b)") |
+| `whileTrue:`, `whileFalse:` | The same, both halves |
 | `value`, `value:`, … | Absorbed by the trampoline: activating a closure is what the activation stack does. See [execution.md](execution.md) |
 | `do:` | Written in Newspeak |
 
-So exactly one of today's methods actually moves to Newspeak. Everything else in
-`builtins/` — `size`, `at:`, `class`, `hash`, `printString`, the arithmetic, the
-comparisons, `asString`, `asSymbol` — is a leaf and stays Rust permanently.
+So after the trampoline exactly one of today's methods still calls back, and it
+is the one that moves to Newspeak. Everything else in `builtins/` — `size`,
+`at:`, `class`, `hash`, `printString`, the arithmetic, the comparisons,
+`asString`, `asSymbol` — is a leaf, and its computation stays in Rust.
+
+**Where this is going: the core library as Newspeak source, with Rust
+primitives underneath** (the user's direction, 2026-09-12). Primordial Soup
+holds its whole core library as Newspeak (`KernelForPrimordialSoup.ns`),
+compiled like any other class; a leaf is a Newspeak method that names a
+primitive by pragma and carries a Newspeak fallback body for when the primitive
+fails — `Closure>>value` is primitive 156 with a `numArgsError:` fallback,
+`True>>ifTrue: then` is simply `^then value`. ns-next's target is the same:
+every builtin method a real method that lookup, mirrors and the debugger see,
+the leaves backed by the Rust primitives that exist today. The computation of a
+leaf does not move; what changes is that it becomes reachable as a method. That
+is what lets a debugger step into `do:` and edit-and-continue reach library
+code ([liveness-and-reflection.md](liveness-and-reflection.md)), and what gives
+the JIT something to work with: every send inside library code gets a call site
+of its own, whose inline cache records what flows through it, where a Rust
+native records nothing. Library code is shared by every caller, so those sites
+are often megamorphic — `action value:` inside `do:` sees every block in the
+program — and the feedback pays off once the JIT inlines library methods into
+their callers, not from the caches alone.
+
+It comes after the inline caches, for the reason "The ordering matters" gives
+for `do:`, and it does not change the image's decision to keep the builtins out
+of every artifact ([image-format.md](image-format.md), "How upstream
+compares"): the library would be compiled from source the runtime ships, as the
+bootstrap is built from Rust today. Nothing done before then should make the
+move harder; a control-flow native written as a trampoline step, for one, maps
+directly onto a primitive of the kind `Closure>>value` has.
 
 **The ordering matters and is the opposite of the obvious one.** `do:` in
 Newspeak costs an activation for `do:` itself plus real sends for the loop
@@ -132,6 +160,9 @@ code, guarded like the control-flow inlining, as Cog's `bytecodePrimAdd` does.
   boundary — apply to leaves, which are almost all of the library.
 - **A native is bound as an enumerated primitive, not a function pointer**, so
   the JIT can emit it inline.
+- **The core library is headed for Newspeak source with Rust primitives
+  underneath**, as Primordial Soup's is, so that every builtin method is a real
+  method. Planned, after the inline caches.
 - **The platform grows only against a whitelisted module**, so every capability
   has a test that would notice it breaking.
 - **`i64` with an error on overflow**, rather than silent wraparound or a bignum

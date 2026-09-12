@@ -832,9 +832,9 @@ before a snapshot is replaced by a fresh one after the load. Before this step
 those hashes survived only because the bootstrap allocated the same objects in
 the same order every time. Fixing it needs a design decision — a new wire tag
 that records those hashes, or a deterministic hash rule for tag-named
-objects — which is pending with the user
-([image-format.md](design/image-format.md), "Identity hashes are preserved
-verbatim").
+objects. The user decided on 2026-09-12 to record them
+([image-format.md](design/image-format.md), "Planned: the image records
+tag-named hashes").
 
 **What was deleted:** `Heap::alloc_placeholder_object`, whose callers now use
 `alloc_object`, since every object starts at hash 0;

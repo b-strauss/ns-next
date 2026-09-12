@@ -549,6 +549,17 @@ emits, for exactly the sends `control_flow::recognize` accepts.
   source's static nesting depth.
 - **The optimized lowering pays nothing** beyond the counter every rule needs,
   since it never emits `SendInlinable`.
+- **A crafted artifact cannot use the exemption to recurse without bound.**
+  Code decoded from an artifact can emit `SendInlinable` with any block in the
+  argument register — `b := [true ifTrue: b]` — and an exemption granted by
+  selector alone would let that recursion run uncounted until memory ran out.
+  So the block must also have been created by the activation that sends: its
+  `captured_frame` is that activation's reified frame. Every block the
+  reference lowering passes to a `SendInlinable` is a literal created right
+  before the send, so the condition holds for every program either lowering
+  compiles, and a chain of exempt activations is then bounded by how deeply
+  code is nested in the artifact. A block that fails the condition is counted
+  like any other.
 
 So the oracle compares even an overflow byte for byte — the output up to it,
 the error and the exit status — and the trampoline rebuilds exactly the
@@ -566,10 +577,11 @@ agree, so this rule is ns-next's own.
 
 `SendInlinable` arrives with the trampoline, together with the counter that is
 its only consumer; before then it would mean exactly `SendPublic`, and nothing
-could test it. Its wire tag is assigned then. Left to the trampoline as well:
-the limit's value, its error text, and whether the control-flow natives become
-trampoline steps or the native stack is sized for the extra Rust frames they
-cost under the reference lowering.
+could test it. Its wire tag is assigned then. The rest was decided on
+2026-09-12 and is recorded in [execution.md](execution.md), "The trampoline
+(1b)": the limit is 100,000, its error text is `stack overflow: recursion too
+deep`, and the control-flow natives become trampoline steps, so under neither
+lowering does a block they activate cost native stack.
 
 ### Until the trampoline
 
