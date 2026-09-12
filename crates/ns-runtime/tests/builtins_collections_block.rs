@@ -3,6 +3,7 @@
 //! (`crate::builtins::block`), wired through `crate::builtins::dispatch_native`
 //! via `Interpreter::send` -- same pattern as `tests/builtins_boolean_numbers.rs`.
 
+use indoc::indoc;
 use ns_runtime::{BuiltinClass, Interpreter, ObjectData, Signal, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
@@ -59,8 +60,14 @@ fn new_ordered_collection(interp: &mut Interpreter) -> Value {
 
 #[test]
 fn array_at_returns_the_one_based_element() {
-    let src =
-        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^{1. 2. 3} at: 2 )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m = ( ^{1. 2. 3} at: 2 )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let result = interp.send(receiver, Symbol::intern("m"), vec![]);
@@ -75,8 +82,14 @@ fn array_at_returns_the_one_based_element() {
 
 #[test]
 fn array_at_out_of_range_is_a_newspeak_error_not_a_panic() {
-    let src =
-        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^{1. 2. 3} at: 5 )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m = ( ^{1. 2. 3} at: 5 )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let result = interp.send(receiver, Symbol::intern("m"), vec![]);
@@ -90,7 +103,14 @@ fn array_at_out_of_range_is_a_newspeak_error_not_a_panic() {
 
 #[test]
 fn array_at_put_writes_and_returns_the_receiver() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( | a | a := {1. 2. 3}. a at: 2 put: 99. ^a at: 2 )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m = ( | a | a := {1. 2. 3}. a at: 2 put: 99. ^a at: 2 )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let result = interp.send(receiver, Symbol::intern("m"), vec![]);
@@ -107,7 +127,14 @@ fn array_at_put_writes_and_returns_the_receiver() {
 /// `call_block` invoking a real one-argument closure with a real argument.
 #[test]
 fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( | sum | sum := 0. {1. 2. 3} do: [:x | sum := sum + x]. ^sum )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m = ( | sum | sum := 0. {1. 2. 3} do: [:x | sum := sum + x]. ^sum )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let result = interp.send(receiver, Symbol::intern("m"), vec![]);
@@ -127,7 +154,14 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
 /// `Expr::Cascade`, compiled and run, not something faked in Rust.
 #[test]
 fn ordered_collection_add_and_size_through_a_real_cascade() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m: aColl = ( ^aColl add: 1; add: 2; size )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m: aColl = ( ^aColl add: 1; add: 2; size )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let oc = new_ordered_collection(&mut interp);
@@ -191,7 +225,14 @@ fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
 
 #[test]
 fn block_value_invokes_a_zero_arg_closure() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^[42] value )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m = ( ^[42] value )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let result = interp.send(receiver, Symbol::intern("m"), vec![]);
@@ -206,7 +247,14 @@ fn block_value_invokes_a_zero_arg_closure() {
 
 #[test]
 fn block_value_colon_passes_the_argument_positionally() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^[:x | x + 1] value: 41 )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m = ( ^[:x | x + 1] value: 41 )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let result = interp.send(receiver, Symbol::intern("m"), vec![]);
@@ -221,7 +269,14 @@ fn block_value_colon_passes_the_argument_positionally() {
 
 #[test]
 fn block_num_args_reports_the_declared_parameter_count() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^[:x :y | x + y] numArgs )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m = ( ^[:x :y | x + y] numArgs )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let result = interp.send(receiver, Symbol::intern("m"), vec![]);
@@ -239,8 +294,14 @@ fn block_num_args_reports_the_declared_parameter_count() {
 /// every block activation).
 #[test]
 fn block_called_with_too_few_arguments_is_a_newspeak_error_not_a_panic() {
-    let src =
-        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^[:x | x] value )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m = ( ^[:x | x] value )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let result = interp.send(receiver, Symbol::intern("m"), vec![]);
@@ -259,8 +320,14 @@ fn block_called_with_too_few_arguments_is_a_newspeak_error_not_a_panic() {
 /// Same guard, the too-many-arguments direction.
 #[test]
 fn block_called_with_too_many_arguments_is_a_newspeak_error_not_a_panic() {
-    let src =
-        "Newspeak3\n'T'\nclass Foo = Object new (\n) (\n  public m = ( ^[42] value: 1 )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m = ( ^[42] value: 1 )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let result = interp.send(receiver, Symbol::intern("m"), vec![]);

@@ -2,6 +2,7 @@
 //! contract, not about what sits behind it -- which is the point of the
 //! seam.
 
+use indoc::indoc;
 use ns_runtime::types::Value;
 use ns_runtime::Interpreter;
 use ns_runtime::{Signal, Symbol};
@@ -154,8 +155,13 @@ fn register_addressing_puts_arguments_before_temporaries() {
     // the argument/temporary boundary is exactly what the accessor
     // encodes, and a synthetic frame could encode it wrongly and then
     // agree with itself.
-    let src = "Newspeak3\n'T'\nclass T usingPlatform: p = Object new () (\n\
-               \tpublic run: a = (| t | t := a. ^t)\n) : ()\n";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class T usingPlatform: p = Object new () (
+            public run: a = (| t | t := a. ^t)
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     // Computed ahead of the call: `send` takes `&mut Interpreter`, and so
     // does `platform()`, so the two cannot be nested in one expression.

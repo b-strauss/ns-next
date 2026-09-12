@@ -8,5 +8,8 @@ license.workspace = true
 [dependencies]
 ns-syntax = { path = "../ns-syntax" }
 
+[dev-dependencies]
+indoc.workspace = true
+
 [lints]
 workspace = true

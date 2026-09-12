@@ -8,6 +8,7 @@
 //! produce the recorded answer: a change that alters one of these is a
 //! behaviour change and has to be justified as one.
 
+use indoc::indoc;
 mod common;
 
 use common::ScratchDir;
@@ -48,7 +49,16 @@ fn assert_outcome(name: &str, src: &str, exit: i32, stdout: &str, stderr: &str) 
 fn a_does_not_understand_error() {
     assert_outcome(
         "dnu",
-        "Newspeak3\n'T'\nclass Dnu usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\t3 fooBar\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class Dnu usingPlatform: platform = Object new (
+            ) (
+                public main: p args: a = (
+                    3 fooBar
+                )
+            ) : ()
+        "},
         1,
         "",
         "Uncaught Newspeak error: an object does not understand #fooBar\n",
@@ -62,12 +72,18 @@ fn a_does_not_understand_error() {
 fn a_return_from_a_block_whose_initializer_has_finished_is_cannot_return() {
     assert_outcome(
         "init_block_return",
-        "Newspeak3\n'Test'\nclass InitBlockReturn usingPlatform: platform = Object new (\n\
-         \t| blk = [ ^2 ]. |\n) (\n\
-         \tpublic main: p args: a = (\n\
-         \t\tblk value.\n\
-         \t\tp transcript show: 'unreachable'; newLine\n\
-         \t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'Test'
+            class InitBlockReturn usingPlatform: platform = Object new (
+                | blk = [ ^2 ]. |
+            ) (
+                public main: p args: a = (
+                    blk value.
+                    p transcript show: 'unreachable'; newLine
+                )
+            ) : ()
+        "},
         1,
         "",
         "Uncaught Newspeak error: cannotReturn: the enclosing method activation has already returned\n",
@@ -81,17 +97,23 @@ fn a_return_from_a_block_whose_initializer_has_finished_is_cannot_return() {
 fn a_return_from_a_stored_block_whose_method_has_returned_is_cannot_return() {
     assert_outcome(
         "stored_block_return",
-        "Newspeak3\n'Test'\nclass StoredBlockReturn usingPlatform: platform = Object new (\n\
-         \t| blk ::= nil. |\n) (\n\
-         \tstash = (\n\
-         \t\tblk := [^'too late'].\n\
-         \t\t^'stashed'\n\
-         \t)\n\
-         \tpublic main: p args: a = (\n\
-         \t\tp transcript show: self stash; newLine.\n\
-         \t\tblk value.\n\
-         \t\tp transcript show: 'unreachable'; newLine\n\
-         \t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'Test'
+            class StoredBlockReturn usingPlatform: platform = Object new (
+                | blk ::= nil. |
+            ) (
+                stash = (
+                    blk := [^'too late'].
+                    ^'stashed'
+                )
+                public main: p args: a = (
+                    p transcript show: self stash; newLine.
+                    blk value.
+                    p transcript show: 'unreachable'; newLine
+                )
+            ) : ()
+        "},
         1,
         "stashed\n",
         "Uncaught Newspeak error: cannotReturn: the enclosing method activation has already returned\n",
@@ -104,7 +126,16 @@ fn a_return_from_a_stored_block_whose_method_has_returned_is_cannot_return() {
 fn a_non_boolean_receiver_of_an_inlined_selector_does_not_understand() {
     assert_outcome(
         "if-dnu",
-        "Newspeak3\n'T'\nclass IfDnu usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\t3 ifTrue: ['a'] ifFalse: ['b']\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class IfDnu usingPlatform: platform = Object new (
+            ) (
+                public main: p args: a = (
+                    3 ifTrue: ['a'] ifFalse: ['b']
+                )
+            ) : ()
+        "},
         1,
         "",
         "Uncaught Newspeak error: an object does not understand #ifTrue:ifFalse:\n",
@@ -117,7 +148,17 @@ fn a_non_boolean_receiver_of_an_inlined_selector_does_not_understand() {
 fn a_non_boolean_while_condition_fails_with_must_be_boolean() {
     assert_outcome(
         "while-must-be-boolean",
-        "Newspeak3\n'T'\nclass WhileMbb usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\tp transcript show: 'before'; newLine.\n\t\t[p transcript show: 'cond'; newLine. 3] whileTrue: [nil]\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class WhileMbb usingPlatform: platform = Object new (
+            ) (
+                public main: p args: a = (
+                    p transcript show: 'before'; newLine.
+                    [p transcript show: 'cond'; newLine. 3] whileTrue: [nil]
+                )
+            ) : ()
+        "},
         1,
         "before\ncond\n",
         "Uncaught Newspeak error: an object does not understand #mustBeBoolean\n",
@@ -128,7 +169,20 @@ fn a_non_boolean_while_condition_fails_with_must_be_boolean() {
 fn a_variable_block_receiver_takes_the_native_loop() {
     assert_outcome(
         "while-variable",
-        "Newspeak3\n'T'\nclass WhileVar usingPlatform: platform = Object new (\n\t| n ::= 0. |\n) (\n\tpublic main: p args: a = (\n\t\t| cond |\n\t\tcond := [n < 3].\n\t\tcond whileTrue: [n := n + 1].\n\t\tp transcript show: n printString; newLine\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class WhileVar usingPlatform: platform = Object new (
+                | n ::= 0. |
+            ) (
+                public main: p args: a = (
+                    | cond |
+                    cond := [n < 3].
+                    cond whileTrue: [n := n + 1].
+                    p transcript show: n printString; newLine
+                )
+            ) : ()
+        "},
         0,
         "3\n",
         "",
@@ -141,7 +195,23 @@ fn a_variable_block_receiver_takes_the_native_loop() {
 fn and_or_short_circuit_and_coerce() {
     assert_outcome(
         "and-or",
-        "Newspeak3\n'T'\nclass AndOr usingPlatform: platform = Object new (\n\t| log ::= ''. |\n) (\n\tnote: s = ( log := log, s. ^true )\n\tpublic main: p args: a = (\n\t\tp transcript show: (true and: [self note: 'A']) printString; newLine.\n\t\tp transcript show: (false and: [self note: 'B']) printString; newLine.\n\t\tp transcript show: (true or: [self note: 'C']) printString; newLine.\n\t\tp transcript show: (false or: [self note: 'D']) printString; newLine.\n\t\tp transcript show: (true and: [3]) printString; newLine.\n\t\tp transcript show: log; newLine\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class AndOr usingPlatform: platform = Object new (
+                | log ::= ''. |
+            ) (
+                note: s = ( log := log, s. ^true )
+                public main: p args: a = (
+                    p transcript show: (true and: [self note: 'A']) printString; newLine.
+                    p transcript show: (false and: [self note: 'B']) printString; newLine.
+                    p transcript show: (true or: [self note: 'C']) printString; newLine.
+                    p transcript show: (false or: [self note: 'D']) printString; newLine.
+                    p transcript show: (true and: [3]) printString; newLine.
+                    p transcript show: log; newLine
+                )
+            ) : ()
+        "},
         0,
         "true\nfalse\ntrue\ntrue\nfalse\nAD\n",
         "",
@@ -154,7 +224,30 @@ fn and_or_short_circuit_and_coerce() {
 fn a_return_out_of_an_inlined_loop_body() {
     assert_outcome(
         "inlined-return",
-        "Newspeak3\n'T'\nclass InlinedReturn usingPlatform: platform = Object new (\n) (\n\tcount: limit = (\n\t\t| i |\n\t\ti := 0.\n\t\t[true] whileTrue: [\n\t\t\ti := i + 1.\n\t\t\ti > limit ifTrue: [^i]].\n\t\t^0\n\t)\n\tcapture: x = (\n\t\t| c |\n\t\tx > 0 ifTrue: [c := [x * 2]] ifFalse: [c := [x]].\n\t\t^c value\n\t)\n\tpublic main: p args: a = (\n\t\tp transcript show: (self count: 3) printString; newLine.\n\t\tp transcript show: (self capture: 5) printString; newLine\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class InlinedReturn usingPlatform: platform = Object new (
+            ) (
+                count: limit = (
+                    | i |
+                    i := 0.
+                    [true] whileTrue: [
+                        i := i + 1.
+                        i > limit ifTrue: [^i]].
+                    ^0
+                )
+                capture: x = (
+                    | c |
+                    x > 0 ifTrue: [c := [x * 2]] ifFalse: [c := [x]].
+                    ^c value
+                )
+                public main: p args: a = (
+                    p transcript show: (self count: 3) printString; newLine.
+                    p transcript show: (self capture: 5) printString; newLine
+                )
+            ) : ()
+        "},
         0,
         "4\n10\n",
         "",
@@ -169,7 +262,24 @@ fn a_return_out_of_an_inlined_loop_body() {
 fn operands_that_mutate_each_other_keep_their_evaluated_values() {
     assert_outcome(
         "operand-order",
-        "Newspeak3\n'T'\nclass OperandOrder usingPlatform: platform = Object new (\n) (\n\tfirst: x second: y = ( ^x )\n\tkeywordArgs = ( | t | t := 1. ^self first: t second: (t := 9) )\n\tbinaryOperand = ( | t | t := 2. ^t + (t := 30) )\n\tarrayElements = ( | t | t := 1. ^{t. t := 5. t} at: 1 )\n\tinlinedArm = ( | t | t := 2. ^t + (true ifTrue: [t := 9. 1] ifFalse: [2]) )\n\tpublic main: p args: a = (\n\t\tp transcript show: self keywordArgs printString; newLine.\n\t\tp transcript show: self binaryOperand printString; newLine.\n\t\tp transcript show: self arrayElements printString; newLine.\n\t\tp transcript show: self inlinedArm printString; newLine\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class OperandOrder usingPlatform: platform = Object new (
+            ) (
+                first: x second: y = ( ^x )
+                keywordArgs = ( | t | t := 1. ^self first: t second: (t := 9) )
+                binaryOperand = ( | t | t := 2. ^t + (t := 30) )
+                arrayElements = ( | t | t := 1. ^{t. t := 5. t} at: 1 )
+                inlinedArm = ( | t | t := 2. ^t + (true ifTrue: [t := 9. 1] ifFalse: [2]) )
+                public main: p args: a = (
+                    p transcript show: self keywordArgs printString; newLine.
+                    p transcript show: self binaryOperand printString; newLine.
+                    p transcript show: self arrayElements printString; newLine.
+                    p transcript show: self inlinedArm printString; newLine
+                )
+            ) : ()
+        "},
         0,
         "1\n32\n1\n3\n",
         "",
@@ -183,7 +293,31 @@ fn operands_that_mutate_each_other_keep_their_evaluated_values() {
 fn an_operand_written_by_a_callee_keeps_its_evaluated_value() {
     assert_outcome(
         "operand-callee",
-        "Newspeak3\n'T'\nclass CalleeClobber usingPlatform: platform = Object new (\n\t| c ::= nil. |\n) (\n\tfirst: x second: y = ( ^x )\n\thook: v = ( c value. ^v )\n\tsetterValue = ( | t | t := 1. c := [t := 9]. ^self first: (hook := t) second: 1 )\n\targThroughASend = ( | t | t := 1. c := [t := 9]. ^self first: t second: (self hook: 0) )\n\tcascadeReceiver = (\n\t\t| t orig |\n\t\torig := OrderedCollection new.\n\t\tt := orig.\n\t\tc := [t := OrderedCollection new].\n\t\tt add: 1; add: (self hook: 2).\n\t\t^orig size\n\t)\n\tpublic main: p args: a = (\n\t\tp transcript show: self setterValue printString; newLine.\n\t\tp transcript show: self argThroughASend printString; newLine.\n\t\tp transcript show: self cascadeReceiver printString; newLine\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class CalleeClobber usingPlatform: platform = Object new (
+                | c ::= nil. |
+            ) (
+                first: x second: y = ( ^x )
+                hook: v = ( c value. ^v )
+                setterValue = ( | t | t := 1. c := [t := 9]. ^self first: (hook := t) second: 1 )
+                argThroughASend = ( | t | t := 1. c := [t := 9]. ^self first: t second: (self hook: 0) )
+                cascadeReceiver = (
+                    | t orig |
+                    orig := OrderedCollection new.
+                    t := orig.
+                    c := [t := OrderedCollection new].
+                    t add: 1; add: (self hook: 2).
+                    ^orig size
+                )
+                public main: p args: a = (
+                    p transcript show: self setterValue printString; newLine.
+                    p transcript show: self argThroughASend printString; newLine.
+                    p transcript show: self cascadeReceiver printString; newLine
+                )
+            ) : ()
+        "},
         0,
         "1\n1\n2\n",
         "",
@@ -202,37 +336,43 @@ fn an_operand_written_by_a_callee_keeps_its_evaluated_value() {
 fn an_assignment_through_a_setter_answers_the_value_before_the_setter_ran() {
     assert_outcome(
         "setter-value",
-        "Newspeak3\n'T'\nclass SetterValue usingPlatform: platform = Object new (\n\
-         \t| blk ::= nil. |\n) (\n\
-         \tpublic class Init new: n = Object new (\n\
-         \t\t| hook = [n := 99]. answer = (x := n). |\n\
-         \t) (\n\
-         \t\tx: v = ( hook value )\n\
-         \t\tpublic result = ( ^answer )\n\
-         \t)\n\
-         \tx: v = ( blk value )\n\
-         \treturned = ( | y | y := 1. blk := [y := 99]. ^x := y )\n\
-         \treturnedFromABlock = ( [ | z | z := 1. blk := [z := 99]. ^x := z ] value. ^0 )\n\
-         \tblockValue = ( ^[ | z | z := 1. blk := [z := 99]. x := z ] value )\n\
-         \tinlinedBranch: c = ( | y | y := 1. blk := [y := 99]. ^c ifTrue: [x := y] ifFalse: [0] )\n\
-         \tinlinedAnd = ( | y | y := true. blk := [y := false]. ^true and: [x := y] )\n\
-         \tinlinedCondition = (\n\
-         \t\t| y count |\n\
-         \t\ty := true.\n\
-         \t\tcount := 0.\n\
-         \t\tblk := [y := false].\n\
-         \t\t[x := y] whileTrue: [count := count + 1].\n\
-         \t\t^count\n\
-         \t)\n\
-         \tpublic main: p args: a = (\n\
-         \t\tp transcript show: self returned printString; newLine.\n\
-         \t\tp transcript show: self returnedFromABlock printString; newLine.\n\
-         \t\tp transcript show: self blockValue printString; newLine.\n\
-         \t\tp transcript show: (self inlinedBranch: true) printString; newLine.\n\
-         \t\tp transcript show: self inlinedAnd printString; newLine.\n\
-         \t\tp transcript show: self inlinedCondition printString; newLine.\n\
-         \t\tp transcript show: (Init new: 1) result printString; newLine\n\
-         \t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class SetterValue usingPlatform: platform = Object new (
+                | blk ::= nil. |
+            ) (
+                public class Init new: n = Object new (
+                    | hook = [n := 99]. answer = (x := n). |
+                ) (
+                    x: v = ( hook value )
+                    public result = ( ^answer )
+                )
+                x: v = ( blk value )
+                returned = ( | y | y := 1. blk := [y := 99]. ^x := y )
+                returnedFromABlock = ( [ | z | z := 1. blk := [z := 99]. ^x := z ] value. ^0 )
+                blockValue = ( ^[ | z | z := 1. blk := [z := 99]. x := z ] value )
+                inlinedBranch: c = ( | y | y := 1. blk := [y := 99]. ^c ifTrue: [x := y] ifFalse: [0] )
+                inlinedAnd = ( | y | y := true. blk := [y := false]. ^true and: [x := y] )
+                inlinedCondition = (
+                    | y count |
+                    y := true.
+                    count := 0.
+                    blk := [y := false].
+                    [x := y] whileTrue: [count := count + 1].
+                    ^count
+                )
+                public main: p args: a = (
+                    p transcript show: self returned printString; newLine.
+                    p transcript show: self returnedFromABlock printString; newLine.
+                    p transcript show: self blockValue printString; newLine.
+                    p transcript show: (self inlinedBranch: true) printString; newLine.
+                    p transcript show: self inlinedAnd printString; newLine.
+                    p transcript show: self inlinedCondition printString; newLine.
+                    p transcript show: (Init new: 1) result printString; newLine
+                )
+            ) : ()
+        "},
         0,
         "1\n1\n1\n1\ntrue\n1\n1\n",
         "",
@@ -245,7 +385,16 @@ fn an_assignment_through_a_setter_answers_the_value_before_the_setter_ran() {
 fn a_bare_super_is_a_program_error() {
     assert_outcome(
         "bare-super",
-        "Newspeak3\n'T'\nclass BareSuper usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\t^super\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class BareSuper usingPlatform: platform = Object new (
+            ) (
+                public main: p args: a = (
+                    ^super
+                )
+            ) : ()
+        "},
         1,
         "",
         "Uncaught Newspeak error: internal: unresolved identifier `super`\n",
@@ -258,7 +407,18 @@ fn a_bare_super_is_a_program_error() {
 fn a_bare_super_raises_only_when_it_is_reached() {
     assert_outcome(
         "bare-super-deferred",
-        "Newspeak3\n'T'\nclass DeferredSuper usingPlatform: platform = Object new (\n) (\n\tunreached = ( ^super )\n\tpublic main: p args: a = (\n\t\tp transcript show: 'before'; newLine.\n\t\t^self unreached\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class DeferredSuper usingPlatform: platform = Object new (
+            ) (
+                unreached = ( ^super )
+                public main: p args: a = (
+                    p transcript show: 'before'; newLine.
+                    ^self unreached
+                )
+            ) : ()
+        "},
         1,
         "before\n",
         "Uncaught Newspeak error: internal: unresolved identifier `super`\n",
@@ -271,7 +431,21 @@ fn a_bare_super_raises_only_when_it_is_reached() {
 fn a_superclass_clause_naming_the_wrong_factory_fails() {
     assert_outcome(
         "wrong-superclass-factory",
-        "Newspeak3\n'T'\nclass WrongFactory usingPlatform: platform = Object new (\n) (\n\tpublic class Base withBase: b = Object new (| v ::= b. |) (\n\t)\n\tpublic class Derived = Base new (\n\t) (\n\t)\n\tpublic main: p args: a = (\n\t\t^Derived new\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class WrongFactory usingPlatform: platform = Object new (
+            ) (
+                public class Base withBase: b = Object new (| v ::= b. |) (
+                )
+                public class Derived = Base new (
+                ) (
+                )
+                public main: p args: a = (
+                    ^Derived new
+                )
+            ) : ()
+        "},
         1,
         "",
         "Uncaught Newspeak error: the superclass clause of class Derived sends #new, but the primary factory of class Base is #withBase:\n",
@@ -284,7 +458,21 @@ fn a_superclass_clause_naming_the_wrong_factory_fails() {
 fn a_variable_and_block_coerces_its_value_to_a_boolean() {
     assert_outcome(
         "and-variable-coerces",
-        "Newspeak3\n'T'\nclass AndVar usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\t| three yes |\n\t\tthree := [3].\n\t\tyes := [true].\n\t\tp transcript show: (true and: three) printString; newLine.\n\t\tp transcript show: (true and: yes) printString; newLine.\n\t\tp transcript show: (false or: three) printString; newLine\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class AndVar usingPlatform: platform = Object new (
+            ) (
+                public main: p args: a = (
+                    | three yes |
+                    three := [3].
+                    yes := [true].
+                    p transcript show: (true and: three) printString; newLine.
+                    p transcript show: (true and: yes) printString; newLine.
+                    p transcript show: (false or: three) printString; newLine
+                )
+            ) : ()
+        "},
         0,
         "false\ntrue\nfalse\n",
         "",
@@ -297,7 +485,20 @@ fn a_variable_and_block_coerces_its_value_to_a_boolean() {
 fn a_variable_while_condition_that_goes_non_boolean_fails_with_must_be_boolean() {
     assert_outcome(
         "while-variable-mbb",
-        "Newspeak3\n'T'\nclass WhileVarMbb usingPlatform: platform = Object new (\n\t| n ::= 0. |\n) (\n\tpublic main: p args: a = (\n\t\t| cond body |\n\t\tcond := [n < 2 ifTrue: [true] ifFalse: [n]].\n\t\tbody := [n := n + 1. p transcript show: n printString; newLine].\n\t\tcond whileTrue: body\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class WhileVarMbb usingPlatform: platform = Object new (
+                | n ::= 0. |
+            ) (
+                public main: p args: a = (
+                    | cond body |
+                    cond := [n < 2 ifTrue: [true] ifFalse: [n]].
+                    body := [n := n + 1. p transcript show: n printString; newLine].
+                    cond whileTrue: body
+                )
+            ) : ()
+        "},
         1,
         "1\n2\n",
         "Uncaught Newspeak error: an object does not understand #mustBeBoolean\n",
@@ -310,7 +511,18 @@ fn a_variable_while_condition_that_goes_non_boolean_fails_with_must_be_boolean()
 fn an_if_block_that_takes_an_argument_is_a_wrong_arity_error() {
     assert_outcome(
         "if-block-arity",
-        "Newspeak3\n'T'\nclass IfArity usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\t| b |\n\t\tb := [:x | x].\n\t\ttrue ifTrue: b\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class IfArity usingPlatform: platform = Object new (
+            ) (
+                public main: p args: a = (
+                    | b |
+                    b := [:x | x].
+                    true ifTrue: b
+                )
+            ) : ()
+        "},
         1,
         "",
         "Uncaught Newspeak error: wrong number of block arguments: block takes 1, got 0\n",
@@ -323,7 +535,17 @@ fn an_if_block_that_takes_an_argument_is_a_wrong_arity_error() {
 fn a_thousand_deep_recursion_runs() {
     assert_outcome(
         "deep-stack",
-        "Newspeak3\n'T'\nclass Deep usingPlatform: platform = Object new (\n) (\n\tdeepStack: n = ( ^0 = n ifTrue: [0] ifFalse: [n + (deepStack: n - 1) + n] )\n\tpublic main: p args: a = (\n\t\tp transcript show: (deepStack: 1000) printString; newLine\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class Deep usingPlatform: platform = Object new (
+            ) (
+                deepStack: n = ( ^0 = n ifTrue: [0] ifFalse: [n + (deepStack: n - 1) + n] )
+                public main: p args: a = (
+                    p transcript show: (deepStack: 1000) printString; newLine
+                )
+            ) : ()
+        "},
         0,
         "1001000\n",
         "",
@@ -336,7 +558,18 @@ fn a_thousand_deep_recursion_runs() {
 fn an_unbounded_recursion_is_a_newspeak_error() {
     assert_outcome(
         "unbounded-recursion",
-        "Newspeak3\n'T'\nclass Unbounded usingPlatform: platform = Object new (\n) (\n\tdown: n = ( ^1 + (down: n + 1) )\n\tpublic main: p args: a = (\n\t\tp transcript show: 'start'; newLine.\n\t\tdown: 0\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class Unbounded usingPlatform: platform = Object new (
+            ) (
+                down: n = ( ^1 + (down: n + 1) )
+                public main: p args: a = (
+                    p transcript show: 'start'; newLine.
+                    down: 0
+                )
+            ) : ()
+        "},
         1,
         "start\n",
         "Uncaught Newspeak error: stack overflow: recursion too deep\n",
@@ -350,7 +583,15 @@ fn an_unbounded_recursion_is_a_newspeak_error() {
 fn a_recursion_through_do_is_bounded_by_the_native_limit() {
     assert_outcome(
         "do-recursion",
-        "Newspeak3\n'T'\nclass DoDeep usingPlatform: platform = Object new (\n) (\n\td: n = ( #(1) do: [:e | d: n + 1] )\n\tpublic main: p args: a = ( d: 0 )\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class DoDeep usingPlatform: platform = Object new (
+            ) (
+                d: n = ( #(1) do: [:e | d: n + 1] )
+                public main: p args: a = ( d: 0 )
+            ) : ()
+        "},
         1,
         "",
         "Uncaught Newspeak error: stack overflow: too many nested native calls\n",
@@ -363,7 +604,18 @@ fn a_recursion_through_do_is_bounded_by_the_native_limit() {
 fn a_recursive_instantiation_is_bounded_by_the_native_limit() {
     assert_outcome(
         "instantiation-recursion",
-        "Newspeak3\n'T'\nclass Tower usingPlatform: platform = Object new (\n) (\n\tpublic class Floor = Object new (\n\t\t| above = Floor new. |\n\t) (\n\t)\n\tpublic main: p args: a = ( Floor new )\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class Tower usingPlatform: platform = Object new (
+            ) (
+                public class Floor = Object new (
+                    | above = Floor new. |
+                ) (
+                )
+                public main: p args: a = ( Floor new )
+            ) : ()
+        "},
         1,
         "",
         "Uncaught Newspeak error: stack overflow: too many nested native calls\n",
@@ -381,7 +633,21 @@ fn a_recursive_instantiation_is_bounded_by_the_native_limit() {
 fn a_recursion_through_the_nested_class_accessor_is_bounded_by_the_native_limit() {
     assert_outcome(
         "accessor-recursion",
-        "Newspeak3\n'T'\nclass Chain usingPlatform: platform = Object new (\n) (\n\tpublic class Link = Object new (\n\t) (\n\t\tpublic class Next = self deeper (\n\t\t) (\n\t\t)\n\t\tdeeper = ( ^Link new Next )\n\t)\n\tpublic main: p args: a = ( Link new Next )\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'T'
+            class Chain usingPlatform: platform = Object new (
+            ) (
+                public class Link = Object new (
+                ) (
+                    public class Next = self deeper (
+                    ) (
+                    )
+                    deeper = ( ^Link new Next )
+                )
+                public main: p args: a = ( Link new Next )
+            ) : ()
+        "},
         1,
         "",
         "Uncaught Newspeak error: stack overflow: too many nested native calls\n",

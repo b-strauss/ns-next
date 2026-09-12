@@ -1,3 +1,4 @@
+use indoc::indoc;
 use std::process::Command;
 
 fn ns_next() -> Command {
@@ -18,7 +19,15 @@ fn repo_root() -> std::path::PathBuf {
 fn parse_ok_file() {
     let dir = tempdir();
     let f = dir.join("Ok.ns");
-    std::fs::write(&f, "Newspeak3\n'X'\nclass C = ()\n").unwrap();
+    std::fs::write(
+        &f,
+        indoc! {"
+            Newspeak3
+            'X'
+            class C = ()
+        "},
+    )
+    .unwrap();
     let out = ns_next().arg("parse").arg(&f).output().unwrap();
     assert!(
         out.status.success(),
@@ -31,7 +40,15 @@ fn parse_ok_file() {
 fn parse_bad_file_exits_1() {
     let dir = tempdir();
     let f = dir.join("Bad.ns");
-    std::fs::write(&f, "Newspeak3\n'X'\nclass C = (").unwrap();
+    std::fs::write(
+        &f,
+        indoc! {"
+            Newspeak3
+            'X'
+            class C = (
+        "},
+    )
+    .unwrap();
     let out = ns_next().arg("parse").arg(&f).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("error:"));
@@ -42,13 +59,33 @@ fn parse_corpus_reports_counts() {
     let dir = tempdir_named("corpus-counts");
     let modules = dir.join("modules");
     std::fs::create_dir_all(&modules).unwrap();
-    std::fs::write(modules.join("Good.ns"), "Newspeak3\n'X'\nclass C = ()\n").unwrap();
     std::fs::write(
-        modules.join("AlsoGood.ns"),
-        "Newspeak3\n'X'\nclass D = ()\n",
+        modules.join("Good.ns"),
+        indoc! {"
+            Newspeak3
+            'X'
+            class C = ()
+        "},
     )
     .unwrap();
-    std::fs::write(modules.join("Bad.ns"), "Newspeak3\n'X'\nclass C = (").unwrap();
+    std::fs::write(
+        modules.join("AlsoGood.ns"),
+        indoc! {"
+            Newspeak3
+            'X'
+            class D = ()
+        "},
+    )
+    .unwrap();
+    std::fs::write(
+        modules.join("Bad.ns"),
+        indoc! {"
+            Newspeak3
+            'X'
+            class C = (
+        "},
+    )
+    .unwrap();
     let bl = dir.join("blacklist.toml");
     std::fs::write(
         &bl,
@@ -80,7 +117,15 @@ fn parse_corpus_stale_blacklist_entry_fails() {
     let dir = tempdir_named("corpus-stale");
     let modules = dir.join("modules");
     std::fs::create_dir_all(&modules).unwrap();
-    std::fs::write(modules.join("Good.ns"), "Newspeak3\n'X'\nclass C = ()\n").unwrap();
+    std::fs::write(
+        modules.join("Good.ns"),
+        indoc! {"
+            Newspeak3
+            'X'
+            class C = ()
+        "},
+    )
+    .unwrap();
     let bl = dir.join("blacklist.toml");
     // Names a file that actually parses now -> stale.
     std::fs::write(
@@ -112,7 +157,15 @@ fn parse_corpus_malformed_blacklist_fails_with_error() {
     let dir = tempdir_named("corpus-malformed");
     let modules = dir.join("modules");
     std::fs::create_dir_all(&modules).unwrap();
-    std::fs::write(modules.join("Good.ns"), "Newspeak3\n'X'\nclass C = ()\n").unwrap();
+    std::fs::write(
+        modules.join("Good.ns"),
+        indoc! {"
+            Newspeak3
+            'X'
+            class C = ()
+        "},
+    )
+    .unwrap();
     let bl = dir.join("blacklist.toml");
     std::fs::write(&bl, "this is not valid toml :::\n[[entry\n").unwrap();
 
@@ -132,8 +185,16 @@ fn parse_corpus_malformed_blacklist_fails_with_error() {
 /// A module whose entry method writes to the transcript, so a synthetic
 /// `run-corpus` whitelist can exercise `expected_stdout` against real
 /// output -- the vendored corpus modules that run today print nothing.
-const TALKATIVE: &str = "Newspeak3\n'X'\nclass Talkative usingPlatform: p = Object new (\n) (\n\
-     \tpublic main: platform args: a = (\n\t\tplatform transcript show: 'hi'; newLine\n\t)\n) : ()\n";
+const TALKATIVE: &str = indoc! {"
+    Newspeak3
+    'X'
+    class Talkative usingPlatform: p = Object new (
+    ) (
+        public main: platform args: a = (
+            platform transcript show: 'hi'; newLine
+        )
+    ) : ()
+"};
 
 /// Lays out a `modules/` directory with `Talkative.ns` in it plus a
 /// sibling `runnable.toml` holding `whitelist`, and returns the modules

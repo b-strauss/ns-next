@@ -1,3 +1,4 @@
+use indoc::indoc;
 use std::path::Path;
 use std::process::Command;
 
@@ -31,7 +32,16 @@ fn run_sends_main_args_and_prints_via_platform_transcript() {
     let f = dir.join("Hello.ns");
     std::fs::write(
         &f,
-        "Newspeak3\n'Test'\nclass Hello usingPlatform: platform = Object new (\n) (\n\tpublic main: p args: a = (\n\t\tp transcript show: 'hi'; newLine\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'Test'
+            class Hello usingPlatform: platform = Object new (
+            ) (
+                public main: p args: a = (
+                    p transcript show: 'hi'; newLine
+                )
+            ) : ()
+        "},
     )
     .unwrap();
 
@@ -90,7 +100,16 @@ fn a_zero_argument_factory_reaches_its_public_entry_method() {
     let f = dir.join("NoPlatform.ns");
     std::fs::write(
         &f,
-        "Newspeak3\n'Test'\nclass NoPlatform new = Object new (\n) (\n\tpublic foo: p = (\n\t\tp transcript show: '99'; newLine\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'Test'
+            class NoPlatform new = Object new (
+            ) (
+                public foo: p = (
+                    p transcript show: '99'; newLine
+                )
+            ) : ()
+        "},
     )
     .unwrap();
 
@@ -117,7 +136,13 @@ fn a_multi_parameter_factory_is_refused_with_a_clear_error() {
     let f = dir.join("TwoArgs.ns");
     std::fs::write(
         &f,
-        "Newspeak3\n'Test'\nclass TwoArgs usingPlatform: platform ide: webIde = Object new (\n) (\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'Test'
+            class TwoArgs usingPlatform: platform ide: webIde = Object new (
+            ) (
+            ) : ()
+        "},
     )
     .unwrap();
 
@@ -139,7 +164,15 @@ fn a_multi_parameter_factory_is_refused_with_a_clear_error() {
 fn run_reports_a_parse_error_and_exits_nonzero() {
     let dir = tempdir_named("bad-parse");
     let f = dir.join("Bad.ns");
-    std::fs::write(&f, "Newspeak3\n'Test'\nclass C = (").unwrap();
+    std::fs::write(
+        &f,
+        indoc! {"
+            Newspeak3
+            'Test'
+            class C = (
+        "},
+    )
+    .unwrap();
 
     let out = ns_next().arg("run").arg(&f).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -153,7 +186,16 @@ fn run_supports_a_custom_entry_selector_via_send() {
     let f = dir.join("Greet.ns");
     std::fs::write(
         &f,
-        "Newspeak3\n'Test'\nclass Greet usingPlatform: platform = Object new (\n) (\n\tpublic greet: p = (\n\t\tp transcript show: 'custom'; newLine\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'Test'
+            class Greet usingPlatform: platform = Object new (
+            ) (
+                public greet: p = (
+                    p transcript show: 'custom'; newLine
+                )
+            ) : ()
+        "},
     )
     .unwrap();
 
@@ -180,8 +222,21 @@ fn run_supports_a_custom_entry_selector_via_send() {
 /// status 0. Both halves of the defence are needed for this to pass: the
 /// CLI sizes the argument list to the selector, and `push_step` refuses
 /// a mismatch outright if anything ever gets it wrong.
-const UNARY_PROBE: &str = "Newspeak3\n'Test'\nclass Probe usingPlatform: p = Object new (\n\t|\n\t\tprivate plat = p.\n\t|\n) (\n\
-     \tpublic probe = (\n\t\t| t |\n\t\tnil = t ifTrue: [ plat transcript show: 'nil-ok'; newLine ]\n\t\t\tifFalse: [ plat transcript show: 'NOTNIL-BUG'; newLine ]\n\t)\n) : ()\n";
+const UNARY_PROBE: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Probe usingPlatform: p = Object new (
+        |
+            private plat = p.
+        |
+    ) (
+        public probe = (
+            | t |
+            nil = t ifTrue: [ plat transcript show: 'nil-ok'; newLine ]
+                ifFalse: [ plat transcript show: 'NOTNIL-BUG'; newLine ]
+        )
+    ) : ()
+"};
 
 #[test]
 fn a_unary_entry_selector_gets_no_arguments_and_reads_its_temporary_as_nil() {
@@ -212,7 +267,16 @@ fn an_entry_selector_the_cli_cannot_fill_is_refused_before_the_send() {
     let f = dir.join("Wide.ns");
     std::fs::write(
         &f,
-        "Newspeak3\n'Test'\nclass Wide usingPlatform: p = Object new (\n) (\n\tpublic a: x b: y c: z = (\n\t\t^x\n\t)\n) : ()\n",
+        indoc! {"
+            Newspeak3
+            'Test'
+            class Wide usingPlatform: p = Object new (
+            ) (
+                public a: x b: y c: z = (
+                    ^x
+                )
+            ) : ()
+        "},
     )
     .unwrap();
 

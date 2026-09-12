@@ -11,6 +11,11 @@ license = "MIT"
 clap = { version = "4", features = ["derive"] }
 insta = "1"
 toml = "0.8"
+# Tests only: a Newspeak module written inline in a test reads as the source it
+# is, indented with the Rust around it, instead of one line of `\n` escapes.
+# `indoc!` strips the indentation at compile time, so the string the test sees is
+# unchanged and a `const` can still hold one.
+indoc = "2"
 
 # Link-time optimization across crate boundaries, and a single codegen unit so the
 # optimizer sees the whole picture. Both usually help runtime speed as well as size --

@@ -999,6 +999,7 @@ pub(super) fn lower_literal(lit: &ast::Literal) -> BcLiteral {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indoc::{formatdoc, indoc};
     use std::path::PathBuf;
 
     /// Parses `src` (a full, minimal `class ... ( ) ( <methods> ) : ()`
@@ -1050,7 +1051,14 @@ mod tests {
     #[test]
     fn a_literal_returns_a_fresh_scratch_register() {
         let (method, bindings) = resolve_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^42 )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( ^42 )
+                ) : ()
+            "},
             0,
         );
         let mut lowerer = method_lowerer(&method, &bindings); // 0 params, 0 temps -> base 0
@@ -1071,7 +1079,14 @@ mod tests {
     #[test]
     fn reading_a_parameter_returns_its_own_register_with_no_extra_instruction() {
         let (method, bindings) = resolve_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo: x = ( ^x )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo: x = ( ^x )
+                ) : ()
+            "},
             0,
         );
         let mut lowerer = method_lowerer(&method, &bindings); // 1 param (register 0)
@@ -1092,7 +1107,15 @@ mod tests {
     #[test]
     fn an_operand_that_a_later_argument_can_write_is_copied_out_of_its_local() {
         let (method, bindings) = resolve_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo: x bar: y = ( ^x )\n  m = ( | t | t := 1. ^self foo: t bar: (t := 9) )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo: x bar: y = ( ^x )
+                  m = ( | t | t := 1. ^self foo: t bar: (t := 9) )
+                ) : ()
+            "},
             1,
         );
         let mut lowerer = method_lowerer(&method, &bindings); // temp `t` is register 0
@@ -1126,7 +1149,14 @@ mod tests {
     #[test]
     fn an_operand_no_later_argument_can_write_stays_in_its_own_register() {
         let (method, bindings) = resolve_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  m: a with: b = ( ^a foo: b bar: 3 )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  m: a with: b = ( ^a foo: b bar: 3 )
+                ) : ()
+            "},
             0,
         );
         let mut lowerer = method_lowerer(&method, &bindings); // params a, b = registers 0, 1
@@ -1160,7 +1190,14 @@ mod tests {
     #[test]
     fn a_bare_super_lowers_to_a_deferred_error_literal_not_a_panic() {
         let (method, bindings) = resolve_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^super )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( ^super )
+                ) : ()
+            "},
             0,
         );
         let mut lowerer = method_lowerer(&method, &bindings);
@@ -1178,7 +1215,14 @@ mod tests {
     #[test]
     fn assigning_a_named_temp_emits_store_local_and_records_the_statement_range() {
         let (method, bindings) = resolve_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( | t | t := 7. ^t )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( | t | t := 7. ^t )
+                ) : ()
+            "},
             0,
         );
         let mut lowerer = method_lowerer(&method, &bindings); // temp `t` is register 0, base 1
@@ -1201,7 +1245,14 @@ mod tests {
     #[test]
     fn scratch_registers_reset_between_statements() {
         let (method, bindings) = resolve_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( | t | t := 1. t := 2. ^t )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( | t | t := 1. t := 2. ^t )
+                ) : ()
+            "},
             0,
         );
         let mut lowerer = method_lowerer(&method, &bindings);
@@ -1232,7 +1283,14 @@ mod tests {
     #[test]
     fn an_out_of_range_integer_literal_lowers_to_malformed_int_not_a_panic() {
         let (method, bindings) = resolve_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^99999999999999999999 )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( ^99999999999999999999 )
+                ) : ()
+            "},
             0,
         );
         let mut lowerer = method_lowerer(&method, &bindings);
@@ -1250,7 +1308,14 @@ mod tests {
     #[test]
     fn a_radix_literal_is_parsed_at_compile_time() {
         let (method, bindings) = resolve_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^16rFF )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( ^16rFF )
+                ) : ()
+            "},
             0,
         );
         let mut lowerer = method_lowerer(&method, &bindings);
@@ -1268,7 +1333,14 @@ mod tests {
     #[test]
     fn an_ordinary_send_evaluates_receiver_then_args() {
         let (method, bindings) = resolve_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo: x = ( ^3 + x )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo: x = ( ^3 + x )
+                ) : ()
+            "},
             0,
         );
         let mut lowerer = method_lowerer(&method, &bindings);
@@ -1299,7 +1371,15 @@ mod tests {
     fn a_bare_implicit_send_lowers_to_send_lexical() {
         // `foo`'s body (`^bar`) resolves `bar` as an implicit-receiver unary
         // send at depth 0 (`bar` is a sibling method) -- `Binding::LexicalSend`.
-        let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  bar = ( ^42 )\n  foo = ( ^bar )\n) : ()";
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              bar = ( ^42 )
+              foo = ( ^bar )
+            ) : ()
+        "};
         let (foo, bindings) = resolve_method(src, 1);
         let mut lowerer = method_lowerer(&foo, &bindings);
         let dst = lowerer.lower_expr(return_expr(&foo));
@@ -1319,7 +1399,15 @@ mod tests {
 
     #[test]
     fn a_keyword_implicit_send_and_a_super_send_lower_without_a_receiver_register() {
-        let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  at: i put: v = ( ^v )\n  foo = ( at: 1 put: 2. ^super printString )\n) : ()";
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              at: i put: v = ( ^v )
+              foo = ( at: 1 put: 2. ^super printString )
+            ) : ()
+        "};
         let (foo, bindings) = resolve_method(src, 1);
         let mut lowerer = method_lowerer(&foo, &bindings);
         lowerer.lower_statement(&foo.body.stmts[0], ValueUse::Discarded);
@@ -1345,7 +1433,15 @@ mod tests {
 
     #[test]
     fn a_slot_assignment_lowers_to_a_setter_lexical_send() {
-        let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  bump = ( n := n + 1 )\n) : ()";
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+              | n ::= 0. |
+            ) (
+              bump = ( n := n + 1 )
+            ) : ()
+        "};
         let (bump, bindings) = resolve_method(src, 0);
         let mut lowerer = method_lowerer(&bump, &bindings);
         lowerer.lower_statement(&bump.body.stmts[0], ValueUse::Discarded);
@@ -1382,7 +1478,15 @@ mod tests {
     /// pins what a program observes.
     #[test]
     fn a_slot_assignment_in_statement_position_does_not_copy_its_value() {
-        let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  m = ( | t | t := 1. n := t )\n) : ()";
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+              | n ::= 0. |
+            ) (
+              m = ( | t | t := 1. n := t )
+            ) : ()
+        "};
         let code = lower_whole_method(src, 0); // temp `t` is register 0
         assert!(
             !code.instrs.iter().any(|i| matches!(i, Instr::Move { .. })),
@@ -1398,7 +1502,15 @@ mod tests {
 
     #[test]
     fn a_returned_slot_assignment_copies_its_value_out_of_the_local() {
-        let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  m = ( | t | t := 1. ^n := t )\n) : ()";
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+              | n ::= 0. |
+            ) (
+              m = ( | t | t := 1. ^n := t )
+            ) : ()
+        "};
         let code = lower_whole_method(src, 0); // temp `t` is register 0
         let [copy] = setter_args(&code)[..] else {
             panic!("expected one setter send: {:?}", code.instrs);
@@ -1413,7 +1525,15 @@ mod tests {
         // A method body stands in for the initializer expression, as in
         // `a_slot_initializer_is_one_statement_ending_in_init_slot`; the
         // parameter gives the assignment a named local to hand on.
-        let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  foo: p = ( ^n := p )\n) : ()";
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+              | n ::= 0. |
+            ) (
+              foo: p = ( ^n := p )
+            ) : ()
+        "};
         let (method, bindings) = resolve_method(src, 0);
         let mut lowerer = Lowerer::new(CodeKind::Initializer, 1, 0, &bindings, vec![]);
         lowerer.lower_slot_init(return_expr(&method), 4);
@@ -1445,7 +1565,15 @@ mod tests {
     /// assignment is copied; an earlier statement's is not.
     #[test]
     fn a_blocks_last_slot_assignment_copies_its_value_and_an_earlier_one_does_not() {
-        let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  m = ( ^[:t | n := t. n := t] )\n) : ()";
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+              | n ::= 0. |
+            ) (
+              m = ( ^[:t | n := t. n := t] )
+            ) : ()
+        "};
         let code = lower_whole_method(src, 0);
         let Instr::MakeClosure { code: block, .. } = &code.instrs[0] else {
             panic!("expected the block literal: {:?}", code.instrs);
@@ -1469,11 +1597,18 @@ mod tests {
     /// form's own value is -- a loop condition always, a loop body never.
     #[test]
     fn an_inlined_blocks_last_slot_assignment_is_copied_only_when_its_value_is_read() {
-        let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  \
-            discarded: c = ( | t | c ifTrue: [n := t] ifFalse: [n := t]. c and: [n := t] )\n  \
-            returned: c = ( | t | ^c ifTrue: [n := t] ifFalse: [n := t] )\n  \
-            returnedAnd: c = ( | t | ^c and: [n := t] )\n  \
-            loop = ( | t | [n := t] whileTrue: [n := t] )\n) : ()";
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+              | n ::= 0. |
+            ) (
+              discarded: c = ( | t | c ifTrue: [n := t] ifFalse: [n := t]. c and: [n := t] )
+              returned: c = ( | t | ^c ifTrue: [n := t] ifFalse: [n := t] )
+              returnedAnd: c = ( | t | ^c and: [n := t] )
+              loop = ( | t | [n := t] whileTrue: [n := t] )
+            ) : ()
+        "};
         // `c` is register 0 and `t` register 1; `loop`'s `t` is register 0.
         let discarded = lower_whole_method(src, 0);
         assert_eq!(setter_args(&discarded), vec![1, 1, 1]);
@@ -1497,8 +1632,14 @@ mod tests {
 
     #[test]
     fn a_bare_builtin_class_name_lowers_to_load_builtin_class() {
-        let src =
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^OrderedCollection )\n) : ()";
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              foo = ( ^OrderedCollection )
+            ) : ()
+        "};
         let (foo, bindings) = resolve_method(src, 0);
         let mut lowerer = method_lowerer(&foo, &bindings);
         let dst = lowerer.lower_expr(return_expr(&foo));
@@ -1515,7 +1656,14 @@ mod tests {
 
     #[test]
     fn a_cascade_reuses_one_receiver_register_across_every_message() {
-        let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( | c | c := OrderedCollection new. c add: 1; add: 2 )\n) : ()";
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              foo = ( | c | c := OrderedCollection new. c add: 1; add: 2 )
+            ) : ()
+        "};
         let (foo, bindings) = resolve_method(src, 0);
         let mut lowerer = method_lowerer(&foo, &bindings); // temp `c` is register 0
         lowerer.lower_statement(&foo.body.stmts[0], ValueUse::Discarded);
@@ -1576,7 +1724,14 @@ mod tests {
     #[test]
     fn a_method_with_no_explicit_return_implicitly_returns_self() {
         let code = lower_whole_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( 1 + 1 )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( 1 + 1 )
+                ) : ()
+            "},
             0,
         );
         assert_eq!(
@@ -1588,7 +1743,14 @@ mod tests {
     #[test]
     fn an_explicit_method_return_is_a_plain_return_with_nothing_appended() {
         let code = lower_whole_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( ^1 )
+                ) : ()
+            "},
             0,
         );
         assert_eq!(
@@ -1606,7 +1768,14 @@ mod tests {
     #[test]
     fn a_block_literal_compiles_to_its_own_code_carried_by_make_closure() {
         let code = lower_whole_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^[ :x | x ] )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( ^[ :x | x ] )
+                ) : ()
+            "},
             0,
         );
         let Some(Instr::MakeClosure {
@@ -1629,7 +1798,14 @@ mod tests {
     #[test]
     fn a_block_reads_and_writes_enclosing_locals_through_outer_local_instructions() {
         let code = lower_whole_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo: x = ( | t | ^[ t := x ] )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo: x = ( | t | ^[ t := x ] )
+                ) : ()
+            "},
             0,
         );
         let Some(Instr::MakeClosure { code: block, .. }) = code.instrs.first() else {
@@ -1656,7 +1832,14 @@ mod tests {
     #[test]
     fn a_doubly_nested_block_counts_two_frame_hops() {
         let code = lower_whole_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo: x = ( ^[ [ x ] ] )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo: x = ( ^[ [ x ] ] )
+                ) : ()
+            "},
             0,
         );
         let Some(Instr::MakeClosure { code: outer, .. }) = code.instrs.first() else {
@@ -1678,7 +1861,14 @@ mod tests {
     #[test]
     fn a_return_inside_a_block_is_a_non_local_return() {
         let code = lower_whole_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^[ ^1 ] )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( ^[ ^1 ] )
+                ) : ()
+            "},
             0,
         );
         let Some(Instr::MakeClosure { code: block, .. }) = code.instrs.first() else {
@@ -1699,7 +1889,14 @@ mod tests {
     #[test]
     fn an_empty_block_returns_nil_and_a_multi_statement_block_returns_its_last_value() {
         let code = lower_whole_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( [ ] value. ^[ 1. 2 ] value )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( [ ] value. ^[ 1. 2 ] value )
+                ) : ()
+            "},
             0,
         );
         let Some(Instr::MakeClosure { code: empty, .. }) = code.instrs.first() else {
@@ -1759,7 +1956,14 @@ mod tests {
     #[test]
     fn a_dynamic_array_literal_lowers_to_make_array() {
         let (method, bindings) = resolve_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^{ 1. 2. 3 } )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( ^{ 1. 2. 3 } )
+                ) : ()
+            "},
             0,
         );
         let mut lowerer = method_lowerer(&method, &bindings);
@@ -1792,7 +1996,14 @@ mod tests {
     #[test]
     fn an_initializer_discards_a_top_level_return_and_always_returns_self() {
         let (method, bindings) = resolve_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( ^1 )
+                ) : ()
+            "},
             0,
         );
         // Reuse `foo`'s `^1` as if it were an initExpr: kind Initializer, 0 args.
@@ -1815,7 +2026,14 @@ mod tests {
     #[test]
     fn a_slot_initializer_is_one_statement_ending_in_init_slot() {
         let (method, bindings) = resolve_method(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^6 * 7 )\n) : ()",
+            indoc! {"
+                Newspeak3
+                'T'
+                class X = Object new (
+                ) (
+                  foo = ( ^6 * 7 )
+                ) : ()
+            "},
             0,
         );
         let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, 0, &bindings, vec![]);
@@ -1834,8 +2052,14 @@ mod tests {
 
     /// Compiles `foo: x = ( ^<body> )` and returns the method's code.
     fn compile_foo(body: &str) -> CompiledCode {
-        let full =
-            format!("Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo: x = ( ^{body} )\n) : ()");
+        let full = formatdoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              foo: x = ( ^{body} )
+            ) : ()
+        "};
         lower_whole_method(&full, 0)
     }
 

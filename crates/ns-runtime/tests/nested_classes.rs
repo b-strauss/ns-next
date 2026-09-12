@@ -3,6 +3,7 @@
 //! evaluates the declaration with the receiver as enclosing object and
 //! caches the resulting class object per receiver.
 
+use indoc::indoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -53,17 +54,17 @@ fn expect_error(result: Result<Value, Signal>, what: &str) -> String {
     }
 }
 
-const SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    public class Inner = Object new (| v. |) (
-        public value = ( ^42 )
+const SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        public class Inner = Object new (| v. |) (
+            public value = ( ^42 )
+        )
+        public makeInner = ( ^Inner new )
+        public innerClass = ( ^Inner )
     )
-    public makeInner = ( ^Inner new )
-    public innerClass = ( ^Inner )
-)
-";
+"};
 
 #[test]
 fn the_accessor_returns_the_same_class_object_every_time() {
@@ -171,14 +172,14 @@ fn a_nested_class_can_be_instantiated_through_its_accessor() {
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if ec does not evaluate
 /// to a class object C." A program error, not an interpreter invariant --
 /// a `NewspeakError`, never a panic.
-const NON_CLASS_SUPERCLASS_SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new (| notAClass = 7. |) (
-    public class Inner = notAClass new () ()
-    public innerClass = ( ^Inner )
-)
-";
+const NON_CLASS_SUPERCLASS_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new (| notAClass = 7. |) (
+        public class Inner = notAClass new () ()
+        public innerClass = ( ^Inner )
+    )
+"};
 
 #[test]
 fn a_superclass_clause_that_is_not_a_class_is_a_program_error() {
@@ -202,16 +203,16 @@ fn a_superclass_clause_that_is_not_a_class_is_a_program_error() {
 /// default (no modifier) is `protected`, so an ordinary explicit-receiver
 /// send must not reach it -- and `lookupPublic`'s hard-stop rule means the
 /// search stops at the declaration rather than continuing up the chain.
-const PROTECTED_NESTED_SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    class Hidden = Object new () (
-        public value = ( ^7 )
+const PROTECTED_NESTED_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        class Hidden = Object new () (
+            public value = ( ^7 )
+        )
+        public reach = ( ^Hidden new value )
     )
-    public reach = ( ^Hidden new value )
-)
-";
+"};
 
 #[test]
 fn a_nested_class_defaults_to_protected_accessibility() {
@@ -244,19 +245,19 @@ fn a_nested_class_defaults_to_protected_accessibility() {
 /// not the receiver's own (dynamic) class -- which is what the clause frame's
 /// `current_class` must be, since the clause is lexically part of `Base`'s
 /// declaration.
-const INHERITED_NESTED_SRC: &str = "\
-Newspeak3
-'Test'
-class M usingPlatform: p = Object new () (
-    class Base = Object new () (
-        public class N = Object new () (
-            public tag = ( ^11 )
+const INHERITED_NESTED_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class M usingPlatform: p = Object new () (
+        class Base = Object new () (
+            public class N = Object new () (
+                public tag = ( ^11 )
+            )
         )
+        public class Derived = Base new () ()
+        public makeDerived = ( ^Derived new )
     )
-    public class Derived = Base new () ()
-    public makeDerived = ( ^Derived new )
-)
-";
+"};
 
 #[test]
 fn an_inherited_nested_declaration_is_reached_through_the_chain() {
@@ -305,14 +306,14 @@ fn an_inherited_nested_declaration_is_reached_through_the_chain() {
 /// answers a class object without dispatching -- which is the outcome this
 /// pins. It is the regression guard for the day that form starts
 /// dispatching: by then the frame already carries the declaring class.
-const SUPER_PREFIXED_CLAUSE_SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    public class Inner = super Object ()
-    public innerClass = ( ^Inner )
-)
-";
+const SUPER_PREFIXED_CLAUSE_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        public class Inner = super Object ()
+        public innerClass = ( ^Inner )
+    )
+"};
 
 #[test]
 fn a_super_prefixed_clause_answers_a_class_object() {
@@ -336,14 +337,14 @@ fn a_super_prefixed_clause_answers_a_class_object() {
 /// first access, so `Inner`'s clause re-enters `Inner`'s own accessor before
 /// the cache slot is filled -- unbounded recursion, and an abort rather than
 /// a diagnosable error, without the in-progress guard.
-const CYCLIC_SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    public class Inner = Inner new ()
-    public innerClass = ( ^Inner )
-)
-";
+const CYCLIC_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        public class Inner = Inner new ()
+        public innerClass = ( ^Inner )
+    )
+"};
 
 #[test]
 fn a_self_referential_nested_class_is_a_program_error() {
@@ -371,14 +372,14 @@ fn a_self_referential_nested_class_is_a_program_error() {
     assert_eq!(message, again);
 }
 
-const CLASS_SIDE_SRC: &str = "\
-Newspeak3
-'Test'
-class Widget new = Object new () (
-) : (
-    public describe = ( ^'a widget class' )
-)
-";
+const CLASS_SIDE_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Widget new = Object new () (
+    ) : (
+        public describe = ( ^'a widget class' )
+    )
+"};
 
 /// §6.3: a class object's class-side methods are reachable by sending to
 /// the class object itself, through a lazily created metaclass.
@@ -413,22 +414,22 @@ fn a_class_with_no_class_side_still_reports_ordinary_does_not_understand() {
     assert!(message.contains("does not understand #noSuchClassSideMethod"));
 }
 
-const CLASS_SIDE_INHERITANCE_SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    public class Widget new = Object new () (
-    ) : (
-        public describe = ( ^'a widget class' )
+const CLASS_SIDE_INHERITANCE_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        public class Widget new = Object new () (
+        ) : (
+            public describe = ( ^'a widget class' )
+        )
+        public class SpecialWidget new = Widget new () (
+        )
+        public class OverridingWidget new = Widget new () (
+        ) : (
+            public describe = ( ^'a special widget class' )
+        )
     )
-    public class SpecialWidget new = Widget new () (
-    )
-    public class OverridingWidget new = Widget new () (
-    ) : (
-        public describe = ( ^'a special widget class' )
-    )
-)
-";
+"};
 
 /// A class side is inherited down the ordinary subclass chain like any
 /// other mixin member (plain single inheritance -- not a reification of
@@ -560,20 +561,20 @@ fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name() {
 /// itself), but its `super describe` lands in `Base`'s activation, and
 /// `Base`'s own `outer Outer label` must resolve from *that* activation.
 /// Mirrors `tests-fixtures/nested_super.ns` at the API level.
-const NESTED_SUPER_SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    label = ( ^'outer' )
-    public class Base = Object new () (
-        public describe = ( ^outer Outer label )
+const NESTED_SUPER_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        label = ( ^'outer' )
+        public class Base = Object new () (
+            public describe = ( ^outer Outer label )
+        )
+        public class Derived = Base new () (
+            public describe = ( ^(super describe), '/derived' )
+        )
+        public run = ( ^Derived new describe )
     )
-    public class Derived = Base new () (
-        public describe = ( ^(super describe), '/derived' )
-    )
-    public run = ( ^Derived new describe )
-)
-";
+"};
 
 #[test]
 fn super_and_outer_both_resolve_through_the_defining_level() {
@@ -600,20 +601,20 @@ fn super_and_outer_both_resolve_through_the_defining_level() {
 /// two-level chain (where the bug and the fix agree on the first hop) would
 /// pass either way. This guards the actual defect class the level-tracking
 /// machinery exists for.
-const SUPER_CHAIN_SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    public class Grand = Object new () (
-        public describe = ( ^'grand' )
+const SUPER_CHAIN_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        public class Grand = Object new () (
+            public describe = ( ^'grand' )
+        )
+        public class Mid = Grand new () (
+            public describe = ( ^(super describe), '/mid' )
+        )
+        public class Leaf = Mid new () ()
+        public run = ( ^Leaf new describe )
     )
-    public class Mid = Grand new () (
-        public describe = ( ^(super describe), '/mid' )
-    )
-    public class Leaf = Mid new () ()
-    public run = ( ^Leaf new describe )
-)
-";
+"};
 
 #[test]
 fn a_super_chain_progresses_through_an_inherited_middle_level() {
@@ -635,21 +636,21 @@ fn a_super_chain_progresses_through_an_inherited_middle_level() {
 /// must reach the module instance and answer `'top'` on any receiver --
 /// resolving the depth from the receiver's own class instead reaches the
 /// `Mid` instance, whose decoy `label` answers `'mid'`.
-const OUTER_THROUGH_INHERITED_SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    label = ( ^'top' )
-    public class Base = Object new () (
-        public describe = ( ^outer Outer label )
+const OUTER_THROUGH_INHERITED_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        label = ( ^'top' )
+        public class Base = Object new () (
+            public describe = ( ^outer Outer label )
+        )
+        public class Mid = Object new () (
+            label = ( ^'mid' )
+            public class Derived = Base new () ()
+        )
+        public run = ( ^Mid new Derived new describe )
     )
-    public class Mid = Object new () (
-        label = ( ^'mid' )
-        public class Derived = Base new () ()
-    )
-    public run = ( ^Mid new Derived new describe )
-)
-";
+"};
 
 #[test]
 fn outer_in_an_inherited_method_resolves_from_the_defining_level() {
@@ -669,23 +670,23 @@ fn outer_in_an_inherited_method_resolves_from_the_defining_level() {
 /// then leave the level that declares `Deep`, which is `Base`, not
 /// `Derived`'s own class. Stepping through the reached object's class
 /// instead lands on `Mid`'s instance and its decoy `label`.
-const DEEP_OUTER_THROUGH_INHERITED_SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    label = ( ^'top' )
-    public class Base = Object new () (
-        public class Deep = Object new () (
-            public describe = ( ^outer Outer label )
+const DEEP_OUTER_THROUGH_INHERITED_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        label = ( ^'top' )
+        public class Base = Object new () (
+            public class Deep = Object new () (
+                public describe = ( ^outer Outer label )
+            )
         )
+        public class Mid = Object new () (
+            label = ( ^'mid' )
+            public class Derived = Base new () ()
+        )
+        public run = ( ^Mid new Derived new Deep new describe )
     )
-    public class Mid = Object new () (
-        label = ( ^'mid' )
-        public class Derived = Base new () ()
-    )
-    public run = ( ^Mid new Derived new Deep new describe )
-)
-";
+"};
 
 #[test]
 fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
@@ -707,24 +708,24 @@ fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
 /// at depth 2 and can only be walked through the declaration chain.
 /// `Widget`'s decoy `label` is what a walk that stopped one level short
 /// would answer with.
-const CLASS_SIDE_OUTER_SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    label = ( ^'top' )
-    public class Widget = Object new () (
-        label = ( ^'widget' )
-        public class Part = Object new () (
+const CLASS_SIDE_OUTER_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        label = ( ^'top' )
+        public class Widget = Object new () (
+            label = ( ^'widget' )
+            public class Part = Object new () (
+            ) : (
+                public whichOuter = ( ^outer Outer label )
+            )
         ) : (
             public whichOuter = ( ^outer Outer label )
         )
-    ) : (
-        public whichOuter = ( ^outer Outer label )
+        public shallow = ( ^Widget whichOuter )
+        public deep = ( ^Widget new Part whichOuter )
     )
-    public shallow = ( ^Widget whichOuter )
-    public deep = ( ^Widget new Part whichOuter )
-)
-";
+"};
 
 #[test]
 fn outer_in_a_class_side_method_reaches_the_enclosing_object() {

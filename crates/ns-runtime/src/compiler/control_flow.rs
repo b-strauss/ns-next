@@ -81,10 +81,17 @@ pub(crate) fn recognize(send: &ast::Send) -> Option<InlineForm<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indoc::formatdoc;
 
     fn parse_send(src: &str) -> ast::Send {
-        let full =
-            format!("Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^{src} )\n) : ()");
+        let full = formatdoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              foo = ( ^{src} )
+            ) : ()
+        "};
         let module = ns_syntax::parse(&full).expect("parse");
         match &module.root_class.instance_side.methods[0].body.stmts[0] {
             ast::Stmt::Return(ast::Expr::Send(send)) => (**send).clone(),

@@ -842,6 +842,7 @@ mod slot_tests {
 #[cfg(test)]
 mod class_tests {
     use super::*;
+    use indoc::indoc;
 
     fn module(src: &str) -> Module {
         match crate::parse(src) {
@@ -866,8 +867,15 @@ mod class_tests {
     // G2 declaration.
     #[test]
     fn dotless_final_slot_init_does_not_swallow_following_decl() {
-        let src = "Newspeak3\n'X'\n\
-                   class Outer = (\n | a = X new |\n) (\n class Inner = () () : ()\n) : ()\n";
+        let src = indoc! {"
+            Newspeak3
+            'X'
+            class Outer = (
+             | a = X new |
+            ) (
+             class Inner = () () : ()
+            ) : ()
+        "};
         let (m, _clean) = module_with_diags(src);
         let body = &m.root_class.instance_side;
         assert_eq!(body.slots.len(), 1, "the slot survives");
@@ -884,7 +892,13 @@ mod class_tests {
     // send even in a slot initializer.
     #[test]
     fn bar_operator_in_slot_initializer() {
-        let m = module("Newspeak3\n'X'\nclass C = (\n | flag = a | b. |\n) ()\n");
+        let m = module(indoc! {"
+            Newspeak3
+            'X'
+            class C = (
+             | flag = a | b. |
+            ) ()
+        "});
         let init = m.root_class.instance_side.slots[0].init.as_ref().unwrap();
         let Expr::Send(s) = init else {
             panic!("{init:?}")
@@ -899,7 +913,11 @@ mod class_tests {
     #[test]
     fn minimal_module() {
         // Real grammar: G1 `()` then G2 `()` (both empty).
-        let m = module("Newspeak3\n'App'\nclass Empty usingPlatform: p = () ()\n");
+        let m = module(indoc! {"
+            Newspeak3
+            'App'
+            class Empty usingPlatform: p = () ()
+        "});
         assert_eq!(m.language_id, "Newspeak3");
         assert_eq!(m.category, "App");
         assert_eq!(m.root_class.name.name, "Empty");
@@ -913,7 +931,11 @@ mod class_tests {
 
     #[test]
     fn superclass_clause_with_send() {
-        let m = module("Newspeak3\n'X'\nclass C = Object new () ()\n");
+        let m = module(indoc! {"
+            Newspeak3
+            'X'
+            class C = Object new () ()
+        "});
         let sc = m.root_class.superclass.as_ref().unwrap();
         assert_eq!(sc.receiver.name, "Object");
         assert_eq!(sc.messages.len(), 1);
@@ -923,16 +945,18 @@ mod class_tests {
     fn slots_methods_and_nested_class() {
         // Comment + `|..|` slot section + init exprs live in G1; methods and
         // nested classes live in G2.
-        let src = r#"Newspeak3
-'X'
-class Outer usingPlatform: p = (
-    (* a comment *)
-    | x ::= 0. |
-    x := 1.
-) (
-    public bump = ( x := x + 1 )
-    class Inner = ( ) ( public ping = ( ^ 42 ) ) : ()
-)"#;
+        let src = indoc! {"
+            Newspeak3
+            'X'
+            class Outer usingPlatform: p = (
+                (* a comment *)
+                | x ::= 0. |
+                x := 1.
+            ) (
+                public bump = ( x := x + 1 )
+                class Inner = ( ) ( public ping = ( ^ 42 ) ) : ()
+            )
+        "};
         let m = module(src);
         let body = &m.root_class.instance_side;
         assert_eq!(body.slots.len(), 1);
@@ -944,14 +968,24 @@ class Outer usingPlatform: p = (
 
     #[test]
     fn class_side_block() {
-        let src = "Newspeak3\n'X'\nclass C = () () : ( public default = ( ^ C new ) )\n";
+        let src = indoc! {"
+            Newspeak3
+            'X'
+            class C = () () : ( public default = ( ^ C new ) )
+        "};
         let m = module(src);
         assert_eq!(m.root_class.class_side.as_ref().unwrap().methods.len(), 1);
     }
 
     #[test]
     fn trailing_garbage_is_an_error() {
-        assert!(crate::parse("Newspeak3\n'X'\nclass C = () ()\nextra").is_err());
+        assert!(crate::parse(indoc! {"
+            Newspeak3
+            'X'
+            class C = () ()
+            extra
+        "})
+        .is_err());
     }
 
     // Malformed G1 input must terminate with a diagnostic, not hang:
@@ -959,23 +993,43 @@ class Outer usingPlatform: p = (
     // so `parse_header_body`'s loop needs an explicit forward-progress guard.
     #[test]
     fn malformed_body_caret_is_error() {
-        assert!(crate::parse("Newspeak3\n'X'\nclass C = ( ^ 1 ) ()").is_err());
+        assert!(crate::parse(indoc! {"
+            Newspeak3
+            'X'
+            class C = ( ^ 1 ) ()
+        "})
+        .is_err());
     }
 
     #[test]
     fn malformed_body_semi_is_error() {
-        assert!(crate::parse("Newspeak3\n'X'\nclass C = ( ; ) ()").is_err());
+        assert!(crate::parse(indoc! {"
+            Newspeak3
+            'X'
+            class C = ( ; ) ()
+        "})
+        .is_err());
     }
 
     #[test]
     fn malformed_body_binsel_is_error() {
-        assert!(crate::parse("Newspeak3\n'X'\nclass C = ( + ) ()").is_err());
+        assert!(crate::parse(indoc! {"
+            Newspeak3
+            'X'
+            class C = ( + ) ()
+        "})
+        .is_err());
     }
 
     // A `|..|` slot section inside G2 is malformed (it belongs to G1).
     #[test]
     fn slot_section_in_g2_is_error() {
-        assert!(crate::parse("Newspeak3\n'X'\nclass C = () ( | x | ) : ()").is_err());
+        assert!(crate::parse(indoc! {"
+            Newspeak3
+            'X'
+            class C = () ( | x | ) : ()
+        "})
+        .is_err());
     }
 
     // --- corpus-shaped tests (real two-group grammar) ---
@@ -983,7 +1037,16 @@ class Outer usingPlatform: p = (
     #[test]
     fn two_group_with_class_side() {
         // Exact shape of corpus/modules/ADummyPush.ns.
-        let src = "Newspeak3\n'Newspeak'\nclass ADummyPush new = Object new (\n) (\n\tfoo = (\n\t\t^99\n\t)\n) : ()\n";
+        let src = indoc! {"
+            Newspeak3
+            'Newspeak'
+            class ADummyPush new = Object new (
+            ) (
+                foo = (
+                    ^99
+                )
+            ) : ()
+        "};
         let m = module(src);
         assert_eq!(m.root_class.instance_side.methods.len(), 1);
         assert!(m.root_class.class_side.is_some());
@@ -991,7 +1054,11 @@ class Outer usingPlatform: p = (
 
     #[test]
     fn nested_class_two_group() {
-        let src = "Newspeak3\n'X'\nclass C = () ( class Inner = ( ) ( m = () ) : () ) : ()\n";
+        let src = indoc! {"
+            Newspeak3
+            'X'
+            class C = () ( class Inner = ( ) ( m = () ) : () ) : ()
+        "};
         let m = module(src);
         assert_eq!(m.root_class.instance_side.nested_classes.len(), 1);
         assert_eq!(
@@ -1005,7 +1072,11 @@ class Outer usingPlatform: p = (
 
     #[test]
     fn init_exprs_in_g1_only() {
-        let m = module("Newspeak3\n'X'\nclass C = ( x := 1. y := 2. ) ()\n");
+        let m = module(indoc! {"
+            Newspeak3
+            'X'
+            class C = ( x := 1. y := 2. ) ()
+        "});
         let body = &m.root_class.instance_side;
         assert_eq!(body.init_exprs.len(), 2);
         assert!(body.methods.is_empty());
@@ -1013,7 +1084,11 @@ class Outer usingPlatform: p = (
 
     #[test]
     fn lazy_slot_in_g2() {
-        let m = module("Newspeak3\n'X'\nclass C = () ( lazy foo = bar baz. ) : ()\n");
+        let m = module(indoc! {"
+            Newspeak3
+            'X'
+            class C = () ( lazy foo = bar baz. ) : ()
+        "});
         let body = &m.root_class.instance_side;
         assert_eq!(body.slots.len(), 1);
         assert_eq!(body.slots[0].name.name, "foo");
@@ -1022,7 +1097,11 @@ class Outer usingPlatform: p = (
 
     #[test]
     fn lazy_slot_modifier_first_in_g2() {
-        let m = module("Newspeak3\n'X'\nclass C = () ( public lazy foo ::= bar. ) : ()\n");
+        let m = module(indoc! {"
+            Newspeak3
+            'X'
+            class C = () ( public lazy foo ::= bar. ) : ()
+        "});
         let body = &m.root_class.instance_side;
         assert_eq!(body.slots.len(), 1);
         assert_eq!(body.slots[0].access, Some(AccessModifier::Public));
@@ -1032,7 +1111,11 @@ class Outer usingPlatform: p = (
     // A method literally named `lazy` must not be mistaken for a lazy slot.
     #[test]
     fn method_named_lazy_is_not_a_slot() {
-        let m = module("Newspeak3\n'X'\nclass C = () ( lazy = ( ^ 1 ) ) : ()\n");
+        let m = module(indoc! {"
+            Newspeak3
+            'X'
+            class C = () ( lazy = ( ^ 1 ) ) : ()
+        "});
         let body = &m.root_class.instance_side;
         assert!(body.slots.is_empty());
         assert_eq!(body.methods.len(), 1);
@@ -1042,7 +1125,11 @@ class Outer usingPlatform: p = (
     // not a class comment. ---
     #[test]
     fn leading_string_in_header_is_an_init_expr_not_a_comment() {
-        let m = module("Newspeak3\n'X'\nclass C = ( 'hello' printLine. ) ()\n");
+        let m = module(indoc! {"
+            Newspeak3
+            'X'
+            class C = ( 'hello' printLine. ) ()
+        "});
         assert_eq!(m.root_class.class_comment, None);
         let body = &m.root_class.instance_side;
         assert_eq!(body.init_exprs.len(), 1);
@@ -1061,7 +1148,11 @@ class Outer usingPlatform: p = (
     // class comment.
     #[test]
     fn block_comment_in_header_is_still_the_class_comment() {
-        let m = module("Newspeak3\n'X'\nclass C = ( (* a comment *) ) ()\n");
+        let m = module(indoc! {"
+            Newspeak3
+            'X'
+            class C = ( (* a comment *) ) ()
+        "});
         assert_eq!(m.root_class.class_comment.as_deref(), Some(" a comment "));
     }
 
@@ -1095,7 +1186,11 @@ class Outer usingPlatform: p = (
 
     #[test]
     fn shallow_nesting_still_parses_clean() {
-        let m = module("Newspeak3\n'X'\nclass C = ( ((((x)))). ) ()\n");
+        let m = module(indoc! {"
+            Newspeak3
+            'X'
+            class C = ( ((((x)))). ) ()
+        "});
         assert_eq!(m.root_class.instance_side.init_exprs.len(), 1);
     }
 }

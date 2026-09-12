@@ -236,6 +236,7 @@ pub fn lookup_slot(heap: &Heap, class: ClassRef, name: Symbol) -> Option<usize> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indoc::formatdoc;
     use std::collections::HashMap;
 
     /// A placeholder `ClassRef` whose own `.class` field points back to
@@ -263,11 +264,17 @@ mod tests {
         // Build a minimal MethodDecl via ns_syntax::parse of a throwaway
         // module and pull the method out of it -- avoids hand-constructing
         // deeply nested AST literals here.
-        let src =
-            format!(
-            "Newspeak3\n'T'\nclass X = Object new (\n) (\n  {access_kw}{selector} = ( ^1 )\n) : ()",
-            access_kw = access.map(|a| format!("{a:?} ").to_lowercase()).unwrap_or_default(),
-        );
+        let access_kw = access
+            .map(|a| format!("{a:?} ").to_lowercase())
+            .unwrap_or_default();
+        let src = formatdoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              {access_kw}{selector} = ( ^1 )
+            ) : ()
+        "};
         let module = ns_syntax::parse(&src).expect("parse");
         let method = module.root_class.instance_side.methods[0].clone();
         let mut methods = HashMap::new();

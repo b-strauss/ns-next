@@ -3,6 +3,7 @@
 //! bounded by a count rather than by the native stack, and running past it is
 //! an ordinary Newspeak error under both lowerings.
 
+use indoc::{formatdoc, indoc};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -38,11 +39,16 @@ fn small_int(v: Value) -> i64 {
     }
 }
 
-const DEPTH: &str = "Newspeak3\n'T'\nclass Depth = Object new (\n) (\n\
-    \tpublic down: n = ( n = 0 ifTrue: [^0]. ^down: n - 1 )\n\
-    \tpublic logic: n = ( ^n = 0 or: [(logic: n - 1) and: [true]] )\n\
-    \tpublic loop: n = ( [n > 0] whileTrue: [^loop: n - 1]. ^0 )\n\
-    ) : ()";
+const DEPTH: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Depth = Object new (
+    ) (
+        public down: n = ( n = 0 ifTrue: [^0]. ^down: n - 1 )
+        public logic: n = ( ^n = 0 or: [(logic: n - 1) and: [true]] )
+        public loop: n = ( [n > 0] whileTrue: [^loop: n - 1]. ^0 )
+    ) : ()
+"};
 
 /// Fifty thousand nested method activations: far past what the Rust stack of
 /// a test thread would hold if every send recursed on it, and nothing but
@@ -77,11 +83,16 @@ fn a_deep_method_recursion_runs_on_the_activation_stack() {
 /// method it names and leaves nothing behind it on the stack.
 #[test]
 fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack() {
-    let src = "Newspeak3\n'T'\nclass R = Object new (\n) (\n\
-        \tpublic find = ( self each: [:e | e = 3 ifTrue: [^e * 10]]. ^0 )\n\
-        \teach: blk = ( self to: 5 do: blk )\n\
-        \tto: hi do: blk = ( | i | i := 1. [i <= hi] whileTrue: [blk value: i. i := i + 1] )\n\
-        ) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class R = Object new (
+        ) (
+            public find = ( self each: [:e | e = 3 ifTrue: [^e * 10]]. ^0 )
+            each: blk = ( self to: 5 do: blk )
+            to: hi do: blk = ( | i | i := 1. [i <= hi] whileTrue: [blk value: i. i := i + 1] )
+        ) : ()
+    "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(src, lowering);
         let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
@@ -103,10 +114,15 @@ fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack() {
 /// what this expects; nothing else should.
 #[test]
 fn a_return_into_a_running_initializer_escapes_the_runs_below_it() {
-    let src = "Newspeak3\n'T'\nclass E = Object new (\n) (\n\
-        \tclass Inner = Object new ( | a = [^1] value. | ) ( ) : ()\n\
-        \tpublic make = ( Inner new. ^0 )\n\
-        ) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class E = Object new (
+        ) (
+            class Inner = Object new ( | a = [^1] value. | ) ( ) : ()
+            public make = ( Inner new. ^0 )
+        ) : ()
+    "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(src, lowering);
         let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
@@ -123,12 +139,17 @@ fn a_return_into_a_running_initializer_escapes_the_runs_below_it() {
 /// each held in a variable -- runs through the natives, and none of them
 /// calls back into the loop, so forty thousand levels fit on a test thread's
 /// stack under either lowering.
-const THROUGH_NATIVES: &str = "Newspeak3\n'T'\nclass N = Object new (\n) (\n\
-    \tpublic viaValue: n = ( | b | b := [:k | k = 0 ifTrue: [0] ifFalse: [b value: k - 1]]. ^b value: n )\n\
-    \tpublic viaIf: n = ( | t f | t := [0]. f := [viaIf: n - 1]. ^n = 0 ifTrue: t ifFalse: f )\n\
-    \tpublic viaOr: n = ( | rest | rest := [(viaOr: n - 1) = 0]. ^(n = 0 or: rest) ifTrue: [0] ifFalse: [1] )\n\
-    \tpublic viaWhile: n = ( | c b | c := [n > 0]. b := [^viaWhile: n - 1]. c whileTrue: b. ^0 )\n\
-    ) : ()";
+const THROUGH_NATIVES: &str = indoc! {"
+    Newspeak3
+    'T'
+    class N = Object new (
+    ) (
+        public viaValue: n = ( | b | b := [:k | k = 0 ifTrue: [0] ifFalse: [b value: k - 1]]. ^b value: n )
+        public viaIf: n = ( | t f | t := [0]. f := [viaIf: n - 1]. ^n = 0 ifTrue: t ifFalse: f )
+        public viaOr: n = ( | rest | rest := [(viaOr: n - 1) = 0]. ^(n = 0 or: rest) ifTrue: [0] ifFalse: [1] )
+        public viaWhile: n = ( | c b | c := [n > 0]. b := [^viaWhile: n - 1]. c whileTrue: b. ^0 )
+    ) : ()
+"};
 
 #[test]
 fn a_deep_recursion_through_native_block_activations_runs_on_the_activation_stack() {
@@ -280,9 +301,14 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
     use ns_runtime::bytecode::{CodeKind, Instr};
     use ns_runtime::image;
     use ns_runtime::image::opcodes::{OP_SEND_INLINABLE, OP_SEND_PUBLIC};
-    let src = format!(
-        "Newspeak3\n'T'\nclass Crafted = Object new (\n) (\n\tpublic main = ( | b n | n := 0. b := {block}. ^b value )\n) : ()"
-    );
+    let src = formatdoc! {"
+        Newspeak3
+        'T'
+        class Crafted = Object new (
+        ) (
+            public main = ( | b n | n := 0. b := {block}. ^b value )
+        ) : ()
+    "};
     // `n < 200000 ifTrue: b` is not a literal-block send, so even the
     // reference lowering compiles it to a `SendPublic`, which the mutation
     // below turns into a `SendInlinable` -- the two share one operand layout.
@@ -354,13 +380,19 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
 /// value and leave both depths where they were.
 #[test]
 fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
-    let src = "Newspeak3\n'T'\nclass Floor = Object new (\n\t| n ::= 0. |\n) (\n\
-        \tpublic below: k = ( ^[n < k] )\n\
-        \tpublic atLeast: k = ( ^[n >= k] )\n\
-        \tpublic step = ( ^[n := n + 1] )\n\
-        \tpublic count = ( ^n )\n\
-        \tpublic constant: v = ( ^[v] )\n\
-        ) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Floor = Object new (
+            | n ::= 0. |
+        ) (
+            public below: k = ( ^[n < k] )
+            public atLeast: k = ( ^[n >= k] )
+            public step = ( ^[n := n + 1] )
+            public count = ( ^n )
+            public constant: v = ( ^[v] )
+        ) : ()
+    "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(src, lowering);
         let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");

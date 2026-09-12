@@ -4,6 +4,7 @@
 //! `Interpreter::instantiate` directly from Rust -- the code path an
 //! ordinary Newspeak `ClassName new` message send actually takes.
 
+use indoc::indoc;
 use ns_runtime::{BuiltinClass, Interpreter, Signal, Symbol, Value};
 
 fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
@@ -97,7 +98,11 @@ fn array_new_via_ordinary_send_does_not_understand_add() {
 /// reachable afterward through a real method send.
 #[test]
 fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (|x = 42.|) (public bar = (^x)) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (|x = 42.|) (public bar = (^x)) : ()
+    "};
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,

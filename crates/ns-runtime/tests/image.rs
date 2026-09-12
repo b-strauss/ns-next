@@ -2,6 +2,7 @@
 //! scalars, the mixin table, the code table, the object and frame tables,
 //! whole-image `snapshot`/`load`, and the two verification passes.
 
+use indoc::{formatdoc, indoc};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -312,7 +313,18 @@ fn mixin_chain(depth: u32) -> Vec<u8> {
     w.into_bytes()
 }
 
-const RICH: &str = "Newspeak3\n'T'\nclass Rich x: a = Object new (\n  | p = a. q ::= 0. |\n  q := p.\n) (\n  find: t in: c = ( c do: [:e | e = t ifTrue: [^e]]. ^nil )\n  loop = ( | n | n := 0. [n < 3] whileTrue: [n := n + 1]. ^n )\n  arr = ( ^{ 1. #(2 3). 'four' } )\n) : ()";
+const RICH: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Rich x: a = Object new (
+      | p = a. q ::= 0. |
+      q := p.
+    ) (
+      find: t in: c = ( c do: [:e | e = t ifTrue: [^e]]. ^nil )
+      loop = ( | n | n := 0. [n < 3] whileTrue: [n := n + 1]. ^n )
+      arr = ( ^{ 1. #(2 3). 'four' } )
+    ) : ()
+"};
 
 fn every_instr_once() -> CompiledCode {
     let block = Rc::new(CompiledCode {
@@ -511,7 +523,13 @@ fn round_trip_code_table(
 
 #[test]
 fn every_instr_variant_round_trips() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let synthetic = Rc::new(every_instr_once());
     let doctored = Mixin {
@@ -1027,7 +1045,14 @@ fn a_mixin_table_with_no_root_row_is_a_decode_error() {
 fn source_with_nested_literal_array(levels: usize) -> String {
     let open = "(".repeat(levels);
     let close = ")".repeat(levels);
-    format!("Newspeak3\n'T'\nclass X = Object new (\n) (\n  arr = ( ^#{open}0{close} )\n) : ()")
+    formatdoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          arr = ( ^#{open}0{close} )
+        ) : ()
+    "}
 }
 
 /// The deepest literal-array nesting `ns-syntax`'s parser actually accepts,
@@ -1105,9 +1130,14 @@ fn source_with_nested_blocks(levels: usize) -> String {
     for _ in 1..levels {
         nest = format!("[{nest} value]");
     }
-    format!(
-        "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public nest = ( ^{nest} value )\n) : ()"
-    )
+    formatdoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public nest = ( ^{nest} value )
+        ) : ()
+    "}
 }
 
 /// The deepest block nesting `ns-syntax`'s parser accepts, probed rather than
@@ -1266,7 +1296,13 @@ fn round_trip_graph(
     )
 }
 
-const EMPTY: &str = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+const EMPTY: &str = indoc! {"
+    Newspeak3
+    'T'
+    class X = Object new (
+    ) (
+    ) : ()
+"};
 
 fn obj(v: &Value) -> &ns_runtime::ObjRef {
     let Value::Obj(o) = v else {
@@ -1348,7 +1384,14 @@ fn the_platform_singleton_resolves_to_the_interpreters_own() {
 
 #[test]
 fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | a = 1. b = 'two'. |\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | a = 1. b = 'two'. |
+        ) (
+        ) : ()
+    "};
     let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class| {
         vec![expect_ok(interp.instantiate(*class, vec![]), "instantiate")]
     });
@@ -1367,7 +1410,15 @@ fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
 
 #[test]
 fn a_closure_and_its_paused_home_frame_round_trip() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  mk = ( ^[ 1 ] )\n  public outer = ( ^mk )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          mk = ( ^[ 1 ] )
+          public outer = ( ^mk )
+        ) : ()
+    "};
     let (interp, class, original, decoded, _max) = round_trip_graph(src, |interp, class| {
         let instance = expect_ok(interp.instantiate(*class, vec![]), "instantiate");
         let closure = expect_ok(
@@ -1441,7 +1492,14 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
 
 #[test]
 fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | blk = [ 2 ]. |
+        ) (
+        ) : ()
+    "};
     let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class| {
         vec![expect_ok(interp.instantiate(*class, vec![]), "instantiate")]
     });
@@ -1461,7 +1519,14 @@ fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
 
 #[test]
 fn the_graph_section_encoding_is_deterministic() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | a = 1. blk = [ 2 ]. s = 'three'. |\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | a = 1. blk = [ 2 ]. s = 'three'. |
+        ) (
+        ) : ()
+    "};
     let mut encodings = Vec::new();
     for _ in 0..2 {
         let (mut interp, class) = load(src);
@@ -1943,7 +2008,14 @@ fn a_closure_frames_code_id_out_of_range_is_a_decode_error_not_a_panic() {
 
 #[test]
 fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | blk = [ 2 ]. |
+        ) (
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let roots = vec![expect_ok(interp.instantiate(class, vec![]), "instantiate")];
     let platform = interp.platform();
@@ -1990,7 +2062,14 @@ fn a_closure_capturing_a_block_activation_round_trips() {
     // `[:x | [ x ] ] value: 5` runs the outer block, so the inner closure's
     // `captured_frame` is a *block activation* -- a `FrameKind::Closure`
     // frame, the one frame kind the quiesced worlds above never produce.
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public mk = ( ^[:x | [ x ] ] value: 5 )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public mk = ( ^[:x | [ x ] ] value: 5 )
+        ) : ()
+    "};
     let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class| {
         let instance = expect_ok(interp.instantiate(*class, vec![]), "instantiate");
         vec![expect_ok(
@@ -2163,7 +2242,15 @@ fn a_closure_record_declaring_too_many_parameters_is_a_decode_error() {
 
 #[test]
 fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_counter() {
-    let src = "Newspeak3\n'T'\nclass Counter = Object new (\n  | n ::= 0. |\n) (\n  public bump = ( n := n + 1. ^n )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Counter = Object new (
+          | n ::= 0. |
+        ) (
+          public bump = ( n := n + 1. ^n )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     expect_ok(
@@ -2213,7 +2300,13 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
 
 #[test]
 fn bytes_after_the_last_section_are_refused_not_ignored() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let platform = interp.platform();
     let mut bytes = image::snapshot(
@@ -2237,7 +2330,13 @@ fn bytes_after_the_last_section_are_refused_not_ignored() {
 
 #[test]
 fn load_refuses_a_version_mismatch() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let platform = interp.platform();
     let mut bytes = image::snapshot(
@@ -2292,7 +2391,15 @@ fn an_invalid_source_origin_tag_is_a_decode_error_not_a_panic() {
 
 #[test]
 fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | blk = [ 2 ]. |\n) (\n  public run = ( ^blk value )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | blk = [ 2 ]. |
+        ) (
+          public run = ( ^blk value )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let platform = interp.platform();
@@ -2777,7 +2884,14 @@ fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_on_load() {
     // selector's arity; the frame's temps are sized from the *body's*
     // `num_args`. A body claiming a different arity leaves `read_local`
     // indexing `temps` past its end.
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo: a = ( ^a )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public foo: a = ( ^a )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let body = CompiledCode {
         num_args: 2,
@@ -2799,7 +2913,14 @@ fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_on_load() {
 
 #[test]
 fn a_method_root_naming_a_block_body_is_refused_on_load() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( ^1 )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public foo = ( ^1 )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let body = CompiledCode {
         kind: CodeKind::Block,
@@ -2819,8 +2940,14 @@ fn a_method_root_naming_a_block_body_is_refused_on_load() {
 // the code that runs in them.
 // ---------------------------------------------------------------------------
 
-const ONE_METHOD: &str =
-    "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( ^1 )\n) : ()";
+const ONE_METHOD: &str = indoc! {"
+    Newspeak3
+    'T'
+    class X = Object new (
+    ) (
+      public foo = ( ^1 )
+    ) : ()
+"};
 
 /// A world whose code table is `[block, foo]` -- `foo`'s body is the one
 /// `MakeClosure` that creates `block` -- with the class's `foo` carrying
@@ -2981,7 +3108,15 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
 fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_locals() {
     // The end-to-end control: a quiesced world holding a closure over a
     // method activation, through the real sections and back.
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | held ::= nil. |\n) (\n  public keep = ( | t | t := 7. held := [ t ]. ^held )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | held ::= nil. |
+        ) (
+          public keep = ( | t | t := 7. held := [ t ]. ^held )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     expect_ok(
@@ -3023,7 +3158,15 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
     // `LoadOuterLocal` really does hop two frames at run time. Sending
     // `value` after the load is what proves the reconstructed chain reads
     // the right register.
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n  | held ::= nil. |\n) (\n  public keep = ( held := [:x | [ x ] ] value: 5. ^held )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | held ::= nil. |
+        ) (
+          public keep = ( held := [:x | [ x ] ] value: 5. ^held )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     expect_ok(
@@ -3076,8 +3219,15 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
 
 /// A root class with one slot, so `class_has_initializer_code` is true and
 /// `instantiate` *must* find compiled initializer code for it.
-const NEEDS_INITIALIZER: &str =
-    "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 1. |\n) (\n  public n = ( ^n )\n) : ()";
+const NEEDS_INITIALIZER: &str = indoc! {"
+    Newspeak3
+    'T'
+    class X = Object new (
+      | n ::= 1. |
+    ) (
+      public n = ( ^n )
+    ) : ()
+"};
 
 #[test]
 fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_on_load() {
@@ -3180,7 +3330,13 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
     // very first hash assigned after the load. Saturating
     // there costs a shared hash (identity is `Rc` identity, never the
     // hash) instead of aborting the process.
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     interp
@@ -3221,7 +3377,13 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
 /// past every hash the image carried, so it cannot collide with one.
 #[test]
 fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let hashed = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let unhashed = expect_ok(interp.instantiate(class, vec![]), "instantiate");
@@ -3264,7 +3426,13 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
 /// preserved verbatim"). One that nothing asked stays unassigned.
 #[test]
 fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let platform = interp.platform();
     let integer = interp.builtin_class(BuiltinClass::Integer);
@@ -3403,15 +3571,15 @@ fn the_tag_named_hash_table_answers_its_largest_hash() {
 // decoding must attach each of them to the declaration it came from.
 // ---------------------------------------------------------------------------
 
-const NESTED_MODULE: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    public class Inner = Object new (| v = 9. |) (
-        public value = ( ^v )
-    )
-) : ()
-";
+const NESTED_MODULE: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        public class Inner = Object new (| v = 9. |) (
+            public value = ( ^v )
+        )
+    ) : ()
+"};
 
 /// A class object applying `mixin` to `superclass` directly -- what the
 /// (not yet implemented) nested-class accessor will eventually do for
@@ -3852,23 +4020,23 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
 /// answers with, and a walk that finds no declaring class at all answers
 /// `nil label`, an error. Both are wrong output rather than a refused
 /// image, which is why the field has to travel.
-const DEEP_OUTER_MODULE: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    label = ( ^'top' )
-    public class Base = Object new () (
-        public class Deep = Object new () (
-            public describe = ( ^outer Outer label )
+const DEEP_OUTER_MODULE: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        label = ( ^'top' )
+        public class Base = Object new () (
+            public class Deep = Object new () (
+                public describe = ( ^outer Outer label )
+            )
         )
-    )
-    public class Mid = Object new () (
-        label = ( ^'mid' )
-        public class Derived = Base new () ()
-    )
-    public makeDeep = ( ^Mid new Derived new Deep new )
-) : ()
-";
+        public class Mid = Object new () (
+            label = ( ^'mid' )
+            public class Derived = Base new () ()
+        )
+        public makeDeep = ( ^Mid new Derived new Deep new )
+    ) : ()
+"};
 
 #[test]
 fn outer_still_resolves_through_a_declaration_chain_that_came_from_an_image() {
@@ -3901,17 +4069,17 @@ fn string_contents(heap: &Heap, value: &Value) -> String {
         .expect("expected a string object")
 }
 
-const NESTED_SUPERCLASS_ARGS: &str = "\
-Newspeak3
-'Test'
-class Args usingPlatform: p = Object new () (
-    public class Base withBase: b = Object new (| v ::= b. |) (
-        public value = ( ^v )
-    )
-    public class Derived = Base withBase: 7 () (
-    )
-) : ()
-";
+const NESTED_SUPERCLASS_ARGS: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Args usingPlatform: p = Object new () (
+        public class Base withBase: b = Object new (| v ::= b. |) (
+            public value = ( ^v )
+        )
+        public class Derived = Base withBase: 7 () (
+        )
+    ) : ()
+"};
 
 /// `newspeak-spec.pdf` §6.2 evaluates the superclass clause's message on
 /// every instantiation, so a reloaded image is the only place its compiled
@@ -4132,7 +4300,14 @@ fn the_superclass_clause_frame_kinds_decode() {
 // everywhere else by index.
 // ---------------------------------------------------------------------------
 
-const TRIVIAL_MODULE: &str = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( ^1 )\n) : ()";
+const TRIVIAL_MODULE: &str = indoc! {"
+    Newspeak3
+    'T'
+    class X = Object new (
+    ) (
+      foo = ( ^1 )
+    ) : ()
+"};
 
 /// A full `image::snapshot` of `src`, with no roots -- these tests care
 /// about the code table's own bytes, not the object graph.
@@ -4188,9 +4363,16 @@ fn a_repeated_selector_is_stored_once() {
     // text, stored earlier in the image, still contains the selector as
     // plain text -- `bytes_from_symbol_table` excludes that section, which
     // the symbol table does not cover.)
-    let bytes = snapshot_of(
-        "Newspeak3\n'T'\nclass C = Object new (\n) (\n  a = ( ^self distinctiveSelector )\n  b = ( ^self distinctiveSelector )\n  distinctiveSelector = ( ^self distinctiveSelector )\n) : ()",
-    );
+    let bytes = snapshot_of(indoc! {"
+        Newspeak3
+        'T'
+        class C = Object new (
+        ) (
+          a = ( ^self distinctiveSelector )
+          b = ( ^self distinctiveSelector )
+          distinctiveSelector = ( ^self distinctiveSelector )
+        ) : ()
+    "});
     assert_eq!(
         occurrences(bytes_from_symbol_table(&bytes), b"distinctiveSelector"),
         1
@@ -4252,9 +4434,15 @@ fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywh
     // `distinctiveSelector` -- the method itself and every send of it --
     // must still resolve to the same interned `Symbol` after a load, not
     // merely compress on the wire.
-    let bytes = snapshot_of(
-        "Newspeak3\n'T'\nclass C = Object new (\n) (\n  public a = ( ^self distinctiveSelector )\n  distinctiveSelector = ( ^42 )\n) : ()",
-    );
+    let bytes = snapshot_of(indoc! {"
+        Newspeak3
+        'T'
+        class C = Object new (
+        ) (
+          public a = ( ^self distinctiveSelector )
+          distinctiveSelector = ( ^42 )
+        ) : ()
+    "});
     let mut loaded = image::load(&bytes).expect("load");
     let instance = expect_ok(
         loaded.interp.instantiate(loaded.root_class, vec![]),
@@ -4273,17 +4461,17 @@ fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywh
 // comes back from the table, never by re-parsing the image's own source text.
 // ---------------------------------------------------------------------------
 
-const TABLE_NESTED_SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new (| s. |) (
-    public class Inner withV: a = Object new (| v = a. |) (
-        public value = ( ^v )
+const TABLE_NESTED_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new (| s. |) (
+        public class Inner withV: a = Object new (| v = a. |) (
+            public value = ( ^v )
+        )
+    ) : (
+        public marker = ( ^2 )
     )
-) : (
-    public marker = ( ^2 )
-)
-";
+"};
 
 /// Decodes an image's symbol, code and mixin tables out of its own bytes,
 /// walking the earlier sections with the real decoders rather than
@@ -4521,7 +4709,11 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
 /// does not count as a nesting level, so it is exactly the level that makes
 /// the two ceilings differ by more than the uncounted root.
 fn nested_module_source(nested: usize, class_side: bool) -> String {
-    let mut src = String::from("Newspeak3\n'T'\nclass C0 = Object new () (\n");
+    let mut src = String::from(indoc! {"
+        Newspeak3
+        'T'
+        class C0 = Object new () (
+    "});
     for i in 1..=nested {
         src.push_str(&format!("public class C{i} = Object new () (\n"));
     }
@@ -4854,17 +5046,17 @@ fn a_class_object_whose_own_class_is_another_record_is_refused() {
 /// A module with a nested class, a method to send after a load, and a
 /// method that hands out a live block -- so a snapshot of it carries a
 /// closure, and therefore frames, in its graph.
-const SOURCE_FREE_MODULE: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    public answer = ( ^42 )
-    public block = ( ^[ 42 ] )
-    public class Inner = Object new (| v = 9. |) (
-        public value = ( ^v )
-    )
-) : ()
-";
+const SOURCE_FREE_MODULE: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        public answer = ( ^42 )
+        public block = ( ^[ 42 ] )
+        public class Inner = Object new (| v = 9. |) (
+            public value = ( ^v )
+        )
+    ) : ()
+"};
 
 /// Whether `haystack` contains `needle` anywhere.
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -5101,7 +5293,14 @@ fn a_frames_sender_survives_a_round_trip() {
 /// stack will ever catch.
 #[test]
 fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_continuable() {
-    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public mk = ( ^[ ^1 ] )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public mk = ( ^[ ^1 ] )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let platform = interp.platform();
     let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
@@ -5159,21 +5358,21 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
 /// clause, several method bodies, and a nested class. Each line the leak
 /// test checks is unlike any other byte sequence the image has a reason to
 /// contain, so a partial leak has somewhere to show up.
-const LEAK_PROBE_MODULE: &str = "\
-Newspeak3
-'Test'
-(* commentaryAboutTheFrobulator explains nothing at all *)
-class Probe usingPlatform: aPlatformSlotName = Object new (
-    | mnemosyneSlot ::= 3 + 4 * 5. |
-    mnemosyneSlot := mnemosyneSlot + 111.
-) (
-    public quixoticAccumulator = ( ^mnemosyneSlot + 1 - 1 )
-    public verbatimSentinel: aParameterName = ( ^aParameterName )
-    public class Kaleidoscope = Object new (| innerVestige = 77. |) (
-        public perpetualMotion = ( ^innerVestige * 1 )
-    )
-) : ()
-";
+const LEAK_PROBE_MODULE: &str = indoc! {"
+    Newspeak3
+    'Test'
+    (* commentaryAboutTheFrobulator explains nothing at all *)
+    class Probe usingPlatform: aPlatformSlotName = Object new (
+        | mnemosyneSlot ::= 3 + 4 * 5. |
+        mnemosyneSlot := mnemosyneSlot + 111.
+    ) (
+        public quixoticAccumulator = ( ^mnemosyneSlot + 1 - 1 )
+        public verbatimSentinel: aParameterName = ( ^aParameterName )
+        public class Kaleidoscope = Object new (| innerVestige = 77. |) (
+            public perpetualMotion = ( ^innerVestige * 1 )
+        )
+    ) : ()
+"};
 
 /// The source-free image's headline claim, tested as a property rather than by
 /// spot-checking two needles: **no line of the module's source text
@@ -5271,24 +5470,24 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
 /// already has its own dedicated round-trip test above; folding every format
 /// feature into one fixture would leave a future diff of `golden-image.bin`
 /// unable to say which section actually moved.
-const GOLDEN_SRC: &str = "\
-Newspeak3
-'Golden'
-class Golden usingPlatform: p = Object new (
-    | count ::= 0. |
-    count := count + 1.
-) (
-    public increment = ( count := count + 1. ^count )
-    public current = ( ^count )
-    public reset = ( count := 0. ^self )
-    public doubled = ( ^count * 2 )
-    public class Inner withSeed: s = Object new (| seed = s. |) (
-        public seed = ( ^seed )
+const GOLDEN_SRC: &str = indoc! {"
+    Newspeak3
+    'Golden'
+    class Golden usingPlatform: p = Object new (
+        | count ::= 0. |
+        count := count + 1.
+    ) (
+        public increment = ( count := count + 1. ^count )
+        public current = ( ^count )
+        public reset = ( count := 0. ^self )
+        public doubled = ( ^count * 2 )
+        public class Inner withSeed: s = Object new (| seed = s. |) (
+            public seed = ( ^seed )
+        )
+    ) : (
+        public marker = ( ^7 )
     )
-) : (
-    public marker = ( ^7 )
-)
-";
+"};
 
 /// A source-free `image::snapshot` of `src`, compiled from scratch and
 /// rooted at one freshly instantiated object -- the live object in the
@@ -5403,8 +5602,14 @@ fn an_unknown_header_flag_is_still_rejected_now_that_two_are_known() {
 /// but it would grow `build`'s symbol table past `snapshot`'s and the
 /// byte-equality assertion below would fail for a reason that has nothing to
 /// do with the refactor under test.
-const ENTRY_SRC: &str =
-    "Newspeak3\n'T'\nclass X = Object new (\n) (\n  main: p args: q = ( ^1 )\n) : ()";
+const ENTRY_SRC: &str = indoc! {"
+    Newspeak3
+    'T'
+    class X = Object new (
+    ) (
+      main: p args: q = ( ^1 )
+    ) : ()
+"};
 
 #[test]
 fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class() {
@@ -5743,12 +5948,14 @@ fn the_graph_walk_consumes_the_section_exactly() {
     // The third source is the one that matters: a block in a slot is the only
     // way a frame reaches the graph at all, so without it the frame half of
     // the layout is never walked and this guard would be blind to it.
-    const WITH_A_FRAME: &str = "Newspeak3
-'T'
-class X usingPlatform: p = Object new (
-  | blk = [ 2 ]. |
-) (
-) : ()";
+    const WITH_A_FRAME: &str = indoc! {"
+        Newspeak3
+        'T'
+        class X usingPlatform: p = Object new (
+          | blk = [ 2 ]. |
+        ) (
+        ) : ()
+    "};
     for src in [ENTRY_SRC, TRIVIAL_MODULE, WITH_A_FRAME] {
         let (mut interp, class) = load(src);
         let platform = interp.platform();

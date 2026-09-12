@@ -1,6 +1,7 @@
 //! Instance initializers: a class's slot initializers and `initExprs`,
 //! compiled into one body per mixin and run on each level's own activation.
 
+use indoc::indoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -48,8 +49,25 @@ fn instantiate_and_get(src: &str, factory_args: Vec<Value>, getter: &str) -> Val
     )
 }
 
-const FACTORY_PARAM: &str = "Newspeak3\n'T'\nclass Foo x: a = Object new (\n  | p = a. |\n) (\n  public p2 = ( ^p )\n) : ()";
-const INIT_EXPRS: &str = "Newspeak3\n'T'\nclass Foo = Object new (\n  | q ::= 5. r ::= 0. |\n  r := q + 1.\n) (\n  public r2 = ( ^r )\n) : ()";
+const FACTORY_PARAM: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Foo x: a = Object new (
+      | p = a. |
+    ) (
+      public p2 = ( ^p )
+    ) : ()
+"};
+const INIT_EXPRS: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Foo = Object new (
+      | q ::= 5. r ::= 0. |
+      r := q + 1.
+    ) (
+      public r2 = ( ^r )
+    ) : ()
+"};
 
 #[test]
 fn a_slot_initializer_reads_a_factory_parameter() {
@@ -65,7 +83,15 @@ fn init_exprs_run_after_slot_initializers() {
 
 #[test]
 fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initializer_frame() {
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n  | blk = [ 3 ]. |\n) (\n  public blk2 = ( ^blk )\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+          | blk = [ 3 ]. |
+        ) (
+          public blk2 = ( ^blk )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
     let v = expect_ok(
@@ -91,7 +117,15 @@ fn a_return_inside_a_block_in_init_exprs_escapes_instantiate() {
     // A known gap (`docs/design/execution.md`, "Non-local return"): the
     // `Signal::Return` targets the initializer activation, which is still
     // running, and nothing catches it.
-    let src = "Newspeak3\n'T'\nclass Foo = Object new (\n  | |\n  [ ^1 ] value.\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+          | |
+          [ ^1 ] value.
+        ) (
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let result = interp.instantiate(class, vec![]);
     assert!(matches!(result, Err(Signal::Return(..))));
@@ -195,7 +229,14 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     // The mixin is the one `load_module` built, so the initializer it
     // compiled for it -- keyed by that mixin -- is the one both hand-made
     // applications run.
-    let src = "Newspeak3\n'T'\nclass Shared x: a = Object new (\n  | v = a. |\n) (\n) : ()";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Shared x: a = Object new (
+          | v = a. |
+        ) (
+        ) : ()
+    "};
     let (mut interp, loaded) = load(src);
     let shared_mixin = interp
         .heap_ref()
@@ -256,18 +297,18 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
 /// level's base overwrites its superclass's slots instead of its own.
 #[test]
 fn a_three_level_chain_initializes_every_level_at_its_own_absolute_offsets() {
-    let src = "\
-Newspeak3
-'T'
-class Levels = Object new () (
-    public class Base withBase: b = Object new (| b1 ::= b. b2 ::= 10. |) (
-    )
-    public class Middle withMiddle: m = Base withBase: m + 1 (| m1 ::= m. m2 ::= 20. |) (
-    )
-    public class Leaf = Middle withMiddle: 2 (| l1 ::= 3. l2 ::= 30. |) (
-    )
-) : ()
-";
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Levels = Object new () (
+            public class Base withBase: b = Object new (| b1 ::= b. b2 ::= 10. |) (
+            )
+            public class Middle withMiddle: m = Base withBase: m + 1 (| m1 ::= m. m2 ::= 20. |) (
+            )
+            public class Leaf = Middle withMiddle: 2 (| l1 ::= 3. l2 ::= 30. |) (
+            )
+        ) : ()
+    "};
     let (mut interp, class) = load(src);
     let module = expect_ok(interp.instantiate(class, vec![]), "instantiate Levels");
     let leaf_class = expect_ok(interp.send(module, Symbol::intern("Leaf"), vec![]), "Leaf");

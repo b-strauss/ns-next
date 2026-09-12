@@ -1,3 +1,4 @@
+use indoc::indoc;
 use std::rc::Rc;
 
 use ns_runtime::mixin::{mixin_key, Mixin};
@@ -116,7 +117,11 @@ fn load(
 
 #[test]
 fn a_class_object_carries_identity_and_its_application_carries_layout() {
-    let src = "Newspeak3\n'Test'\nclass Point new = Object new (| x. y. |) ()\n";
+    let src = indoc! {"
+        Newspeak3
+        'Test'
+        class Point new = Object new (| x. y. |) ()
+    "};
     let (interp, class, _resolved) = load(src);
     let application = interp
         .heap_ref()
@@ -134,18 +139,18 @@ fn a_class_object_carries_identity_and_its_application_carries_layout() {
     );
 }
 
-const NESTED_SRC: &str = "\
-Newspeak3
-'Test'
-class Outer usingPlatform: p = Object new () (
-    public class Inner = Object new (| v. |) (
-        public value = ( ^v )
+const NESTED_SRC: &str = indoc! {"
+    Newspeak3
+    'Test'
+    class Outer usingPlatform: p = Object new () (
+        public class Inner = Object new (| v. |) (
+            public value = ( ^v )
+        )
+        public classSideMarker = ( ^1 )
+    ) : (
+        public marker = ( ^2 )
     )
-    public classSideMarker = ( ^1 )
-) : (
-    public marker = ( ^2 )
-)
-";
+"};
 
 #[test]
 fn the_mixin_tree_contains_nested_and_class_side_declarations() {

@@ -223,6 +223,10 @@ appears both there and under `corpus/`, and why neither copy may be deleted.
   Implementation plans live in `docs/superpowers/plans/`, are named
   `YYYY-MM-DD-HHMM-<name>.md` so several from one day sort chronologically, and
   are execution records — left as written once complete.
+- A Newspeak module written inline in a test is an `indoc! {"…"}` (or
+  `formatdoc! {"…"}` for a template), its lines indented with spaces along with
+  the Rust around it and the closing `"}` on a line of its own -- not a
+  one-line literal of `\n` and `\t` escapes. `indoc` is a dev-dependency only.
 - Comments should explain the decision, not restate the mechanics. The reason a check
   exists — what it prevents — is the part a later reader cannot reconstruct.
 - **Object, frame and activation access goes through
