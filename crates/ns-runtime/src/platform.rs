@@ -11,10 +11,9 @@ use crate::{Interpreter, Symbol};
 
 /// The `platform` singleton, its `transcript` stream, and its
 /// `collections` namespace all share `BuiltinClass::Platform` as their
-/// `.class` tag (a builtin class of their own would buy no behaviour) --
-/// told apart
-/// here by payload shape: the platform singleton is built with a
-/// zero-field `ObjectData::Instance` (see `Interpreter::platform`), the
+/// `.class` tag (a builtin class of their own would buy no behaviour), and
+/// are told apart here by payload shape: the platform singleton is built
+/// with a zero-field `ObjectData::Instance` (see `Interpreter::platform`), the
 /// stream with a one-field one (see `Interpreter::new_stream_object`), the
 /// namespace with a two-field one (see
 /// `Interpreter::new_collections_namespace`). None ever holds real slot

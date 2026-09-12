@@ -263,8 +263,8 @@ impl Interpreter {
     }
 
     /// The six numbered steps in `docs/design/object-model.md`,
-    /// "Instantiation"; see `instantiate_unchecked`. Like `send`, it leaves the
-    /// activation stack as it found it.
+    /// "Instantiation"; see `instantiate_unchecked`. Like `send`, it leaves
+    /// the activation stack as it found it.
     pub fn instantiate(&mut self, class: ClassRef, factory_args: Vec<Value>) -> EvalResult {
         let depth = self.heap.activation_depth();
         let result = self.instantiate_unchecked(class, factory_args);
@@ -277,8 +277,8 @@ impl Interpreter {
     }
 
     /// The six numbered steps in `docs/design/object-model.md`,
-    /// "Instantiation". Steps 2-5 are `run_initializer_level`, once per level of the
-    /// superclass chain.
+    /// "Instantiation". Steps 2-5 are `run_initializer_level`, once per
+    /// level of the superclass chain.
     fn instantiate_unchecked(&mut self, class: ClassRef, factory_args: Vec<Value>) -> EvalResult {
         // Step 1: one instance, every slot nil. The application already
         // knows the whole layout, inherited slots included -- summing the

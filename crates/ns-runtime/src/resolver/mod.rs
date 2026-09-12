@@ -140,9 +140,9 @@ impl Resolver {
         // Slot initializers and initExprs execute in the instance
         // initializer's activation (`docs/design/object-model.md`,
         // "Instantiation", step 2: that activation is created with the
-        // factory message's arguments), so this class's *own* factory parameters are
-        // locals there -- exactly the way a method's own parameters are
-        // locals in its body. `| t = platform transcript. |` inside
+        // factory message's arguments), so this class's *own* factory
+        // parameters are locals there -- exactly the way a method's own
+        // parameters are locals in its body. `| t = platform transcript. |` inside
         // `class M usingPlatform: platform = Object new (...)` is the
         // single most common real Newspeak module idiom and depends on it.
         //

@@ -14,8 +14,9 @@ toml = "0.8"
 
 # Link-time optimization across crate boundaries, and a single codegen unit so the
 # optimizer sees the whole picture. Both usually help runtime speed as well as size --
-# the VM and the send machinery it calls into live in different modules, so
-# cross-crate inlining is exactly the case LTO exists for. Release builds get slower;
+# the binary is `ns-cli`, whose commands call into `ns-runtime` and `ns-syntax`, two
+# separate crates, so cross-crate inlining is exactly the case LTO exists for; the
+# single codegen unit does the same within each crate. Release builds get slower;
 # debug builds are unaffected.
 #
 # `opt-level = "z"` and `panic = "abort"` shrink the binary further and are deliberately

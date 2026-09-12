@@ -419,11 +419,11 @@ impl<'a> Lowerer<'a> {
                     // Not a compiler-invariant violation: `resolve_ident`
                     // deliberately records no binding for `super`, and the
                     // lexer deliberately does not reserve it, so `^super`
-                    // is a program the language accepts and rejects at *evaluation*
-                    // time. Compilation cannot raise a `NewspeakError`, so
-                    // the error is deferred exactly like `MalformedInt`:
-                    // the VM raises `literals`' own error when the
-                    // instruction executes.
+                    // is a program the language accepts and rejects at
+                    // *evaluation* time. Compilation cannot raise a
+                    // `NewspeakError`, so the error is deferred exactly like
+                    // `MalformedInt`: the VM raises `literals`' own error
+                    // when the instruction executes.
                     None => {
                         let dst = self.alloc_scratch();
                         self.emit(Instr::LoadLiteral {
@@ -588,9 +588,9 @@ impl<'a> Lowerer<'a> {
             _ => {
                 // The inlining gate: only an ordinary explicit-receiver send
                 // is ever offered to `recognize` (`docs/design/compiler.md`,
-                // "Control-flow inlining"). Every recognized form still keeps a runtime
-                // guard whose failure path is a real virtual send, so
-                // inlining stays a pure optimization.
+                // "Control-flow inlining"). Every recognized form still keeps
+                // a runtime guard whose failure path is a real virtual send,
+                // so inlining stays a pure optimization.
                 if let Some(form) = control_flow::recognize(send) {
                     return match form {
                         InlineForm::IfTrueIfFalse(t, f) => self.lower_if(send, Some(t), Some(f)),
@@ -1019,10 +1019,10 @@ mod tests {
         assert_eq!(code.num_args, 1);
     }
 
-    /// The value-register invariant: the register `lower_expr` returns must still hold
-    /// that value when its consumer executes. A named local's own register
-    /// is live storage, so an operand that has to survive an argument which
-    /// can write it is copied into a scratch first.
+    /// The value-register invariant: the register `lower_expr` returns must
+    /// still hold that value when its consumer executes. A named local's own
+    /// register is live storage, so an operand that has to survive an
+    /// argument which can write it is copied into a scratch first.
     #[test]
     fn an_operand_that_a_later_argument_can_write_is_copied_out_of_its_local() {
         let (method, bindings) = resolve_method(

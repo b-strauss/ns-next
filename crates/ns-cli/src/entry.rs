@@ -4,8 +4,8 @@
 
 use std::process::ExitCode;
 
-/// Renders the entry send's outcome -- `program_outcomes.rs` pins these strings byte for byte, so they live here
-/// once and are never duplicated.
+/// Renders the entry send's outcome -- `program_outcomes.rs` pins these
+/// strings byte for byte, so they live here once and are never duplicated.
 pub(crate) fn report_entry_send(result: Result<ns_runtime::Value, ns_runtime::Signal>) -> ExitCode {
     match result {
         Ok(_) => ExitCode::SUCCESS,

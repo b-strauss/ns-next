@@ -1,7 +1,8 @@
 //! Static member-set and superclass-name computation for classes, used only
 //! to pick a lexical-send depth `k` (`docs/design/dispatch.md`,
-//! "Resolution", step 2) -- never to resolve which concrete method body runs (that is
-//! `dispatch.rs`'s job, at runtime, over the real object graph).
+//! "Resolution", step 2) -- never to resolve which concrete method body
+//! runs (that is `dispatch.rs`'s job, at runtime, over the real object
+//! graph).
 
 use std::collections::HashSet;
 

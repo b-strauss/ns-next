@@ -29,8 +29,9 @@ use crate::Symbol;
 /// binding that names no builtin class -- a bare `super`, which
 /// `resolver::resolve_ident` leaves unbound and the lexer does not reserve,
 /// or a `super`-prefixed superclass-clause receiver (see
-/// `interpreter::literals::unresolved_identifier_error`). Neither variant is a lowered `ast::Literal`; both are payloads
-/// of a `LoadLiteral` that raises instead of producing a value.
+/// `interpreter::literals::unresolved_identifier_error`). Neither variant
+/// is a lowered `ast::Literal`; both are payloads of a `LoadLiteral` that
+/// raises instead of producing a value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Nil,

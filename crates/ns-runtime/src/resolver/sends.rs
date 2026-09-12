@@ -34,8 +34,8 @@ pub(super) fn depth_search(chain: &[EnclosingClass], selector: Symbol) -> u16 {
 /// caller must distinguish "found nowhere" from "found at depth 0" -- e.g.
 /// resolving a superclass-clause receiver, which is looked up exactly like
 /// a method or slot name would be (`docs/design/dispatch.md`, "Binding
-/// variants"), where "not found anywhere" must fall through to the builtin-class-name
-/// check rather than silently becoming a self send.
+/// variants"), where "not found anywhere" must fall through to the
+/// builtin-class-name check rather than silently becoming a self send.
 pub(super) fn find_member_depth(chain: &[EnclosingClass], selector: Symbol) -> Option<u16> {
     chain
         .iter()
