@@ -48,6 +48,10 @@ that lowering is mostly a transliteration rather than a translation.
 
 - `SendPublic { selector, receiver_reg, arg_regs, dst, call_site }` — an ordinary
   explicit-receiver send, resolved with `lookupPublic`.
+- `SendInlinable { selector, receiver_reg, arg_regs, dst, call_site }` — the
+  same send, decided exactly as `SendPublic` is, marking one the optimized
+  lowering would have inlined. Only the reference lowering emits it, and only
+  the depth count reads the mark; see "How the limit counts".
 - `SendLexical { depth, selector, arg_regs, dst, call_site }` — `Binding::LexicalSend`.
   **No receiver register**: the receiver is `self` by construction, and the
   kth-enclosing object is computed at run time.
@@ -406,8 +410,9 @@ against code nothing had checked.
    an outer local a `LoadOuterLocal`. There are no inlined scopes, so the hop
    count is the resolver's depth unchanged.
 4. Every send is a real send, receiver then arguments from left to right.
-   Nothing is inlined. Every send is emitted by one function, which is where
-   the trampoline adds `SendInlinable` ("How the limit counts" below).
+   Nothing is inlined. Every send the optimized lowering inlines — exactly the
+   sends `control_flow::recognize` accepts — is a `SendInlinable`, and every
+   other explicit-receiver send a `SendPublic` ("How the limit counts" below).
 5. An assignment evaluates its value into a fresh register, then stores it or
    sends the setter. The assignment's value is that register, never the local.
 6. A cascade evaluates its receiver once into a fresh register and sends every
@@ -512,10 +517,11 @@ by exempting it from the comparison:
 - **The recursion-depth limit**, below.
 
 Everything else was checked and agrees: all eight inlined forms exist as natives
-that follow the rules the inlined code reproduces (`truthy_arg` for `and:` and
-`or:`, `mustBeBoolean` for a non-Boolean loop condition); a method's `^` inside
-a block the optimized lowering inlines is a `Return` there and a
-`NonLocalReturn` that `invoke_method` catches here, with the same result, and
+that follow the rules the inlined code reproduces (`builtins::boolean::truthy`
+for `and:` and `or:`, `mustBeBoolean` for a non-Boolean loop condition); a
+method's `^` inside a block the optimized lowering inlines is a `Return` there
+and a `NonLocalReturn` here, whose unwind ends at the method's activation, with
+the same result, and
 `cannotReturn` and the initializer gap behave alike; and a real block nested
 inside such a block has one more frame in its chain here, which holds no
 variables, since the inlining gate admits none, and the same `home`. A
@@ -524,8 +530,8 @@ code: what is compared is program outcomes, never artifacts.
 
 ### How the limit counts
 
-The trampoline turns recursion depth into an ordinary Newspeak error
-([execution.md](execution.md), "Planned: the trampoline"). A limit that counted
+The trampoline makes recursion depth an ordinary Newspeak error
+([execution.md](execution.md), "The trampoline"). A limit that counted
 every activation would trip at different depths under the two lowerings, because
 the reference lowering activates blocks the optimized one inlines:
 `n = 0 ifTrue: [0] ifFalse: [n * (self fact: n - 1)]` costs one activation per
@@ -562,11 +568,10 @@ emits, for exactly the sends `control_flow::recognize` accepts.
   like any other.
 
 So the oracle compares even an overflow byte for byte — the output up to it,
-the error and the exit status — and the trampoline rebuilds exactly the
-unwinding an overflow goes through. Two alternatives were rejected. Counting
+the error and the exit status. Two alternatives were rejected. Counting
 every activation and exempting an overflow from the comparison, as a JVM leaves
 the depth of a `StackOverflowError` to frame sizes and compilation tier, would
-leave that unwinding unchecked and report false divergences for a recursion
+leave every overflow unchecked and report false divergences for a recursion
 that fits under one lowering and not the other. Counting only method-like
 activations would agree under both, but would leave a recursion through blocks
 alone — `b := [:n | n = 0 ifFalse: [b value: n - 1]]` — to a second, memory-based
@@ -575,24 +580,39 @@ by memory and Nova by a fixed count of contexts ([execution.md](execution.md),
 "How other systems bound recursion depth"); none has two lowerings that must
 agree, so this rule is ns-next's own.
 
-`SendInlinable` arrives with the trampoline, together with the counter that is
-its only consumer; before then it would mean exactly `SendPublic`, and nothing
-could test it. Its wire tag is assigned then. The rest was decided on
-2026-09-12 and is recorded in [execution.md](execution.md), "The trampoline
-(1b)": the limit is 100,000, its error text is `stack overflow: recursion too
-deep`, and the control-flow natives become trampoline steps, so under neither
-lowering does a block they activate cost native stack.
+**Where it is decided.** `Interpreter::push_step`
+(`crates/ns-runtime/src/interpreter/mod.rs`) decides whether an activation
+counts, and records it on the stack entry; `Interpreter::push` refuses a
+counted push at the limit. A block is exempt when it carries
+`StepArgs::ControlFlow` — the arguments only the control-flow natives build —
+the send that led to it was a `SendInlinable`, and its `captured_frame` is the
+sending activation's reified frame. The VM decides a `SendInlinable` exactly as
+it does a `SendPublic` and only hands `push_step` the fact that it was one; a
+native loop's next block is exempt only if the one it replaces was. `&` and
+`|` share `and:`'s and `or:`'s native, so their block carries the mark as
+well, but no lowering emits a `SendInlinable` for them, since `recognize` does
+not accept them ([execution.md](execution.md), "Two bounds, not one").
 
-### Until the trampoline
+**Where it is pinned.** `crates/ns-runtime/tests/trampoline.rs` holds the
+boundary under both lowerings: `down:`, `logic:` and `loop:` — a plain
+recursion, one through an `or:` block and one through a `whileTrue:` body, the
+last two inlined by one lowering and activated, exempt, by the other — run at
+99,999 and fail at 100,000, leave the activation stack empty, and leave the
+interpreter usable. A recursion through `value` alone ends in the same error,
+and so does a crafted artifact whose self-recursive `ifTrue:` is rewritten into
+a `SendInlinable`, which the captured-frame condition counts. The golden
+outcomes `deep-stack` and `unbounded-recursion`
+(`crates/ns-cli/tests/program_outcomes.rs`) pin a thousand-deep recursion
+through an `ifFalse:` block and the overflow's output, exit status and error
+text, under both lowerings.
 
-The control-flow natives call back into Newspeak on the Rust stack, so under the
-reference lowering each level of a recursion through an `ifTrue:` costs more
-native stack than under the optimized one, and a deep enough recursion aborts
-sooner. The deepest recursion any suite runs under the reference lowering is
-eleven levels, `fact: 10` in `crates/ns-runtime/tests/reference_lowering.rs`,
-each level through an `ifFalse:` block; among the fixtures and golden outcomes
-the deepest is six (`tests-fixtures/nonlocal_return_depth.ns`). Both are well
-inside either lowering's native stack.
+`SendInlinable`, wire tag 20, arrived with the trampoline, together with the
+counter that is its only consumer: without the counter it would mean exactly
+`SendPublic`, and nothing could test it. The limit is 100,000
+(`MAX_ACTIVATION_DEPTH`), its error text is `stack overflow: recursion too
+deep`, and the control-flow natives are trampoline steps, so under neither
+lowering does a block they activate cost native stack
+([execution.md](execution.md), "The trampoline").
 
 ### Status
 
@@ -603,8 +623,9 @@ and the harness. Every recorded program answers alike under both lowerings.
 Probing with it beyond the recorded programs found one defect in the optimized
 lowering, since fixed and pinned by a golden outcome: an assignment through a
 setter could answer the new value of the local it read ("The value-register
-invariant"). What "How the limit counts" needs — `SendInlinable` and the depth counter that
-is its only consumer — arrives with the trampoline.
+invariant"). What "How the limit counts" needs — `SendInlinable` and the depth
+counter that is its only consumer — arrived with the
+[trampoline](../superpowers/plans/2026-09-12-1619-ns-next-trampoline.md).
 
 ## Follow-up: entry points that reach a class object only to find its mixin
 
@@ -653,4 +674,4 @@ signatures is a design change to the image module's interface, not a migration.
   it off by forgetting a guard.
 - **The recursion-depth limit exempts exactly the activations inlining
   removes**, marked by `SendInlinable`, so that it counts the same under both
-  lowerings and the oracle compares an overflow too. Planned.
+  lowerings and the oracle compares an overflow too.

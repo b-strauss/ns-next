@@ -103,7 +103,7 @@ names a different, perfectly valid object, so the read answers the wrong thing
 rather than failing. A `debug_assertions`-only guard makes that explicit rather
 than conventional: each `Heap` carries a distinct id, each handle records the id
 of the heap that minted it, and every accessor that takes a handle asserts the two
-match — 58 sites in `heap.rs`, 13 of them through an `ActivationRef`, whose check
+match — 63 sites in `heap.rs`, 17 of them through an `ActivationRef`, whose check
 also compares a generation, because a stack index is reused as soon as its entry
 is popped. In a release build neither the fields nor the checks exist, and a
 handle is exactly its 32-bit index.
@@ -208,8 +208,9 @@ Where a site needs several fields of one object, frame or activation at once, a
 batched accessor answers them together rather than the caller taking several —
 `activation_receiver_and_current_class`, `object_snapshot`,
 `frame_register_shape` and `frame_snapshot` are the present examples. This is
-not only style: `dispatch_lexical_send`'s head, on every implicit-receiver send,
-once took one `RefCell` borrow yielding both the receiver and the current class;
+not only style: the lexical-send head (`sends::decide_lexical_send` today), on
+every implicit-receiver send, once took one `RefCell` borrow yielding both the
+receiver and the current class;
 splitting that into two separate accessor calls measured as a real cost,
 recovered by batching them back into one (see [execution.md](execution.md)'s
 measurements section). On the activation stack those are two field reads of one
@@ -228,8 +229,8 @@ file next starts from a list rather than from rediscovery.
   divergent names. The activation side is uniform: an accessor through a
   `FrameRef` is `frame_*` and one through an `ActivationRef` is
   `activation_*`. The exceptions are verbs that put the noun second — `set_frame_pc`,
-  `set_activation_pc`, `grow_activation_temps`, `replace_frame` — and the stack
-  operations themselves, `push_activation`, `pop_activation` and `reify`.
+  `set_activation_pc`, `replace_frame` — and the stack operations themselves,
+  `push_activation`, `pop_activation`, `top_activation` and `reify`.
 - **The `heap` parameter sits first in some signatures and last in others**,
   across `image/`, `compiler/` and `interpreter/`.
 - **Copy-out costs, and the accessor that could now avoid them.**
@@ -275,11 +276,13 @@ about the resulting `unbind()` noise. That price is accepted deliberately.
 
 This is what lets the Rust code that holds values keep its present shape. The VM
 keeps a running activation's values in its registers, on the activation stack,
-but not every value: a send's arguments are collected into a `Vec<Value>` (the
-VM's `collect`) and held across the send, which allocates, and every native in
-`builtins/` that holds values across an allocation does the same. Under a
-checked scope discipline that is expressible and verified, rather than a
-discipline that has to be re-established by hand on every later change.
+but not every value: a send's arguments are gathered into the interpreter's
+reusable argument buffer (`vm::send`) and held there while the send is decided,
+which can allocate; a native loop's continuation holds its condition and body
+on a stack entry, outside any register; and every native in `builtins/` that
+holds values across an allocation holds them in Rust locals. Under a checked
+scope discipline that is expressible and verified, rather than a discipline
+that has to be re-established by hand on every later change.
 
 ### Considered and rejected: conservative stack scanning
 

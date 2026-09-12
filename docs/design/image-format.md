@@ -30,9 +30,16 @@ iterative.
 
 That guarantee is about **decoding**. `load` on a stateless binary instantiates
 and sends the recorded entry with no flag at all, so starting one executes its
-code with the same exposure as running the equivalent source -- recursion depth
-bounded only by the native stack until the VM is trampolined; see
-[execution.md](execution.md), "Planned: the trampoline".
+code with the same exposure as running the equivalent source. Recursion depth
+is bounded by two counted limits, 100,000 activations and 1,000 re-entries of
+the run loop from Rust, each an ordinary Newspeak error rather than a native
+stack overflow, and a crafted `SendInlinable` cannot use the count's one
+exemption to recurse uncounted; see [execution.md](execution.md), "Two bounds,
+not one". A mutated
+binary that decodes cleanly can still abort while executing — a native that
+indexes an argument it was not given, for one: the control-flow natives read
+`args[0]` unchecked, and the decoder does not check a send's argument count
+against its selector — and that is not a decoder defect.
 
 ## Two artifacts
 
@@ -441,18 +448,17 @@ the new flag, the entry field and the trailing-byte check
 ## Planned: suspend and resume
 
 An image cannot be taken mid-execution, and the obstacle is control flow rather
-than format. A reified `Frame` is fully encoded, and every running activation is
-an entry on the explicit activation stack ([execution.md](execution.md),
-"Activations"), but sends still recurse through the Rust call stack, so the chain
-of running activations exists twice — on the activation stack and implicitly on
-the Rust stack. Only the first can be serialized, by reifying it; only the
-second can be resumed. There is no yield path out of `run_code` and no re-entry
-point that would continue a decoded frame at its `pc`.
-
-The fix is the trampoline ([execution.md](execution.md), "Planned: the
-trampoline"), which makes the activation stack the only copy. Suspending then
-means reifying and divorcing the whole stack, which is the same operation a
-debugger performs on the frames it touches — and the same operation upstream
+than format. A reified `Frame` is fully encoded, every running activation is an
+entry on the explicit activation stack ([execution.md](execution.md),
+"Activations"), and sends no longer recurse through the Rust call stack: the
+trampoline made the activation stack the only copy of a running computation
+([execution.md](execution.md), "The trampoline"), apart from the paths that
+still re-enter the run loop from Rust — `do:`, instantiation and the
+nested-class accessor — each of which holds a Rust frame while it runs. What is
+missing is a yield path out of `vm::run`, a way through or around those Rust
+frames, and a re-entry point that would continue a decoded frame at its `pc`.
+Suspending then means reifying and divorcing the whole stack, which is the same
+operation a debugger performs on the frames it touches — and the same operation upstream
 performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)
 before taking a snapshot. An activation's `pc` being stored only at sends,
 `MakeClosure` and `NonLocalReturn` is *not* an obstacle: those are exactly the
@@ -465,12 +471,11 @@ each frame against, but it never cross-checks `home` against `kind`: a
 crafted image can pair a method-kind frame (`home` meaningful only for
 `FrameKind::Closure`) with a non-nil `home`. Nothing observes the
 mismatch today, because the VM never runs a frame loaded from an image
--- only ever an activation one of the four push sites built.
+-- only ever an activation `Interpreter::push` built.
 A decoded home is only ever consulted as a return target, and a decoded
 frame is never married to a live activation, so a `^` into one is
 `cannotReturn` whatever its record says.
-Trampolined sends,
-suspend-and-resume and live debugging are exactly what would start running
+Suspend-and-resume and live debugging are exactly what would start running
 a decoded frame — at which point this dormant assumption becomes
 load-bearing, and whoever wires up re-entry has to decide, deliberately,
 whether `verify_graph` gains the cross-check or the re-entry path treats a

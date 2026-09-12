@@ -10,26 +10,25 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
 
-M4 is under way, and **the next piece is 1b, the trampoline**, on the branch
-`feature/trampoline`. The small fix that preceded it is done — see "M4 —
-Tag-named identity hashes" below. 1b's own open design decisions were settled
-with the user on 2026-09-12 and recorded in the design documents first:
-[trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), in
-eight tasks, starting with the profile of `bench_block.ns` owed below. Its
-design is [execution.md](design/execution.md), "Planned: the trampoline", now
-with the control-flow natives as trampoline steps, two depth bounds (100,000
-activations, 1,000 re-entries from Rust) and the CLI's interpreter thread.
+M4 is under way. **1b, the trampoline, is done** — see "M4 — The trampoline"
+below — and **the next piece is step 2, the compiler-checked root
+discipline** ([memory.md](design/memory.md), "The root discipline: checked by
+the compiler, not by convention"). One task of the trampoline's
+[plan](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md) is still owed
+and comes first, with the user: the profile of `bench_block.ns` below.
 
-1b adds
-`SendInlinable` and the recursion-depth counter together, by the rule in
-[compiler.md](design/compiler.md), "How the limit counts": the limit counts
-every activation except a block activation a builtin control-flow native
-performs for a `SendInlinable`, so it agrees under both lowerings. The bytecode
+Sends run on the activation stack rather than the Rust stack, in one loop that
+pushes, pops and resumes; `value` and the control-flow natives are trampoline
+steps rather than callbacks; and recursion depth has two counted bounds —
+100,000 activations, counted by the rule in [compiler.md](design/compiler.md),
+"How the limit counts", and 1,000 re-entries of the loop from Rust — each an
+ordinary Newspeak error that agrees under both lowerings
+([execution.md](design/execution.md), "The trampoline"). The bytecode
 VM is the only engine ([execution.md](design/execution.md), "One engine"):
 step A retired the tree-walker on 2026-09-11, because designing 1b showed that
 a recursive AST evaluator cannot take part in what the trampoline exists for —
@@ -59,7 +58,7 @@ why the object and activation representations were converted together rather
 than one at a time. Each piece is designed in the document for its own aspect;
 those documents are the authority, and this is only the map to them.
 
-**Six pieces are done.** The heap seam routes every object and activation
+**Seven pieces are done.** The heap seam routes every object and activation
 access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
 it replaced `Rc<RefCell<_>>`: an `ObjRef` or a `FrameRef` is a 32-bit index
 into a `Vec` the `Heap` owns, with a private field so the compiler enforces the
@@ -74,9 +73,17 @@ nothing captures, and step 5, the collector, is what ends it. Then step A
 retired the tree-walker, step B cleaned up after it, and step C built the
 reference lowering as the differential oracle; see "M4 — Retiring the
 tree-walker", "M4 — Cleaning up with one engine" and "M4 — The reference
-lowering" below.
+lowering" below. Then 1b took sends off the Rust stack; see "M4 — The
+trampoline" below.
 
-**Before 1b fixes its baseline, profile `bench_block.ns`.** Its time did not
+**The profile of `bench_block.ns` is still owed.** It is the trampoline plan's
+first task, deferred to be taken with the user, since it needs an elevated shell
+and a profiler installed outside the repository. It is to be taken on a binary
+built from the commit 1b started from, `04e5fc0`, in a throwaway worktree: the
+question arose about that binary, and the trampoline has since changed what
+`bench_block.ns` pays for — about 22% less, mostly because `value:` is a push
+where it was a native call and a nested run ([execution.md](design/execution.md),
+"What the trampoline moved"). The question: `bench_block.ns`'s time did not
 move under the activation stack, although the stack took the block's own
 activation out of the frame arena; what offsets that saving was not known.
 Retiring the tree-walker took about 4% off it, attributed to a smaller closure.
@@ -92,8 +99,8 @@ it — roughly the creation, reification, invocation and divorce of one block,
 since both methods otherwise do one `+` apiece.
 
 The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
-and all three done, everything from 1b on still ahead — and it is not the order
-the milestone was originally sketched in. Two things settled the order of the
+and all three done, 1b done, everything from step 2 on still ahead — and it is
+not the order the milestone was originally sketched in. Two things settled the order of the
 numbered steps, neither of them a preference.
 
 The first is a measurement. On a release build, before the arena, a
@@ -111,7 +118,7 @@ checked, the collector's root set is the bootstrap plus the activation stack —
 of individually allocated frames", as [memory.md](design/memory.md) puts it.
 Establishing the discipline against the frame arena would have meant
 establishing it against a representation step 1 then replaced, and threading
-lifetimes through `Interpreter::send`, `run_code` and `Signal::Return` twice.
+lifetimes through `Interpreter::send`, the run loop and `Signal::Return` twice.
 The discipline costs nothing at run time and pays off only with the collector,
 so nothing is lost by it going second.
 
@@ -125,15 +132,16 @@ so nothing is lost by it going second.
      activation returns. A user-method send fell from ~146 ns to ~91 ns, and
      an activation nothing captures leaves nothing behind; see "M4 — The
      activation stack" below.
-   - **1b — the trampoline. Next.** `send` split into a decision and an
-     activation, arguments copied straight from the caller's registers,
-     `Block value` absorbed, recursion depth an ordinary Newspeak error,
-     counted by the rule in [compiler.md](design/compiler.md), "How the limit
-     counts", with `SendInlinable` and the counter added together. Designed in
-     [execution.md](design/execution.md), "Planned: the trampoline", which
-     also lists what 1a left for it; planned in
-     [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md).
-2. **A compiler-checked root discipline** — [memory.md](design/memory.md). Nova's
+   - **1b — the trampoline. Done.** `send` split into a decision and an
+     activation, run by one loop on the activation stack; arguments gathered
+     into one reusable buffer instead of a vector per send; `Block value` and
+     the control-flow natives trampoline steps; recursion depth an ordinary
+     Newspeak error under two bounds, the first counted by the rule in
+     [compiler.md](design/compiler.md), "How the limit counts", with
+     `SendInlinable` and the counter added together. `bench_loop.ns` fell by
+     about 32%, `bench_send.ns` 31% and `bench_block.ns` 22%; see "M4 — The
+     trampoline" below.
+2. **A compiler-checked root discipline. Next.** [memory.md](design/memory.md). Nova's
    `GcScope`/`NoGcScope`, where holding an unrooted handle across a collection
    safepoint is a type error rather than corruption found later under collection
    pressure. Free at run time; the ergonomic cost is accepted deliberately.
@@ -164,10 +172,11 @@ makes the numbers worse and after them costs nothing. M4 owes it only that the
 rewrite not deepen the investment in Rust callbacks.
 
 What M4 unlocks beyond speed is recorded where it applies: suspending a running
-computation and serializing it ([image-format.md](design/image-format.md)) waits
-on the trampoline, and so does the debugger; `become:`-based class mutation
-waits on the collector
-([liveness-and-reflection.md](design/liveness-and-reflection.md)).
+computation and serializing it needed the trampoline, which is built, and still
+needs a yield path out of the run loop and a way past the paths that re-enter it
+from Rust ([image-format.md](design/image-format.md), "Planned: suspend and
+resume"), and so does the debugger; `become:`-based class mutation waits on
+the collector ([liveness-and-reflection.md](design/liveness-and-reflection.md)).
 
 ## M1 — Frontend (2026-09-01)
 
@@ -916,7 +925,8 @@ ignored; `parse-corpus` reports **parsed 210, failed
   stack per level and aborts sooner. The deepest recursion a suite runs under
   it is eleven levels, `fact: 10` in
   `crates/ns-runtime/tests/reference_lowering.rs`; the fixtures reach six
-  ([compiler.md](design/compiler.md), "Until the trampoline").
+  ([compiler.md](design/compiler.md), "How the limit counts"). Closed by 1b;
+  see "M4 — The trampoline" below.
 - **Programs without a recorded answer** — generated programs, fuzzing — and
   the direct run-against-run comparison only they would need. While every
   program the suites run has a recorded answer, "both produce the recorded
@@ -970,6 +980,177 @@ this fix.
 
 617 tests pass, with one ignored; `parse-corpus` stays at **210/0/1/0** and
 `run-corpus` at **6/0/205**.
+
+## M4 — The trampoline (2026-09-12)
+
+Plan: [ns-next-trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md).
+
+Step 1b. Sends no longer recurse on the Rust stack: one run loop, `vm::run`,
+pushes, pops and resumes every activation a send makes, and the activation
+stack is the only place a running computation lives, apart from the three paths
+that still re-enter the loop from Rust — `do:`, instantiation and the
+nested-class accessor. Recursion depth is an ordinary Newspeak error under two
+counted bounds, the same under both lowerings
+([execution.md](design/execution.md), "The trampoline"). The design was settled
+and recorded in the design documents before the plan.
+
+**Four decisions**, settled with the user on 2026-09-12:
+
+1. **The control-flow natives are trampoline steps.** `value` and the four
+   `ifTrue:` forms return the block to activate; `and:` and `or:` return it
+   with a continuation that coerces its value; `whileTrue:` and `whileFalse:`
+   return the condition with a continuation that activates the body or ends
+   the loop. No control-flow native calls back into Newspeak, so no Rust
+   re-entry happens under one lowering and not the other. `do:` stays a
+   callback until it moves to Newspeak.
+2. **Two bounds**, the way Lua and CPython bound depth once their calls left
+   the native stack: L = 100,000 activations, counted by
+   [compiler.md](design/compiler.md)'s rule, and N = 1,000 re-entries of the
+   loop from Rust. The error texts, `stack overflow: recursion too deep` and
+   `stack overflow: too many nested native calls`, name no number.
+3. **The `SendInlinable` exemption also requires the block's
+   `captured_frame` to be the sending activation's reified frame**, so a
+   crafted artifact cannot use the exemption to recurse uncounted.
+4. **The CLI runs every command on a thread it spawns**, with an explicit,
+   measured stack — the whole command, not only the send, because the symbol
+   interner is thread-local.
+
+**What changed**, in the plan's order. The plan's first task, the profile of
+`bench_block.ns`, is deferred (above).
+
+1. **`SendInlinable`**, wire tag 20, pinned in `opcode_tags.rs`. The reference
+   lowering emits it for exactly the sends `control_flow::recognize` accepts,
+   and the VM decides it exactly as `SendPublic`. Two reference-lowering
+   `disasm` snapshots changed, in exactly the marked sends; no
+   optimized-lowering snapshot changed.
+2. **Deciding before running.** Every send is split into a decision —
+   `Interpreter::decide_send`, `sends::decide_lexical_send` and
+   `sends::decide_super_send`, answering a `Step` — and running what was
+   decided. On its own, still recursive, the split measured 6–22% slower;
+   answering a `Step::Value` in place recovered part of that, and the rest was
+   accepted as the cost of a shape the loop was about to consume.
+3. **The loop.** `vm::run` runs an activation and everything it pushes, and
+   pops all of it on every path out. `Interpreter::push_step` pushes what a
+   send decided; `Interpreter::reenter` is the one way Rust enters the loop; a
+   stack entry carries its own code, so a return resumes its caller from the
+   `pc` its send stored; a send's arguments go through one reusable buffer
+   instead of a vector per send. `Signal::Return` is an unwind of the
+   activation stack (`vm::unwind`, `Interpreter::catches_return`). The plan's
+   unwind had a defect the task found: a `^` into a running initializer made it
+   read a target an inner run had already popped — a panic where the parent
+   commit reported the known gap. `Heap::activation_is_live` is the one
+   question a popped handle may be asked, and the gap is reported as before,
+   pinned under both lowerings.
+4. **Blocks as steps.** `Step::Block` carries a `Continuation` — `Deliver`,
+   `Truthy`, `WhileCondition` or `WhileBody` — that rides on the block's stack
+   entry and is applied, through `Interpreter::resume`, when the loop pops the
+   block, so a native loop's condition and body replace each other on the
+   stack. `value` and the control-flow natives answer steps;
+   `invoke_closure` remains only for `do:`. A non-Boolean loop condition's
+   `mustBeBoolean` is decided and pushed by the loop instead of re-entering it.
+   Three golden outcomes were added first and passed before the change, pinning
+   the behaviour it had to keep.
+5. **The two bounds.** `MAX_ACTIVATION_DEPTH` and `MAX_NATIVE_DEPTH`;
+   `Interpreter::push` is the one checked push, the heap keeps the counted
+   depth, `push_step` decides the exemption, `reenter` counts N. **A
+   deviation:** the mark of a control-flow native's block is
+   `StepArgs::ControlFlow`, not a `bool` field on `Step::Block` as the plan had
+   it — the field measured 3–8% slower on every benchmark even with nothing
+   reading it. `&` and `|`, which share `and:`'s and `or:`'s native, carry the
+   mark too, harmlessly: nothing emits a `SendInlinable` for them. The
+   superclass chain is walked iteratively (`run_initializer_levels`, with
+   `run_own_initializer` per level). The CLI's thread has 32 MiB, from
+   measured debug-build re-entry costs of 9,280 bytes through `do:`, 8,256
+   through instantiation and 6,816 through the nested-class accessor.
+   `crates/ns-runtime/tests/trampoline.rs`, seven tests over the branch, pins
+   deep recursion on the stack, the unwind, the exact boundary under both
+   lowerings and the crafted artifact; four golden outcomes pin a
+   thousand-deep recursion, an unbounded one, and recursion to N through `do:`
+   and through instantiation. Every new answer was derived from the rule, not
+   recorded from a run.
+6. **Caching the running activation's register base in the loop** — measured
+   over six rounds, no source faster and none slower, so it was reverted by its
+   keep rule and not committed ([execution.md](design/execution.md), "What the
+   trampoline moved").
+7. **The documents**, and a sweep of the comments that still named functions
+   the branch removed or renamed.
+
+**What was deleted:** `vm::run_code` and its `collect`, `Interpreter::run_step`
+and `invoke_method`, `Heap::grow_activation_temps` (every activation is pushed
+with its whole register file), `builtins::block::run_while`, and
+`builtins::boolean::truthy_arg` (now `truthy`). `dispatch_send`,
+`dispatch_lexical_send`, `dispatch_super_send` and `does_not_understand` are
+`decide_send`, `decide_lexical_send`, `decide_super_send` and
+`decide_does_not_understand`.
+
+Measured whole against `04e5fc0` in one sitting on a release build, three
+rounds of `ns-next bench` over the three fixtures, alternating the binaries
+within each round, the "before" built in a throwaway worktree. Bytecode medians
+in ms, rounds 1–3:
+
+| Source | Before | After |
+|---|---|---|
+| `bench_loop.ns` | 16.96, 16.40, 16.53 | 11.23, 11.27, 11.28 |
+| `bench_send.ns` | 20.48, 20.33, 20.20 | 14.13, 13.95, 13.87 |
+| `bench_block.ns` | 30.77, 30.17, 31.14 | 23.66, 24.38, 23.97 |
+
+On every source the after-group lies entirely below the before-group:
+**`bench_loop.ns` about 32% faster, `bench_send.ns` about 31%, `bench_block.ns`
+about 22%.** Each task on the hot path was also measured against its parent;
+those tables, and what each attributes, are in
+[execution.md](design/execution.md), "What the trampoline moved".
+
+**Byte identity.** Every `build` and `snapshot` artifact of the optimized
+lowering is identical between `04e5fc0` and this step: `compared 46 artifacts,
+0 differing`. A reference-lowering artifact differs by construction, since it
+carries `SendInlinable`.
+
+Suite running time (`cargo test --workspace`, debug build) went from 9.36 s to
+12.82 s, 3.1 s of it `crates/ns-runtime/tests/trampoline.rs`, whose boundary
+test runs three recursions to 100,000 counted activations under each lowering.
+
+637 tests pass, with one ignored (617 before); `parse-corpus` stays at
+**210/0/1/0** and `run-corpus` at **6/0/205**.
+
+**Left, deliberately:**
+
+- **Instantiation, the nested-class accessor and `do:` stay re-entries of the
+  loop**, counted against N ([execution.md](design/execution.md), "What stays
+  recursive"). `do:` moves to Newspeak after the inline caches; the other two
+  could become trampoline steps once something needs it.
+- **The unchecked `args[0]`** in the control-flow natives (`builtins/boolean.rs`,
+  `builtins/block.rs`). The decoder does not check a send's argument count
+  against its selector, so a crafted artifact that sends `ifTrue:` with no
+  argument still reaches it and panics
+  ([image-format.md](design/image-format.md)).
+- **A `^` into a running initializer** still escapes as "internal: non-local
+  return escaped the entry send", the known gap, now pinned by a test.
+- **Catchable exceptions.** Both depth errors unwind to the entry send like
+  every other error. `Heap::activation_is_live`'s release-build answer rests on
+  nothing being pushed while a signal propagates, so an `ensure:` or `on:do:`
+  needs the activation generation in every build first
+  ([execution.md](design/execution.md), "Non-local return").
+- **Suspending a running computation**: a yield path out of the loop, and a way
+  past its re-entries from Rust ([image-format.md](design/image-format.md),
+  "Planned: suspend and resume").
+- **The profile of `bench_block.ns`** — above.
+- **Small follow-ups the task reviews deferred.** A nested run's argument
+  buffer is dropped when the outer one is given back, so a re-entry with
+  arguments allocates once, and a returned buffer keeps its stale values until
+  the next send (a collector concern). `catches_return` clones a `FrameKind`
+  to test its variant; `doesNotUnderstand:` copies the send's arguments; a
+  native loop's body step looks its closure up again every iteration;
+  `run_initializer_levels` allocates a list per instantiation — none measured.
+  `boolean.rs`'s `block_step` treats any continuation but `Truthy` as
+  `Deliver`, which a future continuation would have to be matched against
+  explicitly. No test sends `whileTrue:` or `and:` from Rust, where a
+  non-`Deliver` continuation sits at a run's floor; the boundary test does not
+  assert `counted_depth() == 0` after an overflow; the crafted-artifact test
+  does not assert that its mutation produced a `SendInlinable`. `vm::send`
+  carries `#[allow(clippy::too_many_arguments)]`.
+- **The two error messages that name a milestone, `ClosureData.params` and the
+  lexical-send slot lookup** (now in `sends::decide_lexical_send`), still as
+  listed under "M4 — Cleaning up with one engine".
 
 ## Notes
 

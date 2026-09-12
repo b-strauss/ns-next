@@ -225,7 +225,7 @@ pub enum FrameKind {
 }
 
 /// What the run loop does with an activation's value when it returns
-/// (`docs/design/execution.md`, "The trampoline (1b)"). Every activation a
+/// (`docs/design/execution.md`, "The trampoline"). Every activation a
 /// send makes hands its value to that send; the other three are how a builtin
 /// control-flow native finishes its work once the block it activated has
 /// returned, with no Rust frame waiting for it.

@@ -86,20 +86,20 @@ operations as primitives.
 
 **The rule: a native that calls back into Newspeak must not stay a Rust native.**
 A native that is a leaf computation should stay one, and should get an inlined
-fast path instead. Today ten selectors call back, through
-`builtins::call_block`, and they have three different destinations:
+fast path instead. Of the natives that run a block, only one still calls back,
+through `builtins::call_block`:
 
-| Selector | Destination |
+| Selector | How it runs its block |
 |---|---|
-| `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler, with the native kept as the guarded fallback — already how it works for the literal-block case. The trampoline turns the fallback native into a trampoline step that returns the block to activate instead of calling it ([execution.md](execution.md), "The trampoline (1b)") |
-| `whileTrue:`, `whileFalse:` | The same, both halves |
-| `value`, `value:`, … | Absorbed by the trampoline: activating a closure is what the activation stack does. See [execution.md](execution.md) |
-| `do:` | Written in Newspeak |
+| `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler for a literal block, with the native kept as the guarded fallback. The native is a trampoline step: it returns the block to activate instead of calling it, with a continuation for what `and:` and `or:` do with its value ([execution.md](execution.md), "The trampoline") |
+| `whileTrue:`, `whileFalse:` | The same, both halves: the native is a trampoline step that returns the condition block, and its continuation activates the body or ends the loop |
+| `value`, `value:`, … | A trampoline step that returns the block to activate: activating a closure is what the activation stack does. See [execution.md](execution.md) |
+| `do:` | Still a Rust loop that calls the block for each element and so re-enters the run loop; it is to be written in Newspeak |
 
-So after the trampoline exactly one of today's methods still calls back, and it
-is the one that moves to Newspeak. Everything else in `builtins/` — `size`,
-`at:`, `class`, `hash`, `printString`, the arithmetic, the comparisons,
-`asString`, `asSymbol` — is a leaf, and its computation stays in Rust.
+So exactly one method still calls back, and it is the one that moves to
+Newspeak. Everything else in `builtins/` — `size`, `at:`, `class`, `hash`,
+`printString`, the arithmetic, the comparisons, `asString`, `asSymbol` — is a
+leaf, and its computation stays in Rust.
 
 **Where this is going: the core library as Newspeak source, with Rust
 primitives underneath** (the user's direction, 2026-09-12). Primordial Soup

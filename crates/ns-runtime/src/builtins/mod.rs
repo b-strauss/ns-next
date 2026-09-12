@@ -23,7 +23,7 @@ use crate::{platform, Interpreter, Symbol};
 ///
 /// `boolean::dispatch` and `block::dispatch` answer a `Step` themselves: the
 /// control-flow natives and `value` return the block to activate instead of
-/// calling it (`docs/design/execution.md`, "The trampoline (1b)").
+/// calling it (`docs/design/execution.md`, "The trampoline").
 ///
 /// Only `do:` still invokes a block from Rust (`call_block`, below), so the
 /// functions it is reached through are the ones whose own signature must

@@ -305,7 +305,8 @@ impl Interpreter {
     /// than by recursing per level: the chain's length is an image's to
     /// choose, and a level with no initializer code pushes no activation, so
     /// neither depth bound would see a long chain of them
-    /// (`docs/design/execution.md`, "The trampoline (1b)").
+    /// (`docs/design/execution.md`, "A superclass chain is walked
+    /// iteratively").
     ///
     /// Upward first: each level's factory arguments are checked against its
     /// declared arity, then its superclass clause's message is evaluated to

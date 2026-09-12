@@ -38,7 +38,7 @@ pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
 pub const MAX_NATIVE_DEPTH: usize = 1_000;
 
 /// What a send decided, before anything runs (`docs/design/execution.md`,
-/// "The trampoline (1b)"). Deciding is `interpreter/`'s -- lookup,
+/// "Deciding, then running"). Deciding is `interpreter/`'s -- lookup,
 /// `doesNotUnderstand:`, the natives, the nested-class accessor -- and running
 /// what was decided is the VM's, which is how `vm.rs` stays free of dispatch
 /// logic once sends stop recursing.
@@ -226,7 +226,7 @@ impl Interpreter {
     }
 
     /// Decides what an ordinary (explicit-receiver) send would run, without
-    /// running it (`docs/design/execution.md`, "The trampoline (1b)").
+    /// running it (`docs/design/execution.md`, "Deciding, then running").
     ///
     /// Checked first, before any lookup: `ClassName new` (or a class's own
     /// non-default factory selector) never has a real method to find --
@@ -1152,7 +1152,7 @@ mod tests {
 
     /// Deciding a send runs nothing: a user method comes back as the
     /// activation to make, with nothing pushed, and a native leaf as its
-    /// value (`docs/design/execution.md`, "The trampoline (1b)").
+    /// value (`docs/design/execution.md`, "Deciding, then running").
     #[test]
     fn deciding_a_send_answers_what_to_run_without_running_it() {
         let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  public foo = ( ^1 )\n) : ()";

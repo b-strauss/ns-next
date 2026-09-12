@@ -1,4 +1,4 @@
-//! The trampoline (`docs/design/execution.md`, "The trampoline (1b)"): sends
+//! The trampoline (`docs/design/execution.md`, "The trampoline"): sends
 //! run on the activation stack, not the Rust stack, so recursion depth is
 //! bounded by a count rather than by the native stack, and running past it is
 //! an ordinary Newspeak error under both lowerings.

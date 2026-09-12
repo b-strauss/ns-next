@@ -1,7 +1,7 @@
 //! `Boolean`/`True`/`False` native methods. The control-flow ones return the
 //! block to activate as a step instead of calling it, so none of them waits
 //! on a Rust frame for Newspeak code (`docs/design/execution.md`, "The
-//! trampoline (1b)").
+//! trampoline").
 
 use crate::interpreter::{Signal, Step, StepArgs};
 use crate::types::*;

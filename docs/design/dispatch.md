@@ -180,7 +180,7 @@ drift. Something needed there is widened to `pub(crate)`, not duplicated.
 An arity check belongs here too: a method activation addresses its arguments and
 temporaries as one run of registers, so a send whose argument count does not
 match the declaration would silently shift every temporary rather than fail.
-`invoke_method` refuses the mismatch outright.
+`Interpreter::push_step` refuses the mismatch outright.
 
 ## Deviation: slots are not reachable through an explicit receiver
 
@@ -229,7 +229,7 @@ fallback send (`prior-art/opensmalltalk-vm/src/spur64.cog/`,
 `prior-art/primordialsoup/vm/primitives.cc`). SOMns reaches the same result
 through Graal's partial evaluation of its primitive nodes.
 
-**A lexical send to a slot is cached too.** `dispatch_lexical_send` checks
+**A lexical send to a slot is cached too.** `sends::decide_lexical_send` checks
 for a slot before any method lookup: it interns the getter name for every
 setter-shaped selector (`sends::slot_selector_shape`) and hashes the name
 into the application's `slot_index` for every lexical send. A lexical-send
