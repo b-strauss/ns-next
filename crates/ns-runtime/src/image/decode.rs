@@ -227,7 +227,7 @@ pub enum DecodeError {
     /// `u32::MAX + 1` (an overflow panic in this workspace's dev profile,
     /// and a wrap to 0 -- colliding with the loaded objects it exists to
     /// avoid -- in release), and even saturating it would only move the
-    /// overflow to `alloc_identity_hash`'s own `+= 1`. Refusing the image
+    /// overflow to the counter's own `+= 1`. Refusing the image
     /// is the only answer that neither panics nor collides.
     IdentityHashExhausted,
     /// Bytes remain after the last section. Refused rather than ignored: with
@@ -1911,7 +1911,7 @@ pub fn decode_graph_section(
         .map(|_| {
             ctx.interp
                 .heap
-                .alloc_placeholder_object(placeholder_class, ObjectData::Instance(Vec::new()))
+                .alloc_object(placeholder_class, ObjectData::Instance(Vec::new()))
         })
         .collect();
     let frames: Vec<FrameRef> = (0..frame_count)

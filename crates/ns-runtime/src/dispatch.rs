@@ -295,7 +295,7 @@ mod tests {
             own_slot_base: 0,
         });
         let class_of_class = dummy_class(heap);
-        heap.alloc_placeholder_object(
+        heap.alloc_object(
             class_of_class,
             ObjectData::Class(ClassData {
                 application,

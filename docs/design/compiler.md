@@ -452,7 +452,7 @@ by exempting it from the comparison:
 
 - **The identity hash.** `hash` answers an allocation counter, and the reference
   lowering allocates a closure for every `ifTrue:` the optimized one inlines, so
-  every later object's hash would shift. Identity hashes become lazily assigned,
+  every later object's hash would shift. Identity hashes are lazily assigned,
   as in Cog/Spur (`hashBitsOf:`, which calls `newHashBitsOf:` when the bits are
   0) and Primordial Soup (`Object_identityHash`, which sets `header_hash` when it
   is 0): an object draws its number from the counter when it is first asked for
@@ -530,10 +530,10 @@ sooner. The suites recurse at most six levels
 
 ### Order of work
 
-1. **Lazy identity hashes**, a behaviour change of its own, measured because it
-   touches allocation. It also removes the discarded `Object` allocation in
-   `build_builtin_classes`, which was kept only because it shifted every later
-   hash.
+1. **Lazy identity hashes** — done, a behaviour change of its own, measured
+   because it touches allocation. It also removes the discarded `Object`
+   allocation in `build_builtin_classes`, which was kept only because it
+   shifted every later hash.
 2. **`compiler/reference.rs`, `Lowering` and the CLI switch.** The optimized
    path is untouched, which byte identity of every `build` and `snapshot`
    artifact against the parent commit proves.

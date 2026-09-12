@@ -15,7 +15,7 @@ pub fn dispatch(
         "==" => Some(Ok(Value::Bool(identical(&receiver, &args[0])))),
         "=" => Some(Ok(Value::Bool(identical(&receiver, &args[0])))), // Object's default: identity
         "hash" => Some(Ok(Value::SmallInt(
-            identity_hash_of(&interp.heap, &receiver) as i64,
+            identity_hash_of(&mut interp.heap, &receiver) as i64,
         ))),
         "printString" => Some(Ok(Value::Obj(interp.new_string("an Object".to_string())))),
         "doesNotUnderstand:" => {
@@ -50,9 +50,9 @@ fn identical(a: &Value, b: &Value) -> bool {
     }
 }
 
-fn identity_hash_of(heap: &Heap, value: &Value) -> u32 {
+fn identity_hash_of(heap: &mut Heap, value: &Value) -> u32 {
     match value {
-        Value::Obj(obj) => heap.identity_hash(*obj),
+        Value::Obj(obj) => heap.ensure_identity_hash(*obj),
         _ => 0, // primitives are values and get no distinct identity
                 // hash (revisit if a fixture needs one)
     }

@@ -192,9 +192,8 @@ placeholder-allocated before either is filled.
 
 **Identity hashes are preserved verbatim.** After a load the allocation counter
 is advanced past the largest hash the image contained, so newly allocated objects
-never collide with loaded ones. Once hashes are assigned lazily
-([object-model.md](object-model.md)), a record's 0 means "not yet assigned" and
-is preserved the same way; the counter rule is unchanged.
+never collide with loaded ones. A record's 0 means "not yet assigned" and is
+preserved the same way ([object-model.md](object-model.md)).
 
 ## How frames actually get into an image
 

@@ -33,7 +33,7 @@ that cannot name its code is describing an intention, and should say so.
 | Aspect | Document | Status | Planned next |
 |---|---|---|---|
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
-| Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | lazy identity hashes, `become:` |
+| Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | the reference lowering, inline-cache slots wired up |
 | Activations, the VM loop | [execution.md](execution.md) | Built | the trampoline, closure conversion, JIT tiers |
