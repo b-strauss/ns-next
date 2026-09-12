@@ -42,6 +42,13 @@ allocated would change a program's `hash` values under any of them. The encoder 
 stored value without assigning one, and the decoder keeps every value, 0
 included.
 
+That stability across a snapshot holds today for every object the image
+carries as a record, and **not for the objects it names by tag**: a builtin
+class, the module's root class and the `platform` singleton. Nothing records
+their hashes, so one assigned before a snapshot is replaced by a fresh one after
+the load. Which of two fixes closes it is open; see
+[image-format.md](image-format.md), "Identity hashes are preserved verbatim".
+
 `ClosureData { params, code, captured_frame: FrameRef, home: FrameRef }`
 captures its defining frame for closure semantics and its home activation for
 non-local return. A closure object holds it behind an `Rc`, so invoking a block

@@ -384,6 +384,12 @@ itself — nothing would notice. As a separate module the oracle cannot be
 switched off by an optimization. The price is that every new language construct
 is lowered twice.
 
+For the same reason, a pass that rewrites code after lowering — a peephole
+pass, superinstructions — applies to the optimized lowering's output only and
+must never rewrite the reference lowering's. It would change the baseline after
+`check_shape` had checked it, and every comparison from then on would be
+against code nothing had checked.
+
 ### What it emits
 
 1. The named locals keep the layout the resolver assigned — arguments, then
@@ -566,8 +572,11 @@ cost under the reference lowering.
 The control-flow natives call back into Newspeak on the Rust stack, so under the
 reference lowering each level of a recursion through an `ifTrue:` costs more
 native stack than under the optimized one, and a deep enough recursion aborts
-sooner. The suites recurse at most six levels
-(`tests-fixtures/nonlocal_return_depth.ns`), well inside either.
+sooner. The deepest recursion any suite runs under the reference lowering is
+eleven levels, `fact: 10` in `crates/ns-runtime/tests/reference_lowering.rs`,
+each level through an `ifFalse:` block; among the fixtures and golden outcomes
+the deepest is six (`tests-fixtures/nonlocal_return_depth.ns`). Both are well
+inside either lowering's native stack.
 
 ### Status
 
@@ -575,7 +584,10 @@ Built, in the four commits of its
 [plan](../superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md):
 lazy identity hashes, `compiler/reference.rs` with `Lowering`, the CLI switch,
 and the harness. Every recorded program answers alike under both lowerings.
-What "How the limit counts" needs — `SendInlinable` and the depth counter that
+Probing with it beyond the recorded programs found one defect in the optimized
+lowering, since fixed and pinned by a golden outcome: an assignment through a
+setter could answer the new value of the local it read ("The value-register
+invariant"). What "How the limit counts" needs — `SendInlinable` and the depth counter that
 is its only consumer — arrives with the trampoline.
 
 ## Follow-up: entry points that reach a class object only to find its mixin

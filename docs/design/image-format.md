@@ -190,10 +190,32 @@ temps, `pc` — an instruction index into the frame's compiled body — `sender`
 Frames and objects reference each other freely, so both tables are
 placeholder-allocated before either is filled.
 
-**Identity hashes are preserved verbatim.** After a load the identity-hash
-counter is advanced past the largest hash the image contained, so a hash assigned
-afterwards never collides with a loaded one. A record's 0 means "not yet assigned" and is
-preserved the same way ([object-model.md](object-model.md)).
+**Identity hashes are preserved verbatim** for every object the image carries
+as a record. After a load the identity-hash counter is advanced past the largest
+hash the image contained, so a hash assigned afterwards never collides with a
+loaded one. A record's 0 means "not yet assigned" and is preserved the same way
+([object-model.md](object-model.md)).
+
+**The exception is an object the image names by tag rather than by record**: a
+builtin class, the module's root class and the `platform` singleton
+(`encode::is_class_tag`, and the platform check beside it in
+`GraphTable::visit_value`). None of them is a record, so nothing carries its
+hash. The bootstrap `load` builds and the root class it rebuilds start at 0 like
+every new object, and one of them that was asked for its hash before the
+snapshot draws a fresh one the first time it is asked after the load. Hashes
+stay unique, since the fresh one is drawn past every loaded hash, but not stable:
+a program that kept such a hash across a snapshot — or, once there are any, a
+hashed collection keyed by one of these objects — sees a different value after
+the load. Before identity hashes were lazy these hashes survived by accident:
+the bootstrap allocated the same objects in the same order every time, so each
+drew the same number again.
+
+> **Open: stable hashes for tag-named objects.** Two candidate fixes, and the
+> choice between them is pending with the user. Either the graph section records
+> the stored hash of each tag-named object that has one, under a new wire tag,
+> and the decoder restores it; or tag-named objects get a deterministic hash rule
+> of their own, so that a fresh bootstrap and `load` reproduce the same value
+> without the image recording it. No test pins the present, lossy behaviour.
 
 ## How frames actually get into an image
 
@@ -493,6 +515,9 @@ builtins.
 
 ## Open questions
 
+- **How a tag-named object keeps its identity hash across a snapshot** — a new
+  wire tag that records it, or a deterministic hash rule. Lazy identity hashes
+  made it a known regression; see "Identity hashes are preserved verbatim".
 - **The decompiler** that is to provide export back to `.ns`. Mitigated by the
   debug source blob, unwritten.
 - **Whether upstream strips source at packaging time.** A measurement of four

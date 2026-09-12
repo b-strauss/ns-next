@@ -39,8 +39,11 @@ are done:
   tree-walker used to be: a second, deliberately naive lowering, under which
   every program must behave byte for byte as it does under the optimized one
   ([compiler.md](design/compiler.md), "The reference lowering"). Every
-  recorded program answers alike under both; see "M4 — The reference
-  lowering" below.
+  recorded program answers alike under both. Probing with it found and fixed
+  one defect in the optimized lowering, and lazy identity hashes left one
+  known regression, whose fix waits on a decision from the user: a builtin
+  class, the root class and `platform` do not keep their hash across a
+  snapshot. See "M4 — The reference lowering" below.
 
 M4's pieces are one change: the object representation, the activation
 representation and the root discipline each constrain the other two, which is
@@ -715,11 +718,28 @@ eventually a JIT — is checked against a baseline that does not move
 ([compiler.md](design/compiler.md), "The reference lowering"). The design was
 written and committed before the plan.
 
-**The oracle found no divergence.** Every fixture, every golden outcome, every
-build/load round trip and every `run-corpus` row produces its recorded answer
-under both lowerings, and every corpus module the resolver accepts compiles
-under both with the reference lowering's shape check passing. Nothing needed
-fixing, and no recorded answer changed.
+**The harness found no divergence; the final review, probing with the
+oracle, found one.** Every fixture, every golden outcome, every build/load
+round trip and every `run-corpus` row produces its recorded answer under both
+lowerings, and every corpus module the resolver accepts compiles under both
+with the reference lowering's shape check passing; no recorded answer changed.
+The whole-branch review then ran programs written to probe where the two
+lowerings differ, and one answered differently: `^x := y`, with a setter `x:`
+that assigns `y` through a closure built earlier, answered `y`'s new value
+under the optimized lowering and the value `y` had under the reference one. The
+rule decided which was right — `x := e` answers the value of `e`
+([dispatch.md](design/dispatch.md), "Setter sends") — so the defect was the
+optimized lowering's, and it predates this step. It skipped the copy that
+protects an assignment's value from its setter send wherever the value was
+consumed by the next instruction — a `^`, a slot initializer, a block's last
+statement, an inlined block's result — on the reasoning that nothing runs in
+between; but the setter send itself runs user code before that instruction
+reads. The fix has every position state whether anything reads its value, and
+skips the copy only where nothing does, so the common case keeps its cheap form:
+every fixture and every corpus module that builds compiles to the same bytes as
+before, and the three benchmarks moved within noise. A new golden outcome in
+`program_outcomes.rs` pins seven positions under both lowerings
+([compiler.md](design/compiler.md), "The value-register invariant").
 
 **Three decisions**, settled with the user on 2026-09-12 and recorded in the
 design:
@@ -793,6 +813,28 @@ design:
    under each lowering — with no switch, naming the lane that disagrees. A
    review finding followed: `corpus/runnable.toml`'s header now describes the
    four lanes.
+5. **The final review's fixes.** The setter-value fix above, in a commit of
+   its own. `check_shape` now also asserts that a named local is read only by
+   `Move` and written only by `StoreLocal` — the property that kept the
+   reference lowering immune to that defect — and the reference lowering's
+   ceilings on temporaries, block parameters and named locals are checked in
+   every build; four more unit tests pin the shape check itself.
+   `crates/ns-cli/tests/lowering.rs` checks that `build` and
+   `snapshot` compile with the lowering they are given, by reading the code
+   the artifact carries, since no program's output would show a dropped
+   `--lowering`.
+
+**A known regression: identity hashes of tag-named objects across a
+snapshot.** Lazy hashes lose the hash of an object an image names by tag
+rather than by record — a builtin class, the module's root class, the
+`platform` singleton. Nothing records it, so a hash one of them was asked for
+before a snapshot is replaced by a fresh one after the load. Before this step
+those hashes survived only because the bootstrap allocated the same objects in
+the same order every time. Fixing it needs a design decision — a new wire tag
+that records those hashes, or a deterministic hash rule for tag-named
+objects — which is pending with the user
+([image-format.md](design/image-format.md), "Identity hashes are preserved
+verbatim").
 
 **What was deleted:** `Heap::alloc_placeholder_object`, whose callers now use
 `alloc_object`, since every object starts at hash 0;
@@ -851,7 +893,8 @@ Suite running time (`cargo test --workspace`, debug build) went from 6.43 s to
 twice, and `run-corpus`'s rows four ways instead of two — more process spawns
 and compiles, not a slower lowering.
 
-600 tests pass, with one ignored; `parse-corpus` reports **parsed 210, failed
+609 tests pass after the final review's fixes (600 before them), with one
+ignored; `parse-corpus` reports **parsed 210, failed
 0, expected-fail 1, stale 0** and `run-corpus` **ran 6, failed 0, skipped
 205**.
 
@@ -861,7 +904,9 @@ and compiles, not a slower lowering.
   — 1b's, together with whether the control-flow natives become trampoline
   steps. Until then they call back into Newspeak on the Rust stack, so under
   the reference lowering a recursion through an `ifTrue:` costs more native
-  stack per level and aborts sooner; the suites recurse at most six levels
+  stack per level and aborts sooner. The deepest recursion a suite runs under
+  it is eleven levels, `fact: 10` in
+  `crates/ns-runtime/tests/reference_lowering.rs`; the fixtures reach six
   ([compiler.md](design/compiler.md), "Until the trampoline").
 - **Programs without a recorded answer** — generated programs, fuzzing — and
   the direct run-against-run comparison only they would need. While every

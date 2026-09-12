@@ -429,7 +429,10 @@ its variables. After it, a surviving block holds exactly what it captured.
 ## Decisions
 
 - **Identity hashes come from a counter, not an address, and are assigned on
-  first request**, so identity survives moving and snapshotting.
+  first request**, so identity survives moving and snapshotting — except, for
+  now, the hash of an object an image names by tag rather than by record
+  ([image-format.md](image-format.md), "Identity hashes are preserved
+  verbatim").
 - **A handle is an arena-relative index, not a globally unique name**, and a
   `debug_assertions`-only origin guard says so at every accessor rather than
   leaving it to convention. It exists because the failure it catches is silent:
