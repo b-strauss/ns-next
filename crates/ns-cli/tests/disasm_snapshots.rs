@@ -1,8 +1,9 @@
 //! `ns-next disasm` snapshot tests -- one per representative code shape:
 //! plain keyword method, block with non-local return, inlined
 //! ifTrue:ifFalse:, inlined whileTrue:, the non-inlined fallback case, an
-//! instance initializer (`docs/design/compiler.md`, "Reading the output").
-//! Catches accidental codegen changes.
+//! instance initializer (`docs/design/compiler.md`, "Reading the output"),
+//! and the same two shapes under the reference lowering. Catches accidental
+//! codegen changes.
 
 mod common;
 use common::ScratchDir;
@@ -56,6 +57,22 @@ fn disasm_control_flow_fallback_main() {
 #[test]
 fn disasm_instance_init_initializer() {
     insta::assert_snapshot!(disasm("instance_init.ns", &["--initializer"]));
+}
+
+#[test]
+fn disasm_while_loop_main_under_the_reference_lowering() {
+    insta::assert_snapshot!(disasm(
+        "while_loop.ns",
+        &["main:args:", "--lowering", "reference"]
+    ));
+}
+
+#[test]
+fn disasm_control_flow_fallback_main_under_the_reference_lowering() {
+    insta::assert_snapshot!(disasm(
+        "control_flow_fallback.ns",
+        &["main:args:", "--lowering", "reference"]
+    ));
 }
 
 #[test]

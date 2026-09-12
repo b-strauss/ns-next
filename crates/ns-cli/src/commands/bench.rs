@@ -57,7 +57,7 @@ fn timed_send(
 /// before the loop -- once-per-process costs, excluded from the per-send
 /// timing for the same reason instantiation is.
 fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<BenchStats, String> {
-    let (mut interp, class) = source::bootstrap(loaded);
+    let (mut interp, class) = source::bootstrap(loaded, ns_runtime::Lowering::Optimized);
     let platform = interp.platform();
     let factory_args = entry::factory_args_for(interp.heap_ref(), class, platform)?;
     let entry_args_list = entry::entry_args(send, platform)?;

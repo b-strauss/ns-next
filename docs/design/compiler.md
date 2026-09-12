@@ -422,6 +422,10 @@ which lowering produced that code, because nothing would read it.
 defaulting to optimized. `disasm` of one method under both is the first tool to
 reach for when the oracle fires. `bench` does not take it, since timing the
 oracle means nothing, and `load` and `inspect` decode rather than compile.
+The switch itself is `LoweringArg` in `crates/ns-cli/src/main.rs`, converted
+into `ns_runtime::Lowering` and passed to `source::bootstrap`, which every
+compiling command goes through; `disasm` takes it as an `Option` instead and
+refuses it for an artifact, which carries the code it was built with.
 
 ### The harness
 
@@ -537,9 +541,9 @@ sooner. The suites recurse at most six levels
    because it touches allocation. It also removes the discarded `Object`
    allocation in `build_builtin_classes`, which was kept only because it
    shifted every later hash.
-2. **`compiler/reference.rs`, `Lowering` and the CLI switch.** The optimized
-   path is untouched, which byte identity of every `build` and `snapshot`
-   artifact against the parent commit proves.
+2. **`compiler/reference.rs`, `Lowering` and the CLI switch.** — done. The
+   optimized path is untouched, which byte identity of every `build` and
+   `snapshot` artifact against the parent commit proves.
 3. **The harness**, with the suite's running time recorded before and after.
 4. **The documents**: this section becomes a description of what exists.
 

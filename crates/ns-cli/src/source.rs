@@ -49,12 +49,15 @@ pub(crate) fn load_source(file: &Path) -> Result<LoadedSource, ExitCode> {
     })
 }
 
-/// Bootstraps an interpreter and loads the module's root class, which
-/// compiles every body onto the declaration it belongs to -- before anything
-/// is instantiated, so the root class's instance initializer runs compiled
-/// too.
-pub(crate) fn bootstrap(loaded: &LoadedSource) -> (ns_runtime::Interpreter, ns_runtime::ClassRef) {
-    let mut interp = ns_runtime::Interpreter::bootstrap();
+/// Bootstraps an interpreter that compiles with `lowering` and loads the
+/// module's root class, which compiles every body onto the declaration it
+/// belongs to -- before anything is instantiated, so the root class's
+/// instance initializer runs compiled too.
+pub(crate) fn bootstrap(
+    loaded: &LoadedSource,
+    lowering: ns_runtime::Lowering,
+) -> (ns_runtime::Interpreter, ns_runtime::ClassRef) {
+    let mut interp = ns_runtime::Interpreter::bootstrap_with(lowering);
     let class = interp.load_module(&loaded.resolved);
     (interp, class)
 }

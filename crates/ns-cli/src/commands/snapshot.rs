@@ -9,12 +9,18 @@ use crate::source;
 /// `ns-next snapshot`: `run`'s pipeline up to (and optionally including)
 /// the entry send, then a serialized image of the resulting world. The
 /// image's own code table is what a later `load` runs.
-pub(crate) fn execute(file: &Path, out: &Path, send: Option<&str>, debug_source: bool) -> ExitCode {
+pub(crate) fn execute(
+    file: &Path,
+    out: &Path,
+    send: Option<&str>,
+    debug_source: bool,
+    lowering: ns_runtime::Lowering,
+) -> ExitCode {
     let loaded = match source::load_source(file) {
         Ok(l) => l,
         Err(code) => return code,
     };
-    let (mut interp, class) = source::bootstrap(&loaded);
+    let (mut interp, class) = source::bootstrap(&loaded, lowering);
     let instance = match entry::instantiate_root(&mut interp, class) {
         Ok(v) => v,
         Err(code) => return code,

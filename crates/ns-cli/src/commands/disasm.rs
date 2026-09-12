@@ -79,12 +79,14 @@ fn root_mixin_of(
 /// take exactly one method's body or the target mixin's initializer and print
 /// its bytecode listing. The source path never instantiates; the artifact
 /// path never instantiates either, since `image::load` only decodes the
-/// world.
+/// world. `lowering` chooses how a source is compiled; it is refused for an
+/// artifact.
 pub(crate) fn execute(
     file: &Path,
     selector: Option<&str>,
     initializer: bool,
     class_path: Option<&str>,
+    lowering: Option<ns_runtime::Lowering>,
 ) -> ExitCode {
     let raw = match std::fs::read(file) {
         Ok(b) => b,
@@ -108,6 +110,13 @@ pub(crate) fn execute(
     // object that heap put there -- a different, perfectly valid object,
     // disassembled without a word of complaint.
     let root_mixin = if looks_like_an_artifact(&raw) {
+        if lowering.is_some() {
+            eprintln!(
+                "error: --lowering applies to a .ns source; {} is an artifact, which carries the code it was built with",
+                file.display()
+            );
+            return ExitCode::FAILURE;
+        }
         match ns_runtime::image::load(&raw) {
             Ok(loaded) => match root_mixin_of(loaded.interp.heap_ref(), loaded.root_class) {
                 Ok(m) => m,
@@ -126,7 +135,8 @@ pub(crate) fn execute(
             Ok(l) => l,
             Err(code) => return code,
         };
-        let (interp, class) = source::bootstrap(&loaded);
+        let (interp, class) =
+            source::bootstrap(&loaded, lowering.unwrap_or(ns_runtime::Lowering::Optimized));
         match root_mixin_of(interp.heap_ref(), class) {
             Ok(m) => m,
             Err(msg) => {
