@@ -32,8 +32,11 @@ pub enum Value {
 #[derive(Debug, Clone)]
 pub struct Object {
     pub class: ClassRef,
-    /// Monotonic, assigned at allocation -- never derived from the arena
-    /// index (liveness spec's stable-identity constraint).
+    /// 0 until something asks for it; then drawn from a monotonic counter
+    /// (`Heap::ensure_identity_hash`), so allocation order stays
+    /// unobservable. Never derived from the arena index, which a moving
+    /// collector or `become:` would change (liveness spec's stable-identity
+    /// constraint).
     pub identity_hash: u32,
     pub data: ObjectData,
 }

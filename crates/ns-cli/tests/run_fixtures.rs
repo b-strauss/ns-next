@@ -12,8 +12,14 @@ fn normalize_newlines(s: &str) -> String {
     s.replace("\r\n", "\n")
 }
 
+/// Both lowerings: the optimized one every program runs under, and the
+/// reference lowering it is checked against (`docs/design/compiler.md`, "The
+/// reference lowering"). Each must produce the recorded answer.
+const LOWERINGS: [&str; 2] = ["optimized", "reference"];
+
 /// Every fixture succeeds, prints exactly its `.expected` stdout -- every
-/// byte, the final newline included -- and writes nothing to stderr.
+/// byte, the final newline included -- and writes nothing to stderr, under
+/// both lowerings.
 #[test]
 fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
@@ -26,30 +32,34 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
         let expected_path = path.with_extension("expected");
         let expected = std::fs::read_to_string(&expected_path)
             .unwrap_or_else(|_| panic!("missing {}", expected_path.display()));
-        let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
-            .arg("run")
-            .arg(&path)
-            .output()
-            .expect("run ns-next");
-        assert!(
-            output.status.success(),
-            "{} exited non-zero: {}",
-            path.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(
-            String::from_utf8_lossy(&output.stderr),
-            "",
-            "{} wrote to stderr",
-            path.display()
-        );
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert_eq!(
-            normalize_newlines(&stdout),
-            normalize_newlines(&expected),
-            "{} produced unexpected stdout",
-            path.display()
-        );
+        for lowering in LOWERINGS {
+            let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+                .arg("run")
+                .arg(&path)
+                .arg("--lowering")
+                .arg(lowering)
+                .output()
+                .expect("run ns-next");
+            assert!(
+                output.status.success(),
+                "{} exited non-zero under the {lowering} lowering: {}",
+                path.display(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                "",
+                "{} wrote to stderr under the {lowering} lowering",
+                path.display()
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert_eq!(
+                normalize_newlines(&stdout),
+                normalize_newlines(&expected),
+                "{} produced unexpected stdout under the {lowering} lowering",
+                path.display()
+            );
+        }
         checked += 1;
     }
     // A floor rather than whatever the directory yields: a fixture that
@@ -57,8 +67,8 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
     // loses its expected-output check without any test failing, so the
     // floor tracks the actual count.
     assert!(
-        checked >= 22,
-        "expected every one of the 22 tests-fixtures/*.ns fixtures to be \
+        checked >= 23,
+        "expected every one of the 23 tests-fixtures/*.ns fixtures to be \
          compared against its .expected file, checked {checked} -- raise \
          this floor when adding a fixture, never lower it"
     );

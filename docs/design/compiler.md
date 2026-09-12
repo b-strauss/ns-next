@@ -1,10 +1,11 @@
 # Compiler — AST to bytecode
 
-> **Status:** built.
+> **Status:** built, including the reference lowering it is checked against.
 > **Code:** `crates/ns-runtime/src/bytecode.rs` (the instruction set and the
 > compiled-code shapes), `compiler/mod.rs` (entry points), `compiler/lower.rs`
 > (lowering, register allocation, the scope stack), `compiler/control_flow.rs`
-> (inlining). CLI: `ns-next disasm`.
+> (inlining), `compiler/reference.rs` (the reference lowering). CLI: `ns-next
+> disasm`.
 
 This is the producer side. How the bytecode is then run — activations, the VM,
 the dispatch loop — is [execution.md](execution.md).
@@ -172,11 +173,27 @@ executes.** This follows directly from "a read of a local needs no instruction":
 because a named local's register *is* its value, that register is live storage,
 not scratch, and anything that writes the local writes the expression's value too.
 
-`lower_operand` copies when anything lowered afterwards can write the register;
-`lower_expr_consumed_immediately` is the counterpart for positions where nothing
-is lowered afterwards. Getting this wrong is silent wrong output with exit status
-0, not a crash — which is why it is an invariant in `CLAUDE.md` rather than a
-comment.
+`lower_operand` copies when anything lowered afterwards can write the register.
+An assignment through a setter copies the local its value was read from even
+when the consumer is the very next instruction, because the setter send itself
+runs user code before that consumer reads — code that can write the local
+through a closure that captured the frame. `^x := y`, with a setter that assigns
+`y`, would otherwise answer `y`'s new value, where the language answers the
+value `y` had ([dispatch.md](dispatch.md), "Setter sends").
+
+The copy is skipped only where nothing reads the value at all, and every
+position says which it is rather than inferring it: `lower_expr_for` takes a
+`ValueUse`, and is the one place that acts on it. An instruction reads the
+value of a `^`, of a slot initializer (`InitSlot`), of a block's last statement
+(its `ImplicitReturn`) and of an inlined block's last statement — a branch of
+`ifTrue:` and its relatives, the block of `and:`/`or:`, a loop condition — when
+the inlined form's own value is read; an inlined form in a discarded position
+passes that on to its blocks, and a loop body is never read. Every other
+statement is discarded, including every statement of a method or an
+initializer, which fall off their end answering `self`, and an initializer's
+top-level `^`, which returns nothing. Getting this wrong is silent wrong
+output with exit status 0, not a crash — which is why it is an invariant in
+`CLAUDE.md` rather than a comment.
 
 ## Control-flow inlining
 
@@ -257,8 +274,8 @@ the common case: a non-Boolean receiver must still produce the identical
 `ifTrue:ifFalse:` must have its method run; a non-Boolean `whileTrue:` condition
 must produce the identical `mustBeBoolean` error.
 
-With no second lowering yet to compare against, those paths are pinned by
-recorded answers: `crates/ns-cli/tests/program_outcomes.rs` holds the exit
+Those paths are pinned by recorded answers, which both lowerings must produce:
+`crates/ns-cli/tests/program_outcomes.rs` holds the exit
 status, stdout and stderr of the non-Boolean receiver, the non-Boolean loop
 condition, a block held in a variable that takes the native loop and a `^` out
 of an inlined loop body; `tests-fixtures/control_flow_fallback.ns` runs a user
@@ -319,28 +336,263 @@ These are the first pieces of the VM's own introspection tooling, the equivalent
 of `d8`; the rest, inline-cache transition traces and deoptimization reasons,
 arrives with the mechanisms it would observe.
 
-## Planned: the reference lowering
+## The reference lowering
 
-What would change: the compiler gains a second, deliberately naive lowering,
+The compiler has a second, deliberately naive lowering, `compiler/reference.rs`,
 and every program must behave byte for byte the same under both. It is the
 differential oracle the retired tree-walker used to be
-([execution.md](execution.md), "One engine").
+([execution.md](execution.md), "One engine"), and it is meant to stay. Every
+optimization the optimized lowering gains later — registers reused across
+statements, a liveness analysis, more inlined selectors, eventually a JIT that
+can be compared against both — is checked against a naive baseline that does
+not move.
 
-The reference lowering inlines no control flow — `ifTrue:`, `and:`,
-`whileTrue:` and their kin become real sends with real closures — gives every
-value a fresh register, and copies every named local before use. What it checks
-is exactly what the two lowerings do differently: register allocation and
+### What it checks, and what it cannot
+
+It checks what the two lowerings do differently: register allocation and
 liveness (the class of defect "The value-register invariant" above guards
 against), control-flow inlining with its guard and fallback, the lexical-depth
-rewrite inside an inlined block, and the lowering of `^` there. What it cannot
-check is anything the two share: dispatch, the natives, the instructions' own
-semantics and `InitSlot` addressing. Golden tests of exit status, stdout and
-stderr cover those.
+rewrite inside an inlined block, and the lowering of `^` there. Because it is
+written independently rather than as a mode of `Lowerer`, it also checks
+everything else a lowering decides: cascades, argument order, assignments and
+their setter sends, the `^` rule per code kind, how a body ends, the
+initializer's shape, and closure compilation.
 
-One question is open, and must be settled before the trampoline needs the
-answer. The reference lowering activates blocks the optimized one inlines, so a
-recursion-depth limit that counts activations would trip at different points
-under the two. This lowering's design decides how the limit counts.
+What it cannot check is anything the two share: the instructions' semantics in
+the VM, dispatch, the natives, `InitSlot` addressing, and the definitions both
+take from `interpreter/`. Golden tests of exit status, stdout and stderr cover
+those. Nor can it catch a misreading of the specification both lowerings were
+written from; four of the six silent defects Milestone 3's review found were of
+that kind, identically wrong under both engines.
+
+### An independent module, not a mode
+
+`compiler/reference.rs`, written from the AST and the resolver's bindings. It
+shares with `lower.rs` only what must have one definition or is purely
+mechanical: the bytecode types, `lower_literal` (with its deferred
+`MalformedInt`), `selector_of`, the parameter counting, the span helpers,
+`instantiate::builtin_kind_from_name`, and `nested::superclass_clause_expr` and
+`superclass_clause_message_args_expr` — the one definition of what a superclass
+clause evaluates.
+
+A flag inside `Lowerer` was the alternative, and was rejected on two counts. It
+would check only the four differences above and leave the rest shared, the
+blindness the tree-walker had for the orchestration it shared with the VM. And
+every later optimization in `Lowerer` would need a "not in reference mode"
+guard, whose omission would silently compare the optimized lowering with
+itself — nothing would notice. As a separate module the oracle cannot be
+switched off by an optimization. The price is that every new language construct
+is lowered twice.
+
+For the same reason, a pass that rewrites code after lowering — a peephole
+pass, superinstructions — applies to the optimized lowering's output only and
+must never rewrite the reference lowering's. It would change the baseline after
+`check_shape` had checked it, and every comparison from then on would be
+against code nothing had checked.
+
+### What it emits
+
+1. The named locals keep the layout the resolver assigned — arguments, then
+   temporaries — because blocks address their enclosing variables by those
+   indices.
+2. **Every value gets a fresh register, and no register is reused anywhere in
+   the body.** The scratch allocator is not reset at statement boundaries, so
+   every scratch register is written by exactly one instruction, and a named
+   local is written only by an assignment to it — this body's `StoreLocal` or
+   an inner block's `StoreOuterLocal`. A defect in which the optimized lowering
+   overwrites a register that is still live cannot happen here, so it shows as
+   a divergence.
+3. Every read of a local is a `Move` into a fresh register, and every read of
+   an outer local a `LoadOuterLocal`. There are no inlined scopes, so the hop
+   count is the resolver's depth unchanged.
+4. Every send is a real send, receiver then arguments from left to right.
+   Nothing is inlined. Every send is emitted by one function, which is where
+   the trampoline adds `SendInlinable` ("How the limit counts" below).
+5. An assignment evaluates its value into a fresh register, then stores it or
+   sends the setter. The assignment's value is that register, never the local.
+6. A cascade evaluates its receiver once into a fresh register and sends every
+   message to it; its value is the last send's.
+7. A block literal is a `MakeClosure` whose body the reference lowering
+   compiles too.
+8. `^` follows the code kind alone: `Return` in a method, `NonLocalReturn` in a
+   block, evaluate-and-discard at the top of an initializer, `Return` in a
+   superclass clause or its message. There is no "inside an inlined block"
+   case. A body that falls off its end follows the rules of `finish_body`,
+   written again rather than shared.
+9. An initializer is each own slot's initializer followed by `InitSlot`, then
+   the `initExprs`.
+10. `statement_pc`, `call_sites` and `num_registers` follow the same rules as in
+    `lower.rs`.
+
+Its `finish` checks that shape in a debug build, which is what the test suite
+runs (`check_shape`): no branch instruction, since only inlining emits one;
+every scratch register written by exactly one instruction; a named local
+written only by `StoreLocal`; and a named local read only by `Move`, every other
+operand being a scratch register — rule 3, the property that keeps a value from
+changing under its consumer. The ceilings — at most `u16::MAX` temporaries,
+block parameters, named locals, registers and instructions in a body — are
+checked in every build (`Body::new` and its callers, `fresh`, `emit_send`),
+because an index that wrapped would be silently wrong code. A method's or a
+factory's parameter count comes from the shared `num_args_of` and
+`factory_num_args`, whose narrowing rests on the parser's bound instead. The
+optimized lowering is not yet as strict: `lower.rs`'s `alloc_scratch` adds
+without a check, and `next_call_site` guards the call-site id with a
+`debug_assert!` only, so a body past either ceiling is silently wrong in a
+release build. Aligning it with `fresh` and `emit_send` is open.
+
+### Selecting it
+
+`Lowering { Optimized, Reference }` lives in `compiler/mod.rs`, and the compiler
+entry points take it. An `Interpreter` is given one when it is constructed —
+`Interpreter::bootstrap()` is optimized, `Interpreter::bootstrap_with(Lowering)`
+chooses — and `load_module` compiles with it, so one interpreter never mixes the
+two. A decoded artifact runs the code it carries. The image does not record
+which lowering produced that code, because nothing would read it.
+
+`run`, `snapshot`, `build` and `disasm` take `--lowering <optimized|reference>`,
+defaulting to optimized. `disasm` of one method under both is the first tool to
+reach for when the oracle fires. `bench` does not take it, since timing the
+oracle means nothing, and `load` and `inspect` decode rather than compile.
+The switch itself is `LoweringArg` in `crates/ns-cli/src/main.rs`, converted
+into `ns_runtime::Lowering` and passed to `source::bootstrap`, which every
+compiling command goes through; `disasm` takes it as an `Option` instead and
+refuses it for an artifact, which carries the code it was built with.
+
+A command that dropped the switch would compare the optimized lowering with
+itself, and no program's output would show it. `crates/ns-cli/tests/lowering.rs`
+therefore reads the code instead: `disasm`'s listing, and `inspect --full` of an
+artifact from `build` and from `snapshot`, have no branch under the reference
+lowering and one under the optimized. `run` writes nothing to read; it is
+covered by handing the switch to the same `source::bootstrap` call.
+
+### The harness
+
+- `crates/ns-cli/tests/run_fixtures.rs`, `program_outcomes.rs` and
+  `build_load.rs` run every program under both lowerings against the same
+  recorded answer. Under the reference lowering `build_load.rs` also takes the
+  encoder and decoder over code with no jumps and many registers.
+- `run-corpus` runs every row four ways — from source and as a built binary,
+  under each lowering — with no switch, because a gate must not be optional. A
+  row fails if any of the four differs, and the report names which. The gate's
+  counts stay per row.
+- `crates/ns-runtime/tests/reference_lowering.rs` loads every corpus module the
+  resolver accepts, under both lowerings, compiling without running. It
+  exercises "Compilation cannot fail" and the reference lowering's shape
+  assertions over the whole corpus rather than over the six modules that run.
+
+Running every program under both lowerings took the suite (`cargo test
+--workspace`, debug build) from 6.43 s to 9.09 s: every fixture, golden outcome
+and build/load pair runs twice, and `run-corpus`'s rows four ways instead of
+two — more process spawns and compiles, not a slower lowering.
+
+While every program the suites run has a recorded answer, "both produce the
+recorded answer" is the comparison. Comparing the two runs directly with each
+other is needed only once programs without a recorded answer join — generated
+ones — which is outside this step.
+
+`ns-runtime`'s integration tests stay on the optimized lowering. They test
+dispatch, the natives, instantiation and the image, which the two lowerings
+share; the reference lowering has tests of its own in `reference.rs`.
+
+### Keeping it invisible to a program
+
+Nothing the reference lowering does differently may be observable. Two things
+were, and each is settled in the design of the aspect it belongs to rather than
+by exempting it from the comparison:
+
+- **The identity hash.** Were it drawn from its counter at allocation, the
+  closure the reference lowering allocates for every `ifTrue:` the optimized one
+  inlines would shift every later object's hash. Identity hashes are lazily
+  assigned, as in Cog/Spur (`hashBitsOf:`, which calls `newHashBitsOf:` when the
+  bits are 0) and Primordial Soup (`Object_identityHash`, which sets
+  `header_hash` when it is 0): an object draws its number from the counter when
+  it is first asked for one. That makes allocation order unobservable in
+  general, which closure conversion and a JIT's escape analysis need as well.
+  See [object-model.md](object-model.md).
+- **The recursion-depth limit**, below.
+
+Everything else was checked and agrees: all eight inlined forms exist as natives
+that follow the rules the inlined code reproduces (`truthy_arg` for `and:` and
+`or:`, `mustBeBoolean` for a non-Boolean loop condition); a method's `^` inside
+a block the optimized lowering inlines is a `Return` there and a
+`NonLocalReturn` that `invoke_method` catches here, with the same result, and
+`cannotReturn` and the initializer gap behave alike; and a real block nested
+inside such a block has one more frame in its chain here, which holds no
+variables, since the inlining gate admits none, and the same `home`. A
+snapshot's bytes differ by construction, because its code table holds different
+code: what is compared is program outcomes, never artifacts.
+
+### How the limit counts
+
+The trampoline turns recursion depth into an ordinary Newspeak error
+([execution.md](execution.md), "Planned: the trampoline"). A limit that counted
+every activation would trip at different depths under the two lowerings, because
+the reference lowering activates blocks the optimized one inlines:
+`n = 0 ifTrue: [0] ifFalse: [n * (self fact: n - 1)]` costs one activation per
+level optimized and two under the reference lowering.
+
+**The limit counts every activation on the activation stack — method, block,
+initializer level, superclass clause and message — except a block activation
+that a builtin control-flow native performs for a `SendInlinable`.** The natives
+are `ifTrue:`, `ifFalse:`, `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `and:` and
+`or:` on a Boolean, and `whileTrue:` and `whileFalse:` on a block.
+`SendInlinable` is an ordinary public send that only the reference lowering
+emits, for exactly the sends `control_flow::recognize` accepts.
+
+- **The count agrees at every point of every program.** The optimized lowering
+  omits exactly these activations and no others. On a non-Boolean receiver both
+  lowerings make the same real send with real closures, and from there count
+  alike; the `mustBeBoolean` send is made alike too.
+- **Depth stays bounded.** A literal block can run again only if the body
+  enclosing it runs again, so every recursive cycle contains a counted
+  activation, and the uncounted activations per counted one are bounded by the
+  source's static nesting depth.
+- **The optimized lowering pays nothing** beyond the counter every rule needs,
+  since it never emits `SendInlinable`.
+
+So the oracle compares even an overflow byte for byte — the output up to it,
+the error and the exit status — and the trampoline rebuilds exactly the
+unwinding an overflow goes through. Two alternatives were rejected. Counting
+every activation and exempting an overflow from the comparison, as a JVM leaves
+the depth of a `StackOverflowError` to frame sizes and compilation tier, would
+leave that unwinding unchecked and report false divergences for a recursion
+that fits under one lowering and not the other. Counting only method-like
+activations would agree under both, but would leave a recursion through blocks
+alone — `b := [:n | n = 0 ifFalse: [b value: n - 1]]` — to a second, memory-based
+bound that does not agree. Of the prior art, the Smalltalk lineage bounds depth
+by memory and Nova by a fixed count of contexts ([execution.md](execution.md),
+"How other systems bound recursion depth"); none has two lowerings that must
+agree, so this rule is ns-next's own.
+
+`SendInlinable` arrives with the trampoline, together with the counter that is
+its only consumer; before then it would mean exactly `SendPublic`, and nothing
+could test it. Its wire tag is assigned then. Left to the trampoline as well:
+the limit's value, its error text, and whether the control-flow natives become
+trampoline steps or the native stack is sized for the extra Rust frames they
+cost under the reference lowering.
+
+### Until the trampoline
+
+The control-flow natives call back into Newspeak on the Rust stack, so under the
+reference lowering each level of a recursion through an `ifTrue:` costs more
+native stack than under the optimized one, and a deep enough recursion aborts
+sooner. The deepest recursion any suite runs under the reference lowering is
+eleven levels, `fact: 10` in `crates/ns-runtime/tests/reference_lowering.rs`,
+each level through an `ifFalse:` block; among the fixtures and golden outcomes
+the deepest is six (`tests-fixtures/nonlocal_return_depth.ns`). Both are well
+inside either lowering's native stack.
+
+### Status
+
+Built, in the four commits of its
+[plan](../superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md):
+lazy identity hashes, `compiler/reference.rs` with `Lowering`, the CLI switch,
+and the harness. Every recorded program answers alike under both lowerings.
+Probing with it beyond the recorded programs found one defect in the optimized
+lowering, since fixed and pinned by a golden outcome: an assignment through a
+setter could answer the new value of the local it read ("The value-register
+invariant"). What "How the limit counts" needs — `SendInlinable` and the depth counter that
+is its only consumer — arrives with the trampoline.
 
 ## Follow-up: entry points that reach a class object only to find its mixin
 
@@ -384,3 +636,9 @@ signatures is a design change to the image module's interface, not a migration.
   backs many applications with different inherited layouts.
 - **Call-site slots are emitted inert from the start**, so wiring up inline caches
   is not a format break.
+- **The reference lowering is an independent module, not a mode of `Lowerer`**,
+  so that it checks everything a lowering decides and no optimization can switch
+  it off by forgetting a guard.
+- **The recursion-depth limit exempts exactly the activations inlining
+  removes**, marked by `SendInlinable`, so that it counts the same under both
+  lowerings and the oracle compares an overflow too. Planned.

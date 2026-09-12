@@ -238,9 +238,11 @@ struct FrameSlot {
 }
 
 pub struct Heap {
-    /// Monotonic, assigned at allocation, never derived from an address, so
-    /// identity survives both a moving collector and a snapshot
-    /// (`docs/design/memory.md`).
+    /// The next identity hash to hand out. Hashes are assigned lazily, the
+    /// first time `ensure_identity_hash` is asked for one, and never derived
+    /// from an address or an arena index, so identity survives both a moving
+    /// collector and a snapshot (`docs/design/memory.md`) and allocation
+    /// order stays unobservable (`docs/design/object-model.md`).
     next_identity_hash: u32,
     /// Every *reified* activation, addressed by a `FrameRef`'s index: one
     /// `Heap::reify` created because a block captured it, or one the image
@@ -319,17 +321,16 @@ impl Heap {
         }
     }
 
-    /// Saturating, not wrapping and not panicking: identity hashes are not
-    /// required to be unique (`dispatch.rs`'s placeholder class objects
-    /// already share hash 0, and `hash` is the only thing that reads one --
-    /// object identity is the arena index (`ObjRef::same`), never the hash),
-    /// so a world that exhausts the counter is better served by handing out
-    /// a shared `u32::MAX` than by aborting the process. Reachable in *one*
-    /// allocation once `image::load` may set the counter from a file:
+    /// Draws the next number from the counter. Saturating, not wrapping and
+    /// not panicking: identity hashes are not required to be unique -- object
+    /// identity is the arena index (`ObjRef::same`), never the hash -- so a
+    /// world that exhausts the counter is better served by handing out a
+    /// shared `u32::MAX` than by aborting the process. Reachable in *one*
+    /// request once `image::load` has set the counter from a file:
     /// `advance_identity_hash_past` puts it wherever the image's maximum
-    /// says, so the `saturating_add(1)` below is on an image-controlled
-    /// path.
-    pub fn alloc_identity_hash(&mut self) -> u32 {
+    /// says. Never answers 0, which means "not assigned": the counter starts
+    /// at 1 and only moves up.
+    fn alloc_identity_hash(&mut self) -> u32 {
         let h = self.next_identity_hash;
         self.next_identity_hash = self.next_identity_hash.saturating_add(1);
         h
@@ -347,34 +348,13 @@ impl Heap {
     // ---------- Object construction ----------
     //
     // Every construction of an `ObjRef` in the workspace -- src or tests --
-    // goes through one of the three methods below, so that replacing what
+    // goes through one of the two methods below, so that replacing what
     // backs a handle only ever touches this file.
 
-    /// Allocates `data` under `class`, with a fresh identity hash drawn from
-    /// the counter. The ordinary constructor -- everything that is a real,
-    /// observable object goes through this one.
+    /// Allocates `data` under `class`. It carries no identity hash until
+    /// something asks for one (`ensure_identity_hash`), so allocating draws
+    /// nothing from the counter.
     pub fn alloc_object(&mut self, class: ClassRef, data: ObjectData) -> ObjRef {
-        let identity_hash = self.alloc_identity_hash();
-        self.push_object(Object {
-            class,
-            identity_hash,
-            data,
-        })
-    }
-
-    /// Allocates `data` under `class` with identity hash fixed at 0,
-    /// bypassing the counter entirely -- for a record nothing may observe
-    /// as itself. `image::decode`'s two-pass graph section calls this for
-    /// the placeholder it is about to overwrite wholesale via
-    /// `replace_object` once the real record is read, so drawing a fresh
-    /// hash per placeholder would burn through the counter for objects
-    /// nothing keeps. `dispatch.rs`'s and `tests/interpreter.rs`'s
-    /// hand-built class fixtures use it for the same reason `dummy_class`
-    /// does via `alloc_self_referential_class` below: they are never linked
-    /// into a real hierarchy, so which hash they carry does not matter, and
-    /// 0 is the value every other such placeholder already shares
-    /// (`alloc_identity_hash`'s own doc comment).
-    pub fn alloc_placeholder_object(&mut self, class: ClassRef, data: ObjectData) -> ObjRef {
         self.push_object(Object {
             class,
             identity_hash: 0,
@@ -389,9 +369,8 @@ impl Heap {
     /// An arena has no such problem: the slot's index is known before the
     /// slot is filled, so the object can name itself in safe Rust.
     ///
-    /// Identity hash fixed at 0, like `alloc_placeholder_object`: none of
-    /// the four callers links this object into a real hierarchy a hash
-    /// could distinguish it within.
+    /// Like every object, it carries no identity hash until one is asked
+    /// for.
     pub fn alloc_self_referential_class(&mut self, data: ObjectData) -> ObjRef {
         let index = self.next_object_index();
         let handle = self.object_handle(index);
@@ -403,8 +382,8 @@ impl Heap {
         handle
     }
 
-    /// Where `alloc_object` and `alloc_placeholder_object` enter an object
-    /// into the arena; `alloc_self_referential_class` pushes directly
+    /// Where `alloc_object` enters an object into the arena;
+    /// `alloc_self_referential_class` pushes directly
     /// instead, because it needs the index before the object exists to name
     /// itself as its own `class`, but it enforces the same ceiling by
     /// calling `next_object_index` itself. The ceiling is the
@@ -576,9 +555,30 @@ impl Heap {
     // ties every accessor's result to the `Heap` it read from -- the same
     // discipline `docs/design/memory.md` describes for the frame arena.
 
+    /// The identity hash stored on `obj`, 0 if nothing has asked for one yet.
+    /// A read never assigns one: the image encoder writes exactly what is
+    /// stored, so snapshotting a world does not change it.
     pub fn identity_hash(&self, obj: ObjRef) -> u32 {
         self.check_object_origin(obj);
         self.objects[obj.index as usize].identity_hash
+    }
+
+    /// `obj`'s identity hash, drawn from the counter the first time anything
+    /// asks -- `Object>>hash` is the one caller. Assigned lazily, as Cog/Spur
+    /// (`hashBitsOf:`, which calls `newHashBitsOf:` when the bits are 0) and
+    /// Primordial Soup (`Object_identityHash`) do, so that allocation order is
+    /// unobservable: the reference lowering allocates closures the optimized
+    /// one does not, and closure conversion and a JIT's escape analysis will
+    /// add and remove allocations the same way (`docs/design/object-model.md`).
+    pub fn ensure_identity_hash(&mut self, obj: ObjRef) -> u32 {
+        self.check_object_origin(obj);
+        let stored = self.objects[obj.index as usize].identity_hash;
+        if stored != 0 {
+            return stored;
+        }
+        let hash = self.alloc_identity_hash();
+        self.objects[obj.index as usize].identity_hash = hash;
+        hash
     }
 
     /// An opaque, hashable key unique to `obj`, for code that needs an
@@ -586,9 +586,8 @@ impl Heap {
     /// `image::encode::GraphTable`'s object-id map,
     /// `image::decode::rebuild_applications`'s superclass-position map and
     /// `interpreter::nested::in_progress_key`. `identity_hash` cannot serve
-    /// that role, because two placeholder objects may legitimately share
-    /// hash 0 (`alloc_placeholder_object`, `alloc_self_referential_class`),
-    /// which would fold two distinct objects into one table entry.
+    /// that role, because every object nothing has asked for its hash stores
+    /// 0, which would fold two distinct objects into one table entry.
     ///
     /// It lives on `Heap` rather than on `ObjRef` so that the origin check
     /// applies to it like it does to every accessor. Two handles from
@@ -613,7 +612,7 @@ impl Heap {
     /// the only caller: it forces a live object's hash to one below the
     /// ceiling by hand, which is the only way to reach
     /// `advance_identity_hash_past`'s overflow guard without actually
-    /// allocating four billion objects first.
+    /// hashing four billion objects first.
     ///
     /// Calling this on anything but that one object under test is a raw,
     /// unchecked overwrite of the one value identity-keyed lookups,
@@ -1470,11 +1469,12 @@ mod tests {
 
     /// Why `object_identity_key` exists at all, rather than callers keying
     /// on `identity_hash`. Both allocators that fix the hash at 0 --
-    /// `alloc_placeholder_object` and `alloc_self_referential_class` -- can
-    /// produce several objects in one heap sharing that hash, and a map
-    /// keyed on it would fold them into one entry. `image::decode` builds a
-    /// whole graph out of exactly those placeholders, so this is the case
-    /// that would break, not a hypothetical one.
+    /// `alloc_object` (every object nothing has asked for its hash) and
+    /// `alloc_self_referential_class` -- can produce several objects in one
+    /// heap sharing that hash, and a map keyed on it would fold them into
+    /// one entry. `image::decode` builds a whole graph out of exactly those
+    /// placeholders, so this is the case that would break, not a
+    /// hypothetical one.
     ///
     /// The cross-heap case is pinned separately, by
     /// `keying_a_handle_through_a_foreign_heap_panics` below.
@@ -1482,8 +1482,8 @@ mod tests {
     fn identity_keys_separate_objects_that_share_an_identity_hash() {
         let mut heap = Heap::new();
         let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
-        let a = heap.alloc_placeholder_object(class, ObjectData::Instance(Vec::new()));
-        let b = heap.alloc_placeholder_object(class, ObjectData::Instance(Vec::new()));
+        let a = heap.alloc_object(class, ObjectData::Instance(Vec::new()));
+        let b = heap.alloc_object(class, ObjectData::Instance(Vec::new()));
 
         assert_eq!(heap.identity_hash(a), 0);
         assert_eq!(heap.identity_hash(a), heap.identity_hash(b));
@@ -1883,6 +1883,31 @@ mod tests {
         let outer = heap.push_activation(header(), &[], 1);
         let _inner = heap.push_activation(header(), &[], 1);
         heap.pop_activation(outer);
+    }
+
+    /// A hash is drawn from the counter when something first asks for one,
+    /// not when the object is allocated, so allocation order is not
+    /// observable (`docs/design/object-model.md`).
+    #[test]
+    fn an_identity_hash_is_assigned_on_first_request_not_at_allocation() {
+        let mut heap = Heap::new();
+        let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let a = heap.alloc_object(class, ObjectData::Instance(Vec::new()));
+        let b = heap.alloc_object(class, ObjectData::Instance(Vec::new()));
+        assert_eq!(heap.identity_hash(a), 0, "allocation assigns no hash");
+        assert_eq!(heap.identity_hash(b), 0, "allocation assigns no hash");
+        assert_eq!(
+            heap.ensure_identity_hash(b),
+            1,
+            "the first request draws the first number"
+        );
+        assert_eq!(heap.ensure_identity_hash(a), 2);
+        assert_eq!(
+            heap.ensure_identity_hash(b),
+            1,
+            "a second request answers the same hash"
+        );
+        assert_eq!(heap.identity_hash(b), 1, "the assigned hash is stored");
     }
 
     /// Every test above pushes `FrameKind::TopLevel`, which is `None` on

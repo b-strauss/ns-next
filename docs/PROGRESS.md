@@ -10,22 +10,24 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
 
-M4 is under way, and **the next piece is C, the reference lowering. Its design
-is written first** ([compiler.md](design/compiler.md), "Planned: the reference
-lowering"), before any plan or code, and it has to settle how a recursion-depth
-limit counts: the reference lowering activates blocks the optimized one
-inlines, so a limit that counts activations would trip at different points
-under the two, and 1b needs the answer. The bytecode VM is the only engine
-([execution.md](design/execution.md), "One engine"): step A retired the
-tree-walker on 2026-09-11, because designing 1b, the trampoline, showed that a
-recursive AST evaluator cannot take part in what the trampoline exists for —
+M4 is under way, and **the next piece is 1b, the trampoline.** No plan is
+written for it yet; its design is [execution.md](design/execution.md),
+"Planned: the trampoline", which also lists what 1a left for it. 1b adds
+`SendInlinable` and the recursion-depth counter together, by the rule in
+[compiler.md](design/compiler.md), "How the limit counts": the limit counts
+every activation except a block activation a builtin control-flow native
+performs for a `SendInlinable`, so it agrees under both lowerings. The bytecode
+VM is the only engine ([execution.md](design/execution.md), "One engine"):
+step A retired the tree-walker on 2026-09-11, because designing 1b showed that
+a recursive AST evaluator cannot take part in what the trampoline exists for —
 suspending a running computation, the debugger, edit-and-continue on a live
-activation. Three steps come before 1b, each landing on its own:
+activation. Three steps came before 1b, each landing on its own, and all three
+are done:
 
 - **A — Retire the tree-walker. Done.** Its verdicts were harvested into golden
   outcomes first, then everything that existed only because there were two
@@ -33,13 +35,15 @@ activation. Three steps come before 1b, each landing on its own:
 - **B — Clean up with one engine. Done.** Behaviour-preserving refactoring,
   measured wherever it touched a hot path, with the golden outcomes and the
   image bytes as the guard; see "M4 — Cleaning up with one engine" below.
-- **C — The reference lowering. Next; its design is written first.** The
-  differential oracle the retired tree-walker used to be: a second,
-  deliberately naive lowering, under which every program must behave byte for
-  byte as it does under the optimized one ([compiler.md](design/compiler.md),
-  "Planned: the reference lowering"). How the prior art bounds recursion depth
-  is recorded in [execution.md](design/execution.md), "How other systems bound
-  recursion depth".
+- **C — The reference lowering. Done.** The differential oracle the retired
+  tree-walker used to be: a second, deliberately naive lowering, under which
+  every program must behave byte for byte as it does under the optimized one
+  ([compiler.md](design/compiler.md), "The reference lowering"). Every
+  recorded program answers alike under both. Probing with it found and fixed
+  one defect in the optimized lowering, and lazy identity hashes left one
+  known regression, whose fix waits on a decision from the user: a builtin
+  class, the root class and `platform` do not keep their hash across a
+  snapshot. See "M4 — The reference lowering" below.
 
 M4's pieces are one change: the object representation, the activation
 representation and the root discipline each constrain the other two, which is
@@ -47,7 +51,7 @@ why the object and activation representations were converted together rather
 than one at a time. Each piece is designed in the document for its own aspect;
 those documents are the authority, and this is only the map to them.
 
-**Five pieces are done.** The heap seam routes every object and activation
+**Six pieces are done.** The heap seam routes every object and activation
 access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
 it replaced `Rc<RefCell<_>>`: an `ObjRef` or a `FrameRef` is a 32-bit index
 into a `Vec` the `Heap` owns, with a private field so the compiler enforces the
@@ -59,8 +63,10 @@ see "M4 — The activation stack" below. **Nothing reclaims an arena slot** —
 every object and every reified frame is kept for the life of the process. That
 is a deliberate interim cost. The activation stack bounded it for activations
 nothing captures, and step 5, the collector, is what ends it. Then step A
-retired the tree-walker and step B cleaned up after it; see "M4 — Retiring the
-tree-walker" and "M4 — Cleaning up with one engine" below.
+retired the tree-walker, step B cleaned up after it, and step C built the
+reference lowering as the differential oracle; see "M4 — Retiring the
+tree-walker", "M4 — Cleaning up with one engine" and "M4 — The reference
+lowering" below.
 
 **Before 1b fixes its baseline, profile `bench_block.ns`.** Its time did not
 move under the activation stack, although the stack took the block's own
@@ -78,7 +84,7 @@ it — roughly the creation, reification, invocation and divorce of one block,
 since both methods otherwise do one `+` apiece.
 
 The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
-with A and B done, everything from 1b on still ahead — and it is not the order
+and all three done, everything from 1b on still ahead — and it is not the order
 the milestone was originally sketched in. Two things settled the order of the
 numbered steps, neither of them a preference.
 
@@ -111,11 +117,13 @@ so nothing is lost by it going second.
      activation returns. A user-method send fell from ~146 ns to ~91 ns, and
      an activation nothing captures leaves nothing behind; see "M4 — The
      activation stack" below.
-   - **1b — the trampoline. After A to C.** `send` split into a decision and an
+   - **1b — the trampoline. Next.** `send` split into a decision and an
      activation, arguments copied straight from the caller's registers,
-     `Block value` absorbed, recursion depth an ordinary Newspeak error.
-     Designed in [execution.md](design/execution.md), "Planned: the
-     trampoline", which also lists what 1a left for it; no plan is written yet.
+     `Block value` absorbed, recursion depth an ordinary Newspeak error,
+     counted by the rule in [compiler.md](design/compiler.md), "How the limit
+     counts", with `SendInlinable` and the counter added together. Designed in
+     [execution.md](design/execution.md), "Planned: the trampoline", which
+     also lists what 1a left for it; no plan is written yet.
 2. **A compiler-checked root discipline** — [memory.md](design/memory.md). Nova's
    `GcScope`/`NoGcScope`, where holding an unrooted handle across a collection
    safepoint is a type error rather than corruption found later under collection
@@ -513,7 +521,8 @@ claimed it was an error was wrong, and was corrected.
 **What replaced the differential for now** is recorded answers: every fixture
 against its `.expected` stdout and an empty stderr, the golden outcomes, and
 `run-corpus` — `CLAUDE.md`'s "Program outcomes are pinned, not re-derived".
-Step C's reference lowering is the planned differential oracle.
+Step C's reference lowering became the differential oracle; see "M4 — The
+reference lowering" below.
 
 Measured before and after in one sitting on a release build, the "before" built
 from the branch's merge-base in a throwaway worktree: three rounds of
@@ -685,10 +694,9 @@ the same result.
   `interpreter/literals.rs`'s `parse_int_literal` ("fractional radix literals
   are not supported in Milestone 1"). A program observes them on stderr, so
   rewording them is a behaviour change that needs its own decision.
-- **The discarded `Object` allocation in `build_builtin_classes`.** Its loop
-  allocates a class object for `BuiltinClass::Object` and then discards it in
-  favour of `class_of_class`. Removing it would shift every later identity hash
-  by one, which a program and an image both observe.
+- **The discarded `Object` allocation in `build_builtin_classes`.** Step C
+  removed it once identity hashes became lazy, so dropping an allocation no
+  longer shifted any hash.
 - **`ClosureData.params` duplicating `code.num_args`.** At run time only the
   count is read, but the image's closure record carries the names, so dropping
   them is a wire change. Step B shares the vector instead of copying it.
@@ -697,6 +705,219 @@ the same result.
   application's `slot_index` for every lexical send. A lexical-send inline-cache
   entry that records the slot's index removes both
   ([dispatch.md](design/dispatch.md), "Planned: inline caches").
+
+## M4 — The reference lowering (2026-09-12)
+
+Plan: [ns-next-reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md).
+
+Step C, the last of the three inserted ahead of 1b. The compiler has a second,
+deliberately naive lowering, `compiler/reference.rs`, and every program must
+behave byte for byte the same under both: the differential oracle the retired
+tree-walker used to be, meant to stay, so that every later optimization — and
+eventually a JIT — is checked against a baseline that does not move
+([compiler.md](design/compiler.md), "The reference lowering"). The design was
+written and committed before the plan.
+
+**The harness found no divergence; the final review, probing with the
+oracle, found one.** Every fixture, every golden outcome, every build/load
+round trip and every `run-corpus` row produces its recorded answer under both
+lowerings, and every corpus module the resolver accepts compiles under both
+with the reference lowering's shape check passing; no recorded answer changed.
+The whole-branch review then ran programs written to probe where the two
+lowerings differ, and one answered differently: `^x := y`, with a setter `x:`
+that assigns `y` through a closure built earlier, answered `y`'s new value
+under the optimized lowering and the value `y` had under the reference one. The
+rule decided which was right — `x := e` answers the value of `e`
+([dispatch.md](design/dispatch.md), "Setter sends") — so the defect was the
+optimized lowering's, and it predates this step. It skipped the copy that
+protects an assignment's value from its setter send wherever the value was
+consumed by the next instruction — a `^`, a slot initializer, a block's last
+statement, an inlined block's result — on the reasoning that nothing runs in
+between; but the setter send itself runs user code before that instruction
+reads. The fix has every position state whether anything reads its value, and
+skips the copy only where nothing does, so the common case keeps its cheap form:
+every fixture and every corpus module that builds compiles to the same bytes as
+before, and the three benchmarks moved within noise. A new golden outcome in
+`program_outcomes.rs` pins seven positions under both lowerings
+([compiler.md](design/compiler.md), "The value-register invariant").
+
+**Three decisions**, settled with the user on 2026-09-12 and recorded in the
+design:
+
+1. **An independent module, not a mode of `Lowerer`.** It shares with
+   `lower.rs` only what must have one definition or is purely mechanical — the
+   bytecode types, `lower_literal`, `selector_of`, the parameter counting, the
+   span helpers, `builtin_kind_from_name` and the two superclass-clause
+   expression builders in `interpreter/nested.rs` — because whatever the two
+   share, the comparison cannot check. A flag inside `Lowerer` would have
+   checked only the four things the lowerings do differently (register reuse,
+   inlining, the lexical-depth rewrite, `^` inside an inlined block), and every
+   later optimization would have needed a "not in reference mode" guard whose
+   omission silently compares the optimized lowering with itself. The price is
+   that every new construct is lowered twice.
+2. **The recursion-depth limit exempts exactly the activations inlining
+   removes.** It counts every activation except a block activation that a
+   builtin control-flow native performs for a `SendInlinable` — an ordinary
+   public send only the reference lowering emits, for exactly the sends the
+   optimized one inlines. So the count agrees at every point of every program,
+   depth stays bounded (every recursive cycle contains a counted activation),
+   the optimized lowering pays nothing beyond the counter, and the oracle
+   compares even an overflow byte for byte. Counting every activation would
+   trip at different depths under the two lowerings; counting only method-like
+   activations would leave a recursion through blocks to a memory bound that
+   does not agree. The Smalltalk lineage bounds depth by memory and Nova by a
+   fixed count of contexts ([execution.md](design/execution.md), "How other
+   systems bound recursion depth"); none has two lowerings that must agree, so
+   the rule is ns-next's own. Neither `SendInlinable` nor the counter is built:
+   the counter is its only consumer, so both arrive with 1b
+   ([compiler.md](design/compiler.md), "How the limit counts").
+3. **Identity hashes are assigned lazily**, the first time `hash` asks, as in
+   Cog/Spur (`hashBitsOf:`, which calls `newHashBitsOf:` when the bits are 0)
+   and Primordial Soup (`Object_identityHash`, which sets `header_hash` when it
+   is 0). A hash drawn at allocation made every allocation observable, and the
+   reference lowering allocates a closure for every block the optimized one
+   inlines; closure conversion and a JIT's escape analysis will add and remove
+   allocations the same way ([object-model.md](design/object-model.md)).
+
+**What changed**, in the plan's order:
+
+1. **Lazy identity hashes** — a behaviour change of its own. An object carries
+   0 until `Object>>hash` asks, through `Heap::ensure_identity_hash`; the
+   encoder writes what is stored without assigning one, and the decoder keeps
+   every value, 0 included. `hash` values change, which the specification
+   leaves open and no recorded outcome pinned. A new fixture,
+   `tests-fixtures/identity_hash.ns`, pins the rule — its answers (1, 2, 1,
+   `false`) were derived from the rule, not recorded from a run.
+   `crates/ns-runtime/tests/fixtures/golden-image.bin` was regenerated and
+   differs from before in exactly one byte, checked byte by byte: the
+   snapshotted instance's identity-hash field, now 0 because nothing asks for
+   it.
+2. **The reference lowering.** `compiler/reference.rs`, `Lowering { Optimized,
+   Reference }` and `Interpreter::bootstrap_with`: an interpreter compiles
+   every module it loads with the lowering it was bootstrapped with, so one
+   never mixes the two, and a decoded artifact runs the code it carries.
+   Nothing is inlined, every scratch register is written by exactly one
+   instruction, every read of a local is a copy, and `check_shape` asserts
+   that in a debug build. Eight unit tests, and
+   `crates/ns-runtime/tests/reference_lowering.rs`: programs answer alike, the
+   initializer's shape, and every corpus module the resolver accepts — at
+   least 189 of 211, a floor that is never lowered — compiles under both.
+3. **`--lowering <optimized|reference>`** on `run`, `snapshot`, `build` and
+   `disasm`, defaulting to optimized. `disasm` refuses it for an artifact,
+   which carries the code it was built with; `bench` keeps the optimized
+   lowering, since timing the oracle means nothing. Two new `disasm` snapshots
+   pin the loop and the fallback shapes under the reference lowering.
+4. **The harness.** Every fixture, golden outcome and build/load round trip
+   runs under both lowerings against the same recorded answer, and
+   `run-corpus` runs every row four ways — from source and as a built binary,
+   under each lowering — with no switch, naming the lane that disagrees. A
+   review finding followed: `corpus/runnable.toml`'s header now describes the
+   four lanes.
+5. **The final review's fixes.** The setter-value fix above, in a commit of
+   its own. `check_shape` now also asserts that a named local is read only by
+   `Move` and written only by `StoreLocal` — the property that kept the
+   reference lowering immune to that defect — and the reference lowering's
+   ceilings on temporaries, block parameters and named locals are checked in
+   every build; four more unit tests pin the shape check itself.
+   `crates/ns-cli/tests/lowering.rs` checks that `build` and
+   `snapshot` compile with the lowering they are given, by reading the code
+   the artifact carries, since no program's output would show a dropped
+   `--lowering`.
+
+**A known regression: identity hashes of tag-named objects across a
+snapshot.** Lazy hashes lose the hash of an object an image names by tag
+rather than by record — a builtin class, the module's root class, the
+`platform` singleton. Nothing records it, so a hash one of them was asked for
+before a snapshot is replaced by a fresh one after the load. Before this step
+those hashes survived only because the bootstrap allocated the same objects in
+the same order every time. Fixing it needs a design decision — a new wire tag
+that records those hashes, or a deterministic hash rule for tag-named
+objects — which is pending with the user
+([image-format.md](design/image-format.md), "Identity hashes are preserved
+verbatim").
+
+**What was deleted:** `Heap::alloc_placeholder_object`, whose callers now use
+`alloc_object`, since every object starts at hash 0;
+`Interpreter::alloc_identity_hash` (the `Heap`'s own `alloc_identity_hash` is
+now private, with `ensure_identity_hash` its only caller outside tests); and
+the discarded `Object` allocation in
+`build_builtin_classes`, kept by step B only because removing it shifted every
+later hash.
+
+Measured in two sittings on a release build, each with three rounds of
+`ns-next bench` over the three fixtures, alternating the two binaries within
+each round, the "before" built in a throwaway worktree. Bytecode medians in ms,
+rounds 1–3.
+
+Lazy identity hashes, against their parent commit, because they touch
+allocation:
+
+| Source | Before | After |
+|---|---|---|
+| `bench_loop.ns` | 16.34, 15.57, 15.42 | 15.58, 15.49, 15.76 |
+| `bench_send.ns` | 18.79, 19.08, 19.33 | 18.98, 18.83, 19.04 |
+| `bench_block.ns` | 29.94, 29.74, 30.85 | 29.83, 30.20, 30.99 |
+
+The whole step, against `master`:
+
+| Source | Before | After |
+|---|---|---|
+| `bench_loop.ns` | 15.58, 15.29, 15.32 | 15.48, 15.68, 15.48 |
+| `bench_send.ns` | 18.97, 19.03, 19.00 | 18.96, 18.87, 19.03 |
+| `bench_block.ns` | 29.89, 30.61, 29.92 | 30.60, 29.95, 30.49 |
+
+Nothing moved beyond noise in either sitting: on every source the two groups
+overlap, and no "after" median is slower than its "before" by more than the
+spread within either group. Three extra whole-step rounds of the two sources
+whose "after" sat higher settled `bench_loop.ns` — 15.82, 15.38, 15.62 before
+against 15.57, 15.55, 15.66 after, no direction — and left `bench_block.ns`'s
+"after" higher in five rounds of six — 29.83, 29.95, 29.81 against 29.93,
+30.15, 30.01 — by about 0.5% on the six-round medians (29.92 against
+30.08 ms), inside both groups' spread (0.79 and 0.67 ms). Not attributed; no
+profile was taken. The optimized lowering's output is unchanged (below), so
+the timed code is the same bytecode, and the one change on its path is that
+an allocation no longer draws from the counter.
+
+**Byte identity.** Lazy identity hashes build every fixture into a stateless
+binary identical to their parent commit's: `compared 23 artifacts, 0
+differing` (a snapshot changes on purpose, so only binaries were compared).
+The reference lowering and the CLI switch each left every `build` and
+`snapshot` artifact of the optimized lowering identical to their parent
+commit's: `compared 46 artifacts, 0 differing`, twice. Against `master`, all
+23 stateless binaries are identical, and all 23 snapshots differ in one to
+three bytes at the same length — in each, `inspect --full` shows nothing but
+the identity-hash fields of objects nothing asked for their hash, now 0.
+
+Suite running time (`cargo test --workspace`, debug build) went from 6.43 s to
+9.09 s with the harness: every fixture, golden outcome and build/load pair runs
+twice, and `run-corpus`'s rows four ways instead of two — more process spawns
+and compiles, not a slower lowering.
+
+609 tests pass after the final review's fixes (600 before them), with one
+ignored; `parse-corpus` reports **parsed 210, failed
+0, expected-fail 1, stale 0** and `run-corpus` **ran 6, failed 0, skipped
+205**.
+
+**Left, deliberately:**
+
+- **`SendInlinable`, the depth counter, the limit's value and its error text**
+  — 1b's, together with whether the control-flow natives become trampoline
+  steps. Until then they call back into Newspeak on the Rust stack, so under
+  the reference lowering a recursion through an `ifTrue:` costs more native
+  stack per level and aborts sooner. The deepest recursion a suite runs under
+  it is eleven levels, `fact: 10` in
+  `crates/ns-runtime/tests/reference_lowering.rs`; the fixtures reach six
+  ([compiler.md](design/compiler.md), "Until the trampoline").
+- **Programs without a recorded answer** — generated programs, fuzzing — and
+  the direct run-against-run comparison only they would need. While every
+  program the suites run has a recorded answer, "both produce the recorded
+  answer" is the comparison.
+- **`ns-runtime`'s integration tests under the reference lowering.** They test
+  dispatch, the natives, instantiation and the image, which the two lowerings
+  share.
+- **The two error messages that name a milestone, `ClosureData.params` and the
+  lexical-send slot lookup**, still as listed under "M4 — Cleaning up with one
+  engine".
 
 ## Notes
 

@@ -35,10 +35,10 @@ that cannot name its code is describing an intention, and should say so.
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
-| AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | the reference lowering, inline-cache slots wired up |
+| AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | inline-cache slots wired up |
 | Activations, the VM loop | [execution.md](execution.md) | Built | the trampoline, closure conversion, JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena and the activation stack are built, nothing reclaims an arena slot | checked roots, a collector |
-| Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
+| Serialization, both artifacts | [image-format.md](image-format.md) | Built — except that an object named by tag loses its identity hash across a snapshot (open) | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | Partial | the leaf/callback split |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
 
@@ -84,7 +84,10 @@ source bytes
   -> ns-runtime::resolve        ResolvedModule (bindings + slot layout)
   -> Interpreter::load_module   the module's root class object, its code
                                 compiled onto the declarations: one
-                                CompiledCode per body, on its mixin
+                                CompiledCode per body, on its mixin, by
+                                the interpreter's lowering -- optimized,
+                                or the reference lowering it is checked
+                                against
   -> instantiate                the primary factory, then each level's initializer
   -> the entry send             whatever the CLI was asked to send
 ```
@@ -112,7 +115,7 @@ cargo test --workspace          # includes the golden program outcomes
 cargo clippy --workspace --all-targets   # must be warning-free
 cargo fmt --all                 # before every commit
 cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 210, failed 0, expected-fail 1, stale 0
-cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 205
+cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 205 -- every row under both lowerings
 ```
 
 Never judge performance from a debug build; `cargo build --workspace --release`

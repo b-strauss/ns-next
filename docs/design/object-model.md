@@ -28,11 +28,26 @@ anywhere else. `Value` is therefore `Copy` and a handle has no destructor. What
 that representation buys, what it costs while nothing reclaims a slot, and why a
 handle means nothing against a different `Heap` are in [memory.md](memory.md).
 
-**The identity hash is a monotonic counter assigned at allocation**, never
-derived from an address and never from the arena index. An address- or
+**The identity hash is drawn from a monotonic counter the first time `hash`
+asks for one**, never derived from an address and never from the arena index,
+and 0 means "not yet assigned" (`Heap::ensure_identity_hash`). An address- or
 index-derived hash would break the moment a moving collector relocates the
 object or a `become:` swaps identities, and identity has to be stable across a
-snapshot. See [memory.md](memory.md).
+snapshot; see [memory.md](memory.md). Assigning it lazily, as Cog/Spur
+(`hashBitsOf:`) and Primordial Soup (`Object_identityHash`) do, keeps
+allocation order unobservable: the reference lowering allocates closures the
+optimized one does not, and closure conversion and a JIT's escape analysis will
+add and remove allocations the same way, so a hash drawn when the object is
+allocated would change a program's `hash` values under any of them. The encoder writes the
+stored value without assigning one, and the decoder keeps every value, 0
+included.
+
+That stability across a snapshot holds today for every object the image
+carries as a record, and **not for the objects it names by tag**: a builtin
+class, the module's root class and the `platform` singleton. Nothing records
+their hashes, so one assigned before a snapshot is replaced by a fresh one after
+the load. Which of two fixes closes it is open; see
+[image-format.md](image-format.md), "Identity hashes are preserved verbatim".
 
 `ClosureData { params, code, captured_frame: FrameRef, home: FrameRef }`
 captures its defining frame for closure semantics and its home activation for
@@ -313,5 +328,6 @@ forwarding in a moving collector, and no collector exists yet
   makes an override and the declaration it overrides collide in one slot.
 - **The accessor is interpreter code, not synthesized bytecode**, so there is one
   copy of it for every lowering to reach.
-- **Identity hashes come from a counter, not from addresses**, so identity
-  survives a moving collector and a snapshot.
+- **Identity hashes come from a counter, not from addresses, and are assigned on
+  first request**, so identity survives a moving collector and a snapshot, and
+  allocation order is unobservable.

@@ -1,12 +1,23 @@
-//! Bytecode compiler entry points: `compile_method` for a method, and
-//! `compile_mixin_bodies` for the three bodies a mixin owns. See
-//! `docs/design/compiler.md`.
+//! Bytecode compiler entry points, and the choice between the optimized
+//! lowering (`lower.rs`) and the reference lowering it is checked against
+//! (`reference.rs`).
 //! Compiling an already-resolved module is a total, deterministic lowering
 //! that can never raise a `NewspeakError`; a failure here is an `ns-runtime`
 //! bug and panics.
 
 pub(crate) mod control_flow;
 pub(crate) mod lower;
+pub(crate) mod reference;
+
+/// Which lowering compiles a module: the optimized one every program runs
+/// under, or the deliberately naive reference lowering it is checked against
+/// (`docs/design/compiler.md`, "The reference lowering"). Chosen once per
+/// `Interpreter`, so one interpreter never mixes the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lowering {
+    Optimized,
+    Reference,
+}
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -42,7 +53,11 @@ fn factory_num_args(mixin: &Mixin) -> u16 {
 pub fn compile_method(
     method: &ast::MethodDecl,
     bindings: &Rc<HashMap<Span, Binding>>,
+    lowering: Lowering,
 ) -> CompiledCode {
+    if lowering == Lowering::Reference {
+        return reference::compile_method(method, bindings);
+    }
     let num_args = num_args_of(&method.pattern);
     let num_named_temps = method.body.temps.len() as u16;
     let mut lowerer = Lowerer::new(
@@ -52,10 +67,7 @@ pub fn compile_method(
         bindings,
         vec![],
     );
-    for stmt in &method.body.stmts {
-        lowerer.lower_statement(stmt);
-    }
-    lowerer.finish_body(&method.body.stmts);
+    lowerer.lower_body(&method.body.stmts);
     lowerer.finish(method.span)
 }
 
@@ -64,7 +76,15 @@ pub fn compile_method(
 /// declaration has them. Called while the mixin is still a value, before it is
 /// wrapped in the `Rc` every application shares -- the one moment it can be
 /// written.
-pub(crate) fn compile_mixin_bodies(mixin: &mut Mixin, bindings: &Rc<HashMap<Span, Binding>>) {
+pub(crate) fn compile_mixin_bodies(
+    mixin: &mut Mixin,
+    bindings: &Rc<HashMap<Span, Binding>>,
+    lowering: Lowering,
+) {
+    if lowering == Lowering::Reference {
+        reference::compile_mixin_bodies(mixin, bindings);
+        return;
+    }
     mixin.initializer_code = Some(Rc::new(compile_mixin_initializer(mixin, bindings)));
     mixin.superclass_clause_code = compile_superclass_clause(mixin, bindings).map(Rc::new);
     mixin.superclass_message_code = compile_superclass_message(mixin, bindings).map(Rc::new);
@@ -99,10 +119,9 @@ fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>
         }
     }
     for stmt in &mixin.init_exprs {
-        lowerer.lower_statement(stmt);
         source = Some(merge_span(source, stmt_span(stmt)));
     }
-    lowerer.finish_body(&mixin.init_exprs);
+    lowerer.lower_body(&mixin.init_exprs);
     lowerer.finish(source.unwrap_or(Span::new(0, 0)))
 }
 
@@ -126,10 +145,7 @@ fn compile_superclass_clause(
         crate::interpreter::nested::superclass_clause_expr(clause),
     )];
     let mut lowerer = Lowerer::new(CodeKind::SuperclassClause, 0, 0, bindings, vec![]);
-    for stmt in &stmts {
-        lowerer.lower_statement(stmt);
-    }
-    lowerer.finish_body(&stmts);
+    lowerer.lower_body(&stmts);
     Some(lowerer.finish(clause.span))
 }
 
@@ -158,10 +174,7 @@ fn compile_superclass_message(
     let num_args = factory_num_args(mixin);
     let stmts = vec![Stmt::Return(args)];
     let mut lowerer = Lowerer::new(CodeKind::SuperclassMessage, num_args, 0, bindings, vec![]);
-    for stmt in &stmts {
-        lowerer.lower_statement(stmt);
-    }
-    lowerer.finish_body(&stmts);
+    lowerer.lower_body(&stmts);
     Some(lowerer.finish(clause.span))
 }
 

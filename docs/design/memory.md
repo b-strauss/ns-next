@@ -17,11 +17,11 @@
 rather than something the representation forecloses. Layout lives on
 `MixinApplication`; see [object-model.md](object-model.md).
 
-**Identity is stable and hashed from a counter.** Every object carries an
-`identity_hash` assigned monotonically at allocation, never derived from its
-address. This is required by identity-keyed collections, by image roots, and by
-`become:`; an address-derived hash would break the moment an object moved or an
-identity was swapped.
+**Identity is stable and hashed from a counter.** Every object's
+`identity_hash` is drawn from a monotonic counter the first time it is asked
+for, never derived from its address. This is required by identity-keyed
+collections, by image roots, and by `become:`; an address-derived hash would
+break the moment an object moved or an identity was swapped.
 
 **Objects live in an arena and activations on a stack, not in
 `Rc<RefCell<_>>`.** One `Heap` owns `objects: Vec<Object>`, the activation
@@ -428,8 +428,11 @@ its variables. After it, a surviving block holds exactly what it captured.
 
 ## Decisions
 
-- **Identity hashes come from a counter, not an address**, so identity survives
-  moving and snapshotting.
+- **Identity hashes come from a counter, not an address, and are assigned on
+  first request**, so identity survives moving and snapshotting — except, for
+  now, the hash of an object an image names by tag rather than by record
+  ([image-format.md](image-format.md), "Identity hashes are preserved
+  verbatim").
 - **A handle is an arena-relative index, not a globally unique name**, and a
   `debug_assertions`-only origin guard says so at every accessor rather than
   leaving it to convention. It exists because the failure it catches is silent:

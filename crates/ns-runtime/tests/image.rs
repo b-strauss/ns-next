@@ -1118,14 +1118,17 @@ fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
     // `assert_eq!` can tell a real fold from a stale field or a running
     // counter.
     let (interp, _c, original, decoded, max) = round_trip_graph(EMPTY, |interp, _| {
-        let first = Value::Obj(interp.new_string("x".to_string()));
-        let second = Value::Obj(interp.new_string("y".to_string()));
-        vec![second, first]
+        let first = interp.new_string("x".to_string());
+        let second = interp.new_string("y".to_string());
+        // Requested in this order, so `second` holds the higher hash.
+        interp.heap_mut().ensure_identity_hash(first);
+        interp.heap_mut().ensure_identity_hash(second);
+        vec![Value::Obj(second), Value::Obj(first)]
     });
     let heap = interp.heap_ref();
     let higher = heap.identity_hash(*obj(&original[0]));
     let lower = heap.identity_hash(*obj(&original[1]));
-    assert!(higher > lower, "the allocator hands out ascending hashes");
+    assert!(higher > lower, "hashes are handed out in request order");
     assert_eq!(heap.identity_hash(*obj(&decoded[0])), higher);
     assert_eq!(heap.identity_hash(*obj(&decoded[1])), lower);
     assert_eq!(max, higher);
@@ -1974,6 +1977,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         interp.send(instance, Symbol::intern("bump"), vec![]),
         "bump",
     );
+    let max_hash = interp.heap_mut().ensure_identity_hash(*obj(&instance));
     let platform = interp.platform();
     let bytes = image::snapshot(
         interp.heap_ref(),
@@ -1984,7 +1988,6 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         std::slice::from_ref(&instance),
     )
     .expect("snapshot");
-    let max_hash = interp.heap_ref().identity_hash(*obj(&instance));
 
     let mut loaded = image::load(&bytes).expect("load");
     assert!(
@@ -2010,7 +2013,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
     );
     let fresh = loaded.interp.new_string("fresh".to_string());
     assert!(
-        loaded.interp.heap_ref().identity_hash(fresh) > max_hash,
+        loaded.interp.heap_mut().ensure_identity_hash(fresh) > max_hash,
         "no hash collision with loaded objects"
     );
 }
@@ -2954,8 +2957,8 @@ fn an_identity_hash_at_the_ceiling_is_refused_rather_than_overflowing_the_counte
 fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
     // The step the ceiling check alone does not cover: a maximum of
     // `u32::MAX - 1` is a legal image, and it leaves the counter at
-    // `u32::MAX` -- where `alloc_identity_hash`'s own `+= 1` used to
-    // overflow on the very first allocation after the load. Saturating
+    // `u32::MAX` -- where the counter's own `+= 1` would overflow on the
+    // very first hash assigned after the load. Saturating
     // there costs a shared hash (identity is `Rc` identity, never the
     // hash) instead of aborting the process.
     let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
@@ -2985,12 +2988,54 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
     );
     let first = loaded.interp.new_string("a".to_string());
     let second = loaded.interp.new_string("b".to_string());
-    assert_eq!(loaded.interp.heap_ref().identity_hash(first), u32::MAX);
+    let heap = loaded.interp.heap_mut();
+    assert_eq!(heap.ensure_identity_hash(first), u32::MAX);
     assert_eq!(
-        loaded.interp.heap_ref().identity_hash(second),
+        heap.ensure_identity_hash(second),
         u32::MAX,
         "an exhausted counter shares its last hash instead of overflowing"
     );
+}
+
+/// An object nothing asked for its hash is written as 0 and decoded as 0 --
+/// still unassigned -- and the first request after the load draws a number
+/// past every hash the image carried, so it cannot collide with one.
+#[test]
+fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() {
+    let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n) : ()";
+    let (mut interp, class) = load(src);
+    let hashed = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let unhashed = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let assigned = interp.heap_mut().ensure_identity_hash(*obj(&hashed));
+    let platform = interp.platform();
+    let bytes = image::snapshot(
+        interp.heap_ref(),
+        Some(src),
+        &Origin::File(PathBuf::from("t.ns")),
+        class,
+        &platform,
+        &[hashed, unhashed],
+    )
+    .expect("snapshot");
+    assert_eq!(
+        interp.heap_ref().identity_hash(*obj(&unhashed)),
+        0,
+        "snapshotting assigns no hash"
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let (kept, fresh) = (*obj(&loaded.roots[0]), *obj(&loaded.roots[1]));
+    let heap = loaded.interp.heap_mut();
+    assert_eq!(
+        heap.identity_hash(kept),
+        assigned,
+        "an assigned hash is preserved"
+    );
+    assert_eq!(
+        heap.identity_hash(fresh),
+        0,
+        "an unassigned hash stays unassigned"
+    );
+    assert!(heap.ensure_identity_hash(fresh) > assigned);
 }
 
 // ---------------------------------------------------------------------------

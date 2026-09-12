@@ -25,6 +25,22 @@ pub(crate) enum ScopeKind {
     Inlined,
 }
 
+/// Whether anything reads an expression's value once it is computed. A
+/// position states it, never infers it; `Lowerer::lower_expr_for` is the one
+/// place that acts on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueUse {
+    /// An instruction reads the value: a return, `InitSlot`, a body's
+    /// `ImplicitReturn`, an inlined block's result.
+    Read,
+    /// Nothing reads the value: every statement but a block's last, every
+    /// statement of a method or an initializer (both fall off their end
+    /// answering `self`), an inlined loop body's statements, and the last
+    /// statement of a block inlined where the inlined form's own value is
+    /// discarded.
+    Discarded,
+}
+
 /// The runtime `captured_frame` hop count for a resolver depth of `depth`
 /// scopes: the number of `Frame` scopes among the innermost `depth`
 /// entries of `scopes` (innermost last).
@@ -96,13 +112,33 @@ impl<'a> Lowerer<'a> {
         self.instrs.len() - 1
     }
 
+    /// Lowers a body's own statements, then its end (`finish_body`). The
+    /// last statement's value is read only when falling off the end answers
+    /// it; every other statement's value is discarded.
+    pub(crate) fn lower_body(&mut self, stmts: &[Stmt]) {
+        let last_use = if self.answers_last_value() {
+            ValueUse::Read
+        } else {
+            ValueUse::Discarded
+        };
+        for (i, stmt) in stmts.iter().enumerate() {
+            let use_ = if i + 1 == stmts.len() {
+                last_use
+            } else {
+                ValueUse::Discarded
+            };
+            self.lower_statement(stmt, use_);
+        }
+        self.finish_body(stmts);
+    }
+
     /// Lowers one of the body's own statements, recording its safepoint
     /// range in `statement_pc` and resetting the scratch allocator first
     /// (statements are the safepoint/scratch-liveness boundary).
-    pub(crate) fn lower_statement(&mut self, stmt: &Stmt) {
+    fn lower_statement(&mut self, stmt: &Stmt, use_: ValueUse) {
         self.next_scratch = self.base;
         let start = self.instrs.len();
-        self.lower_stmt_inner(stmt);
+        self.lower_stmt_inner(stmt, use_);
         let end = self.instrs.len();
         self.statement_pc.push((self.statement_index, start..end));
         self.statement_index += 1;
@@ -117,7 +153,7 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn lower_slot_init(&mut self, init: &Expr, own_index: u32) {
         self.next_scratch = self.base;
         let start = self.instrs.len();
-        let src = self.lower_expr_consumed_immediately(init);
+        let src = self.lower_expr_for(init, ValueUse::Read);
         self.emit(Instr::InitSlot { src, own_index });
         let end = self.instrs.len();
         self.statement_pc.push((self.statement_index, start..end));
@@ -125,21 +161,29 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Lowers a statement without touching the allocator or the PC table --
-    /// shared by `lower_statement` and `lower_inline_block_body`.
-    /// Returns the value register for a `Stmt::Expr` (or a discarded
-    /// initializer `^`), `None` when a return instruction was emitted.
-    fn lower_stmt_inner(&mut self, stmt: &Stmt) -> Option<u16> {
+    /// shared by `lower_statement` and `lower_inline_block_body`. `use_` is
+    /// what reads an expression statement's value; a `^` that returns reads
+    /// its own. Returns the value register for a `Stmt::Expr` (or a
+    /// discarded initializer `^`), `None` when a return instruction was
+    /// emitted.
+    fn lower_stmt_inner(&mut self, stmt: &Stmt, use_: ValueUse) -> Option<u16> {
         match stmt {
             Stmt::Expr(e) => {
-                let reg = self.lower_expr_consumed_immediately(e);
+                let reg = self.lower_expr_for(e, use_);
                 self.last_expr_reg = Some(reg);
                 Some(reg)
             }
             Stmt::Return(e) => {
-                let reg = self.lower_expr_consumed_immediately(e);
-                match self.return_instr(reg) {
-                    Some(instr) => {
-                        self.emit(instr);
+                let make_return = self.return_instr();
+                let use_ = if make_return.is_some() {
+                    ValueUse::Read
+                } else {
+                    use_
+                };
+                let reg = self.lower_expr_for(e, use_);
+                match make_return {
+                    Some(make_return) => {
+                        self.emit(make_return(reg));
                         self.last_expr_reg = None;
                         None
                     }
@@ -152,19 +196,19 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// What a `^` means here, per code kind. `None` is
-    /// "evaluate and discard" (a top-level `^` in `initExprs`, which has no
-    /// method to return from). Inside an inlined block (`scopes.last()
-    /// == Inlined`) an initializer's `^` must instead raise the
-    /// same `Signal::Return` a real block would, so it becomes
+    /// What a `^` means here, per code kind: the instruction that returns a
+    /// value register. `None` is "evaluate and discard" (a top-level `^` in
+    /// `initExprs`, which has no method to return from). Inside an inlined
+    /// block (`scopes.last() == Inlined`) an initializer's `^` must instead
+    /// raise the same `Signal::Return` a real block would, so it becomes
     /// `NonLocalReturn`.
-    fn return_instr(&self, reg: u16) -> Option<Instr> {
+    fn return_instr(&self) -> Option<fn(u16) -> Instr> {
         let inside_inlined = self.scopes.last() == Some(&ScopeKind::Inlined);
         match (self.kind, inside_inlined) {
-            (CodeKind::Method, _) => Some(Instr::Return { reg }),
-            (CodeKind::Block, _) => Some(Instr::NonLocalReturn { reg }),
+            (CodeKind::Method, _) => Some(|reg| Instr::Return { reg }),
+            (CodeKind::Block, _) => Some(|reg| Instr::NonLocalReturn { reg }),
             (CodeKind::Initializer, false) => None,
-            (CodeKind::Initializer, true) => Some(Instr::NonLocalReturn { reg }),
+            (CodeKind::Initializer, true) => Some(|reg| Instr::NonLocalReturn { reg }),
             // Either clause body is a single synthetic `^expr` (the
             // receiver, or the message's argument list), so its top-level
             // `^` is what hands that value back; a `^` written inside a
@@ -172,11 +216,23 @@ impl<'a> Lowerer<'a> {
             // `interpreter::nested::run_clause_body` built, exactly as it
             // would in any other body.
             (CodeKind::SuperclassClause | CodeKind::SuperclassMessage, false) => {
-                Some(Instr::Return { reg })
+                Some(|reg| Instr::Return { reg })
             }
             (CodeKind::SuperclassClause | CodeKind::SuperclassMessage, true) => {
-                Some(Instr::NonLocalReturn { reg })
+                Some(|reg| Instr::NonLocalReturn { reg })
             }
+        }
+    }
+
+    /// Whether a body that falls off its end answers its last statement's
+    /// value -- a block, a superclass clause -- rather than `self` -- a
+    /// method, an initializer. `finish_body` emits that end, and
+    /// `lower_body` reads it to know whether the last statement's value is
+    /// read, so the two cannot disagree.
+    fn answers_last_value(&self) -> bool {
+        match self.kind {
+            CodeKind::Block | CodeKind::SuperclassClause | CodeKind::SuperclassMessage => true,
+            CodeKind::Method | CodeKind::Initializer => false,
         }
     }
 
@@ -195,32 +251,23 @@ impl<'a> Lowerer<'a> {
     /// always returns `self` (its top-level `^` never emits a return); a
     /// block returns its last statement's value, `nil` if it has none; a
     /// superclass clause returns the value of the one expression it is.
-    pub(crate) fn finish_body(&mut self, stmts: &[Stmt]) {
-        let ends_in_return = matches!(stmts.last(), Some(Stmt::Return(_)));
-        match self.kind {
-            CodeKind::SuperclassClause | CodeKind::SuperclassMessage if ends_in_return => {}
-            CodeKind::SuperclassClause | CodeKind::SuperclassMessage => {
-                let reg = match self.last_expr_reg {
-                    Some(r) => r,
-                    None => self.emit_nil(),
-                };
-                self.emit(Instr::ImplicitReturn { reg });
-            }
-            CodeKind::Method if ends_in_return => {}
-            CodeKind::Method | CodeKind::Initializer => {
-                let dst = self.alloc_scratch();
-                self.emit(Instr::LoadSelf { dst });
-                self.emit(Instr::ImplicitReturn { reg: dst });
-            }
-            CodeKind::Block if ends_in_return => {}
-            CodeKind::Block => {
-                let reg = match self.last_expr_reg {
-                    Some(r) => r,
-                    None => self.emit_nil(),
-                };
-                self.emit(Instr::ImplicitReturn { reg });
-            }
+    fn finish_body(&mut self, stmts: &[Stmt]) {
+        let ends_in_return =
+            matches!(stmts.last(), Some(Stmt::Return(_))) && self.kind != CodeKind::Initializer;
+        if ends_in_return {
+            return;
         }
+        let reg = if self.answers_last_value() {
+            match self.last_expr_reg {
+                Some(r) => r,
+                None => self.emit_nil(),
+            }
+        } else {
+            let dst = self.alloc_scratch();
+            self.emit(Instr::LoadSelf { dst });
+            dst
+        };
+        self.emit(Instr::ImplicitReturn { reg });
     }
 
     /// Compiles a block literal into its own `CompiledCode` with a nested
@@ -240,10 +287,7 @@ impl<'a> Lowerer<'a> {
             self.bindings,
             self.scopes.clone(),
         );
-        for stmt in &block.body.stmts {
-            inner.lower_statement(stmt);
-        }
-        inner.finish_body(&block.body.stmts);
+        inner.lower_body(&block.body.stmts);
         let code = inner.finish(block.span);
         let dst = self.alloc_scratch();
         self.emit(Instr::MakeClosure {
@@ -283,23 +327,29 @@ impl<'a> Lowerer<'a> {
         self.materialize(reg, clobbered)
     }
 
-    /// Lowers an expression whose value is consumed by the very next
-    /// instruction this body emits, or by nothing at all.
+    /// Lowers `expr` in a position whose caller states whether anything
+    /// reads its value.
     ///
-    /// This is the other half of `lower_operand`'s rule. An operand has to
-    /// survive whatever is lowered after it; here nothing is, so no user
-    /// code can run between the expression's last instruction and its
-    /// consumer, and `lower_assign` can skip the copy that would otherwise
-    /// protect its value from the setter send it just emitted.
+    /// This is the other half of `lower_operand`'s rule, and the one place
+    /// a copy is skipped because a value is discarded. An assignment through
+    /// a setter would otherwise copy a named local's register before handing
+    /// it on as its value: the setter send runs user code, which can write
+    /// that local through a closure that captured this frame, and it runs
+    /// before any consumer reads the value -- even a consumer that is the
+    /// very next instruction (`^x := y`, with a setter that assigns `y`).
+    /// Only when nothing reads the value at all is the copy pure overhead.
     ///
-    /// The three positions with that property are a statement, a `^`, and a
-    /// slot initializer. They route through this one function rather than
-    /// deciding for themselves, so a fourth cannot be added later and
-    /// silently get the pessimized form -- or, worse, be given the cheap
-    /// form without the property actually holding.
-    fn lower_expr_consumed_immediately(&mut self, expr: &Expr) -> u16 {
-        match expr {
-            Expr::Assign { target, value, .. } => self.lower_assign(target, value, false),
+    /// Every position that knows its use routes through here and states it:
+    /// a body's statements (`lower_body`), a `^`, a slot initializer, an
+    /// inlined block's statements, and the inlined forms that pass their own
+    /// use on to their blocks. None of them infers it, so a new position
+    /// cannot silently be given the cheap form without the property holding.
+    fn lower_expr_for(&mut self, expr: &Expr, use_: ValueUse) -> u16 {
+        match (use_, expr) {
+            (ValueUse::Discarded, Expr::Assign { target, value, .. }) => {
+                self.lower_assign(target, value, ValueUse::Discarded)
+            }
+            (ValueUse::Discarded, Expr::Send(send)) => self.lower_send(send, ValueUse::Discarded),
             _ => self.lower_expr(expr),
         }
     }
@@ -348,8 +398,8 @@ impl<'a> Lowerer<'a> {
                 dst
             }
             Expr::Ident(id) => self.lower_ident_read(id),
-            Expr::Assign { target, value, .. } => self.lower_assign(target, value, true),
-            Expr::Send(send) => self.lower_send(send),
+            Expr::Assign { target, value, .. } => self.lower_assign(target, value, ValueUse::Read),
+            Expr::Send(send) => self.lower_send(send, ValueUse::Read),
             Expr::Cascade(cascade) => self.lower_cascade(cascade),
             Expr::Block(block) => self.lower_block_literal(block),
             Expr::DynamicArray { elements, .. } => {
@@ -437,24 +487,17 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// `value_outlives_setter` is false only where this expression's value
-    /// is consumed by the next instruction emitted, or by nothing at all --
-    /// see `lower_expr_consumed_immediately`, the only caller that passes
-    /// false.
-    fn lower_assign(
-        &mut self,
-        target: &ast::Ident,
-        value: &Expr,
-        value_outlives_setter: bool,
-    ) -> u16 {
+    /// `use_` is `Discarded` only where nothing reads this assignment's
+    /// value -- see `lower_expr_for`, the only caller that passes it.
+    fn lower_assign(&mut self, target: &ast::Ident, value: &Expr, use_: ValueUse) -> u16 {
         let mut v = self.lower_expr(value);
-        // A setter send runs user code before this expression's own value is
-        // handed on, so a named local's register would no longer hold what
-        // was assigned. (The `StoreLocal`/`StoreOuterLocal` cases below need
-        // no copy: the only named local a `StoreLocal` can write while `v`
-        // is live is `v` itself -- `t := t` -- which leaves it unchanged,
-        // and a `StoreOuterLocal` writes a different frame.)
-        if value_outlives_setter
+        // A setter send runs user code before anything reads this
+        // expression's own value, so a named local's register may no longer
+        // hold what was assigned by then. (The `StoreLocal`/`StoreOuterLocal`
+        // cases below need no copy: the only named local a `StoreLocal` can
+        // write while `v` is live is `v` itself -- `t := t` -- which leaves
+        // it unchanged, and a `StoreOuterLocal` writes a different frame.)
+        if use_ == ValueUse::Read
             && matches!(
                 self.bindings.get(&target.span),
                 Some(Binding::LexicalSend { .. })
@@ -567,7 +610,9 @@ impl<'a> Lowerer<'a> {
             .collect()
     }
 
-    fn lower_send(&mut self, send: &ast::Send) -> u16 {
+    /// `use_` is what reads the send's value. Only an inlined form passes it
+    /// on, to the blocks whose values become its own.
+    fn lower_send(&mut self, send: &ast::Send, use_: ValueUse) -> u16 {
         match self.bindings.get(&send.span) {
             Some(Binding::SuperSend) => {
                 let selector = selector_of(&send.message);
@@ -593,11 +638,13 @@ impl<'a> Lowerer<'a> {
                 // so inlining stays a pure optimization.
                 if let Some(form) = control_flow::recognize(send) {
                     return match form {
-                        InlineForm::IfTrueIfFalse(t, f) => self.lower_if(send, Some(t), Some(f)),
-                        InlineForm::IfTrue(t) => self.lower_if(send, Some(t), None),
-                        InlineForm::IfFalse(f) => self.lower_if(send, None, Some(f)),
-                        InlineForm::And(b) => self.lower_and_or(send, b, true),
-                        InlineForm::Or(b) => self.lower_and_or(send, b, false),
+                        InlineForm::IfTrueIfFalse(t, f) => {
+                            self.lower_if(send, Some(t), Some(f), use_)
+                        }
+                        InlineForm::IfTrue(t) => self.lower_if(send, Some(t), None, use_),
+                        InlineForm::IfFalse(f) => self.lower_if(send, None, Some(f), use_),
+                        InlineForm::And(b) => self.lower_and_or(send, b, true, use_),
+                        InlineForm::Or(b) => self.lower_and_or(send, b, false, use_),
                         InlineForm::WhileTrue { cond, body } => self.lower_while(cond, body, true),
                         InlineForm::WhileFalse { cond, body } => {
                             self.lower_while(cond, body, false)
@@ -654,8 +701,9 @@ impl<'a> Lowerer<'a> {
     /// statement's live registers). Pushes `ScopeKind::Inlined` so local
     /// references inside (and in nested real blocks) drop one frame hop.
     /// Returns the register holding the block's value (`nil` if it has no
-    /// statements).
-    fn lower_inline_block_body(&mut self, block: &ast::BlockExpr) -> u16 {
+    /// statements); `use_` is what reads it, and so what reads the last
+    /// statement's value.
+    fn lower_inline_block_body(&mut self, block: &ast::BlockExpr, use_: ValueUse) -> u16 {
         debug_assert!(
             block.params.is_empty() && block.body.temps.is_empty(),
             "internal: the inlining gate admits only parameterless, temp-less blocks"
@@ -663,9 +711,14 @@ impl<'a> Lowerer<'a> {
         self.scopes.push(ScopeKind::Inlined);
         let mark = self.next_scratch;
         let mut result = None;
-        for stmt in &block.body.stmts {
+        for (i, stmt) in block.body.stmts.iter().enumerate() {
             self.next_scratch = mark;
-            result = self.lower_stmt_inner(stmt);
+            let stmt_use = if i + 1 == block.body.stmts.len() {
+                use_
+            } else {
+                ValueUse::Discarded
+            };
+            result = self.lower_stmt_inner(stmt, stmt_use);
         }
         self.scopes.pop();
         match result {
@@ -777,12 +830,15 @@ impl<'a> Lowerer<'a> {
     }
 
     /// `ifTrue:`/`ifFalse:`/`ifTrue:ifFalse:`/`ifFalse:ifTrue:`: an absent
-    /// branch is `nil`, matching `builtins::boolean`'s one-armed arms.
+    /// branch is `nil`, matching `builtins::boolean`'s one-armed arms. A
+    /// branch's value is only moved into the send's own result, so `use_`
+    /// -- what reads that result -- is what reads the branch's value.
     fn lower_if(
         &mut self,
         send: &ast::Send,
         true_block: Option<&ast::BlockExpr>,
         false_block: Option<&ast::BlockExpr>,
+        use_: ValueUse,
     ) -> u16 {
         let guard_reg = self.lower_expr(&send.receiver);
         let dst = self.alloc_scratch();
@@ -790,11 +846,11 @@ impl<'a> Lowerer<'a> {
             guard_reg,
             dst,
             |lw| match true_block {
-                Some(b) => lw.lower_inline_block_body(b),
+                Some(b) => lw.lower_inline_block_body(b, use_),
                 None => lw.emit_nil(),
             },
             |lw| match false_block {
-                Some(b) => lw.lower_inline_block_body(b),
+                Some(b) => lw.lower_inline_block_body(b, use_),
                 None => lw.emit_nil(),
             },
             |lw| lw.emit_ordinary_send_with_receiver(guard_reg, &send.message),
@@ -804,11 +860,19 @@ impl<'a> Lowerer<'a> {
 
     /// `and:`/`or:`: the short-circuit arm is the receiver's own Boolean
     /// value, the other arm the block's value coerced by `truthy_arg`'s rule.
-    fn lower_and_or(&mut self, send: &ast::Send, block: &ast::BlockExpr, is_and: bool) -> u16 {
+    /// The coercion only chooses which literal becomes the send's result, so
+    /// `use_` -- what reads that result -- is what reads the block's value.
+    fn lower_and_or(
+        &mut self,
+        send: &ast::Send,
+        block: &ast::BlockExpr,
+        is_and: bool,
+        use_: ValueUse,
+    ) -> u16 {
         let guard_reg = self.lower_expr(&send.receiver);
         let dst = self.alloc_scratch();
         let evaluate_and_coerce = |lw: &mut Self| {
-            let b = lw.lower_inline_block_body(block);
+            let b = lw.lower_inline_block_body(block, use_);
             lw.emit_coerce_to_bool(b)
         };
         let fallback =
@@ -824,6 +888,8 @@ impl<'a> Lowerer<'a> {
     /// A real loop: condition, guard, exit branch, body, back-edge. A
     /// non-Boolean condition value takes the `mustBeBoolean` path and ends the
     /// loop with that send's value; a normal exit leaves `nil` in `dst`.
+    /// The guard reads the condition's value on every iteration, whatever
+    /// reads the loop's; nothing reads the body's.
     fn lower_while(
         &mut self,
         cond: &ast::BlockExpr,
@@ -832,7 +898,7 @@ impl<'a> Lowerer<'a> {
     ) -> u16 {
         let dst = self.emit_nil();
         let loop_start = self.here();
-        let guard_reg = self.lower_inline_block_body(cond);
+        let guard_reg = self.lower_inline_block_body(cond, ValueUse::Read);
         let not_bool_jump = self.emit(Instr::JumpIfNotBoolean {
             reg: guard_reg,
             target: 0,
@@ -848,7 +914,7 @@ impl<'a> Lowerer<'a> {
                 target: 0,
             })
         };
-        self.lower_inline_block_body(body);
+        self.lower_inline_block_body(body, ValueUse::Discarded);
         self.emit(Instr::Jump { target: loop_start });
         let fallback_label = self.here();
         self.patch_target(not_bool_jump, fallback_label);
@@ -907,7 +973,7 @@ pub(crate) fn selector_of(message: &ast::MessageSend) -> crate::Symbol {
     }
 }
 
-fn lower_literal(lit: &ast::Literal) -> BcLiteral {
+pub(super) fn lower_literal(lit: &ast::Literal) -> BcLiteral {
     match lit {
         // Parsed once, here, with `parse_int_literal`, the parser the VM
         // re-runs for a `MalformedInt`. A literal it rejects is a
@@ -1031,7 +1097,7 @@ mod tests {
         );
         let mut lowerer = method_lowerer(&method, &bindings); // temp `t` is register 0
         for stmt in &method.body.stmts {
-            lowerer.lower_statement(stmt);
+            lowerer.lower_statement(stmt, ValueUse::Discarded);
         }
         let code = lowerer.finish(method.span);
         // An explicit `self` receiver is a depth-0 lexical send.
@@ -1116,7 +1182,7 @@ mod tests {
             0,
         );
         let mut lowerer = method_lowerer(&method, &bindings); // temp `t` is register 0, base 1
-        lowerer.lower_statement(&method.body.stmts[0]); // `t := 7.`
+        lowerer.lower_statement(&method.body.stmts[0], ValueUse::Discarded); // `t := 7.`
         let code = lowerer.finish(method.span);
         assert_eq!(
             code.instrs,
@@ -1139,8 +1205,8 @@ mod tests {
             0,
         );
         let mut lowerer = method_lowerer(&method, &bindings);
-        lowerer.lower_statement(&method.body.stmts[0]);
-        lowerer.lower_statement(&method.body.stmts[1]);
+        lowerer.lower_statement(&method.body.stmts[0], ValueUse::Discarded);
+        lowerer.lower_statement(&method.body.stmts[1], ValueUse::Discarded);
         let code = lowerer.finish(method.span);
         // Both literals land in scratch register 1 -- the allocator reset
         // between statements instead of growing.
@@ -1256,7 +1322,7 @@ mod tests {
         let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  at: i put: v = ( ^v )\n  foo = ( at: 1 put: 2. ^super printString )\n) : ()";
         let (foo, bindings) = resolve_method(src, 1);
         let mut lowerer = method_lowerer(&foo, &bindings);
-        lowerer.lower_statement(&foo.body.stmts[0]);
+        lowerer.lower_statement(&foo.body.stmts[0], ValueUse::Discarded);
         let code = lowerer.finish(foo.span);
         assert!(matches!(
             &code.instrs[2],
@@ -1282,7 +1348,7 @@ mod tests {
         let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  bump = ( n := n + 1 )\n) : ()";
         let (bump, bindings) = resolve_method(src, 0);
         let mut lowerer = method_lowerer(&bump, &bindings);
-        lowerer.lower_statement(&bump.body.stmts[0]);
+        lowerer.lower_statement(&bump.body.stmts[0], ValueUse::Discarded);
         let code = lowerer.finish(bump.span);
         assert!(matches!(
             code.instrs.last(),
@@ -1291,59 +1357,59 @@ mod tests {
         ));
     }
 
+    /// The argument register of every `n:` setter send in `code`, in order.
+    fn setter_args(code: &CompiledCode) -> Vec<u16> {
+        code.instrs
+            .iter()
+            .filter_map(|i| match i {
+                Instr::SendLexical {
+                    selector, arg_regs, ..
+                } if selector.as_str() == "n:" => Some(arg_regs[0]),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The copy `lower_assign` makes for a setter send protects the
-    /// assignment's *value* from the user code that setter runs. Where that
-    /// value is consumed by the next instruction this body emits -- the
-    /// three `lower_expr_consumed_immediately` positions -- nothing runs in
-    /// between, so the copy is pure overhead: one instruction, and one more
-    /// register in every activation's `temps`. The three tests below pin
-    /// the cheap form for each position; the guard that the copy is still
-    /// made where the value *does* outlive the setter is the `setterValue`
-    /// case of `ns-cli`'s
-    /// `an_operand_written_by_a_callee_keeps_its_evaluated_value`.
+    /// assignment's *value* from the user code that setter runs, which can
+    /// write the local through a closure before anything reads the value --
+    /// even a consumer that is the very next instruction. Only where nothing
+    /// reads the value is the copy pure overhead: one instruction, and one
+    /// more register in every activation's `temps`. This test pins the cheap
+    /// form for a statement; the tests after it pin the copy for each
+    /// position that reads the value, and `ns-cli`'s
+    /// `an_assignment_through_a_setter_answers_the_value_before_the_setter_ran`
+    /// pins what a program observes.
     #[test]
     fn a_slot_assignment_in_statement_position_does_not_copy_its_value() {
         let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  m = ( | t | t := 1. n := t )\n) : ()";
-        let (method, bindings) = resolve_method(src, 0);
-        let mut lowerer = method_lowerer(&method, &bindings); // temp `t` is register 0
-        for stmt in &method.body.stmts {
-            lowerer.lower_statement(stmt);
-        }
-        let code = lowerer.finish(method.span);
+        let code = lower_whole_method(src, 0); // temp `t` is register 0
         assert!(
             !code.instrs.iter().any(|i| matches!(i, Instr::Move { .. })),
-            "nothing consumes the assignment's value, so it needs no copy: {:?}",
+            "nothing reads the assignment's value, so it needs no copy: {:?}",
             code.instrs
         );
-        let Some(Instr::SendLexical { arg_regs, .. }) = code
-            .instrs
-            .iter()
-            .find(|i| matches!(i, Instr::SendLexical { .. }))
-        else {
-            panic!("expected the setter send");
-        };
-        assert_eq!(arg_regs[0], 0, "the setter takes `t`'s own register");
+        assert_eq!(
+            setter_args(&code),
+            vec![0],
+            "the setter takes `t`'s own register"
+        );
     }
 
     #[test]
-    fn a_returned_slot_assignment_does_not_copy_its_value() {
+    fn a_returned_slot_assignment_copies_its_value_out_of_the_local() {
         let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  m = ( | t | t := 1. ^n := t )\n) : ()";
-        let (method, bindings) = resolve_method(src, 0);
-        let mut lowerer = method_lowerer(&method, &bindings); // temp `t` is register 0
-        for stmt in &method.body.stmts {
-            lowerer.lower_statement(stmt);
-        }
-        let code = lowerer.finish(method.span);
-        assert!(
-            !code.instrs.iter().any(|i| matches!(i, Instr::Move { .. })),
-            "the `Return` reads the value immediately after the setter send: {:?}",
-            code.instrs
-        );
-        assert_eq!(code.instrs.last(), Some(&Instr::Return { reg: 0 }));
+        let code = lower_whole_method(src, 0); // temp `t` is register 0
+        let [copy] = setter_args(&code)[..] else {
+            panic!("expected one setter send: {:?}", code.instrs);
+        };
+        assert_ne!(copy, 0, "the setter can write `t` before `Return` reads");
+        assert!(code.instrs.contains(&Instr::Move { dst: copy, src: 0 }));
+        assert_eq!(code.instrs.last(), Some(&Instr::Return { reg: copy }));
     }
 
     #[test]
-    fn a_slot_initializer_that_assigns_a_slot_does_not_copy_its_value() {
+    fn a_slot_initializer_that_assigns_a_slot_copies_its_value_out_of_the_local() {
         // A method body stands in for the initializer expression, as in
         // `a_slot_initializer_is_one_statement_ending_in_init_slot`; the
         // parameter gives the assignment a named local to hand on.
@@ -1352,18 +1418,81 @@ mod tests {
         let mut lowerer = Lowerer::new(CodeKind::Initializer, 1, 0, &bindings, vec![]);
         lowerer.lower_slot_init(return_expr(&method), 4);
         let code = lowerer.finish(method.span);
-        assert!(
-            !code.instrs.iter().any(|i| matches!(i, Instr::Move { .. })),
-            "`InitSlot` reads the value immediately after the setter send: {:?}",
-            code.instrs
-        );
+        let [copy] = setter_args(&code)[..] else {
+            panic!("expected one setter send: {:?}", code.instrs);
+        };
+        assert_ne!(copy, 0, "the setter can write `p` before `InitSlot` reads");
         assert_eq!(
-            code.instrs.last(),
-            Some(&Instr::InitSlot {
-                src: 0,
-                own_index: 4
-            })
+            code.instrs,
+            vec![
+                Instr::Move { dst: copy, src: 0 },
+                Instr::SendLexical {
+                    depth: 0,
+                    selector: crate::Symbol::intern("n:"),
+                    arg_regs: vec![copy],
+                    dst: copy + 1,
+                    call_site: CallSite { call_site_id: 1 },
+                },
+                Instr::InitSlot {
+                    src: copy,
+                    own_index: 4
+                },
+            ]
         );
+    }
+
+    /// A block answers its last statement's value, so that statement's
+    /// assignment is copied; an earlier statement's is not.
+    #[test]
+    fn a_blocks_last_slot_assignment_copies_its_value_and_an_earlier_one_does_not() {
+        let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  m = ( ^[:t | n := t. n := t] )\n) : ()";
+        let code = lower_whole_method(src, 0);
+        let Instr::MakeClosure { code: block, .. } = &code.instrs[0] else {
+            panic!("expected the block literal: {:?}", code.instrs);
+        };
+        let [discarded, read] = setter_args(block)[..] else {
+            panic!("expected two setter sends: {:?}", block.instrs);
+        };
+        assert_eq!(
+            discarded, 0,
+            "the first value is discarded: `t`'s own register"
+        );
+        assert_ne!(read, 0, "the block answers the second value");
+        assert!(block.instrs.contains(&Instr::Move { dst: read, src: 0 }));
+        assert_eq!(
+            block.instrs.last(),
+            Some(&Instr::ImplicitReturn { reg: read })
+        );
+    }
+
+    /// An inlined block's last statement is read exactly when the inlined
+    /// form's own value is -- a loop condition always, a loop body never.
+    #[test]
+    fn an_inlined_blocks_last_slot_assignment_is_copied_only_when_its_value_is_read() {
+        let src = "Newspeak3\n'T'\nclass X = Object new (\n  | n ::= 0. |\n) (\n  \
+            discarded: c = ( | t | c ifTrue: [n := t] ifFalse: [n := t]. c and: [n := t] )\n  \
+            returned: c = ( | t | ^c ifTrue: [n := t] ifFalse: [n := t] )\n  \
+            returnedAnd: c = ( | t | ^c and: [n := t] )\n  \
+            loop = ( | t | [n := t] whileTrue: [n := t] )\n) : ()";
+        // `c` is register 0 and `t` register 1; `loop`'s `t` is register 0.
+        let discarded = lower_whole_method(src, 0);
+        assert_eq!(setter_args(&discarded), vec![1, 1, 1]);
+        for (index, count) in [(1, 2), (2, 1)] {
+            let returned = lower_whole_method(src, index);
+            let args = setter_args(&returned);
+            assert_eq!(args.len(), count);
+            assert!(
+                args.iter().all(|&a| a > 1),
+                "the send's value is read, so each branch's is: {:?}",
+                returned.instrs
+            );
+        }
+        let loop_code = lower_whole_method(src, 3);
+        let [condition, body] = setter_args(&loop_code)[..] else {
+            panic!("expected two setter sends: {:?}", loop_code.instrs);
+        };
+        assert_ne!(condition, 0, "the guard reads the condition's value");
+        assert_eq!(body, 0, "nothing reads the loop body's value");
     }
 
     #[test]
@@ -1389,8 +1518,8 @@ mod tests {
         let src = "Newspeak3\n'T'\nclass X = Object new (\n) (\n  foo = ( | c | c := OrderedCollection new. c add: 1; add: 2 )\n) : ()";
         let (foo, bindings) = resolve_method(src, 0);
         let mut lowerer = method_lowerer(&foo, &bindings); // temp `c` is register 0
-        lowerer.lower_statement(&foo.body.stmts[0]);
-        lowerer.lower_statement(&foo.body.stmts[1]);
+        lowerer.lower_statement(&foo.body.stmts[0], ValueUse::Discarded);
+        lowerer.lower_statement(&foo.body.stmts[1], ValueUse::Discarded);
         let code = lowerer.finish(foo.span);
         let receiver_regs: Vec<u16> = code
             .instrs
@@ -1440,10 +1569,7 @@ mod tests {
     fn lower_whole_method(src: &str, index: usize) -> CompiledCode {
         let (method, bindings) = resolve_method(src, index);
         let mut lowerer = method_lowerer(&method, &bindings);
-        for stmt in &method.body.stmts {
-            lowerer.lower_statement(stmt);
-        }
-        lowerer.finish_body(&method.body.stmts);
+        lowerer.lower_body(&method.body.stmts);
         lowerer.finish(method.span)
     }
 
@@ -1671,8 +1797,7 @@ mod tests {
         );
         // Reuse `foo`'s `^1` as if it were an initExpr: kind Initializer, 0 args.
         let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, 0, &bindings, vec![]);
-        lowerer.lower_statement(&method.body.stmts[0]);
-        lowerer.finish_body(&method.body.stmts);
+        lowerer.lower_body(&method.body.stmts);
         let code = lowerer.finish(method.span);
         assert_eq!(
             code.instrs,

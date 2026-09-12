@@ -276,6 +276,7 @@ mod tests {
             Rc::new(MixinMethod::from_decl(
                 Rc::new(method),
                 &Rc::new(HashMap::new()),
+                crate::compiler::Lowering::Optimized,
             )),
         );
         // The application chain must be linked wherever the class-object
@@ -295,7 +296,7 @@ mod tests {
             own_slot_base: 0,
         });
         let class_of_class = dummy_class(heap);
-        heap.alloc_placeholder_object(
+        heap.alloc_object(
             class_of_class,
             ObjectData::Class(ClassData {
                 application,

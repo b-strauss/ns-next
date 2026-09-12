@@ -16,6 +16,24 @@ struct Cli {
     command: Cmd,
 }
 
+/// Which lowering compiles a source (`docs/design/compiler.md`, "The
+/// reference lowering"): `optimized` is what every program runs under,
+/// `reference` the naive lowering it is checked against.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum LoweringArg {
+    Optimized,
+    Reference,
+}
+
+impl From<LoweringArg> for ns_runtime::Lowering {
+    fn from(arg: LoweringArg) -> Self {
+        match arg {
+            LoweringArg::Optimized => ns_runtime::Lowering::Optimized,
+            LoweringArg::Reference => ns_runtime::Lowering::Reference,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Parse a single .ns file.
@@ -47,6 +65,9 @@ enum Cmd {
         /// a full `main:args:`-shaped application.
         #[arg(long, default_value = "main:args:")]
         send: String,
+        /// The lowering to compile the source with.
+        #[arg(long, value_enum, default_value_t = LoweringArg::Optimized)]
+        lowering: LoweringArg,
     },
     /// Run a file, then serialize the resulting (quiesced) world to an
     /// image file.
@@ -63,6 +84,9 @@ enum Cmd {
         /// run it -- only to read it back as `.ns`.
         #[arg(long)]
         debug_source: bool,
+        /// The lowering to compile the source with.
+        #[arg(long, value_enum, default_value_t = LoweringArg::Optimized)]
+        lowering: LoweringArg,
     },
     /// Deserialize an artifact and start it. An image already holds its
     /// instance; a stateless binary is instantiated here and sent the entry
@@ -115,6 +139,10 @@ enum Cmd {
         /// for a class side. Defaults to the root class itself.
         #[arg(long)]
         class: Option<String>,
+        /// The lowering to compile a .ns source with; optimized when absent.
+        /// Refused for an artifact, which carries the code it was built with.
+        #[arg(long, value_enum)]
+        lowering: Option<LoweringArg>,
     },
     /// Print an artifact's structure: header flags, section offsets, the
     /// symbol table, the code table with every body named, the mixin table,
@@ -139,6 +167,9 @@ enum Cmd {
         /// Store the module's source text in the binary (the debug variant).
         #[arg(long)]
         debug_source: bool,
+        /// The lowering to compile the source with.
+        #[arg(long, value_enum, default_value_t = LoweringArg::Optimized)]
+        lowering: LoweringArg,
     },
 }
 
@@ -151,13 +182,20 @@ fn main() -> ExitCode {
         Cmd::RunCorpus { dir, whitelist } => {
             commands::run_corpus::execute(&dir, whitelist.as_deref())
         }
-        Cmd::Run { file, send } => commands::run::execute(&file, &send),
+        Cmd::Run {
+            file,
+            send,
+            lowering,
+        } => commands::run::execute(&file, &send, lowering.into()),
         Cmd::Snapshot {
             file,
             out,
             send,
             debug_source,
-        } => commands::snapshot::execute(&file, &out, send.as_deref(), debug_source),
+            lowering,
+        } => {
+            commands::snapshot::execute(&file, &out, send.as_deref(), debug_source, lowering.into())
+        }
         Cmd::Load {
             image,
             send,
@@ -173,13 +211,21 @@ fn main() -> ExitCode {
             selector,
             initializer,
             class,
-        } => commands::disasm::execute(&file, selector.as_deref(), initializer, class.as_deref()),
+            lowering,
+        } => commands::disasm::execute(
+            &file,
+            selector.as_deref(),
+            initializer,
+            class.as_deref(),
+            lowering.map(Into::into),
+        ),
         Cmd::Inspect { artifact, full } => commands::inspect::execute(&artifact, full),
         Cmd::Build {
             file,
             out,
             entry,
             debug_source,
-        } => commands::build::execute(&file, &out, entry.as_deref(), debug_source),
+            lowering,
+        } => commands::build::execute(&file, &out, entry.as_deref(), debug_source, lowering.into()),
     }
 }

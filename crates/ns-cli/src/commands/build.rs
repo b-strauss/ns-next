@@ -69,12 +69,13 @@ pub(crate) fn execute(
     out: &Path,
     entry: Option<&str>,
     debug_source: bool,
+    lowering: ns_runtime::Lowering,
 ) -> ExitCode {
     let loaded = match source::load_source(file) {
         Ok(l) => l,
         Err(code) => return code,
     };
-    let (mut interp, class) = source::bootstrap(&loaded);
+    let (mut interp, class) = source::bootstrap(&loaded, lowering);
 
     let entry = match entry {
         Some(e) => e.to_string(),

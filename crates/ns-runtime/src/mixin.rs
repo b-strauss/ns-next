@@ -61,17 +61,18 @@ pub struct MixinMethod {
 }
 
 impl MixinMethod {
-    /// The entry a parsed declaration becomes, compiled against the
-    /// resolver's `bindings` for the module it belongs to.
+    /// The entry a parsed declaration becomes, compiled by `lowering` against
+    /// the resolver's `bindings` for the module it belongs to.
     pub fn from_decl(
         decl: Rc<ast::MethodDecl>,
         bindings: &Rc<HashMap<Span, Binding>>,
+        lowering: crate::compiler::Lowering,
     ) -> MixinMethod {
         MixinMethod {
             selector: Symbol::intern(&crate::interpreter::instantiate::method_name(&decl.pattern)),
             access: crate::dispatch::effective_access(decl.access),
             num_args: crate::interpreter::instantiate::pattern_param_count(&decl.pattern),
-            code: Rc::new(crate::compiler::compile_method(&decl, bindings)),
+            code: Rc::new(crate::compiler::compile_method(&decl, bindings, lowering)),
             decl: Some(decl),
         }
     }

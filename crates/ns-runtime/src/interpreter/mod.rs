@@ -13,6 +13,7 @@ pub(crate) mod sends;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::compiler::Lowering;
 use crate::dispatch::{self, Lookup};
 use crate::heap::{ActivationHeader, ActivationRef, Heap};
 use crate::types::*;
@@ -57,10 +58,21 @@ pub struct Interpreter {
     /// a linear scan beats hashing and allocates nothing in the common
     /// case.
     nested_in_progress: Vec<(usize, usize)>,
+    /// The lowering every module this interpreter loads is compiled with
+    /// (`docs/design/compiler.md`, "The reference lowering"). Fixed at
+    /// construction, so one interpreter never mixes the two.
+    lowering: Lowering,
 }
 
 impl Interpreter {
     pub fn bootstrap() -> Interpreter {
+        Interpreter::bootstrap_with(Lowering::Optimized)
+    }
+
+    /// An interpreter whose `load_module` compiles with `lowering`. The
+    /// reference lowering is for checking the optimized one against it; an
+    /// artifact decoded into either runs the code it carries.
+    pub fn bootstrap_with(lowering: Lowering) -> Interpreter {
         let mut interp = Interpreter {
             heap: Heap::new(),
             builtin_classes: Vec::new(),
@@ -68,6 +80,7 @@ impl Interpreter {
             applications: HashMap::new(),
             empty_class_sides: HashMap::new(),
             nested_in_progress: Vec::new(),
+            lowering,
         };
         interp.builtin_classes = build_builtin_classes(&mut interp);
         interp
@@ -77,12 +90,6 @@ impl Interpreter {
         self.builtin_classes[kind as usize]
     }
 
-    /// A thin delegate; see `Heap::alloc_identity_hash`'s doc comment for why
-    /// this saturates instead of wrapping or panicking.
-    pub fn alloc_identity_hash(&mut self) -> u32 {
-        self.heap.alloc_identity_hash()
-    }
-
     /// After `image::load`: never hand out an identity hash a loaded object
     /// already carries (`docs/design/image-format.md`, "Sections").
     ///
@@ -90,9 +97,9 @@ impl Interpreter {
     /// `image::decode` refuses an image carrying `u32::MAX` outright
     /// (`DecodeError::IdentityHashExhausted`), because there is no counter
     /// value past it. That refusal is what keeps `Heap::advance_identity_hash_past`'s
-    /// `max.saturating_add(1)` in range; `alloc_identity_hash`'s own
-    /// saturation is what keeps the *next* allocation in range when the
-    /// image's maximum is one below the ceiling.
+    /// `max.saturating_add(1)` in range; the counter's own saturation is what
+    /// keeps the *next* hash in range when the image's maximum is one below
+    /// the ceiling.
     pub(crate) fn advance_identity_hash_past(&mut self, max: u32) {
         self.heap.advance_identity_hash_past(max);
     }
@@ -820,37 +827,26 @@ fn build_builtin_classes(interp: &mut Interpreter) -> Vec<ClassRef> {
         build_self_referential_object_class(&mut interp.heap, object_application.clone());
     let mut classes = Vec::with_capacity(kinds.len());
     for kind in kinds {
-        let (superclass, application) = if kind == BuiltinClass::Object {
-            (None, object_application.clone())
-        } else {
-            (
-                Some(class_of_class),
-                interp.apply_mixin(&builtin_mixin(kind), Some(&object_application)),
-            )
-        };
-        let obj = interp.heap.alloc_object(
+        // `builtin_class` indexes by discriminant, so the vector must be
+        // filled in exactly that order.
+        debug_assert_eq!(classes.len(), kind as usize);
+        if kind == BuiltinClass::Object {
+            // The self-referential class every builtin has as its `.class`.
+            classes.push(class_of_class);
+            continue;
+        }
+        let application = interp.apply_mixin(&builtin_mixin(kind), Some(&object_application));
+        classes.push(interp.heap.alloc_object(
             class_of_class,
             ObjectData::Class(ClassData {
                 application,
                 enclosing: None,
                 declaring_class: None,
-                superclass,
+                superclass: Some(class_of_class),
                 builtin: Some(kind),
                 metaclass: None,
             }),
-        );
-        // `builtin_class` indexes by discriminant, so the vector must be
-        // filled in exactly that order.
-        debug_assert_eq!(classes.len(), kind as usize);
-        // `Object`'s entry is the self-referential class every builtin has as
-        // its `.class`; the object this iteration allocated for it is never
-        // used, and is kept only because removing it would shift every later
-        // identity hash.
-        classes.push(if kind == BuiltinClass::Object {
-            class_of_class
-        } else {
-            obj
-        });
+        ));
     }
     classes
 }

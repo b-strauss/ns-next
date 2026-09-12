@@ -26,17 +26,16 @@ The oracle was also blind to defects in the orchestration the two shared: four
 of the six silent defects Milestone 3's review found were identically wrong
 under both.
 
-Until the reference lowering lands there is no second way to run a program and
-compare against, so behaviour is protected by recorded answers: every
-`tests-fixtures/*.ns` against its `.expected` stdout and an empty stderr
+Behaviour is protected by recorded answers, which both lowerings must produce:
+every `tests-fixtures/*.ns` against its `.expected` stdout and an empty stderr
 (`crates/ns-cli/tests/run_fixtures.rs`), the golden exit status, stdout and
 stderr of the programs that cannot be fixtures
 (`crates/ns-cli/tests/program_outcomes.rs`), and `run-corpus` over the runnable
 corpus. The answers recorded before the retirement are verdicts the oracle and
 the VM agreed on. A change that alters one is a behaviour change, to be
 justified as one — never recorded because the code now produces it. The
-reference lowering ([compiler.md](compiler.md), "Planned: the reference
-lowering") is the planned differential oracle.
+reference lowering ([compiler.md](compiler.md), "The reference
+lowering") is the differential oracle that replaced it.
 
 ## Activations
 
@@ -651,11 +650,16 @@ Two things the trampoline settles on its own:
 - **Recursion depth becomes a checkable limit and an ordinary Newspeak error**
   instead of a native stack overflow that aborts the process. That closes the
   exposure [image-format.md](image-format.md) records against a loaded artifact.
-  How the limit counts has to be settled first. Counting stack entries does
-  **not** mean the same thing under two ways of running one program when one of
-  them activates blocks the other inlines, as the reference lowering will
-  ([compiler.md](compiler.md), "Planned: the reference lowering"). That
-  lowering's design decides it. Measured on Windows's 1 MB main-thread stack
+  How the limit counts is settled: every activation except a block activation
+  that a builtin control-flow native performs for a `SendInlinable`, the send
+  only the reference lowering emits where the optimized one inlines. That makes
+  the count agree under both lowerings at every point of every program, so the
+  reference lowering checks an overflow too ([compiler.md](compiler.md), "How
+  the limit counts"). The trampoline adds `SendInlinable` and the counter
+  together, and decides the limit's value, its error text, and whether the
+  control-flow natives become trampoline steps or the native stack is sized for
+  the extra Rust frames they cost under the reference lowering. Measured on
+  Windows's 1 MB main-thread stack
   before any of this, the recursion depth reachable today is 818 for recursion
   inside an `ifFalse:` block (release build), and 307 through `do:` — below the
   1000 that Newspeak's own `KernelWeakTests.ns` (`deepStack: 1000`) expects.
@@ -665,9 +669,9 @@ target by `ActivationRef`, but it still propagates through Rust `?` until the
 `invoke_method` that owns the target catches it; under the trampoline it becomes
 an unwind of the activation stack to the target entry. The semantics are
 unchanged, and this is the part of the change the golden outcomes have to be
-trusted hardest on: the reference lowering lands first, but it runs on the same
-VM, so it cannot cross-check the trampoline's unwind of `Signal::Return` — both
-ways of running a program would unwind through the same code.
+trusted hardest on: the reference lowering runs on the same VM, so it cannot
+cross-check the trampoline's unwind of `Signal::Return` — both ways of running
+a program would unwind through the same code.
 
 ### How other systems bound recursion depth
 
@@ -685,17 +689,21 @@ Newspeak's own tests assume the Smalltalk behaviour: `KernelWeakTests.ns`'s
 `deepStack: 1000` exists to overflow Primordial Soup's frame stack and force a
 flush.
 
-What that means for the limit, without deciding it. The Smalltalk-lineage VMs
-make depth a question of memory, not a count, and a trampolined VM can do the
-same, since its activation stack is a `Vec` on the heap. A fixed count like
-Nova's is what a runtime falls back on when the stack its evaluator recurses on
+The Smalltalk-lineage VMs make depth a question of memory, not a count, and a
+trampolined VM could do the same, since its activation stack is a `Vec` on the
+heap. ns-next counts instead, because a memory bound would trip at different
+depths under its two lowerings — the reference lowering's activations are more
+numerous and hold more registers — and the reference lowering is meant to check
+an overflow too. What the count includes is decided in
+[compiler.md](compiler.md), "How the limit counts". A fixed count like Nova's is
+otherwise what a runtime falls back on when the stack its evaluator recurses on
 cannot grow. After 1b some paths still recurse on the Rust stack — the natives
 that call back into Newspeak, instantiation, the nested-class accessor ("What
 stays recursive" below) — and each level of them still costs native stack:
 derived from the depth reachable on a 1 MB stack before the trampoline,
 recursion through `do:` cost roughly 3.4 KB of native stack per Newspeak level
-in a release build and 13.4 KB in a debug one. Whatever the limit counts, those
-paths need either a bounded depth or a native stack sized for it.
+in a release build and 13.4 KB in a debug one. Those paths need either a bounded
+depth or a native stack sized for the count.
 
 ### What stays recursive, and why that is not a hole
 
@@ -788,8 +796,8 @@ binds it is that no native code may ever enter an image.
 ## Decisions
 
 - **One engine.** The tree-walker was retired because it could not represent a
-  suspended computation; golden outcomes protect behaviour until the reference
-  lowering becomes the differential oracle.
+  suspended computation; golden outcomes protect behaviour, and the reference
+  lowering is the differential oracle.
 - **`vm.rs` holds no dispatch logic.** Every observable error comes from shared
   code, so the reference lowering and a JIT share it. Splitting `send` into a
   decision and an activation preserves this: the decision does not move.

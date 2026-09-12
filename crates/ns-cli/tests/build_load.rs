@@ -98,10 +98,12 @@ fn loading_a_binary_runs_its_initializers_against_the_loading_platform() {
 }
 
 /// `build` then `load` must be indistinguishable from `run` on the same
-/// source: exit status, stdout and stderr. A binary carries no source, so
-/// comparing it against `run` is how a binary is checked at all;
-/// `run_fixtures.rs` pins the same fixtures' output against their
+/// source -- exit status, stdout and stderr -- under both lowerings. A binary
+/// carries no source, so comparing it against `run` is how a binary is checked
+/// at all; `run_fixtures.rs` pins the same fixtures' output against their
 /// `.expected` files, so equality here also holds against a recorded answer.
+/// Under the reference lowering this also takes the encoder and decoder over
+/// code with no jumps and many registers.
 #[test]
 fn every_fixture_runs_identically_from_source_and_from_a_binary() {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
@@ -113,40 +115,47 @@ fn every_fixture_runs_identically_from_source_and_from_a_binary() {
         if path.extension().and_then(|e| e.to_str()) != Some("ns") {
             continue;
         }
-        let out = dir.join(&format!(
-            "{}.nsb",
-            path.file_stem().unwrap().to_string_lossy()
-        ));
+        let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+        for lowering in ["optimized", "reference"] {
+            let out = dir.join(&format!("{stem}.{lowering}.nsb"));
+            let (built, _, build_err) = ns_next(&[
+                "build".as_ref(),
+                path.as_os_str(),
+                out.as_os_str(),
+                "--lowering".as_ref(),
+                lowering.as_ref(),
+            ]);
+            if !built {
+                // A fixture whose root class declares no `main:args:` and
+                // needs an explicit entry is not a failure of this property.
+                // Anything else is, so the reason is asserted rather than
+                // assumed.
+                assert!(
+                    build_err.contains("--entry"),
+                    "build failed for {} under the {lowering} lowering: {build_err}",
+                    path.display()
+                );
+                continue;
+            }
 
-        let (built, _, build_err) = ns_next(&["build".as_ref(), path.as_os_str(), out.as_os_str()]);
-        if !built {
-            // A fixture whose root class declares no `main:args:` and needs an
-            // explicit entry is not a failure of this property. Anything else
-            // is, so the reason is asserted rather than assumed.
-            assert!(
-                build_err.contains("--entry"),
-                "build failed for {}: {build_err}",
-                path.display()
-            );
-            continue;
+            let (run_ok, run_out, run_err) = ns_next(&[
+                "run".as_ref(),
+                path.as_os_str(),
+                "--lowering".as_ref(),
+                lowering.as_ref(),
+            ]);
+            let (load_ok, load_out, load_err) = ns_next(&["load".as_ref(), out.as_os_str()]);
+            let what = format!("{} under the {lowering} lowering", path.display());
+            assert_eq!(load_ok, run_ok, "exit status differs for {what}");
+            assert_eq!(load_out, run_out, "stdout differs for {what}");
+            assert_eq!(load_err, run_err, "stderr differs for {what}");
+            checked += 1;
         }
-
-        let (run_ok, run_out, run_err) = ns_next(&["run".as_ref(), path.as_os_str()]);
-        let (load_ok, load_out, load_err) = ns_next(&["load".as_ref(), out.as_os_str()]);
-        assert_eq!(
-            load_ok,
-            run_ok,
-            "exit status differs for {}",
-            path.display()
-        );
-        assert_eq!(load_out, run_out, "stdout differs for {}", path.display());
-        assert_eq!(load_err, run_err, "stderr differs for {}", path.display());
-        checked += 1;
     }
 
     assert!(
-        checked >= 5,
-        "expected several fixtures to be covered, got {checked}"
+        checked >= 10,
+        "expected several fixtures to be covered under both lowerings, got {checked}"
     );
 }
 

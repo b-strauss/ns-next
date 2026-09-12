@@ -5,7 +5,8 @@ resolver, bytecode compiler and register VM, and a versioned image format.
 Rust 1.98.0, edition 2021, three crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`.
-- `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`),
+- `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
+  with the reference lowering it is checked against in `compiler/reference.rs`),
   the VM (`vm.rs`) and the send machinery it calls (`interpreter/`), core library
   (`builtins/`), image format (`image/`). Objects live in an arena owned by one
   `Heap` (`heap.rs`) and are addressed by 32-bit handles; activations live on an
@@ -24,9 +25,9 @@ These are not style preferences. Each one has already produced a real defect in 
 repository; the reasoning behind them is in the design documents under
 `docs/design/`.
 
-**Program outcomes are pinned, not re-derived.** Until the reference lowering lands
-(`docs/design/compiler.md`, "Planned: the reference lowering") there is no second way to
-run a program and compare against. What protects behaviour is recorded answers: every
+**Program outcomes are pinned, not re-derived.** The reference lowering
+(`docs/design/compiler.md`, "The reference lowering") is a second way to run
+every program, and both are held to recorded answers: every
 `tests-fixtures/*.ns` against its `.expected` stdout and an empty stderr, the golden exit
 status, stdout and stderr in `crates/ns-cli/tests/program_outcomes.rs`, and `run-corpus`.
 A change that alters one is a behaviour change: establish that the new output is right
@@ -47,9 +48,11 @@ deferred to execution instead (see `Literal::MalformedInt` and
 
 **An expression's value register must still hold that value when its consumer executes.**
 A named local's register is live storage. `lower_operand` copies it when anything lowered
-afterwards can write it; `lower_expr_consumed_immediately` is the counterpart for the
-positions where nothing is lowered afterwards. Getting this wrong is silent wrong output
-with exit status 0, not a crash.
+afterwards can write it. An assignment through a setter copies it too, even when the very
+next instruction reads the assignment's value: the setter send runs user code first, and
+that code can write the local through a closure. `lower_expr_for` skips that copy only
+where its caller states that nothing reads the value (`ValueUse::Discarded`). Getting this
+wrong is silent wrong output with exit status 0, not a crash.
 
 **An image is untrusted input.** No byte sequence may cause a panic or a process abort:
 validate every id, tag, count and length before it indexes, allocates or slices, and
@@ -177,8 +180,8 @@ one to measure.
 A file that legitimately cannot parse yet belongs in `corpus/blacklist.toml`. A corpus
 module that runs end to end belongs in `corpus/runnable.toml`, with the entry selector
 to send and the output it produces; `run-corpus` runs every listed module from source
-and as a built binary and fails if either differs from the recorded output. Nothing
-under `crates/ns-syntax` should change for runtime work.
+and as a built binary, under both lowerings, and fails if any of the four differs from
+the recorded output. Nothing under `crates/ns-syntax` should change for runtime work.
 
 `platform.rs` is widened only on demand: an accessor exists because a module on
 `corpus/runnable.toml` needs it, and the whitelist entry that demanded it is named in the

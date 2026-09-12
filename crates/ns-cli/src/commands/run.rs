@@ -10,12 +10,12 @@ use crate::source;
 /// instantiate the root class with whatever its declared primary factory
 /// takes, send the entry selector with whatever `entry_args` sizes for it,
 /// report.
-pub(crate) fn execute(file: &Path, send: &str) -> ExitCode {
+pub(crate) fn execute(file: &Path, send: &str, lowering: ns_runtime::Lowering) -> ExitCode {
     let loaded = match source::load_source(file) {
         Ok(l) => l,
         Err(code) => return code,
     };
-    let (mut interp, class) = source::bootstrap(&loaded);
+    let (mut interp, class) = source::bootstrap(&loaded, lowering);
     let instance = match entry::instantiate_root(&mut interp, class) {
         Ok(v) => v,
         Err(code) => return code,
