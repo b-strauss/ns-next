@@ -78,7 +78,7 @@ fn a_user_method_runs_as_bytecode_and_returns_its_value() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = expect_ok(send(&mut interp, &instance, "answer", &[]), "answer");
-    assert_eq!(int_of(&interp.enter(|m| m.fetch(&result))), 42);
+    assert_eq!(interp.enter(|m| int_of(&m.fetch(&result))), 42);
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
     });
     let nine = interp.stash(Value::SmallInt(9));
     let result = expect_ok(send(&mut interp, &block, "value:", &[nine]), "value:");
-    assert_eq!(int_of(&interp.enter(|m| m.fetch(&result))), 10);
+    assert_eq!(interp.enter(|m| int_of(&m.fetch(&result))), 10);
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn temps_implicit_self_sends_and_arithmetic_work() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = expect_ok(send(&mut interp, &instance, "foo", &[]), "foo");
-    assert_eq!(int_of(&interp.enter(|m| m.fetch(&result))), 42);
+    assert_eq!(interp.enter(|m| int_of(&m.fetch(&result))), 42);
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn slots_read_and_write_through_lexical_sends() {
     let instance = new_instance(&mut interp, &class);
     expect_ok(send(&mut interp, &instance, "bump", &[]), "bump");
     let result = expect_ok(send(&mut interp, &instance, "bump", &[]), "bump");
-    assert_eq!(int_of(&interp.enter(|m| m.fetch(&result))), 3);
+    assert_eq!(interp.enter(|m| int_of(&m.fetch(&result))), 3);
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn cascades_and_builtin_instantiation_work() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = expect_ok(send(&mut interp, &instance, "foo", &[]), "foo");
-    assert_eq!(int_of(&interp.enter(|m| m.fetch(&result))), 2);
+    assert_eq!(interp.enter(|m| int_of(&m.fetch(&result))), 2);
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn a_block_writes_an_enclosing_temp_through_store_outer_local() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = expect_ok(send(&mut interp, &instance, "sum", &[]), "sum");
-    assert_eq!(int_of(&interp.enter(|m| m.fetch(&result))), 6);
+    assert_eq!(interp.enter(|m| int_of(&m.fetch(&result))), 6);
 }
 
 #[test]
@@ -253,7 +253,7 @@ fn empty_and_multi_statement_blocks_return_nil_and_the_last_value() {
     let empty = expect_ok(send(&mut interp, &instance, "empty", &[]), "empty");
     assert!(interp.enter(|m| matches!(m.fetch(&empty), Value::Nil)));
     let last = expect_ok(send(&mut interp, &instance, "last", &[]), "last");
-    assert_eq!(int_of(&interp.enter(|m| m.fetch(&last))), 2);
+    assert_eq!(interp.enter(|m| int_of(&m.fetch(&last))), 2);
 }
 
 #[test]
@@ -426,8 +426,8 @@ fn loading_a_second_module_keeps_the_first_modules_code() {
     let b_instance = new_instance(&mut interp, &b);
     let from_a = expect_ok(send(&mut interp, &a_instance, "answer", &[]), "A answer");
     let from_b = expect_ok(send(&mut interp, &b_instance, "answer", &[]), "B answer");
-    assert_eq!(int_of(&interp.enter(|m| m.fetch(&from_a))), 1);
-    assert_eq!(int_of(&interp.enter(|m| m.fetch(&from_b))), 2);
+    assert_eq!(interp.enter(|m| int_of(&m.fetch(&from_a))), 1);
+    assert_eq!(interp.enter(|m| int_of(&m.fetch(&from_b))), 2);
 }
 
 /// The probe that exposed the frame-shift defect: a method with a declared

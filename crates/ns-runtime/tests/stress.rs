@@ -76,9 +76,10 @@ fn run_every_continuation(stress: bool) -> (i64, u32, usize) {
     interp.set_stress_moves(stress);
     let s = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let sum = expect_ok(interp.send(&s, Symbol::intern("run"), &[]), "run");
-    let Value::SmallInt(sum) = interp.enter(|m| m.fetch(&sum)) else {
-        panic!("`run` answers an integer")
-    };
+    let sum = interp.enter(|m| match m.fetch(&sum) {
+        Value::SmallInt(sum) => sum,
+        _ => panic!("`run` answers an integer"),
+    });
     (sum, interp.moves(), interp.stress_safepoints())
 }
 
@@ -103,6 +104,9 @@ fn every_continuation_survives_a_move_at_every_safepoint() {
 /// keeping a plain value across a run. The run itself succeeds -- the
 /// stale value is the host's, not the runtime's -- and it is the host's
 /// read afterwards that is refused.
+///
+/// `kept` leaves its entry on purpose -- that is the mistake; Task 4's brand
+/// makes it a compile error and deletes this test.
 #[test]
 fn a_value_a_host_keeps_across_a_run_is_refused_under_stress() {
     let (mut interp, class) = load(EVERY_CONTINUATION);

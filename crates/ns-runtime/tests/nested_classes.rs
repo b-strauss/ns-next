@@ -159,9 +159,10 @@ fn a_nested_class_can_be_instantiated_through_its_accessor() {
         interp.send(&instance, Symbol::intern("value"), &[]),
         "value",
     );
-    let Value::SmallInt(value) = interp.enter(|m| m.fetch(&value)) else {
-        panic!("expected a SmallInt from `Inner new value`")
-    };
+    let value = interp.enter(|m| match m.fetch(&value) {
+        Value::SmallInt(value) => value,
+        _ => panic!("expected a SmallInt from `Inner new value`"),
+    });
     assert_eq!(value, 42);
 }
 
@@ -214,9 +215,10 @@ fn a_nested_class_defaults_to_protected_accessibility() {
     let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     // Lexically, from inside Outer: reachable, and it really is a class.
     let value = expect_ok(interp.send(&outer, Symbol::intern("reach"), &[]), "reach");
-    let Value::SmallInt(value) = interp.enter(|m| m.fetch(&value)) else {
-        panic!("expected a SmallInt from `Hidden new value`")
-    };
+    let value = interp.enter(|m| match m.fetch(&value) {
+        Value::SmallInt(value) => value,
+        _ => panic!("expected a SmallInt from `Hidden new value`"),
+    });
     assert_eq!(value, 7);
     // From outside, as an ordinary send: not reachable.
     let message = expect_error(interp.send(&outer, Symbol::intern("Hidden"), &[]), "Hidden");
@@ -285,9 +287,10 @@ fn an_inherited_nested_declaration_is_reached_through_the_chain() {
     });
     let instance = expect_ok(interp.instantiate(&n_class, &[]), "instantiate N");
     let tag = expect_ok(interp.send(&instance, Symbol::intern("tag"), &[]), "tag");
-    let Value::SmallInt(tag) = interp.enter(|m| m.fetch(&tag)) else {
-        panic!("expected a SmallInt from `N new tag`")
-    };
+    let tag = interp.enter(|m| match m.fetch(&tag) {
+        Value::SmallInt(tag) => tag,
+        _ => panic!("expected a SmallInt from `N new tag`"),
+    });
     assert_eq!(tag, 11);
 }
 

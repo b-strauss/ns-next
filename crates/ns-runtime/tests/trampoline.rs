@@ -100,7 +100,7 @@ fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack() {
         let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let result = expect_ok(interp.send(&instance, Symbol::intern("find"), &[]), "find");
         assert_eq!(
-            small_int(interp.enter(|m| m.fetch(&result))),
+            interp.enter(|m| small_int(m.fetch(&result))),
             30,
             "{lowering:?}"
         );
@@ -175,7 +175,7 @@ fn a_deep_recursion_through_instantiation_runs_on_the_activation_stack() {
             "build:",
         );
         assert_eq!(
-            small_int(interp.enter(|m| m.fetch(&height))),
+            interp.enter(|m| small_int(m.fetch(&height))),
             20_000,
             "{lowering:?}"
         );
@@ -217,7 +217,7 @@ fn a_deep_recursion_through_native_block_activations_runs_on_the_activation_stac
                 selector,
             );
             assert_eq!(
-                small_int(interp.enter(|m| m.fetch(&result))),
+                interp.enter(|m| small_int(m.fetch(&result))),
                 0,
                 "{selector} under {lowering:?}"
             );
@@ -511,7 +511,7 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
         );
         let count = expect_ok(send(&mut interp, &instance, "count", &[]), "count");
         assert_eq!(
-            small_int(interp.enter(|m| m.fetch(&count))),
+            interp.enter(|m| small_int(m.fetch(&count))),
             3,
             "{}",
             what("whileTrue:")
@@ -527,7 +527,7 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
         );
         let count = expect_ok(send(&mut interp, &instance, "count", &[]), "count");
         assert_eq!(
-            small_int(interp.enter(|m| m.fetch(&count))),
+            interp.enter(|m| small_int(m.fetch(&count))),
             5,
             "{}",
             what("whileFalse:")
@@ -568,7 +568,7 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
             &what("ifTrue:"),
         );
         assert_eq!(
-            small_int(interp.enter(|m| m.fetch(&value))),
+            interp.enter(|m| small_int(m.fetch(&value))),
             42,
             "{}",
             what("ifTrue:")
@@ -617,7 +617,7 @@ fn a_deep_recursion_through_do_runs_on_the_activation_stack() {
             "d:",
         );
         assert_eq!(
-            small_int(interp.enter(|m| m.fetch(&result))),
+            interp.enter(|m| small_int(m.fetch(&result))),
             0,
             "{lowering:?}"
         );
@@ -690,7 +690,7 @@ fn a_return_through_a_superclass_clause_abandons_its_creation() {
             "the first probe",
         );
         assert_eq!(
-            small_int(interp.enter(|m| m.fetch(&escaped))),
+            interp.enter(|m| small_int(m.fetch(&escaped))),
             7,
             "{lowering:?}: the `^` lands on `probe`"
         );
@@ -755,7 +755,7 @@ fn a_return_in_a_clause_messages_block_hands_its_value_to_the_walk() {
             "make",
         );
         assert_eq!(
-            small_int(interp.enter(|m| m.fetch(&made))),
+            interp.enter(|m| small_int(m.fetch(&made))),
             34,
             "{lowering:?}: Base got the returned argument list, and Cell's own slot ran too"
         );
@@ -793,7 +793,7 @@ fn a_return_into_an_initializer_with_a_level_below_escapes_the_run() {
             "fine",
         );
         assert_eq!(
-            small_int(interp.enter(|m| m.fetch(&fine))),
+            interp.enter(|m| small_int(m.fetch(&fine))),
             42,
             "{lowering:?}"
         );
@@ -833,7 +833,7 @@ fn an_error_in_a_clause_message_mid_climb_unwinds_the_run() {
             "fine",
         );
         assert_eq!(
-            small_int(interp.enter(|m| m.fetch(&fine))),
+            interp.enter(|m| small_int(m.fetch(&fine))),
             42,
             "{lowering:?}"
         );

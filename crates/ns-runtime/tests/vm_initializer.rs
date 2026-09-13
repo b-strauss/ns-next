@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::{
-    BuiltinClass, ClassData, ClassRef, FrameKind, HostResult, HostSignal, Interpreter, Mixin,
+    BuiltinClass, ClassData, FrameKind, HostResult, HostSignal, Interpreter, Mixin,
     MixinApplication, ObjectData, Root, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
@@ -39,8 +39,9 @@ fn int_of(v: &Value) -> i64 {
     }
 }
 
-/// Instantiates with `factory_args`, sends `getter`, returns the result.
-fn instantiate_and_get(src: &str, factory_args: Vec<Value>, getter: &str) -> Value {
+/// Instantiates with `factory_args`, sends `getter`, returns the `SmallInt`
+/// it answers.
+fn instantiate_and_get(src: &str, factory_args: Vec<Value>, getter: &str) -> i64 {
     let (mut interp, class) = load(src);
     let factory_args: Vec<Root> = factory_args
         .into_iter()
@@ -48,7 +49,7 @@ fn instantiate_and_get(src: &str, factory_args: Vec<Value>, getter: &str) -> Val
         .collect();
     let instance = expect_ok(interp.instantiate(&class, &factory_args), "instantiate");
     let result = expect_ok(interp.send(&instance, Symbol::intern(getter), &[]), getter);
-    interp.enter(|m| m.fetch(&result))
+    interp.enter(|m| int_of(&m.fetch(&result)))
 }
 
 const FACTORY_PARAM: &str = indoc! {"
@@ -74,13 +75,13 @@ const INIT_EXPRS: &str = indoc! {"
 #[test]
 fn a_slot_initializer_reads_a_factory_parameter() {
     let v = instantiate_and_get(FACTORY_PARAM, vec![Value::SmallInt(7)], "p2");
-    assert_eq!(int_of(&v), 7);
+    assert_eq!(v, 7);
 }
 
 #[test]
 fn init_exprs_run_after_slot_initializers() {
     let v = instantiate_and_get(INIT_EXPRS, vec![], "r2");
-    assert_eq!(int_of(&v), 6);
+    assert_eq!(v, 6);
 }
 
 #[test]
@@ -177,10 +178,11 @@ fn raw_slot_decl(name: &str) -> Rc<ns_syntax::ast::SlotDecl> {
 /// `load_module` cannot do (it always builds a fresh `Mixin` per module).
 fn make_class(
     interp: &mut Interpreter,
-    class_of_class: ClassRef,
+    class_of_class: BuiltinClass,
     application: Rc<MixinApplication>,
 ) -> Root {
     interp.enter(|m| {
+        let class_of_class = m.builtin_class(class_of_class);
         let class = m.heap_mut().alloc_object(
             class_of_class,
             ObjectData::Class(ClassData {
@@ -243,18 +245,15 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
         ) : ()
     "};
     let (mut interp, loaded) = load(src);
-    let (shared_mixin, object_class) = interp.enter(|m| {
+    let shared_mixin = interp.enter(|m| {
         let Value::Obj(loaded) = m.fetch(&loaded) else {
             panic!("load_module answers a class object")
         };
-        let mixin = m
-            .heap()
+        m.heap()
             .class_application(loaded)
             .expect("a class object")
             .mixin
-            .clone();
-        let object_class = m.builtin_class(BuiltinClass::Object);
-        (mixin, object_class)
+            .clone()
     });
 
     // Two structurally different superclass shapes for the same mixin: one
@@ -275,8 +274,8 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
         "the setup must actually give the two applications different bases"
     );
 
-    let class_a = make_class(&mut interp, object_class, app_a.clone());
-    let class_b = make_class(&mut interp, object_class, app_b.clone());
+    let class_a = make_class(&mut interp, BuiltinClass::Object, app_a.clone());
+    let class_b = make_class(&mut interp, BuiltinClass::Object, app_b.clone());
 
     let a = expect_ok(
         interp.instantiate(&class_a, &[interp.stash(Value::SmallInt(11))]),

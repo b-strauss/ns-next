@@ -148,13 +148,21 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
         "instantiate(Foo) bar",
     );
 
-    let a = interp_a.enter(|m| m.fetch(&via_send_bar));
-    let b = interp_b.enter(|m| m.fetch(&via_instantiate_bar));
+    // Each side leaves its interpreter's entry as the integer it answered,
+    // or as the description of whatever else it answered.
+    let a = interp_a.enter(|m| match m.fetch(&via_send_bar) {
+        Value::SmallInt(a) => Ok(a),
+        other => Err(m.heap().describe(&other)),
+    });
+    let b = interp_b.enter(|m| match m.fetch(&via_instantiate_bar) {
+        Value::SmallInt(b) => Ok(b),
+        other => Err(m.heap().describe(&other)),
+    });
     match (a, b) {
-        (Value::SmallInt(a), Value::SmallInt(b)) => assert_eq!(a, b),
+        (Ok(a), Ok(b)) => assert_eq!(a, b),
         (a, b) => {
-            let da = interp_a.enter(|m| m.heap().describe(&a));
-            let db = interp_b.enter(|m| m.heap().describe(&b));
+            let da = a.map_or_else(|d| d, |n| n.to_string());
+            let db = b.map_or_else(|d| d, |n| n.to_string());
             panic!("expected two equal Value::SmallInt, got {da} and {db}")
         }
     }
