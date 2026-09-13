@@ -1508,14 +1508,7 @@ pub fn decode_class_tag(
     match r.read_u8()? {
         CLS_BUILTIN => Ok(ctx.interp.builtin_class(read_builtin_class(r)?)),
         CLS_USER_ROOT => Ok(*ctx.root_class),
-        CLS_RECORD => {
-            let id = r.read_u32()?;
-            tables
-                .objects
-                .get(id as usize)
-                .copied()
-                .ok_or(DecodeError::BadObjectId(id))
-        }
+        CLS_RECORD => decode_object_id(r, tables),
         tag => Err(DecodeError::InvalidTag { what: "class", tag }),
     }
 }
@@ -1543,15 +1536,7 @@ fn decode_value(
         VAL_TRUE => Ok(Value::Bool(true)),
         VAL_SMALL_INT => Ok(Value::SmallInt(r.read_i64()?)),
         VAL_FLOAT => Ok(Value::Float(r.read_f64()?)),
-        VAL_OBJECT_ID => {
-            let id = r.read_u32()?;
-            tables
-                .objects
-                .get(id as usize)
-                .copied()
-                .map(Value::Obj)
-                .ok_or(DecodeError::BadObjectId(id))
-        }
+        VAL_OBJECT_ID => Ok(Value::Obj(decode_object_id(r, tables)?)),
         VAL_CLASS_TAG => Ok(Value::Obj(decode_class_tag(r, ctx, tables)?)),
         VAL_PLATFORM => Ok(ctx.platform),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
@@ -1569,6 +1554,17 @@ fn decode_values(
         values.push(decode_value(r, ctx, tables)?);
     }
     Ok(values)
+}
+
+/// An object id off the wire, resolved against the placeholders the first
+/// pass allocated: in range, or `BadObjectId` before anything indexes by it.
+fn decode_object_id(r: &mut Reader, tables: &Tables) -> Result<ObjRef, DecodeError> {
+    let id = r.read_u32()?;
+    tables
+        .objects
+        .get(id as usize)
+        .copied()
+        .ok_or(DecodeError::BadObjectId(id))
 }
 
 fn decode_frame_id(r: &mut Reader, tables: &Tables) -> Result<FrameRef, DecodeError> {
@@ -1674,16 +1670,7 @@ fn decode_frame(
         FRAME_INITIALIZER => FrameKind::Initializer(decode_class_tag(r, ctx, tables)?),
         FRAME_SUPERCLASS_CLAUSE => FrameKind::SuperclassClause(decode_class_tag(r, ctx, tables)?),
         FRAME_SUPERCLASS_MESSAGE => FrameKind::SuperclassMessage(decode_class_tag(r, ctx, tables)?),
-        FRAME_CLOSURE_OBJECT => {
-            let id = r.read_u32()?;
-            FrameKind::Closure(
-                tables
-                    .objects
-                    .get(id as usize)
-                    .copied()
-                    .ok_or(DecodeError::BadObjectId(id))?,
-            )
-        }
+        FRAME_CLOSURE_OBJECT => FrameKind::Closure(decode_object_id(r, tables)?),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "frame kind",

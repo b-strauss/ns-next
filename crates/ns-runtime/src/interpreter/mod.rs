@@ -1697,4 +1697,16 @@ mod tests {
     fn a_decision_stays_the_size_the_hot_path_was_measured_at() {
         assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 56);
     }
+
+    /// The debug-build twin of the pin above, so that a variant that grows a
+    /// decision is noticed by the ordinary suite and not only by the release
+    /// run the measurement protocol makes. It only notices growth: the
+    /// release figure is the one the hot path was measured at, and a debug
+    /// handle carries its origin and move epoch besides its index, which is
+    /// what puts this above it.
+    #[cfg(all(target_pointer_width = "64", debug_assertions))]
+    #[test]
+    fn a_decision_stays_the_size_it_has_in_a_debug_build() {
+        assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 64);
+    }
 }

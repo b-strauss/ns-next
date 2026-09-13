@@ -136,6 +136,7 @@ const GRAPH: &str = indoc! {"
         | v ::= 7. |
       ) (
         public v = ( ^v )
+        public secret = ( ^outer X secret )
       ) : ()
       public build = (
         | n |
@@ -145,6 +146,8 @@ const GRAPH: &str = indoc! {"
         ^{cell. counter}
       )
       public read = ( ^cell v + counter value )
+      public secret = ( ^11 )
+      public throughCell = ( ^cell secret )
     ) : (
       public marker = ( ^3 )
     )
@@ -162,9 +165,11 @@ fn move_once(interp: &mut Interpreter) {
 
 /// What a host holds as roots survives a move of every object and every
 /// reified frame, and so does everything reachable from it: an instance's
-/// slots, a nested class and its enclosing object, a closure and the
-/// divorced frame whose variable it writes, a cached metaclass, and the
-/// builtin classes every send to an integer reaches.
+/// slots, a nested class and its enclosing object -- which `outer X` reaches
+/// through the cell's class object, and which only `X` can answer `secret`
+/// for -- a closure and the divorced frame whose variable it writes, a
+/// cached metaclass, and the builtin classes every send to an integer
+/// reaches.
 #[test]
 #[cfg(debug_assertions)]
 fn a_world_reached_from_roots_survives_moves() {
@@ -174,6 +179,11 @@ fn a_world_reached_from_roots_survives_moves() {
     move_once(&mut interp);
     let read = expect_ok(interp.send(&x, Symbol::intern("read"), &[]), "read");
     assert!(matches!(interp.fetch(&read), Value::SmallInt(48)));
+    let secret = expect_ok(
+        interp.send(&x, Symbol::intern("throughCell"), &[]),
+        "throughCell",
+    );
+    assert!(matches!(interp.fetch(&secret), Value::SmallInt(11)));
     move_once(&mut interp);
     let read = expect_ok(interp.send(&x, Symbol::intern("read"), &[]), "read");
     assert!(matches!(interp.fetch(&read), Value::SmallInt(49)));

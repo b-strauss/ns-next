@@ -2235,6 +2235,106 @@ fn the_retired_closure_frame_tag_is_refused() {
     );
 }
 
+/// `inspect` walks the graph with its own reader, so it has to refuse the
+/// retired tag itself: an artifact `load` refuses must not inspect as if it
+/// were well-formed. The describing sections come from a real snapshot and
+/// the graph section is the hand-written one above, spliced in where the
+/// snapshot's own graph began.
+#[test]
+fn inspect_refuses_the_retired_closure_frame_tag() {
+    let (mut interp, class) = load(TRIVIAL_MODULE);
+    let platform = interp.platform();
+    let mut bytes = image::snapshot(
+        &interp,
+        None,
+        &Origin::File(PathBuf::from("t.ns")),
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[],
+    )
+    .expect("snapshot");
+    let graph_start = image::inspect::inspect(&bytes)
+        .expect("inspect")
+        .sections
+        .iter()
+        .find(|s| s.name == "graph")
+        .expect("a snapshot has a graph section")
+        .start;
+    bytes.truncate(graph_start);
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 0, 1);
+    w.write_u8(0); // receiver: nil
+    w.write_u32(0); // no args
+    w.write_u32(0); // no temps
+    w.write_u32(0); // pc
+    w.write_bool(false); // no sender
+    w.write_bool(false); // no home
+    w.write_bool(false); // no current class
+    w.write_u8(1); // frame kind: the retired FRAME_CLOSURE
+    w.write_bool(false);
+    w.write_u32(0);
+    bytes.extend_from_slice(&w.into_bytes());
+    let err = match image::inspect::inspect(&bytes) {
+        Ok(_) => panic!("inspect accepted the retired closure frame tag"),
+        Err(e) => e,
+    };
+    assert_eq!(err, "invalid frame kind tag 1");
+    assert_eq!(load_err(&bytes), "invalid frame kind tag 1");
+}
+
+/// `inspect` renders a closure frame as the object id it names: after
+/// `[:x | [ x ] ] value: 5`, the inner closure's captured frame is the outer
+/// block's activation, and the object the frame line names is the outer
+/// block itself, with its one parameter.
+#[test]
+fn inspect_names_the_closure_object_a_closure_frame_runs() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public mk = ( ^[:x | [ x ] ] value: 5 )
+        ) : ()
+    "};
+    let (mut interp, class) = load(src);
+    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    let inner = expect_ok(interp.send(&instance, Symbol::intern("mk"), &[]), "mk");
+    let platform = interp.platform();
+    // Read out after the last run, for the encoder, which runs nothing.
+    let bytes = image::snapshot(
+        &interp,
+        None,
+        &Origin::File(PathBuf::from("t.ns")),
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&inner)],
+    )
+    .expect("snapshot");
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let closure_frames: Vec<&String> = report
+        .graph_frames
+        .iter()
+        .filter(|frame| frame.starts_with("closure object "))
+        .collect();
+    let [frame] = closure_frames[..] else {
+        panic!(
+            "expected one closure frame, the outer block's activation, in {:?}",
+            report.graph_frames
+        )
+    };
+    let id: usize = frame
+        .strip_prefix("closure object ")
+        .and_then(|rest| rest.split(',').next())
+        .expect("the id ends the kind")
+        .parse()
+        .expect("an object id");
+    let object = &report.graph_objects[id];
+    assert!(
+        object.contains("closure [x] code "),
+        "object {id} should be the outer block, with its parameter `x`: {object}"
+    );
+}
+
 /// A closure frame's object id is in range but names a string: refused once
 /// every record is read, like a class reference that names an ordinary
 /// object, since only then is it known what the record was.
@@ -3444,6 +3544,7 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
         ..mixin_of(interp.heap_ref(), class)
     };
     install_mixin(&mut interp, class, doctored);
+    // Read out after the last run, for the encoder, which runs nothing.
     let bytes = image::snapshot(
         &interp,
         Some(NEEDS_INITIALIZER),

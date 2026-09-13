@@ -27,9 +27,8 @@ impl Interpreter {
     #[inline(never)]
     pub(crate) fn safepoint(&mut self) {
         #[cfg(debug_assertions)]
-        if self.stress.is_some() {
-            let size = self.heap.traced_size();
-            if self.stress.as_mut().is_some_and(|stress| stress.due(size)) {
+        if let Some(stress) = &mut self.stress {
+            if stress.due(self.heap.traced_size()) {
                 self.move_everything();
             }
             return;
@@ -56,12 +55,16 @@ pub(crate) const STRESS_MOVE_BUDGET: usize = 1_000;
 #[derive(Default)]
 pub(crate) struct StressMoves {
     safepoints_since_move: usize,
+    /// Every safepoint taken since the mode was turned on, moved at or
+    /// not. For tests (`Interpreter::stress_safepoints`).
+    safepoints: usize,
 }
 
 #[cfg(debug_assertions)]
 impl StressMoves {
     /// Counts one safepoint and answers whether it moves.
     fn due(&mut self, traced_size: usize) -> bool {
+        self.safepoints += 1;
         self.safepoints_since_move += 1;
         if self
             .safepoints_since_move
@@ -116,6 +119,14 @@ impl Interpreter {
     /// How many times this interpreter's heap has moved everything.
     pub fn moves(&self) -> u32 {
         self.heap.move_epoch()
+    }
+
+    /// How many safepoints the stress mode has taken since it was turned
+    /// on, whether or not each moved; 0 while it is off. For tests: with
+    /// `moves`, it pins that a heap within the budget moves at every
+    /// safepoint.
+    pub fn stress_safepoints(&self) -> usize {
+        self.stress.as_ref().map_or(0, |stress| stress.safepoints)
     }
 
     /// What must hold no handle when everything moves, because nothing

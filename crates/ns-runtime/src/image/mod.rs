@@ -318,6 +318,10 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         }
         .to_string());
     }
+    // Rooted only now, after every verification pass and the trailing-bytes
+    // check: nothing runs while an artifact decodes, so nothing moves under
+    // the plain handles above, and a refused artifact answers nothing to
+    // root (`docs/design/image-format.md`, "Two artifacts").
     let root_class = interp.stash(Value::Obj(root_class));
     let roots = graph
         .roots

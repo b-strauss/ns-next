@@ -271,6 +271,17 @@ struct HostRoots {
 /// The table's size below which `stash` never sweeps.
 const MIN_ROOT_SWEEP: usize = 64;
 
+impl HostRoots {
+    /// Drops every slot the host has released -- one the table holds the
+    /// only reference to -- and sets the size at which `stash` sweeps
+    /// next: twice what survived, never below `MIN_ROOT_SWEEP`.
+    fn sweep(&mut self) {
+        self.slots
+            .retain(|slot| std::rc::Rc::strong_count(slot) > 1);
+        self.sweep_at = (self.slots.len() * 2).max(MIN_ROOT_SWEEP);
+    }
+}
+
 /// One live activation. Its registers are `values[base..]` up to the next
 /// entry's `base` (or the end of `values`, for the top entry): the
 /// arguments first, then the temporaries.
@@ -371,12 +382,20 @@ pub struct Heap {
 /// unbounded print of every activation's and every object's data.
 impl std::fmt::Debug for Heap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `try_borrow`, not `borrow`: a `{:?}` written into a panic message
+        // while `stash` holds the table would otherwise panic inside the
+        // panic, and a debug print must never be what aborts the process.
+        let host_roots = self.host_roots.try_borrow().map(|roots| roots.slots.len());
+        let host_roots: &dyn std::fmt::Debug = match &host_roots {
+            Ok(count) => count,
+            Err(_) => &"<borrowed>",
+        };
         f.debug_struct("Heap")
             .field("next_identity_hash", &self.next_identity_hash)
             .field("frames.len()", &self.frames.len())
             .field("activations", &self.stack.entries.len())
             .field("objects.len()", &self.objects.len())
-            .field("host roots", &self.host_roots.borrow().slots.len())
+            .field("host roots", host_roots)
             .finish()
     }
 }
@@ -441,7 +460,7 @@ impl crate::trace::Tracer for Forwarder {
         );
         assert_eq!(
             handle.epoch, self.from,
-            "a stale handle is stored in the heap: minted before move {}, found during move {}",
+            "a stale handle is stored in the heap: minted in move epoch {}, found during move {}",
             handle.epoch, self.to
         );
         handle.index = self.objects.apply(handle.index);
@@ -455,7 +474,7 @@ impl crate::trace::Tracer for Forwarder {
         );
         assert_eq!(
             handle.epoch, self.from,
-            "a stale handle is stored in the heap: minted before move {}, found during move {}",
+            "a stale handle is stored in the heap: minted in move epoch {}, found during move {}",
             handle.epoch, self.to
         );
         handle.index = self.frames.apply(handle.index);
@@ -693,7 +712,7 @@ impl Heap {
         #[cfg(debug_assertions)]
         assert_eq!(
             obj.epoch, self.epoch,
-            "stale handle: minted before move {} of this heap, read after move {} -- \
+            "stale handle: minted in move epoch {} of this heap, read in move epoch {} -- \
              a host keeps a value across a run only as a `Root`",
             obj.epoch, self.epoch
         );
@@ -711,7 +730,7 @@ impl Heap {
         #[cfg(debug_assertions)]
         assert_eq!(
             frame.epoch, self.epoch,
-            "stale handle: minted before move {} of this heap, read after move {} -- \
+            "stale handle: minted in move epoch {} of this heap, read in move epoch {} -- \
              a host keeps a value across a run only as a `Root`",
             frame.epoch, self.epoch
         );
@@ -961,34 +980,34 @@ impl Heap {
         }
     }
 
+    /// Closure `obj`'s payload, borrowed, or `None` when `obj` is not a
+    /// closure. Private, like every borrow of the arena: the accessors
+    /// below each copy one thing out of it, so that none of their callers
+    /// holds a borrow of the heap.
+    fn closure(&self, obj: ObjRef) -> Option<&ClosureData> {
+        self.check_object_origin(obj);
+        match &self.objects[obj.index as usize].data {
+            ObjectData::Closure(closure) => Some(closure),
+            _ => None,
+        }
+    }
+
     /// Whether `obj` is a closure -- what a control-flow native asks of a
     /// value before activating it as a block.
     pub fn is_closure(&self, obj: ObjRef) -> bool {
-        self.check_object_origin(obj);
-        matches!(
-            self.objects[obj.index as usize].data,
-            ObjectData::Closure(_)
-        )
+        self.closure(obj).is_some()
     }
 
     /// How many parameters closure `obj` declares, or `None` when `obj` is
     /// not a closure.
     pub fn closure_param_count(&self, obj: ObjRef) -> Option<usize> {
-        self.check_object_origin(obj);
-        match &self.objects[obj.index as usize].data {
-            ObjectData::Closure(closure) => Some(closure.params.len()),
-            _ => None,
-        }
+        self.closure(obj).map(|closure| closure.params.len())
     }
 
     /// Closure `obj`'s compiled body, or `None` when `obj` is not a closure.
     /// `image::decode::frame_body` resolves a closure frame's body by it.
     pub fn closure_code(&self, obj: ObjRef) -> Option<std::rc::Rc<crate::bytecode::CompiledCode>> {
-        self.check_object_origin(obj);
-        match &self.objects[obj.index as usize].data {
-            ObjectData::Closure(closure) => Some(closure.code.clone()),
-            _ => None,
-        }
+        self.closure(obj).map(|closure| closure.code.clone())
     }
 
     /// What activating closure `obj` needs, read in one borrow: its body,
@@ -999,15 +1018,13 @@ impl Heap {
         &self,
         obj: ObjRef,
     ) -> Option<(std::rc::Rc<crate::bytecode::CompiledCode>, usize, FrameRef)> {
-        self.check_object_origin(obj);
-        match &self.objects[obj.index as usize].data {
-            ObjectData::Closure(closure) => Some((
+        self.closure(obj).map(|closure| {
+            (
                 closure.code.clone(),
                 closure.params.len(),
                 closure.captured_frame,
-            )),
-            _ => None,
-        }
+            )
+        })
     }
 
     /// A copy of closure `obj`'s payload -- two `Rc` bumps, since its
@@ -1016,11 +1033,7 @@ impl Heap {
     /// through `object_snapshot`, and the run loop reads what it needs
     /// through the narrower accessors above.
     pub fn closure_data(&self, obj: ObjRef) -> Option<ClosureData> {
-        self.check_object_origin(obj);
-        match &self.objects[obj.index as usize].data {
-            ObjectData::Closure(closure) => Some(closure.clone()),
-            _ => None,
-        }
+        self.closure(obj).cloned()
     }
 
     /// Closure `obj`'s captured frame and home, or `None` when `obj` is not
@@ -1030,11 +1043,8 @@ impl Heap {
     /// rather than panicking keeps a future change there from turning an
     /// untrusted image into a panic here.
     fn closure_frames(&self, obj: ObjRef) -> Option<(FrameRef, FrameRef)> {
-        self.check_object_origin(obj);
-        match &self.objects[obj.index as usize].data {
-            ObjectData::Closure(closure) => Some((closure.captured_frame, closure.home)),
-            _ => None,
-        }
+        self.closure(obj)
+            .map(|closure| (closure.captured_frame, closure.home))
     }
 
     /// The whole of `obj`'s record -- `class`, `identity_hash` and `data`
@@ -1133,10 +1143,7 @@ impl Heap {
         let slot = std::rc::Rc::new(std::cell::Cell::new(value));
         let mut roots = self.host_roots.borrow_mut();
         if roots.slots.len() >= roots.sweep_at {
-            roots
-                .slots
-                .retain(|slot| std::rc::Rc::strong_count(slot) > 1);
-            roots.sweep_at = (roots.slots.len() * 2).max(MIN_ROOT_SWEEP);
+            roots.sweep();
         }
         roots.slots.push(slot.clone());
         Root { slot }
@@ -1522,7 +1529,7 @@ impl Heap {
             .stack
             .entries
             .pop()
-            .expect("an activation handle names a live entry");
+            .expect("internal: an activation handle names a live entry");
         let base = entry.base as usize;
         if let Some(frame) = entry.reified {
             let registers = &self.stack.values[base..];
@@ -1838,6 +1845,7 @@ impl Heap {
     /// Sound only where nothing outside the heap and the interpreter holds a
     /// handle: at a safepoint of the run loop, or between runs.
     #[cfg(debug_assertions)]
+    #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them stale"]
     pub(crate) fn move_everything(&mut self) -> Forwarder {
         use crate::trace::{Trace, Tracer};
         let from = self.epoch;
@@ -1869,9 +1877,7 @@ impl Heap {
             forwarder.value(value);
         }
         let roots = self.host_roots.get_mut();
-        roots
-            .slots
-            .retain(|slot| std::rc::Rc::strong_count(slot) > 1);
+        roots.sweep();
         for slot in &roots.slots {
             let mut value = slot.get();
             forwarder.value(&mut value);
@@ -2450,16 +2456,22 @@ mod tests {
     /// outer-local walk (`locals::frame_at_depth`) starts every hop off
     /// `activation_captured`/`frame_captured`, so a closure activation that
     /// answered `None` for either would silently misroute a `^` or a
-    /// captured-variable read rather than fail loudly. This also exercises
-    /// `alloc_frame`'s debug assertion that `Frame.home` is populated
-    /// exactly for a `FrameKind::Closure` activation, since `reify` builds
-    /// that frame from a closure entry's `kind` here for the first time in
-    /// this test module.
+    /// captured-variable read rather than fail loudly. The closure's two
+    /// frames are distinct -- a block inside a block captures the outer
+    /// block's activation and returns to the method's -- so that the two
+    /// swapped in `closure_frames` would fail here rather than pass. This
+    /// also exercises `alloc_frame`'s debug assertion that `Frame.home` is
+    /// populated exactly for a `FrameKind::Closure` activation, since
+    /// `reify` builds that frame from a closure entry's `kind` here for the
+    /// first time in this test module.
     #[test]
     fn a_closure_activations_home_and_captured_frame_are_its_closures() {
         let mut heap = Heap::new();
         let method_act = heap.push_activation(header(), &[], 0);
         let home_frame = heap.reify(method_act);
+        let outer_block_act = heap.push_activation(header(), &[], 0);
+        let captured_frame = heap.reify(outer_block_act);
+        assert!(!captured_frame.same(home_frame));
 
         let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
         let closure = heap.alloc_object(
@@ -2475,7 +2487,7 @@ mod tests {
                     call_sites: vec![],
                     source: ns_syntax::Span::new(0, 0),
                 }),
-                captured_frame: home_frame,
+                captured_frame,
                 home: home_frame,
             }),
         );
@@ -2500,15 +2512,27 @@ mod tests {
             .is_some_and(|h| h.same(home_frame)));
         assert!(heap
             .activation_captured(closure_act)
-            .is_some_and(|c| c.same(home_frame)));
+            .is_some_and(|c| c.same(captured_frame)));
 
         let closure_frame = heap.reify(closure_act);
         assert!(heap
             .frame_home(closure_frame)
             .is_some_and(|h| h.same(home_frame)));
+        assert!(heap
+            .frame_captured(closure_frame)
+            .is_some_and(|c| c.same(captured_frame)));
 
         heap.pop_activation(closure_act);
+        heap.pop_activation(outer_block_act);
         heap.pop_activation(method_act);
+    }
+
+    /// Moves a bare heap, one no interpreter owns: nothing outside it holds
+    /// a handle, so the forwarder `move_everything` answers has no more
+    /// work to do and is dropped here on purpose.
+    #[cfg(debug_assertions)]
+    fn move_bare_heap(heap: &mut Heap) {
+        let _ = heap.move_everything();
     }
 
     /// A move gives every object and every frame a new index -- the
@@ -2549,7 +2573,7 @@ mod tests {
             heap.stash(Value::Obj(b)),
             heap.stash(Value::Obj(closure)),
         ];
-        heap.move_everything();
+        move_bare_heap(&mut heap);
         let after: Vec<ObjRef> = roots
             .iter()
             .map(|root| match heap.fetch(root) {
@@ -2584,7 +2608,7 @@ mod tests {
         let mut heap = Heap::new();
         let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
         let a = heap.alloc_object(class, ObjectData::Str("a".to_string()));
-        heap.move_everything();
+        move_bare_heap(&mut heap);
         let _ = heap.str_value(a);
     }
 
@@ -2595,7 +2619,7 @@ mod tests {
         let mut heap = Heap::new();
         let frame = heap.alloc_frame(top_level_frame());
         heap.alloc_frame(top_level_frame());
-        heap.move_everything();
+        move_bare_heap(&mut heap);
         let _ = heap.frame_receiver(frame);
     }
 
@@ -2608,7 +2632,7 @@ mod tests {
         let mut heap = Heap::new();
         let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
         let root = heap.stash(Value::Obj(class));
-        heap.move_everything();
+        move_bare_heap(&mut heap);
         let Value::Obj(fresh) = heap.fetch(&root) else {
             panic!("a root keeps its object")
         };
@@ -2627,11 +2651,11 @@ mod tests {
         let stale = heap.alloc_object(class, ObjectData::Str("stale".to_string()));
         let array = heap.alloc_object(class, ObjectData::Array(vec![]));
         let root = heap.stash(Value::Obj(array));
-        heap.move_everything();
+        move_bare_heap(&mut heap);
         let Value::Obj(array) = heap.fetch(&root) else {
             panic!("a root keeps its object")
         };
         heap.array_push(array, Value::Obj(stale));
-        heap.move_everything();
+        move_bare_heap(&mut heap);
     }
 }

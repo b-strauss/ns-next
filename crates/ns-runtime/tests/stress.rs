@@ -69,7 +69,9 @@ const EVERY_CONTINUATION: &str = indoc! {"
     ) : ()
 "};
 
-fn run_every_continuation(stress: bool) -> (i64, u32) {
+/// `run`'s answer, how many times everything moved, and how many safepoints
+/// the stress mode took.
+fn run_every_continuation(stress: bool) -> (i64, u32, usize) {
     let (mut interp, class) = load(EVERY_CONTINUATION);
     interp.set_stress_moves(stress);
     let s = expect_ok(interp.instantiate(&class, &[]), "instantiate");
@@ -77,29 +79,50 @@ fn run_every_continuation(stress: bool) -> (i64, u32) {
     let Value::SmallInt(sum) = interp.fetch(&sum) else {
         panic!("`run` answers an integer")
     };
-    (sum, interp.moves())
+    (sum, interp.moves(), interp.stress_safepoints())
 }
 
 #[test]
 fn every_continuation_survives_a_move_at_every_safepoint() {
-    assert_eq!(run_every_continuation(false), (31, 0), "the control");
-    let (sum, moves) = run_every_continuation(true);
+    assert_eq!(run_every_continuation(false), (31, 0, 0), "the control");
+    let (sum, moves, safepoints) = run_every_continuation(true);
     assert_eq!(sum, 31);
     assert!(
         moves > 20,
         "only {moves} moves: the stress mode did not run"
     );
+    // A heap this far within the budget moves at every safepoint, so every
+    // continuation is moved under, not only some.
+    assert_eq!(
+        moves as usize, safepoints,
+        "{safepoints} safepoints but {moves} moves: the heap outgrew the stress budget"
+    );
 }
 
 /// The mistake the stress mode exists to catch, made on purpose: a host
-/// keeping a plain value across a run.
+/// keeping a plain value across a run. The run itself succeeds -- the
+/// stale value is the host's, not the runtime's -- and it is the host's
+/// read afterwards that is refused.
 #[test]
-#[should_panic(expected = "stale handle")]
 fn a_value_a_host_keeps_across_a_run_is_refused_under_stress() {
     let (mut interp, class) = load(EVERY_CONTINUATION);
     interp.set_stress_moves(true);
     let s = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let kept = interp.fetch(&s);
     expect_ok(interp.send(&s, Symbol::intern("run"), &[]), "run");
-    let _ = interp.heap_ref().describe(&kept);
+    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        interp.heap_ref().describe(&kept)
+    }));
+    let Err(payload) = read else {
+        panic!("a value kept across a run was read as if it were current")
+    };
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .expect("a panic with a message");
+    assert!(
+        message.contains("stale handle"),
+        "the read panicked, but not as a stale handle: {message}"
+    );
 }
