@@ -372,6 +372,44 @@ fn a_self_referential_nested_class_is_a_program_error() {
     assert_eq!(message, again);
 }
 
+/// A subclass redeclaring a nested class in terms of the one it inherits is
+/// not a cycle: the two declarations cache in separate slots
+/// (`MixinApplication::nested_slot`), so creating the subclass's `Inner` --
+/// whose clause creates the inherited one on the same receiver, through
+/// `super Inner` -- finds the inherited one's slot empty, not in progress.
+/// The clause reaches it through a method because a `super`-prefixed clause
+/// receiver does not dispatch yet (`a_super_prefixed_clause_answers_a_class_object`).
+#[test]
+fn a_nested_class_built_on_the_one_it_redeclares_is_not_a_cycle() {
+    let src = indoc! {"
+        Newspeak3
+        'Test'
+        class Outer = Object new (
+        ) (
+            public class Base = Object new (
+            ) (
+                public class Inner = Object new (
+                ) (
+                    public tag = ( ^'base' )
+                ) : ()
+            ) : ()
+            public class Sub = Base new (
+            ) (
+                public class Inner = self inherited (
+                ) (
+                    public own = ( ^'sub' )
+                ) : ()
+                inherited = ( ^super Inner )
+            ) : ()
+            public both = ( | i | i := Sub new Inner new. ^i tag, i own )
+        ) : ()
+    "};
+    let (mut interp, class) = load(src);
+    let outer = expect_ok(interp.instantiate(class, vec![]), "instantiate Outer");
+    let both = expect_ok(interp.send(outer, Symbol::intern("both"), vec![]), "both");
+    assert_eq!(string_contents(interp.heap_ref(), &both), "basesub");
+}
+
 const CLASS_SIDE_SRC: &str = indoc! {"
     Newspeak3
     'Test'
