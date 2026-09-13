@@ -458,6 +458,38 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
     }
 }
 
+/// `do:` is a trampoline step, not a callback: a recursion through it is
+/// activations on the stack and nothing on the Rust stack, so twenty thousand
+/// levels -- far past what a test thread's stack holds when each level
+/// re-enters the loop from Rust -- run under either lowering. Each level
+/// counts two activations, the method and the block.
+#[test]
+fn a_deep_recursion_through_do_runs_on_the_activation_stack() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class DoDeep = Object new (
+        ) (
+            public d: n = ( n = 0 ifTrue: [^0]. #(1) do: [:e | ^d: n - 1]. ^1 )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(src, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let result = expect_ok(
+            interp.send(
+                instance,
+                Symbol::intern("d:"),
+                vec![Value::SmallInt(20_000)],
+            ),
+            "d:",
+        );
+        assert_eq!(small_int(result), 0, "{lowering:?}");
+        assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
+        assert_eq!(interp.heap_ref().counted_depth(), 0, "{lowering:?}");
+    }
+}
+
 /// `receiver selector args`, sent from Rust: whatever it answers, it must
 /// leave the activation stack empty and the counted depth 0.
 fn at_the_floor(

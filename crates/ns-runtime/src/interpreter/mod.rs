@@ -555,6 +555,9 @@ impl Interpreter {
                 crate::builtins::block::after_condition(self, state, value)
             }
             Continuation::WhileBody(state) => Ok(crate::builtins::block::after_body(state)),
+            Continuation::DoElement(state) => {
+                Ok(crate::builtins::collections::after_element(state))
+            }
         }
     }
 
@@ -589,9 +592,9 @@ impl Interpreter {
     /// Every re-entry of the run loop from Rust: `push` pushes one
     /// activation, and the loop runs it and everything it activates and pops
     /// all of it (`vm::run`). The public `send`, each initializing level of an
-    /// instantiation and its clause message, the nested-class accessor's
-    /// clause, and every native that still calls a block come through here --
-    /// the paths "What stays recursive" in `docs/design/execution.md` names.
+    /// instantiation and its clause message, and the nested-class accessor's
+    /// clause come through here -- the paths "What stays recursive" in
+    /// `docs/design/execution.md` names.
     ///
     /// Each re-entry costs native stack, so it is counted against
     /// `MAX_NATIVE_DEPTH`, and one past it is refused before anything is
@@ -620,20 +623,6 @@ impl Interpreter {
             self.heap.activation_kind(act),
             FrameKind::Method(_) | FrameKind::SuperclassClause(_) | FrameKind::SuperclassMessage(_)
         )
-    }
-
-    /// Invokes a closure with `args`, from Rust. Only `do:` still does this --
-    /// every other native that runs a block returns it as a step instead
-    /// (`docs/design/execution.md`, "What stays recursive"). It re-enters the
-    /// run loop (`reenter`), which pops the closure's activation, and
-    /// everything it activates, on every path out.
-    pub fn invoke_closure(&mut self, closure: &Rc<ClosureData>, args: Vec<Value>) -> EvalResult {
-        let step = Step::Block {
-            closure: closure.clone(),
-            args: StepArgs::Owned(args),
-            then: Continuation::Deliver,
-        };
-        self.reenter(|interp| interp.push_step(step, &[], None, false))
     }
 
     /// Where a `^` in `act` returns to. A block returns from its home --
@@ -1216,5 +1205,48 @@ mod tests {
             Ok(Step::Value(Value::SmallInt(7))) => {}
             _ => panic!("a native leaf is decided as its value"),
         }
+    }
+
+    /// `do:` is decided as the activation of its block for the first
+    /// element, with the rest of the loop in the continuation: nothing runs,
+    /// and nothing is pushed (`docs/design/execution.md`, "No re-entry from
+    /// Rust").
+    #[test]
+    fn deciding_do_answers_its_block_for_the_first_element() {
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              public items = ( ^{10. 20. 30} )
+              public echo = ( ^[:e | e] )
+            ) : ()
+        "};
+        let (mut interp, class) = load(src);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let items = expect_ok(
+            interp.send(instance, Symbol::intern("items"), vec![]),
+            "items",
+        );
+        let echo = expect_ok(
+            interp.send(instance, Symbol::intern("echo"), vec![]),
+            "echo",
+        );
+        match interp.decide_send(items, Symbol::intern("do:"), &[echo]) {
+            Ok(Step::Block {
+                args: StepArgs::Owned(args),
+                then: Continuation::DoElement(state),
+                ..
+            }) => {
+                assert!(
+                    matches!(args.as_slice(), [Value::SmallInt(10)]),
+                    "the first element"
+                );
+                assert_eq!(state.next, 1, "the second element is next");
+                assert_eq!(state.items.len(), 3, "the whole snapshot rides along");
+            }
+            _ => panic!("`do:` is decided as its block's first activation"),
+        }
+        assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
     }
 }

@@ -576,11 +576,13 @@ fn an_unbounded_recursion_is_a_newspeak_error() {
     );
 }
 
-/// `do:` still re-enters the run loop from Rust for every element, so a
-/// recursion through it is bounded by the second limit -- and ends in its
-/// error, not in a native stack overflow, on the CLI's interpreter thread.
+/// `do:` is a trampoline step, so a recursion through it is made only of
+/// counted activations -- the method and the block, at every level -- and
+/// ends at the activation limit like any other recursion. It used to end at a
+/// second limit, on re-entries of the run loop from Rust, which no longer
+/// exists (`docs/design/execution.md`, "No re-entry from Rust").
 #[test]
-fn a_recursion_through_do_is_bounded_by_the_native_limit() {
+fn a_recursion_through_do_is_bounded_by_the_activation_limit() {
     assert_outcome(
         "do-recursion",
         indoc! {"
@@ -594,7 +596,7 @@ fn a_recursion_through_do_is_bounded_by_the_native_limit() {
         "},
         1,
         "",
-        "Uncaught Newspeak error: stack overflow: too many nested native calls\n",
+        "Uncaught Newspeak error: stack overflow: recursion too deep\n",
     );
 }
 

@@ -225,10 +225,10 @@ pub enum FrameKind {
 }
 
 /// What the run loop does with an activation's value when it returns
-/// (`docs/design/execution.md`, "The trampoline"). Every activation a
-/// send makes hands its value to that send; the other three are how a builtin
-/// control-flow native finishes its work once the block it activated has
-/// returned, with no Rust frame waiting for it.
+/// (`docs/design/execution.md`, "The trampoline"). Every activation a send
+/// makes hands its value to that send; the others are how a builtin native
+/// finishes its work once the block it activated has returned, with no Rust
+/// frame waiting for it.
 #[derive(Debug, Clone)]
 pub enum Continuation {
     /// Hand the value to the send that made the activation.
@@ -240,6 +240,10 @@ pub enum Continuation {
     WhileCondition(Rc<WhileLoop>),
     /// Its body returned.
     WhileBody(Rc<WhileLoop>),
+    /// A native `do:` loop's block returned for one element: activate it for
+    /// the next, or answer the receiver
+    /// (`builtins::collections::after_element`).
+    DoElement(Box<DoLoop>),
 }
 
 /// A native `whileTrue:`/`whileFalse:` loop in progress: its condition, its
@@ -250,6 +254,20 @@ pub struct WhileLoop {
     pub(crate) condition: Rc<ClosureData>,
     pub(crate) body: Value,
     pub(crate) expect: bool,
+}
+
+/// A native `do:` loop in progress: the collection it answers when it is done,
+/// its block, the elements the collection had when the loop began -- `do:`
+/// walks that snapshot, so a block that changes the collection does not
+/// change the walk -- and the index of the next element to hand the block.
+///
+/// Boxed in its continuation, and owned by exactly one stack entry.
+#[derive(Debug, Clone)]
+pub struct DoLoop {
+    pub(crate) receiver: Value,
+    pub(crate) block: Rc<ClosureData>,
+    pub(crate) items: Vec<Value>,
+    pub(crate) next: usize,
 }
 
 /// A *reified* activation: one a block captured, or one the image decoder

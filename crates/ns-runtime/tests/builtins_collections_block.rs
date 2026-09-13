@@ -123,8 +123,9 @@ fn array_at_put_writes_and_returns_the_receiver() {
     }
 }
 
-/// `do:` traversal via a mutable-slot accumulator. Also exercises
-/// `call_block` invoking a real one-argument closure with a real argument.
+/// `do:` traversal via a mutable-slot accumulator. Also exercises `do:`
+/// activating a real one-argument closure with a real argument, once per
+/// element.
 #[test]
 fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
     let src = indoc! {"
@@ -219,6 +220,88 @@ fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
     assert!(
         err.message.contains("requires an Integer index"),
         "unexpected message: {}",
+        err.message
+    );
+}
+
+/// `do:` walks the elements its receiver had when it began: a block that adds
+/// to the collection it is walking neither sees what it adds nor runs
+/// forever. Two elements seen, four in the collection afterwards.
+#[test]
+fn do_walks_a_snapshot_of_its_receiver() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m: aColl = (
+            | seen |
+            seen := 0.
+            aColl add: 1; add: 2.
+            aColl do: [:x | seen := seen + 1. aColl add: x].
+            ^seen * 100 + aColl size
+          )
+        ) : ()
+    "};
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let oc = new_ordered_collection(&mut interp);
+    let result = interp.send(receiver, Symbol::intern("m:"), vec![oc]);
+    match expect_ok(result, "do: over a collection it grows") {
+        Value::SmallInt(204) => {}
+        other => panic!("expected 204, got {}", interp.heap_ref().describe(&other)),
+    }
+}
+
+/// A non-block argument stands for its own value, so `do:` hands it every
+/// element and observes nothing; like any `do:`, it answers its receiver.
+#[test]
+fn do_with_a_non_block_answers_its_receiver() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public m = ( | a | a := {1. 2}. ^(a do: 3) == a )
+        ) : ()
+    "};
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let result = interp.send(receiver, Symbol::intern("m"), vec![]);
+    assert!(matches!(
+        expect_ok(result, "{1. 2} do: 3"),
+        Value::Bool(true)
+    ));
+}
+
+/// A block of the wrong arity fails at the first element; an empty
+/// collection hands it nothing, so there it does not fail at all.
+#[test]
+fn do_checks_its_block_arity_at_each_element() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          public empty = ( ^#() do: [:a :b | a] )
+          public full = ( ^#(1) do: [:a :b | a] )
+        ) : ()
+    "};
+    let (mut interp, class) = load(src);
+    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    expect_ok(
+        interp.send(receiver, Symbol::intern("empty"), vec![]),
+        "#() do: with a two-argument block",
+    );
+    let result = interp.send(receiver, Symbol::intern("full"), vec![]);
+    let err = expect_error(
+        interp.heap_ref(),
+        result,
+        "#(1) do: with a two-argument block",
+    );
+    assert!(
+        err.message.contains("wrong number of block arguments"),
+        "got: {}",
         err.message
     );
 }
