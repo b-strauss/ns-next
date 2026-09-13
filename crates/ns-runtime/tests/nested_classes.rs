@@ -7,9 +7,9 @@ use indoc::indoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_runtime::{Heap, Interpreter, Signal, SourceOrigin, Symbol, Value};
+use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, Value};
 
-fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
+fn load(src: &str) -> (Interpreter, Root) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -18,17 +18,17 @@ fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
     )
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module_unrooted(&resolved);
+    let class = interp.load_module(&resolved);
     (interp, class)
 }
 
-/// `Signal` carries no `Debug` impl, so `Result::expect` isn't usable on an
-/// `EvalResult` -- unwrap by hand, naming which variant leaked.
-fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+/// `HostSignal` carries no `Debug` impl, so `Result::expect` isn't usable on
+/// a `HostResult` -- unwrap by hand, naming which variant leaked.
+fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
-        Ok(v) => v,
-        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
-        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+        Ok(root) => root,
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
     }
 }
 
@@ -46,11 +46,11 @@ fn string_contents(heap: &Heap, value: &Value) -> String {
     }
 }
 
-fn expect_error(result: Result<Value, Signal>, what: &str) -> String {
+fn expect_error(result: HostResult, what: &str) -> String {
     match result {
-        Ok(_) => panic!("{what}: expected a Signal::Error"),
-        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
-        Err(Signal::Error(e)) => e.message,
+        Ok(_) => panic!("{what}: expected a Newspeak error"),
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(e)) => e.message,
     }
 }
 
@@ -69,52 +69,49 @@ const SRC: &str = indoc! {"
 #[test]
 fn the_accessor_returns_the_same_class_object_every_time() {
     let (mut interp, class) = load(SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
-    );
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     let first = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("innerClass"), vec![]),
+        interp.send(&outer, Symbol::intern("innerClass"), &[]),
         "first Inner",
     );
     let second = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("innerClass"), vec![]),
+        interp.send(&outer, Symbol::intern("innerClass"), &[]),
         "second Inner",
     );
-    let (Value::Obj(a), Value::Obj(b)) = (&first, &second) else {
+    let (Value::Obj(a), Value::Obj(b)) = (interp.fetch(&first), interp.fetch(&second)) else {
         panic!("a nested class access must yield a class object");
     };
-    assert!(a.same(*b), "spec 6: cached within r");
+    assert!(a.same(b), "spec 6: cached within r");
 }
 
 #[test]
 fn two_enclosing_instances_get_distinct_nested_classes() {
     let (mut interp, class) = load(SRC);
-    let platform = interp.platform_value();
+    let platform = interp.platform();
     let one = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
+        interp.instantiate(&class, std::slice::from_ref(&platform)),
         "instantiate first Outer",
     );
     let two = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
+        interp.instantiate(&class, &[platform]),
         "instantiate second Outer",
     );
     let a = expect_ok(
-        interp.send_unrooted(one, Symbol::intern("innerClass"), vec![]),
+        interp.send(&one, Symbol::intern("innerClass"), &[]),
         "first",
     );
     let b = expect_ok(
-        interp.send_unrooted(two, Symbol::intern("innerClass"), vec![]),
+        interp.send(&two, Symbol::intern("innerClass"), &[]),
         "second",
     );
-    let (Value::Obj(a), Value::Obj(b)) = (&a, &b) else {
+    let (Value::Obj(a), Value::Obj(b)) = (interp.fetch(&a), interp.fetch(&b)) else {
         panic!("class objects")
     };
-    assert!(!a.same(*b), "spec 6: a distinct class per instance");
+    assert!(!a.same(b), "spec 6: a distinct class per instance");
     let (Some(a_application), Some(b_application)) = (
-        interp.heap_ref().class_application(*a),
-        interp.heap_ref().class_application(*b),
+        interp.heap_ref().class_application(a),
+        interp.heap_ref().class_application(b),
     ) else {
         panic!("class data")
     };
@@ -128,42 +125,37 @@ fn two_enclosing_instances_get_distinct_nested_classes() {
 #[test]
 fn the_nested_class_remembers_its_enclosing_object() {
     let (mut interp, class) = load(SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
-    );
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     let inner = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("innerClass"), vec![]),
+        interp.send(&outer, Symbol::intern("innerClass"), &[]),
         "Inner",
     );
-    let (Value::Obj(inner), Value::Obj(outer)) = (&inner, &outer) else {
+    let (Value::Obj(inner), Value::Obj(outer)) = (interp.fetch(&inner), interp.fetch(&outer))
+    else {
         panic!("class object and instance")
     };
     let enclosing = interp
         .heap_ref()
-        .class_enclosing(*inner)
+        .class_enclosing(inner)
         .expect("spec 6: a nested class's one piece of state is its enclosing object");
-    assert!(enclosing.same(*outer));
+    assert!(enclosing.same(outer));
 }
 
 #[test]
 fn a_nested_class_can_be_instantiated_through_its_accessor() {
     let (mut interp, class) = load(SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
-    );
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     let instance = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("makeInner"), vec![]),
+        interp.send(&outer, Symbol::intern("makeInner"), &[]),
         "makeInner",
     );
     let value = expect_ok(
-        interp.send_unrooted(instance, Symbol::intern("value"), vec![]),
+        interp.send(&instance, Symbol::intern("value"), &[]),
         "value",
     );
-    let Value::SmallInt(value) = value else {
+    let Value::SmallInt(value) = interp.fetch(&value) else {
         panic!("expected a SmallInt from `Inner new value`")
     };
     assert_eq!(value, 42);
@@ -184,13 +176,10 @@ const NON_CLASS_SUPERCLASS_SRC: &str = indoc! {"
 #[test]
 fn a_superclass_clause_that_is_not_a_class_is_a_program_error() {
     let (mut interp, class) = load(NON_CLASS_SUPERCLASS_SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
-    );
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     let message = expect_error(
-        interp.send_unrooted(outer, Symbol::intern("innerClass"), vec![]),
+        interp.send(&outer, Symbol::intern("innerClass"), &[]),
         "innerClass",
     );
     assert!(
@@ -217,25 +206,16 @@ const PROTECTED_NESTED_SRC: &str = indoc! {"
 #[test]
 fn a_nested_class_defaults_to_protected_accessibility() {
     let (mut interp, class) = load(PROTECTED_NESTED_SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
-    );
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     // Lexically, from inside Outer: reachable, and it really is a class.
-    let value = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("reach"), vec![]),
-        "reach",
-    );
-    let Value::SmallInt(value) = value else {
+    let value = expect_ok(interp.send(&outer, Symbol::intern("reach"), &[]), "reach");
+    let Value::SmallInt(value) = interp.fetch(&value) else {
         panic!("expected a SmallInt from `Hidden new value`")
     };
     assert_eq!(value, 7);
     // From outside, as an ordinary send: not reachable.
-    let message = expect_error(
-        interp.send_unrooted(outer, Symbol::intern("Hidden"), vec![]),
-        "Hidden",
-    );
+    let message = expect_error(interp.send(&outer, Symbol::intern("Hidden"), &[]), "Hidden");
     assert!(
         message.contains("does not understand"),
         "unexpected message: {message}"
@@ -265,52 +245,42 @@ const INHERITED_NESTED_SRC: &str = indoc! {"
 #[test]
 fn an_inherited_nested_declaration_is_reached_through_the_chain() {
     let (mut interp, class) = load(INHERITED_NESTED_SRC);
-    let platform = interp.platform_value();
-    let m = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate M",
-    );
+    let platform = interp.platform();
+    let m = expect_ok(interp.instantiate(&class, &[platform]), "instantiate M");
     let derived = expect_ok(
-        interp.send_unrooted(m, Symbol::intern("makeDerived"), vec![]),
+        interp.send(&m, Symbol::intern("makeDerived"), &[]),
         "makeDerived",
     );
     // `N` is declared on Base, reached here through Derived's chain -- and
     // its hidden cache slot is the inherited entry in Derived's layout.
-    let n_class = expect_ok(
-        interp.send_unrooted(derived, Symbol::intern("N"), vec![]),
-        "N",
-    );
-    let (Value::Obj(n_class), Value::Obj(derived_obj)) = (&n_class, &derived) else {
+    let n_class = expect_ok(interp.send(&derived, Symbol::intern("N"), &[]), "N");
+    let (Value::Obj(n_class_obj), Value::Obj(derived_obj)) =
+        (interp.fetch(&n_class), interp.fetch(&derived))
+    else {
         panic!("class object and instance")
     };
     {
         let enclosing = interp
             .heap_ref()
-            .class_enclosing(*n_class)
+            .class_enclosing(n_class_obj)
             .expect("an enclosing object");
         assert!(
-            enclosing.same(*derived_obj),
+            enclosing.same(derived_obj),
             "the enclosing object is the receiver, not the declaring level"
         );
     }
-    // Still cached per receiver across the inherited path.
-    let again = expect_ok(
-        interp.send_unrooted(derived, Symbol::intern("N"), vec![]),
-        "N again",
-    );
-    let Value::Obj(again) = &again else {
+    // Still cached per receiver across the inherited path. Both class
+    // objects are read after the run that answered the second.
+    let again = expect_ok(interp.send(&derived, Symbol::intern("N"), &[]), "N again");
+    let (Value::Obj(n_class_obj), Value::Obj(again)) =
+        (interp.fetch(&n_class), interp.fetch(&again))
+    else {
         panic!("class object")
     };
-    assert!(n_class.same(*again), "spec 6: cached within r");
-    let instance = expect_ok(
-        interp.instantiate_unrooted(*n_class, vec![]),
-        "instantiate N",
-    );
-    let tag = expect_ok(
-        interp.send_unrooted(instance, Symbol::intern("tag"), vec![]),
-        "tag",
-    );
-    let Value::SmallInt(tag) = tag else {
+    assert!(n_class_obj.same(again), "spec 6: cached within r");
+    let instance = expect_ok(interp.instantiate(&n_class, &[]), "instantiate N");
+    let tag = expect_ok(interp.send(&instance, Symbol::intern("tag"), &[]), "tag");
+    let Value::SmallInt(tag) = interp.fetch(&tag) else {
         panic!("expected a SmallInt from `N new tag`")
     };
     assert_eq!(tag, 11);
@@ -336,16 +306,13 @@ const SUPER_PREFIXED_CLAUSE_SRC: &str = indoc! {"
 #[test]
 fn a_super_prefixed_clause_answers_a_class_object() {
     let (mut interp, class) = load(SUPER_PREFIXED_CLAUSE_SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
-    );
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     let inner = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("innerClass"), vec![]),
+        interp.send(&outer, Symbol::intern("innerClass"), &[]),
         "innerClass",
     );
-    let Value::Obj(inner) = inner else {
+    let Value::Obj(inner) = interp.fetch(&inner) else {
         panic!("the accessor must yield a class object")
     };
     assert!(interp.heap_ref().is_class(inner));
@@ -367,13 +334,10 @@ const CYCLIC_SRC: &str = indoc! {"
 #[test]
 fn a_self_referential_nested_class_is_a_program_error() {
     let (mut interp, class) = load(CYCLIC_SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
-    );
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     let message = expect_error(
-        interp.send_unrooted(outer, Symbol::intern("innerClass"), vec![]),
+        interp.send(&outer, Symbol::intern("innerClass"), &[]),
         "innerClass",
     );
     assert_eq!(
@@ -384,7 +348,7 @@ fn a_self_referential_nested_class_is_a_program_error() {
     // The guard is scoped to the evaluation, not latched: a second access
     // must raise the same error rather than a different one (or succeed).
     let again = expect_error(
-        interp.send_unrooted(outer, Symbol::intern("innerClass"), vec![]),
+        interp.send(&outer, Symbol::intern("innerClass"), &[]),
         "innerClass again",
     );
     assert_eq!(message, again);
@@ -423,15 +387,12 @@ fn a_nested_class_built_on_the_one_it_redeclares_is_not_a_cycle() {
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![]),
-        "instantiate Outer",
+    let outer = expect_ok(interp.instantiate(&class, &[]), "instantiate Outer");
+    let both = expect_ok(interp.send(&outer, Symbol::intern("both"), &[]), "both");
+    assert_eq!(
+        string_contents(interp.heap_ref(), &interp.fetch(&both)),
+        "basesub"
     );
-    let both = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("both"), vec![]),
-        "both",
-    );
-    assert_eq!(string_contents(interp.heap_ref(), &both), "basesub");
 }
 
 const CLASS_SIDE_SRC: &str = indoc! {"
@@ -449,11 +410,11 @@ const CLASS_SIDE_SRC: &str = indoc! {"
 fn a_class_side_method_dispatches_on_the_class_object() {
     let (mut interp, class) = load(CLASS_SIDE_SRC);
     let described = expect_ok(
-        interp.send_unrooted(Value::Obj(class), Symbol::intern("describe"), vec![]),
+        interp.send(&class, Symbol::intern("describe"), &[]),
         "class-side send",
     );
     assert_eq!(
-        string_contents(interp.heap_ref(), &described),
+        string_contents(interp.heap_ref(), &interp.fetch(&described)),
         "a widget class"
     );
 }
@@ -466,11 +427,7 @@ fn a_class_side_method_dispatches_on_the_class_object() {
 fn a_class_with_no_class_side_still_reports_ordinary_does_not_understand() {
     let (mut interp, class) = load(SRC);
     let message = expect_error(
-        interp.send_unrooted(
-            Value::Obj(class),
-            Symbol::intern("noSuchClassSideMethod"),
-            vec![],
-        ),
+        interp.send(&class, Symbol::intern("noSuchClassSideMethod"), &[]),
         "class-side miss",
     );
     assert!(message.contains("does not understand #noSuchClassSideMethod"));
@@ -501,39 +458,29 @@ const CLASS_SIDE_INHERITANCE_SRC: &str = indoc! {"
 #[test]
 fn a_subclass_with_no_class_side_inherits_the_superclasss_class_side_method() {
     let (mut interp, class) = load(CLASS_SIDE_INHERITANCE_SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
-    );
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     let special_widget = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("SpecialWidget"), vec![]),
+        interp.send(&outer, Symbol::intern("SpecialWidget"), &[]),
         "SpecialWidget accessor",
     );
     let described = expect_ok(
-        interp.send_unrooted(special_widget, Symbol::intern("describe"), vec![]),
+        interp.send(&special_widget, Symbol::intern("describe"), &[]),
         "inherited class-side send",
     );
     assert_eq!(
-        string_contents(interp.heap_ref(), &described),
+        string_contents(interp.heap_ref(), &interp.fetch(&described)),
         "a widget class"
     );
 }
 
 /// The class object a nested declaration's accessor answers for `enclosing`.
-fn nested_class_object(
-    interp: &mut Interpreter,
-    enclosing: Value,
-    name: &str,
-) -> ns_runtime::ClassRef {
-    let value = expect_ok(
-        interp.send_unrooted(enclosing, Symbol::intern(name), vec![]),
-        name,
-    );
-    match value {
-        Value::Obj(obj) => obj,
-        _ => panic!("{name} answers a class object"),
-    }
+fn nested_class_object(interp: &mut Interpreter, enclosing: &Root, name: &str) -> Root {
+    let class = expect_ok(interp.send(enclosing, Symbol::intern(name), &[]), name);
+    let Value::Obj(_) = interp.fetch(&class) else {
+        panic!("{name} answers a class object")
+    };
+    class
 }
 
 fn application_of(
@@ -557,17 +504,22 @@ fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/class_side.ns");
     let src = std::fs::read_to_string(&path).expect("read tests-fixtures/class_side.ns");
     let (mut interp, class) = load(&src);
-    let platform = interp.platform_value();
+    let platform = interp.platform();
     let one = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
+        interp.instantiate(&class, std::slice::from_ref(&platform)),
         "instantiate first ClassSide",
     );
     let two = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
+        interp.instantiate(&class, &[platform]),
         "instantiate second ClassSide",
     );
-    let a = nested_class_object(&mut interp, one, "SpecialWidget");
-    let b = nested_class_object(&mut interp, two, "SpecialWidget");
+    let a = nested_class_object(&mut interp, &one, "SpecialWidget");
+    let b = nested_class_object(&mut interp, &two, "SpecialWidget");
+    // Both are read after the last run; building metaclasses below runs
+    // nothing.
+    let (Value::Obj(a), Value::Obj(b)) = (interp.fetch(&a), interp.fetch(&b)) else {
+        panic!("SpecialWidget answers a class object")
+    };
     assert!(
         !a.same(b),
         "spec 6: one class object per enclosing instance"
@@ -600,21 +552,18 @@ fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
 #[test]
 fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name() {
     let (mut interp, class) = load(CLASS_SIDE_INHERITANCE_SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
-    );
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     let overriding_widget = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("OverridingWidget"), vec![]),
+        interp.send(&outer, Symbol::intern("OverridingWidget"), &[]),
         "OverridingWidget accessor",
     );
     let described = expect_ok(
-        interp.send_unrooted(overriding_widget, Symbol::intern("describe"), vec![]),
+        interp.send(&overriding_widget, Symbol::intern("describe"), &[]),
         "overriding class-side send",
     );
     assert_eq!(
-        string_contents(interp.heap_ref(), &described),
+        string_contents(interp.heap_ref(), &interp.fetch(&described)),
         "a special widget class"
     );
 }
@@ -644,17 +593,11 @@ const NESTED_SUPER_SRC: &str = indoc! {"
 #[test]
 fn super_and_outer_both_resolve_through_the_defining_level() {
     let (mut interp, class) = load(NESTED_SUPER_SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
-    );
-    let described = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("run"), vec![]),
-        "run",
-    );
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let described = expect_ok(interp.send(&outer, Symbol::intern("run"), &[]), "run");
     assert_eq!(
-        string_contents(interp.heap_ref(), &described),
+        string_contents(interp.heap_ref(), &interp.fetch(&described)),
         "outer/derived"
     );
 }
@@ -687,16 +630,13 @@ const SUPER_CHAIN_SRC: &str = indoc! {"
 #[test]
 fn a_super_chain_progresses_through_an_inherited_middle_level() {
     let (mut interp, class) = load(SUPER_CHAIN_SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let described = expect_ok(interp.send(&outer, Symbol::intern("run"), &[]), "run");
+    assert_eq!(
+        string_contents(interp.heap_ref(), &interp.fetch(&described)),
+        "grand/mid"
     );
-    let described = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("run"), vec![]),
-        "run",
-    );
-    assert_eq!(string_contents(interp.heap_ref(), &described), "grand/mid");
 }
 
 /// §3.3: an activation's enclosing objects belong to the level that
@@ -726,16 +666,13 @@ const OUTER_THROUGH_INHERITED_SRC: &str = indoc! {"
 #[test]
 fn outer_in_an_inherited_method_resolves_from_the_defining_level() {
     let (mut interp, class) = load(OUTER_THROUGH_INHERITED_SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let described = expect_ok(interp.send(&outer, Symbol::intern("run"), &[]), "run");
+    assert_eq!(
+        string_contents(interp.heap_ref(), &interp.fetch(&described)),
+        "top"
     );
-    let described = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("run"), vec![]),
-        "run",
-    );
-    assert_eq!(string_contents(interp.heap_ref(), &described), "top");
 }
 
 /// The same defect one hop further out, which only a lexical *declaration*
@@ -765,16 +702,13 @@ const DEEP_OUTER_THROUGH_INHERITED_SRC: &str = indoc! {"
 #[test]
 fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
     let (mut interp, class) = load(DEEP_OUTER_THROUGH_INHERITED_SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let described = expect_ok(interp.send(&outer, Symbol::intern("run"), &[]), "run");
+    assert_eq!(
+        string_contents(interp.heap_ref(), &interp.fetch(&described)),
+        "top"
     );
-    let described = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("run"), vec![]),
-        "run",
-    );
-    assert_eq!(string_contents(interp.heap_ref(), &described), "top");
 }
 
 /// §6.3.1: a class side is written inside the same class declaration its
@@ -807,21 +741,21 @@ const CLASS_SIDE_OUTER_SRC: &str = indoc! {"
 #[test]
 fn outer_in_a_class_side_method_reaches_the_enclosing_object() {
     let (mut interp, class) = load(CLASS_SIDE_OUTER_SRC);
-    let platform = interp.platform_value();
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![platform]),
-        "instantiate Outer",
-    );
+    let platform = interp.platform();
+    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     let shallow = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("shallow"), vec![]),
+        interp.send(&outer, Symbol::intern("shallow"), &[]),
         "shallow",
     );
-    assert_eq!(string_contents(interp.heap_ref(), &shallow), "top");
-    let deep = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("deep"), vec![]),
-        "deep",
+    assert_eq!(
+        string_contents(interp.heap_ref(), &interp.fetch(&shallow)),
+        "top"
     );
-    assert_eq!(string_contents(interp.heap_ref(), &deep), "top");
+    let deep = expect_ok(interp.send(&outer, Symbol::intern("deep"), &[]), "deep");
+    assert_eq!(
+        string_contents(interp.heap_ref(), &interp.fetch(&deep)),
+        "top"
+    );
 }
 
 /// A superclass clause that fails leaves no creation in progress behind: the
@@ -842,24 +776,21 @@ fn a_failed_superclass_clause_is_retried_rather_than_reported_as_a_cycle() {
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let outer = expect_ok(
-        interp.instantiate_unrooted(class, vec![]),
-        "instantiate Outer",
-    );
-    match interp.send_unrooted(outer, Symbol::intern("Inner"), vec![]) {
-        Err(Signal::Error(e)) => assert!(
+    let outer = expect_ok(interp.instantiate(&class, &[]), "instantiate Outer");
+    match interp.send(&outer, Symbol::intern("Inner"), &[]) {
+        Err(HostSignal::Error(e)) => assert!(
             !e.message.contains("cyclic"),
             "the first access fails in its clause: {}",
             e.message
         ),
-        Err(Signal::Return(..)) => panic!("a non-local return escaped"),
+        Err(HostSignal::Return) => panic!("a non-local return escaped"),
         Ok(_) => panic!("the first access must fail"),
     }
     let inner = expect_ok(
-        interp.send_unrooted(outer, Symbol::intern("Inner"), vec![]),
+        interp.send(&outer, Symbol::intern("Inner"), &[]),
         "the second access",
     );
-    let Value::Obj(inner) = inner else {
+    let Value::Obj(inner) = interp.fetch(&inner) else {
         panic!("a class object");
     };
     assert!(interp.heap_ref().is_class(inner));

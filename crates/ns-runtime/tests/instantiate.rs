@@ -4,15 +4,15 @@
 //! numbered steps this exercises.
 
 use indoc::indoc;
-use ns_runtime::{Interpreter, Lowering, Signal, Symbol, Value};
+use ns_runtime::{HostResult, HostSignal, Interpreter, Lowering, Root, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both.
-fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
+fn load(src: &str) -> (Interpreter, Root) {
     load_with(src, Lowering::Optimized)
 }
 
-fn load_with(src: &str, lowering: Lowering) -> (Interpreter, ns_runtime::ClassRef) {
+fn load_with(src: &str, lowering: Lowering) -> (Interpreter, Root) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -21,19 +21,27 @@ fn load_with(src: &str, lowering: Lowering) -> (Interpreter, ns_runtime::ClassRe
     )
     .expect("resolve");
     let mut interp = Interpreter::bootstrap_with(lowering);
-    let class = interp.load_module_unrooted(&resolved);
+    let class = interp.load_module(&resolved);
     (interp, class)
 }
 
-/// `Signal` carries no `Debug` impl of its own, so `EvalResult`
-/// (`Result<Value, Signal>`) has none either and `Result::expect` isn't
+/// `HostSignal` carries no `Debug` impl, so `HostResult`
+/// (`Result<Root, HostSignal>`) has none either and `Result::expect` isn't
 /// usable on it directly -- unwrap by hand, with a message naming which
-/// `Signal` variant leaked instead.
-fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+/// `HostSignal` variant leaked instead.
+fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
-        Ok(v) => v,
-        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
-        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+        Ok(root) => root,
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
+    }
+}
+
+/// The object `root` holds, for the heap accessors that take one.
+fn obj(interp: &Interpreter, root: &Root) -> ns_runtime::ObjRef {
+    match interp.fetch(root) {
+        Value::Obj(obj) => obj,
+        _ => panic!("expected an object"),
     }
 }
 
@@ -49,18 +57,18 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
     "};
     let (mut interp, class) = load(src);
 
-    let receiver = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
+    let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
 
-    let result = interp.send_unrooted(receiver, Symbol::intern("bar"), vec![]);
+    let result = interp.send(&receiver, Symbol::intern("bar"), &[]);
 
-    match result {
+    match result.map(|root| interp.fetch(&root)) {
         Ok(Value::SmallInt(42)) => {}
         Ok(other) => panic!(
             "expected Value::SmallInt(42), got {}",
             interp.heap_ref().describe(&other)
         ),
-        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
-        Err(Signal::Error(e)) => panic!("unexpected Signal::Error: {}", e.message),
+        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
+        Err(HostSignal::Error(e)) => panic!("unexpected Newspeak error: {}", e.message),
     }
 }
 
@@ -114,14 +122,17 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
         ns_runtime::SourceOrigin::File("sub.ns".into()),
     )
     .expect("resolve");
-    let sub_class = interp.load_module_unrooted(&sub_resolved);
+    let sub_root = interp.load_module(&sub_resolved);
 
     // Relink Sub -> Sup (see the doc comment above), on both chains: the
     // class-object chain that `super`/`instantiate` walk, and the
     // application chain that carries the layout. Re-applying Sub's own mixin
     // to Sup's application is what recomputes `b`'s absolute index past
     // Sup's one inherited slot -- hand-editing the layout would let the two
-    // chains disagree about the instance's shape.
+    // chains disagree about the instance's shape. Nothing has run yet, so
+    // the class objects read from their roots here are current.
+    let sup_class = obj(&interp, &sup_class);
+    let sub_class = obj(&interp, &sub_root);
     let sup_application = interp
         .heap_ref()
         .class_application(sup_class)
@@ -139,14 +150,11 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
             .set_class_application(sub_class, sub_application);
     assert!(relinked, "expected Sub to be a class object");
 
-    let receiver = expect_ok(
-        interp.instantiate_unrooted(sub_class, vec![]),
-        "instantiate",
-    );
+    let receiver = expect_ok(interp.instantiate(&sub_root, &[]), "instantiate");
 
-    let result = interp.send_unrooted(receiver, Symbol::intern("getB"), vec![]);
+    let result = interp.send(&receiver, Symbol::intern("getB"), &[]);
 
-    match result {
+    match result.map(|root| interp.fetch(&root)) {
         Ok(Value::SmallInt(10)) => {}
         Ok(Value::Nil) => panic!(
             "getB returned nil -- the superclass's own slot initializer (a = 10) did not run \
@@ -156,8 +164,8 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
             "expected Value::SmallInt(10), got {}",
             interp.heap_ref().describe(&other)
         ),
-        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
-        Err(Signal::Error(e)) => panic!("unexpected Signal::Error: {}", e.message),
+        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
+        Err(HostSignal::Error(e)) => panic!("unexpected Newspeak error: {}", e.message),
     }
 }
 
@@ -179,13 +187,13 @@ fn a_factory_parameter_is_visible_in_a_slot_initializer() {
     let (mut interp, class) = load(src);
 
     let receiver = expect_ok(
-        interp.instantiate_unrooted(class, vec![Value::SmallInt(99)]),
+        interp.instantiate(&class, &[interp.stash(Value::SmallInt(99))]),
         "instantiate",
     );
 
-    let result = interp.send_unrooted(receiver, Symbol::intern("getT"), vec![]);
+    let result = interp.send(&receiver, Symbol::intern("getT"), &[]);
 
-    match result {
+    match result.map(|root| interp.fetch(&root)) {
         Ok(Value::SmallInt(99)) => {}
         Ok(other) => {
             panic!(
@@ -193,8 +201,8 @@ fn a_factory_parameter_is_visible_in_a_slot_initializer() {
                 interp.heap_ref().describe(&other)
             )
         }
-        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
-        Err(Signal::Error(e)) => panic!("unexpected Signal::Error: {}", e.message),
+        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
+        Err(HostSignal::Error(e)) => panic!("unexpected Newspeak error: {}", e.message),
     }
 }
 
@@ -212,19 +220,17 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
     let (mut interp, class) = load(src);
 
     let receiver = expect_ok(
-        interp.send_unrooted(
-            Value::Obj(class),
+        interp.send(
+            &class,
             Symbol::intern("usingPlatform:"),
-            vec![Value::SmallInt(99)],
+            &[interp.stash(Value::SmallInt(99))],
         ),
         "M usingPlatform: 99",
     );
 
-    let result = expect_ok(
-        interp.send_unrooted(receiver, Symbol::intern("getT"), vec![]),
-        "getT",
-    );
+    let result = expect_ok(interp.send(&receiver, Symbol::intern("getT"), &[]), "getT");
 
+    let result = interp.fetch(&result);
     match &result {
         Value::Obj(obj) => match interp.heap_ref().str_value(*obj) {
             Some(s) => assert_eq!(s, "99"),
@@ -258,20 +264,20 @@ fn a_factory_parameter_is_visible_in_an_init_expr() {
     let (mut interp, class) = load(src);
 
     let receiver = expect_ok(
-        interp.instantiate_unrooted(class, vec![Value::SmallInt(7)]),
+        interp.instantiate(&class, &[interp.stash(Value::SmallInt(7))]),
         "instantiate",
     );
 
-    let result = interp.send_unrooted(receiver, Symbol::intern("getT"), vec![]);
+    let result = interp.send(&receiver, Symbol::intern("getT"), &[]);
 
-    match result {
+    match result.map(|root| interp.fetch(&root)) {
         Ok(Value::SmallInt(7)) => {}
         Ok(other) => panic!(
             "expected SmallInt(7) assigned by the initExpr, got {}",
             interp.heap_ref().describe(&other)
         ),
-        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
-        Err(Signal::Error(e)) => panic!("unexpected Signal::Error: {}", e.message),
+        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
+        Err(HostSignal::Error(e)) => panic!("unexpected Newspeak error: {}", e.message),
     }
 }
 
@@ -292,10 +298,10 @@ fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
     "};
     let (mut interp, class) = load(src);
 
-    let result = interp.instantiate_unrooted(class, vec![Value::SmallInt(1)]);
+    let result = interp.instantiate(&class, &[interp.stash(Value::SmallInt(1))]);
 
     match result {
-        Err(Signal::Error(e)) => {
+        Err(HostSignal::Error(e)) => {
             assert!(
                 e.message.contains("wrong number of factory arguments"),
                 "unexpected error message: {}",
@@ -303,10 +309,10 @@ fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
             );
         }
         Ok(v) => panic!(
-            "expected a factory-arity NewspeakError, got Ok({})",
-            interp.heap_ref().describe(&v)
+            "expected a factory-arity Newspeak error, got Ok({})",
+            interp.heap_ref().describe(&interp.fetch(&v))
         ),
-        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `instantiate`"),
+        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `instantiate`"),
     }
 }
 
@@ -319,19 +325,19 @@ fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
     "};
     let (mut interp, class) = load(src);
 
-    let receiver = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
+    let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
 
-    let result = interp.send_unrooted(receiver, Symbol::intern("thisSelectorDoesNotExist"), vec![]);
+    let result = interp.send(&receiver, Symbol::intern("thisSelectorDoesNotExist"), &[]);
 
     match result {
-        Err(Signal::Error(e)) => {
+        Err(HostSignal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("thisSelectorDoesNotExist"));
         }
         Ok(v) => panic!(
             "expected a doesNotUnderstand: error, got Ok({})",
-            interp.heap_ref().describe(&v)
+            interp.heap_ref().describe(&interp.fetch(&v))
         ),
-        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
+        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
     }
 }
 
@@ -362,23 +368,20 @@ fn a_superclass_factory_message_receives_its_own_arguments() {
     "};
     let (mut interp, class) = load(src);
     let module = expect_ok(
-        interp.instantiate_unrooted(class, vec![]),
+        interp.instantiate(&class, &[]),
         "instantiate SuperclassArgs",
     );
     let derived = expect_ok(
-        interp.send_unrooted(module, Symbol::intern("Derived"), vec![]),
+        interp.send(&module, Symbol::intern("Derived"), &[]),
         "Derived",
     );
     let instance = expect_ok(
-        interp.send_unrooted(derived, Symbol::intern("new"), vec![]),
+        interp.send(&derived, Symbol::intern("new"), &[]),
         "Derived new",
     );
-    let stored = expect_ok(
-        interp.send_unrooted(instance, Symbol::intern("base"), vec![]),
-        "base",
-    );
+    let stored = expect_ok(interp.send(&instance, Symbol::intern("base"), &[]), "base");
     assert!(
-        matches!(stored, Value::SmallInt(7)),
+        matches!(interp.fetch(&stored), Value::SmallInt(7)),
         "the superclass's slot initializer did not see the clause's own argument"
     );
 }
@@ -429,53 +432,54 @@ fn new_answers_the_instance_its_initializers_ran_on() {
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load_with(src, lowering);
-        let module = expect_ok(
-            interp.instantiate_unrooted(class, vec![]),
-            "instantiate Kinds",
-        );
+        let module = expect_ok(interp.instantiate(&class, &[]), "instantiate Kinds");
         let cases: [(&str, &[(&str, i64)]); 3] = [
             ("One", &[("a", 1)]),
             ("Two", &[("b", 2), ("c", 3)]),
             ("Bare", &[("b", 2)]),
         ];
         for (name, slots) in cases {
-            let class = expect_ok(
-                interp.send_unrooted(module, Symbol::intern(name), vec![]),
-                name,
-            );
-            let Value::Obj(class_obj) = class else {
+            let class = expect_ok(interp.send(&module, Symbol::intern(name), &[]), name);
+            let Value::Obj(_) = interp.fetch(&class) else {
                 panic!("{name} answers a class object")
             };
             for from_newspeak in [false, true] {
                 let what = format!("{name} new, {lowering:?}, from Newspeak: {from_newspeak}");
                 let instance = if from_newspeak {
-                    interp.send_unrooted(module, Symbol::intern("make:"), vec![class])
+                    interp.send(
+                        &module,
+                        Symbol::intern("make:"),
+                        std::slice::from_ref(&class),
+                    )
                 } else {
-                    interp.send_unrooted(class, Symbol::intern("new"), vec![])
+                    interp.send(&class, Symbol::intern("new"), &[])
                 };
                 let instance = expect_ok(instance, &what);
                 let seen = expect_ok(
-                    interp.send_unrooted(module, Symbol::intern("lastSeen"), vec![]),
+                    interp.send(&module, Symbol::intern("lastSeen"), &[]),
                     "lastSeen",
                 );
-                let (Value::Obj(instance_obj), Value::Obj(seen_obj)) = (instance, seen) else {
+                // Every handle compared below is read after `lastSeen`, the
+                // last run before the comparisons.
+                let (Value::Obj(instance_obj), Value::Obj(seen_obj)) =
+                    (interp.fetch(&instance), interp.fetch(&seen))
+                else {
                     panic!("{what}: answered something other than an object");
                 };
+                let class_obj = obj(&interp, &class);
                 assert!(
                     instance_obj.same(seen_obj),
                     "{what}: answered an object other than the one its initializers ran on"
                 );
                 assert!(
-                    interp.class_of(&instance).same(class_obj),
+                    interp.class_of(&Value::Obj(instance_obj)).same(class_obj),
                     "{what}: answered an instance of another class"
                 );
                 for (getter, expected) in slots {
-                    let value = expect_ok(
-                        interp.send_unrooted(instance, Symbol::intern(getter), vec![]),
-                        getter,
-                    );
+                    let value =
+                        expect_ok(interp.send(&instance, Symbol::intern(getter), &[]), getter);
                     assert!(
-                        matches!(value, Value::SmallInt(n) if n == *expected),
+                        matches!(interp.fetch(&value), Value::SmallInt(n) if n == *expected),
                         "{what}: slot {getter}"
                     );
                 }
