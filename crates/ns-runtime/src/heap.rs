@@ -359,7 +359,8 @@ pub struct Heap {
     epoch: u32,
 }
 
-/// Prints the counter and both arenas' lengths, never their contents. A
+/// Prints the counter and how many frames, activations, objects and host
+/// roots there are, never their contents. A
 /// derived `Debug` would walk every activation and every object ever
 /// allocated, and a method's declaration reachable through a frame's kind
 /// would print a whole AST -- the same hazard `CLAUDE.md`'s
@@ -399,8 +400,9 @@ struct Rotation {
 
 #[cfg(debug_assertions)]
 impl Rotation {
-    /// A shift in `1..len`, varied by `epoch` so that successive moves do
-    /// not undo one another. No slot keeps its index, so a handle the
+    /// A shift in `1..len`, varied by `epoch` so that moves do not all
+    /// shift alike; two of them can still compose to no shift at all, which
+    /// the epoch covers. No slot keeps its index in a move, so a handle the
     /// tracer missed both carries an old epoch and names a different
     /// object: the permutation checks the forwarding, the epoch the
     /// completeness. An arena of one slot or none cannot move anything.
@@ -1010,8 +1012,9 @@ impl Heap {
 
     /// A copy of closure `obj`'s payload -- two `Rc` bumps, since its
     /// parameter names and body are shared with the instruction that made
-    /// it. For the image encoder and verifier and for tests; the run loop
-    /// reads what it needs through the narrower accessors above.
+    /// it. For the image verifier and for tests; the encoder reads a closure
+    /// through `object_snapshot`, and the run loop reads what it needs
+    /// through the narrower accessors above.
     pub fn closure_data(&self, obj: ObjRef) -> Option<ClosureData> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {

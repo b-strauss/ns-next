@@ -61,6 +61,14 @@ They are **one format**, distinguished by a header flag. The binary is the
 image's leading sections stopping where the object graph would begin, plus a
 recorded entry point.
 
+A host holds what a load answers as roots: `image::load`'s `LoadedImage`
+carries the root class and the image's roots as `Root`s
+([memory.md](memory.md), "Host roots"), stashed once decoding and every
+verification are done — nothing runs while an artifact decodes, so
+nothing moves under the decoder's plain handles. `image::snapshot` and
+`image::build` take plain values, which a host fetches from its roots just
+before the call, for the same reason: encoding runs no code.
+
 ## Layout
 
 ```

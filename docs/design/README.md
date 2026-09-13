@@ -36,8 +36,8 @@ that cannot name its code is describing an intention, and should say so.
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | inline-cache slots wired up |
-| Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust | closure conversion, JIT tiers |
-| Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena and the activation stack are built, nothing reclaims an arena slot | checked roots (designed: safepoints in the run loop, a lifetime brand, a stress mode), a collector |
+| Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, and the loop polls a safepoint | closure conversion, JIT tiers |
+| Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena, the activation stack, the safepoint, tracing, host roots and the stress mode are built; nothing reclaims an arena slot | the lifetime brand (2c), a collector |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | Partial | the core library as Newspeak source |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
@@ -114,11 +114,17 @@ regression.
 
 ```bash
 cargo test --workspace          # includes the golden program outcomes
+NS_NEXT_STRESS_MOVES=1 cargo test --workspace   # the same, moving everything at the run loop's safepoints
 cargo clippy --workspace --all-targets   # must be warning-free
 cargo fmt --all                 # before every commit
 cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 210, failed 0, expected-fail 1, stale 0
 cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 205 -- every row under both lowerings
+NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules   # the same report
 ```
+
+The two stress runs are Git Bash syntax and do anything only in a debug build
+([memory.md](memory.md), "Checking the roots before a collector exists: the
+stress mode").
 
 Never judge performance from a debug build; `cargo build --workspace --release`
 is the one to measure.
