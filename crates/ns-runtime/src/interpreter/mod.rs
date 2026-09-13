@@ -1561,6 +1561,47 @@ mod tests {
         );
     }
 
+    /// A walk that climbs through a clause message with arguments, and then
+    /// finds no initializer at any level, retires straight out of
+    /// `descend_levels`'s "nothing below" branch -- the branch that never
+    /// writes `Descending` into `phase`. `retire_walk` must clear `phase`
+    /// itself, or the retired box still holds the two `ClassRef`s of the
+    /// last `Climbing` it was in, contradicting "a spare holds no handle".
+    #[test]
+    fn a_retired_walk_holds_no_classref_in_its_phase() {
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              public class Base x: p = Object new (
+              ) (
+              ) : ()
+              public class Cell = Base x: 1 (
+              ) (
+              ) : ()
+            ) : ()
+        "};
+        let (mut interp, class) = load(src);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let cell = expect_ok(
+            interp.send(instance, Symbol::intern("Cell"), vec![]),
+            "Cell",
+        );
+        let Value::Obj(cell) = cell else {
+            panic!("`Cell` answers a class object")
+        };
+        expect_ok(interp.instantiate(cell, vec![]), "Cell new");
+        assert_eq!(interp.spare_walks.len(), 1, "one walk ran");
+        let state = &interp.spare_walks[0];
+        assert!(matches!(state.instance, Value::Nil), "no instance handle");
+        assert!(state.levels.is_empty(), "no levels");
+        assert!(
+            matches!(state.phase, InstantiationPhase::Descending { .. }),
+            "a retired box's phase holds no ClassRef either"
+        );
+    }
+
     /// Every decision answers a `Result<Step, Signal>`, so its size is paid
     /// on every send; a variant that grows it is a cost on every benchmark,
     /// not only on the path it serves (`StepArgs::ControlFlow`'s comment).

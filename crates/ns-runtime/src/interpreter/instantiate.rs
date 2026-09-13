@@ -343,6 +343,14 @@ impl Interpreter {
             state.levels.clear();
             state.levels.shrink_to(SPARE_LEVELS);
             state.instance = Value::Nil;
+            // A walk that climbed through a clause message with arguments and
+            // then found nothing to initialize below it retires straight out
+            // of `descend_levels`'s "nothing below" branches, which never
+            // write `Descending` into `phase` -- so without this, the box
+            // would still hold the last `Climbing`'s two `ClassRef`s.
+            // `Descending { index: 0 }` is otherwise never read (`walk_state`'s
+            // comment), so any handle-free variant would do.
+            state.phase = InstantiationPhase::Descending { index: 0 };
             self.spare_walks.push(state);
         }
     }
