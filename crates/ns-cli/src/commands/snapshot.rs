@@ -21,32 +21,36 @@ pub(crate) fn execute(
         Err(code) => return code,
     };
     let (mut interp, class) = source::bootstrap(&loaded, lowering);
-    let instance = match entry::instantiate_root(&mut interp, class) {
+    let instance = match entry::instantiate_root(&mut interp, &class) {
         Ok(v) => v,
         Err(code) => return code,
     };
-    let platform = interp.platform_value();
-    let mut roots = vec![instance];
+    let platform = interp.platform();
+    let mut roots: Vec<ns_runtime::Root> = vec![instance.clone()];
     if let Some(selector) = send {
-        let args = match entry::entry_args(selector, platform) {
+        let args = match entry::entry_args(&interp, selector, &platform) {
             Ok(args) => args,
             Err(msg) => {
                 eprintln!("error: {msg}");
                 return ExitCode::FAILURE;
             }
         };
-        match interp.send_unrooted(instance, ns_runtime::Symbol::intern(selector), args) {
+        match interp.send(&instance, ns_runtime::Symbol::intern(selector), &args) {
             Ok(result) => roots.push(result),
             Err(signal) => return entry::report_entry_send(Err(signal)),
         }
     }
+    // Fetched only now, right before encoding: encoding runs no code, so
+    // nothing can move these values between here and the write.
+    let platform = interp.fetch(&platform);
+    let root_values: Vec<ns_runtime::Value> = roots.iter().map(|r| interp.fetch(r)).collect();
     let bytes = match ns_runtime::image::snapshot(
         &interp,
         debug_source.then_some(loaded.source.as_str()),
         &loaded.origin,
-        class,
+        entry::class_ref(&interp, &class),
         &platform,
-        &roots,
+        &root_values,
     ) {
         Ok(b) => b,
         Err(e) => {

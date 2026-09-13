@@ -6,33 +6,45 @@ use std::process::ExitCode;
 
 /// Renders the entry send's outcome -- `program_outcomes.rs` pins these
 /// strings byte for byte, so they live here once and are never duplicated.
-pub(crate) fn report_entry_send(result: Result<ns_runtime::Value, ns_runtime::Signal>) -> ExitCode {
+pub(crate) fn report_entry_send(result: ns_runtime::HostResult) -> ExitCode {
     match result {
         Ok(_) => ExitCode::SUCCESS,
-        Err(ns_runtime::Signal::Error(e)) => {
+        Err(ns_runtime::HostSignal::Error(e)) => {
             eprintln!("Uncaught Newspeak error: {}", e.message);
             ExitCode::FAILURE
         }
-        Err(ns_runtime::Signal::Return(..)) => {
+        Err(ns_runtime::HostSignal::Return) => {
             eprintln!("internal: non-local return escaped the entry send");
             ExitCode::FAILURE
         }
     }
 }
 
-fn report_signal(signal: ns_runtime::Signal) -> ExitCode {
+fn report_signal(signal: ns_runtime::HostSignal) -> ExitCode {
     match signal {
-        ns_runtime::Signal::Error(e) => {
+        ns_runtime::HostSignal::Error(e) => {
             eprintln!(
                 "Uncaught Newspeak error during instantiation: {}",
                 e.message
             );
         }
-        ns_runtime::Signal::Return(..) => {
+        ns_runtime::HostSignal::Return => {
             eprintln!("internal: non-local return escaped instantiation");
         }
     }
     ExitCode::FAILURE
+}
+
+/// The class object a module's root-class `Root` holds: `load_module` and
+/// `image::load` only ever root a class object there.
+pub(crate) fn class_ref(
+    interp: &ns_runtime::Interpreter,
+    class: &ns_runtime::Root,
+) -> ns_runtime::ClassRef {
+    match interp.fetch(class) {
+        ns_runtime::Value::Obj(class) => class,
+        _ => unreachable!("internal: a module's root class is a class object"),
+    }
 }
 
 /// The argument list `instantiate_root` (used by `run`, `snapshot` and
@@ -54,8 +66,8 @@ fn report_signal(signal: ns_runtime::Signal) -> ExitCode {
 pub(crate) fn factory_args_for(
     heap: &ns_runtime::Heap,
     class: ns_runtime::ClassRef,
-    platform: ns_runtime::Value,
-) -> Result<Vec<ns_runtime::Value>, String> {
+    platform: &ns_runtime::Root,
+) -> Result<Vec<ns_runtime::Root>, String> {
     let factory = heap
         .class_application(class)
         .and_then(|app| app.mixin.factory);
@@ -71,7 +83,7 @@ pub(crate) fn factory_args_for(
         Some(factory)
             if factory.num_args == 1 && factory.selector == ns_runtime::Symbol::USING_PLATFORM =>
         {
-            Ok(vec![platform])
+            Ok(vec![platform.clone()])
         }
         Some(factory) => Err(format!(
             "cannot instantiate `{}`: its primary factory `{}` takes {} argument(s), and \
@@ -131,13 +143,14 @@ fn selector_arity(selector: &str) -> usize {
 /// still no command-line-argument passthrough into Newspeak. Beyond two
 /// the CLI has nothing to offer, and says so rather than padding.
 pub(crate) fn entry_args(
+    interp: &ns_runtime::Interpreter,
     selector: &str,
-    platform: ns_runtime::Value,
-) -> Result<Vec<ns_runtime::Value>, String> {
+    platform: &ns_runtime::Root,
+) -> Result<Vec<ns_runtime::Root>, String> {
     match selector_arity(selector) {
         0 => Ok(vec![]),
-        1 => Ok(vec![platform]),
-        2 => Ok(vec![platform, ns_runtime::Value::Nil]),
+        1 => Ok(vec![platform.clone()]),
+        2 => Ok(vec![platform.clone(), interp.stash(ns_runtime::Value::Nil)]),
         n => Err(format!(
             "cannot send `{selector}`: it takes {n} argument(s), and this CLI only knows how \
              to supply the platform and a `nil` argument list"
@@ -150,14 +163,15 @@ pub(crate) fn entry_args(
 /// does. `Err` carries the exit code to return.
 pub(crate) fn instantiate_root(
     interp: &mut ns_runtime::Interpreter,
-    class: ns_runtime::ClassRef,
-) -> Result<ns_runtime::Value, ExitCode> {
-    let platform = interp.platform_value();
-    let factory_args = factory_args_for(interp.heap_ref(), class, platform).map_err(|msg| {
-        eprintln!("error: {msg}");
-        ExitCode::FAILURE
-    })?;
+    class: &ns_runtime::Root,
+) -> Result<ns_runtime::Root, ExitCode> {
+    let platform = interp.platform();
+    let factory_args = factory_args_for(interp.heap_ref(), class_ref(interp, class), &platform)
+        .map_err(|msg| {
+            eprintln!("error: {msg}");
+            ExitCode::FAILURE
+        })?;
     interp
-        .instantiate_unrooted(class, factory_args)
+        .instantiate(class, &factory_args)
         .map_err(report_signal)
 }

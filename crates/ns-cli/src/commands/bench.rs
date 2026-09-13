@@ -18,10 +18,10 @@ struct BenchStats {
 /// call site treats it as fatal to the whole process the way `run` does --
 /// `execute` folds it into its `Result` instead -- so this
 /// produces a `String`, not an `ExitCode`.
-fn signal_message(signal: ns_runtime::Signal) -> String {
+fn signal_message(signal: ns_runtime::HostSignal) -> String {
     match signal {
-        ns_runtime::Signal::Error(e) => format!("Uncaught Newspeak error: {}", e.message),
-        ns_runtime::Signal::Return(..) => {
+        ns_runtime::HostSignal::Error(e) => format!("Uncaught Newspeak error: {}", e.message),
+        ns_runtime::HostSignal::Return => {
             "internal: non-local return escaped the entry send".to_string()
         }
     }
@@ -37,16 +37,16 @@ fn signal_message(signal: ns_runtime::Signal) -> String {
 /// already-mutated state instead of the same workload every iteration.
 fn timed_send(
     interp: &mut ns_runtime::Interpreter,
-    class: ns_runtime::ClassRef,
-    factory_args: &[ns_runtime::Value],
+    class: &ns_runtime::Root,
+    factory_args: &[ns_runtime::Root],
     selector: ns_runtime::Symbol,
-    entry_args: &[ns_runtime::Value],
+    entry_args: &[ns_runtime::Root],
 ) -> Result<std::time::Duration, String> {
     let instance = interp
-        .instantiate_unrooted(class, factory_args.to_vec())
+        .instantiate(class, factory_args)
         .map_err(signal_message)?;
     let start = std::time::Instant::now();
-    let outcome = interp.send_unrooted(instance, selector, entry_args.to_vec());
+    let outcome = interp.send(&instance, selector, entry_args);
     let elapsed = start.elapsed();
     outcome.map(|_| elapsed).map_err(signal_message)
 }
@@ -58,9 +58,13 @@ fn timed_send(
 /// timing for the same reason instantiation is.
 fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<BenchStats, String> {
     let (mut interp, class) = source::bootstrap(loaded, ns_runtime::Lowering::Optimized);
-    let platform = interp.platform_value();
-    let factory_args = entry::factory_args_for(interp.heap_ref(), class, platform)?;
-    let entry_args_list = entry::entry_args(send, platform)?;
+    let platform = interp.platform();
+    let factory_args = entry::factory_args_for(
+        interp.heap_ref(),
+        entry::class_ref(&interp, &class),
+        &platform,
+    )?;
+    let entry_args_list = entry::entry_args(&interp, send, &platform)?;
     let selector = ns_runtime::Symbol::intern(send);
 
     // Warm-up: discarded. It exercises the same allocation and lookup
@@ -68,7 +72,7 @@ fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<Ben
     // a one-time cost (e.g. a lazily-populated cache) the rest do not.
     timed_send(
         &mut interp,
-        class,
+        &class,
         &factory_args,
         selector,
         &entry_args_list,
@@ -78,7 +82,7 @@ fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<Ben
     for _ in 0..iterations {
         timings.push(timed_send(
             &mut interp,
-            class,
+            &class,
             &factory_args,
             selector,
             &entry_args_list,

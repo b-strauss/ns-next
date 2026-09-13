@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use crate::compiler::Lowering;
 use crate::dispatch::{self, Lookup};
-use crate::heap::{ActivationHeader, ActivationRef, Heap};
+use crate::heap::{ActivationHeader, ActivationRef, Heap, Root};
 use crate::types::*;
 use crate::Symbol;
 
@@ -25,6 +25,31 @@ pub enum Signal {
 }
 
 pub type EvalResult = Result<Value, Signal>;
+
+/// How a host's send or instantiation ended (`Interpreter::send`,
+/// `Interpreter::instantiate`): its value, rooted, or the signal that ended
+/// it.
+pub type HostResult = Result<Root, HostSignal>;
+
+/// A signal that left a host's send or instantiation. No `Debug`, for the
+/// reason `Signal` has none, so `unwrap` and `expect` on a `HostResult` do
+/// not compile.
+pub enum HostSignal {
+    /// A Newspeak error nothing handled.
+    Error(HostError),
+    /// A `^` that reached the host: its home had returned, or it aimed at a
+    /// running initializer, which catches none (`docs/design/execution.md`,
+    /// "Non-local return").
+    Return,
+}
+
+/// A Newspeak error as a host receives it: `NewspeakError` with its
+/// receiver rooted, since the host may read it after running more code.
+pub struct HostError {
+    pub selector: Symbol,
+    pub receiver: Root,
+    pub message: String,
+}
 
 /// L: the most activations that may be live at once, counted by the rule in
 /// `docs/design/compiler.md`, "How the limit counts". It bounds memory, not
@@ -247,10 +272,32 @@ impl Interpreter {
         &mut self.heap
     }
 
+    /// `Heap::stash`, for a host.
+    pub fn stash(&self, value: Value) -> Root {
+        self.heap.stash(value)
+    }
+
+    /// `Heap::fetch`, for a host.
+    pub fn fetch(&self, root: &Root) -> Value {
+        self.heap.fetch(root)
+    }
+
     /// An ordinary (explicit-receiver) send from a host: `newspeak-spec.pdf`
     /// §5.5, decided as `decide_send` decides it and run from the outside
     /// (`run_from_host`). A `Send*` the VM issues never comes through here:
     /// `vm.rs` decides it and pushes what was decided itself.
+    pub fn send(&mut self, receiver: &Root, selector: Symbol, args: &[Root]) -> HostResult {
+        let receiver = self.fetch(receiver);
+        let args: Vec<Value> = args.iter().map(|arg| self.fetch(arg)).collect();
+        let result = match self.decide_send(receiver, selector, &args) {
+            Ok(step) => self.run_from_host(step, &args),
+            Err(signal) => Err(signal),
+        };
+        self.to_host(result)
+    }
+
+    /// Transitional: the unrooted form the tests used before hosts held
+    /// roots; removed once every test uses roots.
     pub fn send_unrooted(
         &mut self,
         receiver: Value,
@@ -260,6 +307,20 @@ impl Interpreter {
         match self.decide_send(receiver, selector, &args) {
             Ok(step) => self.run_from_host(step, &args),
             Err(signal) => Err(signal),
+        }
+    }
+
+    /// A run's outcome as the host receives it. Nothing runs between the
+    /// run's last safepoint and here, so every value in `result` is current.
+    fn to_host(&self, result: EvalResult) -> HostResult {
+        match result {
+            Ok(value) => Ok(self.stash(value)),
+            Err(Signal::Error(e)) => Err(HostSignal::Error(HostError {
+                selector: e.selector,
+                receiver: self.stash(e.receiver),
+                message: e.message,
+            })),
+            Err(Signal::Return(..)) => Err(HostSignal::Return),
         }
     }
 
@@ -997,6 +1058,12 @@ impl Interpreter {
         let value = Value::Obj(obj);
         self.platform_singleton = Some(value);
         value
+    }
+
+    /// The `platform` object, rooted for a host.
+    pub fn platform(&mut self) -> Root {
+        let platform = self.platform_value();
+        self.stash(platform)
     }
 
     /// A `Transcript`-style stdout stream object -- see `crate::platform`'s

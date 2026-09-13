@@ -8,12 +8,12 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
-use crate::heap::Heap;
+use crate::heap::{Heap, Root};
 use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
 use crate::types::*;
 use crate::Symbol;
 
-use super::{EvalResult, Interpreter, Signal, Step};
+use super::{EvalResult, HostError, HostResult, HostSignal, Interpreter, Signal, Step};
 
 /// How many finished walks' boxes `Interpreter::retire_walk` keeps for
 /// reuse, and how many levels of room each keeps. One box serves any number
@@ -77,6 +77,9 @@ impl Interpreter {
     /// declaration it belongs to as the tree is built, so a class this
     /// returns is already runnable. It is compiled with the lowering this
     /// interpreter was bootstrapped with.
+    ///
+    /// Transitional: the unrooted form the tests used before hosts held
+    /// roots; removed once every test uses roots.
     pub fn load_module_unrooted(&mut self, resolved: &ResolvedModule) -> ClassRef {
         let decl = &resolved.module.root_class;
         let mixin = self.build_mixin(decl, &resolved.bindings);
@@ -94,6 +97,13 @@ impl Interpreter {
         // declaration contains it. Every other class object in the system
         // comes from `interpreter::nested`, which passes both.
         self.new_class_object(application, None, None, superclass)
+    }
+
+    /// Materializes the module's root class (`load_module_unrooted`), rooted
+    /// for the host that will instantiate it.
+    pub fn load_module(&mut self, resolved: &ResolvedModule) -> Root {
+        let class = self.load_module_unrooted(resolved);
+        self.stash(Value::Obj(class))
     }
 
     /// Builds the mixin for `decl`, recursively including its nested
@@ -270,10 +280,37 @@ impl Interpreter {
         None
     }
 
-    /// Instantiates `class` from a host: the six numbered steps in
-    /// `docs/design/object-model.md`, "Instantiation", decided
+    /// Instantiates the class `class` holds, from a host: the six numbered
+    /// steps in `docs/design/object-model.md`, "Instantiation", decided
     /// (`decide_instantiation`) and then run from the outside
-    /// (`run_from_host`), like a host's `send`.
+    /// (`run_from_host`), like a host's `send`. A root that holds anything
+    /// but a class object is refused as a Newspeak error, never a panic:
+    /// the caller is a host.
+    pub fn instantiate(&mut self, class: &Root, factory_args: &[Root]) -> HostResult {
+        let value = self.fetch(class);
+        let class = match value {
+            Value::Obj(obj) if self.heap.is_class(obj) => obj,
+            _ => {
+                return Err(HostSignal::Error(HostError {
+                    selector: Symbol::NEW,
+                    receiver: self.stash(value),
+                    message: format!(
+                        "cannot instantiate {}: it is not a class",
+                        self.heap.describe(&value)
+                    ),
+                }))
+            }
+        };
+        let factory_args: Vec<Value> = factory_args.iter().map(|arg| self.fetch(arg)).collect();
+        let result = match self.decide_instantiation(class, factory_args) {
+            Ok(step) => self.run_from_host(step, &[]),
+            Err(signal) => Err(signal),
+        };
+        self.to_host(result)
+    }
+
+    /// Transitional: the unrooted form the tests used before hosts held
+    /// roots; removed once every test uses roots.
     pub fn instantiate_unrooted(
         &mut self,
         class: ClassRef,

@@ -76,6 +76,7 @@ pub(crate) fn execute(
         Err(code) => return code,
     };
     let (mut interp, class) = source::bootstrap(&loaded, lowering);
+    let class = crate::entry::class_ref(&interp, &class);
 
     let entry = match entry {
         Some(e) => e.to_string(),
@@ -91,7 +92,8 @@ pub(crate) fn execute(
         }
     };
 
-    if let Err(msg) = crate::entry::entry_args(&entry, interp.platform_value()) {
+    let platform = interp.platform();
+    if let Err(msg) = crate::entry::entry_args(&interp, &entry, &platform) {
         eprintln!("error: cannot use `{entry}` as an entry point: {msg}");
         return ExitCode::FAILURE;
     }

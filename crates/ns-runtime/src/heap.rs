@@ -218,6 +218,31 @@ pub struct Popped {
     pub counted: bool,
 }
 
+/// A value a host keeps across runs of the loop (`docs/design/memory.md`,
+/// "Host roots"): a slot the heap's root table also holds, which a moving
+/// collector traces and rewrites. Cloning a `Root` shares the slot, and
+/// dropping the last clone releases it without touching the heap -- the
+/// table notices at its next sweep that it holds the only reference left.
+/// gc-arena's `DynamicRoot` is the model.
+///
+/// No `Debug`, for the reason `Signal` has none: printing one would print
+/// a `Value`.
+#[derive(Clone)]
+pub struct Root {
+    slot: std::rc::Rc<std::cell::Cell<Value>>,
+}
+
+/// The host roots. Swept of slots nothing else holds at every move, and
+/// whenever it has doubled since the last sweep, so it stays proportional to
+/// the roots a host still holds even in a build where nothing moves.
+struct HostRoots {
+    slots: Vec<std::rc::Rc<std::cell::Cell<Value>>>,
+    sweep_at: usize,
+}
+
+/// The table's size below which `stash` never sweeps.
+const MIN_ROOT_SWEEP: usize = 64;
+
 /// One live activation. Its registers are `values[base..]` up to the next
 /// entry's `base` (or the end of `values`, for the top entry): the
 /// arguments first, then the temporaries.
@@ -282,6 +307,10 @@ pub struct Heap {
     /// Every object, addressed by an `ObjRef`'s index. Nothing is ever
     /// removed, for the same reason as `frames`.
     objects: Vec<Object>,
+    /// Every `Root` a host holds. A `RefCell` so that `stash` and `fetch`
+    /// take `&self`, which lets a host stash an argument inside the call that
+    /// sends it.
+    host_roots: std::cell::RefCell<HostRoots>,
     /// This heap's distinct id, stamped onto every handle it mints. Debug
     /// builds only; see `next_heap_id`. No accessor exists for it: nothing
     /// outside a `cfg`-guarded position may name a field that does not
@@ -306,6 +335,7 @@ impl std::fmt::Debug for Heap {
             .field("frames.len()", &self.frames.len())
             .field("activations", &self.stack.entries.len())
             .field("objects.len()", &self.objects.len())
+            .field("host roots", &self.host_roots.borrow().slots.len())
             .finish()
     }
 }
@@ -341,6 +371,10 @@ impl Heap {
             frames: Vec::new(),
             stack: ActivationStack::default(),
             objects: Vec::new(),
+            host_roots: std::cell::RefCell::new(HostRoots {
+                slots: Vec::new(),
+                sweep_at: MIN_ROOT_SWEEP,
+            }),
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
         }
@@ -919,6 +953,44 @@ impl Heap {
             Some(v) => self.describe(v),
             None => "no argument".to_string(),
         }
+    }
+
+    // ---------- Host roots ----------
+
+    /// Roots `value` for a host. A value a host keeps past the next run of
+    /// the loop must be a `Root`: a run may move every object
+    /// (`docs/design/memory.md`, "Where a collection can happen"), and only
+    /// what the collector traces is rewritten.
+    pub fn stash(&self, value: Value) -> Root {
+        if let Value::Obj(obj) = value {
+            self.check_object_origin(obj);
+        }
+        let slot = std::rc::Rc::new(std::cell::Cell::new(value));
+        let mut roots = self.host_roots.borrow_mut();
+        if roots.slots.len() >= roots.sweep_at {
+            roots
+                .slots
+                .retain(|slot| std::rc::Rc::strong_count(slot) > 1);
+            roots.sweep_at = (roots.slots.len() * 2).max(MIN_ROOT_SWEEP);
+        }
+        roots.slots.push(slot.clone());
+        Root { slot }
+    }
+
+    /// What `root` holds now. The answer is good until the next run of the
+    /// loop, which may move it; read the root again after one.
+    pub fn fetch(&self, root: &Root) -> Value {
+        let value = root.slot.get();
+        if let Value::Obj(obj) = value {
+            self.check_object_origin(obj);
+        }
+        value
+    }
+
+    /// How many slots the root table holds, those nothing else holds any
+    /// more but that no sweep has reached yet included.
+    pub fn host_root_count(&self) -> usize {
+        self.host_roots.borrow().slots.len()
     }
 
     // ---------- Class accessors ----------

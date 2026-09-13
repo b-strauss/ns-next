@@ -16,12 +16,12 @@ pub(crate) fn execute(file: &Path, send: &str, lowering: ns_runtime::Lowering) -
         Err(code) => return code,
     };
     let (mut interp, class) = source::bootstrap(&loaded, lowering);
-    let instance = match entry::instantiate_root(&mut interp, class) {
+    let instance = match entry::instantiate_root(&mut interp, &class) {
         Ok(v) => v,
         Err(code) => return code,
     };
-    let platform = interp.platform_value();
-    let args = match entry::entry_args(send, platform) {
+    let platform = interp.platform();
+    let args = match entry::entry_args(&interp, send, &platform) {
         Ok(args) => args,
         Err(msg) => {
             eprintln!("error: {msg}");
@@ -29,5 +29,5 @@ pub(crate) fn execute(file: &Path, send: &str, lowering: ns_runtime::Lowering) -
         }
     };
     let selector = ns_runtime::Symbol::intern(send);
-    entry::report_entry_send(interp.send_unrooted(instance, selector, args))
+    entry::report_entry_send(interp.send(&instance, selector, &args))
 }

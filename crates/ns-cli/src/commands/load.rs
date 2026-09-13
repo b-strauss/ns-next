@@ -55,6 +55,10 @@ pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> E
         print!("{source}");
         return ExitCode::SUCCESS;
     }
+    // Rooted at once, before anything runs: a run may move every object, and
+    // only what a host holds as a `Root` is rewritten.
+    let root_class = interp.stash(ns_runtime::Value::Obj(root_class));
+    let roots: Vec<ns_runtime::Root> = roots.into_iter().map(|v| interp.stash(v)).collect();
     // `stateless` (the decoded header flag), not `roots.is_empty()`, decides
     // whether to instantiate: it says what the artifact *is*, where an empty
     // `roots` is only what a binary happens to look like. `image::snapshot`
@@ -76,7 +80,7 @@ pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> E
         // *that* a command-line entry point supplies the platform is a CLI
         // concern -- nothing in the runtime needs to know it was invoked
         // from a terminal.
-        match crate::entry::instantiate_root(&mut interp, root_class) {
+        match crate::entry::instantiate_root(&mut interp, &root_class) {
             Ok(v) => v,
             Err(code) => return code,
         }
@@ -111,17 +115,17 @@ pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> E
             return ExitCode::FAILURE;
         }
     };
-    let platform = interp.platform_value();
-    let args = match crate::entry::entry_args(selector, platform) {
+    let platform = interp.platform();
+    let args = match crate::entry::entry_args(&interp, selector, &platform) {
         Ok(args) => args,
         Err(msg) => {
             eprintln!("error: {msg}");
             return ExitCode::FAILURE;
         }
     };
-    crate::entry::report_entry_send(interp.send_unrooted(
-        instance,
+    crate::entry::report_entry_send(interp.send(
+        &instance,
         ns_runtime::Symbol::intern(selector),
-        args,
+        &args,
     ))
 }

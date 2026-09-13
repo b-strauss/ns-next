@@ -137,7 +137,7 @@ pub(crate) fn execute(
         };
         let (interp, class) =
             source::bootstrap(&loaded, lowering.unwrap_or(ns_runtime::Lowering::Optimized));
-        match root_mixin_of(interp.heap_ref(), class) {
+        match root_mixin_of(interp.heap_ref(), crate::entry::class_ref(&interp, &class)) {
             Ok(m) => m,
             Err(msg) => {
                 eprintln!("error: {msg}");

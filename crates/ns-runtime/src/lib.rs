@@ -20,8 +20,8 @@ pub mod types;
 pub mod vm;
 
 pub use compiler::Lowering;
-pub use heap::{ActivationHeader, ActivationRef, ClassRef, FrameRef, Heap, ObjRef};
-pub use interpreter::{Interpreter, Signal};
+pub use heap::{ActivationHeader, ActivationRef, ClassRef, FrameRef, Heap, ObjRef, Root};
+pub use interpreter::{HostError, HostResult, HostSignal, Interpreter, Signal};
 pub use mixin::{Mixin, MixinApplication};
 pub use resolver::resolve;
 pub use symbol::Symbol;
