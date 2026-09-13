@@ -55,10 +55,6 @@ pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> E
         print!("{source}");
         return ExitCode::SUCCESS;
     }
-    // Rooted at once, before anything runs: a run may move every object, and
-    // only what a host holds as a `Root` is rewritten.
-    let root_class = interp.stash(ns_runtime::Value::Obj(root_class));
-    let roots: Vec<ns_runtime::Root> = roots.into_iter().map(|v| interp.stash(v)).collect();
     // `stateless` (the decoded header flag), not `roots.is_empty()`, decides
     // whether to instantiate: it says what the artifact *is*, where an empty
     // `roots` is only what a binary happens to look like. `image::snapshot`

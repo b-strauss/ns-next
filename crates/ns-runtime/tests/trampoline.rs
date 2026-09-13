@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::{
-    HostResult, HostSignal, Interpreter, Lowering, Root, Signal, SourceOrigin, Symbol, Value,
+    HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol, Value,
 };
 
 fn load(src: &str, lowering: Lowering) -> (Interpreter, Root) {
@@ -404,34 +404,13 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
         "{block}: whether the sending block reifies its own activation"
     );
 
-    // `image::load` answers its root class as a plain `ClassRef`, so this
-    // test runs the loaded artifact through the unrooted entries and unwraps
-    // what they answer with these.
-    fn expect_ok_unrooted(result: Result<Value, Signal>, what: &str) -> Value {
-        match result {
-            Ok(v) => v,
-            Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
-            Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
-        }
-    }
-    fn expect_too_deep_unrooted(result: Result<Value, Signal>, what: &str) {
-        match result {
-            Err(Signal::Error(e)) => assert_eq!(e.message, TOO_DEEP, "{what}"),
-            Err(Signal::Return(..)) => panic!("{what}: a non-local return escaped"),
-            Ok(_) => panic!("{what}: ran past the depth limit"),
-        }
-    }
     let mut loaded = image::load(&bytes).expect("the mutated artifact decodes");
-    let instance = expect_ok_unrooted(
-        loaded
-            .interp
-            .instantiate_unrooted(loaded.root_class, vec![]),
+    let instance = expect_ok(
+        loaded.interp.instantiate(&loaded.root_class, &[]),
         "instantiate",
     );
-    expect_too_deep_unrooted(
-        loaded
-            .interp
-            .send_unrooted(instance, Symbol::intern("main"), vec![]),
+    expect_too_deep(
+        loaded.interp.send(&instance, Symbol::intern("main"), &[]),
         &format!("the crafted recursion through {block}"),
     );
     assert_eq!(loaded.interp.heap_ref().activation_depth(), 0, "{block}");

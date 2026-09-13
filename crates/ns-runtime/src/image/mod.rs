@@ -22,7 +22,7 @@ pub mod mixins;
 pub mod opcodes;
 pub mod symbols;
 
-use crate::heap::Heap;
+use crate::heap::{Heap, Root};
 use crate::types::{ClassRef, SourceOrigin, Value};
 use crate::{Interpreter, Symbol};
 
@@ -210,8 +210,11 @@ pub struct LoadedImage {
     /// Bootstrapped. The image's code lives on the declarations its mixin
     /// table rebuilt.
     pub interp: Interpreter,
-    pub root_class: ClassRef,
-    pub roots: Vec<Value>,
+    /// The module's root class, rooted for the host that will instantiate
+    /// it or snapshot it again.
+    pub root_class: Root,
+    /// The image's roots, rooted: a host sends to them, which runs code.
+    pub roots: Vec<Root>,
     /// Where the module came from. Provenance, not program text -- it is
     /// in every image, source blob or not.
     pub origin: SourceOrigin,
@@ -315,10 +318,16 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         }
         .to_string());
     }
+    let root_class = interp.stash(Value::Obj(root_class));
+    let roots = graph
+        .roots
+        .into_iter()
+        .map(|root| interp.stash(root))
+        .collect();
     Ok(LoadedImage {
         interp,
         root_class,
-        roots: graph.roots,
+        roots,
         origin,
         source,
         entry,
