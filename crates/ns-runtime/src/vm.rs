@@ -42,7 +42,8 @@ enum Flow {
 /// and every activation it pushes, until `base` is done, and pops them all,
 /// `base` included, on every path out: a return, an error, or a non-local
 /// return aimed below `base`. The stack is exactly as deep afterwards as it
-/// was before `base` was pushed.
+/// was before `base` was pushed. Its safepoints (`poll`) are every switch to
+/// another activation and every backward jump.
 ///
 /// An activation's `pc` is stored only by the instructions that can hand it
 /// to an observer: every send (a callee runs above it, and the loop resumes
@@ -64,7 +65,14 @@ pub fn run(interp: &mut Interpreter, base: ActivationRef) -> EvalResult {
                     "internal: pc ran past the end of a CompiledCode with no terminating return"
                 );
             }
-            Flow::Jump(target) => pc = target,
+            Flow::Jump(target) => {
+                // A backward jump closes a loop, so that a loop that makes no
+                // send still passes a safepoint.
+                if target <= pc {
+                    poll(interp);
+                }
+                pc = target;
+            }
             Flow::Switch {
                 act: next,
                 code: next_code,
@@ -73,9 +81,24 @@ pub fn run(interp: &mut Interpreter, base: ActivationRef) -> EvalResult {
                 act = next;
                 code = next_code;
                 pc = next_pc;
+                poll(interp);
             }
             Flow::Exit(result) => return result,
         }
+    }
+}
+
+/// The safepoint, reached at every switch to another activation -- a push,
+/// or a caller resumed -- and at every backward jump. Between two
+/// instructions the loop holds the running `ActivationRef`, its code and its
+/// `pc`, none of which a move changes, so a collection may run here and
+/// nowhere else (`docs/design/memory.md`, "Where a collection can happen").
+/// One compare of a flag the heap owns; what happens when it is set is
+/// `interpreter/`'s.
+#[inline(always)]
+fn poll(interp: &mut Interpreter) {
+    if interp.heap.safepoint_requested() {
+        interp.safepoint();
     }
 }
 

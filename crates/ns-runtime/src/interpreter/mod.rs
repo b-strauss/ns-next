@@ -217,6 +217,10 @@ pub struct Interpreter {
     /// Nothing the loop calls can start another -- no decision, native or
     /// continuation runs code from Rust -- and a debug build checks that.
     running: bool,
+    /// The stress mode's schedule, when it is on (`NS_NEXT_STRESS_MOVES`, or
+    /// `set_stress_moves`). Debug builds only.
+    #[cfg(debug_assertions)]
+    stress: Option<safepoint::StressMoves>,
 }
 
 impl Interpreter {
@@ -240,8 +244,15 @@ impl Interpreter {
             lowering,
             arg_buffer: Vec::new(),
             running: false,
+            #[cfg(debug_assertions)]
+            stress: safepoint::StressMoves::from_env(),
         };
         interp.builtin_classes = build_builtin_classes(&mut interp);
+        #[cfg(debug_assertions)]
+        {
+            let on = interp.stress.is_some();
+            interp.heap.set_safepoint_requested(on);
+        }
         interp
     }
 

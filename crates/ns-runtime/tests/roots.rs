@@ -150,6 +150,16 @@ const GRAPH: &str = indoc! {"
     )
 "};
 
+/// Moves everything between runs, and checks that it did. The count is
+/// taken across the move alone, because under the stress mode the runs
+/// around it move as well.
+#[cfg(debug_assertions)]
+fn move_once(interp: &mut Interpreter) {
+    let before = interp.moves();
+    interp.move_now();
+    assert_eq!(interp.moves(), before + 1, "move_now did not move");
+}
+
 /// What a host holds as roots survives a move of every object and every
 /// reified frame, and so does everything reachable from it: an instance's
 /// slots, a nested class and its enclosing object, a closure and the
@@ -161,19 +171,17 @@ fn a_world_reached_from_roots_survives_moves() {
     let (mut interp, class) = load(GRAPH);
     let x = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let built = expect_ok(interp.send(&x, Symbol::intern("build"), &[]), "build");
-    let before = interp.moves();
-    interp.move_now();
+    move_once(&mut interp);
     let read = expect_ok(interp.send(&x, Symbol::intern("read"), &[]), "read");
     assert!(matches!(interp.fetch(&read), Value::SmallInt(48)));
-    interp.move_now();
+    move_once(&mut interp);
     let read = expect_ok(interp.send(&x, Symbol::intern("read"), &[]), "read");
     assert!(matches!(interp.fetch(&read), Value::SmallInt(49)));
     let marker = expect_ok(interp.send(&class, Symbol::intern("marker"), &[]), "marker");
     assert!(matches!(interp.fetch(&marker), Value::SmallInt(3)));
-    interp.move_now();
+    move_once(&mut interp);
     let marker = expect_ok(interp.send(&class, Symbol::intern("marker"), &[]), "marker");
     assert!(matches!(interp.fetch(&marker), Value::SmallInt(3)));
-    assert_eq!(interp.moves(), before + 3);
     let heap = interp.heap_ref();
     let Value::Obj(built) = interp.fetch(&built) else {
         panic!("`build` answers an array")

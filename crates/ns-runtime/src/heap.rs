@@ -339,6 +339,12 @@ pub struct Heap {
     /// take `&self`, which lets a host stash an argument inside the call that
     /// sends it.
     host_roots: std::cell::RefCell<HostRoots>,
+    /// Whether the run loop's next safepoint must take its slow path
+    /// (`Interpreter::safepoint`). The poll is one compare of this flag
+    /// (`docs/design/memory.md`, "Where a collection can happen"). Nothing
+    /// sets it in a release build until the collector's allocation counter
+    /// exists; the stress mode sets it for good.
+    safepoint_requested: bool,
     /// This heap's distinct id, stamped onto every handle it mints. Debug
     /// builds only; see `next_heap_id`. No accessor exists for it: nothing
     /// outside a `cfg`-guarded position may name a field that does not
@@ -508,6 +514,7 @@ impl Heap {
                 slots: Vec::new(),
                 sweep_at: MIN_ROOT_SWEEP,
             }),
+            safepoint_requested: false,
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
             #[cfg(debug_assertions)]
@@ -1776,6 +1783,30 @@ impl Heap {
             .map(|entry| self.activation_handle(entry))
     }
 
+    // ---------- The safepoint ----------
+
+    #[inline]
+    pub(crate) fn safepoint_requested(&self) -> bool {
+        self.safepoint_requested
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn set_safepoint_requested(&mut self, on: bool) {
+        self.safepoint_requested = on;
+    }
+
+    /// How much a move has to rewrite: both arenas, the activation stack's
+    /// entries and registers, and the host roots. The stress mode paces its
+    /// moves by it.
+    #[cfg(debug_assertions)]
+    pub(crate) fn traced_size(&self) -> usize {
+        self.objects.len()
+            + self.frames.len()
+            + self.stack.entries.len()
+            + self.stack.values.len()
+            + self.host_roots.borrow().slots.len()
+    }
+
     // ---------- Moving everything (debug builds only) ----------
 
     /// How many times this heap has moved everything.
@@ -1790,8 +1821,8 @@ impl Heap {
     /// and in every host root -- into the next epoch. What the heap does not
     /// hold, the caller forwards with the answer: the interpreter's own
     /// roots (`Interpreter::move_everything`). A compacting collection that
-    /// treats everything as live; the stress mode will run one at every
-    /// safepoint (`docs/design/memory.md`, "Checking the roots before a
+    /// treats everything as live; the stress mode runs one at the run loop's
+    /// safepoints (`docs/design/memory.md`, "Checking the roots before a
     /// collector exists").
     ///
     /// Sound only where nothing outside the heap and the interpreter holds a
