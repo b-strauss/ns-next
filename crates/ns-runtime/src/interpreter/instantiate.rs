@@ -13,7 +13,7 @@ use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
 use crate::types::*;
 use crate::Symbol;
 
-use super::{BodyStep, EvalResult, Interpreter, Signal, Step};
+use super::{EvalResult, Interpreter, Signal, Step};
 
 /// A class body's methods as a mixin's method dictionary: everything a
 /// lookup or `Interpreter::push_step` reads is lifted out of the
@@ -282,12 +282,12 @@ impl Interpreter {
     /// when there is any. Steps 2-5 are `climb_levels` and `descend_levels`,
     /// for every level of the superclass chain.
     ///
-    /// The walk's state is a value while it runs and is boxed only into the
+    /// The walk's state is values while it runs and is boxed only into the
     /// continuation of a body that has work left after it, so the common
     /// instantiation -- code in the class itself, a builtin above it --
-    /// boxes neither the state nor a body step; what it allocates is the
-    /// instance's fields and the list of levels (`descend_levels` says why
-    /// its last body needs no continuation).
+    /// boxes nothing; what it allocates is the instance's fields and the
+    /// list of levels (`descend_levels` says why its last body needs no
+    /// continuation).
     pub(crate) fn decide_instantiation(
         &mut self,
         class: ClassRef,
@@ -302,40 +302,33 @@ impl Interpreter {
             .map_or(0, |a| a.num_slots);
         let instance =
             self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil; slot_count]));
-        let state = Instantiation {
-            instance: Value::Obj(instance),
-            levels: Vec::new(),
-            phase: InstantiationPhase::Climbing,
-        };
-        self.climb_levels(state, class, factory_args)
+        self.climb_levels(Value::Obj(instance), Vec::new(), class, factory_args)
     }
 
     /// One body an instantiation ran has returned `value`: carry the walk on
     /// from where `state` says it stopped. `Interpreter::resume` calls this,
-    /// with the state taken out of its continuation's box: the walk runs by
-    /// value again until it answers another body.
+    /// with the state taken out of its continuation's box: the walk runs on
+    /// values again until it answers another body.
     pub(crate) fn advance_instantiation(
         &mut self,
         state: Instantiation,
         value: Value,
     ) -> Result<Step, Signal> {
-        match state.phase {
-            InstantiationPhase::Climbing => {
-                let level = state
-                    .levels
-                    .last()
-                    .expect("internal: a clause message runs for a level the walk has recorded")
-                    .0;
-                let superclass = self
-                    .heap
-                    .class_superclass(level)
-                    .expect("internal: a clause message runs only for a level with a superclass");
+        let Instantiation {
+            instance,
+            levels,
+            phase,
+        } = state;
+        match phase {
+            InstantiationPhase::Climbing { level, superclass } => {
                 let super_args = argument_list(&self.heap, level, value)?;
-                self.climb_levels(state, superclass, super_args)
+                self.climb_levels(instance, levels, superclass, super_args)
             }
             // An initializer's value is not used; only its effects on the
             // instance are.
-            InstantiationPhase::Descending { index } => self.descend_levels(state, index),
+            InstantiationPhase::Descending { index } => {
+                self.descend_levels(instance, levels, index)
+            }
         }
     }
 
@@ -351,22 +344,23 @@ impl Interpreter {
     /// iteratively"). At the top of the chain, the downward walk begins.
     fn climb_levels(
         &mut self,
-        mut state: Instantiation,
+        instance: Value,
+        mut levels: Vec<(ClassRef, Vec<Value>)>,
         mut level: ClassRef,
         mut args: Vec<Value>,
     ) -> Result<Step, Signal> {
         loop {
             self.check_factory_arity(level, &args)?;
             let Some(superclass) = self.heap.class_superclass(level) else {
-                state.levels.push((level, args));
-                let above_top = state.levels.len();
-                return self.descend_levels(state, above_top);
+                levels.push((level, args));
+                let above_top = levels.len();
+                return self.descend_levels(instance, levels, above_top);
             };
             let message = self.clause_message_body(level, superclass)?;
             let Some(code) = message else {
                 // `Object new` and every other argument-free clause: nothing
                 // to run, and the superclass gets no arguments.
-                state.levels.push((level, args));
+                levels.push((level, args));
                 level = superclass;
                 args = Vec::new();
                 continue;
@@ -375,19 +369,19 @@ impl Interpreter {
             // with *this* level's factory arguments -- §6.2's "in the context
             // of the instance initializer".
             let message_args = args.clone();
-            let instance = state.instance;
-            state.levels.push((level, args));
-            return Ok(Step::Body(Box::new(BodyStep {
-                receiver: instance,
-                current_class: level,
-                kind: FrameKind::SuperclassMessage(level),
-                slot_base: 0,
+            levels.push((level, args));
+            return Ok(Step::ClauseMessage {
+                level,
                 code,
                 args: message_args,
                 // Its value is the superclass's arguments: the walk has
                 // everything above this level still to do.
-                then: Continuation::Instantiate(Box::new(state)),
-            })));
+                then: Box::new(Instantiation {
+                    instance,
+                    levels,
+                    phase: InstantiationPhase::Climbing { level, superclass },
+                }),
+            });
         }
     }
 
@@ -401,46 +395,47 @@ impl Interpreter {
     /// first that has code is answered as an activation;
     /// `advance_instantiation` carries on below it when it returns, unless
     /// nothing below it has code. Past the last level, the instance (step 6).
-    fn descend_levels(&mut self, mut state: Instantiation, next: usize) -> Result<Step, Signal> {
-        let Some(index) = initializing_level_below(&self.heap, &state.levels, next) else {
-            return Ok(Step::Value(state.instance));
+    fn descend_levels(
+        &mut self,
+        instance: Value,
+        mut levels: Vec<(ClassRef, Vec<Value>)>,
+        next: usize,
+    ) -> Result<Step, Signal> {
+        let Some(index) = initializing_level_below(&self.heap, &levels, next) else {
+            return Ok(Step::Value(instance));
         };
-        let level = state.levels[index].0;
-        let args = std::mem::take(&mut state.levels[index].1);
-        let instance = state.instance;
-        if initializing_level_below(&self.heap, &state.levels, index).is_none() {
-            // The last body of the walk, so all that is left once it returns
-            // is step 6, answering the instance -- which is exactly what the
-            // initializer answers: the compiler ends every instance
-            // initializer by answering `self` and discards a top-level `^`
-            // (`compiler::lower`'s `finish_body`, `compiler::reference`'s
-            // `end`). So its activation delivers its own value like a
-            // method's, and nothing of the walk outlives this step: the
-            // common instantiation boxes neither the walk's state nor a
-            // continuation for it. Making an
-            // initializer answer anything else breaks `new`;
-            // `tests/instantiate.rs`'s
-            // `new_answers_the_instance_its_initializers_ran_on` pins it. (A
-            // decoded image's initializer is not held to this; `new` then
-            // answers what that code answers, which is the image's program
-            // running, not a fault.)
+        let level = levels[index].0;
+        let args = std::mem::take(&mut levels[index].1);
+        // With no level below this one left to initialize, this is the last
+        // body of the walk, so all that is left once it returns is step 6,
+        // answering the instance -- which is exactly what the initializer
+        // answers: the compiler ends every instance initializer by answering
+        // `self` and discards a top-level `^` (`compiler::lower`'s
+        // `finish_body`, `compiler::reference`'s `end`). So its activation
+        // delivers its own value like a method's, and nothing of the walk
+        // outlives this step: the common instantiation boxes no state for
+        // it. Making an initializer answer anything else breaks `new`;
+        // `tests/instantiate.rs`'s
+        // `new_answers_the_instance_its_initializers_ran_on` pins it. (A
+        // decoded image's initializer is not held to this; `new` then answers
+        // what that code answers, which is the image's program running, not a
+        // fault.)
+        if initializing_level_below(&self.heap, &levels, index).is_none() {
             return Ok(Step::Initializer {
                 receiver: instance,
                 level,
                 args,
             });
         }
-        let (code, slot_base) = self.initializer_body(level);
-        state.phase = InstantiationPhase::Descending { index };
-        Ok(Step::Body(Box::new(BodyStep {
-            receiver: instance,
-            current_class: level,
-            kind: FrameKind::Initializer(level),
-            slot_base,
-            code,
+        Ok(Step::InitializerThen {
+            level,
             args,
-            then: Continuation::Instantiate(Box::new(state)),
-        })))
+            then: Box::new(Instantiation {
+                instance,
+                levels,
+                phase: InstantiationPhase::Descending { index },
+            }),
+        })
     }
 
     /// The compiled instance initializer of `level`, a level

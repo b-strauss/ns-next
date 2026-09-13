@@ -60,24 +60,50 @@ pub(crate) enum Step {
         args: StepArgs,
         then: Continuation,
     },
-    /// Activate a body that is neither a method nor a block -- an instance
-    /// initializer, a superclass clause, or the arguments of a clause's
-    /// message -- and do `then` with its value. Boxed, so that a decision's
-    /// `Result<Step, Signal>` stays the size the hot path was measured at
-    /// (`StepArgs::ControlFlow`'s comment says why that matters).
-    Body(Box<BodyStep>),
     /// Activate `level`'s instance initializer on `receiver`, and deliver its
     /// value: an instantiation's last initializer, whose value is the
-    /// instance (`Interpreter::descend_levels` says why). The one body common
-    /// enough to be worth carrying inline -- every instantiation that runs
-    /// code ends in one -- and small enough to be: it carries no
-    /// continuation, and its code and slot base are `level`'s, found when it
-    /// is pushed.
+    /// instance (`Interpreter::descend_levels` says why). Its code and slot
+    /// base are `level`'s, found when it is pushed.
+    ///
+    /// This and the three bodies below are inline rather than one boxed
+    /// description of an activation: every instantiation with code runs at
+    /// least one of them, and boxing each one's description measured 5-8%
+    /// slower on a chain of two levels with code. Each is smaller than
+    /// `Step::Method`, deliberately: an `Initializer` as large as it (with an
+    /// optional continuation instead of `InitializerThen`) measured 4-6%
+    /// slower on every benchmark, none of which instantiates anything in its
+    /// loop, though `Result<Step, Signal>` kept its size -- presumably
+    /// because two variants of the largest size leave the discriminant a
+    /// different niche, the effect `StepArgs::ControlFlow`'s comment
+    /// describes.
     Initializer {
         receiver: Value,
         level: ClassRef,
         args: Vec<Value>,
     },
+    /// Activate `level`'s instance initializer on the instance `then` is
+    /// initializing, and carry the walk on below it when it returns: an
+    /// initializer with a level below it that still has code.
+    InitializerThen {
+        level: ClassRef,
+        args: Vec<Value>,
+        then: Box<Instantiation>,
+    },
+    /// Activate `code`, the arguments of `level`'s superclass clause message,
+    /// on the instance `then` is initializing and with `level`'s factory
+    /// arguments (§6.2); its value is the superclass's arguments, with which
+    /// `then` carries the walk on.
+    ClauseMessage {
+        level: ClassRef,
+        code: Rc<crate::bytecode::CompiledCode>,
+        args: Vec<Value>,
+        then: Box<Instantiation>,
+    },
+    /// Activate the superclass clause of the nested class `creation`
+    /// describes, on its enclosing object and as part of the class that
+    /// declares it; its value is the superclass, from which the class is
+    /// built, cached and answered (`nested::after_clause`).
+    SuperclassClause(Box<NestedClassCreation>),
 }
 
 /// Where an activation's arguments come from.
@@ -111,19 +137,6 @@ impl StepArgs {
             StepArgs::Owned(args) => args,
         }
     }
-}
-
-/// Everything `Step::Body` activates. Its arguments are its own: nothing a
-/// body step activates takes a send's arguments.
-pub(crate) struct BodyStep {
-    pub(crate) receiver: Value,
-    pub(crate) current_class: ClassRef,
-    pub(crate) kind: FrameKind,
-    /// See `Frame::slot_base`; 0 for anything but an initializer.
-    pub(crate) slot_base: usize,
-    pub(crate) code: Rc<crate::bytecode::CompiledCode>,
-    pub(crate) args: Vec<Value>,
-    pub(crate) then: Continuation,
 }
 
 pub struct Interpreter {
@@ -588,70 +601,90 @@ impl Interpreter {
                 )
             }
             // An initializer level, a superclass clause or its message is
-            // never an activation the optimized lowering inlines away, so it
-            // is always counted.
-            Step::Body(body) => {
-                let BodyStep {
-                    receiver,
-                    current_class,
-                    kind,
-                    slot_base,
-                    code,
-                    args,
-                    then,
-                } = *body;
-                // A nested class's creation is in progress exactly while its
-                // clause's activation is on the stack: marked once the push
-                // has succeeded, and unmarked by `resume` or `abandon` when
-                // the activation is popped. A push refused at the depth limit
-                // marks nothing.
-                let creation = match &then {
-                    Continuation::NestedClass(creation) => {
-                        Some((creation.enclosing, creation.index))
-                    }
-                    _ => None,
-                };
-                let temps = (code.num_registers - code.num_args) as usize;
-                let act = self.push(
-                    ActivationHeader {
-                        receiver,
-                        current_class: Some(current_class),
-                        kind,
-                        slot_base,
-                        code,
-                        then,
-                        counted: true,
-                    },
-                    &args,
-                    temps,
-                )?;
-                if let Some((enclosing, index)) = creation {
-                    nested::begin_creation(self, enclosing, index);
-                }
-                Ok(act)
-            }
+            // never an activation the optimized lowering inlines away, so
+            // each of the three below is always counted.
             Step::Initializer {
                 receiver,
                 level,
                 args,
+            } => self.push_initializer(receiver, level, &args, Continuation::Deliver),
+            Step::InitializerThen { level, args, then } => {
+                self.push_initializer(then.instance, level, &args, Continuation::Instantiate(then))
+            }
+            Step::ClauseMessage {
+                level,
+                code,
+                args,
+                then,
             } => {
-                let (code, slot_base) = self.initializer_body(level);
                 let temps = (code.num_registers - code.num_args) as usize;
                 self.push(
                     ActivationHeader {
-                        receiver,
+                        receiver: then.instance,
                         current_class: Some(level),
-                        kind: FrameKind::Initializer(level),
-                        slot_base,
+                        kind: FrameKind::SuperclassMessage(level),
+                        slot_base: 0, // a clause message never contains InitSlot
                         code,
-                        then: Continuation::Deliver,
+                        then: Continuation::Instantiate(then),
                         counted: true,
                     },
                     &args,
                     temps,
                 )
             }
+            Step::SuperclassClause(creation) => {
+                let code = nested::superclass_clause_code(&creation.nested);
+                let temps = (code.num_registers - code.num_args) as usize;
+                let (enclosing, index) = (creation.enclosing, creation.index);
+                let act = self.push(
+                    ActivationHeader {
+                        receiver: Value::Obj(enclosing),
+                        current_class: Some(creation.declaring_class),
+                        kind: FrameKind::SuperclassClause(creation.declaring_class),
+                        slot_base: 0, // a clause never contains InitSlot
+                        code,
+                        then: Continuation::NestedClass(creation),
+                        counted: true,
+                    },
+                    &[],
+                    temps,
+                )?;
+                // A nested class's creation is in progress exactly while its
+                // clause's activation is on the stack: marked once the push
+                // has succeeded, and unmarked by `resume` or `abandon` when
+                // the activation is popped. A push refused at the depth limit
+                // marks nothing.
+                nested::begin_creation(self, enclosing, index);
+                Ok(act)
+            }
         }
+    }
+
+    /// Pushes `level`'s instance initializer on `receiver`, the one body
+    /// `Step::Initializer` and `Step::InitializerThen` share; only what
+    /// happens once it returns differs.
+    fn push_initializer(
+        &mut self,
+        receiver: Value,
+        level: ClassRef,
+        args: &[Value],
+        then: Continuation,
+    ) -> Result<ActivationRef, Signal> {
+        let (code, slot_base) = self.initializer_body(level);
+        let temps = (code.num_registers - code.num_args) as usize;
+        self.push(
+            ActivationHeader {
+                receiver,
+                current_class: Some(level),
+                kind: FrameKind::Initializer(level),
+                slot_base,
+                code,
+                then,
+                counted: true,
+            },
+            args,
+            temps,
+        )
     }
 
     /// What a control-flow native does once the block it activated has
@@ -1369,13 +1402,12 @@ mod tests {
         let (mut interp, class) = load(src);
         let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
         let slot = match interp.decide_send(instance, Symbol::intern("N"), &[]) {
-            Ok(Step::Body(body)) => {
-                assert!(matches!(body.kind, FrameKind::SuperclassClause(_)));
-                assert!(body.args.is_empty(), "a clause takes no arguments");
-                match body.then {
-                    Continuation::NestedClass(creation) => creation.index,
-                    _ => panic!("the clause's continuation builds the class"),
-                }
+            Ok(Step::SuperclassClause(creation)) => {
+                assert!(
+                    matches!(instance, Value::Obj(obj) if obj.same(creation.enclosing)),
+                    "the clause runs on the enclosing object"
+                );
+                creation.index
             }
             _ => panic!("a nested class is decided as its clause's activation"),
         };
@@ -1392,11 +1424,12 @@ mod tests {
     }
 
     /// A factory send is decided as the instantiation's first body to run --
-    /// the initializer of the topmost level with code -- with the rest of the
-    /// walk in the continuation when a level below still has code, and a
-    /// plain delivery when none has (the initializer answers the instance);
-    /// a class with nothing to initialize at any level is decided as its
-    /// instance outright.
+    /// a clause message with arguments on the way up, or else the
+    /// initializer of the topmost level with code -- with the rest of the
+    /// walk in the continuation when anything is left to run below it, and a
+    /// plain delivery when nothing is (the initializer answers the
+    /// instance); a class with nothing to initialize at any level is decided
+    /// as its instance outright.
     #[test]
     fn deciding_new_answers_the_first_initializer_as_an_activation() {
         let src = indoc! {"
@@ -1415,6 +1448,13 @@ mod tests {
                 | w = 2. |
               ) (
               ) : ()
+              public class M x: a = Object new (
+                | m = a. |
+              ) (
+              ) : ()
+              public class S = M x: 3 (
+              ) (
+              ) : ()
             ) : ()
         "};
         let (mut interp, class) = load(src);
@@ -1422,8 +1462,12 @@ mod tests {
         let p = expect_ok(interp.send(instance, Symbol::intern("P"), vec![]), "P");
         let q = expect_ok(interp.send(instance, Symbol::intern("Q"), vec![]), "Q");
         let r = expect_ok(interp.send(instance, Symbol::intern("R"), vec![]), "R");
+        let s = expect_ok(interp.send(instance, Symbol::intern("S"), vec![]), "S");
         let Value::Obj(p_class) = p else {
             panic!("`P` answers a class object")
+        };
+        let Value::Obj(s_class) = s else {
+            panic!("`S` answers a class object")
         };
         assert!(
             matches!(
@@ -1433,11 +1477,26 @@ mod tests {
             "`P new` is decided as P's initializer, which delivers"
         );
         match interp.decide_send(r, Symbol::NEW, &[]) {
-            Ok(Step::Body(body)) => {
-                assert!(matches!(body.kind, FrameKind::Initializer(level) if level.same(p_class)));
-                assert!(matches!(body.then, Continuation::Instantiate(_)));
+            Ok(Step::InitializerThen {
+                level, then: state, ..
+            }) => {
+                assert!(level.same(p_class));
+                assert!(matches!(
+                    state.phase,
+                    InstantiationPhase::Descending { index: 1 }
+                ));
             }
-            _ => panic!("`R new` is decided as its superclass P's initializer"),
+            _ => panic!("`R new` is decided as its superclass P's initializer, R's still to run"),
+        }
+        match interp.decide_send(s, Symbol::NEW, &[]) {
+            Ok(Step::ClauseMessage { level, then, .. }) => {
+                assert!(level.same(s_class));
+                assert!(matches!(
+                    then.phase,
+                    InstantiationPhase::Climbing { level, .. } if level.same(s_class)
+                ));
+            }
+            _ => panic!("`S new` is decided as its clause message's activation"),
         }
         assert!(
             matches!(

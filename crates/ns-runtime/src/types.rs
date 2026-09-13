@@ -303,8 +303,9 @@ pub struct NestedClassCreation {
 /// level of the superclass chain the upward walk has reached with the factory
 /// arguments it gets, and which way the walk is going.
 ///
-/// A value while the walk runs; boxed only into the continuation of a body
-/// that has work left after it, and then owned by exactly one stack entry.
+/// Only the continuation of a body that has work left after it holds one,
+/// boxed, and then it is owned by exactly one stack entry; while the walk
+/// runs, its parts are values.
 #[derive(Debug, Clone)]
 pub struct Instantiation {
     pub(crate) instance: Value,
@@ -318,9 +319,12 @@ pub struct Instantiation {
 #[derive(Debug, Clone, Copy)]
 pub enum InstantiationPhase {
     /// Upward. A body running for this instantiation is the clause message
-    /// of the last level in `levels`, and its value is its superclass's
-    /// factory arguments.
-    Climbing,
+    /// of `level`, the last in `levels`, and its value is the factory
+    /// arguments of `superclass`, `level`'s superclass.
+    Climbing {
+        level: ClassRef,
+        superclass: ClassRef,
+    },
     /// Downward. A body running for this instantiation is the initializer of
     /// `levels[index]`, and a level below it has code still to run.
     Descending { index: usize },

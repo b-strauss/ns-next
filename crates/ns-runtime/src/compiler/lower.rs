@@ -212,9 +212,9 @@ impl<'a> Lowerer<'a> {
             // Either clause body is a single synthetic `^expr` (the
             // receiver, or the message's argument list), so its top-level
             // `^` is what hands that value back; a `^` written inside a
-            // block of the clause's own message unwinds to the `Step::Body`
-            // `interpreter::nested::nested_class` answers, exactly as it
-            // would in any other body.
+            // block of the clause's message returns from the message's own
+            // activation, which catches it (`Interpreter::catches_return`),
+            // exactly as a method's activation would.
             (CodeKind::SuperclassClause | CodeKind::SuperclassMessage, false) => {
                 Some(|reg| Instr::Return { reg })
             }

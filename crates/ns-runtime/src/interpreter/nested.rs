@@ -18,9 +18,9 @@
 //! This lives under `interpreter/` rather than in `mixin.rs` because it is
 //! the one part of nesting that *evaluates Newspeak code*: the superclass
 //! clause. That code runs compiled, in an activation of its own -- a
-//! `Step::Body`, exactly as `instantiate.rs` runs a superclass clause's
-//! deferred message, one with `Continuation::NestedClass` and the other with
-//! `Continuation::Instantiate`.
+//! `Step::SuperclassClause` continuing with `Continuation::NestedClass`, as
+//! `instantiate.rs` runs a clause's deferred message as a
+//! `Step::ClauseMessage` continuing with `Continuation::Instantiate`.
 
 use std::rc::Rc;
 
@@ -30,7 +30,7 @@ use crate::mixin::{mixin_key, Mixin};
 use crate::types::*;
 use crate::Symbol;
 
-use super::{BodyStep, Interpreter, Signal, Step};
+use super::{Interpreter, Signal, Step};
 
 /// What a superclass clause evaluates: the `ec` of `newspeak-spec.pdf` §6.1,
 /// as an ordinary expression.
@@ -147,26 +147,24 @@ pub(crate) fn nested_class(
         let object = Value::Obj(interp.builtin_class(BuiltinClass::Object));
         return after_clause(interp, creation, object);
     }
-    let code = nested.superclass_clause_code.clone().unwrap_or_else(|| {
+    Ok(Step::SuperclassClause(Box::new(creation)))
+}
+
+/// The compiled superclass clause of `nested`, a declaration with a clause.
+///
+/// Its activation (`Interpreter::push_step`) runs as part of the class that
+/// *declares* it: the clause is resolved against that declaration's
+/// enclosing chain, and `super`-prefixed forms look up from that class's
+/// superclass -- which is why the activation's class is the declaring class
+/// rather than the receiver's own (dynamic) class, the two differing exactly
+/// when the declaration is inherited. Its kind, `FrameKind::SuperclassClause`,
+/// names the table its body came from, which `image::decode::frame_body`
+/// resolves a frame's body by, and makes it a return target
+/// (`Interpreter::catches_return`).
+pub(super) fn superclass_clause_code(nested: &Mixin) -> Rc<crate::bytecode::CompiledCode> {
+    nested.superclass_clause_code.clone().unwrap_or_else(|| {
         panic!("internal: mixin with a superclass clause carries no compiled form for it (a mixin built from source always does; verify_mixins refuses a decoded one)")
-    });
-    // The clause belongs to the class that *declares* it: it is resolved
-    // against that declaration's enclosing chain, and `super`-prefixed forms
-    // look up from that class's superclass -- which is why the activation's
-    // class is the declaring class rather than the receiver's own (dynamic)
-    // class, the two differing exactly when the declaration is inherited. Its
-    // kind names the table its body came from, which `image::decode::frame_body`
-    // resolves a frame's body by, and makes it a return target
-    // (`Interpreter::catches_return`).
-    Ok(Step::Body(Box::new(BodyStep {
-        receiver: *receiver,
-        current_class: declaring_class,
-        kind: FrameKind::SuperclassClause(declaring_class),
-        slot_base: 0,
-        code,
-        args: Vec::new(),
-        then: Continuation::NestedClass(Box::new(creation)),
-    })))
+    })
 }
 
 /// Steps 3-5, once the superclass clause has evaluated to `superclass`:
