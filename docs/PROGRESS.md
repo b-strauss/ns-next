@@ -42,6 +42,16 @@ written against the code as it then is.
   faster: `bench_send.ns` +0.2% / +0.8%, `bench_do.ns` −1.3% in both,
   and the three instantiation sources −0.9% to −3.8%
   ([execution.md](design/execution.md), "What removing the re-entries moved").
+  It is left for now because what it would take is layout tuning of code the
+  next steps rebuild anyway: 2b puts the safepoint poll into the run loop, 2c
+  makes every instruction an `enter`, and step 3's inline caches replace the
+  native dispatch chain these loops run through. **So that the shift cannot
+  add up unnoticed, every performance measurement from 2b up to and including
+  step 3 compares against `be3eb40` as well as against the commit it starts
+  from**, with the protocol and the seven sources of "What removing the
+  re-entries moved", and reports both. If the comparison with `be3eb40` still
+  shows a source slower once step 3 has landed, the shift is chased then, on
+  the rebuilt send path.
 - **A decoded image's last initializer is not held to answering `self`**, so
   `new` answers whatever it answers — wrong but safe, no panic.
   `image::decode::verify_mixins` could refuse such an initializer, which would
