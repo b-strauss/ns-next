@@ -4165,8 +4165,8 @@ fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_ref
 /// The clause's *receiver* side of the same shape: a mixin-table row that
 /// declares a superclass clause, in an image carrying no compiled code for
 /// it, would panic when the first nested-class access pushes the clause's
-/// activation (`nested::superclass_clause_code`). `verify_mixins` is the only place that sees both halves, so it
-/// refuses.
+/// activation (`nested::superclass_clause_code`). `verify_mixins` is the only
+/// place that sees both halves, so it refuses.
 #[test]
 fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
     let (mut interp, class) = load(NESTED_SUPERCLASS_ARGS);

@@ -284,6 +284,18 @@ so `inspect` can still display an artifact whose halves disagree; only `load`
 refuses it. A corrupt but version-matching image is an error there, never a
 panic in the VM later.
 
+**`Instr::InitSlot`'s `own_index` is not one of the counts these passes
+bound.** `verify_mixins` checks a body's kind and arity against its
+declaration, but nothing checks that a slot-store instruction's index falls
+within the mixin's own slot count. This is harmless at run time:
+`Heap::set_instance_field` is total, so an out-of-range index writes nothing,
+and an in-range but wrong one writes a different slot of the instance being
+initialized — silently wrong output, never a panic. That is acceptable for
+the reason `CLAUDE.md`'s "An image is untrusted input" gives: loading a
+stateless binary already runs its own code, with the same exposure as running
+the equivalent source, so a wrong slot from a malformed index is no worse
+than any other wrong answer a mutated program's own code can produce.
+
 The mixin tree's nesting depth is input-controlled, so building it is iterative —
 the "bound any recursion whose depth the input controls" case. Symbol ids, mixin
 ids, class-object references, slot counts and arities are all validated before
