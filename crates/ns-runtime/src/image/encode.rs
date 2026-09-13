@@ -10,7 +10,7 @@ use crate::types::{
     BuiltinClass, ClassData, ClassRef, ClosureData, FrameKind, FrameRef, ObjRef, ObjectData,
     SourceOrigin, Value,
 };
-use crate::Interpreter;
+use crate::Mutator;
 
 use super::opcodes::*;
 use super::{mixins, symbols};
@@ -666,7 +666,7 @@ impl GraphTable {
                     stack.push(Pending::Frame(c.home));
                 }
                 // A class object's three references. `metaclass` is not one
-                // of them: it is a lazy cache `Interpreter::metaclass_of`
+                // of them: it is a lazy cache `Mutator::metaclass_of`
                 // rebuilds on demand, and nothing hands a metaclass to
                 // Newspeak code, so no value in the graph can point at one.
                 ObjectData::Class(data) => {
@@ -868,7 +868,7 @@ fn encode_closure_record(
 /// The `MixinApplication` itself is deliberately absent. Layout and lookup
 /// follow deterministically from the mixin and the superclass's own
 /// application, so `image::decode` rebuilds each one through
-/// `Interpreter::apply_mixin` -- whose cache is keyed by exactly that pair,
+/// `Mutator::apply_mixin` -- whose cache is keyed by exactly that pair,
 /// which is what gives two enclosing instances back the *one* application
 /// they shared before the snapshot (§6.2). Writing applications out would
 /// have to reproduce that sharing by hand, and getting it wrong is silent:
@@ -877,7 +877,7 @@ fn encode_closure_record(
 ///
 /// `builtin` is not written either -- a record only ever describes a user
 /// class, since a builtin is a class *tag* -- and neither is `metaclass`,
-/// a lazy cache `Interpreter::metaclass_of` rebuilds on the first
+/// a lazy cache `Mutator::metaclass_of` rebuilds on the first
 /// class-side send. A metaclass could not be written even if it were
 /// wanted: when a class declares no class side of its own but an ancestor
 /// does, `metaclass_of` applies a *synthetic* mixin that has no
@@ -1044,14 +1044,14 @@ pub fn encode_graph_section(
 /// can keep `Integer hash` in a slot without keeping `Integer`.
 pub fn encode_tag_named_hashes(
     w: &mut Writer,
-    interp: &Interpreter,
+    m: &Mutator,
     root_class: ClassRef,
     platform: &Value,
 ) {
-    let heap = interp.heap_ref();
+    let heap = &m.heap;
     let mut entries: Vec<(u8, Option<u8>, u32)> = Vec::new();
     for kind in BuiltinClass::ALL {
-        let hash = heap.identity_hash(interp.builtin_class(kind));
+        let hash = heap.identity_hash(m.builtin_class(kind));
         if hash != 0 {
             entries.push((HASHED_BUILTIN_CLASS, Some(builtin_class_tag(kind)), hash));
         }

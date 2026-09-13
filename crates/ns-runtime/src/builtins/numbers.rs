@@ -31,7 +31,7 @@
 //! argument as an "Integer overflow" would be actively misleading.
 
 use crate::types::*;
-use crate::{Heap, Interpreter, Symbol};
+use crate::{Heap, Mutator, Symbol};
 
 /// A mixed-type numeric operation (see this module's known-gap note). Kept
 /// distinct from the overflow error below so the message never claims an
@@ -54,7 +54,7 @@ fn type_mismatch(
 }
 
 pub(crate) fn dispatch_integer(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
@@ -66,14 +66,13 @@ pub(crate) fn dispatch_integer(
         Some(Value::SmallInt(m)) => Some(*m),
         _ => None,
     };
-    let mismatch =
-        |op: &str| type_mismatch(&interp.heap, &receiver, Symbol::intern(op), args.first());
+    let mismatch = |op: &str| type_mismatch(&m.heap, &receiver, Symbol::intern(op), args.first());
     let overflow = |op: &str| NewspeakError {
         selector: Symbol::intern(op),
         receiver: Value::SmallInt(n),
         message: format!(
             "Integer overflow computing {n} {op} {}",
-            interp.heap.describe_arg(args.first())
+            m.heap.describe_arg(args.first())
         ),
     };
     // `+`/`-`/`*`: a non-Integer argument is a type mismatch; only a genuine
@@ -121,13 +120,13 @@ pub(crate) fn dispatch_integer(
                 .map(Value::SmallInt)
                 .ok_or_else(|| overflow("abs")),
         ),
-        "printString" | "asString" => Some(Ok(Value::Obj(interp.new_string(n.to_string())))),
+        "printString" | "asString" => Some(Ok(Value::Obj(m.new_string(n.to_string())))),
         _ => None,
     }
 }
 
 pub(crate) fn dispatch_float(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
@@ -143,8 +142,7 @@ pub(crate) fn dispatch_float(
         Some(Value::SmallInt(y)) => Some(*y as f64),
         _ => None,
     };
-    let mismatch =
-        |op: &str| type_mismatch(&interp.heap, &receiver, Symbol::intern(op), args.first());
+    let mismatch = |op: &str| type_mismatch(&m.heap, &receiver, Symbol::intern(op), args.first());
     let arith = |op: &str, f: fn(f64, f64) -> f64| match arg_float() {
         None => Err(mismatch(op)),
         Some(y) => Ok(Value::Float(f(x, y))),
@@ -162,7 +160,7 @@ pub(crate) fn dispatch_float(
         ">" => Some(compare(">", |a, b| a > b)),
         // Same exception as `Integer`'s `=`: never an error.
         "=" => Some(Ok(Value::Bool(arg_float() == Some(x)))),
-        "printString" | "asString" => Some(Ok(Value::Obj(interp.new_string(x.to_string())))),
+        "printString" | "asString" => Some(Ok(Value::Obj(m.new_string(x.to_string())))),
         _ => None,
     }
 }

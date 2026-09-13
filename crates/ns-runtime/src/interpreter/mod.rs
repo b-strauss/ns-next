@@ -44,6 +44,14 @@ pub enum HostSignal {
     Return,
 }
 
+/// What deciding a host's send or instantiation left for the loop.
+pub(crate) enum HostStart {
+    /// Nothing to run: the answer, rooted.
+    Finished(HostResult),
+    /// An activation, pushed, for `vm::run`.
+    Run(ActivationRef),
+}
+
 /// A Newspeak error as a host receives it: `NewspeakError` with its
 /// receiver rooted, since the host may read it after running more code.
 pub struct HostError {
@@ -88,7 +96,7 @@ pub(crate) enum Step {
     },
     /// Activate `level`'s instance initializer on `receiver`, and deliver its
     /// value: an instantiation's last initializer, whose value is the
-    /// instance (`Interpreter::descend_levels` says why). Its code and slot
+    /// instance (`Mutator::descend_levels` says why). Its code and slot
     /// base are `level`'s, found when it is pushed.
     ///
     /// This and the three bodies below are inline rather than one boxed
@@ -165,20 +173,28 @@ impl StepArgs {
     }
 }
 
-pub struct Interpreter {
+/// Everything a step of the interpreter works on -- the heap and the
+/// bootstrap's builtin classes, the caches of behaviour, the argument
+/// buffer and the spare instantiation boxes -- and every decision, native
+/// and continuation that runs one. A host reaches it only through
+/// `Interpreter::enter`, and nothing here reaches back: no method takes or
+/// answers the `Interpreter`, so no step can run the loop, reach its
+/// safepoint, or start a host's send (`docs/design/memory.md`, "The
+/// brand").
+pub struct Mutator {
     pub(crate) heap: Heap,
     /// Every builtin class object, indexed by `BuiltinClass as usize`.
     /// Indexed rather than hashed because `class_of` asks for one on every
     /// send to a primitive receiver. Empty only while `bootstrap` is
-    /// building it; nothing can reach an `Interpreter` in that state.
-    builtin_classes: Vec<ClassRef>,
-    platform_singleton: Option<Value>,
+    /// building it; nothing can reach a `Mutator` in that state.
+    pub(crate) builtin_classes: Vec<ClassRef>,
+    pub(crate) platform_singleton: Option<Value>,
     /// (mixin identity, superclass application identity) -> behaviour.
     /// Keyed on the superclass's *application*, never on a superclass class
     /// object: a nested superclass has one class object per enclosing
     /// instance, so a class-object key would never hit and every instance
     /// would get its own behaviour.
-    applications: HashMap<(usize, usize), Rc<crate::mixin::MixinApplication>>,
+    pub(crate) applications: HashMap<(usize, usize), Rc<crate::mixin::MixinApplication>>,
     /// mixin identity -> the synthetic empty class side `metaclass_of`
     /// stands in for that mixin's own level when it declares none.
     ///
@@ -188,31 +204,41 @@ pub struct Interpreter {
     /// metaclass applications, and the shared-application property is
     /// exactly what the inline caches will guard on. It would
     /// also grow `applications` without bound.
-    empty_class_sides: HashMap<usize, Rc<crate::mixin::Mixin>>,
+    pub(crate) empty_class_sides: HashMap<usize, Rc<crate::mixin::Mixin>>,
     /// How many nested classes are marked as being created
     /// (`nested::begin_creation`), for `run_from_host`'s check that none
     /// outlives the run that began it. The mark itself lives in the class's
     /// cache slot; this only counts it, so a release build keeps nothing.
     #[cfg(debug_assertions)]
-    creations_in_progress: usize,
+    pub(crate) creations_in_progress: usize,
     /// Boxes finished instantiations left behind, emptied, for the next ones
     /// to walk in (`instantiate.rs`'s `walk_state` and `retire_walk`).
     /// Allocating a box and a list of levels per instantiation instead
     /// measured 3-13% slower on instantiation benchmarks. They hold no
     /// handle, so a collector has nothing to trace in them.
     #[allow(clippy::vec_box)] // the boxes are what is reused, not only their contents
-    spare_walks: Vec<Box<Instantiation>>,
+    pub(crate) spare_walks: Vec<Box<Instantiation>>,
     /// The lowering every module this interpreter loads is compiled with
     /// (`docs/design/compiler.md`, "The reference lowering"). Fixed at
     /// construction, so one interpreter never mixes the two.
-    lowering: Lowering,
+    pub(crate) lowering: Lowering,
     /// The reusable argument buffer the run loop gathers a send's arguments
     /// into (`vm::send`). Taken while a send is decided and pushed and given
     /// back afterwards, because the decision needs `&mut Interpreter` while
     /// it reads the arguments. Empty between instructions: it is cleared
     /// when it is given back, so it holds no handle a move would have to
     /// find.
-    arg_buffer: Vec<Value>,
+    pub(crate) arg_buffer: Vec<Value>,
+}
+
+/// A host's interpreter: the step state at rest (`World`), and what only
+/// the run loop between steps needs -- whether a run is in progress, and
+/// the stress mode's schedule. Its methods are the host's entries: `enter`
+/// for a step's worth of reading and allocating, and `send`,
+/// `instantiate`, `load_module` and `platform`, which take and answer
+/// roots.
+pub struct Interpreter {
+    world: crate::heap::World,
     /// Whether a host's run of the loop is in progress (`run_from_host`).
     /// Nothing the loop calls can start another -- no decision, native or
     /// continuation runs code from Rust -- and a debug build checks that.
@@ -232,32 +258,134 @@ impl Interpreter {
     /// reference lowering is for checking the optimized one against it; an
     /// artifact decoded into either runs the code it carries.
     pub fn bootstrap_with(lowering: Lowering) -> Interpreter {
+        // Only the debug build's stress mode writes to it below.
+        #[cfg_attr(not(debug_assertions), allow(unused_mut))]
         let mut interp = Interpreter {
-            heap: Heap::new(),
-            builtin_classes: Vec::new(),
-            platform_singleton: None,
-            applications: HashMap::new(),
-            empty_class_sides: HashMap::new(),
-            #[cfg(debug_assertions)]
-            creations_in_progress: 0,
-            spare_walks: Vec::new(),
-            lowering,
-            arg_buffer: Vec::new(),
+            world: crate::heap::World::new(lowering),
             running: false,
             #[cfg(debug_assertions)]
             stress: safepoint::StressMoves::from_env(),
         };
-        interp.builtin_classes = build_builtin_classes(&mut interp);
         #[cfg(debug_assertions)]
         {
             let on = interp.stress.is_some();
-            interp.heap.set_safepoint_requested(on);
+            interp.world.set_safepoint_requested(on);
         }
         interp
     }
 
+    /// Runs `f` with the interpreter's step state: its heap, its builtin
+    /// classes, and every method a step uses. What `f` answers is what
+    /// this answers. `f` runs no Newspeak code; a host runs code with
+    /// `send` and `instantiate`, outside every entry.
+    #[inline(always)]
+    pub fn enter<R>(&mut self, f: impl FnOnce(&mut Mutator) -> R) -> R {
+        self.world.enter(f)
+    }
+
+    /// The heap, for reading. Public so integration tests can exercise the
+    /// seam directly; the field itself stays `pub(crate)` so no caller
+    /// outside the crate can hold one across a call back into the
+    /// interpreter.
+    pub fn heap_ref(&self) -> &Heap {
+        &self.heap
+    }
+
+    pub fn heap_mut(&mut self) -> &mut Heap {
+        &mut self.heap
+    }
+
+    /// Roots an immediate -- `nil`, a Boolean, a `SmallInteger`, a `Float`
+    /// -- a host built itself, outside any entry. An object is rooted with
+    /// `Mutator::stash`, inside the entry that reached it.
+    pub fn stash(&self, value: Value) -> Root {
+        self.world.stash(value)
+    }
+
+    /// `Heap::fetch`, for a host.
+    pub fn fetch(&self, root: &Root) -> Value {
+        self.heap.fetch(root)
+    }
+
+    /// Whether the run loop's next safepoint must take its slow path.
+    #[inline(always)]
+    pub(crate) fn safepoint_requested(&self) -> bool {
+        self.world.safepoint_requested()
+    }
+
+    /// An ordinary (explicit-receiver) send from a host: `newspeak-spec.pdf`
+    /// §5.5, decided as `decide_send` decides it and run from the outside
+    /// (`run_from_host`). A `Send*` the VM issues never comes through here:
+    /// `vm.rs` decides it and pushes what was decided itself.
+    pub fn send(&mut self, receiver: &Root, selector: Symbol, args: &[Root]) -> HostResult {
+        let depth = self.world.activation_depth();
+        let start = self.enter(|m| {
+            let receiver = m.fetch(receiver);
+            let args: Vec<Value> = args.iter().map(|arg| m.fetch(arg)).collect();
+            let decided = m.decide_send(receiver, selector, &args);
+            m.start(decided, &args)
+        });
+        self.run_from_host(start, depth)
+    }
+
+    /// Runs what a host's send or instantiation started. It is the only way
+    /// Rust enters the run loop (`docs/design/execution.md`, "No re-entry
+    /// from Rust"). `depth` is the stack's depth before the host's entry
+    /// decided anything.
+    ///
+    /// Three things are checked in a debug build, because each is otherwise
+    /// silent. The loop is never entered while it is running -- nothing it
+    /// calls can reach here. The stack is left as deep as it was found: a
+    /// leaked entry would put a later activation on top of a dead one's
+    /// registers (a leak inside a run is caught too, by
+    /// `Heap::pop_activation`'s check that it pops the top). And no nested
+    /// class's creation outlives the run that began it.
+    fn run_from_host(&mut self, start: HostStart, depth: usize) -> HostResult {
+        debug_assert!(
+            !self.running,
+            "internal: the run loop was re-entered from Rust"
+        );
+        let result = match start {
+            HostStart::Finished(result) => result,
+            HostStart::Run(act) => {
+                self.running = true;
+                let result = crate::vm::run(self, act);
+                self.running = false;
+                result
+            }
+        };
+        debug_assert_eq!(
+            self.world.activation_depth(),
+            depth,
+            "a host's send or instantiation must leave the activation stack as it found it"
+        );
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            self.world.creations_in_progress(),
+            0,
+            "internal: a nested class's creation outlived the run that began it"
+        );
+        result
+    }
+
+    /// The `platform` object, rooted for a host.
+    pub fn platform(&mut self) -> Root {
+        self.enter(|m| {
+            let platform = m.platform_value();
+            m.stash(platform)
+        })
+    }
+}
+
+impl Mutator {
     pub fn builtin_class(&self, kind: BuiltinClass) -> ClassRef {
         self.builtin_classes[kind as usize]
+    }
+
+    /// Builds every builtin class into an empty step state. `World::new`
+    /// calls it once, in the first entry the world makes.
+    pub(crate) fn bootstrap_builtin_classes(&mut self) {
+        self.builtin_classes = build_builtin_classes(self);
     }
 
     /// After `image::load`: never hand out an identity hash a loaded object
@@ -274,45 +402,50 @@ impl Interpreter {
         self.heap.advance_identity_hash_past(max);
     }
 
-    /// The heap, for reading. Public so integration tests can exercise the
-    /// seam directly; the field itself stays `pub(crate)` so no caller
-    /// outside the crate can hold one across a call back into the
-    /// interpreter.
-    pub fn heap_ref(&self) -> &Heap {
+    /// The heap, for reading, inside an entry.
+    pub fn heap(&self) -> &Heap {
         &self.heap
     }
 
+    /// The heap, for writing, inside an entry.
     pub fn heap_mut(&mut self) -> &mut Heap {
         &mut self.heap
     }
 
-    /// `Heap::stash`, for a host.
-    pub fn stash(&self, value: Value) -> Root {
-        self.heap.stash(value)
-    }
-
-    /// `Heap::fetch`, for a host.
+    /// What `root` holds now. Good until this entry ends: the next run may
+    /// move it, so read the root again in the next entry.
     pub fn fetch(&self, root: &Root) -> Value {
         self.heap.fetch(root)
     }
 
-    /// An ordinary (explicit-receiver) send from a host: `newspeak-spec.pdf`
-    /// §5.5, decided as `decide_send` decides it and run from the outside
-    /// (`run_from_host`). A `Send*` the VM issues never comes through here:
-    /// `vm.rs` decides it and pushes what was decided itself.
-    pub fn send(&mut self, receiver: &Root, selector: Symbol, args: &[Root]) -> HostResult {
-        let receiver = self.fetch(receiver);
-        let args: Vec<Value> = args.iter().map(|arg| self.fetch(arg)).collect();
-        let result = match self.decide_send(receiver, selector, &args) {
-            Ok(step) => self.run_from_host(step, &args),
-            Err(signal) => Err(signal),
-        };
-        self.to_host(result)
+    /// Roots `value`, so that a host can hold it past this entry.
+    pub fn stash(&self, value: Value) -> Root {
+        self.heap.stash(value)
+    }
+
+    /// Pushes what a host's send or instantiation decided, in the entry
+    /// that decided it: `send_args` are the send's arguments, which
+    /// `StepArgs::Send` names and which do not outlive the entry. A value,
+    /// a signal, or a push refused at the depth limit finishes here, rooted
+    /// for the host.
+    pub(crate) fn start(
+        &mut self,
+        decided: Result<Step, Signal>,
+        send_args: &[Value],
+    ) -> HostStart {
+        match decided {
+            Ok(Step::Value(value)) => HostStart::Finished(self.to_host(Ok(value))),
+            Ok(step) => match self.push_step(step, send_args, None, false) {
+                Ok(act) => HostStart::Run(act),
+                Err(signal) => HostStart::Finished(self.to_host(Err(signal))),
+            },
+            Err(signal) => HostStart::Finished(self.to_host(Err(signal))),
+        }
     }
 
     /// A run's outcome as the host receives it. Nothing runs between the
     /// run's last safepoint and here, so every value in `result` is current.
-    fn to_host(&self, result: EvalResult) -> HostResult {
+    pub(crate) fn to_host(&self, result: EvalResult) -> HostResult {
         match result {
             Ok(value) => Ok(self.stash(value)),
             Err(Signal::Error(e)) => Err(HostSignal::Error(HostError {
@@ -322,50 +455,6 @@ impl Interpreter {
             })),
             Err(Signal::Return(..)) => Err(HostSignal::Return),
         }
-    }
-
-    /// Runs what a host's send or instantiation decided. It is the only way
-    /// Rust enters the run loop (`docs/design/execution.md`, "No re-entry from
-    /// Rust"): a value needs no activation, and anything else is pushed and
-    /// run by `vm::run`, which pops it and everything it activates on every
-    /// path out.
-    ///
-    /// Three things are checked in a debug build, because each is otherwise
-    /// silent. The loop is never entered while it is running -- nothing it
-    /// calls can reach here. The stack is left as deep as it was found: a
-    /// leaked entry would put a later activation on top of a dead one's
-    /// registers (a leak inside a run is caught too, by
-    /// `Heap::pop_activation`'s check that it pops the top). And no nested
-    /// class's creation outlives the run that began it.
-    fn run_from_host(&mut self, step: Step, send_args: &[Value]) -> EvalResult {
-        debug_assert!(
-            !self.running,
-            "internal: the run loop was re-entered from Rust"
-        );
-        let depth = self.heap.activation_depth();
-        let result = match step {
-            Step::Value(value) => Ok(value),
-            step => match self.push_step(step, send_args, None, false) {
-                Ok(act) => {
-                    self.running = true;
-                    let result = crate::vm::run(self, act);
-                    self.running = false;
-                    result
-                }
-                Err(signal) => Err(signal),
-            },
-        };
-        debug_assert_eq!(
-            self.heap.activation_depth(),
-            depth,
-            "a host's send or instantiation must leave the activation stack as it found it"
-        );
-        #[cfg(debug_assertions)]
-        assert_eq!(
-            self.creations_in_progress, 0,
-            "internal: a nested class's creation outlived the run that began it"
-        );
-        result
     }
 
     /// Decides what an ordinary (explicit-receiver) send would run, without
@@ -876,7 +965,7 @@ impl Interpreter {
             Value::Obj(obj) => self.heap.class_of_obj(*obj),
             // Nil/Bool/SmallInt/Float classes are wired up by the bootstrap
             // into interpreter-held globals, read from there via
-            // `Interpreter::builtin_class(kind)`.
+            // `Mutator::builtin_class(kind)`.
             _ => self.builtin_class_for_primitive(value),
         }
     }
@@ -1060,12 +1149,6 @@ impl Interpreter {
         let value = Value::Obj(obj);
         self.platform_singleton = Some(value);
         value
-    }
-
-    /// The `platform` object, rooted for a host.
-    pub fn platform(&mut self) -> Root {
-        let platform = self.platform_value();
-        self.stash(platform)
     }
 
     /// A `Transcript`-style stdout stream object -- see `crate::platform`'s
@@ -1292,7 +1375,7 @@ fn recursion_too_deep(header: &ActivationHeader) -> Signal {
 /// actually inheriting from a `Boolean` superclass node, since they do not
 /// yet. Fix this only if a corpus module or fixture test needs real
 /// `Boolean`/`True`/`False` inheritance to observe correct behavior.
-fn build_builtin_classes(interp: &mut Interpreter) -> Vec<ClassRef> {
+fn build_builtin_classes(m: &mut Mutator) -> Vec<ClassRef> {
     // NOTE: deliberately *not* `use BuiltinClass::*;` here --
     // `BuiltinClass::Object` and `crate::types::Object`
     // (the object-model struct, brought into scope by `use crate::types::*;`
@@ -1310,9 +1393,9 @@ fn build_builtin_classes(interp: &mut Interpreter) -> Vec<ClassRef> {
     // same shape every other class object has, and -- for the non-`Object`
     // builtins -- to link an application chain parallel to the class-object
     // chain, which `dispatch::next_level` steps in lockstep.
-    let object_application = interp.apply_mixin(&builtin_mixin(BuiltinClass::Object), None);
+    let object_application = m.apply_mixin(&builtin_mixin(BuiltinClass::Object), None);
     let class_of_class =
-        build_self_referential_object_class(&mut interp.heap, object_application.clone());
+        build_self_referential_object_class(&mut m.heap, object_application.clone());
     let mut classes = Vec::with_capacity(BuiltinClass::ALL.len());
     for kind in BuiltinClass::ALL {
         // `builtin_class` indexes by discriminant, so the vector must be
@@ -1323,8 +1406,8 @@ fn build_builtin_classes(interp: &mut Interpreter) -> Vec<ClassRef> {
             classes.push(class_of_class);
             continue;
         }
-        let application = interp.apply_mixin(&builtin_mixin(kind), Some(&object_application));
-        classes.push(interp.heap.alloc_object(
+        let application = m.apply_mixin(&builtin_mixin(kind), Some(&object_application));
+        classes.push(m.heap.alloc_object(
             class_of_class,
             ObjectData::Class(ClassData {
                 application,
@@ -1367,6 +1450,22 @@ fn build_self_referential_object_class(
     }))
 }
 
+/// Transitional, for Tasks 1-3 of the 2c plan: lets a host or test that
+/// still reads through the interpreter compile until it reads through
+/// `enter`. Task 3 removes it, with `heap_ref`, `heap_mut` and `fetch`.
+impl std::ops::Deref for Interpreter {
+    type Target = Mutator;
+    fn deref(&self) -> &Mutator {
+        self.world.mutator()
+    }
+}
+
+impl std::ops::DerefMut for Interpreter {
+    fn deref_mut(&mut self) -> &mut Mutator {
+        self.world.mutator_mut()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1394,6 +1493,20 @@ mod tests {
                 panic!("{what}: unexpected Newspeak error: {}", e.message)
             }
         }
+    }
+
+    /// A host reads and allocates through `enter`, which answers what its
+    /// closure answers and runs nothing: the stack is as deep afterwards
+    /// as before (`docs/design/memory.md`, "The brand").
+    #[test]
+    fn enter_answers_its_closures_value_and_runs_nothing() {
+        let mut interp = Interpreter::bootstrap();
+        let len = interp.enter(|m| {
+            let array = m.new_array(vec![Value::SmallInt(1), Value::SmallInt(2)]);
+            m.heap().array_len(array)
+        });
+        assert_eq!(len, Some(2));
+        assert_eq!(interp.enter(|m| m.heap().activation_depth()), 0);
     }
 
     /// Deciding a send runs nothing: a user method comes back as the

@@ -156,7 +156,7 @@ pub enum Instr {
     /// on how many slots their own superclass contributes. The VM
     /// resolves the absolute index at run time via `frame.slot_base`, which
     /// is fixed when that level's activation is pushed, from the slot base
-    /// `Interpreter::initializer_body` finds: that level's own
+    /// `Mutator::initializer_body` finds: that level's own
     /// `MixinApplication.own_slot_base` -- one frame per level, so a frame's
     /// base never describes a level other than its own. Still the one
     /// layout-dependent instruction (a class-shape-change flush must
@@ -178,7 +178,7 @@ pub enum Instr {
         reg: u16,
     },
     /// A `^` inside a block body -- unwinds to the activation's `home` via
-    /// the shared `Interpreter::raise_return`.
+    /// the shared `Mutator::raise_return`.
     NonLocalReturn {
         reg: u16,
     },

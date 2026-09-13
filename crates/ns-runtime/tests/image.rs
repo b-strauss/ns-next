@@ -1305,7 +1305,7 @@ fn round_trip_graph(
     let mixin_order = mixin_preorder(interp.heap_ref(), class);
     let decoded = {
         let mut ctx = decode::DecodeContext {
-            interp: &mut interp,
+            m: &mut interp,
             root_class: &class,
             codes: &code_table.codes,
             platform,
@@ -1623,7 +1623,7 @@ impl GraphFixture {
     /// through `Interpreter::apply_mixin`, which writes to the shared cache.
     fn decode(&mut self, bytes: &[u8]) -> Result<decode::DecodedGraph, decode::DecodeError> {
         let mut ctx = decode::DecodeContext {
-            interp: &mut self.interp,
+            m: &mut self.interp,
             root_class: &self.class,
             codes: &self.codes,
             platform: self.platform,
@@ -2101,7 +2101,7 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
     assert!(before > 0 && graph.len() > 8);
     let mixin_order = mixin_preorder(interp.heap_ref(), class);
     let mut ctx = decode::DecodeContext {
-        interp: &mut interp,
+        m: &mut interp,
         root_class: &class,
         codes: &[],
         platform,

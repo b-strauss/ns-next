@@ -2,35 +2,35 @@
 //! (`newspeak-spec.pdf` §5.5).
 
 use crate::types::*;
-use crate::{Heap, Interpreter, Symbol};
+use crate::{Heap, Mutator, Symbol};
 
 pub(crate) fn dispatch(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
 ) -> Option<Result<Value, NewspeakError>> {
     match selector.as_str() {
-        "class" => Some(Ok(Value::Obj(interp.class_of(&receiver)))),
+        "class" => Some(Ok(Value::Obj(m.class_of(&receiver)))),
         "==" => Some(Ok(Value::Bool(identical(&receiver, &args[0])))),
         "=" => Some(Ok(Value::Bool(identical(&receiver, &args[0])))), // Object's default: identity
         "hash" => Some(Ok(Value::SmallInt(
-            identity_hash_of(&mut interp.heap, &receiver) as i64,
+            identity_hash_of(&mut m.heap, &receiver) as i64,
         ))),
-        "printString" => Some(Ok(Value::Obj(interp.new_string("an Object".to_string())))),
+        "printString" => Some(Ok(Value::Obj(m.new_string("an Object".to_string())))),
         "doesNotUnderstand:" => {
             // Object's default doesNotUnderstand: (spec §5.5): must be
             // `protected`, always raises a MessageNotUnderstood-shaped
             // NewspeakError. There is no exception-class hierarchy yet;
             // this produces the NewspeakError value directly
             // rather than a catchable Newspeak object.
-            let msg_selector = extract_dnu_selector(&interp.heap, &args[0]);
+            let msg_selector = extract_dnu_selector(&m.heap, &args[0]);
             Some(Err(NewspeakError {
                 selector: msg_selector,
                 receiver,
                 message: format!(
                     "{} does not understand #{}",
-                    describe(&receiver, interp),
+                    describe(&receiver, m),
                     msg_selector
                 ),
             }))
@@ -58,14 +58,14 @@ fn identity_hash_of(heap: &mut Heap, value: &Value) -> u32 {
     }
 }
 
-fn describe(_value: &Value, _interp: &Interpreter) -> String {
+fn describe(_value: &Value, _m: &Mutator) -> String {
     // The default `doesNotUnderstand:` message names the receiver by kind
     // only. `Heap::describe` is the value-aware description.
     "an object".to_string()
 }
 
 fn extract_dnu_selector(heap: &Heap, message_mirror_shaped_array: &Value) -> Symbol {
-    // Matches `Interpreter::decide_does_not_understand`'s `{selector. args}` array
+    // Matches `Mutator::decide_does_not_understand`'s `{selector. args}` array
     // shape.
     if let Value::Obj(obj) = message_mirror_shaped_array {
         if let Some(Value::Obj(sym_obj)) = heap.array_at(*obj, 0) {

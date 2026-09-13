@@ -14,7 +14,7 @@ use crate::types::{
     BuiltinClass, ClassRef, ClosureData, Frame, FrameKind, FrameRef, ObjRef, Object, ObjectData,
     SourceOrigin, Value,
 };
-use crate::Interpreter;
+use crate::Mutator;
 use crate::Symbol;
 
 use super::opcodes::*;
@@ -92,7 +92,7 @@ pub enum DecodeError {
     /// A closure frame's kind names an object that is not a closure.
     NotAClosureReference,
     /// A class object's own `class` is another record in the image's object
-    /// table. `Interpreter::new_class_object` always gives a class object
+    /// table. `Mutator::new_class_object` always gives a class object
     /// the shared bootstrap `Object` placeholder, so no real world contains
     /// one -- and `Object`'s iterative `Drop` cannot hand the `class` field
     /// to its worklist, so a chain of them is the one link left that would
@@ -132,7 +132,7 @@ pub enum DecodeError {
     /// about how many arguments the closure takes. The two are separate
     /// fields on the wire, so only a decode-time reconciliation can catch
     /// a crafted mismatch -- and it must, because the two halves are read
-    /// by different parts of `Interpreter::push_step`: it checks the
+    /// by different parts of `Mutator::push_step`: it checks the
     /// *call's* arity against `params.len()` but sizes the register file
     /// from the *code* (`num_registers - num_args`). Disagreement leaves
     /// `locals::read_local` computing `temps[i - args.len()]` past the end
@@ -154,7 +154,7 @@ pub enum DecodeError {
     UnknownSelector(String),
     /// A mixin-table row declares slots or `initExpr`s but carries no
     /// compiled initializer. Instantiating such a class runs initializer
-    /// code on every `X new`, and `Interpreter::initializer_body` panics on that
+    /// code on every `X new`, and `Mutator::initializer_body` panics on that
     /// invariant rather than failing -- so only refusing here keeps a
     /// crafted image from aborting the process at the first `X new`.
     MissingInitializer,
@@ -238,7 +238,7 @@ pub enum DecodeError {
     CapturedFrameMismatch,
     /// An object's identity hash is `u32::MAX`, so there is no hash a
     /// loaded world could allocate *next*:
-    /// `Interpreter::advance_identity_hash_past` would have to compute
+    /// `Mutator::advance_identity_hash_past` would have to compute
     /// `u32::MAX + 1` (an overflow panic in this workspace's dev profile,
     /// and a wrap to 0 -- colliding with the loaded objects it exists to
     /// avoid -- in release), and even saturating it would only move the
@@ -763,7 +763,7 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
                 mixin.factory.map_or(0, |factory| factory.num_args),
             )?,
             // A class with slots or `initExpr`s runs compiled initializer
-            // code on every `X new`, and `Interpreter::initializer_body` *panics*
+            // code on every `X new`, and `Mutator::initializer_body` *panics*
             // when the mixin carries none. The row's declaration half says
             // the mixin needs one and its code half says whether the image
             // carries it -- two fields only this function compares.
@@ -1438,17 +1438,17 @@ fn decode_literal(
 // ---------------------------------------------------------------------------
 
 /// Everything the graph decoder resolves tags against: the live bootstrap
-/// (`interp`), the root class built from the mixin table, the decoded code
+/// (`m`), the root class built from the mixin table, the decoded code
 /// table, the interpreter's `platform` singleton, and the decoded
 /// declaration tree a class object's mixin id names.
 ///
-/// `interp` is `&mut` because decoding a class object *allocates into* the
+/// `m` is `&mut` because decoding a class object *allocates into* the
 /// interpreter: rebuilding its `MixinApplication` goes through
-/// `Interpreter::apply_mixin`, and that shared cache is the whole mechanism
+/// `Mutator::apply_mixin`, and that shared cache is the whole mechanism
 /// by which two enclosing instances get back the one application they had
 /// before the snapshot.
 pub struct DecodeContext<'a> {
-    pub interp: &'a mut Interpreter,
+    pub m: &'a mut Mutator,
     pub root_class: &'a ClassRef,
     pub codes: &'a [Rc<CompiledCode>],
     pub platform: Value,
@@ -1506,7 +1506,7 @@ pub fn decode_class_tag(
     tables: &Tables,
 ) -> Result<ClassRef, DecodeError> {
     match r.read_u8()? {
-        CLS_BUILTIN => Ok(ctx.interp.builtin_class(read_builtin_class(r)?)),
+        CLS_BUILTIN => Ok(ctx.m.builtin_class(read_builtin_class(r)?)),
         CLS_USER_ROOT => Ok(*ctx.root_class),
         CLS_RECORD => decode_object_id(r, tables),
         tag => Err(DecodeError::InvalidTag { what: "class", tag }),
@@ -1640,7 +1640,7 @@ fn method_decl(
 ) -> Result<Rc<crate::mixin::MixinMethod>, DecodeError> {
     let class = current_class.unwrap_or(ctx.root_class);
     let found = ctx
-        .interp
+        .m
         .heap
         .class_application(*class)
         .and_then(|a| a.mixin.methods.get(&selector).cloned());
@@ -1766,16 +1766,16 @@ pub(crate) fn bounded_count(
 /// from the declaration and a decoded mixin has no declaration to read a
 /// name from.
 pub fn build_root_class(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     mixins: &mixins::Decoded,
     superclass: Option<ClassRef>,
 ) -> Result<ClassRef, DecodeError> {
     let root_mixin = mixins.root().cloned().ok_or(DecodeError::NotAClass)?;
     let super_application = superclass
         .as_ref()
-        .and_then(|superclass| interp.heap.class_application(*superclass));
-    let application = interp.apply_mixin(&root_mixin, super_application.as_ref());
-    Ok(interp.new_class_object(application, None, None, superclass))
+        .and_then(|superclass| m.heap.class_application(*superclass));
+    let application = m.apply_mixin(&root_mixin, super_application.as_ref());
+    Ok(m.new_class_object(application, None, None, superclass))
 }
 
 /// The root-class section's bytes, read but not resolved: whether a
@@ -1798,9 +1798,9 @@ fn read_root_superclass_tag(r: &mut Reader) -> Result<Option<BuiltinClass>, Deco
 /// which explains why the format admits only a builtin here.
 pub fn decode_root_superclass(
     r: &mut Reader,
-    interp: &Interpreter,
+    m: &Mutator,
 ) -> Result<Option<ClassRef>, DecodeError> {
-    Ok(read_root_superclass_tag(r)?.map(|tag| interp.builtin_class(tag)))
+    Ok(read_root_superclass_tag(r)?.map(|tag| m.builtin_class(tag)))
 }
 
 /// Reads the root-class section's bytes without resolving the tag to a live
@@ -1825,7 +1825,7 @@ struct PendingClass {
 /// Rebuilds every decoded class object's `MixinApplication`, superclass
 /// first.
 ///
-/// An application is derived, never stored: `Interpreter::apply_mixin`
+/// An application is derived, never stored: `Mutator::apply_mixin`
 /// computes the slot layout and the lookup chain from a mixin and its
 /// superclass's application, and caches the result under exactly that pair.
 /// So rebuilding restores identity as well as content -- two class objects
@@ -1851,7 +1851,7 @@ fn rebuild_applications(
     // handle, not as the id it was written with.
     let mut position: HashMap<usize, usize> = HashMap::with_capacity(pending.len());
     for (i, p) in pending.iter().enumerate() {
-        position.insert(ctx.interp.heap.object_identity_key(objects[p.object]), i);
+        position.insert(ctx.m.heap.object_identity_key(objects[p.object]), i);
     }
     let mut done = vec![false; pending.len()];
     let mut on_chain = vec![false; pending.len()];
@@ -1868,11 +1868,11 @@ fn rebuild_applications(
             on_chain[current] = true;
             chain.push(current);
             let superclass = ctx
-                .interp
+                .m
                 .heap
                 .class_superclass(objects[pending[current].object]);
             let Some(superclass) = superclass else { break };
-            let Some(&next) = position.get(&ctx.interp.heap.object_identity_key(superclass)) else {
+            let Some(&next) = position.get(&ctx.m.heap.object_identity_key(superclass)) else {
                 break;
             };
             if done[next] {
@@ -1885,9 +1885,9 @@ fn rebuild_applications(
         // application in hand.
         for &i in chain.iter().rev() {
             let object = &objects[pending[i].object];
-            let super_application = match ctx.interp.heap.class_superclass(*object) {
+            let super_application = match ctx.m.heap.class_superclass(*object) {
                 Some(superclass) => Some(
-                    ctx.interp
+                    ctx.m
                         .heap
                         .class_application(superclass)
                         .ok_or(DecodeError::NotAClassReference)?,
@@ -1895,9 +1895,9 @@ fn rebuild_applications(
                 None => None,
             };
             let application = ctx
-                .interp
+                .m
                 .apply_mixin(&pending[i].mixin, super_application.as_ref());
-            if !ctx.interp.heap.set_class_application(*object, application) {
+            if !ctx.m.heap.set_class_application(*object, application) {
                 unreachable!("this object was filled in as a class record");
             }
             done[i] = true;
@@ -1933,7 +1933,7 @@ fn is_prebuilt_class(heap: &Heap, class: ClassRef, root_class: ClassRef) -> bool
 /// cached nested class in a slot *is*).
 ///
 /// The extra rule for a class object's *own* `class` is the runtime's
-/// invariant, not a limit invented here: `Interpreter::new_class_object` is
+/// invariant, not a limit invented here: `Mutator::new_class_object` is
 /// the only thing that mints a class object and always gives it the shared
 /// bootstrap `Object` placeholder -- §3.2's reified metaclass model stays
 /// deliberately unbuilt -- so this refuses nothing a real world contains.
@@ -2018,26 +2018,26 @@ pub fn decode_graph_section(
 ) -> Result<DecodedGraph, DecodeError> {
     let object_count = bounded_count(r.read_u32()? as usize, MIN_OBJECT_RECORD_BYTES, r)?;
     let frame_count = bounded_count(r.read_u32()? as usize, MIN_FRAME_RECORD_BYTES, r)?;
-    let placeholder_class = ctx.interp.builtin_class(BuiltinClass::Object);
+    let placeholder_class = ctx.m.builtin_class(BuiltinClass::Object);
     // A real application, standing in until `rebuild_applications` derives
     // each class object's own -- the same technique as the placeholder
     // object and `placeholder_frame`, and for the same reason: nothing may
     // observe a half-built record, and a `None` here would need an
     // `Option` on `ClassData` that no live class object could ever be.
     let placeholder_application = ctx
-        .interp
+        .m
         .heap
         .class_application(placeholder_class)
         .ok_or(DecodeError::NotAClass)?;
     let objects: Vec<ObjRef> = (0..object_count)
         .map(|_| {
-            ctx.interp
+            ctx.m
                 .heap
                 .alloc_object(placeholder_class, ObjectData::Instance(Vec::new()))
         })
         .collect();
     let frames: Vec<FrameRef> = (0..frame_count)
-        .map(|_| ctx.interp.heap.alloc_frame(placeholder_frame()))
+        .map(|_| ctx.m.heap.alloc_frame(placeholder_frame()))
         .collect();
     let tables = Tables {
         objects: &objects,
@@ -2076,7 +2076,7 @@ pub fn decode_graph_section(
                 })
             }
         };
-        ctx.interp.heap.replace_object(
+        ctx.m.heap.replace_object(
             *obj,
             Object {
                 class,
@@ -2088,9 +2088,9 @@ pub fn decode_graph_section(
     rebuild_applications(ctx, &objects, pending_classes)?;
     for frame in &frames {
         let decoded = decode_frame(r, ctx, &tables, symbols)?;
-        ctx.interp.heap.replace_frame(*frame, decoded);
+        ctx.m.heap.replace_frame(*frame, decoded);
     }
-    check_class_references(&ctx.interp.heap, &objects, &frames, *ctx.root_class)?;
+    check_class_references(&ctx.m.heap, &objects, &frames, *ctx.root_class)?;
     let roots = decode_values(r, ctx, &tables)?;
     Ok(DecodedGraph {
         roots,
@@ -2107,7 +2107,7 @@ pub fn decode_graph_section(
 /// refused, each for the reason its `DecodeError` gives.
 pub fn decode_tag_named_hashes(
     r: &mut Reader,
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     root_class: ClassRef,
 ) -> Result<u32, DecodeError> {
     let count = bounded_count(r.read_u32()? as usize, MIN_TAG_NAMED_HASH_BYTES, r)?;
@@ -2115,9 +2115,9 @@ pub fn decode_tag_named_hashes(
     let mut max = 0;
     for _ in 0..count {
         let target = match r.read_u8()? {
-            HASHED_BUILTIN_CLASS => interp.builtin_class(read_builtin_class(r)?),
+            HASHED_BUILTIN_CLASS => m.builtin_class(read_builtin_class(r)?),
             HASHED_ROOT_CLASS => root_class,
-            HASHED_PLATFORM => match interp.platform_value() {
+            HASHED_PLATFORM => match m.platform_value() {
                 Value::Obj(platform) => platform,
                 _ => unreachable!("the platform singleton is always an object"),
             },
@@ -2139,7 +2139,7 @@ pub fn decode_tag_named_hashes(
             return Err(DecodeError::DuplicateTagNamedHash);
         }
         restored.push(target);
-        interp.heap.set_identity_hash(target, hash);
+        m.heap.set_identity_hash(target, hash);
         max = max.max(hash);
     }
     Ok(max)
@@ -2187,7 +2187,7 @@ fn decode_class_record(
             // class *tag*, resolved through the bootstrap, and never an
             // object-table entry.
             builtin: None,
-            // Rebuilt by `Interpreter::metaclass_of` on the first
+            // Rebuilt by `Mutator::metaclass_of` on the first
             // class-side send, exactly as it is for a class object the
             // accessor just created.
             //

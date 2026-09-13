@@ -4,10 +4,10 @@
 
 use crate::interpreter::{Signal, Step, StepArgs};
 use crate::types::*;
-use crate::{Interpreter, Symbol};
+use crate::{Mutator, Symbol};
 
 pub(crate) fn dispatch(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
@@ -15,7 +15,7 @@ pub(crate) fn dispatch(
     let Value::Obj(closure) = receiver else {
         return None;
     };
-    let params = interp.heap_ref().closure_param_count(closure)?;
+    let params = m.heap().closure_param_count(closure)?;
     Some(Ok(match selector.as_str() {
         "value" | "value:" | "value:value:" | "value:value:value:" => Step::Block {
             closure,
@@ -56,14 +56,14 @@ fn condition_step(state: Box<WhileLoop>) -> Step {
 
 /// The condition returned `value`.
 pub(crate) fn after_condition(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     state: Box<WhileLoop>,
     value: Value,
 ) -> Result<Step, Signal> {
     match value {
-        Value::Bool(b) if b == state.expect => Ok(body_step(interp, state)),
+        Value::Bool(b) if b == state.expect => Ok(body_step(m, state)),
         Value::Bool(_) => Ok(Step::Value(Value::Nil)),
-        other => interp.decide_send(other, Symbol::MUST_BE_BOOLEAN, &[]),
+        other => m.decide_send(other, Symbol::MUST_BE_BOOLEAN, &[]),
     }
 }
 
@@ -74,9 +74,9 @@ pub(crate) fn after_body(state: Box<WhileLoop>) -> Step {
 
 /// The body, activated -- or, when it is not a block, taken as its own value,
 /// so the condition runs again straight away.
-fn body_step(interp: &Interpreter, state: Box<WhileLoop>) -> Step {
+fn body_step(m: &Mutator, state: Box<WhileLoop>) -> Step {
     if let Value::Obj(body) = state.body {
-        if interp.heap_ref().is_closure(body) {
+        if m.heap().is_closure(body) {
             return Step::Block {
                 closure: body,
                 args: StepArgs::ControlFlow,

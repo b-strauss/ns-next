@@ -13,9 +13,9 @@ use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
 use crate::types::*;
 use crate::Symbol;
 
-use super::{HostError, HostResult, HostSignal, Interpreter, Signal, Step};
+use super::{HostError, HostResult, HostSignal, HostStart, Interpreter, Mutator, Signal, Step};
 
-/// How many finished walks' boxes `Interpreter::retire_walk` keeps for
+/// How many finished walks' boxes `Mutator::retire_walk` keeps for
 /// reuse, and how many levels of room each keeps. One box serves any number
 /// of instantiations in sequence; more are held at once only while
 /// instantiations nest bodies that have work after them.
@@ -23,7 +23,7 @@ const SPARE_WALKS: usize = 16;
 const SPARE_LEVELS: usize = 64;
 
 /// A class body's methods as a mixin's method dictionary: everything a
-/// lookup or `Interpreter::push_step` reads is lifted out of the
+/// lookup or `Mutator::push_step` reads is lifted out of the
 /// declaration here, so that a mixin decoded from an image -- which has no
 /// declaration at all -- answers the same questions from the same fields.
 fn build_methods(
@@ -79,6 +79,47 @@ impl Interpreter {
     /// interpreter was bootstrapped with. The class comes back rooted, for
     /// the host that will instantiate it.
     pub fn load_module(&mut self, resolved: &ResolvedModule) -> Root {
+        self.enter(|m| {
+            let class = m.load_root_class(resolved);
+            m.stash(Value::Obj(class))
+        })
+    }
+
+    /// Instantiates the class `class` holds, from a host: the six numbered
+    /// steps in `docs/design/object-model.md`, "Instantiation", decided
+    /// (`decide_instantiation`) and then run from the outside
+    /// (`run_from_host`), like a host's `send`. A root that holds anything
+    /// but a class object is refused as a Newspeak error, never a panic:
+    /// the caller is a host.
+    pub fn instantiate(&mut self, class: &Root, factory_args: &[Root]) -> HostResult {
+        let depth = self.world.activation_depth();
+        let start = self.enter(|m| {
+            let value = m.fetch(class);
+            let class = match value {
+                Value::Obj(obj) if m.heap.is_class(obj) => obj,
+                _ => {
+                    return HostStart::Finished(Err(HostSignal::Error(HostError {
+                        selector: Symbol::NEW,
+                        receiver: m.stash(value),
+                        message: format!(
+                            "cannot instantiate {}: it is not a class",
+                            m.heap.describe(&value)
+                        ),
+                    })))
+                }
+            };
+            let factory_args: Vec<Value> = factory_args.iter().map(|arg| m.fetch(arg)).collect();
+            let decided = m.decide_instantiation(class, factory_args);
+            m.start(decided, &[])
+        });
+        self.run_from_host(start, depth)
+    }
+}
+
+impl Mutator {
+    /// `load_module`'s work, inside its entry: the root class, built and
+    /// compiled, for `load_module` to root.
+    pub(crate) fn load_root_class(&mut self, resolved: &ResolvedModule) -> ClassRef {
         let decl = &resolved.module.root_class;
         let mixin = self.build_mixin(decl, &resolved.bindings);
         let superclass = self.resolve_superclass_receiver(decl);
@@ -94,8 +135,7 @@ impl Interpreter {
         // class is the outermost level, so no object encloses it and no
         // declaration contains it. Every other class object in the system
         // comes from `interpreter::nested`, which passes both.
-        let class = self.new_class_object(application, None, None, superclass);
-        self.stash(Value::Obj(class))
+        self.new_class_object(application, None, None, superclass)
     }
 
     /// Builds the mixin for `decl`, recursively including its nested
@@ -108,7 +148,7 @@ impl Interpreter {
     /// superclass is resolved, no slot layout computed, no class object
     /// built) -- a nested mixin has no class object of its own until
     /// something materializes it (the accessor), and a class side until
-    /// `Interpreter::metaclass_of` builds the metaclass that applies it.
+    /// `Mutator::metaclass_of` builds the metaclass that applies it.
     fn build_mixin(
         &mut self,
         decl: &ast::ClassDecl,
@@ -216,7 +256,7 @@ impl Interpreter {
     /// never *sent*: §6.2 has the subclass's initializer invoke the
     /// superclass's instance initializer directly on the same object, so
     /// `climb_levels` runs it level by level and never calls
-    /// `Interpreter::decide_send` -- and therefore never reaches this method,
+    /// `Mutator::decide_send` -- and therefore never reaches this method,
     /// which would otherwise allocate a second, discarded instance per level.
     pub(super) fn try_factory_send(
         &mut self,
@@ -243,7 +283,7 @@ impl Interpreter {
             // find its data (falling straight through to
             // `doesNotUnderstand:` on the very next send). Built directly
             // with `new_instance_object`, tagged with `class_ref` itself
-            // (the receiver's own class -- *not* `Interpreter::new_array`,
+            // (the receiver's own class -- *not* `Mutator::new_array`,
             // which unconditionally tags its result `BuiltinClass::Array`;
             // using that here would make `OrderedCollection new`'s result
             // dispatch through `dispatch_array`, which has no `add:`).
@@ -270,35 +310,6 @@ impl Interpreter {
             return Some(self.builtin_class(kind));
         }
         None
-    }
-
-    /// Instantiates the class `class` holds, from a host: the six numbered
-    /// steps in `docs/design/object-model.md`, "Instantiation", decided
-    /// (`decide_instantiation`) and then run from the outside
-    /// (`run_from_host`), like a host's `send`. A root that holds anything
-    /// but a class object is refused as a Newspeak error, never a panic:
-    /// the caller is a host.
-    pub fn instantiate(&mut self, class: &Root, factory_args: &[Root]) -> HostResult {
-        let value = self.fetch(class);
-        let class = match value {
-            Value::Obj(obj) if self.heap.is_class(obj) => obj,
-            _ => {
-                return Err(HostSignal::Error(HostError {
-                    selector: Symbol::NEW,
-                    receiver: self.stash(value),
-                    message: format!(
-                        "cannot instantiate {}: it is not a class",
-                        self.heap.describe(&value)
-                    ),
-                }))
-            }
-        };
-        let factory_args: Vec<Value> = factory_args.iter().map(|arg| self.fetch(arg)).collect();
-        let result = match self.decide_instantiation(class, factory_args) {
-            Ok(step) => self.run_from_host(step, &[]),
-            Err(signal) => Err(signal),
-        };
-        self.to_host(result)
     }
 
     /// Decides an instantiation of `class` with `factory_args` without running
@@ -376,7 +387,7 @@ impl Interpreter {
     }
 
     /// One body an instantiation ran has returned `value`: carry the walk on
-    /// from where `state` says it stopped. `Interpreter::resume` calls this
+    /// from where `state` says it stopped. `Mutator::resume` calls this
     /// with its continuation's box, in which the walk goes on until it answers
     /// another body.
     pub(crate) fn advance_instantiation(
@@ -767,7 +778,7 @@ fn initializing_level_below(
 ///
 /// `pub(crate)` for `image::decode::verify_mixins`, which must refuse
 /// an image that has no compiled initializer for a mixin that needs one
-/// rather than let `Interpreter::initializer_body` above panic on the invariant --
+/// rather than let `Mutator::initializer_body` above panic on the invariant --
 /// checked per mixin, since every mixin of the tree carries its own.
 pub(crate) fn mixin_needs_initializer_code(mixin: &crate::mixin::Mixin) -> bool {
     !mixin.slots.is_empty() || mixin.has_init_exprs

@@ -89,7 +89,7 @@ pub struct ClassData {
     /// resolves a send to one.
     pub builtin: Option<BuiltinClass>,
     /// The metaclass built from this class's mixin's `class_side`, created
-    /// on first use and cached here (`Interpreter::metaclass_of`) so a
+    /// on first use and cached here (`Mutator::metaclass_of`) so a
     /// repeated class-side send does not rebuild it and so metaclass
     /// identity stays stable (the inline caches will key on it).
     /// Lives on `ClassData`, not as a slot on an *instance*: a class
@@ -121,7 +121,7 @@ pub enum BuiltinClass {
 }
 
 impl BuiltinClass {
-    /// Every builtin class, in declaration order. `Interpreter::builtin_class`
+    /// Every builtin class, in declaration order. `Mutator::builtin_class`
     /// indexes by discriminant, so the bootstrap builds them in this order,
     /// and the image's closing hash table writes them in it too -- it is also
     /// their wire-tag order (`image::encode::builtin_class_tag`).
@@ -260,7 +260,7 @@ pub enum Continuation {
     NestedClass(Box<NestedClassCreation>),
     /// A body an instantiation ran returned -- a clause message's arguments,
     /// or the initializer of a level with another below it still to run:
-    /// carry the walk on (`Interpreter::advance_instantiation`). The last
+    /// carry the walk on (`Mutator::advance_instantiation`). The last
     /// initializer's activation delivers instead (`descend_levels` says why).
     Instantiate(Box<Instantiation>),
 }
@@ -318,7 +318,7 @@ pub struct NestedClassCreation {
 /// arguments it gets, and which way the walk is going.
 ///
 /// Always boxed, in a box the interpreter reuses from one instantiation to
-/// the next (`Interpreter::walk_state`); while a body runs that has work left
+/// the next (`Mutator::walk_state`); while a body runs that has work left
 /// after it, the box is in that body's continuation, owned by exactly one
 /// stack entry.
 #[derive(Debug, Clone)]
@@ -384,7 +384,7 @@ pub struct Frame {
     /// while the body runs is the live activation's own `slot_base`
     /// (`Heap::activation_slot_base`), one activation per initializing level
     /// of the superclass chain, pushed with the slot base
-    /// `Interpreter::initializer_body` finds; a
+    /// `Mutator::initializer_body` finds; a
     /// frame carries a copy only if that activation was reified. The image
     /// does not record it -- a decoded frame has 0, since nothing re-activates
     /// one. Set once, where the activation is pushed, and never changed.
@@ -417,7 +417,7 @@ mod tests {
     use super::*;
 
     /// A root application with no code, no slots and no superclass. Built
-    /// directly rather than through `Interpreter::apply_mixin` so this
+    /// directly rather than through `Mutator::apply_mixin` so this
     /// module's tests stay free of the interpreter.
     fn empty_application(name: &str) -> Rc<crate::mixin::MixinApplication> {
         Rc::new(crate::mixin::MixinApplication {

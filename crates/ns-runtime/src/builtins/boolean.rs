@@ -5,11 +5,11 @@
 
 use crate::interpreter::{Signal, Step, StepArgs};
 use crate::types::*;
-use crate::Interpreter;
+use crate::Mutator;
 use crate::Symbol;
 
 pub(crate) fn dispatch(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
@@ -18,19 +18,15 @@ pub(crate) fn dispatch(
         return None;
     };
     Some(Ok(match selector.as_str() {
-        "ifTrue:ifFalse:" => block_step(
-            interp,
-            if b { args[0] } else { args[1] },
-            Continuation::Deliver,
-        ),
-        "ifFalse:ifTrue:" => block_step(
-            interp,
-            if b { args[1] } else { args[0] },
-            Continuation::Deliver,
-        ),
+        "ifTrue:ifFalse:" => {
+            block_step(m, if b { args[0] } else { args[1] }, Continuation::Deliver)
+        }
+        "ifFalse:ifTrue:" => {
+            block_step(m, if b { args[1] } else { args[0] }, Continuation::Deliver)
+        }
         "ifTrue:" => {
             if b {
-                block_step(interp, args[0], Continuation::Deliver)
+                block_step(m, args[0], Continuation::Deliver)
             } else {
                 Step::Value(Value::Nil)
             }
@@ -39,7 +35,7 @@ pub(crate) fn dispatch(
             if b {
                 Step::Value(Value::Nil)
             } else {
-                block_step(interp, args[0], Continuation::Deliver)
+                block_step(m, args[0], Continuation::Deliver)
             }
         }
         "not" => Step::Value(Value::Bool(!b)),
@@ -49,7 +45,7 @@ pub(crate) fn dispatch(
         // error in it passes through untouched.
         "&" | "and:" => {
             if b {
-                block_step(interp, args[0], Continuation::Truthy)
+                block_step(m, args[0], Continuation::Truthy)
             } else {
                 Step::Value(Value::Bool(false))
             }
@@ -58,11 +54,11 @@ pub(crate) fn dispatch(
             if b {
                 Step::Value(Value::Bool(true))
             } else {
-                block_step(interp, args[0], Continuation::Truthy)
+                block_step(m, args[0], Continuation::Truthy)
             }
         }
         "printString" => Step::Value(Value::Obj(
-            interp.new_string(if b { "true" } else { "false" }.to_string()),
+            m.new_string(if b { "true" } else { "false" }.to_string()),
         )),
         _ => return None,
     }))
@@ -71,9 +67,9 @@ pub(crate) fn dispatch(
 /// `arg` activated as a block with no arguments, its value handed to `then`
 /// -- or, when `arg` is not a block, `arg` itself taken as the value, the
 /// reference library's `ifTrue: aValue` convention.
-fn block_step(interp: &Interpreter, arg: Value, then: Continuation) -> Step {
+fn block_step(m: &Mutator, arg: Value, then: Continuation) -> Step {
     if let Value::Obj(obj) = arg {
-        if interp.heap_ref().is_closure(obj) {
+        if m.heap().is_closure(obj) {
             return Step::Block {
                 closure: obj,
                 args: StepArgs::ControlFlow,

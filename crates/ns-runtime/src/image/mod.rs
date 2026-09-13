@@ -24,7 +24,7 @@ pub mod symbols;
 
 use crate::heap::{Heap, Root};
 use crate::types::{ClassRef, SourceOrigin, Value};
-use crate::{Interpreter, Symbol};
+use crate::{Interpreter, Mutator, Symbol};
 
 /// The sections that describe code and structure, encoded into their own
 /// buffers with the symbol table still open so the caller can intern into it.
@@ -125,14 +125,14 @@ fn write_describing(
 /// closes with the hashes of the objects it names by tag
 /// (`encode::encode_tag_named_hashes`).
 pub fn snapshot(
-    interp: &Interpreter,
+    m: &Mutator,
     source: Option<&str>,
     origin: &SourceOrigin,
     root_class: ClassRef,
     platform: &Value,
     roots: &[Value],
 ) -> Result<Vec<u8>, String> {
-    let heap = interp.heap_ref();
+    let heap = &m.heap;
     // A frame married to a running activation keeps its registers and `pc`
     // on the activation stack, and the format has no record for the stack,
     // so encoding one would write a frame with empty registers and succeed.
@@ -161,7 +161,7 @@ pub fn snapshot(
         &d.mixin_ids,
         &mut d.symbols,
     )?;
-    encode::encode_tag_named_hashes(&mut graph_w, interp, root_class, platform);
+    encode::encode_tag_named_hashes(&mut graph_w, m, root_class, platform);
     let mut w = encode::Writer::new();
     write_describing(&mut w, source, origin, 0, d, root_class, heap)?;
     // `snapshot` never names an entry selector of its own -- a snapshotted
@@ -265,69 +265,69 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     };
     let origin = decode::decode_source_origin(&mut r).map_err(|e| e.to_string())?;
     let mut interp = Interpreter::bootstrap();
-    let symbols = symbols::decode(&mut r).map_err(|e| e.to_string())?;
-    let table = decode::decode_code_table(&mut r, &symbols).map_err(|e| e.to_string())?;
-    decode::verify_code_table(&table).map_err(|e| e.to_string())?;
-    let mixins = mixins::decode(&mut r, &symbols, &table.codes).map_err(|e| e.to_string())?;
-    decode::verify_mixins(&mixins).map_err(|e| e.to_string())?;
-    let root_superclass =
-        decode::decode_root_superclass(&mut r, &interp).map_err(|e| e.to_string())?;
-    let root_class = decode::build_root_class(&mut interp, &mixins, root_superclass)
-        .map_err(|e| e.to_string())?;
-    // `snapshot` always writes this field (as absent); a binary requires it
-    // present, since it is the only place a binary records how to start
-    // itself once instantiated.
-    let entry = decode::decode_entry(&mut r, &symbols).map_err(|e| e.to_string())?;
-    if header.stateless && entry.is_none() {
-        // A binary that cannot say how it starts is not a deployment
-        // artifact -- refusing here keeps the failure where the artifact is
-        // read, rather than wherever a caller eventually fails to find
-        // something to send.
-        return Err("a stateless artifact must record an entry selector".to_string());
-    }
-    let platform = interp.platform_value();
-    // A binary carries no graph section at all -- `decode_graph_section`
-    // would read the next artifact's bytes (there are none) as if they were
-    // one. `DecodedGraph::empty()` is the graph a binary has: no roots, no
-    // objects, no frames, nothing for `verify_graph` to check.
-    let graph = if header.stateless {
-        decode::DecodedGraph::empty()
-    } else {
-        let mut ctx = decode::DecodeContext {
-            interp: &mut interp,
-            root_class: &root_class,
-            codes: &table.codes,
-            platform,
-            mixins: &mixins.mixins,
-        };
-        decode::decode_graph_section(&mut r, &mut ctx, &symbols).map_err(|e| e.to_string())?
-    };
-    if !header.stateless {
-        let tag_named_max = decode::decode_tag_named_hashes(&mut r, &mut interp, root_class)
-            .map_err(|e| e.to_string())?;
-        decode::verify_graph(&graph, &table, &interp.heap).map_err(|e| e.to_string())?;
-        interp.advance_identity_hash_past(graph.max_identity_hash.max(tag_named_max));
-    }
-    // A byte sequence past the last section is refused, not ignored: with
-    // two artifact shapes sharing one format, an unchecked tail would let a
-    // binary with a graph appended -- or a truncated, then padded, image --
-    // load as something its author did not write.
-    if r.remaining() != 0 {
-        return Err(decode::DecodeError::TrailingBytes {
-            count: r.remaining(),
+    let decoded = interp.enter(|m| -> Result<_, String> {
+        let symbols = symbols::decode(&mut r).map_err(|e| e.to_string())?;
+        let table = decode::decode_code_table(&mut r, &symbols).map_err(|e| e.to_string())?;
+        decode::verify_code_table(&table).map_err(|e| e.to_string())?;
+        let mixins = mixins::decode(&mut r, &symbols, &table.codes).map_err(|e| e.to_string())?;
+        decode::verify_mixins(&mixins).map_err(|e| e.to_string())?;
+        let root_superclass =
+            decode::decode_root_superclass(&mut r, m).map_err(|e| e.to_string())?;
+        let root_class =
+            decode::build_root_class(m, &mixins, root_superclass).map_err(|e| e.to_string())?;
+        // `snapshot` always writes this field (as absent); a binary requires it
+        // present, since it is the only place a binary records how to start
+        // itself once instantiated.
+        let entry = decode::decode_entry(&mut r, &symbols).map_err(|e| e.to_string())?;
+        if header.stateless && entry.is_none() {
+            // A binary that cannot say how it starts is not a deployment
+            // artifact -- refusing here keeps the failure where the artifact is
+            // read, rather than wherever a caller eventually fails to find
+            // something to send.
+            return Err("a stateless artifact must record an entry selector".to_string());
         }
-        .to_string());
-    }
-    // Rooted only now, after every verification pass and the trailing-bytes
-    // check: nothing runs while an artifact decodes, so nothing moves under
-    // the plain handles above, and a refused artifact answers nothing to
-    // root (`docs/design/image-format.md`, "Two artifacts").
-    let root_class = interp.stash(Value::Obj(root_class));
-    let roots = graph
-        .roots
-        .into_iter()
-        .map(|root| interp.stash(root))
-        .collect();
+        let platform = m.platform_value();
+        // A binary carries no graph section at all -- `decode_graph_section`
+        // would read the next artifact's bytes (there are none) as if they were
+        // one. `DecodedGraph::empty()` is the graph a binary has: no roots, no
+        // objects, no frames, nothing for `verify_graph` to check.
+        let graph = if header.stateless {
+            decode::DecodedGraph::empty()
+        } else {
+            let mut ctx = decode::DecodeContext {
+                m,
+                root_class: &root_class,
+                codes: &table.codes,
+                platform,
+                mixins: &mixins.mixins,
+            };
+            decode::decode_graph_section(&mut r, &mut ctx, &symbols).map_err(|e| e.to_string())?
+        };
+        if !header.stateless {
+            let tag_named_max = decode::decode_tag_named_hashes(&mut r, m, root_class)
+                .map_err(|e| e.to_string())?;
+            decode::verify_graph(&graph, &table, &m.heap).map_err(|e| e.to_string())?;
+            m.advance_identity_hash_past(graph.max_identity_hash.max(tag_named_max));
+        }
+        // A byte sequence past the last section is refused, not ignored: with
+        // two artifact shapes sharing one format, an unchecked tail would let a
+        // binary with a graph appended -- or a truncated, then padded, image --
+        // load as something its author did not write.
+        if r.remaining() != 0 {
+            return Err(decode::DecodeError::TrailingBytes {
+                count: r.remaining(),
+            }
+            .to_string());
+        }
+        // Rooted only now, after every verification pass and the trailing-bytes
+        // check: nothing runs while an artifact decodes, so nothing moves under
+        // the plain handles above, and a refused artifact answers nothing to
+        // root (`docs/design/image-format.md`, "Two artifacts").
+        let root_class = m.stash(Value::Obj(root_class));
+        let roots = graph.roots.into_iter().map(|root| m.stash(root)).collect();
+        Ok((root_class, roots, entry, header.stateless))
+    })?;
+    let (root_class, roots, entry, stateless) = decoded;
     Ok(LoadedImage {
         interp,
         root_class,
@@ -335,6 +335,6 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         origin,
         source,
         entry,
-        stateless: header.stateless,
+        stateless,
     })
 }

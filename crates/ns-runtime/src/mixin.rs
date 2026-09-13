@@ -79,7 +79,7 @@ impl MixinMethod {
 }
 
 /// One of a mixin's own instance slots. The name is what the run time
-/// needs (`Interpreter::apply_mixin` lays the instance out by name); the
+/// needs (`Mutator::apply_mixin` lays the instance out by name); the
 /// declaration carries the initializer expression, which only the compiler
 /// reads.
 #[derive(Debug, Clone)]
@@ -236,7 +236,7 @@ pub struct MixinApplication {
     pub num_slots: usize,
     /// Where this application's *own* slots start -- `superclass.num_slots`,
     /// or 0 with none. Read at run time
-    /// (`Interpreter::initializer_body`, into the activation's `slot_base`)
+    /// (`Mutator::initializer_body`, into the activation's `slot_base`)
     /// to turn a compiled `InitSlot`'s mixin-relative `own_index` into this
     /// application's absolute field index: the compiled initializer is
     /// shared by every application of the mixin (keying code by mixin

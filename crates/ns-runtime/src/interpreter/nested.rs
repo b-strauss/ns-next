@@ -12,7 +12,7 @@
 //! must be a distinct class per instance of the enclosing class" -- so the
 //! result is cached in a hidden slot of `r` itself (`nested_slot`).
 //! Behaviour is per mixin application (§6.2), so the class object is built
-//! around whatever `Interpreter::apply_mixin` returns, which is shared by
+//! around whatever `Mutator::apply_mixin` returns, which is shared by
 //! every enclosing instance that resolves the clause to the same superclass.
 //!
 //! This lives under `interpreter/` rather than in `mixin.rs` because it is
@@ -30,7 +30,7 @@ use crate::mixin::{mixin_key, Mixin};
 use crate::types::*;
 use crate::Symbol;
 
-use super::{Interpreter, Signal, Step};
+use super::{Mutator, Signal, Step};
 
 /// What a superclass clause evaluates: the `ec` of `newspeak-spec.pdf` §6.1,
 /// as an ordinary expression.
@@ -111,12 +111,12 @@ pub(crate) fn superclass_clause_message_args_expr(
 /// receiver's dynamic class's superclass -- which for an inherited
 /// declaration is one or more levels too deep.
 pub(crate) fn nested_class(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     receiver: &Value,
     nested: &Rc<Mixin>,
     declaring_class: ClassRef,
 ) -> Result<Step, Signal> {
-    let Some((obj, index, cached)) = cache_slot(interp, receiver, nested) else {
+    let Some((obj, index, cached)) = cache_slot(m, receiver, nested) else {
         return Err(no_cache_slot_error(receiver, nested.name));
     };
     // Step 1: the receiver's own cache. `Nil` is "not yet" -- `instantiate`
@@ -144,15 +144,15 @@ pub(crate) fn nested_class(
     if nested.superclass.is_none() {
         // No clause at all (`class N = (...)`): `Object`, the same default
         // `instantiate::resolve_superclass_receiver` gives a root class.
-        let object = Value::Obj(interp.builtin_class(BuiltinClass::Object));
-        return after_clause(interp, creation, object);
+        let object = Value::Obj(m.builtin_class(BuiltinClass::Object));
+        return after_clause(m, creation, object);
     }
     Ok(Step::SuperclassClause(Box::new(creation)))
 }
 
 /// The compiled superclass clause of `nested`, a declaration with a clause.
 ///
-/// Its activation (`Interpreter::push_step`) runs as part of the class that
+/// Its activation (`Mutator::push_step`) runs as part of the class that
 /// *declares* it: the clause is resolved against that declaration's
 /// enclosing chain, and `super`-prefixed forms look up from that class's
 /// superclass -- which is why the activation's class is the declaring class
@@ -160,7 +160,7 @@ pub(crate) fn nested_class(
 /// when the declaration is inherited. Its kind, `FrameKind::SuperclassClause`,
 /// names the table its body came from, which `image::decode::frame_body`
 /// resolves a frame's body by, and makes it a return target
-/// (`Interpreter::catches_return`).
+/// (`Mutator::catches_return`).
 pub(super) fn superclass_clause_code(nested: &Mixin) -> Rc<crate::bytecode::CompiledCode> {
     nested.superclass_clause_code.clone().unwrap_or_else(|| {
         panic!("internal: mixin with a superclass clause carries no compiled form for it (a mixin built from source always does; verify_mixins refuses a decoded one)")
@@ -168,11 +168,11 @@ pub(super) fn superclass_clause_code(nested: &Mixin) -> Rc<crate::bytecode::Comp
 }
 
 /// Steps 3-5, once the superclass clause has evaluated to `superclass`:
-/// `Interpreter::resume` calls this when the clause's activation returns, and
+/// `Mutator::resume` calls this when the clause's activation returns, and
 /// `nested_class` directly for a declaration with no clause. By value, not
 /// boxed: only the continuation needs the box.
 pub(crate) fn after_clause(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     creation: NestedClassCreation,
     superclass: Value,
 ) -> Result<Step, Signal> {
@@ -185,21 +185,21 @@ pub(crate) fn after_clause(
     let Value::Obj(superclass) = superclass else {
         return Err(not_a_class_error(nested.name, superclass));
     };
-    let Some(super_application) = interp.heap.class_application(superclass) else {
+    let Some(super_application) = m.heap.class_application(superclass) else {
         return Err(not_a_class_error(nested.name, Value::Obj(superclass)));
     };
     // Step 3: the application cache decides whether this behaviour already
     // exists. Two enclosing instances whose clauses land on the same
     // superclass application share one application, and therefore one
     // compiled body and one instance layout (§6.2).
-    let application = interp.apply_mixin(&nested, Some(&super_application));
+    let application = m.apply_mixin(&nested, Some(&super_application));
     // Step 4: identity is per receiver. The class object's superclass chain
     // and its application's superclass chain are linked together here --
     // `dispatch::next_level` steps both and stops if either is missing.
     // `declaring_class` records the level this declaration is written in,
     // which is what `dispatch::kth_enclosing_object` steps out along; unlike
     // the superclass chain it does not follow inheritance.
-    let class = interp.new_class_object(
+    let class = m.new_class_object(
         application,
         Some(enclosing),
         Some(declaring_class),
@@ -207,7 +207,7 @@ pub(crate) fn after_clause(
     );
     // Step 5: cache before answering, so step 1 hits from now on.
     crate::interpreter::locals::store_instance_field(
-        &mut interp.heap,
+        &mut m.heap,
         &Value::Obj(enclosing),
         index,
         Value::Obj(class),
@@ -232,20 +232,16 @@ pub(crate) fn after_clause(
 /// The declaration itself, not its name: `MixinApplication::nested_slot` is
 /// keyed by declaration identity so that a subclass's `class N` and the
 /// inherited `class N` it shadows cache into different slots.
-fn cache_slot(
-    interp: &Interpreter,
-    receiver: &Value,
-    nested: &Rc<Mixin>,
-) -> Option<(ObjRef, usize, Value)> {
-    let class = interp.class_of(receiver);
-    let index = interp
+fn cache_slot(m: &Mutator, receiver: &Value, nested: &Rc<Mixin>) -> Option<(ObjRef, usize, Value)> {
+    let class = m.class_of(receiver);
+    let index = m
         .heap
         .class_application(class)?
         .nested_slot
         .get(&mixin_key(nested))
         .copied()?;
     match receiver {
-        Value::Obj(obj) => interp
+        Value::Obj(obj) => m
             .heap
             .instance_field(*obj, index)
             .map(|cached| (*obj, index, cached)),
@@ -286,13 +282,12 @@ fn is_creation_in_progress(value: Value) -> bool {
 /// The clause activation of a creation has just been pushed: mark its class
 /// as being created, in slot `index` of `enclosing`, where it will be cached.
 /// Only a slot `nested_class` found `Nil` gets here.
-pub(super) fn begin_creation(interp: &mut Interpreter, enclosing: ObjRef, index: usize) {
-    interp
-        .heap
+pub(super) fn begin_creation(m: &mut Mutator, enclosing: ObjRef, index: usize) {
+    m.heap
         .set_instance_field(enclosing, index, CREATION_IN_PROGRESS);
     #[cfg(debug_assertions)]
     {
-        interp.creations_in_progress += 1;
+        m.creations_in_progress += 1;
     }
 }
 
@@ -305,19 +300,17 @@ pub(super) fn begin_creation(interp: &mut Interpreter, enclosing: ObjRef, index:
 /// `InitSlot`'s field index, so an image's clause body can overwrite the
 /// slot; that value is left as the image wrote it, and is why this is not an
 /// assertion, which such an image would turn into a panic.
-pub(super) fn end_creation(interp: &mut Interpreter, creation: &NestedClassCreation) {
-    if interp
-        .heap
+pub(super) fn end_creation(m: &mut Mutator, creation: &NestedClassCreation) {
+    if m.heap
         .instance_field(creation.enclosing, creation.index)
         .is_some_and(is_creation_in_progress)
     {
-        interp
-            .heap
+        m.heap
             .set_instance_field(creation.enclosing, creation.index, Value::Nil);
     }
     #[cfg(debug_assertions)]
     {
-        interp.creations_in_progress -= 1;
+        m.creations_in_progress -= 1;
     }
 }
 

@@ -18,6 +18,9 @@
 use crate::types::*;
 use crate::Symbol;
 
+mod world;
+pub(crate) use world::World;
+
 /// Hands every `Heap` a distinct id, so a handle can name the heap that
 /// allocated it. Debug builds only -- the id and the field on each handle
 /// both compile out of a release build, where a handle is exactly its
@@ -233,7 +236,7 @@ pub struct ActivationHeader {
     pub then: Continuation,
     /// Whether the activation counts against the depth limit -- every one
     /// does, except a block a control-flow native activates for a
-    /// `SendInlinable` (`Interpreter::push_step`).
+    /// `SendInlinable` (`Mutator::push_step`).
     pub counted: bool,
 }
 
@@ -1241,7 +1244,7 @@ impl Heap {
 
     /// Answers whether the write happened, mirroring `array_set`,
     /// `set_instance_field` and `set_class_superclass`/`set_class_application`
-    /// below. `Interpreter::metaclass_of` is the only caller, and it only
+    /// below. `Mutator::metaclass_of` is the only caller, and it only
     /// ever calls this on a level it just confirmed is a class object a few
     /// lines above -- a wrong-shape `class` here would mean an uncached
     /// metaclass, which is silent: every later class-side send would rebuild
@@ -1837,7 +1840,7 @@ impl Heap {
     /// in every stack entry and the continuation it owns, in every register,
     /// and in every host root -- into the next epoch. What the heap does not
     /// hold, the caller forwards with the answer: the interpreter's own
-    /// roots (`Interpreter::move_everything`). A compacting collection that
+    /// roots (`World::move_everything`). A compacting collection that
     /// treats everything as live; the stress mode runs one at the run loop's
     /// safepoints (`docs/design/memory.md`, "Checking the roots before a
     /// collector exists").

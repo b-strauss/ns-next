@@ -13,7 +13,7 @@
 
 use crate::interpreter::{Signal, Step, StepArgs};
 use crate::types::*;
-use crate::{Heap, Interpreter, Symbol};
+use crate::{Heap, Mutator, Symbol};
 
 fn out_of_range(receiver: &Value, selector: Symbol, index: i64, len: usize) -> NewspeakError {
     NewspeakError {
@@ -48,7 +48,7 @@ fn not_an_integer(
 /// leaf and is not here: it activates a block, so it answers a step
 /// (`do_step`).
 fn dispatch_common(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
@@ -57,24 +57,23 @@ fn dispatch_common(
         return None;
     };
     match selector.as_str() {
-        "size" => interp
+        "size" => m
             .heap
             .array_len(*obj)
             .map(|len| Ok(Value::SmallInt(len as i64))),
         "at:" => {
-            let len = interp.heap.array_len(*obj)?;
+            let len = m.heap.array_len(*obj)?;
             Some(match args.first() {
                 Some(Value::SmallInt(index)) => {
                     if *index >= 1 && (*index as usize) <= len {
-                        Ok(interp
-                            .heap
+                        Ok(m.heap
                             .array_at(*obj, (*index as usize) - 1)
                             .unwrap_or(Value::Nil))
                     } else {
                         Err(out_of_range(&receiver, selector, *index, len))
                     }
                 }
-                other => Err(not_an_integer(&interp.heap, &receiver, selector, other)),
+                other => Err(not_an_integer(&m.heap, &receiver, selector, other)),
             })
         }
         _ => None,
@@ -85,7 +84,7 @@ fn dispatch_common(
 /// half, kept apart from its `do:` arm so the two compose in `dispatch_array`
 /// without either copying the other's shape.
 fn array_leaf(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
@@ -94,32 +93,25 @@ fn array_leaf(
         let Value::Obj(obj) = &receiver else {
             return None;
         };
-        let len = interp.heap.array_len(*obj)?;
+        let len = m.heap.array_len(*obj)?;
         let index = match args.first() {
             Some(Value::SmallInt(index)) => *index,
-            other => {
-                return Some(Err(not_an_integer(
-                    &interp.heap,
-                    &receiver,
-                    selector,
-                    other,
-                )))
-            }
+            other => return Some(Err(not_an_integer(&m.heap, &receiver, selector, other))),
         };
         if index < 1 || (index as usize) > len {
             return Some(Err(out_of_range(&receiver, selector, index, len)));
         }
         let value = args.get(1).copied().unwrap_or(Value::Nil);
-        interp.heap.array_set(*obj, (index as usize) - 1, value);
+        m.heap.array_set(*obj, (index as usize) - 1, value);
         return Some(Ok(receiver));
     }
-    dispatch_common(interp, receiver, selector, args)
+    dispatch_common(m, receiver, selector, args)
 }
 
 /// `add:`, falling through to `dispatch_common` -- `dispatch_ordered_collection`'s
 /// leaf half, kept apart from its `do:` arm for the same reason `array_leaf` is.
 fn ordered_collection_leaf(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
@@ -128,14 +120,14 @@ fn ordered_collection_leaf(
         let Value::Obj(obj) = &receiver else {
             return None;
         };
-        interp.heap.array_len(*obj)?;
+        m.heap.array_len(*obj)?;
         // Matches the reference library's convention: `add:` returns the
         // argument, not the receiver.
         let value = args.first().copied().unwrap_or(Value::Nil);
-        interp.heap.array_push(*obj, value);
+        m.heap.array_push(*obj, value);
         return Some(Ok(value));
     }
-    dispatch_common(interp, receiver, selector, args)
+    dispatch_common(m, receiver, selector, args)
 }
 
 /// Lifts a leaf's result into the step it is -- the shared tail of
@@ -149,29 +141,29 @@ fn leaf_step(result: Option<Result<Value, NewspeakError>>) -> Option<Result<Step
 /// `do_step`'s block-activation step for it, `array_leaf`'s plain value or
 /// error (through `leaf_step`) for everything else.
 pub(crate) fn dispatch_array(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
 ) -> Option<Result<Step, Signal>> {
     if selector.as_str() == "do:" {
-        return do_step(interp, receiver, selector, args);
+        return do_step(m, receiver, selector, args);
     }
-    leaf_step(array_leaf(interp, receiver, selector, args))
+    leaf_step(array_leaf(m, receiver, selector, args))
 }
 
 /// `OrderedCollection`'s native methods, `do:` included -- same split as
 /// `dispatch_array`.
 pub(crate) fn dispatch_ordered_collection(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
 ) -> Option<Result<Step, Signal>> {
     if selector.as_str() == "do:" {
-        return do_step(interp, receiver, selector, args);
+        return do_step(m, receiver, selector, args);
     }
-    leaf_step(ordered_collection_leaf(interp, receiver, selector, args))
+    leaf_step(ordered_collection_leaf(m, receiver, selector, args))
 }
 
 /// `do:` on an `Array` or an `OrderedCollection`: the block activated for each
@@ -181,7 +173,7 @@ pub(crate) fn dispatch_ordered_collection(
 /// `None` when `receiver` has no `ObjectData::Array` payload, so the send
 /// falls through to `doesNotUnderstand:` as every other selector here does.
 fn do_step(
-    interp: &Interpreter,
+    m: &Mutator,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
@@ -189,7 +181,7 @@ fn do_step(
     let Value::Obj(obj) = &receiver else {
         return None;
     };
-    let items = interp.heap.array_elements(*obj)?;
+    let items = m.heap.array_elements(*obj)?;
     let Some(block) = args.first().copied() else {
         return Some(Err(Signal::Error(NewspeakError {
             selector,
@@ -207,7 +199,7 @@ fn do_step(
     let Value::Obj(block) = block else {
         return Some(Ok(Step::Value(receiver)));
     };
-    if !interp.heap.is_closure(block) {
+    if !m.heap.is_closure(block) {
         return Some(Ok(Step::Value(receiver)));
     }
     Some(Ok(element_step(Box::new(DoLoop {

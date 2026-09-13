@@ -10,7 +10,7 @@ pub mod text;
 
 use crate::interpreter::{Signal, Step};
 use crate::types::*;
-use crate::{platform, Interpreter, Symbol};
+use crate::{platform, Mutator, Symbol};
 
 /// `None` = this builtin does not implement `selector` (let the caller fall
 /// through to `doesNotUnderstand:`). `Some(Err(Signal::Error(_)))` = a
@@ -27,42 +27,32 @@ use crate::{platform, Interpreter, Symbol};
 /// plain leaf: it keeps a `Result<Value, NewspeakError>` signature, wrapped
 /// into the step it is right here, by `wrap_error`.
 pub(crate) fn dispatch_native(
-    interp: &mut Interpreter,
+    m: &mut Mutator,
     kind: BuiltinClass,
     receiver: Value,
     selector: Symbol,
     args: &[Value],
 ) -> Option<Result<Step, Signal>> {
     match kind {
-        BuiltinClass::Object => {
-            object_class::dispatch(interp, receiver, selector, args).map(wrap_error)
-        }
+        BuiltinClass::Object => object_class::dispatch(m, receiver, selector, args).map(wrap_error),
         BuiltinClass::Boolean | BuiltinClass::True | BuiltinClass::False => {
-            boolean::dispatch(interp, receiver, selector, args)
+            boolean::dispatch(m, receiver, selector, args)
         }
         BuiltinClass::Integer => {
-            numbers::dispatch_integer(interp, receiver, selector, args).map(wrap_error)
+            numbers::dispatch_integer(m, receiver, selector, args).map(wrap_error)
         }
-        BuiltinClass::Float => {
-            numbers::dispatch_float(interp, receiver, selector, args).map(wrap_error)
-        }
-        BuiltinClass::Str => {
-            text::dispatch_string(interp, receiver, selector, args).map(wrap_error)
-        }
-        BuiltinClass::Sym => {
-            text::dispatch_symbol(interp, receiver, selector, args).map(wrap_error)
-        }
+        BuiltinClass::Float => numbers::dispatch_float(m, receiver, selector, args).map(wrap_error),
+        BuiltinClass::Str => text::dispatch_string(m, receiver, selector, args).map(wrap_error),
+        BuiltinClass::Sym => text::dispatch_symbol(m, receiver, selector, args).map(wrap_error),
         BuiltinClass::Character => {
-            text::dispatch_character(interp, receiver, selector, args).map(wrap_error)
+            text::dispatch_character(m, receiver, selector, args).map(wrap_error)
         }
-        BuiltinClass::Array => collections::dispatch_array(interp, receiver, selector, args),
+        BuiltinClass::Array => collections::dispatch_array(m, receiver, selector, args),
         BuiltinClass::OrderedCollection => {
-            collections::dispatch_ordered_collection(interp, receiver, selector, args)
+            collections::dispatch_ordered_collection(m, receiver, selector, args)
         }
-        BuiltinClass::Block => block::dispatch(interp, receiver, selector, args),
-        BuiltinClass::Platform => {
-            platform::dispatch(interp, receiver, selector, args).map(wrap_error)
-        }
+        BuiltinClass::Block => block::dispatch(m, receiver, selector, args),
+        BuiltinClass::Platform => platform::dispatch(m, receiver, selector, args).map(wrap_error),
         _ => None,
     }
 }
