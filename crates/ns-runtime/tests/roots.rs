@@ -84,22 +84,33 @@ fn instantiating_a_root_that_holds_no_class_is_a_newspeak_error() {
 
 /// A root nothing outside the table holds is swept, so a host that makes
 /// many sends and keeps few results does not grow the table without bound
-/// -- in a release build too, where nothing moves.
+/// -- in a release build too, where nothing moves. A root the host still
+/// holds is never swept: the table is what the collector traces, so a live
+/// root it dropped would go stale at the first move. `fetch` reads through
+/// the root's own slot and cannot tell, so the table's count is what is
+/// checked.
 #[test]
 fn roots_a_host_has_dropped_are_swept() {
-    let (interp, class) = load(COUNTER);
+    const HELD: usize = 100;
+    let (interp, _class) = load(COUNTER);
+    let held: Vec<Root> = (0..HELD as i64)
+        .map(|i| interp.stash(Value::SmallInt(-i)))
+        .collect();
     for i in 0..10_000 {
         let _ = interp.stash(Value::SmallInt(i));
     }
+    let count = interp.heap_ref().host_root_count();
     assert!(
-        interp.heap_ref().host_root_count() < 200,
-        "the table holds {} roots after 10,000 dropped ones",
-        interp.heap_ref().host_root_count()
+        count >= HELD,
+        "the table holds {count} roots while the host still holds {HELD}"
     );
     assert!(
-        matches!(interp.fetch(&class), Value::Obj(_)),
-        "a root the host still holds survives every sweep"
+        count < 3 * HELD,
+        "the table holds {count} roots after 10,000 dropped ones, with {HELD} held"
     );
+    for (i, root) in held.iter().enumerate() {
+        assert!(matches!(interp.fetch(root), Value::SmallInt(v) if v == -(i as i64)));
+    }
 }
 
 /// A root belongs to the heap that stashed it: another heap's table does
