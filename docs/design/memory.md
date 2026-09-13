@@ -399,6 +399,12 @@ handle across a safepoint, and a native re-entering the run loop.
 `compile_fail` doctests pin both, and a third: storing a branded handle in a
 host's own field.
 
+It also closes the one case the stress mode's epoch check cannot reach:
+`same` compares two handles with no heap in reach, so it can check their
+epochs only against each other, and two stale handles from the same old epoch
+pass it where a live handle against a stale one panics. Under the brand
+neither could have been held past the safepoint that moved them.
+
 `ActivationRef` stays unbranded: the collector moves no stack entry, and its
 generation check already covers an index reused after a pop.
 
@@ -562,7 +568,7 @@ safepoint, and a run that makes no send and closes no loop — a host's send of
 moved at all.
 
 What it costs is time. The whole suite, test binaries already built, takes
-190.2 s under the variable against 12.7 s without it, 682 tests alike. Almost
+190.2 s under the variable against 12.7 s without it, 685 tests alike. Almost
 half of that is `crates/ns-runtime/tests/trampoline.rs`, 91.5 s against 3.0 s,
 nearly all of it in `the_depth_limit_is_exact_and_counts_alike_under_both_lowerings`;
 most of the rest is the three CLI test binaries that spawn `ns-next` per
@@ -575,7 +581,8 @@ The stress runs are gates: `CLAUDE.md` requires the whole suite and
 `run-corpus` — every runnable module from source and as a built binary, under
 both lowerings — under the variable before every commit. A release build
 contains none of it: `trace.rs`, the epoch, the move, the schedule and the
-test hooks (`Interpreter::move_now`, `moves`, `set_stress_moves`) are
+test hooks (`Interpreter::move_now`, `moves`, `stress_safepoints`,
+`set_stress_moves`) are
 `#[cfg(debug_assertions)]`, and only the poll is left, whose price is measured
 in "Where a collection can happen" above.
 

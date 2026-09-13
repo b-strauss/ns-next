@@ -1035,7 +1035,7 @@ Medians in ms from the first sitting, and each group's mean:
 | `bench_do.ns` | 7.92, 8.17, 7.96, 7.98, 8.05 | 8.02 | 8.00, 8.10, 7.90, 7.88, 8.22 | 8.02 | 7.96, 7.97, 7.80, 8.00, 7.81 | 7.91 |
 | `bench_new.ns` | 7.46, 7.39, 7.49, 7.49, 7.37 | 7.44 | 7.44, 7.27, 7.41, 7.27, 7.31 | 7.34 | 7.32, 7.45, 7.46, 7.40, 7.42 | 7.41 |
 | `bench_new2.ns` | 8.34, 8.41, 8.47, 8.38, 8.50 | 8.42 | 8.24, 8.33, 8.26, 8.35, 8.42 | 8.32 | 8.48, 8.44, 8.32, 8.31, 8.22 | 8.35 |
-| `bench_newarg.ns` | 10.66, 10.45, 10.57, 10.59, 10.60 | 10.58 | 10.20, 10.24, 10.22, 10.27, 10.29 | 10.24 | 10.26, 10.21, 10.24, 10.26, 10.11 | 10.22 |
+| `bench_newarg.ns` | 10.66, 10.45, 10.57, 10.59, 10.60 | 10.57 | 10.20, 10.24, 10.22, 10.27, 10.29 | 10.24 | 10.26, 10.21, 10.24, 10.26, 10.11 | 10.22 |
 
 The change of the after-group's mean in both sittings:
 
@@ -1045,7 +1045,7 @@ The change of the after-group's mean in both sittings:
 | `bench_send.ns` | +0.3% / −0.5%, overlapping | +0.9% / +1.4%, overlapping |
 | `bench_block.ns` | **−4.2% / −3.9%**, after entirely below in both | **−2.5% / −2.6%**, after entirely below in both |
 | `bench_do.ns` | −1.4% / −1.1%, overlapping | −1.4% / −1.3%, overlapping |
-| `bench_new.ns` | +1.0% / +0.7%, overlapping | −0.4% / −1.4%, after entirely below in the second |
+| `bench_new.ns` | +1.0% / +0.7%, overlapping | −0.4% / −1.4%, the groups touching at 7.46 in the second |
 | `bench_new2.ns` | +0.4% / +0.8%, after entirely above in the second, by 0.01 ms | −0.8% / −0.6%, overlapping |
 | `bench_newarg.ns` | −0.3% / −0.4%, overlapping | −3.4% / −3.2%, after entirely below in both |
 
@@ -1093,7 +1093,7 @@ a push onto the table against a run of milliseconds. Every after-figure above
 includes it.
 
 The suite (`cargo test --workspace`, debug build, test binaries already built)
-takes 12.7 s for 682 tests, against 12.5 s for 662 before the step. Under
+takes 12.7 s for 685 tests, against 12.5 s for 662 before the step. Under
 `NS_NEXT_STRESS_MOVES=1` it takes 190.2 s: almost half of that is
 `crates/ns-runtime/tests/trampoline.rs`'s depth-limit test, and most of the
 rest the CLI tests that spawn `ns-next` per fixture or golden

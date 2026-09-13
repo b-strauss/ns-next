@@ -75,11 +75,11 @@ written against the code as 2b left it.
   block in that body; the clause *message*'s case, a `^` caught by the
   message's activation, is pinned
   (`a_return_in_a_clause_messages_block_hands_its_value_to_the_walk`).
-- **2b's reviews left small findings**, none of them a defect in what runs:
-  two stress tests that assert less than their names say, a panic message
-  whose move number is off by one, and a few tidy-ups in `heap.rs` and
-  `image/decode.rs`. They are listed under "Left, deliberately" in "M4 — The
-  safepoint, tracing, host roots and the stress mode" below.
+- **Two stale handles from the same old epoch compare in `same()` without a
+  panic.** `same` has no heap in reach, so it can check the two epochs only
+  against each other; a live handle against a stale one panics. That is what
+  2c's brand closes ([memory.md](design/memory.md), "Planned: the brand"),
+  and it is the one finding 2b's reviews left.
 - **The stress suite takes three minutes** (190 s against 12.7 s), almost half
   of it one test, `the_depth_limit_is_exact_and_counts_alike_under_both_lowerings`.
   It is a gate before every commit, so 2c's plan should budget for it.
@@ -1559,7 +1559,7 @@ and the change in each sitting:
 | `bench_do.ns` | 8.02 | 8.02 | 7.91 | −1.4% / −1.1% | −1.4% / −1.3% |
 | `bench_new.ns` | 7.44 | 7.34 | 7.41 | +1.0% / +0.7% | −0.4% / −1.4% |
 | `bench_new2.ns` | 8.42 | 8.32 | 8.35 | +0.4% / +0.8%, after entirely above in the second, by 0.01 ms | −0.8% / −0.6% |
-| `bench_newarg.ns` | 10.58 | 10.24 | 10.22 | −0.3% / −0.4% | −3.4% / −3.2% |
+| `bench_newarg.ns` | 10.57 | 10.24 | 10.22 | −0.3% / −0.4% | −3.4% / −3.2% |
 
 **No source is slower than before the step beyond the sittings' noise, and
 `bench_block.ns` is about 4% faster.** `bench_new2.ns`'s after-group lay
@@ -1580,44 +1580,13 @@ built) takes 12.7 s, against 12.5 s before the step. Under
 `ns-cli`'s tests, which spawn `ns-next` per fixture or golden, about 96 s
 against 7.6 s.
 
-682 tests pass, with one ignored (662 before); `parse-corpus` stays at
+685 tests pass, with one ignored (662 before); `parse-corpus` stays at
 **210/0/1/0** and `run-corpus` at **6/0/205**, plain and under the stress mode.
 
-**Left, deliberately** — found by the reviews, none of them a defect in what
-runs:
-
-- **The stale-handle panics name the wrong move.** `Heap::check_object_origin`,
-  `check_frame_origin` and the `Forwarder` print the handle's epoch as the move
-  it was "minted before"; a handle minted in epoch 0 and read after move 1
-  says "minted before move 0". The panic fires correctly; only its wording is
-  off by one.
-- **Two stress tests assert less than their names say.**
-  `a_value_a_host_keeps_across_a_run_is_refused_under_stress`
-  (`crates/ns-runtime/tests/stress.rs`) would also pass on a stale-handle
-  panic inside the run rather than at the host's read, and
-  `every_continuation_survives_a_move_at_every_safepoint` asserts only that
-  more than 20 moves happened, not that the heap stayed within the budget.
-- **Test gaps elsewhere.** `a_closure_activations_home_and_captured_frame_are_its_closures`
-  (`heap.rs`) uses one frame for both, so it cannot catch the two swapped in
-  `closure_frames`; no test pins `inspect`'s `closure object <id>` or its
-  refusal of the retired tag 1; `a_world_reached_from_roots_survives_moves`'
-  doc names a nested class's enclosing object among what survives, and nothing
-  reads it after the moves; the decision-size pin runs only in a release
-  build, and a debug-size pin could join it.
-- **Tidy-ups.** The host-root sweep is written twice (`Heap::stash`,
-  `Heap::move_everything`), where a `HostRoots::sweep` would do;
-  `Heap::move_everything` is not `#[must_use]`, although dropping its
-  `Forwarder` leaves the interpreter's roots stale; six closure accessors in
-  `heap.rs` repeat the same check, index and match, and `image/decode.rs`
-  resolves an object id to `BadObjectId` in three places;
-  `Interpreter::safepoint` tests `stress.is_some()` and then again through
-  `as_mut`; `Heap`'s `Debug` reads the root table with `borrow()`, where
-  `try_borrow` could not panic; `image::load` stashes its roots only after
-  every verification with no comment saying why (image-format.md does); a
-  comment rustfmt pushed out of place in
-  `the_retired_closure_frame_tag_is_refused`, and one test in
-  `tests/image.rs` without the "read out after the last run" note its
-  neighbours carry.
+**Left, deliberately**, the one finding of the reviews that is not closed:
+two stale handles from the same old epoch compare in `same()` without a
+panic, since `same` has no heap to check them against. That is what 2c's
+brand closes ([memory.md](design/memory.md), "Planned: the brand").
 
 ## Notes
 
