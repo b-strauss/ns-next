@@ -104,12 +104,13 @@ Two things already in place serve this and are not to be regressed: the
 statement→PC table on every `CompiledCode`, and a chain of running activations
 walkable independently of the Rust stack — the activation stack — on which the
 trampoline runs every send without recursing through the Rust stack
-([execution.md](execution.md), "The trampoline"). Two things still block it.
-Nothing can suspend an activation yet: there is no yield path out of the run
-loop, and `do:`, instantiation and the nested-class accessor still hold a Rust
-frame while the loop runs above them ([image-format.md](image-format.md),
-"Planned: suspend and resume"). And an activation's `pc` is currently stored
-only at observable points, which the debugger milestone may need to revisit.
+([execution.md](execution.md), "The trampoline"), and with no Rust frame
+between the host and the loop, since nothing re-enters it from Rust ([execution.md](execution.md),
+"No re-entry from Rust"). Two things still block it. Nothing can suspend an
+activation yet: there is no yield path out of the run loop
+([image-format.md](image-format.md), "Planned: suspend and resume"). And an
+activation's `pc` is currently stored only at observable points, which the
+debugger milestone may need to revisit.
 
 The reified frame is not the *default* representation of an activation; it is
 the one a block, and later a debugger, asks for. Nothing here loses a capability

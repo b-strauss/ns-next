@@ -152,7 +152,7 @@ pub enum DecodeError {
     UnknownSelector(String),
     /// A mixin-table row declares slots or `initExpr`s but carries no
     /// compiled initializer. Instantiating such a class runs initializer
-    /// code on every `X new`, and `run_own_initializer` panics on that
+    /// code on every `X new`, and `Interpreter::initializer_body` panics on that
     /// invariant rather than failing -- so only refusing here keeps a
     /// crafted image from aborting the process at the first `X new`.
     MissingInitializer,
@@ -757,7 +757,7 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
                 mixin.factory.map_or(0, |factory| factory.num_args),
             )?,
             // A class with slots or `initExpr`s runs compiled initializer
-            // code on every `X new`, and `run_own_initializer` *panics*
+            // code on every `X new`, and `Interpreter::initializer_body` *panics*
             // when the mixin carries none. The row's declaration half says
             // the mixin needs one and its code half says whether the image
             // carries it -- two fields only this function compares.
@@ -797,7 +797,7 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
             )?,
             // A mixin whose clause message carries arguments evaluates them
             // on every instantiation, and
-            // `instantiate::eval_superclass_message` panics when the mixin
+            // `instantiate::clause_message_body` panics when the mixin
             // carries no body for them.
             None if mixin_needs_superclass_message_code(mixin) => {
                 return Err(DecodeError::MissingSuperclassMessage)
@@ -812,7 +812,7 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
 /// therefore needs a compiled body for them. Mirrors
 /// `instantiate::mixin_needs_initializer_code`: the one question
 /// `verify_mixins` asks of a decoded declaration, answered off the same
-/// field `instantiate::eval_superclass_message` decides by at run time.
+/// field `instantiate::clause_message_body` decides by at run time.
 fn mixin_needs_superclass_message_code(mixin: &Rc<crate::mixin::Mixin>) -> bool {
     mixin.superclass.is_some_and(|clause| clause.has_args)
 }

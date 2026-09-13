@@ -32,14 +32,8 @@ pub type EvalResult = Result<Value, Signal>;
 /// exempt block activations, at most one per level of block nesting above
 /// each counted one, the stack holds at most 129 x L entries -- 128 being
 /// the parser's nesting ceiling, which `image::decode` holds an artifact to
-/// as well (`docs/design/execution.md`, "Two bounds, not one").
+/// as well (`docs/design/execution.md`, "The depth limit").
 pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
-
-/// N: how deep Rust may re-enter the run loop -- `do:`, instantiation, the
-/// nested-class accessor. It is what bounds the native stack; the CLI sizes
-/// its interpreter thread for it (`docs/design/execution.md`, "Two bounds, not
-/// one").
-pub const MAX_NATIVE_DEPTH: usize = 1_000;
 
 /// What a send decided, before anything runs (`docs/design/execution.md`,
 /// "Deciding, then running"). Deciding is `interpreter/`'s -- lookup,
@@ -66,6 +60,50 @@ pub(crate) enum Step {
         args: StepArgs,
         then: Continuation,
     },
+    /// Activate `level`'s instance initializer on `receiver`, and deliver its
+    /// value: an instantiation's last initializer, whose value is the
+    /// instance (`Interpreter::descend_levels` says why). Its code and slot
+    /// base are `level`'s, found when it is pushed.
+    ///
+    /// This and the three bodies below are inline rather than one boxed
+    /// description of an activation: every instantiation with code runs at
+    /// least one of them, and boxing each one's description measured 5-8%
+    /// slower on a chain of two levels with code. Each is smaller than
+    /// `Step::Method`, deliberately: an `Initializer` as large as it (with an
+    /// optional continuation instead of `InitializerThen`) measured 4-6%
+    /// slower on every benchmark, none of which instantiates anything in its
+    /// loop, though `Result<Step, Signal>` kept its size -- presumably
+    /// because two variants of the largest size leave the discriminant a
+    /// different niche, the effect `StepArgs::ControlFlow`'s comment
+    /// describes.
+    Initializer {
+        receiver: Value,
+        level: ClassRef,
+        args: Vec<Value>,
+    },
+    /// Activate `level`'s instance initializer on the instance `then` is
+    /// initializing, and carry the walk on below it when it returns: an
+    /// initializer with a level below it that still has code.
+    InitializerThen {
+        level: ClassRef,
+        args: Vec<Value>,
+        then: Box<Instantiation>,
+    },
+    /// Activate `code`, the arguments of `level`'s superclass clause message,
+    /// on the instance `then` is initializing and with `level`'s factory
+    /// arguments (§6.2); its value is the superclass's arguments, with which
+    /// `then` carries the walk on.
+    ClauseMessage {
+        level: ClassRef,
+        code: Rc<crate::bytecode::CompiledCode>,
+        args: Vec<Value>,
+        then: Box<Instantiation>,
+    },
+    /// Activate the superclass clause of the nested class `creation`
+    /// describes, on its enclosing object and as part of the class that
+    /// declares it; its value is the superclass, from which the class is
+    /// built, cached and answered (`nested::after_clause`).
+    SuperclassClause(Box<NestedClassCreation>),
 }
 
 /// Where an activation's arguments come from.
@@ -125,26 +163,32 @@ pub struct Interpreter {
     /// exactly what the inline caches will guard on. It would
     /// also grow `applications` without bound.
     empty_class_sides: HashMap<usize, Rc<crate::mixin::Mixin>>,
-    /// The (receiver arena index, declaration identity) pairs whose nested
-    /// class object is being created right now -- see
-    /// `nested::cyclic_definition_error`. A stack, not a set: it is empty
-    /// on every path that is not inside a superclass clause, and a clause
-    /// nests only as deep as a program actually chains class creations, so
-    /// a linear scan beats hashing and allocates nothing in the common
-    /// case.
-    nested_in_progress: Vec<(usize, usize)>,
+    /// How many nested classes are marked as being created
+    /// (`nested::begin_creation`), for `run_from_host`'s check that none
+    /// outlives the run that began it. The mark itself lives in the class's
+    /// cache slot; this only counts it, so a release build keeps nothing.
+    #[cfg(debug_assertions)]
+    creations_in_progress: usize,
+    /// Boxes finished instantiations left behind, emptied, for the next ones
+    /// to walk in (`instantiate.rs`'s `walk_state` and `retire_walk`).
+    /// Allocating a box and a list of levels per instantiation instead
+    /// measured 3-13% slower on instantiation benchmarks. They hold no
+    /// handle, so a collector has nothing to trace in them.
+    #[allow(clippy::vec_box)] // the boxes are what is reused, not only their contents
+    spare_walks: Vec<Box<Instantiation>>,
     /// The lowering every module this interpreter loads is compiled with
     /// (`docs/design/compiler.md`, "The reference lowering"). Fixed at
     /// construction, so one interpreter never mixes the two.
     lowering: Lowering,
     /// The reusable argument buffer the run loop gathers a send's arguments
-    /// into (`vm::send`). Taken while a decision runs and given back
-    /// afterwards, so a decision that re-enters the loop takes a fresh one
-    /// instead of clobbering its caller's.
+    /// into (`vm::send`). Taken while a send is decided and pushed and given
+    /// back afterwards, because the decision needs `&mut Interpreter` while
+    /// it reads the arguments.
     arg_buffer: Vec<Value>,
-    /// How many runs of the loop Rust has re-entered and not yet left
-    /// (`reenter`), checked against `MAX_NATIVE_DEPTH`.
-    native_depth: usize,
+    /// Whether a host's run of the loop is in progress (`run_from_host`).
+    /// Nothing the loop calls can start another -- no decision, native or
+    /// continuation runs code from Rust -- and a debug build checks that.
+    running: bool,
 }
 
 impl Interpreter {
@@ -162,10 +206,12 @@ impl Interpreter {
             platform_singleton: None,
             applications: HashMap::new(),
             empty_class_sides: HashMap::new(),
-            nested_in_progress: Vec::new(),
+            #[cfg(debug_assertions)]
+            creations_in_progress: 0,
+            spare_walks: Vec::new(),
             lowering,
             arg_buffer: Vec::new(),
-            native_depth: 0,
+            running: false,
         };
         interp.builtin_classes = build_builtin_classes(&mut interp);
         interp
@@ -201,30 +247,57 @@ impl Interpreter {
         &mut self.heap
     }
 
-    /// An ordinary (explicit-receiver) send: `newspeak-spec.pdf` §5.5. See
-    /// `decide_send` for the order the cases are tried in.
-    ///
-    /// A send leaves the activation stack exactly as it found it: every
-    /// activation it pushes is popped on every exit, error paths included.
-    /// Checked here, at every host-initiated send (`ns-next run --send`,
-    /// `snapshot --send`, `load --send`) -- a leaked entry is otherwise
-    /// silent, a later activation sitting on top of a dead one's registers.
-    /// A `Send*` the VM issues does not run through this check (`vm.rs`
-    /// decides it and pushes what was decided itself, never through `send`),
-    /// but a leak there is still caught: `Heap::pop_activation` itself
-    /// debug-asserts that the activation it is given is the top of the
-    /// stack, which a leaked entry underneath it would violate.
+    /// An ordinary (explicit-receiver) send from a host: `newspeak-spec.pdf`
+    /// §5.5, decided as `decide_send` decides it and run from the outside
+    /// (`run_from_host`). A `Send*` the VM issues never comes through here:
+    /// `vm.rs` decides it and pushes what was decided itself.
     pub fn send(&mut self, receiver: Value, selector: Symbol, args: Vec<Value>) -> EvalResult {
-        let depth = self.heap.activation_depth();
-        let result = match self.decide_send(receiver, selector, &args) {
-            Ok(Step::Value(value)) => Ok(value),
-            Ok(step) => self.reenter(|interp| interp.push_step(step, &args, None, false)),
+        match self.decide_send(receiver, selector, &args) {
+            Ok(step) => self.run_from_host(step, &args),
             Err(signal) => Err(signal),
+        }
+    }
+
+    /// Runs what a host's send or instantiation decided. It is the only way
+    /// Rust enters the run loop (`docs/design/execution.md`, "No re-entry from
+    /// Rust"): a value needs no activation, and anything else is pushed and
+    /// run by `vm::run`, which pops it and everything it activates on every
+    /// path out.
+    ///
+    /// Three things are checked in a debug build, because each is otherwise
+    /// silent. The loop is never entered while it is running -- nothing it
+    /// calls can reach here. The stack is left as deep as it was found: a
+    /// leaked entry would put a later activation on top of a dead one's
+    /// registers (a leak inside a run is caught too, by
+    /// `Heap::pop_activation`'s check that it pops the top). And no nested
+    /// class's creation outlives the run that began it.
+    fn run_from_host(&mut self, step: Step, send_args: &[Value]) -> EvalResult {
+        debug_assert!(
+            !self.running,
+            "internal: the run loop was re-entered from Rust"
+        );
+        let depth = self.heap.activation_depth();
+        let result = match step {
+            Step::Value(value) => Ok(value),
+            step => match self.push_step(step, send_args, None, false) {
+                Ok(act) => {
+                    self.running = true;
+                    let result = crate::vm::run(self, act);
+                    self.running = false;
+                    result
+                }
+                Err(signal) => Err(signal),
+            },
         };
         debug_assert_eq!(
             self.heap.activation_depth(),
             depth,
-            "a send must leave the activation stack as it found it"
+            "a host's send or instantiation must leave the activation stack as it found it"
+        );
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            self.creations_in_progress, 0,
+            "internal: a nested class's creation outlived the run that began it"
         );
         result
     }
@@ -238,10 +311,12 @@ impl Interpreter {
     /// empty method table (see `build_builtin_classes` below), so an
     /// ordinary `lookup_public` search would just fall through to
     /// `doesNotUnderstand:` every time. `try_factory_send`
-    /// (`instantiate.rs`) recognizes the shape and routes to
-    /// `instantiate` directly; see its own doc comment for why this can
+    /// (`instantiate.rs`) recognizes the shape and decides it as an
+    /// instantiation (`decide_instantiation`) -- not through the host entry
+    /// `instantiate`, which would enter the run loop from inside it, the
+    /// re-entry `run_from_host` refuses; see its own doc comment for why this can
     /// never double-fire against the superclass clause's own deferred
-    /// factory message (`run_initializer_levels` never calls `send`).
+    /// factory message (`climb_levels` never decides a send).
     pub(crate) fn decide_send(
         &mut self,
         receiver: Value,
@@ -249,7 +324,7 @@ impl Interpreter {
         args: &[Value],
     ) -> Result<Step, Signal> {
         if let Some(result) = self.try_factory_send(&receiver, selector, args) {
-            return result.map(Step::Value);
+            return result;
         }
         // §6.3: a class object's class-side methods are reached through its
         // metaclass, consulted before the class object's own (ordinary,
@@ -273,8 +348,7 @@ impl Interpreter {
                             });
                         }
                         Lookup::NestedClass(mixin, declaring_class) => {
-                            return nested::nested_class(self, &receiver, &mixin, declaring_class)
-                                .map(Step::Value);
+                            return nested::nested_class(self, &receiver, &mixin, declaring_class);
                         }
                         Lookup::Native(kind) => {
                             return self.decide_native_or_dnu(kind, receiver, selector, args);
@@ -297,7 +371,7 @@ impl Interpreter {
             // -- the accessor is unary, so a send that supplied arguments
             // did not name it (`walk` matched on the bare selector).
             Lookup::NestedClass(mixin, declaring_class) => {
-                nested::nested_class(self, &receiver, &mixin, declaring_class).map(Step::Value)
+                nested::nested_class(self, &receiver, &mixin, declaring_class)
             }
             Lookup::Native(kind) => self.decide_native_or_dnu(kind, receiver, selector, args),
             Lookup::NotFound => self.decide_does_not_understand(receiver, selector, args),
@@ -534,7 +608,91 @@ impl Interpreter {
                     temps,
                 )
             }
+            // An initializer level, a superclass clause or its message is
+            // never an activation the optimized lowering inlines away, so
+            // each of the three below is always counted.
+            Step::Initializer {
+                receiver,
+                level,
+                args,
+            } => self.push_initializer(receiver, level, &args, Continuation::Deliver),
+            Step::InitializerThen { level, args, then } => {
+                self.push_initializer(then.instance, level, &args, Continuation::Instantiate(then))
+            }
+            Step::ClauseMessage {
+                level,
+                code,
+                args,
+                then,
+            } => {
+                let temps = (code.num_registers - code.num_args) as usize;
+                self.push(
+                    ActivationHeader {
+                        receiver: then.instance,
+                        current_class: Some(level),
+                        kind: FrameKind::SuperclassMessage(level),
+                        slot_base: 0, // a clause message never contains InitSlot
+                        code,
+                        then: Continuation::Instantiate(then),
+                        counted: true,
+                    },
+                    &args,
+                    temps,
+                )
+            }
+            Step::SuperclassClause(creation) => {
+                let code = nested::superclass_clause_code(&creation.nested);
+                let temps = (code.num_registers - code.num_args) as usize;
+                let (enclosing, index) = (creation.enclosing, creation.index);
+                let act = self.push(
+                    ActivationHeader {
+                        receiver: Value::Obj(enclosing),
+                        current_class: Some(creation.declaring_class),
+                        kind: FrameKind::SuperclassClause(creation.declaring_class),
+                        slot_base: 0, // a clause never contains InitSlot
+                        code,
+                        then: Continuation::NestedClass(creation),
+                        counted: true,
+                    },
+                    &[],
+                    temps,
+                )?;
+                // A nested class's creation is in progress exactly while its
+                // clause's activation is on the stack: marked once the push
+                // has succeeded, and unmarked by `resume` or `abandon` when
+                // the activation is popped. A push refused at the depth limit
+                // marks nothing.
+                nested::begin_creation(self, enclosing, index);
+                Ok(act)
+            }
         }
+    }
+
+    /// Pushes `level`'s instance initializer on `receiver`, the one body
+    /// `Step::Initializer` and `Step::InitializerThen` share; only what
+    /// happens once it returns differs.
+    fn push_initializer(
+        &mut self,
+        receiver: Value,
+        level: ClassRef,
+        args: &[Value],
+        then: Continuation,
+    ) -> Result<ActivationRef, Signal> {
+        let (code, slot_base) = self.initializer_body(level);
+        let temps = (code.num_registers - code.num_args) as usize;
+        self.push(
+            ActivationHeader {
+                receiver,
+                current_class: Some(level),
+                kind: FrameKind::Initializer(level),
+                slot_base,
+                code,
+                then,
+                counted: true,
+            },
+            args,
+            temps,
+        )
     }
 
     /// What a control-flow native does once the block it activated has
@@ -555,6 +713,25 @@ impl Interpreter {
                 crate::builtins::block::after_condition(self, state, value)
             }
             Continuation::WhileBody(state) => Ok(crate::builtins::block::after_body(state)),
+            Continuation::DoElement(state) => {
+                Ok(crate::builtins::collections::after_element(state))
+            }
+            Continuation::NestedClass(creation) => {
+                nested::end_creation(self, &creation);
+                nested::after_clause(self, *creation, value)
+            }
+            Continuation::Instantiate(state) => self.advance_instantiation(state, value),
+        }
+    }
+
+    /// What a continuation undoes when its activation is thrown away rather
+    /// than returned from: the counterpart of `resume`, which `vm::unwind`
+    /// calls for every activation it pops. Only a nested class's creation has
+    /// begun anything -- its cache slot is marked as in progress -- so only it
+    /// has anything to undo; every other continuation is simply dropped.
+    pub(crate) fn abandon(&mut self, then: Continuation) {
+        if let Continuation::NestedClass(creation) = then {
+            nested::end_creation(self, &creation);
         }
     }
 
@@ -586,30 +763,6 @@ impl Interpreter {
         self.push_step(step, &[], sender, !replaced_counted)
     }
 
-    /// Every re-entry of the run loop from Rust: `push` pushes one
-    /// activation, and the loop runs it and everything it activates and pops
-    /// all of it (`vm::run`). The public `send`, each initializing level of an
-    /// instantiation and its clause message, the nested-class accessor's
-    /// clause, and every native that still calls a block come through here --
-    /// the paths "What stays recursive" in `docs/design/execution.md` names.
-    ///
-    /// Each re-entry costs native stack, so it is counted against
-    /// `MAX_NATIVE_DEPTH`, and one past it is refused before anything is
-    /// pushed.
-    pub(crate) fn reenter(
-        &mut self,
-        push: impl FnOnce(&mut Interpreter) -> Result<ActivationRef, Signal>,
-    ) -> EvalResult {
-        if self.native_depth >= MAX_NATIVE_DEPTH {
-            return Err(too_many_nested_native_calls());
-        }
-        let act = push(self)?;
-        self.native_depth += 1;
-        let result = crate::vm::run(self, act);
-        self.native_depth -= 1;
-        result
-    }
-
     /// Whether a `^` aimed at `act` ends at `act`: a method's does, and a
     /// superclass clause's or its message's. An initializer catches none -- a
     /// `^` into a running one escapes, the known gap in
@@ -620,20 +773,6 @@ impl Interpreter {
             self.heap.activation_kind(act),
             FrameKind::Method(_) | FrameKind::SuperclassClause(_) | FrameKind::SuperclassMessage(_)
         )
-    }
-
-    /// Invokes a closure with `args`, from Rust. Only `do:` still does this --
-    /// every other native that runs a block returns it as a step instead
-    /// (`docs/design/execution.md`, "What stays recursive"). It re-enters the
-    /// run loop (`reenter`), which pops the closure's activation, and
-    /// everything it activates, on every path out.
-    pub fn invoke_closure(&mut self, closure: &Rc<ClosureData>, args: Vec<Value>) -> EvalResult {
-        let step = Step::Block {
-            closure: closure.clone(),
-            args: StepArgs::Owned(args),
-            then: Continuation::Deliver,
-        };
-        self.reenter(|interp| interp.push_step(step, &[], None, false))
     }
 
     /// Where a `^` in `act` returns to. A block returns from its home --
@@ -1043,10 +1182,10 @@ fn check_block_arity(heap: &Heap, closure: &ClosureData, given: usize) -> Result
     }))
 }
 
-/// L's error, for the activation `header` describes. Neither depth error
-/// names its limit, so that changing one changes no recorded answer. Both are
-/// kept out of line, so that the check on every push is a compare and a
-/// branch and nothing more.
+/// L's error, for the activation `header` describes. The error does not name
+/// its limit, so that changing it changes no recorded answer. It is kept out
+/// of line, so that the check on every push is a compare and a branch and
+/// nothing more.
 #[cold]
 #[inline(never)]
 fn recursion_too_deep(header: &ActivationHeader) -> Signal {
@@ -1059,17 +1198,6 @@ fn recursion_too_deep(header: &ActivationHeader) -> Signal {
         selector,
         receiver: header.receiver,
         message: "stack overflow: recursion too deep".to_string(),
-    })
-}
-
-/// N's error.
-#[cold]
-#[inline(never)]
-fn too_many_nested_native_calls() -> Signal {
-    Signal::Error(NewspeakError {
-        selector: Symbol::UNKNOWN,
-        receiver: Value::Nil,
-        message: "stack overflow: too many nested native calls".to_string(),
     })
 }
 
@@ -1216,5 +1344,271 @@ mod tests {
             Ok(Step::Value(Value::SmallInt(7))) => {}
             _ => panic!("a native leaf is decided as its value"),
         }
+    }
+
+    /// `do:` is decided as the activation of its block for the first
+    /// element, with the rest of the loop in the continuation: nothing runs,
+    /// and nothing is pushed (`docs/design/execution.md`, "No re-entry from
+    /// Rust").
+    #[test]
+    fn deciding_do_answers_its_block_for_the_first_element() {
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              public items = ( ^{10. 20. 30} )
+              public echo = ( ^[:e | e] )
+            ) : ()
+        "};
+        let (mut interp, class) = load(src);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let items = expect_ok(
+            interp.send(instance, Symbol::intern("items"), vec![]),
+            "items",
+        );
+        let echo = expect_ok(
+            interp.send(instance, Symbol::intern("echo"), vec![]),
+            "echo",
+        );
+        match interp.decide_send(items, Symbol::intern("do:"), &[echo]) {
+            Ok(Step::Block {
+                args: StepArgs::Owned(args),
+                then: Continuation::DoElement(state),
+                ..
+            }) => {
+                assert!(
+                    matches!(args.as_slice(), [Value::SmallInt(10)]),
+                    "the first element"
+                );
+                assert_eq!(state.next, 1, "the second element is next");
+                assert_eq!(state.items.len(), 3, "the whole snapshot rides along");
+            }
+            _ => panic!("`do:` is decided as its block's first activation"),
+        }
+        assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
+    }
+
+    /// The nested-class accessor is decided as the activation of the
+    /// superclass clause, with steps 3-5 in the continuation. Nothing is
+    /// pushed, so no creation is in progress yet: one is marked only once its
+    /// clause's activation is on the stack, and the cache slot is still
+    /// `Nil`.
+    #[test]
+    fn deciding_a_nested_class_answers_its_superclass_clause_as_an_activation() {
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              public class N = self base (
+              ) (
+              ) : ()
+              base = ( ^Object )
+            ) : ()
+        "};
+        let (mut interp, class) = load(src);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let slot = match interp.decide_send(instance, Symbol::intern("N"), &[]) {
+            Ok(Step::SuperclassClause(creation)) => {
+                assert!(
+                    matches!(instance, Value::Obj(obj) if obj.same(creation.enclosing)),
+                    "the clause runs on the enclosing object"
+                );
+                creation.index
+            }
+            _ => panic!("a nested class is decided as its clause's activation"),
+        };
+        assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
+        let Value::Obj(obj) = instance else {
+            panic!("an instance is an object");
+        };
+        assert!(
+            matches!(interp.heap.instance_field(obj, slot), Some(Value::Nil)),
+            "nothing is marked as in progress"
+        );
+        #[cfg(debug_assertions)]
+        assert_eq!(interp.creations_in_progress, 0, "nothing is counted");
+    }
+
+    /// A factory send is decided as the instantiation's first body to run --
+    /// a clause message with arguments on the way up, or else the
+    /// initializer of the topmost level with code -- with the rest of the
+    /// walk in the continuation when anything is left to run below it, and a
+    /// plain delivery when nothing is (the initializer answers the
+    /// instance); a class with nothing to initialize at any level is decided
+    /// as its instance outright.
+    #[test]
+    fn deciding_new_answers_the_first_initializer_as_an_activation() {
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              public class P = Object new (
+                | v = 1. |
+              ) (
+              ) : ()
+              public class Q = Object new (
+              ) (
+              ) : ()
+              public class R = P new (
+                | w = 2. |
+              ) (
+              ) : ()
+              public class M x: a = Object new (
+                | m = a. |
+              ) (
+              ) : ()
+              public class S = M x: 3 (
+              ) (
+              ) : ()
+            ) : ()
+        "};
+        let (mut interp, class) = load(src);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let p = expect_ok(interp.send(instance, Symbol::intern("P"), vec![]), "P");
+        let q = expect_ok(interp.send(instance, Symbol::intern("Q"), vec![]), "Q");
+        let r = expect_ok(interp.send(instance, Symbol::intern("R"), vec![]), "R");
+        let s = expect_ok(interp.send(instance, Symbol::intern("S"), vec![]), "S");
+        let Value::Obj(p_class) = p else {
+            panic!("`P` answers a class object")
+        };
+        let Value::Obj(s_class) = s else {
+            panic!("`S` answers a class object")
+        };
+        assert!(
+            matches!(
+                interp.decide_send(p, Symbol::NEW, &[]),
+                Ok(Step::Initializer { level, .. }) if level.same(p_class)
+            ),
+            "`P new` is decided as P's initializer, which delivers"
+        );
+        match interp.decide_send(r, Symbol::NEW, &[]) {
+            Ok(Step::InitializerThen {
+                level, then: state, ..
+            }) => {
+                assert!(level.same(p_class));
+                assert!(matches!(
+                    state.phase,
+                    InstantiationPhase::Descending { index: 1 }
+                ));
+            }
+            _ => panic!("`R new` is decided as its superclass P's initializer, R's still to run"),
+        }
+        match interp.decide_send(s, Symbol::NEW, &[]) {
+            Ok(Step::ClauseMessage { level, then, .. }) => {
+                assert!(level.same(s_class));
+                assert!(matches!(
+                    then.phase,
+                    InstantiationPhase::Climbing { level, .. } if level.same(s_class)
+                ));
+            }
+            _ => panic!("`S new` is decided as its clause message's activation"),
+        }
+        assert!(
+            matches!(
+                interp.decide_send(q, Symbol::NEW, &[]),
+                Ok(Step::Value(Value::Obj(_)))
+            ),
+            "`Q new` is decided as its instance"
+        );
+        assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
+    }
+
+    /// A finished instantiation leaves its walk's box among the spares for
+    /// the next one, and leaves it empty: a spare holds no handle, so it
+    /// keeps nothing alive and a collector need not trace it. The next
+    /// instantiation walks in the same box.
+    #[test]
+    fn a_finished_walk_leaves_an_empty_box_for_the_next() {
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              public class P x: a = Object new (
+                | v = a. |
+              ) (
+              ) : ()
+              public class R = P x: 1 (
+                | w = 2. |
+              ) (
+              ) : ()
+            ) : ()
+        "};
+        let (mut interp, class) = load(src);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let r = expect_ok(interp.send(instance, Symbol::intern("R"), vec![]), "R");
+        let Value::Obj(r) = r else {
+            panic!("`R` answers a class object")
+        };
+        expect_ok(interp.instantiate(r, vec![]), "R new");
+        assert_eq!(interp.spare_walks.len(), 1, "one walk ran at a time");
+        let spare: *const Instantiation = &*interp.spare_walks[0];
+        assert!(
+            interp
+                .spare_walks
+                .iter()
+                .all(|state| matches!(state.instance, Value::Nil) && state.levels.is_empty()),
+            "a spare holds no handle"
+        );
+        expect_ok(interp.instantiate(r, vec![]), "R new again");
+        assert_eq!(interp.spare_walks.len(), 1);
+        assert!(
+            std::ptr::eq(spare, &*interp.spare_walks[0]),
+            "the second walk ran in the first one's box"
+        );
+    }
+
+    /// A walk that climbs through a clause message with arguments, and then
+    /// finds no initializer at any level, retires straight out of
+    /// `descend_levels`'s "nothing below" branch -- the branch that never
+    /// writes `Descending` into `phase`. `retire_walk` must clear `phase`
+    /// itself, or the retired box still holds the two `ClassRef`s of the
+    /// last `Climbing` it was in, contradicting "a spare holds no handle".
+    #[test]
+    fn a_retired_walk_holds_no_classref_in_its_phase() {
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              public class Base x: p = Object new (
+              ) (
+              ) : ()
+              public class Cell = Base x: 1 (
+              ) (
+              ) : ()
+            ) : ()
+        "};
+        let (mut interp, class) = load(src);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let cell = expect_ok(
+            interp.send(instance, Symbol::intern("Cell"), vec![]),
+            "Cell",
+        );
+        let Value::Obj(cell) = cell else {
+            panic!("`Cell` answers a class object")
+        };
+        expect_ok(interp.instantiate(cell, vec![]), "Cell new");
+        assert_eq!(interp.spare_walks.len(), 1, "one walk ran");
+        let state = &interp.spare_walks[0];
+        assert!(matches!(state.instance, Value::Nil), "no instance handle");
+        assert!(state.levels.is_empty(), "no levels");
+        assert!(
+            matches!(state.phase, InstantiationPhase::Descending { .. }),
+            "a retired box's phase holds no ClassRef either"
+        );
+    }
+
+    /// Every decision answers a `Result<Step, Signal>`, so its size is paid
+    /// on every send; a variant that grows it is a cost on every benchmark,
+    /// not only on the path it serves (`StepArgs::ControlFlow`'s comment).
+    /// This is the size the hot path was measured at.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn a_decision_stays_the_size_the_hot_path_was_measured_at() {
+        assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 56);
     }
 }

@@ -225,10 +225,10 @@ pub enum FrameKind {
 }
 
 /// What the run loop does with an activation's value when it returns
-/// (`docs/design/execution.md`, "The trampoline"). Every activation a
-/// send makes hands its value to that send; the other three are how a builtin
-/// control-flow native finishes its work once the block it activated has
-/// returned, with no Rust frame waiting for it.
+/// (`docs/design/execution.md`, "The trampoline"). Every activation a send
+/// makes hands its value to that send; the others are how a builtin native
+/// finishes its work once the block it activated has returned, with no Rust
+/// frame waiting for it.
 #[derive(Debug, Clone)]
 pub enum Continuation {
     /// Hand the value to the send that made the activation.
@@ -240,6 +240,19 @@ pub enum Continuation {
     WhileCondition(Rc<WhileLoop>),
     /// Its body returned.
     WhileBody(Rc<WhileLoop>),
+    /// A native `do:` loop's block returned for one element: activate it for
+    /// the next, or answer the receiver
+    /// (`builtins::collections::after_element`).
+    DoElement(Box<DoLoop>),
+    /// The superclass clause the nested-class accessor evaluated returned the
+    /// superclass: build, cache and answer the class
+    /// (`interpreter::nested::after_clause`).
+    NestedClass(Box<NestedClassCreation>),
+    /// A body an instantiation ran returned -- a clause message's arguments,
+    /// or the initializer of a level with another below it still to run:
+    /// carry the walk on (`Interpreter::advance_instantiation`). The last
+    /// initializer's activation delivers instead (`descend_levels` says why).
+    Instantiate(Box<Instantiation>),
 }
 
 /// A native `whileTrue:`/`whileFalse:` loop in progress: its condition, its
@@ -250,6 +263,72 @@ pub struct WhileLoop {
     pub(crate) condition: Rc<ClosureData>,
     pub(crate) body: Value,
     pub(crate) expect: bool,
+}
+
+/// A native `do:` loop in progress: the collection it answers when it is done,
+/// its block, the elements the collection had when the loop began -- `do:`
+/// walks that snapshot, so a block that changes the collection does not
+/// change the walk -- and the index of the next element to hand the block.
+///
+/// Boxed in its continuation, and owned by exactly one stack entry.
+#[derive(Debug, Clone)]
+pub struct DoLoop {
+    pub(crate) receiver: Value,
+    pub(crate) block: Rc<ClosureData>,
+    pub(crate) items: Vec<Value>,
+    pub(crate) next: usize,
+}
+
+/// A nested class being created for one enclosing object
+/// (`interpreter::nested`): what the accessor needs once the declaration's
+/// superclass clause has been evaluated.
+///
+/// Boxed in its continuation, and owned by exactly one stack entry.
+#[derive(Debug, Clone)]
+pub struct NestedClassCreation {
+    /// The enclosing object `r` of `newspeak-spec.pdf` §6, which caches the
+    /// class.
+    pub(crate) enclosing: ObjRef,
+    /// The absolute index of the hidden slot of `enclosing` the class is
+    /// cached in.
+    pub(crate) index: usize,
+    /// The declaration.
+    pub(crate) nested: Rc<crate::mixin::Mixin>,
+    /// The class object of the level that declares it.
+    pub(crate) declaring_class: ClassRef,
+}
+
+/// An instantiation in progress (`newspeak-spec.pdf` §6.2, and the six steps
+/// of `docs/design/object-model.md`, "Instantiation"): the instance, every
+/// level of the superclass chain the upward walk has reached with the factory
+/// arguments it gets, and which way the walk is going.
+///
+/// Always boxed, in a box the interpreter reuses from one instantiation to
+/// the next (`Interpreter::walk_state`); while a body runs that has work left
+/// after it, the box is in that body's continuation, owned by exactly one
+/// stack entry.
+#[derive(Debug, Clone)]
+pub struct Instantiation {
+    pub(crate) instance: Value,
+    /// Nearest level first: the class instantiated, then its superclass, and
+    /// so on up, as the upward walk reaches them.
+    pub(crate) levels: Vec<(ClassRef, Vec<Value>)>,
+    pub(crate) phase: InstantiationPhase,
+}
+
+/// Which way an instantiation's walk is going.
+#[derive(Debug, Clone, Copy)]
+pub enum InstantiationPhase {
+    /// Upward. A body running for this instantiation is the clause message
+    /// of `level`, the last in `levels`, and its value is the factory
+    /// arguments of `superclass`, `level`'s superclass.
+    Climbing {
+        level: ClassRef,
+        superclass: ClassRef,
+    },
+    /// Downward. A body running for this instantiation is the initializer of
+    /// `levels[index]`, and a level below it has code still to run.
+    Descending { index: usize },
 }
 
 /// A *reified* activation: one a block captured, or one the image decoder
@@ -290,7 +369,8 @@ pub struct Frame {
     /// class level the activation initializes. The value `InitSlot` reads
     /// while the body runs is the live activation's own `slot_base`
     /// (`Heap::activation_slot_base`), one activation per initializing level
-    /// of the superclass chain (`Interpreter::run_own_initializer`); a
+    /// of the superclass chain, pushed with the slot base
+    /// `Interpreter::initializer_body` finds; a
     /// frame carries a copy only if that activation was reified. The image
     /// does not record it -- a decoded frame has 0, since nothing re-activates
     /// one. Set once, where the activation is pushed, and never changed.

@@ -608,11 +608,11 @@ impl Heap {
 
     /// An opaque, hashable key unique to `obj`, for code that needs an
     /// `ObjRef` as a `HashMap`/`HashSet` key rather than a comparison --
-    /// `image::encode::GraphTable`'s object-id map,
-    /// `image::decode::rebuild_applications`'s superclass-position map and
-    /// `interpreter::nested::in_progress_key`. `identity_hash` cannot serve
-    /// that role, because every object nothing has asked for its hash stores
-    /// 0, which would fold two distinct objects into one table entry.
+    /// `image::encode::GraphTable`'s object-id map and
+    /// `image::decode::rebuild_applications`'s superclass-position map.
+    /// `identity_hash` cannot serve that role, because every object nothing
+    /// has asked for its hash stores 0, which would fold two distinct objects
+    /// into one table entry.
     ///
     /// It lives on `Heap` rather than on `ObjRef` so that the origin check
     /// applies to it like it does to every accessor. Two handles from
@@ -1268,9 +1268,9 @@ impl Heap {
         handle
     }
 
-    /// How many activations are live. `Interpreter::send` and
-    /// `Interpreter::instantiate` assert that they leave it where they
-    /// found it.
+    /// How many activations are live. `Interpreter::run_from_host`, through
+    /// which a host's send or instantiation runs, asserts that it leaves it
+    /// where it found it.
     pub fn activation_depth(&self) -> usize {
         self.stack.entries.len()
     }
@@ -1386,11 +1386,13 @@ impl Heap {
     /// Whether `act` is still on the stack -- the one question that may be
     /// asked of a handle whose activation has returned. A non-local return
     /// into an activation that catches none (an initializer) pops its target
-    /// on its way out and goes on naming it, and each run the signal leaves
-    /// asks this before reading the target. Nothing is pushed while a signal
-    /// propagates (`ActivationRef::same`), so the target is live exactly
-    /// while the stack still reaches its index; a debug build checks that
-    /// the entry there is still the one the handle was minted for.
+    /// on its way out and goes on naming it, out to the host that started
+    /// the run; the unwind asks this before it reads a target, and a host
+    /// holding the escaped signal may ask nothing else. Nothing is pushed
+    /// while a signal propagates (`ActivationRef::same`), so the target is
+    /// live exactly while the stack still reaches its index; a debug build
+    /// checks that the entry there is still the one the handle was minted
+    /// for.
     ///
     /// A release build has only the index, so its answer is sound only
     /// while that holds. Anything that runs code while a signal propagates

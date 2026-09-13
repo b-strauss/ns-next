@@ -8,12 +8,19 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
-use crate::heap::{ActivationHeader, Heap};
+use crate::heap::Heap;
 use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
 use crate::types::*;
 use crate::Symbol;
 
-use super::{EvalResult, Interpreter, Signal};
+use super::{EvalResult, Interpreter, Signal, Step};
+
+/// How many finished walks' boxes `Interpreter::retire_walk` keeps for
+/// reuse, and how many levels of room each keeps. One box serves any number
+/// of instantiations in sequence; more are held at once only while
+/// instantiations nest bodies that have work after them.
+const SPARE_WALKS: usize = 16;
+const SPARE_LEVELS: usize = 64;
 
 /// A class body's methods as a mixin's method dictionary: everything a
 /// lookup or `Interpreter::push_step` reads is lifted out of the
@@ -57,8 +64,7 @@ impl Interpreter {
     /// The superclass clause's *receiver* is resolved here, once -- it is
     /// what fixes the superclass (`newspeak-spec.pdf` §6.1). Its trailing
     /// *message* is deliberately not touched here: §6.2 defers it to every
-    /// instantiation, where `run_initializer_levels` evaluates it off the
-    /// mixin's own declaration.
+    /// instantiation, where `climb_levels` evaluates it off the mixin.
     ///
     /// Building the mixin tree (`build_mixin`, below) is a separate step from
     /// applying it: a nested mixin is reachable the moment its enclosing
@@ -204,18 +210,18 @@ impl Interpreter {
     ///
     /// No double-dispatch risk against the superclass clause's own factory
     /// message (e.g. `Object new` in `class Foo = Object new (...)`). That
-    /// message is *evaluated* (`run_initializer_levels` below), but it is
+    /// message is *evaluated* (`climb_levels` below), but it is
     /// never *sent*: §6.2 has the subclass's initializer invoke the
     /// superclass's instance initializer directly on the same object, so
-    /// `run_initializer_levels` runs it level by level and never calls
-    /// `Interpreter::send` -- and therefore never reaches this method, which
-    /// would otherwise allocate a second, discarded instance per level.
+    /// `climb_levels` runs it level by level and never calls
+    /// `Interpreter::decide_send` -- and therefore never reaches this method,
+    /// which would otherwise allocate a second, discarded instance per level.
     pub(super) fn try_factory_send(
         &mut self,
         receiver: &Value,
         selector: Symbol,
         args: &[Value],
-    ) -> Option<EvalResult> {
+    ) -> Option<Result<Step, Signal>> {
         let Value::Obj(obj) = receiver else {
             return None;
         };
@@ -239,10 +245,10 @@ impl Interpreter {
             // which unconditionally tags its result `BuiltinClass::Array`;
             // using that here would make `OrderedCollection new`'s result
             // dispatch through `dispatch_array`, which has no `add:`).
-            Some(BuiltinClass::OrderedCollection) | Some(BuiltinClass::Array) => Ok(Value::Obj(
-                self.new_instance_object(class_ref, ObjectData::Array(vec![])),
+            Some(BuiltinClass::OrderedCollection) | Some(BuiltinClass::Array) => Ok(Step::Value(
+                Value::Obj(self.new_instance_object(class_ref, ObjectData::Array(vec![]))),
             )),
-            _ => self.instantiate(class_ref, args.to_vec()),
+            _ => self.decide_instantiation(class_ref, args.to_vec()),
         })
     }
 
@@ -264,24 +270,36 @@ impl Interpreter {
         None
     }
 
-    /// The six numbered steps in `docs/design/object-model.md`,
-    /// "Instantiation"; see `instantiate_unchecked`. Like `send`, it leaves
-    /// the activation stack as it found it.
+    /// Instantiates `class` from a host: the six numbered steps in
+    /// `docs/design/object-model.md`, "Instantiation", decided
+    /// (`decide_instantiation`) and then run from the outside
+    /// (`run_from_host`), like a host's `send`.
     pub fn instantiate(&mut self, class: ClassRef, factory_args: Vec<Value>) -> EvalResult {
-        let depth = self.heap.activation_depth();
-        let result = self.instantiate_unchecked(class, factory_args);
-        debug_assert_eq!(
-            self.heap.activation_depth(),
-            depth,
-            "instantiation must leave the activation stack as it found it"
-        );
-        result
+        match self.decide_instantiation(class, factory_args) {
+            Ok(step) => self.run_from_host(step, &[]),
+            Err(signal) => Err(signal),
+        }
     }
 
-    /// The six numbered steps in `docs/design/object-model.md`,
-    /// "Instantiation". Steps 2-5 are `run_initializer_levels`, for every
-    /// level of the superclass chain.
-    fn instantiate_unchecked(&mut self, class: ClassRef, factory_args: Vec<Value>) -> EvalResult {
+    /// Decides an instantiation of `class` with `factory_args` without running
+    /// any of its code: the instance comes back as a value when no level of
+    /// the superclass chain has code to run, and otherwise the first body that
+    /// must run, with the rest of the walk in its continuation
+    /// (`Continuation::Instantiate`, carried on by `advance_instantiation`)
+    /// when there is any. Steps 2-5 are `climb_levels` and `descend_levels`,
+    /// for every level of the superclass chain.
+    ///
+    /// The walk runs in a box of the interpreter's spares (`walk_state`),
+    /// which rides in the continuation of a body that has work left after it
+    /// and goes back to the spares when the walk ends, so once one
+    /// instantiation has run, the next allocates the instance's fields and
+    /// nothing else (`descend_levels` says why its last body needs no
+    /// continuation).
+    pub(crate) fn decide_instantiation(
+        &mut self,
+        class: ClassRef,
+        factory_args: Vec<Value>,
+    ) -> Result<Step, Signal> {
         // Step 1: one instance, every slot nil. The application already
         // knows the whole layout, inherited slots included -- summing the
         // chain here again would be a second answer to the same question.
@@ -291,66 +309,194 @@ impl Interpreter {
             .map_or(0, |a| a.num_slots);
         let instance =
             self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil; slot_count]));
-        let receiver = Value::Obj(instance);
-
-        // Steps 2-5, for this class and every level above it.
-        self.run_initializer_levels(class, &receiver, factory_args)?;
-
-        // Step 6.
-        Ok(receiver)
+        let state = self.walk_state(Value::Obj(instance));
+        self.climb_levels(state, class, factory_args)
     }
 
-    /// Class Instantiation steps 2-5 for every level of `class`'s superclass
-    /// chain (`newspeak-spec.pdf` §6.2). Walked with an explicit list rather
-    /// than by recursing per level: the chain's length is an image's to
-    /// choose, and a level with no initializer code pushes no activation, so
-    /// neither depth bound would see a long chain of them
-    /// (`docs/design/execution.md`, "A superclass chain is walked
-    /// iteratively").
-    ///
-    /// Upward first: each level's factory arguments are checked against its
-    /// declared arity, then its superclass clause's message is evaluated to
-    /// the superclass's arguments (step 3's first half). Then downward, from
-    /// the topmost level: each level's own slot initializers and `initExprs`
-    /// run in an activation of their own, with that level's own arguments
-    /// (steps 2, 4 and 5) -- one activation per initializing level, so a
-    /// superclass's initializers see the arguments *its* clause supplied.
-    /// A single activation threaded up the whole chain would let a
-    /// superclass factory parameter read whatever happens to sit at the same
-    /// index in the subclass's argument list -- or index past its end when
-    /// there is none.
-    fn run_initializer_levels(
+    /// The box a new walk of `instance`'s instantiation runs in: a spare one
+    /// if a finished walk left one, so that neither the box nor its list of
+    /// levels is allocated again.
+    fn walk_state(&mut self, instance: Value) -> Box<Instantiation> {
+        match self.spare_walks.pop() {
+            Some(mut state) => {
+                state.instance = instance;
+                state
+            }
+            None => Box::new(Instantiation {
+                instance,
+                levels: Vec::new(),
+                // Never read: the phase is written wherever the box is handed
+                // to a continuation, the one place that reads it.
+                phase: InstantiationPhase::Descending { index: 0 },
+            }),
+        }
+    }
+
+    /// A finished walk's box, back to the spares, emptied so that it holds
+    /// no handle. Bounded twice: the boxes held at once grow with how deeply
+    /// instantiations nest -- each body with work after it holds one -- and
+    /// the list of levels with the superclass chain, whose length is an
+    /// image's to choose; neither peak should stay allocated for the rest of
+    /// the run.
+    fn retire_walk(&mut self, mut state: Box<Instantiation>) {
+        if self.spare_walks.len() < SPARE_WALKS {
+            state.levels.clear();
+            state.levels.shrink_to(SPARE_LEVELS);
+            state.instance = Value::Nil;
+            // A walk that climbed through a clause message with arguments and
+            // then found nothing to initialize below it retires straight out
+            // of `descend_levels`'s "nothing below" branches, which never
+            // write `Descending` into `phase` -- so without this, the box
+            // would still hold the last `Climbing`'s two `ClassRef`s.
+            // `Descending { index: 0 }` is otherwise never read (`walk_state`'s
+            // comment), so any handle-free variant would do.
+            state.phase = InstantiationPhase::Descending { index: 0 };
+            self.spare_walks.push(state);
+        }
+    }
+
+    /// One body an instantiation ran has returned `value`: carry the walk on
+    /// from where `state` says it stopped. `Interpreter::resume` calls this
+    /// with its continuation's box, in which the walk goes on until it answers
+    /// another body.
+    pub(crate) fn advance_instantiation(
         &mut self,
-        class: ClassRef,
-        instance: &Value,
-        factory_args: Vec<Value>,
-    ) -> Result<(), Signal> {
-        let mut levels: Vec<(ClassRef, Vec<Value>)> = Vec::new();
-        let mut level = class;
-        let mut args = factory_args;
+        state: Box<Instantiation>,
+        value: Value,
+    ) -> Result<Step, Signal> {
+        match state.phase {
+            InstantiationPhase::Climbing { level, superclass } => {
+                let super_args = argument_list(&self.heap, level, value)?;
+                self.climb_levels(state, superclass, super_args)
+            }
+            // An initializer's value is not used; only its effects on the
+            // instance are.
+            InstantiationPhase::Descending { index } => self.descend_levels(state, index),
+        }
+    }
+
+    /// The upward walk, from `level` with `args`: each level's factory arity
+    /// checked, then its superclass clause's message evaluated to the
+    /// superclass's arguments (step 3's first half). A message with arguments
+    /// is code, so the walk stops there and answers its activation, and
+    /// `advance_instantiation` resumes it with the value. Walked with a loop
+    /// and a list rather than by recursing per level: the chain's length is an
+    /// image's to choose, and a level with no code pushes no activation, so the
+    /// activation limit would not see a long chain of them
+    /// (`docs/design/execution.md`, "A superclass chain is walked
+    /// iteratively"). At the top of the chain, the downward walk begins.
+    fn climb_levels(
+        &mut self,
+        mut state: Box<Instantiation>,
+        mut level: ClassRef,
+        mut args: Vec<Value>,
+    ) -> Result<Step, Signal> {
         loop {
             self.check_factory_arity(level, &args)?;
-            let next = match self.heap.class_superclass(level) {
-                Some(superclass) => {
-                    let super_args =
-                        self.eval_superclass_message(level, superclass, instance, &args)?;
-                    Some((superclass, super_args))
-                }
-                None => None,
+            let Some(superclass) = self.heap.class_superclass(level) else {
+                state.levels.push((level, args));
+                let above_top = state.levels.len();
+                return self.descend_levels(state, above_top);
             };
-            levels.push((level, args));
-            match next {
-                Some((superclass, super_args)) => {
-                    level = superclass;
-                    args = super_args;
-                }
-                None => break,
-            }
+            let message = self.clause_message_body(level, superclass)?;
+            let Some(code) = message else {
+                // `Object new` and every other argument-free clause: nothing
+                // to run, and the superclass gets no arguments.
+                state.levels.push((level, args));
+                level = superclass;
+                args = Vec::new();
+                continue;
+            };
+            // The message is evaluated on the instance being initialized and
+            // with *this* level's factory arguments -- §6.2's "in the context
+            // of the instance initializer".
+            let message_args = args.clone();
+            state.levels.push((level, args));
+            state.phase = InstantiationPhase::Climbing { level, superclass };
+            return Ok(Step::ClauseMessage {
+                level,
+                code,
+                args: message_args,
+                // Its value is the superclass's arguments: the walk has
+                // everything above this level still to do.
+                then: state,
+            });
         }
-        for (level, args) in levels.into_iter().rev() {
-            self.run_own_initializer(level, instance, args)?;
+    }
+
+    /// The downward walk (steps 2, 4 and 5): below `next`, from the top of the
+    /// chain down to the class instantiated, each level's own slot clauses and
+    /// `initExprs`, in an activation of its own with the arguments its own
+    /// subclass's clause supplied -- one activation per initializing level, so
+    /// a superclass's initializers see the arguments *its* clause supplied. A
+    /// level with nothing to initialize runs no code and is passed over --
+    /// every chain ends at a builtin, which is exactly such a level -- and the
+    /// first that has code is answered as an activation;
+    /// `advance_instantiation` carries on below it when it returns, unless
+    /// nothing below it has code. Past the last level, the instance (step 6).
+    fn descend_levels(
+        &mut self,
+        mut state: Box<Instantiation>,
+        next: usize,
+    ) -> Result<Step, Signal> {
+        let instance = state.instance;
+        let Some(index) = initializing_level_below(&self.heap, &state.levels, next) else {
+            self.retire_walk(state);
+            return Ok(Step::Value(instance));
+        };
+        let level = state.levels[index].0;
+        let args = std::mem::take(&mut state.levels[index].1);
+        // With no level below this one left to initialize, this is the last
+        // body of the walk, so all that is left once it returns is step 6,
+        // answering the instance -- which is exactly what the initializer
+        // answers: the compiler ends every instance initializer by answering
+        // `self` and discards a top-level `^` (`compiler::lower`'s
+        // `finish_body`, `compiler::reference`'s `end`). So its activation
+        // delivers its own value like a method's, and nothing of the walk
+        // outlives this step: its box goes back to the spares now. Making an
+        // initializer answer anything else breaks `new`;
+        // `tests/instantiate.rs`'s
+        // `new_answers_the_instance_its_initializers_ran_on` pins it. (A
+        // decoded image's initializer is not held to this; `new` then answers
+        // what that code answers, which is the image's program running, not a
+        // fault.)
+        if initializing_level_below(&self.heap, &state.levels, index).is_none() {
+            self.retire_walk(state);
+            return Ok(Step::Initializer {
+                receiver: instance,
+                level,
+                args,
+            });
         }
-        Ok(())
+        state.phase = InstantiationPhase::Descending { index };
+        Ok(Step::InitializerThen {
+            level,
+            args,
+            then: state,
+        })
+    }
+
+    /// The compiled instance initializer of `level`, a level
+    /// `class_has_initializer_code` has confirmed, and the `slot_base` its
+    /// activation runs with.
+    pub(super) fn initializer_body(
+        &self,
+        level: ClassRef,
+    ) -> (Rc<crate::bytecode::CompiledCode>, usize) {
+        let application = self
+            .heap
+            .class_application(level)
+            .expect("internal: class_has_initializer_code confirmed this is a class object");
+        let code = application.mixin.initializer_code.clone().unwrap_or_else(|| {
+            panic!("internal: class needs an instance initializer and its mixin carries none (a mixin built from source always does; verify_mixins refuses a decoded one)")
+        });
+        // `InitSlot`'s `own_index` is relative to the mixin's own slots, not
+        // an absolute field index, because the compiled body is shared by
+        // every application of the mixin. This level's own
+        // `MixinApplication.own_slot_base`, taken as the activation's
+        // `slot_base`, turns it into an absolute index at run time; it is set
+        // with the rest of the level's identity, and never changes.
+        (code, application.own_slot_base)
     }
 
     /// Rejects a factory-arity mismatch as a NewspeakError before this
@@ -359,7 +505,7 @@ impl Interpreter {
         // A slot initializer or
         // initExpr may reference a factory parameter as `Binding::Local(i)`,
         // resolved against this class's *declared* factory pattern -- but
-        // the activation `run_own_initializer` pushes lays its registers out
+        // the activation `descend_levels` answers lays its registers out
         // from the arguments actually supplied, so a wrong count would shift
         // every temporary, and too few would leave `locals.rs`'s
         // `read_local`/`write_local` indexing past the end of its register
@@ -367,7 +513,7 @@ impl Interpreter {
         //
         // Checked at *every* level, not just the outermost. A level's
         // arguments come from its subclass's clause message, whose
-        // selector `eval_superclass_message` has already matched against
+        // selector `clause_message_body` has already matched against
         // this class's primary factory selector -- which pins the arity too,
         // since a selector's keyword count is its parameter count. This
         // guard is what keeps that reasoning from being the only thing
@@ -392,71 +538,10 @@ impl Interpreter {
         Ok(())
     }
 
-    /// One level's own slot clauses and `initExprs` (steps 2, 4 and 5), on
-    /// the instance its subclasses share, with the arguments its own
-    /// subclass's clause supplied -- or none at all when the level declares
-    /// nothing to initialize.
-    fn run_own_initializer(
-        &mut self,
-        class: ClassRef,
-        instance: &Value,
-        factory_args: Vec<Value>,
-    ) -> Result<(), Signal> {
-        // Step 2, built here rather than above it: a level with no slots and
-        // no `initExprs` runs no code at all -- such a mixin may carry no
-        // initializer at all -- so its activation could never be observed
-        // -- and every chain ends at a builtin, which is exactly such a
-        // level. Building it only where something runs in it keeps one
-        // activation per *initializing* level rather than one per level.
-        //
-        // Every field of it describes this one level: its arguments, its
-        // class, and its `slot_base` -- the absolute index a compiled
-        // `InitSlot`'s mixin-relative `own_index` is offset by. `slot_base`
-        // is set here, with the rest of the level's identity, and never
-        // changes: with an activation per level there is nothing to save
-        // and restore, and no window in which one describes another level.
-        if !class_has_initializer_code(&self.heap, class) {
-            return Ok(());
-        }
-        let application = self
-            .heap
-            .class_application(class)
-            .expect("internal: class_has_initializer_code confirmed this is a class object");
-        let code = application.mixin.initializer_code.clone().unwrap_or_else(|| {
-            panic!("internal: class needs an instance initializer and its mixin carries none (a mixin built from source always does; verify_mixins refuses a decoded one)")
-        });
-        // `InitSlot`'s `own_index` is relative to the mixin's own slots, not
-        // an absolute field index, because the compiled body is shared by
-        // every application of the mixin. This level's own
-        // `MixinApplication.own_slot_base`, taken as the activation's
-        // `slot_base`, turns it into an absolute index at run time.
-        let slot_base = application.own_slot_base;
-        let temps = (code.num_registers - code.num_args) as usize;
-
-        // Steps 4-5: this class's own slot clauses (declaration order), then
-        // its own initExprs, on an activation pushed with the body's whole
-        // register file. The loop pops it on every path out.
-        self.reenter(|interp| {
-            interp.push(
-                ActivationHeader {
-                    receiver: *instance,
-                    current_class: Some(class),
-                    kind: FrameKind::Initializer(class),
-                    slot_base,
-                    code,
-                    then: Continuation::Deliver,
-                    counted: true,
-                },
-                &factory_args,
-                temps,
-            )
-        })
-        .map(|_| ())
-    }
-
-    /// Step 3's first half: `newspeak-spec.pdf` §6.2's "the superclass
-    /// clause's message is evaluated to a concrete message". Returns the
-    /// argument list the superclass's instance initializer is invoked with.
+    /// Step 3's first half, up to running anything: `newspeak-spec.pdf` §6.2's
+    /// "the superclass clause's message is evaluated to a concrete message".
+    /// Answers the compiled body that evaluates the message's arguments, or
+    /// `None` when there are none.
     ///
     /// §6.1 makes two things run time errors here. That the clause's
     /// expression is not a class object is caught where the clause's
@@ -465,16 +550,14 @@ impl Interpreter {
     /// selector is not the superclass's primary factory selector is caught
     /// here, because only here are both halves known.
     ///
-    /// The selector is checked *before* the arguments are evaluated: a
-    /// clause that cannot be satisfied should not first run its arguments'
-    /// side effects.
-    fn eval_superclass_message(
-        &mut self,
+    /// The selector is checked *before* the arguments are evaluated: a clause
+    /// that cannot be satisfied should not first run its arguments' side
+    /// effects.
+    fn clause_message_body(
+        &self,
         class: ClassRef,
         superclass: ClassRef,
-        instance: &Value,
-        factory_args: &[Value],
-    ) -> Result<Vec<Value>, Signal> {
+    ) -> Result<Option<Rc<crate::bytecode::CompiledCode>>, Signal> {
         // One lookup of the application for both questions below: the clause
         // this class was declared with, and the mixin its compiled message
         // body lives on.
@@ -498,9 +581,7 @@ impl Interpreter {
             ));
         }
         if !clause.is_some_and(|clause| clause.has_args) {
-            // `Object new` and every other argument-free clause: nothing to
-            // evaluate, no activation built, nothing allocated.
-            return Ok(vec![]);
+            return Ok(None);
         }
         let code = application
             .as_ref()
@@ -508,19 +589,7 @@ impl Interpreter {
             .unwrap_or_else(|| {
                 panic!("internal: mixin whose superclass clause message takes arguments carries no compiled form for it (a mixin built from source always does; verify_mixins refuses a decoded one)")
             });
-        // The message is evaluated on the instance being initialized and
-        // with *this* level's factory arguments -- §6.2's "in the context of
-        // the instance initializer" -- through the same activation the
-        // nested-class accessor runs a clause's receiver in.
-        let value = super::nested::run_clause_body(
-            self,
-            instance,
-            factory_args.to_vec(),
-            class,
-            FrameKind::SuperclassMessage(class),
-            code,
-        )?;
-        argument_list(&self.heap, class, value)
+        Ok(Some(code))
     }
 }
 
@@ -529,7 +598,7 @@ impl Interpreter {
 /// none. `None` for a non-class object.
 ///
 /// One definition, shared by `try_factory_send` (which decides whether an
-/// incoming send *is* the factory message) and `eval_superclass_message`
+/// incoming send *is* the factory message) and `clause_message_body`
 /// (which decides whether a superclass clause names it) -- `newspeak-spec.pdf`
 /// §6.1 makes those the same question asked from two sides.
 pub(crate) fn primary_factory_selector(heap: &Heap, class: ClassRef) -> Option<Symbol> {
@@ -662,11 +731,23 @@ pub(crate) fn class_has_initializer_code(heap: &Heap, class: ClassRef) -> bool {
         .is_some_and(|application| mixin_needs_initializer_code(&application.mixin))
 }
 
+/// The nearest level to the top of the chain below `below` that has
+/// initializer code: the next one the downward walk runs.
+fn initializing_level_below(
+    heap: &Heap,
+    levels: &[(ClassRef, Vec<Value>)],
+    below: usize,
+) -> Option<usize> {
+    levels[..below]
+        .iter()
+        .rposition(|(level, _)| class_has_initializer_code(heap, *level))
+}
+
 /// Whether `mixin` declares any slot or `initExpr` at all.
 ///
 /// `pub(crate)` for `image::decode::verify_mixins`, which must refuse
 /// an image that has no compiled initializer for a mixin that needs one
-/// rather than let `run_own_initializer` above panic on the invariant --
+/// rather than let `Interpreter::initializer_body` above panic on the invariant --
 /// checked per mixin, since every mixin of the tree carries its own.
 pub(crate) fn mixin_needs_initializer_code(mixin: &crate::mixin::Mixin) -> bool {
     !mixin.slots.is_empty() || mixin.has_init_exprs

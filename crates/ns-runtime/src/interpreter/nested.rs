@@ -17,19 +17,20 @@
 //!
 //! This lives under `interpreter/` rather than in `mixin.rs` because it is
 //! the one part of nesting that *evaluates Newspeak code*: the superclass
-//! clause. That code runs compiled, in an activation of its own, the same
-//! way `instantiate.rs` runs a superclass clause's deferred message.
+//! clause. That code runs compiled, in an activation of its own -- a
+//! `Step::SuperclassClause` continuing with `Continuation::NestedClass`, as
+//! `instantiate.rs` runs a clause's deferred message as a
+//! `Step::ClauseMessage` continuing with `Continuation::Instantiate`.
 
 use std::rc::Rc;
 
 use ns_syntax::ast;
 
-use crate::heap::{ActivationHeader, Heap};
 use crate::mixin::{mixin_key, Mixin};
 use crate::types::*;
 use crate::Symbol;
 
-use super::{EvalResult, Interpreter, Signal};
+use super::{Interpreter, Signal, Step};
 
 /// What a superclass clause evaluates: the `ec` of `newspeak-spec.pdf` §6.1,
 /// as an ordinary expression.
@@ -97,6 +98,11 @@ pub(crate) fn superclass_clause_message_args_expr(
 /// `r`'s class chain; `declaring_class` is the class object of the level
 /// that declares it -- the `ClassRef` `Lookup::NestedClass` carries.
 ///
+/// Decides the accessor without running anything: `receiver`'s own cache if
+/// it is already filled, or -- for a declaration with no clause at all --
+/// `Object` as a value outright, and otherwise the clause's activation, with
+/// steps 3-5 in its continuation (`after_clause`).
+///
 /// `declaring_class` is *not* `r`'s own class whenever the declaration is
 /// inherited, and the difference is observable: the clause is lexically
 /// part of the declaring class, so a `super`-prefixed clause receiver
@@ -109,28 +115,73 @@ pub(crate) fn nested_class(
     receiver: &Value,
     nested: &Rc<Mixin>,
     declaring_class: ClassRef,
-) -> EvalResult {
-    let Some((obj, index)) = cache_slot(interp, receiver, nested) else {
+) -> Result<Step, Signal> {
+    let Some((obj, index, cached)) = cache_slot(interp, receiver, nested) else {
         return Err(no_cache_slot_error(receiver, nested.name));
     };
-    // Step 1: the receiver's own cache. `Nil` is the "not yet" marker --
-    // `instantiate` fills every slot, hidden ones included, with `Nil`, and
-    // a materialized class object is never `Nil`, so no separate occupancy
-    // flag is needed.
-    if let Some(cached) = read_cache_slot(&interp.heap, receiver, index) {
-        return Ok(cached);
+    // Step 1: the receiver's own cache. `Nil` is "not yet" -- `instantiate`
+    // fills every slot, hidden ones included, with `Nil`, and a materialized
+    // class object is never `Nil` -- and `CREATION_IN_PROGRESS` is "underway,
+    // further down the stack", so the slot answers both questions and no
+    // side table is needed.
+    match cached {
+        Value::Nil => {}
+        cached if is_creation_in_progress(cached) => {
+            return Err(cyclic_definition_error(receiver, nested.name));
+        }
+        cached => return Ok(Step::Value(cached)),
     }
-    // Step 2: the superclass clause, evaluated in the receiver's context --
-    // guarded against a class whose own creation is already underway on
-    // this receiver.
-    let key = in_progress_key(&interp.heap, obj, nested);
-    if interp.nested_in_progress.contains(&key) {
-        return Err(cyclic_definition_error(receiver, nested.name));
+    // Step 2: the superclass clause, evaluated in the receiver's context.
+    let creation = NestedClassCreation {
+        enclosing: obj,
+        index,
+        nested: nested.clone(),
+        declaring_class,
+    };
+    // Whether there is a clause at all is read off the mixin, not off its
+    // declaration: a mixin decoded from an image has no declaration, and the
+    // answer decides whether any code runs.
+    if nested.superclass.is_none() {
+        // No clause at all (`class N = (...)`): `Object`, the same default
+        // `instantiate::resolve_superclass_receiver` gives a root class.
+        let object = Value::Obj(interp.builtin_class(BuiltinClass::Object));
+        return after_clause(interp, creation, object);
     }
-    interp.nested_in_progress.push(key);
-    let evaluated = eval_superclass_clause(interp, receiver, nested, declaring_class);
-    interp.nested_in_progress.pop();
-    let superclass = evaluated?;
+    Ok(Step::SuperclassClause(Box::new(creation)))
+}
+
+/// The compiled superclass clause of `nested`, a declaration with a clause.
+///
+/// Its activation (`Interpreter::push_step`) runs as part of the class that
+/// *declares* it: the clause is resolved against that declaration's
+/// enclosing chain, and `super`-prefixed forms look up from that class's
+/// superclass -- which is why the activation's class is the declaring class
+/// rather than the receiver's own (dynamic) class, the two differing exactly
+/// when the declaration is inherited. Its kind, `FrameKind::SuperclassClause`,
+/// names the table its body came from, which `image::decode::frame_body`
+/// resolves a frame's body by, and makes it a return target
+/// (`Interpreter::catches_return`).
+pub(super) fn superclass_clause_code(nested: &Mixin) -> Rc<crate::bytecode::CompiledCode> {
+    nested.superclass_clause_code.clone().unwrap_or_else(|| {
+        panic!("internal: mixin with a superclass clause carries no compiled form for it (a mixin built from source always does; verify_mixins refuses a decoded one)")
+    })
+}
+
+/// Steps 3-5, once the superclass clause has evaluated to `superclass`:
+/// `Interpreter::resume` calls this when the clause's activation returns, and
+/// `nested_class` directly for a declaration with no clause. By value, not
+/// boxed: only the continuation needs the box.
+pub(crate) fn after_clause(
+    interp: &mut Interpreter,
+    creation: NestedClassCreation,
+    superclass: Value,
+) -> Result<Step, Signal> {
+    let NestedClassCreation {
+        enclosing,
+        index,
+        nested,
+        declaring_class,
+    } = creation;
     let Value::Obj(superclass) = superclass else {
         return Err(not_a_class_error(nested.name, superclass));
     };
@@ -141,33 +192,32 @@ pub(crate) fn nested_class(
     // exists. Two enclosing instances whose clauses land on the same
     // superclass application share one application, and therefore one
     // compiled body and one instance layout (§6.2).
-    let application = interp.apply_mixin(nested, Some(&super_application));
+    let application = interp.apply_mixin(&nested, Some(&super_application));
     // Step 4: identity is per receiver. The class object's superclass chain
     // and its application's superclass chain are linked together here --
     // `dispatch::next_level` steps both and stops if either is missing.
     // `declaring_class` records the level this declaration is written in,
     // which is what `dispatch::kth_enclosing_object` steps out along; unlike
-    // the superclass chain it does not follow inheritance. `obj`, from
-    // `cache_slot` above, already *is* the enclosing object -- this function
-    // only ever reaches here for a receiver `cache_slot` matched as one.
+    // the superclass chain it does not follow inheritance.
     let class = interp.new_class_object(
         application,
-        Some(obj),
+        Some(enclosing),
         Some(declaring_class),
         Some(superclass),
     );
-    // Step 5: cache before returning, so step 1 hits from now on.
+    // Step 5: cache before answering, so step 1 hits from now on.
     crate::interpreter::locals::store_instance_field(
         &mut interp.heap,
-        receiver,
+        &Value::Obj(enclosing),
         index,
         Value::Obj(class),
     );
-    Ok(Value::Obj(class))
+    Ok(Step::Value(Value::Obj(class)))
 }
 
 /// `receiver`'s own object handle together with the absolute index of
-/// `nested`'s hidden cache slot in its layout, or `None` when `receiver`
+/// `nested`'s hidden cache slot in its layout and what that slot holds, or
+/// `None` when `receiver`
 /// has no such slot -- either because its class's application does not
 /// know the declaration (an internal inconsistency) or because its payload
 /// is not an `Instance` at all, which a user class inheriting a builtin's
@@ -176,7 +226,7 @@ pub(crate) fn nested_class(
 /// fields to cache into. Handing back the handle, not just the index,
 /// means every caller downstream already holds proof that `receiver` is an
 /// object instead of re-deriving it from `receiver` a second time --
-/// `in_progress_key` below is exactly that: it takes an `ObjRef`, not a
+/// `NestedClassCreation` is exactly that: it holds an `ObjRef`, not a
 /// `Value`, so a non-object receiver cannot reach it at all.
 ///
 /// The declaration itself, not its name: `MixinApplication::nested_slot` is
@@ -186,7 +236,7 @@ fn cache_slot(
     interp: &Interpreter,
     receiver: &Value,
     nested: &Rc<Mixin>,
-) -> Option<(ObjRef, usize)> {
+) -> Option<(ObjRef, usize, Value)> {
     let class = interp.class_of(receiver);
     let index = interp
         .heap
@@ -198,116 +248,77 @@ fn cache_slot(
         Value::Obj(obj) => interp
             .heap
             .instance_field(*obj, index)
-            .map(|_| (*obj, index)),
+            .map(|cached| (*obj, index, cached)),
         _ => None,
     }
 }
 
-/// The key `Interpreter::nested_in_progress` records while a declaration's
-/// class object is being created for `obj`: its arena index plus the
-/// declaration's identity. The index is a safe key for as long as `heap`
-/// exists, not merely for the duration of this stack entry: the
-/// arena never reuses a slot (there is no collector yet), so no other
-/// object -- live or not -- can ever carry the same index. Taking `ObjRef`
-/// rather than `Value` is what makes that the whole of this function's
-/// contract: there is no "receiver is not an object" case to key at all,
-/// so no sentinel is needed and none could collide with a real entry.
-/// `cache_slot` is the only caller, and it only ever hands back the object
-/// it already matched `receiver` against.
+/// What a nested class's cache slot holds while the class is being created
+/// for that enclosing object -- exactly while the activation evaluating its
+/// superclass clause is on the stack. An access that finds it is a cycle
+/// (`cyclic_definition_error`).
 ///
-/// The declaration, not its name, for the same reason `cache_slot` uses it:
-/// `class N = super N (...)` is a subclass redeclaring what it inherits,
-/// not a cycle, and a name key would report the legal shape as one.
-fn in_progress_key(heap: &Heap, obj: ObjRef, nested: &Rc<Mixin>) -> (usize, usize) {
-    (heap.object_identity_key(obj), mixin_key(nested))
+/// The slot itself, rather than a list of the creations underway, because
+/// the slot is already keyed by exactly the pair a cycle is: the enclosing
+/// object and the declaration's identity (`MixinApplication::nested_slot`), so
+/// `class N = super N (...)`, a subclass redeclaring what it inherits, has a
+/// slot of its own and is not reported as a cycle. The check is one read the
+/// accessor makes anyway, where a list was scanned in full at every level of
+/// a deep chain of creations -- quadratic in that depth -- and nothing here
+/// is an object identity a moving collector would have to rewrite. SOMns
+/// likewise keeps a class slot's whole state in the slot
+/// (`ClassSlotAccessNode`, where nil means "create").
+///
+/// A primitive, not a new kind of `Value`: it is written only over `Nil` and
+/// only by `begin_creation`, and replaced by the class or by `Nil` again when
+/// the clause's activation is popped, so no Newspeak code ever reads it --
+/// nothing but this accessor reads a hidden slot -- and no image holds it,
+/// since only a host snapshots, between runs. An image that stores `false`
+/// in a hidden slot itself gets a cyclic-definition error on access, the
+/// same kind of wrong-but-safe answer as any other non-class value it puts
+/// there, which the accessor answers as the class.
+const CREATION_IN_PROGRESS: Value = Value::Bool(false);
+
+fn is_creation_in_progress(value: Value) -> bool {
+    matches!(value, Value::Bool(false))
 }
 
-fn read_cache_slot(heap: &Heap, receiver: &Value, index: usize) -> Option<Value> {
-    let Value::Obj(obj) = receiver else {
-        return None;
-    };
-    match heap.instance_field(*obj, index) {
-        Some(Value::Nil) | None => None,
-        Some(value) => Some(value),
+/// The clause activation of a creation has just been pushed: mark its class
+/// as being created, in slot `index` of `enclosing`, where it will be cached.
+/// Only a slot `nested_class` found `Nil` gets here.
+pub(super) fn begin_creation(interp: &mut Interpreter, enclosing: ObjRef, index: usize) {
+    interp
+        .heap
+        .set_instance_field(enclosing, index, CREATION_IN_PROGRESS);
+    #[cfg(debug_assertions)]
+    {
+        interp.creations_in_progress += 1;
     }
 }
 
-/// The superclass clause is Newspeak code: the body
-/// `compiler::compile_superclass_clause` compiled onto this mixin runs in a
-/// fresh activation.
+/// `creation`'s clause activation has been popped, by a return or by an
+/// unwind: the class is no longer being created, and its slot is `Nil` again
+/// until `after_clause` caches the class there.
 ///
-/// The clause belongs to the class that *declares* it: it is resolved
-/// against that declaration's enclosing chain, and `super`-prefixed forms
-/// look up from that class's superclass -- which is why the activation's
-/// class is the declaring class rather than the receiver's own (dynamic)
-/// class, the two differing exactly when the declaration is inherited.
-fn eval_superclass_clause(
-    interp: &mut Interpreter,
-    receiver: &Value,
-    nested: &Rc<Mixin>,
-    declaring_class: ClassRef,
-) -> EvalResult {
-    // Whether there is a clause at all is read off the mixin, not off its
-    // declaration: a mixin decoded from an image has no declaration, and the
-    // answer decides whether any code runs.
-    if nested.superclass.is_none() {
-        // No clause at all (`class N = (...)`): `Object`, the same default
-        // `instantiate::resolve_superclass_receiver` gives a root class.
-        return Ok(Value::Obj(interp.builtin_class(BuiltinClass::Object)));
+/// It resets the marker only where the marker still is. A slot the program
+/// can reach never changes under it, but the decoder does not bound
+/// `InitSlot`'s field index, so an image's clause body can overwrite the
+/// slot; that value is left as the image wrote it, and is why this is not an
+/// assertion, which such an image would turn into a panic.
+pub(super) fn end_creation(interp: &mut Interpreter, creation: &NestedClassCreation) {
+    if interp
+        .heap
+        .instance_field(creation.enclosing, creation.index)
+        .is_some_and(is_creation_in_progress)
+    {
+        interp
+            .heap
+            .set_instance_field(creation.enclosing, creation.index, Value::Nil);
     }
-    let code = nested.superclass_clause_code.clone().unwrap_or_else(|| {
-        panic!("internal: mixin with a superclass clause carries no compiled form for it (a mixin built from source always does; verify_mixins refuses a decoded one)")
-    });
-    run_clause_body(
-        interp,
-        receiver,
-        vec![],
-        declaring_class,
-        FrameKind::SuperclassClause(declaring_class),
-        code,
-    )
-}
-
-/// One per-mixin clause body, compiled, in a fresh activation the run loop
-/// runs and pops (`Interpreter::reenter`). Everything around the body -- the
-/// activation, the receiver, the `^` it catches -- is the same shape as a
-/// method activation's.
-///
-/// Shared with `instantiate`, which runs the same clause's *deferred
-/// message arguments* through it one level down. The two differ only in
-/// what they hand in: the receiver (the enclosing object vs. the instance
-/// being initialized), the activation's arguments (none vs. the level's
-/// factory arguments) and the frame kind naming which table the body came
-/// from -- `image::decode::frame_body` resolves a frame's body by that
-/// kind, so a clause activation must never claim to be an initializer one.
-///
-/// Both kinds are return targets for `home_of`/`raise_return`, so a `^`
-/// inside a block written in the clause unwinds to this activation rather
-/// than escaping into the caller (`Interpreter::catches_return`).
-pub(super) fn run_clause_body(
-    interp: &mut Interpreter,
-    receiver: &Value,
-    args: Vec<Value>,
-    current_class: ClassRef,
-    kind: FrameKind,
-    code: Rc<crate::bytecode::CompiledCode>,
-) -> EvalResult {
-    let temps = (code.num_registers - code.num_args) as usize;
-    interp.reenter(|interp| {
-        interp.push(
-            ActivationHeader {
-                receiver: *receiver,
-                current_class: Some(current_class),
-                kind,
-                slot_base: 0, // no clause body ever contains InitSlot
-                code,
-                then: Continuation::Deliver,
-                counted: true,
-            },
-            &args,
-            temps,
-        )
-    })
+    #[cfg(debug_assertions)]
+    {
+        interp.creations_in_progress -= 1;
+    }
 }
 
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if ec does not evaluate
@@ -326,16 +337,16 @@ fn not_a_class_error(name: Symbol, value: Value) -> Signal {
 /// A class whose own creation depends on itself: `class N = N new (...)`,
 /// or any longer cycle through other nested declarations of the same
 /// receiver. §6 makes the accessor evaluate the declaration, so a clause
-/// naming the class being created re-enters the accessor before the cache
-/// slot is filled and would otherwise recurse until the native-depth bound
-/// stopped it -- a stack overflow that names no class, not a diagnosis.
+/// naming the class being created reaches the accessor again before the
+/// cache slot is filled and would otherwise recurse until the activation
+/// limit stopped it -- a stack overflow that names no class, not a
+/// diagnosis.
 ///
 /// This is a cycle in class *creation*, not general user recursion: the
 /// creation of one class object for one receiver happens exactly once, so a
 /// second entry for the same (receiver, declaration) is unconditionally a
-/// cycle. `Interpreter::nested_in_progress` is the stack that detects it in
-/// O(depth) with no allocation on the ordinary path -- it is empty except
-/// while a clause is actually being evaluated.
+/// cycle. The cache slot detects it, holding `CREATION_IN_PROGRESS` while the
+/// first entry's clause runs.
 fn cyclic_definition_error(receiver: &Value, name: Symbol) -> Signal {
     Signal::Error(NewspeakError {
         selector: name,

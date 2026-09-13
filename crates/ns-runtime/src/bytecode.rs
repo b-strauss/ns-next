@@ -155,8 +155,8 @@ pub enum Instr {
     /// different absolute offsets for the same mixin's own slots depending
     /// on how many slots their own superclass contributes. The VM
     /// resolves the absolute index at run time via `frame.slot_base`, which
-    /// `Interpreter::run_own_initializer` fixes when it builds that
-    /// level's frame, from that level's own
+    /// is fixed when that level's activation is pushed, from the slot base
+    /// `Interpreter::initializer_body` finds: that level's own
     /// `MixinApplication.own_slot_base` -- one frame per level, so a frame's
     /// base never describes a level other than its own. Still the one
     /// layout-dependent instruction (a class-shape-change flush must

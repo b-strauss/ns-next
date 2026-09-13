@@ -554,7 +554,7 @@ emits, for exactly the sends `control_flow::recognize` accepts.
   activation, and the uncounted activations per counted one are bounded by the
   source's static nesting depth — at most 128, the parser's ceiling, so the
   stack holds at most 129 entries per counted activation
-  ([execution.md](execution.md), "Two bounds, not one").
+  ([execution.md](execution.md), "The depth limit").
 - **The optimized lowering pays nothing** beyond the counter every rule needs,
   since it never emits `SendInlinable`.
 - **A crafted artifact cannot use the exemption to recurse without bound.**
@@ -586,9 +586,9 @@ agree, so this rule is ns-next's own.
 
 **Where it is decided.** The block arm of `Interpreter::push_step`
 (`crates/ns-runtime/src/interpreter/mod.rs`) is the one place an activation is
-exempted. Every other push is counted by construction: `push_step`'s method arm,
-an initializer level's (`run_own_initializer`) and a superclass clause's or
-message's (`nested::run_clause_body`) each record `counted: true`. The flag
+exempted. Every other push is counted by construction: `push_step`'s method arm
+and its body arms, for an initializer level, a superclass clause or its
+message, record `counted: true`. The flag
 rides on the stack entry, and `Interpreter::push` refuses a counted push at the
 limit. A block is exempt when it carries
 `StepArgs::ControlFlow` — the arguments only the control-flow natives build —
@@ -600,7 +600,7 @@ exempts it only if the one it replaces was; the VM forwards the popped entry's
 flag and decides nothing. `&` and
 `|` share `and:`'s and `or:`'s native, so their block carries the mark as
 well, but no lowering emits a `SendInlinable` for them, since `recognize` does
-not accept them ([execution.md](execution.md), "Two bounds, not one").
+not accept them ([execution.md](execution.md), "The depth limit").
 
 **Where it is pinned.** `crates/ns-runtime/tests/trampoline.rs` holds the
 boundary under both lowerings: `down:`, `logic:` and `loop:` — a plain

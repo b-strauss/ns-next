@@ -115,7 +115,7 @@ pub struct Factory {
 /// `Mixin::superclass_clause_code` / `superclass_message_code`; what is
 /// left here is the part the orchestration around those bodies needs, which
 /// it consults before any body runs. Storing it is what keeps
-/// `instantiate::eval_superclass_message` from having to read
+/// `instantiate::clause_message_body` from having to read
 /// `Mixin::decl`: without it, a mixin decoded from an image would fall back
 /// to `new` and every class whose superclass has a keyword factory would
 /// raise a spurious "not the primary factory message" error.
@@ -236,7 +236,7 @@ pub struct MixinApplication {
     pub num_slots: usize,
     /// Where this application's *own* slots start -- `superclass.num_slots`,
     /// or 0 with none. Read at run time
-    /// (`Interpreter::run_own_initializer`, into the frame's `slot_base`)
+    /// (`Interpreter::initializer_body`, into the activation's `slot_base`)
     /// to turn a compiled `InitSlot`'s mixin-relative `own_index` into this
     /// application's absolute field index: the compiled initializer is
     /// shared by every application of the mixin (keying code by mixin

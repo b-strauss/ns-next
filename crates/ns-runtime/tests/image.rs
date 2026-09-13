@@ -3231,7 +3231,7 @@ const NEEDS_INITIALIZER: &str = indoc! {"
 
 #[test]
 fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_on_load() {
-    // `run_own_initializer` panics -- "internal: class needs an instance
+    // `Interpreter::initializer_body` panics -- "internal: class needs an instance
     // initializer and its mixin carries none" -- when the class has
     // initializer code and its mixin has none. A mixin-table row's
     // declaration half decides the first (it names slots or `initExpr`s)
@@ -4164,9 +4164,9 @@ fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_ref
 
 /// The clause's *receiver* side of the same shape: a mixin-table row that
 /// declares a superclass clause, in an image carrying no compiled code for
-/// it, would panic in `eval_superclass_clause` on the first nested-class
-/// access. `verify_mixins` is the only place that sees both halves, so it
-/// refuses.
+/// it, would panic when the first nested-class access pushes the clause's
+/// activation (`nested::superclass_clause_code`). `verify_mixins` is the only
+/// place that sees both halves, so it refuses.
 #[test]
 fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
     let (mut interp, class) = load(NESTED_SUPERCLASS_ARGS);
@@ -4624,7 +4624,7 @@ fn a_mixin_table_that_is_not_a_declaration_tree_is_an_error() {
 }
 
 /// The factory selector must come from the table, not from `Mixin::decl`:
-/// `instantiate::eval_superclass_message` checks the
+/// `instantiate::clause_message_body` checks the
 /// selector a clause names against the superclass's primary factory
 /// selector. Read off a declaration, a decoded mixin (which has none) would
 /// fall back to `new`, and every class whose superclass has a keyword
@@ -4963,12 +4963,12 @@ fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
 
 #[test]
 fn instantiating_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
-    // `run_initializer_levels` visits every level of the chain -- arity,
+    // `climb_levels` visits every level of the chain -- arity,
     // clause message, initializer -- and none of these levels has
-    // initializer code, so none pushes an activation or re-enters the loop:
-    // neither depth bound would see a per-level recursion
-    // (`docs/design/execution.md`, "A superclass chain is walked
-    // iteratively"). Recursing once per level would abort here.
+    // initializer code, so none pushes an activation: the depth bound would
+    // not see a per-level recursion (`docs/design/execution.md`, "A
+    // superclass chain is walked iteratively"). Recursing once per level
+    // would abort here.
     let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
     let mut loaded = image::load(&bytes).expect("load");
     let head = loaded.roots[0];

@@ -320,7 +320,17 @@ fn send(
 fn finish(interp: &mut Interpreter, act: ActivationRef, value: Value, floor: usize) -> Flow {
     let popped = interp.heap.pop_activation(act);
     let value = match popped.then {
-        Continuation::Deliver => value,
+        // `Deliver` owns nothing, so forgetting it is dropping it. Written
+        // out because otherwise the continuation, left in `popped`, is
+        // dropped at the end of the function through `Continuation`'s drop
+        // glue, which the boxed variants made large enough to stay out of
+        // line: a call on every return, where the tag check used to be
+        // inline. Forgetting it here measured about 1% faster on the
+        // benchmarks that return most.
+        deliver @ Continuation::Deliver => {
+            std::mem::forget(deliver);
+            value
+        }
         then => match interp.resume(then, value) {
             Ok(Step::Value(v)) => v,
             Ok(step) => {
@@ -368,13 +378,17 @@ fn resume_caller(interp: &mut Interpreter, caller: ActivationRef, value: Value) 
 /// is one of this run's activations and catches a return (a method, or a
 /// superclass clause or its message -- `Interpreter::catches_return`) ends
 /// there: everything above the target is popped and the target returns the
-/// value. Anything else pops every activation of this run, `base` included,
-/// and leaves `run` with the signal, for the Rust frame that re-entered the
-/// loop to pass on.
+/// value. Anything else pops every activation of the run, `base` included,
+/// and leaves `run` with the signal, for the host that started the run
+/// (`Interpreter::run_from_host`).
 ///
-/// A target that catches no return is popped with the rest, and the signal
-/// goes on naming it; the runs below this one see a target that has
-/// returned, which is why liveness is asked first.
+/// A target that catches no return -- a running initializer -- is popped
+/// with the rest, and the signal goes on naming it, out to the host: the
+/// known gap in `docs/design/execution.md`, "Non-local return". Liveness is
+/// asked first, because it is the one question a handle whose entry may
+/// have been popped can be asked (`Heap::activation_is_live`). Every
+/// activation it pops hands its continuation to `Interpreter::abandon`, which
+/// undoes what a continuation that will now never run had begun.
 fn unwind(interp: &mut Interpreter, signal: Signal, floor: usize) -> Flow {
     if let Signal::Return(target, value) = &signal {
         let (target, value) = (*target, *value);
@@ -386,7 +400,8 @@ fn unwind(interp: &mut Interpreter, signal: Signal, floor: usize) -> Flow {
                 if top.same(target) {
                     break;
                 }
-                interp.heap.pop_activation(top);
+                let popped = interp.heap.pop_activation(top);
+                interp.abandon(popped.then);
             }
             return finish(interp, target, value, floor);
         }
@@ -396,7 +411,8 @@ fn unwind(interp: &mut Interpreter, signal: Signal, floor: usize) -> Flow {
             .heap
             .top_activation()
             .expect("internal: a stack deeper than the floor has a top");
-        interp.heap.pop_activation(top);
+        let popped = interp.heap.pop_activation(top);
+        interp.abandon(popped.then);
     }
     Flow::Exit(Err(signal))
 }

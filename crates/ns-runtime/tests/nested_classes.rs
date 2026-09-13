@@ -372,6 +372,44 @@ fn a_self_referential_nested_class_is_a_program_error() {
     assert_eq!(message, again);
 }
 
+/// A subclass redeclaring a nested class in terms of the one it inherits is
+/// not a cycle: the two declarations cache in separate slots
+/// (`MixinApplication::nested_slot`), so creating the subclass's `Inner` --
+/// whose clause creates the inherited one on the same receiver, through
+/// `super Inner` -- finds the inherited one's slot empty, not in progress.
+/// The clause reaches it through a method because a `super`-prefixed clause
+/// receiver does not dispatch yet (`a_super_prefixed_clause_answers_a_class_object`).
+#[test]
+fn a_nested_class_built_on_the_one_it_redeclares_is_not_a_cycle() {
+    let src = indoc! {"
+        Newspeak3
+        'Test'
+        class Outer = Object new (
+        ) (
+            public class Base = Object new (
+            ) (
+                public class Inner = Object new (
+                ) (
+                    public tag = ( ^'base' )
+                ) : ()
+            ) : ()
+            public class Sub = Base new (
+            ) (
+                public class Inner = self inherited (
+                ) (
+                    public own = ( ^'sub' )
+                ) : ()
+                inherited = ( ^super Inner )
+            ) : ()
+            public both = ( | i | i := Sub new Inner new. ^i tag, i own )
+        ) : ()
+    "};
+    let (mut interp, class) = load(src);
+    let outer = expect_ok(interp.instantiate(class, vec![]), "instantiate Outer");
+    let both = expect_ok(interp.send(outer, Symbol::intern("both"), vec![]), "both");
+    assert_eq!(string_contents(interp.heap_ref(), &both), "basesub");
+}
+
 const CLASS_SIDE_SRC: &str = indoc! {"
     Newspeak3
     'Test'
@@ -742,4 +780,42 @@ fn outer_in_a_class_side_method_reaches_the_enclosing_object() {
     assert_eq!(string_contents(interp.heap_ref(), &shallow), "top");
     let deep = expect_ok(interp.send(outer, Symbol::intern("deep"), vec![]), "deep");
     assert_eq!(string_contents(interp.heap_ref(), &deep), "top");
+}
+
+/// A superclass clause that fails leaves no creation in progress behind: the
+/// next access evaluates the clause again, rather than reporting the class as
+/// depending on itself.
+#[test]
+fn a_failed_superclass_clause_is_retried_rather_than_reported_as_a_cycle() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Outer = Object new (
+          | first ::= true. |
+        ) (
+          public class Inner = self pick (
+          ) (
+          ) : ()
+          pick = ( first ifTrue: [first := false. ^nil foo]. ^Object )
+        ) : ()
+    "};
+    let (mut interp, class) = load(src);
+    let outer = expect_ok(interp.instantiate(class, vec![]), "instantiate Outer");
+    match interp.send(outer, Symbol::intern("Inner"), vec![]) {
+        Err(Signal::Error(e)) => assert!(
+            !e.message.contains("cyclic"),
+            "the first access fails in its clause: {}",
+            e.message
+        ),
+        Err(Signal::Return(..)) => panic!("a non-local return escaped"),
+        Ok(_) => panic!("the first access must fail"),
+    }
+    let inner = expect_ok(
+        interp.send(outer, Symbol::intern("Inner"), vec![]),
+        "the second access",
+    );
+    let Value::Obj(inner) = inner else {
+        panic!("a class object");
+    };
+    assert!(interp.heap_ref().is_class(inner));
 }

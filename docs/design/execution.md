@@ -1,13 +1,15 @@
 # Execution — activations, the VM
 
-> **Status:** built, including the trampoline.
+> **Status:** built, including the trampoline; nothing re-enters the run loop
+> from Rust.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > arena, the `ActivationRef` and `FrameRef` handles, every read and write of an
-> activation), `types.rs` (`Frame`, `Continuation`, `WhileLoop`), `vm.rs` (the
-> run loop), `interpreter/` (the send decisions, `Step`, every push, the two
-> depth bounds, re-entry from Rust), `builtins/boolean.rs` and
-> `builtins/block.rs` (the control-flow natives as trampoline steps),
-> `crates/ns-cli/src/main.rs` (the interpreter thread and its stack).
+> activation), `types.rs` (`Frame`, `Continuation` and the state its variants
+> carry), `vm.rs` (the run loop), `interpreter/` (the send decisions, `Step`,
+> every push, the depth limit, the host entry), `builtins/boolean.rs`,
+> `builtins/block.rs` and `builtins/collections.rs` (the natives that answer
+> trampoline steps), `crates/ns-cli/src/main.rs` (the interpreter thread and
+> its stack).
 
 This is the consumer side. What produces the bytecode — the instruction set,
 lowering, register allocation, inlining — is [compiler.md](compiler.md).
@@ -115,13 +117,11 @@ pub struct ActivationRef {
   capacity across pops, so once they have grown to the program's depth a push
   allocates nothing. Every activation the runtime pushes goes through one
   function, `Interpreter::push`, which refuses a push past the depth limit ("The
-  trampoline" below) before it reaches the heap, so no new push site can skip
-  the check. Three places call it, all in `interpreter/`: `push_step`, for the
-  method or block a send decided (and the block `do:` invokes); and, for the
-  paths that re-enter the run loop from Rust, `run_own_initializer` and
-  `nested::run_clause_body`. An activation nothing reifies leaves nothing
-  behind; only a block the compiler did not inline reifies one, since an
-  inlined `ifTrue:`/`and:`/`whileTrue:` argument creates no closure.
+  depth limit" below) before it reaches the heap, so no new push site can skip
+  the check. It is called from one place, `Interpreter::push_step`, for the
+  method, block or body a decision answered. An activation nothing reifies
+  leaves nothing behind; only a block the compiler did not inline reifies one,
+  since an inlined `ifTrue:`/`and:`/`whileTrue:` argument creates no closure.
 - **Register access through an `ActivationRef`** is `values[entries[i].base +
   r]`, with no branch on the handle's kind or on an args/temps split; a release
   build still bounds-checks both slice indexes. A debug build also checks that
@@ -143,8 +143,8 @@ pub struct ActivationRef {
   each push and recorded on the entry. A handle read after its entry was popped
   and the index reused would otherwise answer a different, perfectly valid
   activation; the generation check turns that into a panic at the read.
-  `Interpreter::send` and `Interpreter::instantiate` debug-assert that they leave
-  the stack as deep as they found it, because a leaked entry is otherwise silent:
+  `Interpreter::run_from_host`, the one host entry, debug-asserts that it leaves
+  the stack as deep as it found it, because a leaked entry is otherwise silent:
   a later activation would sit on top of a dead one's registers.
 - **A reified frame is a `FrameSlot`**: the `Frame` itself, and the entry it is
   married to. `Frame` is declared in `types.rs` with public fields, because the
@@ -206,9 +206,8 @@ outlives a call — a closure, another frame, an image record — holds a `Frame
   from depth 1 on: the first hop goes from a closure activation to its
   `captured_frame`, the rest follow `FrameRef` links.
 - **No send or block invocation takes a sender to record.** `Interpreter::send`,
-  `decide_send`, `invoke_closure`, `builtins::dispatch_native`,
-  `builtins::call_block` and the `builtins/` modules have no `sender`
-  parameter. It was removed rather than retyped to an `ActivationRef`: its only
+  `decide_send`, `builtins::dispatch_native` and the `builtins/` modules have
+  no `sender` parameter. It was removed rather than retyped to an `ActivationRef`: its only
   use was to fill `Frame.sender`, and once a live activation's sender is the
   entry below it, nothing read it. No native takes an activation handle at all.
   The one function handed the sending activation is `Interpreter::push_step`,
@@ -250,7 +249,7 @@ able to name the code it is executing so that `pc` is interpretable, since the
 statement→PC table is reached through its kind. A stack entry also holds its
 `code` directly, because the loop resumes a caller in it after a callee returns;
 `then`, the `Continuation` the loop applies to its value when it is popped; and
-`counted`, whether it counts against the depth limit ("The trampoline" below).
+`counted`, whether it counts against the depth limit ("The depth limit" below).
 
 `pc` is an instruction index into the activation's compiled body.
 
@@ -282,54 +281,61 @@ activations from its callers'.
   into the interpreter's reusable buffer, stores the caller's `pc`, and asks
   `interpreter/` what the send means: `Interpreter::decide_send`,
   `sends::decide_lexical_send` or `sends::decide_super_send`, which answer a
-  `Step`. `Step::Value` — a native leaf, a slot access, a nested class, a
-  finished instantiation — is written to the send's `dst`, and the caller goes
-  on. `Step::Method` and `Step::Block` are pushed by `Interpreter::push_step`,
-  which checks the arity and the depth limit, and the loop switches to the new
-  activation at `pc` 0, its window filled straight from the buffer. A send
-  allocates no vector once the buffer has grown to the widest one.
+  `Step`. `Step::Value` — a native leaf, a slot access, a nested class or an
+  instantiation that runs no code — is written to the send's `dst`,
+  and the caller goes on. Anything else is an activation: `Step::Method`,
+  `Step::Block`, or one of the bodies an instantiation or a nested-class
+  accessor runs, `Step::Initializer`, `Step::InitializerThen`,
+  `Step::ClauseMessage` and `Step::SuperclassClause`. It is
+  pushed by `Interpreter::push_step`, which checks a method's or block's arity
+  and the depth limit, and the loop switches to the new activation at `pc` 0,
+  its window filled straight from the buffer. A send allocates no vector once
+  the buffer has grown to the widest one.
 - **A return** (`vm::finish`) pops the activation and applies its
   continuation. `Continuation::Deliver`, every send's, hands the value to the
   caller: `resume_caller` reads the `pc` the caller stored at its send, writes
   the value to that send's `dst` and continues at the next instruction — or,
-  when the popped activation was `base`, the loop leaves `run` with it. The
-  continuations the control-flow natives use are applied by
-  `Interpreter::resume`, which calls into `builtins/`; it may answer a value,
-  or another activation — a native loop's next block, or the method a
-  non-Boolean condition's `mustBeBoolean` send finds — which
-  `Interpreter::push_continuation` pushes in the popped activation's place
-  ("The trampoline" below).
+  when the popped activation was `base`, the loop leaves `run` with it. Every
+  other continuation — a control-flow native's, `do:`'s, the nested-class
+  accessor's, an instantiation's — is applied by `Interpreter::resume`, which
+  calls into `builtins/` or `interpreter/`; it may answer a value, or another
+  activation — a native loop's next block, `do:`'s block for the next element,
+  an instantiation's next body, or the method a non-Boolean condition's
+  `mustBeBoolean` send finds — which `Interpreter::push_continuation` pushes
+  in the popped activation's place ("The trampoline" below).
 - **A signal** — a Newspeak error, or a non-local return — goes to
   `vm::unwind`, which pops what it has to and either returns from the
   non-local return's target or leaves `run` with the signal ("Non-local
-  return" below).
+  return" below). Every activation it pops hands its continuation to
+  `Interpreter::abandon`, which undoes what that continuation had begun.
 
 Four kinds of body run, and each reaches the loop one way:
 
 1. **Method body** — pushed by `push_step` for a `Step::Method`. A method
    activation catches a `^` that targets it (`Interpreter::catches_return`).
 2. **Block body** — pushed by `push_step` for a `Step::Block`, running
-   `ClosureData.code`. `value` and the control-flow natives answer the block as
-   a step; `do:`, the one native that still calls a block from Rust, goes
-   through `Interpreter::invoke_closure`, which builds the same step and
-   re-enters the loop with it.
-3. **Instance initializer** — `run_own_initializer`, one per initializing level
-   of `run_initializer_levels`, which runs that level's compiled initializer:
-   its own slot initializers and initializer expressions. A class with no
+   `ClosureData.code`. `value`, the control-flow natives and `do:` answer the
+   block as a step.
+3. **Instance initializer** — `descend_levels`, one per initializing level of
+   the superclass chain, answers that level's compiled initializer: its own
+   slot initializers and initializer expressions. While a level below it still
+   has code to run, it is answered as a `Step::InitializerThen`, whose
+   activation continues with `Continuation::Instantiate`; the walk's last
+   initializer is a `Step::Initializer`, whose activation delivers its own
+   value, the instance ("No re-entry from Rust" below). A class with no
    compiled initializer and no slots is a no-op; a user class whose mixin
-   carries no initializer is refused on load and panics if built any other
-   way.
-4. **Superclass clause and its message arguments** — `nested::run_clause_body`,
-   for the nested-class accessor and for `instantiate`'s deferred clause message.
+   carries no initializer is refused on load and panics if built any other way
+   (`Interpreter::initializer_body`).
+4. **Superclass clause and its message arguments** — the nested-class
+   accessor's clause is a `Step::SuperclassClause`, continuing with
+   `Continuation::NestedClass`; an instantiation's clause message is a
+   `Step::ClauseMessage`, continuing with `Continuation::Instantiate`.
 
-Rust enters the loop in one place, `Interpreter::reenter`: it pushes one
-activation, runs `vm::run` on it and counts the re-entry against the
-native-depth bound. The host's `Interpreter::send`, `invoke_closure`,
-`run_own_initializer` and `run_clause_body` all come through it — the last three
-are the paths in "What stays recursive" below. A decision can itself re-enter —
-an instantiation, or a nested-class accessor running its clause — and finishes
-before the send it decides goes on; it takes a fresh argument buffer, since the
-running send's is in use.
+Rust enters the loop in one place, `Interpreter::run_from_host`, for a host's
+`send` or `instantiate`, and only from outside it: it pushes what the decision
+answered and runs `vm::run` on it. No decision, native or continuation runs
+code from Rust, and a debug build checks that the loop is never entered while
+it runs ("No re-entry from Rust" below).
 
 **The VM has no dispatch logic, no `doesNotUnderstand:` construction, no native
 dispatch and no error text of its own.** It pushes, pops, switches, writes
@@ -390,14 +396,13 @@ catches a return (`Interpreter::catches_return`: a method, a superclass
 clause or its message) ends the unwind: every activation above it is popped,
 and the target returns the value through the ordinary return path, so a
 reified frame is divorced exactly as on any return. The popped activations'
-continuations are not applied, so a `^` out of an `and:` block or a native
-loop's body abandons the coercion or the loop. Any other signal — an error, or
-a return whose target is below this run — pops every activation of the run,
-`base` included, and leaves `vm::run` with it, for the Rust frame that
-re-entered the loop to pass on: through `do:`'s native, which passes a
-`Signal::Return` through untouched (`builtins::call_block`), through an
-instantiation or a nested-class accessor, to the run below, which asks the
-same question.
+continuations are not applied, so a `^` out of an `and:` block, a native
+loop's body or a `do:` block abandons the coercion or the loop; they go to
+`Interpreter::abandon` instead, which unmarks a nested class's creation in its
+cache slot and drops every other. Any other signal — an error, or a
+return whose target catches none — pops every activation of the run, `base`
+included, through `abandon` in the same way, and leaves `vm::run` with it, for
+the host that started the run.
 
 Because there is one stack, a live target is always below the activation
 raising the return, and nothing is pushed while the signal propagates, so the
@@ -414,10 +419,9 @@ initialization — `| blk = [ ^2 ]. |` — whose `^` runs after initialization h
 finished raises `cannotReturn`, as `newspeak-spec.pdf` §7.2 requires, because
 the initializer's frame was divorced when its activation returned. A `^` into an
 initializer that is still running escapes: an initializer activation catches
-no return, so the run it belongs to pops it and leaves with the signal still
-naming it, each run below finds the target no longer live and passes the
-signal on, and it reaches the top of the entry send as "internal: non-local
-return escaped the entry send", a known gap
+no return, so the unwind pops it with everything else down to the floor of the
+host's run and leaves with the signal, and it reaches the top of the entry
+send as "internal: non-local return escaped the entry send", a known gap
 (`crates/ns-runtime/tests/trampoline.rs` pins it under both lowerings).
 
 A method body's own `^` is an ordinary `Return` and raises no signal. The
@@ -440,8 +444,9 @@ compiling excluded — and reports the median of ten timed runs after a discarde
 warm-up. Its three fixtures each run a 50,000-iteration `whileTrue:` loop, which
 the compiler inlines: `bench_loop.ns` sums the counter, `bench_send.ns` adds a
 user-method send per iteration and `bench_block.ns` a method that creates and
-invokes a block. On a release build, on 2026-09-12 with the trampoline, their
-medians were about 11.3, 14.0 and 24.0 ms ("What the trampoline moved" below).
+invokes a block. On a release build, on 2026-09-13, with nothing re-entering
+the loop from Rust, their medians were about 11.1, 14.0 and 23.6 ms ("What
+removing the re-entries moved" below).
 
 Never judge performance from a debug build.
 
@@ -751,7 +756,9 @@ inferences from what each change removed, and no profile was taken.
   `bench_send.ns`, which activate no block in their loops, moved about 2.5%,
   outside both groups' spread but not explained by anything removed from their
   paths — code layout, most likely, and not something to bank on.
-- **The two bounds.** The first version marked a control-flow native's block
+- **The two bounds** — L, and a bound on re-entries of the loop from Rust that
+  the trampoline still had and that went with the re-entries ("No re-entry
+  from Rust" below). The first version marked a control-flow native's block
   with a `bool` field on `Step::Block`, and measured 4–8% slower on every
   source, `bench_loop.ns` included, whose loop activates nothing. Taking the
   pieces out one at a time found the field itself to be the cause, with
@@ -784,14 +791,16 @@ inferences from what each change removed, and no profile was taken.
   kept, so it was reverted: one index into a hot entry is already cheap enough
   that avoiding it does not show.
 
-The interpreter thread's stack comes from the native cost of one re-entry of
-the loop from Rust, measured in a debug build by the address of a local at
-native depths 1 and 101: 9,280 bytes a level through `do:`, 8,256 through
-instantiation and 6,816 through the nested-class accessor. At the native-depth
-bound of 1,000 the largest is about 8.9 MiB; twice that, 17.7 MiB, rounds up to
-`INTERPRETER_STACK_BYTES = 32 MiB` (`crates/ns-cli/src/main.rs`). The goldens
-that recurse to the bound through `do:` and through instantiation run on it in a
-debug build and end in the error rather than an abort.
+The interpreter thread's stack, `INTERPRETER_STACK_BYTES = 8 MiB`
+(`crates/ns-cli/src/main.rs`), is sized for what still recurses on the Rust
+stack. Nothing re-enters the run loop from Rust ("No re-entry from Rust"
+below), so that is the front end and the compiler, whose depth the parser's
+nesting ceiling bounds. The suite runs the deepest nesting the parser accepts
+through every stage on libtest's default 2 MiB threads in a debug build —
+`the_deepest_module_the_parser_accepts_round_trips`,
+`the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs` and
+`the_deepest_literal_array_the_parser_accepts_survives_a_round_trip` in
+`crates/ns-runtime/tests/image.rs` — and the thread gets four times that.
 
 The suite (`cargo test --workspace`, debug build, test binaries already built)
 went from 9.36 s, 617 tests, to 12.82 s, 637 tests, in two runs alike. 3.1 s of
@@ -847,12 +856,143 @@ self). Both are the lexical-send slot lookup PROGRESS.md lists as left for the
 inline caches; a cached getter symbol and a hasher for `u32`-shaped keys would
 remove most of it sooner.
 
+### What removing the re-entries moved
+
+Taking the last re-entries of the loop from Rust away ("No re-entry from Rust"
+below) was measured whole against the commit it started from, `be3eb40`, in
+two sittings on 2026-09-13: the before-binary built in a throwaway worktree,
+`ns-next bench <source> --iterations 30` over seven sources, five rounds,
+alternating the binaries within each round. Besides the three fixtures, four
+throwaway sources exercise the paths that changed and no fixture does, each
+printing the sum it accumulates:
+
+- `bench_do.ns`: 50,000 block activations through `do:` — a 5,000-iteration
+  `whileTrue:` loop over `#(1 2 3 4 5 6 7 8 9 10) do: [:e | sum := sum + e]`.
+- `bench_new.ns`: 20,000 instantiations of
+  `class Cell = Object new ( | v ::= 1. | )`, each followed by `v`.
+- `bench_new2.ns`: the same with two levels of slots,
+  `class Base = Object new ( | u ::= 1. | )` and
+  `class Cell = Base new ( | v ::= 1. | )`.
+- `bench_newarg.ns`: the same with a clause message that has an argument,
+  `class Base x: a = Object new ( | u ::= a. | )` and
+  `class Cell = Base x: 1 ( | v ::= 1. | )`, each instantiation followed by
+  `u`.
+
+They are not fixtures; the first two are written out in the step's
+[plan](../superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md),
+"Measurement protocol", and the other two are `bench_new.ns` with the classes
+above. Medians in ms from the first sitting, each group's mean, and the change
+of the mean in both sittings:
+
+| Source | Before, rounds 1–5 | mean | After, rounds 1–5 | mean | Change, sitting 1 / 2 |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 10.95, 11.03, 10.96, 10.98, 11.05 | 11.00 | 11.35, 11.34, 11.08, 11.15, 11.10 | 11.20 | **+1.9% / +1.4%**, after entirely above in both |
+| `bench_send.ns` | 14.25, 13.86, 13.86, 13.81, 13.74 | 13.90 | 13.87, 13.93, 13.93, 13.98, 13.94 | 13.93 | +0.2% / +0.8%, groups overlap in both |
+| `bench_block.ns` | 23.12, 23.14, 22.90, 23.12, 22.92 | 23.04 | 23.31, 23.53, 23.45, 23.39, 23.37 | 23.41 | **+1.6% / +1.4%**, after entirely above in the first |
+| `bench_do.ns` | 7.85, 7.90, 7.87, 8.00, 7.84 | 7.89 | 7.88, 7.74, 7.78, 7.78, 7.75 | 7.79 | −1.3% / −1.3%, groups overlap in both |
+| `bench_new.ns` | 7.30, 7.27, 7.28, 7.26, 7.29 | 7.28 | 7.11, 7.19, 7.37, 7.15, 7.13 | 7.19 | −1.2% / −2.7%, after entirely below in the second |
+| `bench_new2.ns` | 8.17, 8.19, 8.26, 8.16, 8.23 | 8.20 | 8.16, 8.09, 8.08, 8.16, 8.15 | 8.13 | −0.9% / −1.2%, after entirely below in both |
+| `bench_newarg.ns` | 10.37, 10.60, 10.51, 10.66, 10.40 | 10.51 | 10.10, 10.04, 10.13, 10.18, 10.10 | 10.11 | −3.8% / −3.2%, after entirely below in both |
+
+**Instantiation is faster than it was with the re-entries**, on all three
+shapes, and `do:` and `bench_send.ns` are level with it. What decided that is
+isolated, each change measured against its parent in a sitting of its own
+(below): two boxes per instantiation body, the box and the list of levels
+every instantiation allocated, and a call to `Continuation`'s drop glue on
+every return. An initializer now runs in the same loop — `push_step`, a
+switch, and `finish` — where it ran in a nested run of it, and once the walk
+allocates nothing per instantiation, that is the cheaper of the two. `do:`
+running its block as a step instead of in a nested run did not make it clearly
+faster, although the design expected it to: −1.3% in both sittings, the groups
+overlapping.
+
+**Open finding: `bench_loop.ns` and `bench_block.ns` are 1.4–1.9% slower**,
+the after-group entirely above the before-group in three of the four
+comparisons. Neither runs `do:`, an instantiation or the accessor in its loop:
+`bench_loop.ns` makes only native-leaf and slot sends, and `bench_block.ns`'s
+`whileTrue:` is inlined and each iteration makes lexical sends for the slots
+and `bump:`, public sends of `<`, `+` and `value:`, and one block creation.
+What they run of the changed code is `Interpreter::decide_send` and
+`sends::decide_lexical_send`, whose factory-send and nested-class branches now
+answer a `Step` (neither is taken here); `builtins::dispatch_native`, whose
+`Array` and `OrderedCollection` arms answer a `Step` themselves, with no arm
+added; `Interpreter::push_step` (`bench_block.ns` takes its block arm, for
+`value:`), whose match has four body arms more; and the types every one of
+those sends passes through — `Step`, with four variants more, and the
+`Continuation` `vm::finish` reads, with three more, whose `Deliver` it handles
+inline, so the loop never reaches `Interpreter::resume`. This is the uniform
+shift the first change of the step already showed on code it did not change
+(below), an artifact of inlining and register allocation as far as that
+investigation went. It is not isolated, and nothing removed from either
+benchmark's path explains it.
+
+Each change was measured against its parent on the way, in sittings of its
+own, so its figures are not compared with these:
+
+- **`do:` as a step.** It moved every source by a uniform 2–4%, `bench_loop.ns`
+  included, which runs no `do:`. A control — the parent commit plus only the
+  new `Continuation::DoElement` variant — did not reproduce it. In the
+  post-LTO assembly `vm::finish` is out of line in every build, so the
+  continuation machinery never sat in the loop; in the changed build
+  `object_class::dispatch` was inlined into `dispatch_native` and `run`'s
+  register allocation differed, doing the same work. Moving the continuation
+  handling out of `finish` and marking `do_step` `#[inline(never)]` recovered
+  nothing. It was accepted as an LLVM inlining and layout artifact on unchanged
+  executed code, not bisected further.
+- **The nested-class accessor as a step** made no source slower; by the
+  protocol's rule `bench_send.ns`, `bench_block.ns` and `bench_new.ns` came out
+  faster, with nothing on their paths to explain it.
+- **Instantiation as a state machine.** The first version made `bench_new.ns`
+  about 15.6% slower. Counting allocations found the cause: two more boxes per
+  instantiation, the walk's state and a boxed description of the body (4
+  allocations, 296 bytes, per `Cell new`, against 2 and 144). Letting the last
+  initializer deliver the instance and carrying it inline as
+  `Step::Initializer` restored the count to 2 and 144 bytes on that shape and
+  left about +1.8%. A chain of two levels with code still boxed both for every
+  body but the last, which showed only once `bench_new2.ns` and
+  `bench_newarg.ns` joined the measurement: 15.4% and 18.3% slower than
+  `be3eb40`.
+- **Every body inline.** Carrying `Step::InitializerThen`,
+  `Step::ClauseMessage` and `Step::SuperclassClause` inline instead of a boxed
+  body description: `bench_new2.ns` −5.2%, `bench_newarg.ns` −8.0%, both
+  entirely below, the other five sources level. The first version gave
+  `Step::Initializer` an optional continuation, which made it as large as
+  `Step::Method`; `Result<Step, Signal>` stayed at 56 bytes, yet the four
+  sources that instantiate nothing got 4–6% slower, all entirely above ("Every
+  body is inline in its `Step`" below).
+- **Reusing the walk's box.** Taking the walk's box and its list of levels
+  from the interpreter's spares instead of allocating both: `bench_new.ns`
+  −3.0%, `bench_new2.ns` −8.8%, `bench_newarg.ns` −12.8%, all entirely below;
+  the others level.
+- **`Continuation`'s drop glue.** With three boxed variants, the drop glue of
+  `Continuation` stayed out of line, and `vm::finish` called it on every
+  return for the `Deliver` it left in the popped entry. Taking the `Deliver`
+  and forgetting it moved `bench_block.ns`, `bench_new.ns`, `bench_new2.ns`,
+  `bench_send.ns` and `bench_do.ns` by −0.1% to −1.4% in two sittings, none
+  slower, the groups overlapping.
+- **The in-progress marker** in the cache slot, replacing the list of
+  creations underway, moved no source (−1.2% to +1.1%, overlapping); it was
+  made for the test suite's time and a crafted binary's (below).
+- **Comparing `do:` as a well-known symbol**, instead of through the interner,
+  was tried and not kept: `bench_block.ns`, `bench_new.ns` and `bench_new2.ns`
+  got 1.7–2.1% slower, none of which sends to a collection in its loop.
+
+The suite (`cargo test --workspace`, debug build, test binaries already built)
+takes 12.5 s for 662 tests, in two runs alike — as long as before the step,
+12.5 s for 644. For a while it took 25 s: two tests recurse through the
+nested-class accessor to the activation limit, about 50,000 creations underway
+at the deepest, and the cyclic-definition check scanned a list of every
+creation underway at each level, quadratic in the depth, where the bound on
+re-entries had stopped such a recursion at 1,000 levels. With the marker in the
+cache slot the check is one read, and `accessor-recursion` in
+`crates/ns-cli/tests/program_outcomes.rs` takes 0.3 s again.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
 activation stack, and the run loop ("The VM" above) is the only place a running
-computation lives, apart from the three paths "What stays recursive" below
-names, which re-enter it from Rust. This was step 1b of Milestone 4, and it
+computation lives, and nothing re-enters it from Rust ("No re-entry from Rust"
+below). This was step 1b of Milestone 4, and it
 landed the way the stack did: against a green suite, with its own
 before-and-after measurement ("What the trampoline moved" above).
 
@@ -898,7 +1038,8 @@ Three things the trampoline settles on its own:
   costs native stack per level under the reference lowering only, growing with
   the static nesting of `and:` and `while` blocks, so no fixed native stack
   would guarantee that the count trips before the native stack under both
-  lowerings. `do:` stays a callback until it moves to Newspeak
+  lowerings. `do:` answers its block as a step too ("No re-entry from Rust"
+  below), and moves to Newspeak after the inline caches
   ([core-library.md](core-library.md)).
 - **Recursion depth is a checkable limit and an ordinary Newspeak error**
   instead of a native stack overflow that aborts the process. That closes the
@@ -916,38 +1057,37 @@ Three things the trampoline settles on its own:
   outcome (`crates/ns-cli/tests/program_outcomes.rs`) runs exactly that
   recursion, under both lowerings.
 
-### Two bounds, not one
+### The depth limit
 
-Decided 2026-09-12. Once sends and the control-flow natives no longer recurse,
-two resources can still run out, and they are bounded separately, the way Lua
-and CPython bound them:
+Decided 2026-09-12. Once sends and the control-flow natives no longer recurse
+and nothing re-enters the run loop from Rust ("No re-entry from Rust" below),
+a recursion runs out of one resource only, the memory its activations take,
+and one counted bound limits it:
 
 | Bound | Counts | Value | Error text |
 |---|---|---|---|
 | L | activations, by the rule in [compiler.md](compiler.md), "How the limit counts" | 100,000 | `stack overflow: recursion too deep` |
-| N | re-entries of the run loop from Rust — the paths in "What stays recursive" below | 1,000 | `stack overflow: too many nested native calls` |
 
-The two are `MAX_ACTIVATION_DEPTH` and `MAX_NATIVE_DEPTH` in
-`crates/ns-runtime/src/interpreter/mod.rs`. L bounds memory: an activation is a
-stack entry and a window of registers in two `Vec`s, so L can be far larger
-than any native stack would allow. It bounds it up to a factor: above each
-counted activation sit at most as many exempt ones as blocks nest — each
-exempt block was created by the activation below it, so a chain of them
-descends the lexical nesting — and blocks nest at most 128 deep, the parser's
-ceiling in source and the decoder's, derived from it, in an artifact
-([image-format.md](image-format.md), "Verification"). So the stack holds at
-most 129 × L entries, 12.9 million, whose entries alone take about 1.3 GB in a
-release build (104 bytes each, before their registers). Only code that carries
-`SendInlinable` gets there — the reference lowering's, or an artifact's —
-recursing through 128 nested control-flow blocks at every level; the optimized
-lowering never emits it, so under it the stack holds at most L entries. N
-bounds the native stack, and is the only bound that depends on it. Both agree
-under both lowerings, because the control-flow natives are trampoline steps, so
-no Rust re-entry happens under one lowering and not the other. Neither error
-text names its number, as Lua's,
-CPython's, V8's and Nova's do not, so that changing a value later changes no
-recorded answer. Both unwind to the entry send like every other Newspeak error;
-nothing catches them yet.
+It is `MAX_ACTIVATION_DEPTH` in `crates/ns-runtime/src/interpreter/mod.rs`.
+L bounds memory: an activation is a stack entry and a window of registers in
+two `Vec`s, so L can be far larger than any native stack would allow. It
+bounds it up to a factor: above each counted activation sit at most as many
+exempt ones as blocks nest — each exempt block was created by the activation
+below it, so a chain of them descends the lexical nesting — and blocks nest at
+most 128 deep, the parser's ceiling in source and the decoder's, derived from
+it, in an artifact ([image-format.md](image-format.md), "Verification"). So the
+stack holds at most 129 × L entries, 12.9 million, whose entries alone take
+about 1.3 GB in a release build (104 bytes each, before their registers). Only
+code that carries `SendInlinable` gets there — the reference lowering's, or an
+artifact's — recursing through 128 nested control-flow blocks at every level;
+the optimized lowering never emits it, so under it the stack holds at most L
+entries. The limit agrees under both lowerings, because the control-flow
+natives, `do:`, instantiation and the nested-class accessor are all trampoline
+steps: no recursion costs native stack under one lowering and not the other.
+The error text does not name its number, as Lua's, CPython's, V8's and Nova's
+do not, so that changing the value later changes no recorded answer. It
+unwinds to the entry send like every other Newspeak error; nothing catches it
+yet.
 
 - **L is checked on every push.** `Interpreter::push`, the one function every
   activation the runtime pushes goes through, refuses a counted push when
@@ -955,9 +1095,9 @@ nothing catches them yet.
   running total on push and pop, so an error path — which pops through
   `vm::unwind` like any other — leaves it exact. Whether an activation counts
   is recorded on its stack entry. Only the block arm of
-  `Interpreter::push_step` ever records an exemption; a method, an
-  initializer level (`run_own_initializer`) and a superclass clause or its
-  message (`nested::run_clause_body`) are counted by construction.
+  `Interpreter::push_step` ever records an exemption; a method, and every body
+  an instantiation or a nested-class accessor runs — an initializer level, a
+  superclass clause or its message — are counted by construction.
 - **The exemption is marked by the arguments.** A block a control-flow native
   activates carries `StepArgs::ControlFlow` — it has no arguments, and only
   those natives build that variant — and `push_step` exempts it when the send
@@ -969,47 +1109,45 @@ nothing catches them yet.
   mark rides on the arguments rather than in a field of its own
   because the field measured 4–8% slower ("What the trampoline moved" above);
   so a future native that activates a block with no arguments for any other
-  reason must not build `ControlFlow`. `&` and `|` share `and:`'s and `or:`'s
+  reason must not build `ControlFlow`. `do:`'s block has an argument, so it is
+  always counted. `&` and `|` share `and:`'s and `or:`'s
   native and so carry the mark too, which is harmless: no lowering emits a
   `SendInlinable` for them, since `control_flow::recognize` accepts only the
   eight inlined selectors, and a crafted artifact that marks one meets the
   captured-frame condition like any other.
-- **N is checked on every re-entry.** `Interpreter::reenter` refuses one past
-  the bound before anything is pushed, and counts only a re-entry whose push
-  succeeded.
 - **The CLI runs every command on a thread it spawns** with an explicit stack
   (`std::thread::Builder`, `INTERPRETER_STACK_BYTES` in
-  `crates/ns-cli/src/main.rs`): 32 MiB, from the measured native cost of one
-  re-entry in a debug build, N times over, twice, rounded up ("What the
-  trampoline moved" above). It is reserved, not committed, so only what a
-  program uses is backed by memory. The whole command runs there, not only its
-  sends, because the symbol interner is thread-local (`symbol.rs`) and every
-  symbol a command interns must be interned on the thread that uses it. The
-  goldens at N, one per path — `do-recursion`, `instantiation-recursion` and
-  `accessor-recursion`, run in a debug build — pin that the error, not an
-  abort, is what a program sees. An embedder driving `Interpreter` directly
-  owes its thread the same stack.
+  `crates/ns-cli/src/main.rs`): 8 MiB, four times the 2 MiB libtest threads
+  the suite runs the deepest nesting the parser accepts on, since what still
+  recurses on the Rust stack is the front end and the compiler, bounded by the
+  parser's nesting ceiling ("What the trampoline moved" above). It is
+  reserved, not committed, so only what a program uses is backed by memory.
+  The whole command runs there, not only its sends, because the symbol
+  interner is thread-local (`symbol.rs`) and every symbol a command interns
+  must be interned on the thread that uses it, so the thread would be needed
+  for that alone. The goldens that recurse through
+  `do:`, instantiation and the nested-class accessor — `do-recursion`,
+  `instantiation-recursion` and `accessor-recursion`, run in a debug build —
+  end at L like any other recursion, and pin that the error, not an abort, is
+  what a program sees.
 
-Why not one count sized against the native stack: every counted activation can
-also be a `do:` re-entry, so L would have to fit L re-entries into the native
-stack — about 10,000 at most, with a reservation of over 100 MB in a debug
-build — and the guarantee would hang on Rust frame sizes that change with every
-refactoring and compiler release. Why not a memory bound, as Cog and Primordial
-Soup have, or a stack-pointer check, as V8 and HotSpot have: both trip at
-different depths under the two lowerings, whose activations differ in number
-and size, and the second also between a debug and a release build.
+Why the limit is a count and not a memory bound, as Cog and Primordial Soup
+have, or a stack-pointer check, as V8 and HotSpot have: both trip at different
+depths under the two lowerings, whose activations differ in number and size,
+and the second also between a debug and a release build.
 
 ### A superclass chain is walked iteratively
 
-`Interpreter::run_initializer_levels` walks it with an explicit list: each
-level's factory arity checked and its clause message evaluated from the class
-upward, each level's arguments kept, then the initializers
-(`run_own_initializer`) from the top down — the order of every observable
-effect a per-level recursion had. Recursing once per level would escape both
-bounds: a level with no initializer code pushes no activation and re-enters
-nothing, so neither would see a long chain of such levels, and its length is
-an image's to choose — the same exposure `metaclass_of` and `dispatch::walk`
-were made iterative for.
+`climb_levels` and `descend_levels` (`interpreter/instantiate.rs`) walk it with
+an explicit list, as a state machine `Interpreter::advance_instantiation`
+resumes whenever a body it answered returns: each level's factory arity
+checked and its clause message evaluated from the class upward, each level's
+arguments kept, then the initializers from the top down — the order of every
+observable effect a per-level recursion had. Recursing once per level would
+escape the limit: a level with no initializer code pushes no activation, so
+the count would not see a long chain of such levels, and its length is an
+image's to choose — the same exposure `metaclass_of` and `dispatch::walk` were
+made iterative for.
 
 ### What the golden outcomes are trusted on
 
@@ -1050,27 +1188,163 @@ otherwise what a runtime falls back on when the stack its evaluator recurses on
 cannot grow. The systems that took their calls off the native stack — Lua,
 CPython from 3.11 — separate the two resources that can then run out, with a
 generous bound on the language's own depth and a tight one on native
-re-entries; Primordial Soup and Cog need no second bound only because nothing
-in them re-enters the interpreter from native code. Some paths in ns-next still
-recurse on the Rust stack ("What stays recursive" below), and each level of
-them costs native stack: 9,280 bytes a level through `do:` in a debug build,
-measured on the trampoline ("What the trampoline moved" above). N ("Two bounds,
-not one" above) is what bounds them.
+re-entries; Primordial Soup and Cog need no second bound because nothing in
+them re-enters the interpreter from native code. ns-next is in their position:
+nothing re-enters its run loop from Rust ("No re-entry from Rust" below), so
+one bound, L ("The depth limit" above), is all it needs.
 
-### What stays recursive, and why that is not a hole
+### No re-entry from Rust
 
-Three paths keep their Rust frames: `do:`, the one native that still calls
-back into Newspeak, through `builtins::call_block` and
-`Interpreter::invoke_closure`; instantiation, whose initializer levels and
-clause messages each run in a nested run of the loop; and the nested-class
-accessor, which runs a superclass clause in one. Each re-entry goes through
-`Interpreter::reenter` and is counted against N. `do:` is a barrier for a
-future JIT rather than a correctness problem, and it is addressed by moving it
-out of Rust rather than by trampolining around it; see
-[core-library.md](core-library.md). Instantiation and the accessor could become
-trampoline steps later — both run Newspeak code in a fixed order a continuation
-could drive — but nothing needs that yet. Their Rust-held values are what the
-scope discipline [memory.md](memory.md) plans will have to cover.
+Rust enters the run loop only as its outermost caller — a host's `send` or
+`instantiate`, a stateless binary's entry among them — and never from inside a
+running computation. `do:`, instantiation and the nested-class accessor, the
+three paths that used to run Newspeak code from Rust, are trampoline steps.
+This was step 2a of Milestone 4, decided 2026-09-13, and it is what the root
+discipline stands on ([memory.md](memory.md), "No Rust frame is live below a
+safepoint"): between two instructions no Rust frame between the host and the
+loop holds a value.
+
+All three follow the pattern `whileTrue:` set: a decision answers an activation
+together with a `Continuation`, the continuation rides on the activation's
+stack entry, and `Interpreter::resume` applies it when the activation returns.
+The semantics and the order of every observable effect are what they were
+when these paths ran in nested runs of the loop.
+
+- **`do:`** (`builtins/collections.rs`) walks a snapshot of the elements. An
+  empty collection, or an argument that is not a block, answers the receiver at
+  once: a non-block stands for its own value, so handing it the elements would
+  observe nothing. Otherwise `do_step` answers `Step::Block` for the first
+  element with `Continuation::DoElement`, whose `DoLoop` carries the receiver,
+  the block, the snapshot and the next index; `resume` hands it to
+  `after_element`, which activates the block for the next element or answers
+  the receiver. `dispatch_array` and `dispatch_ordered_collection` check for
+  `do:` first and answer its step themselves, and lift every other selector's
+  value into a step (`leaf_step`), so `builtins::dispatch_native` keeps one arm
+  per class. Each element's activation is counted, like any block a `value`
+  send activates; a `^` in it unwinds like any other activation's, and its
+  arity is checked by the same `check_block_arity`. Its argument is a
+  one-element vector, allocated per element: a `StepArgs` variant that carried
+  one value would avoid that, and would change `Step`'s layout, which the
+  trampoline measured as a 4–8% risk ("What the trampoline moved" above).
+- **The nested-class accessor** (`interpreter/nested.rs`) answers the class as
+  a value when the receiver's cache already holds it, and also when the
+  declaration has no superclass clause, whose superclass is `Object` with no
+  code to run. Otherwise it answers the clause's activation, a
+  `Step::SuperclassClause`, pushed with the declaring class as its current
+  class and continuing with `Continuation::NestedClass`. The boxed
+  `NestedClassCreation` it carries holds the enclosing object, the index of
+  its cache slot, the declaration and the declaring class; `resume` hands it to
+  `nested::after_clause`, which does steps 3 to 5 — the application, the class
+  object, the cache ([object-model.md](object-model.md)) — and answers the
+  class. While the clause runs, the class's cache slot itself says that its
+  creation is underway: `push_step` writes a marker into it once the clause's
+  push has succeeded (`nested::begin_creation`), and `resume` or
+  `Interpreter::abandon` sets it back to nil when the activation is popped
+  (`nested::end_creation`), before `after_clause` caches the class there. An
+  access that finds the marker is the cyclic-definition error; the slot is
+  already keyed by the enclosing object and the declaration, the pair a cycle
+  is, so the check is the one read the accessor makes anyway. The marker is
+  `false`, a primitive the image format already has: nothing but the accessor
+  reads a hidden slot, so no Newspeak code sees it, and no image holds one,
+  since only a host snapshots, between runs; an image that puts `false` in a
+  hidden slot itself gets a cyclic-definition error, the same kind of
+  wrong-but-safe answer as any other non-class value it puts there. The reset
+  replaces only the marker: the decoder does not bound `InitSlot`'s field
+  index, so an image's clause body can overwrite the slot, and a debug build
+  counts the marks rather than asserting on the slot's contents, which such an
+  image could turn into a panic. `abandon` is `resume`'s counterpart for a
+  continuation whose activation `vm::unwind` throws away rather than returns
+  from: the loop forwards every popped entry's continuation to it and decides
+  nothing, as `vm::finish` forwards to `resume`.
+- **Instantiation** (`interpreter/instantiate.rs`) is a state machine.
+  `decide_instantiation` allocates the instance and walks the superclass chain
+  ("A superclass chain is walked iteratively" above) with its state, an
+  `Instantiation` — the instance, the levels reached with their factory
+  arguments, and the phase: climbing at a level and its superclass, or
+  descending at an index. The walk does the synchronous parts itself — each
+  level's arity check, the clause selector check, a level with no code — and
+  answers an activation as soon as code must run. A clause message's
+  arguments are a `Step::ClauseMessage`, and an initializer with a level below
+  it that still has code a `Step::InitializerThen`; each carries the state
+  into its activation's `Continuation::Instantiate`, and
+  `advance_instantiation` carries the walk on when the body returns. The
+  walk's last initializer is a `Step::Initializer`, and its
+  activation delivers its own value, since that value is the instance: both
+  lowerings end an instance initializer by answering `self` and discard a
+  top-level `^` (`compiler::lower`'s `finish_body`, `compiler::reference`'s
+  `end`), and `new_answers_the_instance_its_initializers_ran_on`
+  (`crates/ns-runtime/tests/instantiate.rs`) pins it under both lowerings,
+  from a host's `new` and from a program's. A decoded image's initializer is
+  not held to that: `new` then answers whatever that code answers, which is
+  wrong but safe — no panic, the image's own program running. An instantiation
+  with no code at all answers the instance as a `Step::Value`.
+  `try_factory_send` makes a factory send an ordinary decision,
+  `decide_instantiation`; `Interpreter::instantiate` is the host entry, shaped
+  like `send`.
+
+  The state is always boxed, and the box is reused: the walk runs in a box
+  taken from the interpreter's spares (`walk_state`), and when the walk ends —
+  at its last initializer, or with no code left — the box goes back, emptied
+  of every handle, with its list of levels keeping its room (`retire_walk`).
+  So once one instantiation has run, the next allocates the instance's fields
+  and nothing else, one with code at several levels included; allocating the
+  box and the list per instantiation measured 3–13% slower on the
+  instantiation benchmarks. The spares are capped at 16 boxes of 64 levels'
+  room, because the boxes held at once grow with how deeply instantiations
+  nest and the list with the superclass chain, an image's to choose.
+
+**Every body is inline in its `Step`.** `Step::Initializer`,
+`Step::InitializerThen`, `Step::ClauseMessage` and `Step::SuperclassClause` each
+carry only what their push cannot find from their level or declaration — the
+code and slot base of an initializer are its level's, found when it is pushed
+(`Interpreter::initializer_body`), and a clause's are its declaration's — so
+none needs a boxed description of its activation; boxing one per body, beside
+a fresh box for the walk's state, made a chain of two levels with code 15–18%
+slower than running it in a nested run of the loop had been
+(`bench_new2.ns`, `bench_newarg.ns`). Each is smaller than `Step::Method`, on
+purpose: an `Initializer` with an optional continuation, as large as
+`Step::Method`, left `Result<Step, Signal>` at the 56 bytes the hot path was
+measured at and still made every benchmark 4–6% slower, none of which
+instantiates in its loop — the same effect `StepArgs::ControlFlow`'s comment
+describes, presumably the discriminant's niche. Splitting it into
+`Initializer` and `InitializerThen`, which takes the receiver from its state,
+measured level with before. `a_decision_stays_the_size_the_hot_path_was_measured_at`
+(`interpreter/mod.rs`) pins the size; it cannot see the niche. Every body is
+counted.
+
+**One host entry.** `Interpreter::send` and `Interpreter::instantiate` decide,
+and hand what they decided to `Interpreter::run_from_host`, which answers a
+value as it is and otherwise pushes the activation and runs `vm::run` on it.
+It is the one place Rust enters the loop. A debug build checks there that the
+loop is not already running — nothing it calls can reach `run_from_host` —
+that the stack is left as deep as it was found, and that no nested class's
+creation outlives the run. That the loop is never nested is a debug assertion
+now; it becomes structure in step 2c, where nothing a native can reach offers
+`run` at all ([memory.md](memory.md), "The brand").
+
+`vm::send` still takes the interpreter's reusable argument buffer and gives it
+back, because the decision needs `&mut Interpreter` while it reads the
+arguments. No decision runs code any more, so none takes a second, fresh
+buffer of its own. `Interpreter::reenter`, `invoke_closure`,
+`builtins::call_block`, the count of re-entries and its bound, and that
+bound's error, `stack overflow: too many nested native calls`, are gone with
+the re-entries.
+
+**Three golden outcomes changed.** `do-recursion`, `instantiation-recursion`
+and `accessor-recursion` in `crates/ns-cli/tests/program_outcomes.rs` ended in
+`stack overflow: too many nested native calls`, the bound on re-entries, and
+end in `stack overflow: recursion too deep`. Each of those recursions is made
+only of counted activations now, so it ends at L like any other recursion;
+the limit the old text reported no longer exists. That is why the change is
+right — it was not recorded because the code produced it. The interpreter
+thread's stack was re-derived from what still recurses on the Rust stack
+("The depth limit" above).
+
+The step was measured whole against the commit it started from: "What
+removing the re-entries moved" above. Instantiation, `do:` and `bench_send.ns`
+are level with it or faster; `bench_loop.ns` and `bench_block.ns`, which run
+none of the changed paths in their loops, are 1.4–1.9% slower, an open
+finding.
 
 ### How this meets the liveness requirements
 
@@ -1087,10 +1361,10 @@ only the top entry's register window can grow in place. The answer is that
 editing a method takes its affected activations off the stack first — reified
 and divorced while still running, the operation Cog's `divorceAllFrames`
 performs on every stack page before a snapshot — and a divorced frame's `temps`
-is a growable `Vec`. Continuing an activation from its divorced frame is
-re-entry, which does not exist yet; it is the same missing piece as resuming a
-decoded frame ([image-format.md](image-format.md), "Planned: suspend and
-resume"). The document already accepts that entering the debugger forces the
+is a growable `Vec`. Continuing an activation from its divorced frame needs a
+way to put the frame back on the stack, which does not exist yet; it is the
+same missing piece as resuming a decoded frame
+([image-format.md](image-format.md), "Planned: suspend and resume"). The document already accepts that entering the debugger forces the
 frames it touches out of their fast representation; this is the same step, one
 level below the JIT.
 
@@ -1185,8 +1459,18 @@ binds it is that no native code may ever enter an image.
   debugger need it with or without conversion.
 - **Sends run on the activation stack, not the Rust stack**: one loop pushes,
   pops and resumes, and it pops everything it runs on every path out.
-- **The control-flow natives are trampoline steps and depth has two bounds** —
-  L = 100,000 activations, N = 1,000 re-entries from Rust — because a callback
-  native would make the reference lowering's native stack grow with source
-  nesting, and a single bound would tie the language's depth to Rust frame
-  sizes.
+- **The control-flow natives are trampoline steps and depth has one bound**,
+  L = 100,000 activations, counted alike under both lowerings, because a
+  callback native would make the reference lowering's native stack grow with
+  source nesting; with no re-entry from Rust left, nothing else can run out
+  first ("The depth limit").
+- **Rust does not re-enter the run loop** (decided 2026-09-13, "No re-entry
+  from Rust"): `do:`, instantiation and the nested-class accessor are
+  trampoline steps, so that no Rust frame is live below a safepoint and the
+  root discipline has nothing to root but the host's values. The bound on
+  re-entries went with them.
+- **A nested class's creation is marked in its own cache slot** ("No re-entry
+  from Rust"), not listed beside the stack: the slot is keyed by exactly the
+  pair a cyclic definition is, so the check is the read the accessor makes
+  anyway, where the list was scanned in full at every level of a deep chain of
+  creations.

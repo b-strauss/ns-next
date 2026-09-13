@@ -107,13 +107,12 @@ fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack() {
 
 /// A `^` into an initializer that is still running escapes -- the known gap
 /// in `docs/design/execution.md`, "Non-local return" -- and it escapes as the
-/// signal it always was, not as a panic. The run the initializer belongs to
-/// pops it, so by the time the signal reaches the run of the method that
-/// sent `new`, its target is an activation that has returned: that run must
-/// let the signal pass without reading the target. Closing the gap changes
-/// what this expects; nothing else should.
+/// signal it always was, not as a panic: an initializer catches no return,
+/// so the unwind pops everything down to the floor of the host's run and
+/// leaves it with the signal. Closing the gap changes what this expects;
+/// nothing else should.
 #[test]
-fn a_return_into_a_running_initializer_escapes_the_runs_below_it() {
+fn a_return_into_a_running_initializer_escapes_the_run() {
     let src = indoc! {"
         Newspeak3
         'T'
@@ -132,6 +131,41 @@ fn a_return_into_a_running_initializer_escapes_the_runs_below_it() {
             Err(Signal::Error(e)) => panic!("{lowering:?}: unexpected error: {}", e.message),
         }
         assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
+    }
+}
+
+/// Instantiation is a trampoline step: a class whose slot initializer
+/// instantiates it again, twenty thousand levels deep, is twenty thousand
+/// initializer activations on the stack and nothing on the Rust stack.
+#[test]
+fn a_deep_recursion_through_instantiation_runs_on_the_activation_stack() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Tower = Object new (
+        ) (
+            public class Floor n: k = Object new (
+                | below = k = 0 ifTrue: [nil] ifFalse: [Floor n: k - 1]. |
+            ) (
+                public height = ( ^below == nil ifTrue: [0] ifFalse: [1 + below height] )
+            ) : ()
+            public build: k = ( ^(Floor n: k) height )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(src, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let height = expect_ok(
+            interp.send(
+                instance,
+                Symbol::intern("build:"),
+                vec![Value::SmallInt(20_000)],
+            ),
+            "build:",
+        );
+        assert_eq!(small_int(height), 20_000, "{lowering:?}");
+        assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
+        assert_eq!(interp.heap_ref().counted_depth(), 0, "{lowering:?}");
     }
 }
 
@@ -455,6 +489,232 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
             Err(Signal::Return(..)) => panic!("{}: a non-local return escaped", what("whileTrue:")),
             Ok(_) => panic!("{}: a non-Boolean condition must fail", what("whileTrue:")),
         }
+    }
+}
+
+/// `do:` is a trampoline step, not a callback: a recursion through it is
+/// activations on the stack and nothing on the Rust stack, so twenty thousand
+/// levels -- far past what a test thread's stack holds when each level
+/// re-enters the loop from Rust -- run under either lowering. Each level
+/// counts two activations, the method and the block.
+#[test]
+fn a_deep_recursion_through_do_runs_on_the_activation_stack() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class DoDeep = Object new (
+        ) (
+            public d: n = ( n = 0 ifTrue: [^0]. #(1) do: [:e | ^d: n - 1]. ^1 )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(src, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let result = expect_ok(
+            interp.send(
+                instance,
+                Symbol::intern("d:"),
+                vec![Value::SmallInt(20_000)],
+            ),
+            "d:",
+        );
+        assert_eq!(small_int(result), 0, "{lowering:?}");
+        assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
+        assert_eq!(interp.heap_ref().counted_depth(), 0, "{lowering:?}");
+    }
+}
+
+/// The nested-class accessor is a trampoline step: a recursion through it --
+/// each level a fresh `Link` whose `Next` clause reaches the accessor again --
+/// ends at the activation limit, and the unwind unmarks every creation in
+/// progress (`Interpreter::run_from_host` debug-asserts that).
+#[test]
+fn a_recursion_through_the_nested_class_accessor_ends_at_the_activation_limit() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Chain = Object new (
+        ) (
+            public class Link = Object new (
+            ) (
+                public class Next = self deeper (
+                ) (
+                ) : ()
+                deeper = ( ^Link new Next )
+            ) : ()
+            public start = ( ^Link new Next )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(src, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        expect_too_deep(
+            interp.send(instance, Symbol::intern("start"), vec![]),
+            &format!("start under {lowering:?}"),
+        );
+        assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
+        assert_eq!(interp.heap_ref().counted_depth(), 0, "{lowering:?}");
+    }
+}
+
+/// A `^` whose home is a method below a superclass clause's activation pops
+/// the clause on its way to that method (the first loop of `vm::unwind`), and
+/// the creation the clause had begun ends with it: the next access evaluates
+/// the clause again rather than reporting the class as depending on itself.
+#[test]
+fn a_return_through_a_superclass_clause_abandons_its_creation() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Outer = Object new (
+            | escape ::= nil. armed ::= true. |
+        ) (
+            public class Inner = self pick (
+            ) (
+            ) : ()
+            pick = ( armed ifTrue: [armed := false. escape value: 7]. ^Object )
+            public probe = ( escape := [:v | ^v]. ^Inner )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(src, lowering);
+        let outer = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let escaped = expect_ok(
+            at_the_floor(&mut interp, lowering, outer, "probe", vec![]),
+            "the first probe",
+        );
+        assert_eq!(
+            small_int(escaped),
+            7,
+            "{lowering:?}: the `^` lands on `probe`"
+        );
+        let inner = expect_ok(
+            at_the_floor(&mut interp, lowering, outer, "probe", vec![]),
+            "the second probe",
+        );
+        let Value::Obj(inner) = inner else {
+            panic!("{lowering:?}: the second access answers a class object");
+        };
+        assert!(interp.heap_ref().is_class(inner), "{lowering:?}");
+        let again = expect_ok(
+            at_the_floor(&mut interp, lowering, outer, "Inner", vec![]),
+            "the cached class",
+        );
+        assert!(
+            matches!(again, Value::Obj(again) if again.same(inner)),
+            "{lowering:?}: the class the second access built is the one cached"
+        );
+    }
+}
+
+/// A `^` in a block of a superclass clause's message returns from the
+/// message's own activation, which catches it (`Interpreter::catches_return`):
+/// the run loop pops the activation there and hands the value to the
+/// instantiation's walk as the superclass's arguments, exactly as if the body
+/// had answered it. The clause message is the one clause body a block can be
+/// written in -- the clause receiver is a single name.
+#[test]
+fn a_return_in_a_clause_messages_block_hands_its_value_to_the_walk() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Outer = Object new (
+        ) (
+            class Base x: a = Object new (
+                | u = a. |
+            ) (
+                public u = ( ^u )
+            ) : ()
+            class Cell = Base x: [^{3}] value (
+                | v = 4. |
+            ) (
+                public v = ( ^v )
+            ) : ()
+            public make = ( | c | c := Cell new. ^c u * 10 + c v )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(src, lowering);
+        let outer = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let made = expect_ok(
+            at_the_floor(&mut interp, lowering, outer, "make", vec![]),
+            "make",
+        );
+        assert_eq!(
+            small_int(made),
+            34,
+            "{lowering:?}: Base got the returned argument list, and Cell's own slot ran too"
+        );
+    }
+}
+
+/// A `^` into an initializer that has a level below it still to run -- its
+/// activation carries the rest of the walk in its continuation -- escapes
+/// like one into the last initializer (`a_return_into_a_running_initializer_escapes_the_run`),
+/// and the unwind drops the walk's state with the activation: nothing is left
+/// on either count, and the interpreter goes on.
+#[test]
+fn a_return_into_an_initializer_with_a_level_below_escapes_the_run() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class E = Object new (
+        ) (
+            class Base = Object new ( | a = [^1] value. | ) ( ) : ()
+            class Cell = Base new ( | b = 2. | ) ( ) : ()
+            public make = ( Cell new. ^0 )
+            public fine = ( ^42 )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(src, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        match at_the_floor(&mut interp, lowering, instance, "make", vec![]) {
+            Err(Signal::Return(..)) => {}
+            Ok(_) => panic!("{lowering:?}: the `^` must escape, not be answered"),
+            Err(Signal::Error(e)) => panic!("{lowering:?}: unexpected error: {}", e.message),
+        }
+        let fine = expect_ok(
+            at_the_floor(&mut interp, lowering, instance, "fine", vec![]),
+            "fine",
+        );
+        assert_eq!(small_int(fine), 42, "{lowering:?}");
+    }
+}
+
+/// An error in a superclass clause's message, while the walk of a `new` sent
+/// from inside the run loop is still climbing: the unwind pops the message's
+/// activation and the method that sent `new`, drops the walk's state, and
+/// leaves the run with the error.
+#[test]
+fn an_error_in_a_clause_message_mid_climb_unwinds_the_run() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Outer = Object new (
+        ) (
+            class Base x: a = Object new ( | u = a. | ) ( ) : ()
+            class Cell = Base x: nil foo ( ) ( ) : ()
+            public make = ( ^Cell new )
+            public fine = ( ^42 )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(src, lowering);
+        let outer = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        match at_the_floor(&mut interp, lowering, outer, "make", vec![]) {
+            Err(Signal::Error(e)) => assert_eq!(
+                e.message, "an object does not understand #foo",
+                "{lowering:?}"
+            ),
+            Err(Signal::Return(..)) => panic!("{lowering:?}: a non-local return escaped"),
+            Ok(_) => panic!("{lowering:?}: `nil foo` must fail"),
+        }
+        let fine = expect_ok(
+            at_the_floor(&mut interp, lowering, outer, "fine", vec![]),
+            "fine",
+        );
+        assert_eq!(small_int(fine), 42, "{lowering:?}");
     }
 }
 
