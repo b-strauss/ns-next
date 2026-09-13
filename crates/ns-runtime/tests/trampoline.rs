@@ -490,6 +490,39 @@ fn a_deep_recursion_through_do_runs_on_the_activation_stack() {
     }
 }
 
+/// The nested-class accessor is a trampoline step: a recursion through it --
+/// each level a fresh `Link` whose `Next` clause reaches the accessor again --
+/// ends at the activation limit, and the unwind takes every creation in
+/// progress back off (`Interpreter::send` debug-asserts that).
+#[test]
+fn a_recursion_through_the_nested_class_accessor_ends_at_the_activation_limit() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Chain = Object new (
+        ) (
+            public class Link = Object new (
+            ) (
+                public class Next = self deeper (
+                ) (
+                ) : ()
+                deeper = ( ^Link new Next )
+            ) : ()
+            public start = ( ^Link new Next )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(src, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        expect_too_deep(
+            interp.send(instance, Symbol::intern("start"), vec![]),
+            &format!("start under {lowering:?}"),
+        );
+        assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
+        assert_eq!(interp.heap_ref().counted_depth(), 0, "{lowering:?}");
+    }
+}
+
 /// `receiver selector args`, sent from Rust: whatever it answers, it must
 /// leave the activation stack empty and the counted depth 0.
 fn at_the_floor(

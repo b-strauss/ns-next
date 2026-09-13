@@ -374,7 +374,9 @@ fn resume_caller(interp: &mut Interpreter, caller: ActivationRef, value: Value) 
 ///
 /// A target that catches no return is popped with the rest, and the signal
 /// goes on naming it; the runs below this one see a target that has
-/// returned, which is why liveness is asked first.
+/// returned, which is why liveness is asked first. Every activation it pops
+/// hands its continuation to `Interpreter::abandon`, which undoes what a
+/// continuation that will now never run had begun.
 fn unwind(interp: &mut Interpreter, signal: Signal, floor: usize) -> Flow {
     if let Signal::Return(target, value) = &signal {
         let (target, value) = (*target, *value);
@@ -386,7 +388,8 @@ fn unwind(interp: &mut Interpreter, signal: Signal, floor: usize) -> Flow {
                 if top.same(target) {
                     break;
                 }
-                interp.heap.pop_activation(top);
+                let popped = interp.heap.pop_activation(top);
+                interp.abandon(popped.then);
             }
             return finish(interp, target, value, floor);
         }
@@ -396,7 +399,8 @@ fn unwind(interp: &mut Interpreter, signal: Signal, floor: usize) -> Flow {
             .heap
             .top_activation()
             .expect("internal: a stack deeper than the floor has a top");
-        interp.heap.pop_activation(top);
+        let popped = interp.heap.pop_activation(top);
+        interp.abandon(popped.then);
     }
     Flow::Exit(Err(signal))
 }

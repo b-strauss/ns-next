@@ -244,6 +244,10 @@ pub enum Continuation {
     /// the next, or answer the receiver
     /// (`builtins::collections::after_element`).
     DoElement(Box<DoLoop>),
+    /// The superclass clause the nested-class accessor evaluated returned the
+    /// superclass: build, cache and answer the class
+    /// (`interpreter::nested::after_clause`).
+    NestedClass(Box<NestedClassCreation>),
 }
 
 /// A native `whileTrue:`/`whileFalse:` loop in progress: its condition, its
@@ -268,6 +272,25 @@ pub struct DoLoop {
     pub(crate) block: Rc<ClosureData>,
     pub(crate) items: Vec<Value>,
     pub(crate) next: usize,
+}
+
+/// A nested class being created for one enclosing object
+/// (`interpreter::nested`): what the accessor needs once the declaration's
+/// superclass clause has been evaluated.
+///
+/// Boxed in its continuation, and owned by exactly one stack entry.
+#[derive(Debug, Clone)]
+pub struct NestedClassCreation {
+    /// The enclosing object `r` of `newspeak-spec.pdf` §6, which caches the
+    /// class.
+    pub(crate) enclosing: ObjRef,
+    /// The absolute index of the hidden slot of `enclosing` the class is
+    /// cached in.
+    pub(crate) index: usize,
+    /// The declaration.
+    pub(crate) nested: Rc<crate::mixin::Mixin>,
+    /// The class object of the level that declares it.
+    pub(crate) declaring_class: ClassRef,
 }
 
 /// A *reified* activation: one a block captured, or one the image decoder

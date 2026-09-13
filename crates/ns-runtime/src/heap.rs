@@ -608,11 +608,11 @@ impl Heap {
 
     /// An opaque, hashable key unique to `obj`, for code that needs an
     /// `ObjRef` as a `HashMap`/`HashSet` key rather than a comparison --
-    /// `image::encode::GraphTable`'s object-id map,
-    /// `image::decode::rebuild_applications`'s superclass-position map and
-    /// `interpreter::nested::in_progress_key`. `identity_hash` cannot serve
-    /// that role, because every object nothing has asked for its hash stores
-    /// 0, which would fold two distinct objects into one table entry.
+    /// `image::encode::GraphTable`'s object-id map and
+    /// `image::decode::rebuild_applications`'s superclass-position map.
+    /// `identity_hash` cannot serve that role, because every object nothing
+    /// has asked for its hash stores 0, which would fold two distinct objects
+    /// into one table entry.
     ///
     /// It lives on `Heap` rather than on `ObjRef` so that the origin check
     /// applies to it like it does to every accessor. Two handles from

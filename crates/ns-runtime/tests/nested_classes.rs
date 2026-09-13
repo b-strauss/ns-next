@@ -743,3 +743,41 @@ fn outer_in_a_class_side_method_reaches_the_enclosing_object() {
     let deep = expect_ok(interp.send(outer, Symbol::intern("deep"), vec![]), "deep");
     assert_eq!(string_contents(interp.heap_ref(), &deep), "top");
 }
+
+/// A superclass clause that fails leaves no creation in progress behind: the
+/// next access evaluates the clause again, rather than reporting the class as
+/// depending on itself.
+#[test]
+fn a_failed_superclass_clause_is_retried_rather_than_reported_as_a_cycle() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Outer = Object new (
+          | first ::= true. |
+        ) (
+          public class Inner = self pick (
+          ) (
+          ) : ()
+          pick = ( first ifTrue: [first := false. ^nil foo]. ^Object )
+        ) : ()
+    "};
+    let (mut interp, class) = load(src);
+    let outer = expect_ok(interp.instantiate(class, vec![]), "instantiate Outer");
+    match interp.send(outer, Symbol::intern("Inner"), vec![]) {
+        Err(Signal::Error(e)) => assert!(
+            !e.message.contains("cyclic"),
+            "the first access fails in its clause: {}",
+            e.message
+        ),
+        Err(Signal::Return(..)) => panic!("a non-local return escaped"),
+        Ok(_) => panic!("the first access must fail"),
+    }
+    let inner = expect_ok(
+        interp.send(outer, Symbol::intern("Inner"), vec![]),
+        "the second access",
+    );
+    let Value::Obj(inner) = inner else {
+        panic!("a class object");
+    };
+    assert!(interp.heap_ref().is_class(inner));
+}

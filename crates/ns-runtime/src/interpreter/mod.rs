@@ -66,6 +66,12 @@ pub(crate) enum Step {
         args: StepArgs,
         then: Continuation,
     },
+    /// Activate a body that is neither a method nor a block -- an instance
+    /// initializer, a superclass clause, or the arguments of a clause's
+    /// message -- and do `then` with its value. Boxed, so that a decision's
+    /// `Result<Step, Signal>` stays the size the hot path was measured at
+    /// (`StepArgs::ControlFlow`'s comment says why that matters).
+    Body(Box<BodyStep>),
 }
 
 /// Where an activation's arguments come from.
@@ -101,6 +107,19 @@ impl StepArgs {
     }
 }
 
+/// Everything `Step::Body` activates. Its arguments are its own: nothing a
+/// body step activates takes a send's arguments.
+pub(crate) struct BodyStep {
+    pub(crate) receiver: Value,
+    pub(crate) current_class: ClassRef,
+    pub(crate) kind: FrameKind,
+    /// See `Frame::slot_base`; 0 for anything but an initializer.
+    pub(crate) slot_base: usize,
+    pub(crate) code: Rc<crate::bytecode::CompiledCode>,
+    pub(crate) args: Vec<Value>,
+    pub(crate) then: Continuation,
+}
+
 pub struct Interpreter {
     pub(crate) heap: Heap,
     /// Every builtin class object, indexed by `BuiltinClass as usize`.
@@ -125,14 +144,20 @@ pub struct Interpreter {
     /// exactly what the inline caches will guard on. It would
     /// also grow `applications` without bound.
     empty_class_sides: HashMap<usize, Rc<crate::mixin::Mixin>>,
-    /// The (receiver arena index, declaration identity) pairs whose nested
-    /// class object is being created right now -- see
-    /// `nested::cyclic_definition_error`. A stack, not a set: it is empty
-    /// on every path that is not inside a superclass clause, and a clause
-    /// nests only as deep as a program actually chains class creations, so
-    /// a linear scan beats hashing and allocates nothing in the common
-    /// case.
-    nested_in_progress: Vec<(usize, usize)>,
+    /// The nested classes whose creation is underway: for each, the
+    /// enclosing object and the declaration's identity -- see
+    /// `nested::cyclic_definition_error`. An entry exists exactly while the
+    /// activation evaluating that class's superclass clause is on the stack:
+    /// `push_step` records it once the push has succeeded, and `resume` or
+    /// `abandon` takes it off when the activation is popped, so this list and
+    /// the stack pop in the same order. The object is an `ObjRef`, compared
+    /// with `same`, not an arena index, because a moving collector must be
+    /// able to rewrite it (`docs/design/memory.md`, "What the collector
+    /// traces"). A stack, not a set: it is empty on every path that is not
+    /// inside a superclass clause, and a clause nests only as deep as a
+    /// program actually chains class creations, so a linear scan beats
+    /// hashing and allocates nothing in the common case.
+    nested_in_progress: Vec<(ObjRef, usize)>,
     /// The lowering every module this interpreter loads is compiled with
     /// (`docs/design/compiler.md`, "The reference lowering"). Fixed at
     /// construction, so one interpreter never mixes the two.
@@ -226,6 +251,12 @@ impl Interpreter {
             depth,
             "a send must leave the activation stack as it found it"
         );
+        // A creation begun below a host's send ends before the send returns,
+        // however it returns: `resume` or `abandon` takes it off.
+        debug_assert!(
+            depth != 0 || self.nested_in_progress.is_empty(),
+            "internal: a nested class's creation outlived the send that began it"
+        );
         result
     }
 
@@ -273,8 +304,7 @@ impl Interpreter {
                             });
                         }
                         Lookup::NestedClass(mixin, declaring_class) => {
-                            return nested::nested_class(self, &receiver, &mixin, declaring_class)
-                                .map(Step::Value);
+                            return nested::nested_class(self, &receiver, &mixin, declaring_class);
                         }
                         Lookup::Native(kind) => {
                             return self.decide_native_or_dnu(kind, receiver, selector, args);
@@ -297,7 +327,7 @@ impl Interpreter {
             // -- the accessor is unary, so a send that supplied arguments
             // did not name it (`walk` matched on the bare selector).
             Lookup::NestedClass(mixin, declaring_class) => {
-                nested::nested_class(self, &receiver, &mixin, declaring_class).map(Step::Value)
+                nested::nested_class(self, &receiver, &mixin, declaring_class)
             }
             Lookup::Native(kind) => self.decide_native_or_dnu(kind, receiver, selector, args),
             Lookup::NotFound => self.decide_does_not_understand(receiver, selector, args),
@@ -534,6 +564,49 @@ impl Interpreter {
                     temps,
                 )
             }
+            // An initializer level, a superclass clause or its message is
+            // never an activation the optimized lowering inlines away, so it
+            // is always counted.
+            Step::Body(body) => {
+                let BodyStep {
+                    receiver,
+                    current_class,
+                    kind,
+                    slot_base,
+                    code,
+                    args,
+                    then,
+                } = *body;
+                // A nested class's creation is in progress exactly while its
+                // clause's activation is on the stack: recorded once the push
+                // has succeeded, and taken off by `resume` or `abandon` when
+                // the activation is popped. A push refused at the depth limit
+                // records nothing.
+                let in_progress = match &then {
+                    Continuation::NestedClass(creation) => {
+                        Some(nested::in_progress_entry(creation))
+                    }
+                    _ => None,
+                };
+                let temps = (code.num_registers - code.num_args) as usize;
+                let act = self.push(
+                    ActivationHeader {
+                        receiver,
+                        current_class: Some(current_class),
+                        kind,
+                        slot_base,
+                        code,
+                        then,
+                        counted: true,
+                    },
+                    &args,
+                    temps,
+                )?;
+                if let Some(entry) = in_progress {
+                    self.nested_in_progress.push(entry);
+                }
+                Ok(act)
+            }
         }
     }
 
@@ -558,7 +631,35 @@ impl Interpreter {
             Continuation::DoElement(state) => {
                 Ok(crate::builtins::collections::after_element(state))
             }
+            Continuation::NestedClass(creation) => {
+                self.leave_nested_class(&creation);
+                nested::after_clause(self, *creation, value)
+            }
         }
+    }
+
+    /// What a continuation undoes when its activation is thrown away rather
+    /// than returned from: the counterpart of `resume`, which `vm::unwind`
+    /// calls for every activation it pops. Only a nested class's creation has
+    /// begun anything -- it is in progress -- so only it has anything to undo;
+    /// every other continuation is simply dropped.
+    pub(crate) fn abandon(&mut self, then: Continuation) {
+        if let Continuation::NestedClass(creation) = then {
+            self.leave_nested_class(&creation);
+        }
+    }
+
+    /// Takes `creation` off `nested_in_progress`: its clause's activation has
+    /// been popped, by a return or by an unwind.
+    fn leave_nested_class(&mut self, creation: &NestedClassCreation) {
+        let left = self.nested_in_progress.pop();
+        debug_assert!(
+            left.is_some_and(
+                |(obj, key)| key == crate::mixin::mixin_key(&creation.nested)
+                    && obj.same(creation.enclosing)
+            ),
+            "internal: nested-class creations end in the order their clauses were pushed"
+        );
     }
 
     /// Pushes the activation a continuation decided (`resume`), in place of
@@ -1248,5 +1349,39 @@ mod tests {
             _ => panic!("`do:` is decided as its block's first activation"),
         }
         assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
+    }
+
+    /// The nested-class accessor is decided as the activation of the
+    /// superclass clause, with steps 3-5 in the continuation. Nothing is
+    /// pushed, so no creation is in progress yet: one is recorded only once
+    /// its clause's activation is on the stack.
+    #[test]
+    fn deciding_a_nested_class_answers_its_superclass_clause_as_an_activation() {
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              public class N = self base (
+              ) (
+              ) : ()
+              base = ( ^Object )
+            ) : ()
+        "};
+        let (mut interp, class) = load(src);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        match interp.decide_send(instance, Symbol::intern("N"), &[]) {
+            Ok(Step::Body(body)) => {
+                assert!(matches!(body.kind, FrameKind::SuperclassClause(_)));
+                assert!(matches!(body.then, Continuation::NestedClass(_)));
+                assert!(body.args.is_empty(), "a clause takes no arguments");
+            }
+            _ => panic!("a nested class is decided as its clause's activation"),
+        }
+        assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
+        assert!(
+            interp.nested_in_progress.is_empty(),
+            "nothing is in progress"
+        );
     }
 }

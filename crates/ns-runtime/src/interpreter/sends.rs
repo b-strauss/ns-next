@@ -129,7 +129,6 @@ pub(crate) fn decide_lexical_send(
         }),
         Lookup::NestedClass(mixin, declaring_class) => {
             crate::interpreter::nested::nested_class(interp, &o, &mixin, declaring_class)
-                .map(Step::Value)
         }
         Lookup::Native(kind) => {
             match crate::builtins::dispatch_native(interp, kind, o, selector, args) {
@@ -186,7 +185,6 @@ pub(crate) fn decide_super_send(
         // (`MixinApplication::nested_slot`), not against its name.
         Lookup::NestedClass(mixin, declaring_class) => {
             crate::interpreter::nested::nested_class(interp, &self_value, &mixin, declaring_class)
-                .map(Step::Value)
         }
         Lookup::Native(kind) => {
             match crate::builtins::dispatch_native(interp, kind, self_value, selector, args) {

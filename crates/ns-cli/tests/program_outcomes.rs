@@ -624,15 +624,16 @@ fn a_recursive_instantiation_is_bounded_by_the_native_limit() {
     );
 }
 
-/// The nested-class accessor runs a superclass clause in a re-entry of the
-/// loop, the first time a class is reached on each enclosing object. `Next`'s
+/// The nested-class accessor runs a superclass clause as a trampoline step,
+/// the first time a class is reached on each enclosing object. `Next`'s
 /// clause, `self deeper`, reaches `Next` again on a fresh `Link`, so every
-/// level is a new enclosing object -- no cyclic-definition error -- and one
-/// more accessor re-entry, until the native limit. `Link` has no slots, so its
-/// instantiation re-enters nothing, and each level counts two activations
-/// against the other limit, the clause and `deeper`, far below it.
+/// level is a new enclosing object -- no cyclic-definition error -- and two
+/// more counted activations, the clause and `deeper`, until the activation
+/// limit. `Link` has no slots, so its instantiation activates nothing. It used
+/// to end at the limit on re-entries of the run loop from Rust, which no
+/// longer exists (`docs/design/execution.md`, "No re-entry from Rust").
 #[test]
-fn a_recursion_through_the_nested_class_accessor_is_bounded_by_the_native_limit() {
+fn a_recursion_through_the_nested_class_accessor_is_bounded_by_the_activation_limit() {
     assert_outcome(
         "accessor-recursion",
         indoc! {"
@@ -652,6 +653,6 @@ fn a_recursion_through_the_nested_class_accessor_is_bounded_by_the_native_limit(
         "},
         1,
         "",
-        "Uncaught Newspeak error: stack overflow: too many nested native calls\n",
+        "Uncaught Newspeak error: stack overflow: recursion too deep\n",
     );
 }
