@@ -105,7 +105,7 @@ statement→PC table on every `CompiledCode`, and a chain of running activations
 walkable independently of the Rust stack — the activation stack — on which the
 trampoline runs every send without recursing through the Rust stack
 ([execution.md](execution.md), "The trampoline"), and with no Rust frame
-below the loop, since nothing re-enters it from Rust ([execution.md](execution.md),
+between the host and the loop, since nothing re-enters it from Rust ([execution.md](execution.md),
 "No re-entry from Rust"). Two things still block it. Nothing can suspend an
 activation yet: there is no yield path out of the run loop
 ([image-format.md](image-format.md), "Planned: suspend and resume"). And an

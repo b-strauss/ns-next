@@ -393,21 +393,26 @@ stress mode below; step 2c makes it the only way a host can hold a value.
 - The activation stack: each entry's receiver, registers, `current_class`, the
   `ClassRef` its `FrameKind` names, and the state its continuation carries.
 - Every arena record: an object's class and payload, a frame's fields.
-- `nested_in_progress`, whose entries hold the enclosing object as an `ObjRef`,
-  not an arena index, so the tracer can rewrite it (step 2a, built).
 - The host root table.
 
 A reified frame is not a root of its own: it is reached through the closure
-that captured it, or through the live entry it is married to.
+that captured it, or through the live entry it is married to. Two things the
+interpreter keeps hold no handle, on purpose: a nested class being created is
+marked in its own cache slot by a primitive (`false`), while the enclosing
+object stays in the continuation of the clause's stack entry, where the stack
+is traced anyway; and the spare boxes finished instantiations leave for the
+next ones are emptied of every handle when they are put back (step 2a,
+built; [execution.md](execution.md), "No re-entry from Rust").
 
 **A handle lives only where the tracer can rewrite it in place**: in an arena
 record, in a stack entry, in a continuation that one stack entry owns, or in an
 interpreter root — never behind a shared `Rc`. `Rc<ClosureData>` breaks that
 today. Its `captured_frame` and `home` are `FrameRef`s, and the same `Rc` hangs
 off the closure object, off `FrameKind::Closure` on every activation of the
-closure, and off `WhileLoop.condition`. Step 2b splits it: the shared part keeps
-`params` and `code`, the two handles move into the closure object's own
-payload, and `FrameKind::Closure` and `WhileLoop` refer to the closure object.
+closure, off `WhileLoop.condition` and off `DoLoop.block`. Step 2b splits it:
+the shared part keeps `params` and `code`, the two handles move into the
+closure object's own payload, and `FrameKind::Closure`, `WhileLoop` and
+`DoLoop` refer to the closure object.
 
 ### Checking the roots before a collector exists: the stress mode
 
@@ -634,8 +639,8 @@ its variables. After it, a surviving block holds exactly what it captured.
   handles and verifiers.
 - **No Rust frame is live below a safepoint**: nothing re-enters the run loop
   from Rust, so there is nothing to root but what the host keeps. Chosen over
-  rooting those frames with Nova's `Scoped` values, because the re-entries are
-  to go anyway.
+  rooting those frames with Nova's `Scoped` values, because the re-entries were
+  to go anyway, and have (step 2a).
 - **The root discipline is enforced by the type system**, not by convention: a
   generative lifetime brand, gc-arena's rather than Nova's scopes, with no
   public `unbind`. The ergonomic cost is accepted rather than traded away.

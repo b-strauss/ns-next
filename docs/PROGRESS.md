@@ -30,25 +30,27 @@ written against the code as it then is.
 
 **Open findings from 2a**, for whoever plans next to weigh:
 
-- **Two benchmarks are slower.** Measured whole against the commit 2a started
-  from, `be3eb40`, `bench_block.ns` is about 2.6% slower (23.00 → 23.60 ms)
-  and `bench_new.ns`, a throwaway source of 20,000 instantiations that each
-  run an initializer, about 3.1% (7.38 → 7.61 ms); on both the after-group
-  lies entirely above the before-group, and a second sitting reproduced both
-  (+2.7%, +3.4%). `bench_loop.ns` and `bench_send.ns` moved +0.7% with the
-  groups overlapping; `bench_do.ns` moved −0.6%, and +1.3% in the second
-  sitting on the strength of one round, overlapping both times. The cause is
-  not isolated ([execution.md](design/execution.md), "What removing the
-  re-entries moved").
-- **The suite takes twice as long**, 12.5 s → 25 s, almost all of it two tests
-  that recurse through the nested-class accessor to the activation limit: the
-  cyclic-definition check scans `nested_in_progress` linearly, which makes that
-  recursion quadratic in its depth now that it runs to 100,000 activations
-  instead of 1,000 re-entries (7.8 s each in a debug build, 0.44 s in a
-  release one). A candidate, not yet designed or measured, is an in-progress
-  marker in the enclosing object's own cache slot, which would make the check
-  constant-time and remove `nested_in_progress`, and with it an entry of
-  "What the collector traces" ([memory.md](design/memory.md)).
+- **Two benchmarks are slightly slower, the cause not isolated.** Measured
+  whole against the commit 2a started from, `be3eb40`, in two sittings,
+  `bench_loop.ns` is 1.9% and 1.4% slower (11.00 → 11.20 ms in the first) and
+  `bench_block.ns` 1.6% and 1.4% (23.04 → 23.41 ms); the after-group lay
+  entirely above the before-group in three of those four comparisons. Neither
+  runs `do:`, an instantiation or the nested-class accessor in its loop. It is
+  the uniform shift the step's first change showed on code it did not change,
+  traced as far as inlining and register-allocation differences in `vm::run`
+  and `dispatch_native`, and not bisected further. Everything else is level or
+  faster: `bench_send.ns` +0.2% / +0.8%, `bench_do.ns` −1.3% in both,
+  and the three instantiation sources −0.9% to −3.8%
+  ([execution.md](design/execution.md), "What removing the re-entries moved").
+- **A decoded image's last initializer is not held to answering `self`**, so
+  `new` answers whatever it answers — wrong but safe, no panic.
+  `image::decode::verify_mixins` could refuse such an initializer, which would
+  make "`new` answers the instance" hold for images too.
+- **No test reaches a `^` that targets a superclass clause's own activation.**
+  A clause's receiver is a single name, so only a crafted image can put a
+  block in that body; the clause *message*'s case, a `^` caught by the
+  message's activation, is pinned
+  (`a_return_in_a_clause_messages_block_hands_its_value_to_the_walk`).
 
 Sends run on the activation stack rather than the Rust stack, in one loop that
 pushes, pops and resumes; `value`, the control-flow natives, `do:`,
@@ -178,9 +180,9 @@ so nothing is lost by it going second.
    - **2a — no re-entry from Rust. Done.** `do:`, instantiation and the
      nested-class accessor are trampoline steps, and the bound on re-entries
      went with them ([execution.md](design/execution.md), "No re-entry from
-     Rust"). Measured whole, `bench_block.ns` came out about 2.6% slower and
-     `bench_new.ns` about 3.1%, the other three sources within their groups'
-     spread — an open finding, above; see "M4 — No re-entry from Rust" below.
+     Rust"). Measured whole, instantiation came out 0.9–3.8% faster, `do:` and
+     `bench_send.ns` level, and `bench_loop.ns` and `bench_block.ns` 1.4–1.9%
+     slower — an open finding, above; see "M4 — No re-entry from Rust" below.
    - **2b — the safepoint, the tracing, host roots and the stress mode. Next.** Every
      place a handle is stored enumerated, `Rc<ClosureData>` split so that no
      handle sits behind a shared `Rc`, and a debug-build mode that moves every
@@ -208,8 +210,9 @@ so nothing is lost by it going second.
 
 Deferred past the milestone on purpose: moving `do:` out of Rust and into
 Newspeak. It is required eventually, so that `do:` becomes a real method that
-lookup, mirrors, the debugger and a JIT see — a Rust native is a permanent
-barrier to optimization ([core-library.md](design/core-library.md)) — but
+lookup, mirrors, the debugger and a JIT see — a `do:` in Rust is opaque to a
+JIT, which cannot inline its block or compile the loop as a unit
+([core-library.md](design/core-library.md)) — but
 doing it before the steps above makes the numbers worse and after them costs
 nothing. M4 owed it only that the rewrite not deepen the investment in Rust
 callbacks, and step 2a took the last callback away, as a trampoline step
@@ -1254,15 +1257,11 @@ safepoint"). The design was settled and recorded in the design documents
    so `dispatch_native` keeps one arm per class. It measured no worse, and it
    keeps that match uniform. An `#[inline(never)]` on `do_step`, tried while
    chasing the shift below, helped nowhere and was dropped.
-2. **The nested-class accessor as a step.** A body that is neither a method nor
-   a block is pushed through `Step::Body(Box<BodyStep>)`, boxed so that
-   `Result<Step, Signal>` stays 56 bytes. The accessor answers its clause as
-   one with `Continuation::NestedClass`, and `nested::after_clause` builds,
-   caches and answers the class when the clause returns.
-   `nested_in_progress` holds the enclosing object as an `ObjRef`; `push_step`
-   records an entry once the clause's push succeeded, and `resume` or the new
-   `Interpreter::abandon` — to which `vm::unwind` hands every continuation it
-   pops — takes it off.
+2. **The nested-class accessor as a step.** The accessor answers its clause as
+   a `Step::SuperclassClause` with `Continuation::NestedClass`, and
+   `nested::after_clause` builds, caches and answers the class when the clause
+   returns. The new `Interpreter::abandon`, to which `vm::unwind` hands every
+   continuation it pops, is `resume`'s counterpart.
 3. **Instantiation as a state machine, and one host entry.**
    `decide_instantiation`, `climb_levels`, `descend_levels` and
    `advance_instantiation` behind `Continuation::Instantiate`;
@@ -1270,18 +1269,42 @@ safepoint"). The design was settled and recorded in the design documents
    `instantiate` both enter the loop through `Interpreter::run_from_host`,
    which debug-checks that the loop is never entered while it runs.
    `reenter`, `invoke_closure`, `builtins::call_block`, the native-depth count,
-   `MAX_NATIVE_DEPTH` and its error went. Then the fix for the slowdown below:
-   the walk's state is held by value and boxed only into a continuation with
-   work left after it, and **a deviation** — the walk's last initializer is a
-   fifth `Step` variant, `Step::Initializer`, inline and delivering its own
-   value, since an instance initializer always answers `self` under both
-   lowerings; `new_answers_the_instance_its_initializers_ran_on` pins that.
-   `a_decision_stays_the_size_the_hot_path_was_measured_at` pins the 56 bytes.
+   `MAX_NATIVE_DEPTH` and its error went. **A deviation:** the walk's last
+   initializer delivers its own value, since an instance initializer always
+   answers `self` under both lowerings
+   (`new_answers_the_instance_its_initializers_ran_on` pins that), so it needs
+   no continuation.
 4. **The interpreter thread's stack**, 32 MiB → 8 MiB: four times the 2 MiB
    libtest threads on which the suite runs the deepest nesting the parser
    accepts through every stage in a debug build.
 5. **The documents**, and a sweep of the comments that still named functions
    the step removed or described re-entry.
+6. **The final review's fixes**, which the whole-step measurement below
+   includes:
+   - **Every instantiation body inline.** The plan boxed a description of
+     every body that is neither a method nor a block (`Step::Body`), and the
+     walk's state per body with work after it; a chain of two levels with code
+     came out 15–18% slower than `be3eb40`. Each body is now a variant of its
+     own — `Step::Initializer`, `Step::InitializerThen`, `Step::ClauseMessage`,
+     `Step::SuperclassClause` — each smaller than `Step::Method`, because an
+     `Initializer` as large as `Method` measured 4–6% slower on every source
+     that instantiates nothing, with `Result<Step, Signal>` still 56 bytes.
+   - **The walk's box reused.** The walk runs in a box taken from the
+     interpreter's spares and handed back emptied, so an instantiation
+     allocates only its instance's fields once one has run; worth 3–13% on the
+     instantiation sources.
+   - **The in-progress marker.** The cyclic-definition check scanned a list of
+     every creation underway, which a recursion through the accessor to the
+     activation limit made quadratic — it doubled the suite's time. The class's
+     own cache slot now holds a marker while its clause runs, so the check is
+     one read and the list, with its object handles, is gone.
+   - **`Continuation`'s drop glue** is no longer called on every return
+     (`vm::finish` forgets the `Deliver` it takes), about 1%.
+   - **Four tests** for unwinding through clause and initializer activations,
+     one that a redeclared nested class built on its inherited one is no
+     cycle, and one that a finished walk leaves its box empty; `do_step` made
+     private, an empty `do:` answered without a loop state, and the review's
+     comment and document corrections.
 
 **Three golden outcomes changed**, each in the task that removed its re-entry:
 `do-recursion`, `instantiation-recursion` and `accessor-recursion`
@@ -1292,9 +1315,11 @@ any other; the limit the old text reported no longer exists. That is why each
 change is right — none was recorded because the code produced it. Every other
 fixture, golden and `run-corpus` row keeps its answer under both lowerings.
 
-**Two measurement findings on the way, each settled by a ruling.** Every task
-on the hot path was measured against its parent over the three fixtures and
-two throwaway sources, `bench_do.ns` and `bench_new.ns`
+**Measurement findings on the way.** Every change on the hot path was measured
+against its parent over the three fixtures and throwaway sources —
+`bench_do.ns` and `bench_new.ns` from the start, `bench_new2.ns` and
+`bench_newarg.ns` (two levels with code, and a clause message with an
+argument) from the final review on
 ([execution.md](design/execution.md), "What removing the re-entries moved"):
 
 - **`do:` as a step moved every source by a uniform 2–4%**, `bench_loop.ns`
@@ -1307,58 +1332,67 @@ two throwaway sources, `bench_do.ns` and `bench_new.ns`
 - **Instantiation first measured about 15.6% slower on `bench_new.ns`.**
   Counting allocations found two more boxes per instantiation, the walk's state
   and the body step. Delivering the last initializer's value, and carrying that
-  initializer inline, restored the count (2 allocations, 144 bytes, per
-  `Cell new`) and left about +1.8%, some 7 ns per instantiation: the
-  initializer now runs in the same loop where it used to run in a nested one
-  and come back as a value. Accepted.
+  initializer inline, restored the count on that shape (2 allocations, 144
+  bytes, per `Cell new`) and left about +1.8%. The final review found the same
+  two boxes still paid per body on a chain of two levels with code, which no
+  source measured until then; carrying every body inline (−5.2% and −8.0% on
+  `bench_new2.ns` and `bench_newarg.ns`) and reusing the walk's box (−3.0%,
+  −8.8%, −12.8% on the three instantiation sources) took them out.
+- **Two changes were measured and not kept.** An `Initializer` step with an
+  optional continuation, as large as `Step::Method`, cost 4–6% on every source
+  that instantiates nothing; and comparing `do:` as a well-known symbol rather
+  than through the interner cost 1.7–2.1% on three sources that send to no
+  collection in their loops.
 
-Measured whole against `be3eb40` in one sitting on a release build, five
+Measured whole against `be3eb40` in two sittings on a release build, five
 rounds of `ns-next bench <source> --iterations 30`, alternating the binaries
-within each round, the "before" built in a throwaway worktree. Medians in ms,
-rounds 1–5, and each group's mean:
+within each round, the "before" built in a throwaway worktree. Means of the
+five medians in ms, and the change in each sitting:
 
-| Source | Before | mean | After | mean |
-|---|---|---|---|---|
-| `bench_loop.ns` | 10.89, 11.05, 11.31, 11.03, 10.99 | 11.05 | 10.95, 10.99, 11.09, 11.28, 11.35 | 11.13 |
-| `bench_send.ns` | 13.86, 13.79, 13.99, 13.95, 13.96 | 13.91 | 13.87, 14.12, 14.01, 14.08, 13.96 | 14.01 |
-| `bench_block.ns` | 22.86, 22.95, 23.04, 23.09, 23.03 | 23.00 | 23.32, 23.46, 23.75, 23.96, 23.52 | 23.60 |
-| `bench_do.ns` | 7.77, 7.75, 7.90, 7.86, 7.92 | 7.84 | 7.72, 7.83, 7.81, 7.77, 7.82 | 7.79 |
-| `bench_new.ns` | 7.38, 7.38, 7.37, 7.36, 7.41 | 7.38 | 7.74, 7.51, 7.52, 7.70, 7.56 | 7.61 |
+| Source | Before | After | Change, sitting 1 / 2 |
+|---|---|---|---|
+| `bench_loop.ns` | 11.00 | 11.20 | **+1.9% / +1.4%**, after entirely above in both |
+| `bench_send.ns` | 13.90 | 13.93 | +0.2% / +0.8%, overlapping |
+| `bench_block.ns` | 23.04 | 23.41 | **+1.6% / +1.4%**, after entirely above in the first |
+| `bench_do.ns` | 7.89 | 7.79 | −1.3% / −1.3%, overlapping |
+| `bench_new.ns` | 7.28 | 7.19 | −1.2% / −2.7%, after entirely below in the second |
+| `bench_new2.ns` | 8.20 | 8.13 | −0.9% / −1.2%, after entirely below in both |
+| `bench_newarg.ns` | 10.51 | 10.11 | −3.8% / −3.2%, after entirely below in both |
 
-**The step is slower on two sources, an open finding.** `bench_block.ns` is
-about 2.6% slower and `bench_new.ns` about 3.1%; on both the after-group lies
-entirely above the before-group, which fails the plan's gate that no source be
-slower. A second sitting reproduced both, +2.7% and +3.4%. `bench_loop.ns` and
-`bench_send.ns` moved +0.7%, the groups overlapping; `bench_do.ns` moved
-−0.6%, and +1.3% in the second sitting on the strength of one round, the
-groups overlapping both times, so `do:` as a step came out not faster, as the
-design expected, and not clearly slower. `bench_block.ns` runs no `do:`,
-instantiation or accessor in its loop, and the cause is not isolated.
+**Instantiation is faster than it was with the re-entries, and two sources
+are slightly slower, an open finding.** The instantiation sources gained what
+the boxes and the drop glue had cost, and running an initializer in the same
+loop, once the walk allocates nothing, is cheaper than a nested run. `do:` as
+a step came out −1.3%, overlapping — not clearly faster, although the design
+expected it to be. `bench_loop.ns` and `bench_block.ns`, which run none of the
+changed paths in their loops, are 1.4–1.9% slower: the uniform codegen shift
+the step's first change showed, not isolated.
 
-Suite running time (`cargo test --workspace`, debug build, test binaries
-already built) went from 12.53 s and 12.54 s to 24.85 s and 25.55 s. Almost
-all of the difference is the two tests that recurse through the nested-class
-accessor to the activation limit, 7.8 s each, which set the running time of
-`program_outcomes.rs` (0.3 s → 7.8 s) and `trampoline.rs` (3.0 s → 7.9 s):
-the cyclic-definition check scans `nested_in_progress` linearly, and such a
-recursion has one creation in progress per level, so it is quadratic in its
-depth, which N used to cap at 1,000 levels. Cutting the scan to the top entry
-alone, a probe that was not kept, took the golden from 7.8 s to 0.29 s.
+The suite (`cargo test --workspace`, debug build, test binaries already
+built) takes 12.5 s in two runs alike, as before the step. Before the marker
+it took 25 s: the two tests that recurse through the nested-class accessor to
+the activation limit made the old list-scanning cyclic-definition check
+quadratic, 7.8 s each.
 
-656 tests pass, with one ignored (644 before); `parse-corpus` stays at
+662 tests pass, with one ignored (644 before); `parse-corpus` stays at
 **210/0/1/0** and `run-corpus` at **6/0/205**.
 
 **Left, deliberately:**
 
-- **The two slower benchmarks**, above, and **the quadratic in-progress
-  check**, for whoever plans next to weigh ("Where the next session starts").
+- **The two slightly slower benchmarks** and **`verify_mixins` not holding a
+  decoded last initializer to `self`**, for whoever plans next to weigh
+  ("Where the next session starts").
 - **`do:`'s per-element argument vector.** Each element's block activation
   takes a one-element `StepArgs::Owned` vector; a one-value `StepArgs` variant
   would avoid it, and would change `Step`'s layout, which the trampoline
   measured as a 4–8% risk.
-- **A decoded image's last initializer is not held to answering `self`.** `new`
-  then answers whatever that code answers — wrong but safe, no panic.
-  `image::decode::verify_mixins` could refuse such an initializer.
+- **Suspend and resume must encode each stack entry's `Continuation`**, with
+  the Rust state it carries — `WhileLoop`, `DoLoop`, `NestedClassCreation`,
+  `Instantiation` — which no image records today
+  ([image-format.md](design/image-format.md), "Planned: suspend and resume").
+- **Step 2b must split `DoLoop.block`** along with every other
+  `Rc<ClosureData>` that holds a handle behind a shared `Rc`
+  ([memory.md](design/memory.md), "What the collector traces").
 - **A `^` into a running initializer** still escapes as "internal: non-local
   return escaped the entry send", the known gap, unchanged.
 - **Moving `do:` into Newspeak**, after the inline caches, as before.

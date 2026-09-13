@@ -60,7 +60,7 @@ bignum. Arbitrary-precision integers are not built.
 This is observable to any program that overflows, which is why it is a recorded
 deviation rather than an implementation detail.
 
-## Planned: the leaf/callback split
+## Planned: the core library as Newspeak source
 
 The shape of a real collections library, of arbitrary-precision integers, and of
 the mirror-based reflection protocol the platform would hand out are all open;

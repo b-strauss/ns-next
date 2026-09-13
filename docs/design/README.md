@@ -39,7 +39,7 @@ that cannot name its code is describing an intention, and should say so.
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust | closure conversion, JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena and the activation stack are built, nothing reclaims an arena slot | checked roots (designed: safepoints in the run loop, a lifetime brand, a stress mode), a collector |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
-| Builtins and the platform | [core-library.md](core-library.md) | Partial | the leaf/callback split |
+| Builtins and the platform | [core-library.md](core-library.md) | Partial | the core library as Newspeak source |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
 
 ## Architecture

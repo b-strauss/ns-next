@@ -474,8 +474,13 @@ entry on the explicit activation stack ([execution.md](execution.md),
 activation stack is its only copy, since sends do not recurse through the Rust
 call stack ([execution.md](execution.md), "The trampoline") and nothing
 re-enters the run loop from Rust ([execution.md](execution.md), "No re-entry
-from Rust"). What is missing is a yield path out of `vm::run` and a re-entry
-point that would continue a decoded frame at its `pc`.
+from Rust"). What is missing is a yield path out of `vm::run`, a re-entry
+point that would continue a decoded frame at its `pc`, and an encoding for
+what each stack entry's `Continuation` carries in Rust: a native loop's
+`WhileLoop` or `DoLoop`, a nested class's `NestedClassCreation`, an
+instantiation's `Instantiation`. An image records none of them today, and a
+suspended activation without its continuation would resume without the rest
+of the loop, the class creation or the walk it belongs to.
 Suspending then means reifying and divorcing the whole stack, which is the same
 operation a debugger performs on the frames it touches — and the same operation upstream
 performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)

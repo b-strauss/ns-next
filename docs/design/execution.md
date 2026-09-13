@@ -284,8 +284,9 @@ activations from its callers'.
   `Step`. `Step::Value` — a native leaf, a slot access, a nested class or an
   instantiation that runs no code — is written to the send's `dst`,
   and the caller goes on. Anything else is an activation: `Step::Method`,
-  `Step::Block`, or one of the two kinds of body an instantiation or a
-  nested-class accessor runs, `Step::Body` and `Step::Initializer`. It is
+  `Step::Block`, or one of the bodies an instantiation or a nested-class
+  accessor runs, `Step::Initializer`, `Step::InitializerThen`,
+  `Step::ClauseMessage` and `Step::SuperclassClause`. It is
   pushed by `Interpreter::push_step`, which checks a method's or block's arity
   and the depth limit, and the loop switches to the new activation at `pc` 0,
   its window filled straight from the buffer. A send allocates no vector once
@@ -318,16 +319,17 @@ Four kinds of body run, and each reaches the loop one way:
 3. **Instance initializer** — `descend_levels`, one per initializing level of
    the superclass chain, answers that level's compiled initializer: its own
    slot initializers and initializer expressions. While a level below it still
-   has code to run, it is answered as a `Step::Body` with
-   `Continuation::Instantiate`; the walk's last initializer is a
-   `Step::Initializer`, whose activation delivers its own value, the instance
-   ("No re-entry from Rust" below). A class with no compiled initializer and no
-   slots is a no-op; a user class whose mixin carries no initializer is
-   refused on load and panics if built any other way
+   has code to run, it is answered as a `Step::InitializerThen`, whose
+   activation continues with `Continuation::Instantiate`; the walk's last
+   initializer is a `Step::Initializer`, whose activation delivers its own
+   value, the instance ("No re-entry from Rust" below). A class with no
+   compiled initializer and no slots is a no-op; a user class whose mixin
+   carries no initializer is refused on load and panics if built any other way
    (`Interpreter::initializer_body`).
-4. **Superclass clause and its message arguments** — a `Step::Body`: the
-   nested-class accessor's clause with `Continuation::NestedClass`, an
-   instantiation's clause message with `Continuation::Instantiate`.
+4. **Superclass clause and its message arguments** — the nested-class
+   accessor's clause is a `Step::SuperclassClause`, continuing with
+   `Continuation::NestedClass`; an instantiation's clause message is a
+   `Step::ClauseMessage`, continuing with `Continuation::Instantiate`.
 
 Rust enters the loop in one place, `Interpreter::run_from_host`, for a host's
 `send` or `instantiate`, and only from outside it: it pushes what the decision
@@ -396,8 +398,8 @@ and the target returns the value through the ordinary return path, so a
 reified frame is divorced exactly as on any return. The popped activations'
 continuations are not applied, so a `^` out of an `and:` block, a native
 loop's body or a `do:` block abandons the coercion or the loop; they go to
-`Interpreter::abandon` instead, which takes a nested class's creation off
-`nested_in_progress` and drops every other. Any other signal — an error, or a
+`Interpreter::abandon` instead, which unmarks a nested class's creation in its
+cache slot and drops every other. Any other signal — an error, or a
 return whose target catches none — pops every activation of the run, `base`
 included, through `abandon` in the same way, and leaves `vm::run` with it, for
 the host that started the run.
@@ -858,55 +860,74 @@ remove most of it sooner.
 
 Taking the last re-entries of the loop from Rust away ("No re-entry from Rust"
 below) was measured whole against the commit it started from, `be3eb40`, in
-one sitting, on 2026-09-13: the before-binary built in a throwaway worktree,
-`ns-next bench <source> --iterations 30` over five sources, five rounds,
-alternating the binaries within each round. Besides the three fixtures, two
-throwaway sources exercise the paths that changed and no fixture does:
-`bench_do.ns`, 50,000 block activations through `do:` (a 5,000-iteration
-`whileTrue:` loop over a ten-element literal array), and `bench_new.ns`, 20,000
-instantiations of a class with one slot initializer (`Cell new v`). They are
-not fixtures; their source is in the step's
+two sittings on 2026-09-13: the before-binary built in a throwaway worktree,
+`ns-next bench <source> --iterations 30` over seven sources, five rounds,
+alternating the binaries within each round. Besides the three fixtures, four
+throwaway sources exercise the paths that changed and no fixture does, each
+printing the sum it accumulates:
+
+- `bench_do.ns`: 50,000 block activations through `do:` — a 5,000-iteration
+  `whileTrue:` loop over `#(1 2 3 4 5 6 7 8 9 10) do: [:e | sum := sum + e]`.
+- `bench_new.ns`: 20,000 instantiations of
+  `class Cell = Object new ( | v ::= 1. | )`, each followed by `v`.
+- `bench_new2.ns`: the same with two levels of slots,
+  `class Base = Object new ( | u ::= 1. | )` and
+  `class Cell = Base new ( | v ::= 1. | )`.
+- `bench_newarg.ns`: the same with a clause message that has an argument,
+  `class Base x: a = Object new ( | u ::= a. | )` and
+  `class Cell = Base x: 1 ( | v ::= 1. | )`, each instantiation followed by
+  `u`.
+
+They are not fixtures; the first two are written out in the step's
 [plan](../superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md),
-"Measurement protocol". Medians in ms, and each group's mean:
+"Measurement protocol", and the other two are `bench_new.ns` with the classes
+above. Medians in ms from the first sitting, each group's mean, and the change
+of the mean in both sittings:
 
-| Source | Before, rounds 1–5 | mean | After, rounds 1–5 | mean | Change |
+| Source | Before, rounds 1–5 | mean | After, rounds 1–5 | mean | Change, sitting 1 / 2 |
 |---|---|---|---|---|---|
-| `bench_loop.ns` | 10.89, 11.05, 11.31, 11.03, 10.99 | 11.05 | 10.95, 10.99, 11.09, 11.28, 11.35 | 11.13 | +0.7%, groups overlap |
-| `bench_send.ns` | 13.86, 13.79, 13.99, 13.95, 13.96 | 13.91 | 13.87, 14.12, 14.01, 14.08, 13.96 | 14.01 | +0.7%, groups overlap |
-| `bench_block.ns` | 22.86, 22.95, 23.04, 23.09, 23.03 | 23.00 | 23.32, 23.46, 23.75, 23.96, 23.52 | 23.60 | **+2.6%, after entirely above** |
-| `bench_do.ns` | 7.77, 7.75, 7.90, 7.86, 7.92 | 7.84 | 7.72, 7.83, 7.81, 7.77, 7.82 | 7.79 | −0.6%, groups overlap |
-| `bench_new.ns` | 7.38, 7.38, 7.37, 7.36, 7.41 | 7.38 | 7.74, 7.51, 7.52, 7.70, 7.56 | 7.61 | **+3.1%, after entirely above** |
+| `bench_loop.ns` | 10.95, 11.03, 10.96, 10.98, 11.05 | 11.00 | 11.35, 11.34, 11.08, 11.15, 11.10 | 11.20 | **+1.9% / +1.4%**, after entirely above in both |
+| `bench_send.ns` | 14.25, 13.86, 13.86, 13.81, 13.74 | 13.90 | 13.87, 13.93, 13.93, 13.98, 13.94 | 13.93 | +0.2% / +0.8%, groups overlap in both |
+| `bench_block.ns` | 23.12, 23.14, 22.90, 23.12, 22.92 | 23.04 | 23.31, 23.53, 23.45, 23.39, 23.37 | 23.41 | **+1.6% / +1.4%**, after entirely above in the first |
+| `bench_do.ns` | 7.85, 7.90, 7.87, 8.00, 7.84 | 7.89 | 7.88, 7.74, 7.78, 7.78, 7.75 | 7.79 | −1.3% / −1.3%, groups overlap in both |
+| `bench_new.ns` | 7.30, 7.27, 7.28, 7.26, 7.29 | 7.28 | 7.11, 7.19, 7.37, 7.15, 7.13 | 7.19 | −1.2% / −2.7%, after entirely below in the second |
+| `bench_new2.ns` | 8.17, 8.19, 8.26, 8.16, 8.23 | 8.20 | 8.16, 8.09, 8.08, 8.16, 8.15 | 8.13 | −0.9% / −1.2%, after entirely below in both |
+| `bench_newarg.ns` | 10.37, 10.60, 10.51, 10.66, 10.40 | 10.51 | 10.10, 10.04, 10.13, 10.18, 10.10 | 10.11 | −3.8% / −3.2%, after entirely below in both |
 
-**Open finding: the step is slower on two sources.** `bench_block.ns` is about
-2.6% slower (23.00 → 23.60 ms) and `bench_new.ns` about 3.1% (7.38 → 7.61 ms,
-about 11 ns per instantiation); on both the after-group lies entirely above
-the before-group, by more than the before-group's spread, so both fail the
-rule that no source may be slower. A second sitting the same day, the same way,
-reproduced both: `bench_block.ns` 22.94 → 23.56 ms (+2.7%), the groups disjoint,
-and `bench_new.ns` 7.38 → 7.63 ms (+3.4%), the groups touching at one value.
-`bench_loop.ns` and `bench_send.ns` moved +0.7% to +0.9% with the groups
-overlapping in both sittings. `bench_do.ns` moved −0.6% in the first and +1.3%
-in the second, the groups overlapping both times and the second mean carried by
-one round at 8.26 ms: running `do:`'s block as a step instead of a nested run
-did not make it faster, as the design expected, and is not clearly slower
-either. `bench_block.ns` runs neither `do:`, an instantiation nor the
-accessor in its loop: its `whileTrue:` is inlined, and each iteration makes
-lexical sends for the slots and `bump:`, public sends of `<`, `+` and `value:`,
-and one block creation. Everything it runs that the step changed,
-`bench_send.ns` runs too, and that moved only +0.7%: `Interpreter::decide_send`
-and `sends::decide_lexical_send`, whose factory-send and nested-class branches
-now answer a `Step` (neither is taken here); `builtins::dispatch_native`, whose
-`Array` and `OrderedCollection` arms now answer a `Step` themselves, with no
-arm added; `Interpreter::push_step`, whose match gained the two body arms
-(`bench_block.ns` also takes its block arm, for `value:`); and the types every
-one of those sends passes through — `Step`, which gained two variants, and the
-`Continuation` `vm::finish` reads, which gained three. Every activation the
-loop pops continues with `Continuation::Deliver` — `value:` answers its block
-with it (`builtins/block.rs`) — which `vm::finish` handles inline, so the loop
-never reaches `Interpreter::resume`. The cause is not isolated.
+**Instantiation is faster than it was with the re-entries**, on all three
+shapes, and `do:` and `bench_send.ns` are level with it. What decided that is
+isolated, each change measured against its parent in a sitting of its own
+(below): two boxes per instantiation body, the box and the list of levels
+every instantiation allocated, and a call to `Continuation`'s drop glue on
+every return. An initializer now runs in the same loop — `push_step`, a
+switch, and `finish` — where it ran in a nested run of it, and once the walk
+allocates nothing per instantiation, that is the cheaper of the two. `do:`
+running its block as a step instead of in a nested run did not make it clearly
+faster, although the design expected it to: −1.3% in both sittings, the groups
+overlapping.
 
-Each hot-path change was measured against its parent on the way, in sittings
-of its own, so its figures are not compared with these:
+**Open finding: `bench_loop.ns` and `bench_block.ns` are 1.4–1.9% slower**,
+the after-group entirely above the before-group in three of the four
+comparisons. Neither runs `do:`, an instantiation or the accessor in its loop:
+`bench_loop.ns` makes only native-leaf and slot sends, and `bench_block.ns`'s
+`whileTrue:` is inlined and each iteration makes lexical sends for the slots
+and `bump:`, public sends of `<`, `+` and `value:`, and one block creation.
+What they run of the changed code is `Interpreter::decide_send` and
+`sends::decide_lexical_send`, whose factory-send and nested-class branches now
+answer a `Step` (neither is taken here); `builtins::dispatch_native`, whose
+`Array` and `OrderedCollection` arms answer a `Step` themselves, with no arm
+added; `Interpreter::push_step` (`bench_block.ns` takes its block arm, for
+`value:`), whose match has four body arms more; and the types every one of
+those sends passes through — `Step`, with four variants more, and the
+`Continuation` `vm::finish` reads, with three more, whose `Deliver` it handles
+inline, so the loop never reaches `Interpreter::resume`. This is the uniform
+shift the first change of the step already showed on code it did not change
+(below), an artifact of inlining and register allocation as far as that
+investigation went. It is not isolated, and nothing removed from either
+benchmark's path explains it.
+
+Each change was measured against its parent on the way, in sittings of its
+own, so its figures are not compared with these:
 
 - **`do:` as a step.** It moved every source by a uniform 2–4%, `bench_loop.ns`
   included, which runs no `do:`. A control — the parent commit plus only the
@@ -918,34 +939,53 @@ of its own, so its figures are not compared with these:
   handling out of `finish` and marking `do_step` `#[inline(never)]` recovered
   nothing. It was accepted as an LLVM inlining and layout artifact on unchanged
   executed code, not bisected further.
-- **Instantiation as a state machine.** The first version made `bench_new.ns`
-  about 15.6% slower. Counting allocations found the cause: two more boxes per
-  instantiation, the walk's state and the body step (4 allocations, 296 bytes,
-  per `Cell new`, against 2 and 144). Letting the last initializer deliver the
-  instance, with the state kept by value, and carrying that initializer inline
-  as `Step::Initializer` restored the count to 2 and 144 bytes and left about
-  +1.8%, about 7 ns per instantiation: the initializer now runs in the same
-  loop — `push_step`, a switch, and `finish` into `resume_caller` — where it
-  used to run in a nested run of the loop and come back as a value. That was
-  accepted.
 - **The nested-class accessor as a step** made no source slower; by the
   protocol's rule `bench_send.ns`, `bench_block.ns` and `bench_new.ns` came out
   faster, with nothing on their paths to explain it.
+- **Instantiation as a state machine.** The first version made `bench_new.ns`
+  about 15.6% slower. Counting allocations found the cause: two more boxes per
+  instantiation, the walk's state and a boxed description of the body (4
+  allocations, 296 bytes, per `Cell new`, against 2 and 144). Letting the last
+  initializer deliver the instance and carrying it inline as
+  `Step::Initializer` restored the count to 2 and 144 bytes on that shape and
+  left about +1.8%. A chain of two levels with code still boxed both for every
+  body but the last, which showed only once `bench_new2.ns` and
+  `bench_newarg.ns` joined the measurement: 15.4% and 18.3% slower than
+  `be3eb40`.
+- **Every body inline.** Carrying `Step::InitializerThen`,
+  `Step::ClauseMessage` and `Step::SuperclassClause` inline instead of a boxed
+  body description: `bench_new2.ns` −5.2%, `bench_newarg.ns` −8.0%, both
+  entirely below, the other five sources level. The first version gave
+  `Step::Initializer` an optional continuation, which made it as large as
+  `Step::Method`; `Result<Step, Signal>` stayed at 56 bytes, yet the four
+  sources that instantiate nothing got 4–6% slower, all entirely above ("Every
+  body is inline in its `Step`" below).
+- **Reusing the walk's box.** Taking the walk's box and its list of levels
+  from the interpreter's spares instead of allocating both: `bench_new.ns`
+  −3.0%, `bench_new2.ns` −8.8%, `bench_newarg.ns` −12.8%, all entirely below;
+  the others level.
+- **`Continuation`'s drop glue.** With three boxed variants, the drop glue of
+  `Continuation` stayed out of line, and `vm::finish` called it on every
+  return for the `Deliver` it left in the popped entry. Taking the `Deliver`
+  and forgetting it moved `bench_block.ns`, `bench_new.ns`, `bench_new2.ns`,
+  `bench_send.ns` and `bench_do.ns` by −0.1% to −1.4% in two sittings, none
+  slower, the groups overlapping.
+- **The in-progress marker** in the cache slot, replacing the list of
+  creations underway, moved no source (−1.2% to +1.1%, overlapping); it was
+  made for the test suite's time and a crafted binary's (below).
+- **Comparing `do:` as a well-known symbol**, instead of through the interner,
+  was tried and not kept: `bench_block.ns`, `bench_new.ns` and `bench_new2.ns`
+  got 1.7–2.1% slower, none of which sends to a collection in its loop.
 
 The suite (`cargo test --workspace`, debug build, test binaries already built)
-went from 12.53 s and 12.54 s, 644 tests, to 24.85 s and 25.55 s, 656 tests.
-Almost all of the difference is two tests that recurse through the
-nested-class accessor to the activation limit, 7.8 s each, which set the
-running time of their test binaries: `accessor-recursion` in
-`crates/ns-cli/tests/program_outcomes.rs` (0.3 s → 7.8 s) and
-`a_recursion_through_the_nested_class_accessor_ends_at_the_activation_limit`
-in `crates/ns-runtime/tests/trampoline.rs` (3.0 s → 7.9 s). Such a recursion has
-about 50,000 creations in progress at its deepest, one per level, and the
-cyclic-definition check scans `nested_in_progress` linearly at every level, so
-it is quadratic in its depth: with the scan cut down to the top entry alone,
-a probe that was not kept, the golden took 0.29 s. The bound on re-entries
-stopped such a recursion at 1,000 levels; now it runs to L. On a release build
-it takes 0.44 s.
+takes 12.5 s for 662 tests, in two runs alike — as long as before the step,
+12.5 s for 644. For a while it took 25 s: two tests recurse through the
+nested-class accessor to the activation limit, about 50,000 creations underway
+at the deepest, and the cyclic-definition check scanned a list of every
+creation underway at each level, quadratic in the depth, where the bound on
+re-entries had stopped such a recursion at 1,000 levels. With the marker in the
+cache slot the check is one read, and `accessor-recursion` in
+`crates/ns-cli/tests/program_outcomes.rs` takes 0.3 s again.
 
 ## The trampoline
 
@@ -1189,34 +1229,46 @@ when these paths ran in nested runs of the loop.
 - **The nested-class accessor** (`interpreter/nested.rs`) answers the class as
   a value when the receiver's cache already holds it, and also when the
   declaration has no superclass clause, whose superclass is `Object` with no
-  code to run. Otherwise it answers the clause's activation: a `Step::Body` of
-  kind `SuperclassClause`, run with the declaring class as its current class,
-  with `Continuation::NestedClass`. The
+  code to run. Otherwise it answers the clause's activation, a
+  `Step::SuperclassClause`, pushed with the declaring class as its current
+  class and continuing with `Continuation::NestedClass`. The boxed
   `NestedClassCreation` it carries holds the enclosing object, the index of
   its cache slot, the declaration and the declaring class; `resume` hands it to
   `nested::after_clause`, which does steps 3 to 5 — the application, the class
   object, the cache ([object-model.md](object-model.md)) — and answers the
-  class. `Interpreter::nested_in_progress`, the list the cyclic-definition
-  check scans, holds the enclosing object as an `ObjRef`, compared with
-  `same`, and the declaration's identity: `push_step` records an entry once the
-  clause's push has succeeded, and `resume` or `Interpreter::abandon` takes it
-  off when the activation is popped, so the list and the stack pop in the same
-  order. `abandon` is `resume`'s counterpart for a continuation whose
-  activation `vm::unwind` throws away rather than returns from: the loop
-  forwards every popped entry's continuation to it and decides nothing, as
-  `vm::finish` forwards to `resume`.
+  class. While the clause runs, the class's cache slot itself says that its
+  creation is underway: `push_step` writes a marker into it once the clause's
+  push has succeeded (`nested::begin_creation`), and `resume` or
+  `Interpreter::abandon` sets it back to nil when the activation is popped
+  (`nested::end_creation`), before `after_clause` caches the class there. An
+  access that finds the marker is the cyclic-definition error; the slot is
+  already keyed by the enclosing object and the declaration, the pair a cycle
+  is, so the check is the one read the accessor makes anyway. The marker is
+  `false`, a primitive the image format already has: nothing but the accessor
+  reads a hidden slot, so no Newspeak code sees it, and no image holds one,
+  since only a host snapshots, between runs; an image that puts `false` in a
+  hidden slot itself gets a cyclic-definition error, the same kind of
+  wrong-but-safe answer as any other non-class value it puts there. The reset
+  replaces only the marker: the decoder does not bound `InitSlot`'s field
+  index, so an image's clause body can overwrite the slot, and a debug build
+  counts the marks rather than asserting on the slot's contents, which such an
+  image could turn into a panic. `abandon` is `resume`'s counterpart for a
+  continuation whose activation `vm::unwind` throws away rather than returns
+  from: the loop forwards every popped entry's continuation to it and decides
+  nothing, as `vm::finish` forwards to `resume`.
 - **Instantiation** (`interpreter/instantiate.rs`) is a state machine.
   `decide_instantiation` allocates the instance and walks the superclass chain
   ("A superclass chain is walked iteratively" above) with its state, an
   `Instantiation` — the instance, the levels reached with their factory
-  arguments, and the phase, climbing or descending at an index — held by value
-  while the walk does the synchronous parts itself: each level's arity check,
-  the clause selector check, a level with no code. It answers an activation as
-  soon as code must run. A clause message's arguments, or an initializer with
-  a level below it that still has code, is a `Step::Body` with
-  `Continuation::Instantiate`, into which the state is boxed;
-  `advance_instantiation` carries the walk on, by value again, when the body
-  returns. The walk's last initializer is a `Step::Initializer`, and its
+  arguments, and the phase: climbing at a level and its superclass, or
+  descending at an index. The walk does the synchronous parts itself — each
+  level's arity check, the clause selector check, a level with no code — and
+  answers an activation as soon as code must run. A clause message's
+  arguments are a `Step::ClauseMessage`, and an initializer with a level below
+  it that still has code a `Step::InitializerThen`; each carries the state
+  into its activation's `Continuation::Instantiate`, and
+  `advance_instantiation` carries the walk on when the body returns. The
+  walk's last initializer is a `Step::Initializer`, and its
   activation delivers its own value, since that value is the instance: both
   lowerings end an instance initializer by answering `self` and discard a
   top-level `^` (`compiler::lower`'s `finish_body`, `compiler::reference`'s
@@ -1224,22 +1276,41 @@ when these paths ran in nested runs of the loop.
   (`crates/ns-runtime/tests/instantiate.rs`) pins it under both lowerings,
   from a host's `new` and from a program's. A decoded image's initializer is
   not held to that: `new` then answers whatever that code answers, which is
-  wrong but safe — no panic, the image's own program running. So the common
-  instantiation — code in the class itself, a builtin above it — boxes neither
-  the state nor a body step, and one with no code at all answers the instance
-  as a `Step::Value`. `try_factory_send` makes a factory send an ordinary
-  decision, `decide_instantiation`; `Interpreter::instantiate` is the host
-  entry, shaped like `send`.
+  wrong but safe — no panic, the image's own program running. An instantiation
+  with no code at all answers the instance as a `Step::Value`.
+  `try_factory_send` makes a factory send an ordinary decision,
+  `decide_instantiation`; `Interpreter::instantiate` is the host entry, shaped
+  like `send`.
 
-**`Step::Body` is boxed.** A body that is neither a method nor a block names
-its receiver, current class, kind, slot base, code, arguments and continuation
-(`BodyStep`), more than fits in `Step` without growing it, and
-`Result<Step, Signal>` stays at the 56 bytes the hot path was measured at —
-`StepArgs::ControlFlow`'s comment says why a change to `Step`'s layout matters,
-and `a_decision_stays_the_size_the_hot_path_was_measured_at`
-(`interpreter/mod.rs`) pins the size. `Step::Initializer` fits inline because
-it carries no continuation and its code and slot base are its level's, found
-when it is pushed (`Interpreter::initializer_body`). Every body is counted.
+  The state is always boxed, and the box is reused: the walk runs in a box
+  taken from the interpreter's spares (`walk_state`), and when the walk ends —
+  at its last initializer, or with no code left — the box goes back, emptied
+  of every handle, with its list of levels keeping its room (`retire_walk`).
+  So once one instantiation has run, the next allocates the instance's fields
+  and nothing else, one with code at several levels included; allocating the
+  box and the list per instantiation measured 3–13% slower on the
+  instantiation benchmarks. The spares are capped at 16 boxes of 64 levels'
+  room, because the boxes held at once grow with how deeply instantiations
+  nest and the list with the superclass chain, an image's to choose.
+
+**Every body is inline in its `Step`.** `Step::Initializer`,
+`Step::InitializerThen`, `Step::ClauseMessage` and `Step::SuperclassClause` each
+carry only what their push cannot find from their level or declaration — the
+code and slot base of an initializer are its level's, found when it is pushed
+(`Interpreter::initializer_body`), and a clause's are its declaration's — so
+none needs a boxed description of its activation; boxing one per body, beside
+a fresh box for the walk's state, made a chain of two levels with code 15–18%
+slower than running it in a nested run of the loop had been
+(`bench_new2.ns`, `bench_newarg.ns`). Each is smaller than `Step::Method`, on
+purpose: an `Initializer` with an optional continuation, as large as
+`Step::Method`, left `Result<Step, Signal>` at the 56 bytes the hot path was
+measured at and still made every benchmark 4–6% slower, none of which
+instantiates in its loop — the same effect `StepArgs::ControlFlow`'s comment
+describes, presumably the discriminant's niche. Splitting it into
+`Initializer` and `InitializerThen`, which takes the receiver from its state,
+measured level with before. `a_decision_stays_the_size_the_hot_path_was_measured_at`
+(`interpreter/mod.rs`) pins the size; it cannot see the niche. Every body is
+counted.
 
 **One host entry.** `Interpreter::send` and `Interpreter::instantiate` decide,
 and hand what they decided to `Interpreter::run_from_host`, which answers a
@@ -1269,8 +1340,10 @@ right — it was not recorded because the code produced it. The interpreter
 thread's stack was re-derived from what still recurses on the Rust stack
 ("The depth limit" above).
 
-The step was measured whole against the commit it started from, and is
-slower on two sources: "What removing the re-entries moved" above, an open
+The step was measured whole against the commit it started from: "What
+removing the re-entries moved" above. Instantiation, `do:` and `bench_send.ns`
+are level with it or faster; `bench_loop.ns` and `bench_block.ns`, which run
+none of the changed paths in their loops, are 1.4–1.9% slower, an open
 finding.
 
 ### How this meets the liveness requirements
@@ -1396,3 +1469,8 @@ binds it is that no native code may ever enter an image.
   trampoline steps, so that no Rust frame is live below a safepoint and the
   root discipline has nothing to root but the host's values. The bound on
   re-entries went with them.
+- **A nested class's creation is marked in its own cache slot** ("No re-entry
+  from Rust"), not listed beside the stack: the slot is keyed by exactly the
+  pair a cyclic definition is, so the check is the read the accessor makes
+  anyway, where the list was scanned in full at every level of a deep chain of
+  creations.
