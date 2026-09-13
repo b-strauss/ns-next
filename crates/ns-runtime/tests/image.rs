@@ -2206,28 +2206,27 @@ fn a_closure_frame_names_the_closure_object_it_runs() {
     );
 }
 
+/// A one-frame graph section whose frame carries the retired closure frame
+/// tag, for the two readers of a graph section below.
+fn retired_closure_frame_graph() -> Vec<u8> {
+    let mut w = one_frame_prefix();
+    w.write_u8(1); // frame kind: the retired FRAME_CLOSURE
+
+    // Padded past the shortest frame record the wire admits, so
+    // `bounded_count` admits the announced frame and the kind tag itself is
+    // what the reader rejects.
+    w.write_bool(false);
+    w.write_u32(0);
+    w.into_bytes()
+}
+
 /// The frame kind a stale artifact wrote for a closure activation, before
 /// the record named the closure object. Its number is retired: the decoder
 /// refuses it rather than read the old inline layout as the new one.
 #[test]
 fn the_retired_closure_frame_tag_is_refused() {
-    let mut w = encode::Writer::new();
-    graph_counts(&mut w, 0, 1);
-    w.write_u8(0); // receiver: nil
-    w.write_u32(0); // no args
-    w.write_u32(0); // no temps
-    w.write_u32(0); // pc
-    w.write_bool(false); // no sender
-    w.write_bool(false); // no home
-    w.write_bool(false); // no current class
-    w.write_u8(1); // frame kind: the retired FRAME_CLOSURE
-                   // Padded past the shortest frame record the wire admits, so
-                   // `bounded_count` admits the announced frame and the kind tag itself is
-                   // what the decoder rejects.
-    w.write_bool(false);
-    w.write_u32(0);
     assert_eq!(
-        GraphFixture::new().decode_err(&w.into_bytes()),
+        GraphFixture::new().decode_err(&retired_closure_frame_graph()),
         decode::DecodeError::InvalidTag {
             what: "frame kind",
             tag: 1
@@ -2261,19 +2260,7 @@ fn inspect_refuses_the_retired_closure_frame_tag() {
         .expect("a snapshot has a graph section")
         .start;
     bytes.truncate(graph_start);
-    let mut w = encode::Writer::new();
-    graph_counts(&mut w, 0, 1);
-    w.write_u8(0); // receiver: nil
-    w.write_u32(0); // no args
-    w.write_u32(0); // no temps
-    w.write_u32(0); // pc
-    w.write_bool(false); // no sender
-    w.write_bool(false); // no home
-    w.write_bool(false); // no current class
-    w.write_u8(1); // frame kind: the retired FRAME_CLOSURE
-    w.write_bool(false);
-    w.write_u32(0);
-    bytes.extend_from_slice(&w.into_bytes());
+    bytes.extend_from_slice(&retired_closure_frame_graph());
     let err = match image::inspect::inspect(&bytes) {
         Ok(_) => panic!("inspect accepted the retired closure frame tag"),
         Err(e) => e,

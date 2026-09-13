@@ -2527,9 +2527,10 @@ mod tests {
         heap.pop_activation(method_act);
     }
 
-    /// Moves a bare heap, one no interpreter owns: nothing outside it holds
-    /// a handle, so the forwarder `move_everything` answers has no more
-    /// work to do and is dropped here on purpose.
+    /// Moves a bare heap, one no interpreter owns: there are no interpreter
+    /// roots to forward, so the forwarder `move_everything` answers is
+    /// dropped here on purpose. A handle a test keeps across the move is
+    /// left stale, which is what the stale-handle tests below rely on.
     #[cfg(debug_assertions)]
     fn move_bare_heap(heap: &mut Heap) {
         let _ = heap.move_everything();

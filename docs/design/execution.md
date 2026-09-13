@@ -1093,7 +1093,7 @@ a push onto the table against a run of milliseconds. Every after-figure above
 includes it.
 
 The suite (`cargo test --workspace`, debug build, test binaries already built)
-takes 12.7 s for 685 tests, against 12.5 s for 662 before the step. Under
+takes 12.7 s, measured at 682 tests, against 12.5 s for 662 before the step. Under
 `NS_NEXT_STRESS_MOVES=1` it takes 190.2 s: almost half of that is
 `crates/ns-runtime/tests/trampoline.rs`'s depth-limit test, and most of the
 rest the CLI tests that spawn `ns-next` per fixture or golden
