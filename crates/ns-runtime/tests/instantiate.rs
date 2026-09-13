@@ -4,11 +4,15 @@
 //! numbered steps this exercises.
 
 use indoc::indoc;
-use ns_runtime::{Interpreter, Signal, Symbol, Value};
+use ns_runtime::{Interpreter, Lowering, Signal, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both.
 fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
+    load_with(src, Lowering::Optimized)
+}
+
+fn load_with(src: &str, lowering: Lowering) -> (Interpreter, ns_runtime::ClassRef) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -16,7 +20,7 @@ fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
         ns_runtime::SourceOrigin::File("test.ns".into()),
     )
     .expect("resolve");
-    let mut interp = Interpreter::bootstrap();
+    let mut interp = Interpreter::bootstrap_with(lowering);
     let class = interp.load_module(&resolved);
     (interp, class)
 }
@@ -374,4 +378,99 @@ fn a_superclass_factory_message_receives_its_own_arguments() {
         matches!(stored, Value::SmallInt(7)),
         "the superclass's slot initializer did not see the clause's own argument"
     );
+}
+
+/// `new` answers the instance its initializers ran on -- under both
+/// lowerings, from a host and from Newspeak, for a class with code at its
+/// own level only (`One`), at two levels (`Two`), and at its superclass's
+/// only (`Bare`). Each initializer notes the `self` it ran on.
+///
+/// The last initializer an instantiation runs hands its own value to the
+/// send, with no step after it to answer the instance
+/// (`Interpreter::descend_levels`): that relies on the compiler ending every
+/// initializer by answering `self`. An initializer that answered anything
+/// else -- its last statement's value, say, or `nil` -- would fail here.
+#[test]
+fn new_answers_the_instance_its_initializers_ran_on() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Kinds = Object new (
+            | seen ::= nil. |
+        ) (
+            public class One = Object new (
+                | a = 1. |
+                note: self.
+            ) (
+                public a = ( ^a )
+            )
+            public class Base = Object new (
+                | b = 2. |
+                note: self.
+            ) (
+                public b = ( ^b )
+            )
+            public class Two = Base new (
+                | c = 3. |
+                note: self.
+            ) (
+                public c = ( ^c )
+            )
+            public class Bare = Base new (
+            ) (
+            )
+            note: o = ( seen := o )
+            public lastSeen = ( ^seen )
+            public make: c = ( ^c new )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load_with(src, lowering);
+        let module = expect_ok(interp.instantiate(class, vec![]), "instantiate Kinds");
+        let cases: [(&str, &[(&str, i64)]); 3] = [
+            ("One", &[("a", 1)]),
+            ("Two", &[("b", 2), ("c", 3)]),
+            ("Bare", &[("b", 2)]),
+        ];
+        for (name, slots) in cases {
+            let class = expect_ok(interp.send(module, Symbol::intern(name), vec![]), name);
+            let Value::Obj(class_obj) = class else {
+                panic!("{name} answers a class object")
+            };
+            for from_newspeak in [false, true] {
+                let what = format!("{name} new, {lowering:?}, from Newspeak: {from_newspeak}");
+                let instance = if from_newspeak {
+                    interp.send(module, Symbol::intern("make:"), vec![class])
+                } else {
+                    interp.send(class, Symbol::intern("new"), vec![])
+                };
+                let instance = expect_ok(instance, &what);
+                let seen = expect_ok(
+                    interp.send(module, Symbol::intern("lastSeen"), vec![]),
+                    "lastSeen",
+                );
+                let (Value::Obj(instance_obj), Value::Obj(seen_obj)) = (instance, seen) else {
+                    panic!("{what}: answered something other than an object");
+                };
+                assert!(
+                    instance_obj.same(seen_obj),
+                    "{what}: answered an object other than the one its initializers ran on"
+                );
+                assert!(
+                    interp.class_of(&instance).same(class_obj),
+                    "{what}: answered an instance of another class"
+                );
+                for (getter, expected) in slots {
+                    let value = expect_ok(
+                        interp.send(instance, Symbol::intern(getter), vec![]),
+                        getter,
+                    );
+                    assert!(
+                        matches!(value, Value::SmallInt(n) if n == *expected),
+                        "{what}: slot {getter}"
+                    );
+                }
+            }
+        }
+    }
 }

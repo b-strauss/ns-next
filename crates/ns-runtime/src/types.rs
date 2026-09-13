@@ -249,8 +249,9 @@ pub enum Continuation {
     /// (`interpreter::nested::after_clause`).
     NestedClass(Box<NestedClassCreation>),
     /// A body an instantiation ran returned -- a clause message's arguments,
-    /// or a level's initializer: carry the walk on
-    /// (`Interpreter::advance_instantiation`).
+    /// or the initializer of a level with another below it still to run:
+    /// carry the walk on (`Interpreter::advance_instantiation`). The last
+    /// initializer's activation delivers instead (`descend_levels` says why).
     Instantiate(Box<Instantiation>),
 }
 
@@ -302,7 +303,8 @@ pub struct NestedClassCreation {
 /// level of the superclass chain the upward walk has reached with the factory
 /// arguments it gets, and which way the walk is going.
 ///
-/// Boxed in its continuation, and owned by exactly one stack entry.
+/// A value while the walk runs; boxed only into the continuation of a body
+/// that has work left after it, and then owned by exactly one stack entry.
 #[derive(Debug, Clone)]
 pub struct Instantiation {
     pub(crate) instance: Value,
@@ -320,7 +322,7 @@ pub enum InstantiationPhase {
     /// factory arguments.
     Climbing,
     /// Downward. A body running for this instantiation is the initializer of
-    /// `levels[index]`.
+    /// `levels[index]`, and a level below it has code still to run.
     Descending { index: usize },
 }
 

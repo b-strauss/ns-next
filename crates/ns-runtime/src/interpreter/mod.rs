@@ -650,7 +650,7 @@ impl Interpreter {
                 self.leave_nested_class(&creation);
                 nested::after_clause(self, *creation, value)
             }
-            Continuation::Instantiate(state) => self.advance_instantiation(state, value),
+            Continuation::Instantiate(state) => self.advance_instantiation(*state, value),
         }
     }
 
@@ -1367,9 +1367,11 @@ mod tests {
     }
 
     /// A factory send is decided as the instantiation's first body to run --
-    /// here `P`'s initializer -- with the rest of the walk in the
-    /// continuation; a class with nothing to initialize at any level is
-    /// decided as its instance outright.
+    /// the initializer of the topmost level with code -- with the rest of the
+    /// walk in the continuation when a level below still has code, and a
+    /// plain delivery when none has (the initializer answers the instance);
+    /// a class with nothing to initialize at any level is decided as its
+    /// instance outright.
     #[test]
     fn deciding_new_answers_the_first_initializer_as_an_activation() {
         let src = indoc! {"
@@ -1384,18 +1386,33 @@ mod tests {
               public class Q = Object new (
               ) (
               ) : ()
+              public class R = P new (
+                | w = 2. |
+              ) (
+              ) : ()
             ) : ()
         "};
         let (mut interp, class) = load(src);
         let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
         let p = expect_ok(interp.send(instance, Symbol::intern("P"), vec![]), "P");
         let q = expect_ok(interp.send(instance, Symbol::intern("Q"), vec![]), "Q");
+        let r = expect_ok(interp.send(instance, Symbol::intern("R"), vec![]), "R");
+        let Value::Obj(p_class) = p else {
+            panic!("`P` answers a class object")
+        };
         match interp.decide_send(p, Symbol::NEW, &[]) {
             Ok(Step::Body(body)) => {
-                assert!(matches!(body.kind, FrameKind::Initializer(_)));
-                assert!(matches!(body.then, Continuation::Instantiate(_)));
+                assert!(matches!(body.kind, FrameKind::Initializer(level) if level.same(p_class)));
+                assert!(matches!(body.then, Continuation::Deliver));
             }
             _ => panic!("`P new` is decided as P's initializer"),
+        }
+        match interp.decide_send(r, Symbol::NEW, &[]) {
+            Ok(Step::Body(body)) => {
+                assert!(matches!(body.kind, FrameKind::Initializer(level) if level.same(p_class)));
+                assert!(matches!(body.then, Continuation::Instantiate(_)));
+            }
+            _ => panic!("`R new` is decided as its superclass P's initializer"),
         }
         assert!(
             matches!(

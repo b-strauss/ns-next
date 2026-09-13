@@ -278,9 +278,14 @@ impl Interpreter {
     /// any of its code: the instance comes back as a value when no level of
     /// the superclass chain has code to run, and otherwise the first body that
     /// must run, with the rest of the walk in its continuation
-    /// (`Continuation::Instantiate`, carried on by `advance_instantiation`).
-    /// Steps 2-5 are `climb_levels` and `descend_levels`, for every level of
-    /// the superclass chain.
+    /// (`Continuation::Instantiate`, carried on by `advance_instantiation`)
+    /// when there is any. Steps 2-5 are `climb_levels` and `descend_levels`,
+    /// for every level of the superclass chain.
+    ///
+    /// The walk's state is a value while it runs and is boxed only into the
+    /// continuation of a body that has work left after it, so the common
+    /// instantiation -- code in the class itself, a builtin above it --
+    /// allocates none (`descend_levels` says why its last body needs none).
     pub(crate) fn decide_instantiation(
         &mut self,
         class: ClassRef,
@@ -295,19 +300,21 @@ impl Interpreter {
             .map_or(0, |a| a.num_slots);
         let instance =
             self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil; slot_count]));
-        let state = Box::new(Instantiation {
+        let state = Instantiation {
             instance: Value::Obj(instance),
             levels: Vec::new(),
             phase: InstantiationPhase::Climbing,
-        });
+        };
         self.climb_levels(state, class, factory_args)
     }
 
     /// One body an instantiation ran has returned `value`: carry the walk on
-    /// from where `state` says it stopped. `Interpreter::resume` calls this.
+    /// from where `state` says it stopped. `Interpreter::resume` calls this,
+    /// with the state taken out of its continuation's box: the walk runs by
+    /// value again until it answers another body.
     pub(crate) fn advance_instantiation(
         &mut self,
-        state: Box<Instantiation>,
+        state: Instantiation,
         value: Value,
     ) -> Result<Step, Signal> {
         match state.phase {
@@ -342,7 +349,7 @@ impl Interpreter {
     /// iteratively"). At the top of the chain, the downward walk begins.
     fn climb_levels(
         &mut self,
-        mut state: Box<Instantiation>,
+        mut state: Instantiation,
         mut level: ClassRef,
         mut args: Vec<Value>,
     ) -> Result<Step, Signal> {
@@ -375,7 +382,9 @@ impl Interpreter {
                 slot_base: 0,
                 code,
                 args: message_args,
-                then: Continuation::Instantiate(state),
+                // Its value is the superclass's arguments: the walk has
+                // everything above this level still to do.
+                then: Continuation::Instantiate(Box::new(state)),
             })));
         }
     }
@@ -388,48 +397,57 @@ impl Interpreter {
     /// level with nothing to initialize runs no code and is passed over --
     /// every chain ends at a builtin, which is exactly such a level -- and the
     /// first that has code is answered as an activation;
-    /// `advance_instantiation` carries on below it when it returns. Past the
-    /// last level, the instance (step 6).
-    fn descend_levels(
-        &mut self,
-        mut state: Box<Instantiation>,
-        mut next: usize,
-    ) -> Result<Step, Signal> {
-        while next > 0 {
-            next -= 1;
-            let level = state.levels[next].0;
-            if !class_has_initializer_code(&self.heap, level) {
-                continue;
-            }
-            let application = self
-                .heap
-                .class_application(level)
-                .expect("internal: class_has_initializer_code confirmed this is a class object");
-            let code = application.mixin.initializer_code.clone().unwrap_or_else(|| {
-                panic!("internal: class needs an instance initializer and its mixin carries none (a mixin built from source always does; verify_mixins refuses a decoded one)")
-            });
-            // `InitSlot`'s `own_index` is relative to the mixin's own slots,
-            // not an absolute field index, because the compiled body is shared
-            // by every application of the mixin. This level's own
-            // `MixinApplication.own_slot_base`, taken as the activation's
-            // `slot_base`, turns it into an absolute index at run time; it is
-            // set here, with the rest of the level's identity, and never
-            // changes.
-            let slot_base = application.own_slot_base;
-            let args = std::mem::take(&mut state.levels[next].1);
-            let instance = state.instance;
-            state.phase = InstantiationPhase::Descending { index: next };
-            return Ok(Step::Body(Box::new(BodyStep {
-                receiver: instance,
-                current_class: level,
-                kind: FrameKind::Initializer(level),
-                slot_base,
-                code,
-                args,
-                then: Continuation::Instantiate(state),
-            })));
-        }
-        Ok(Step::Value(state.instance))
+    /// `advance_instantiation` carries on below it when it returns, unless
+    /// nothing below it has code. Past the last level, the instance (step 6).
+    fn descend_levels(&mut self, mut state: Instantiation, next: usize) -> Result<Step, Signal> {
+        let Some(index) = initializing_level_below(&self.heap, &state.levels, next) else {
+            return Ok(Step::Value(state.instance));
+        };
+        let level = state.levels[index].0;
+        let application = self
+            .heap
+            .class_application(level)
+            .expect("internal: class_has_initializer_code confirmed this is a class object");
+        let code = application.mixin.initializer_code.clone().unwrap_or_else(|| {
+            panic!("internal: class needs an instance initializer and its mixin carries none (a mixin built from source always does; verify_mixins refuses a decoded one)")
+        });
+        // `InitSlot`'s `own_index` is relative to the mixin's own slots, not
+        // an absolute field index, because the compiled body is shared by
+        // every application of the mixin. This level's own
+        // `MixinApplication.own_slot_base`, taken as the activation's
+        // `slot_base`, turns it into an absolute index at run time; it is set
+        // here, with the rest of the level's identity, and never changes.
+        let slot_base = application.own_slot_base;
+        let args = std::mem::take(&mut state.levels[index].1);
+        let instance = state.instance;
+        let then = if initializing_level_below(&self.heap, &state.levels, index).is_some() {
+            state.phase = InstantiationPhase::Descending { index };
+            Continuation::Instantiate(Box::new(state))
+        } else {
+            // The last body of the walk, so all that is left once it returns
+            // is step 6, answering the instance -- which is exactly what the
+            // initializer answers: the compiler ends every instance
+            // initializer by answering `self` and discards a top-level `^`
+            // (`compiler::lower`'s `finish_body`, `compiler::reference`'s
+            // `end`). So its activation delivers its own value like a
+            // method's, and nothing of the walk outlives this step -- no box
+            // for the common instantiation. Making an initializer answer
+            // anything else breaks `new`; `tests/instantiate.rs`'s
+            // `new_answers_the_instance_its_initializers_ran_on` pins it.
+            // (A decoded image's initializer is not held to this; `new` then
+            // answers what that code answers, which is the image's program
+            // running, not a fault.)
+            Continuation::Deliver
+        };
+        Ok(Step::Body(Box::new(BodyStep {
+            receiver: instance,
+            current_class: level,
+            kind: FrameKind::Initializer(level),
+            slot_base,
+            code,
+            args,
+            then,
+        })))
     }
 
     /// Rejects a factory-arity mismatch as a NewspeakError before this
@@ -662,6 +680,18 @@ pub(crate) fn pattern_param_count(pattern: &ast::MessagePattern) -> usize {
 pub(crate) fn class_has_initializer_code(heap: &Heap, class: ClassRef) -> bool {
     heap.class_application(class)
         .is_some_and(|application| mixin_needs_initializer_code(&application.mixin))
+}
+
+/// The nearest level to the top of the chain below `below` that has
+/// initializer code: the next one the downward walk runs.
+fn initializing_level_below(
+    heap: &Heap,
+    levels: &[(ClassRef, Vec<Value>)],
+    below: usize,
+) -> Option<usize> {
+    levels[..below]
+        .iter()
+        .rposition(|(level, _)| class_has_initializer_code(heap, *level))
 }
 
 /// Whether `mixin` declares any slot or `initExpr` at all.
