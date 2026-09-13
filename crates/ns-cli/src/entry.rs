@@ -152,12 +152,12 @@ pub(crate) fn instantiate_root(
     interp: &mut ns_runtime::Interpreter,
     class: ns_runtime::ClassRef,
 ) -> Result<ns_runtime::Value, ExitCode> {
-    let platform = interp.platform();
+    let platform = interp.platform_value();
     let factory_args = factory_args_for(interp.heap_ref(), class, platform).map_err(|msg| {
         eprintln!("error: {msg}");
         ExitCode::FAILURE
     })?;
     interp
-        .instantiate(class, factory_args)
+        .instantiate_unrooted(class, factory_args)
         .map_err(report_signal)
 }

@@ -16,7 +16,7 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 }
 
 /// `OrderedCollection new` via ordinary `send` (not a direct
-/// `interp.instantiate(...)` call) must produce an `ObjectData::Array`-backed
+/// `interp.instantiate_unrooted(...)` call) must produce an `ObjectData::Array`-backed
 /// object -- the payload shape `builtins::collections`' dispatch functions
 /// actually pattern-match on -- and that object must go on to
 /// support `add:`/`size` through the real dispatch chain, which also proves
@@ -28,7 +28,7 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     let mut interp = Interpreter::bootstrap();
     let class_value = Value::Obj(interp.builtin_class(BuiltinClass::OrderedCollection));
 
-    let result = interp.send(class_value, Symbol::intern("new"), vec![]);
+    let result = interp.send_unrooted(class_value, Symbol::intern("new"), vec![]);
     let receiver = expect_ok(result, "OrderedCollection new");
 
     let Value::Obj(obj) = &receiver else {
@@ -44,7 +44,7 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     );
 
     let add_result = expect_ok(
-        interp.send(receiver, Symbol::intern("add:"), vec![Value::SmallInt(1)]),
+        interp.send_unrooted(receiver, Symbol::intern("add:"), vec![Value::SmallInt(1)]),
         "OrderedCollection new add: 1",
     );
     match add_result {
@@ -56,7 +56,7 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     }
 
     let size_result = expect_ok(
-        interp.send(receiver, Symbol::intern("size"), vec![]),
+        interp.send_unrooted(receiver, Symbol::intern("size"), vec![]),
         "OrderedCollection new (after add:) size",
     );
     match size_result {
@@ -77,11 +77,11 @@ fn array_new_via_ordinary_send_does_not_understand_add() {
     let class_value = Value::Obj(interp.builtin_class(BuiltinClass::Array));
 
     let receiver = expect_ok(
-        interp.send(class_value, Symbol::intern("new"), vec![]),
+        interp.send_unrooted(class_value, Symbol::intern("new"), vec![]),
         "Array new",
     );
 
-    match interp.send(receiver, Symbol::intern("add:"), vec![Value::SmallInt(1)]) {
+    match interp.send_unrooted(receiver, Symbol::intern("add:"), vec![Value::SmallInt(1)]) {
         Err(Signal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("add:"));
         }
@@ -94,7 +94,7 @@ fn array_new_via_ordinary_send_does_not_understand_add() {
 }
 
 /// A user-defined class's `new` via ordinary `send` must behave exactly
-/// like calling `interp.instantiate(...)` directly: same slot values
+/// like calling `interp.instantiate_unrooted(...)` directly: same slot values
 /// reachable afterward through a real method send.
 #[test]
 fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
@@ -113,23 +113,26 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
 
     // Path A: `Foo new` via ordinary `send`.
     let mut interp_a = Interpreter::bootstrap();
-    let class_a = interp_a.load_module(&resolved);
+    let class_a = interp_a.load_module_unrooted(&resolved);
     let class_value_a = Value::Obj(class_a);
     let via_send = expect_ok(
-        interp_a.send(class_value_a, Symbol::intern("new"), vec![]),
+        interp_a.send_unrooted(class_value_a, Symbol::intern("new"), vec![]),
         "Foo new (via send)",
     );
     let via_send_bar = expect_ok(
-        interp_a.send(via_send, Symbol::intern("bar"), vec![]),
+        interp_a.send_unrooted(via_send, Symbol::intern("bar"), vec![]),
         "Foo new bar (via send)",
     );
 
-    // Path B: `interp.instantiate(...)` called directly.
+    // Path B: `interp.instantiate_unrooted(...)` called directly.
     let mut interp_b = Interpreter::bootstrap();
-    let class_b = interp_b.load_module(&resolved);
-    let via_instantiate = expect_ok(interp_b.instantiate(class_b, vec![]), "instantiate(Foo)");
+    let class_b = interp_b.load_module_unrooted(&resolved);
+    let via_instantiate = expect_ok(
+        interp_b.instantiate_unrooted(class_b, vec![]),
+        "instantiate(Foo)",
+    );
     let via_instantiate_bar = expect_ok(
-        interp_b.send(via_instantiate, Symbol::intern("bar"), vec![]),
+        interp_b.send_unrooted(via_instantiate, Symbol::intern("bar"), vec![]),
         "instantiate(Foo) bar",
     );
 
@@ -153,7 +156,7 @@ fn a_class_object_receiving_a_non_factory_selector_falls_through_to_ordinary_dis
     let mut interp = Interpreter::bootstrap();
     let class_value = Value::Obj(interp.builtin_class(BuiltinClass::OrderedCollection));
 
-    match interp.send(
+    match interp.send_unrooted(
         class_value,
         Symbol::intern("thisSelectorDoesNotExist"),
         vec![],

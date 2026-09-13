@@ -15,8 +15,8 @@ fn instance_of(src: &str) -> (Interpreter, Value) {
     )
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
-    let receiver = match interp.instantiate(class, vec![]) {
+    let class = interp.load_module_unrooted(&resolved);
+    let receiver = match interp.instantiate_unrooted(class, vec![]) {
         Ok(v) => v,
         Err(Signal::Error(e)) => panic!("instantiate: unexpected Signal::Error: {}", e.message),
         Err(Signal::Return(..)) => panic!("instantiate: unexpected Signal::Return"),
@@ -55,7 +55,10 @@ fn method_with_no_explicit_return_returns_self() {
           public bar = ( 1. 2 )
         ) : ()
     "});
-    let result = expect_ok(interp.send(receiver, Symbol::intern("bar"), vec![]), "bar");
+    let result = expect_ok(
+        interp.send_unrooted(receiver, Symbol::intern("bar"), vec![]),
+        "bar",
+    );
     assert!(
         matches!((&result, &receiver), (Value::Obj(a), Value::Obj(b)) if a.same(*b)),
         "a method with no explicit return must yield the receiver, not the last expression's value"
@@ -73,7 +76,7 @@ fn method_with_explicit_return_returns_the_returned_value() {
         ) : ()
     "});
     let result = expect_ok(
-        interp.send(receiver, Symbol::intern("answer"), vec![]),
+        interp.send_unrooted(receiver, Symbol::intern("answer"), vec![]),
         "answer",
     );
     assert!(matches!(result, Value::SmallInt(42)));
@@ -91,7 +94,10 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
           public bar = ( ^OrderedCollection new )
         ) : ()
     "});
-    let result = expect_ok(interp.send(receiver, Symbol::intern("bar"), vec![]), "bar");
+    let result = expect_ok(
+        interp.send_unrooted(receiver, Symbol::intern("bar"), vec![]),
+        "bar",
+    );
     let Value::Obj(obj) = result else {
         panic!("expected an OrderedCollection instance")
     };
@@ -113,7 +119,10 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
           public m = ( [ ^1 ] value. ^2 )
         ) : ()
     "});
-    let result = expect_ok(interp.send(receiver, Symbol::intern("m"), vec![]), "m");
+    let result = expect_ok(
+        interp.send_unrooted(receiver, Symbol::intern("m"), vec![]),
+        "m",
+    );
     assert!(matches!(result, Value::SmallInt(1)));
     assert_eq!(interp.heap_ref().activation_depth(), 0);
 }
@@ -130,10 +139,13 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
           public again = ( ^b value )
         ) : ()
     "});
-    let first = expect_ok(interp.send(receiver, Symbol::intern("m"), vec![]), "m");
+    let first = expect_ok(
+        interp.send_unrooted(receiver, Symbol::intern("m"), vec![]),
+        "m",
+    );
     assert!(matches!(first, Value::SmallInt(1)));
     expect_cannot_return(
-        interp.send(receiver, Symbol::intern("again"), vec![]),
+        interp.send_unrooted(receiver, Symbol::intern("again"), vec![]),
         "again",
     );
 }
@@ -151,11 +163,11 @@ fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() 
         ) : ()
     "});
     expect_ok(
-        interp.send(receiver, Symbol::intern("capture"), vec![]),
+        interp.send_unrooted(receiver, Symbol::intern("capture"), vec![]),
         "capture",
     );
     expect_cannot_return(
-        interp.send(receiver, Symbol::intern("runIt"), vec![]),
+        interp.send_unrooted(receiver, Symbol::intern("runIt"), vec![]),
         "runIt",
     );
 }

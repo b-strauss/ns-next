@@ -18,8 +18,8 @@ fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
 #[test]
 fn platform_is_memoized_across_calls() {
     let mut interp = Interpreter::bootstrap();
-    let a = interp.platform();
-    let b = interp.platform();
+    let a = interp.platform_value();
+    let b = interp.platform_value();
     match (a, b) {
         (Value::Obj(a), Value::Obj(b)) => assert!(a.same(b)),
         _ => panic!("expected Value::Obj"),
@@ -29,16 +29,16 @@ fn platform_is_memoized_across_calls() {
 #[test]
 fn platform_transcript_show_and_new_line_round_trip() {
     let mut interp = Interpreter::bootstrap();
-    let platform = interp.platform();
+    let platform = interp.platform_value();
 
     let transcript = expect_ok(
-        interp.send(platform, Symbol::intern("transcript"), vec![]),
+        interp.send_unrooted(platform, Symbol::intern("transcript"), vec![]),
         "platform transcript",
     );
 
     let s = Value::Obj(interp.new_string("hi".to_string()));
     let after_show = expect_ok(
-        interp.send(transcript, Symbol::intern("show:"), vec![s]),
+        interp.send_unrooted(transcript, Symbol::intern("show:"), vec![s]),
         "transcript show: 'hi'",
     );
     // `show:` returns the receiver (the `Transcript`-style convention
@@ -49,7 +49,7 @@ fn platform_transcript_show_and_new_line_round_trip() {
     }
 
     expect_ok(
-        interp.send(transcript, Symbol::intern("newLine"), vec![]),
+        interp.send_unrooted(transcript, Symbol::intern("newLine"), vec![]),
         "transcript newLine",
     );
 }
@@ -58,10 +58,10 @@ fn platform_transcript_show_and_new_line_round_trip() {
 fn platform_class_accessors_return_the_matching_builtin_class() {
     let mut interp = Interpreter::bootstrap();
     let expected = interp.builtin_class(BuiltinClass::OrderedCollection);
-    let platform = interp.platform();
+    let platform = interp.platform_value();
 
     let got = expect_ok(
-        interp.send(platform, Symbol::intern("OrderedCollection"), vec![]),
+        interp.send_unrooted(platform, Symbol::intern("OrderedCollection"), vec![]),
         "platform OrderedCollection",
     );
     match got {
@@ -81,14 +81,14 @@ fn platform_class_accessors_return_the_matching_builtin_class() {
 fn platform_collections_answers_list_with_the_ordered_collection_class() {
     let mut interp = Interpreter::bootstrap();
     let expected = interp.builtin_class(BuiltinClass::OrderedCollection);
-    let platform = interp.platform();
+    let platform = interp.platform_value();
 
     let collections = expect_ok(
-        interp.send(platform, Symbol::intern("collections"), vec![]),
+        interp.send_unrooted(platform, Symbol::intern("collections"), vec![]),
         "platform collections",
     );
     let got = expect_ok(
-        interp.send(collections, Symbol::intern("List"), vec![]),
+        interp.send_unrooted(collections, Symbol::intern("List"), vec![]),
         "platform collections List",
     );
     match got {
@@ -104,13 +104,13 @@ fn platform_collections_answers_list_with_the_ordered_collection_class() {
 #[test]
 fn platform_collections_does_not_invent_a_map() {
     let mut interp = Interpreter::bootstrap();
-    let platform = interp.platform();
+    let platform = interp.platform_value();
 
     let collections = expect_ok(
-        interp.send(platform, Symbol::intern("collections"), vec![]),
+        interp.send_unrooted(platform, Symbol::intern("collections"), vec![]),
         "platform collections",
     );
-    match interp.send(collections, Symbol::intern("Map"), vec![]) {
+    match interp.send_unrooted(collections, Symbol::intern("Map"), vec![]) {
         Err(Signal::Error(e)) => assert!(
             e.message.contains("does not understand"),
             "message was: {}",
@@ -127,13 +127,13 @@ fn platform_collections_does_not_invent_a_map() {
 #[test]
 fn the_collections_namespace_is_not_a_transcript() {
     let mut interp = Interpreter::bootstrap();
-    let platform = interp.platform();
+    let platform = interp.platform_value();
 
     let collections = expect_ok(
-        interp.send(platform, Symbol::intern("collections"), vec![]),
+        interp.send_unrooted(platform, Symbol::intern("collections"), vec![]),
         "platform collections",
     );
-    match interp.send(collections, Symbol::intern("newLine"), vec![]) {
+    match interp.send_unrooted(collections, Symbol::intern("newLine"), vec![]) {
         Err(Signal::Error(e)) => assert!(
             e.message.contains("does not understand"),
             "message was: {}",

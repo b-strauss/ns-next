@@ -21,7 +21,7 @@ fn load_with(src: &str, lowering: Lowering) -> (Interpreter, ns_runtime::ClassRe
     )
     .expect("resolve");
     let mut interp = Interpreter::bootstrap_with(lowering);
-    let class = interp.load_module(&resolved);
+    let class = interp.load_module_unrooted(&resolved);
     (interp, class)
 }
 
@@ -49,9 +49,9 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
     "};
     let (mut interp, class) = load(src);
 
-    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let receiver = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
 
-    let result = interp.send(receiver, Symbol::intern("bar"), vec![]);
+    let result = interp.send_unrooted(receiver, Symbol::intern("bar"), vec![]);
 
     match result {
         Ok(Value::SmallInt(42)) => {}
@@ -114,7 +114,7 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
         ns_runtime::SourceOrigin::File("sub.ns".into()),
     )
     .expect("resolve");
-    let sub_class = interp.load_module(&sub_resolved);
+    let sub_class = interp.load_module_unrooted(&sub_resolved);
 
     // Relink Sub -> Sup (see the doc comment above), on both chains: the
     // class-object chain that `super`/`instantiate` walk, and the
@@ -139,9 +139,12 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
             .set_class_application(sub_class, sub_application);
     assert!(relinked, "expected Sub to be a class object");
 
-    let receiver = expect_ok(interp.instantiate(sub_class, vec![]), "instantiate");
+    let receiver = expect_ok(
+        interp.instantiate_unrooted(sub_class, vec![]),
+        "instantiate",
+    );
 
-    let result = interp.send(receiver, Symbol::intern("getB"), vec![]);
+    let result = interp.send_unrooted(receiver, Symbol::intern("getB"), vec![]);
 
     match result {
         Ok(Value::SmallInt(10)) => {}
@@ -176,11 +179,11 @@ fn a_factory_parameter_is_visible_in_a_slot_initializer() {
     let (mut interp, class) = load(src);
 
     let receiver = expect_ok(
-        interp.instantiate(class, vec![Value::SmallInt(99)]),
+        interp.instantiate_unrooted(class, vec![Value::SmallInt(99)]),
         "instantiate",
     );
 
-    let result = interp.send(receiver, Symbol::intern("getT"), vec![]);
+    let result = interp.send_unrooted(receiver, Symbol::intern("getT"), vec![]);
 
     match result {
         Ok(Value::SmallInt(99)) => {}
@@ -209,7 +212,7 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
     let (mut interp, class) = load(src);
 
     let receiver = expect_ok(
-        interp.send(
+        interp.send_unrooted(
             Value::Obj(class),
             Symbol::intern("usingPlatform:"),
             vec![Value::SmallInt(99)],
@@ -218,7 +221,7 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
     );
 
     let result = expect_ok(
-        interp.send(receiver, Symbol::intern("getT"), vec![]),
+        interp.send_unrooted(receiver, Symbol::intern("getT"), vec![]),
         "getT",
     );
 
@@ -255,11 +258,11 @@ fn a_factory_parameter_is_visible_in_an_init_expr() {
     let (mut interp, class) = load(src);
 
     let receiver = expect_ok(
-        interp.instantiate(class, vec![Value::SmallInt(7)]),
+        interp.instantiate_unrooted(class, vec![Value::SmallInt(7)]),
         "instantiate",
     );
 
-    let result = interp.send(receiver, Symbol::intern("getT"), vec![]);
+    let result = interp.send_unrooted(receiver, Symbol::intern("getT"), vec![]);
 
     match result {
         Ok(Value::SmallInt(7)) => {}
@@ -289,7 +292,7 @@ fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
     "};
     let (mut interp, class) = load(src);
 
-    let result = interp.instantiate(class, vec![Value::SmallInt(1)]);
+    let result = interp.instantiate_unrooted(class, vec![Value::SmallInt(1)]);
 
     match result {
         Err(Signal::Error(e)) => {
@@ -316,9 +319,9 @@ fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
     "};
     let (mut interp, class) = load(src);
 
-    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let receiver = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
 
-    let result = interp.send(receiver, Symbol::intern("thisSelectorDoesNotExist"), vec![]);
+    let result = interp.send_unrooted(receiver, Symbol::intern("thisSelectorDoesNotExist"), vec![]);
 
     match result {
         Err(Signal::Error(e)) => {
@@ -359,19 +362,19 @@ fn a_superclass_factory_message_receives_its_own_arguments() {
     "};
     let (mut interp, class) = load(src);
     let module = expect_ok(
-        interp.instantiate(class, vec![]),
+        interp.instantiate_unrooted(class, vec![]),
         "instantiate SuperclassArgs",
     );
     let derived = expect_ok(
-        interp.send(module, Symbol::intern("Derived"), vec![]),
+        interp.send_unrooted(module, Symbol::intern("Derived"), vec![]),
         "Derived",
     );
     let instance = expect_ok(
-        interp.send(derived, Symbol::intern("new"), vec![]),
+        interp.send_unrooted(derived, Symbol::intern("new"), vec![]),
         "Derived new",
     );
     let stored = expect_ok(
-        interp.send(instance, Symbol::intern("base"), vec![]),
+        interp.send_unrooted(instance, Symbol::intern("base"), vec![]),
         "base",
     );
     assert!(
@@ -426,27 +429,33 @@ fn new_answers_the_instance_its_initializers_ran_on() {
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load_with(src, lowering);
-        let module = expect_ok(interp.instantiate(class, vec![]), "instantiate Kinds");
+        let module = expect_ok(
+            interp.instantiate_unrooted(class, vec![]),
+            "instantiate Kinds",
+        );
         let cases: [(&str, &[(&str, i64)]); 3] = [
             ("One", &[("a", 1)]),
             ("Two", &[("b", 2), ("c", 3)]),
             ("Bare", &[("b", 2)]),
         ];
         for (name, slots) in cases {
-            let class = expect_ok(interp.send(module, Symbol::intern(name), vec![]), name);
+            let class = expect_ok(
+                interp.send_unrooted(module, Symbol::intern(name), vec![]),
+                name,
+            );
             let Value::Obj(class_obj) = class else {
                 panic!("{name} answers a class object")
             };
             for from_newspeak in [false, true] {
                 let what = format!("{name} new, {lowering:?}, from Newspeak: {from_newspeak}");
                 let instance = if from_newspeak {
-                    interp.send(module, Symbol::intern("make:"), vec![class])
+                    interp.send_unrooted(module, Symbol::intern("make:"), vec![class])
                 } else {
-                    interp.send(class, Symbol::intern("new"), vec![])
+                    interp.send_unrooted(class, Symbol::intern("new"), vec![])
                 };
                 let instance = expect_ok(instance, &what);
                 let seen = expect_ok(
-                    interp.send(module, Symbol::intern("lastSeen"), vec![]),
+                    interp.send_unrooted(module, Symbol::intern("lastSeen"), vec![]),
                     "lastSeen",
                 );
                 let (Value::Obj(instance_obj), Value::Obj(seen_obj)) = (instance, seen) else {
@@ -462,7 +471,7 @@ fn new_answers_the_instance_its_initializers_ran_on() {
                 );
                 for (getter, expected) in slots {
                     let value = expect_ok(
-                        interp.send(instance, Symbol::intern(getter), vec![]),
+                        interp.send_unrooted(instance, Symbol::intern(getter), vec![]),
                         getter,
                     );
                     assert!(

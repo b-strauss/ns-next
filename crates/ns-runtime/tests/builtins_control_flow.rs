@@ -25,12 +25,12 @@ fn run_method(src: &str, selector: &str) -> (Interpreter, Result<Value, Signal>)
     )
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
-    let instance = match interp.instantiate(class, vec![]) {
+    let class = interp.load_module_unrooted(&resolved);
+    let instance = match interp.instantiate_unrooted(class, vec![]) {
         Ok(v) => v,
         Err(_) => panic!("instantiate failed"),
     };
-    let result = interp.send(instance, Symbol::intern(selector), vec![]);
+    let result = interp.send_unrooted(instance, Symbol::intern(selector), vec![]);
     (interp, result)
 }
 

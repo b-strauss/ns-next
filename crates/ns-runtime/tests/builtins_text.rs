@@ -28,7 +28,7 @@ fn string_concatenation_joins_two_strings() {
     let a = Value::Obj(interp.new_string("foo".to_string()));
     let b = Value::Obj(interp.new_string("bar".to_string()));
 
-    let result = interp.send(a, Symbol::intern(","), vec![b]);
+    let result = interp.send_unrooted(a, Symbol::intern(","), vec![b]);
 
     let joined = expect_ok(result, "'foo' , 'bar'");
     assert_eq!(as_string(interp.heap_ref(), &joined), "foobar");
@@ -40,7 +40,7 @@ fn string_concatenation_with_a_non_string_argument_is_a_newspeak_error_not_a_pan
 
     let a = Value::Obj(interp.new_string("foo".to_string()));
 
-    let result = interp.send(a, Symbol::intern(","), vec![Value::SmallInt(42)]);
+    let result = interp.send_unrooted(a, Symbol::intern(","), vec![Value::SmallInt(42)]);
 
     match result {
         Err(Signal::Error(_)) => {}
@@ -64,7 +64,7 @@ fn concatenating_a_string_with_an_object_is_an_error_not_a_stack_overflow() {
     let a = Value::Obj(interp.new_string("foo".to_string()));
     let arg = Value::Obj(interp.new_array(vec![]));
 
-    let result = interp.send(a, Symbol::intern(","), vec![arg]);
+    let result = interp.send_unrooted(a, Symbol::intern(","), vec![arg]);
 
     match result {
         Err(Signal::Error(e)) => assert!(
@@ -89,13 +89,13 @@ fn string_equality_compares_payloads() {
     let c = Value::Obj(interp.new_string("different".to_string()));
 
     let equal = expect_ok(
-        interp.send(a, Symbol::intern("="), vec![b]),
+        interp.send_unrooted(a, Symbol::intern("="), vec![b]),
         "'same' = 'same'",
     );
     assert!(matches!(equal, Value::Bool(true)));
 
     let not_equal = expect_ok(
-        interp.send(a, Symbol::intern("="), vec![c]),
+        interp.send_unrooted(a, Symbol::intern("="), vec![c]),
         "'same' = 'different'",
     );
     assert!(matches!(not_equal, Value::Bool(false)));
@@ -108,7 +108,7 @@ fn string_print_string_quotes_and_doubles_embedded_quotes() {
     let s = Value::Obj(interp.new_string("it's".to_string()));
 
     let result = expect_ok(
-        interp.send(s, Symbol::intern("printString"), vec![]),
+        interp.send_unrooted(s, Symbol::intern("printString"), vec![]),
         "'it''s' printString",
     );
 
@@ -124,13 +124,13 @@ fn symbol_round_trips_through_as_string_and_as_symbol() {
     let sym = interp.new_symbol(Symbol::intern("foo:bar:"));
 
     let as_str = expect_ok(
-        interp.send(sym, Symbol::intern("asString"), vec![]),
+        interp.send_unrooted(sym, Symbol::intern("asString"), vec![]),
         "#foo:bar: asString",
     );
     assert_eq!(as_string(interp.heap_ref(), &as_str), "foo:bar:");
 
     let back_to_symbol = expect_ok(
-        interp.send(as_str, Symbol::intern("asSymbol"), vec![]),
+        interp.send_unrooted(as_str, Symbol::intern("asSymbol"), vec![]),
         "'foo:bar:' asSymbol",
     );
     match &back_to_symbol {
@@ -155,7 +155,7 @@ fn character_constant_as_integer_yields_its_unicode_code_point() {
     let a = Value::Obj(interp.new_character('A'));
 
     let result = expect_ok(
-        interp.send(a, Symbol::intern("asInteger"), vec![]),
+        interp.send_unrooted(a, Symbol::intern("asInteger"), vec![]),
         "$A asInteger",
     );
 

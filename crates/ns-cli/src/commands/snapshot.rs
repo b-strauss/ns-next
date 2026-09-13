@@ -25,7 +25,7 @@ pub(crate) fn execute(
         Ok(v) => v,
         Err(code) => return code,
     };
-    let platform = interp.platform();
+    let platform = interp.platform_value();
     let mut roots = vec![instance];
     if let Some(selector) = send {
         let args = match entry::entry_args(selector, platform) {
@@ -35,7 +35,7 @@ pub(crate) fn execute(
                 return ExitCode::FAILURE;
             }
         };
-        match interp.send(instance, ns_runtime::Symbol::intern(selector), args) {
+        match interp.send_unrooted(instance, ns_runtime::Symbol::intern(selector), args) {
             Ok(result) => roots.push(result),
             Err(signal) => return entry::report_entry_send(Err(signal)),
         }

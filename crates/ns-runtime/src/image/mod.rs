@@ -282,7 +282,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         // something to send.
         return Err("a stateless artifact must record an entry selector".to_string());
     }
-    let platform = interp.platform();
+    let platform = interp.platform_value();
     // A binary carries no graph section at all -- `decode_graph_section`
     // would read the next artifact's bytes (there are none) as if they were
     // one. `DecodedGraph::empty()` is the graph a binary has: no roots, no

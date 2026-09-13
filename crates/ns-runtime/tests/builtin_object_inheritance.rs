@@ -35,7 +35,7 @@ fn a_builtin_receiver_inherits_objects_native_class() {
     let mut interp = Interpreter::bootstrap();
     let expected = interp.builtin_class(BuiltinClass::Integer);
 
-    let result = interp.send(Value::SmallInt(3), Symbol::intern("class"), vec![]);
+    let result = interp.send_unrooted(Value::SmallInt(3), Symbol::intern("class"), vec![]);
 
     match expect_ok(result, "3 class") {
         Value::Obj(obj) => assert!(
@@ -56,21 +56,21 @@ fn a_builtin_receiver_inherits_objects_native_class() {
 fn builtins_without_their_own_print_string_inherit_objects_default() {
     let mut interp = Interpreter::bootstrap();
 
-    let nil_result = interp.send(Value::Nil, Symbol::intern("printString"), vec![]);
+    let nil_result = interp.send_unrooted(Value::Nil, Symbol::intern("printString"), vec![]);
     assert_eq!(
         as_string(interp.heap_ref(), &expect_ok(nil_result, "nil printString")),
         "an Object"
     );
 
     let coll = expect_ok(
-        interp.send(
+        interp.send_unrooted(
             Value::Obj(interp.builtin_class(BuiltinClass::OrderedCollection)),
             Symbol::intern("new"),
             vec![],
         ),
         "OrderedCollection new",
     );
-    let coll_result = interp.send(coll, Symbol::intern("printString"), vec![]);
+    let coll_result = interp.send_unrooted(coll, Symbol::intern("printString"), vec![]);
     assert_eq!(
         as_string(
             interp.heap_ref(),
@@ -86,14 +86,14 @@ fn builtins_without_their_own_print_string_inherit_objects_default() {
 fn a_builtin_receiver_inherits_objects_identity_and_hash() {
     let mut interp = Interpreter::bootstrap();
 
-    let same = interp.send(
+    let same = interp.send_unrooted(
         Value::SmallInt(3),
         Symbol::intern("=="),
         vec![Value::SmallInt(3)],
     );
     assert!(matches!(expect_ok(same, "3 == 3"), Value::Bool(true)));
 
-    let hash = interp.send(Value::SmallInt(3), Symbol::intern("hash"), vec![]);
+    let hash = interp.send_unrooted(Value::SmallInt(3), Symbol::intern("hash"), vec![]);
     assert!(
         matches!(expect_ok(hash, "3 hash"), Value::SmallInt(_)),
         "Object's native `hash` must be reachable from an Integer receiver"
@@ -110,7 +110,7 @@ fn a_builtin_receiver_inherits_objects_identity_and_hash() {
 fn an_unknown_selector_on_a_builtin_runs_objects_real_does_not_understand() {
     let mut interp = Interpreter::bootstrap();
 
-    let result = interp.send(Value::SmallInt(3), Symbol::intern("frobnicate"), vec![]);
+    let result = interp.send_unrooted(Value::SmallInt(3), Symbol::intern("frobnicate"), vec![]);
 
     match result {
         Err(Signal::Error(e)) => {
@@ -135,7 +135,7 @@ fn an_unknown_selector_on_a_string_runs_objects_real_does_not_understand() {
     let mut interp = Interpreter::bootstrap();
     let receiver = Value::Obj(interp.new_string("hi".to_string()));
 
-    let result = interp.send(receiver, Symbol::intern("frobnicate"), vec![]);
+    let result = interp.send_unrooted(receiver, Symbol::intern("frobnicate"), vec![]);
 
     match result {
         Err(Signal::Error(e)) => {
@@ -159,7 +159,7 @@ fn a_builtins_own_implementation_still_wins_over_objects() {
     // Object's `=` is identity; Integer's own `=` is numeric equality. Both
     // agree on `3 = 3`, so use `printString` -- where the two genuinely
     // differ -- as the discriminating case.
-    let printed = interp.send(Value::SmallInt(7), Symbol::intern("printString"), vec![]);
+    let printed = interp.send_unrooted(Value::SmallInt(7), Symbol::intern("printString"), vec![]);
     assert_eq!(
         as_string(interp.heap_ref(), &expect_ok(printed, "7 printString")),
         "7",

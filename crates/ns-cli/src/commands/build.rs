@@ -91,7 +91,7 @@ pub(crate) fn execute(
         }
     };
 
-    if let Err(msg) = crate::entry::entry_args(&entry, interp.platform()) {
+    if let Err(msg) = crate::entry::entry_args(&entry, interp.platform_value()) {
         eprintln!("error: cannot use `{entry}` as an entry point: {msg}");
         return ExitCode::FAILURE;
     }

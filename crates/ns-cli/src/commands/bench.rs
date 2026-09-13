@@ -43,10 +43,10 @@ fn timed_send(
     entry_args: &[ns_runtime::Value],
 ) -> Result<std::time::Duration, String> {
     let instance = interp
-        .instantiate(class, factory_args.to_vec())
+        .instantiate_unrooted(class, factory_args.to_vec())
         .map_err(signal_message)?;
     let start = std::time::Instant::now();
-    let outcome = interp.send(instance, selector, entry_args.to_vec());
+    let outcome = interp.send_unrooted(instance, selector, entry_args.to_vec());
     let elapsed = start.elapsed();
     outcome.map(|_| elapsed).map_err(signal_message)
 }
@@ -58,7 +58,7 @@ fn timed_send(
 /// timing for the same reason instantiation is.
 fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<BenchStats, String> {
     let (mut interp, class) = source::bootstrap(loaded, ns_runtime::Lowering::Optimized);
-    let platform = interp.platform();
+    let platform = interp.platform_value();
     let factory_args = entry::factory_args_for(interp.heap_ref(), class, platform)?;
     let entry_args_list = entry::entry_args(send, platform)?;
     let selector = ns_runtime::Symbol::intern(send);

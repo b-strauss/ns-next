@@ -111,7 +111,7 @@ pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> E
             return ExitCode::FAILURE;
         }
     };
-    let platform = interp.platform();
+    let platform = interp.platform_value();
     let args = match crate::entry::entry_args(selector, platform) {
         Ok(args) => args,
         Err(msg) => {
@@ -119,7 +119,7 @@ pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> E
             return ExitCode::FAILURE;
         }
     };
-    crate::entry::report_entry_send(interp.send(
+    crate::entry::report_entry_send(interp.send_unrooted(
         instance,
         ns_runtime::Symbol::intern(selector),
         args,

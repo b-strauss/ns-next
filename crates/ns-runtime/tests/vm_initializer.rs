@@ -20,7 +20,7 @@ fn load(src: &str) -> (Interpreter, ClassRef) {
     )
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
+    let class = interp.load_module_unrooted(&resolved);
     (interp, class)
 }
 
@@ -42,9 +42,12 @@ fn int_of(v: &Value) -> i64 {
 /// Instantiates with `factory_args`, sends `getter`, returns the result.
 fn instantiate_and_get(src: &str, factory_args: Vec<Value>, getter: &str) -> Value {
     let (mut interp, class) = load(src);
-    let instance = expect_ok(interp.instantiate(class, factory_args), "instantiate");
+    let instance = expect_ok(
+        interp.instantiate_unrooted(class, factory_args),
+        "instantiate",
+    );
     expect_ok(
-        interp.send(instance, Symbol::intern(getter), vec![]),
+        interp.send_unrooted(instance, Symbol::intern(getter), vec![]),
         getter,
     )
 }
@@ -93,9 +96,9 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let instance = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
     let v = expect_ok(
-        interp.send(instance, Symbol::intern("blk2"), vec![]),
+        interp.send_unrooted(instance, Symbol::intern("blk2"), vec![]),
         "blk2",
     );
     let Value::Obj(obj) = &v else {
@@ -127,14 +130,14 @@ fn a_return_inside_a_block_in_init_exprs_escapes_instantiate() {
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let result = interp.instantiate(class, vec![]);
+    let result = interp.instantiate_unrooted(class, vec![]);
     assert!(matches!(result, Err(Signal::Return(..))));
 }
 
 #[test]
 fn a_factory_arity_mismatch_is_still_the_shared_error() {
     let (mut interp, class) = load(FACTORY_PARAM);
-    match interp.instantiate(class, vec![]) {
+    match interp.instantiate_unrooted(class, vec![]) {
         Err(Signal::Error(e)) => assert!(
             e.message.contains("wrong number of factory arguments"),
             "{}",
@@ -266,11 +269,11 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     let class_b = make_class(&mut interp, object_class, app_b.clone());
 
     let a = expect_ok(
-        interp.instantiate(class_a, vec![Value::SmallInt(11)]),
+        interp.instantiate_unrooted(class_a, vec![Value::SmallInt(11)]),
         "instantiate a",
     );
     let b = expect_ok(
-        interp.instantiate(class_b, vec![Value::SmallInt(22)]),
+        interp.instantiate_unrooted(class_b, vec![Value::SmallInt(22)]),
         "instantiate b",
     );
     assert_eq!(
@@ -310,10 +313,16 @@ fn a_three_level_chain_initializes_every_level_at_its_own_absolute_offsets() {
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let module = expect_ok(interp.instantiate(class, vec![]), "instantiate Levels");
-    let leaf_class = expect_ok(interp.send(module, Symbol::intern("Leaf"), vec![]), "Leaf");
+    let module = expect_ok(
+        interp.instantiate_unrooted(class, vec![]),
+        "instantiate Levels",
+    );
+    let leaf_class = expect_ok(
+        interp.send_unrooted(module, Symbol::intern("Leaf"), vec![]),
+        "Leaf",
+    );
     let leaf = expect_ok(
-        interp.send(leaf_class, Symbol::intern("new"), vec![]),
+        interp.send_unrooted(leaf_class, Symbol::intern("new"), vec![]),
         "Leaf new",
     );
     // `Middle withMiddle: 2` -> `Base withBase: 2 + 1`, so the deepest

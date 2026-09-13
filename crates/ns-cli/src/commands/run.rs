@@ -20,7 +20,7 @@ pub(crate) fn execute(file: &Path, send: &str, lowering: ns_runtime::Lowering) -
         Ok(v) => v,
         Err(code) => return code,
     };
-    let platform = interp.platform();
+    let platform = interp.platform_value();
     let args = match entry::entry_args(send, platform) {
         Ok(args) => args,
         Err(msg) => {
@@ -29,5 +29,5 @@ pub(crate) fn execute(file: &Path, send: &str, lowering: ns_runtime::Lowering) -
         }
     };
     let selector = ns_runtime::Symbol::intern(send);
-    entry::report_entry_send(interp.send(instance, selector, args))
+    entry::report_entry_send(interp.send_unrooted(instance, selector, args))
 }

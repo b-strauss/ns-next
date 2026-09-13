@@ -137,7 +137,7 @@ fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
     )
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
+    let class = interp.load_module_unrooted(&resolved);
     (interp, class)
 }
 
@@ -165,9 +165,9 @@ fn register_addressing_puts_arguments_before_temporaries() {
     let (mut interp, class) = load(src);
     // Computed ahead of the call: `send` takes `&mut Interpreter`, and so
     // does `platform()`, so the two cannot be nested in one expression.
-    let platform = interp.platform();
+    let platform = interp.platform_value();
     let instance = expect_ok(
-        interp.send(
+        interp.send_unrooted(
             Value::Obj(class),
             Symbol::intern("usingPlatform:"),
             vec![platform],
@@ -175,7 +175,7 @@ fn register_addressing_puts_arguments_before_temporaries() {
         "instantiate",
     );
     let result = expect_ok(
-        interp.send(instance, Symbol::intern("run:"), vec![Value::SmallInt(41)]),
+        interp.send_unrooted(instance, Symbol::intern("run:"), vec![Value::SmallInt(41)]),
         "run:",
     );
     assert!(matches!(result, Value::SmallInt(41)));

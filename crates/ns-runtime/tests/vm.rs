@@ -15,7 +15,7 @@ fn load(src: &str) -> (Interpreter, ClassRef) {
     )
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
+    let class = interp.load_module_unrooted(&resolved);
     (interp, class)
 }
 
@@ -38,7 +38,7 @@ fn expect_error(result: Result<Value, Signal>, what: &str) -> NewspeakError {
 }
 
 fn new_instance(interp: &mut Interpreter, class: ClassRef) -> Value {
-    expect_ok(interp.instantiate(class, vec![]), "instantiate")
+    expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate")
 }
 
 fn send(
@@ -47,7 +47,7 @@ fn send(
     selector: &str,
     args: Vec<Value>,
 ) -> Result<Value, Signal> {
-    interp.send(receiver, Symbol::intern(selector), args)
+    interp.send_unrooted(receiver, Symbol::intern(selector), args)
 }
 
 fn string_of(heap: &Heap, v: &Value) -> String {
@@ -422,7 +422,7 @@ fn loading_a_second_module_keeps_the_first_modules_code() {
         SourceOrigin::File(PathBuf::from("b.ns")),
     )
     .expect("resolve");
-    let b = interp.load_module(&resolved);
+    let b = interp.load_module_unrooted(&resolved);
     let a_instance = new_instance(&mut interp, a);
     let b_instance = new_instance(&mut interp, b);
     let from_a = expect_ok(send(&mut interp, a_instance, "answer", vec![]), "A answer");
@@ -465,7 +465,7 @@ fn a_correctly_sent_method_reads_its_temporary_as_nil() {
 fn a_wrong_arity_send_is_refused() {
     let (mut interp, class) = load(ARITY_PROBE);
     let instance = new_instance(&mut interp, class);
-    let platform = interp.platform();
+    let platform = interp.platform_value();
     let error = expect_error(
         send(&mut interp, instance, "probe", vec![platform, Value::Nil]),
         "probe with two surplus arguments",

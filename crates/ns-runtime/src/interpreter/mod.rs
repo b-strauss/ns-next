@@ -251,7 +251,12 @@ impl Interpreter {
     /// §5.5, decided as `decide_send` decides it and run from the outside
     /// (`run_from_host`). A `Send*` the VM issues never comes through here:
     /// `vm.rs` decides it and pushes what was decided itself.
-    pub fn send(&mut self, receiver: Value, selector: Symbol, args: Vec<Value>) -> EvalResult {
+    pub fn send_unrooted(
+        &mut self,
+        receiver: Value,
+        selector: Symbol,
+        args: Vec<Value>,
+    ) -> EvalResult {
         match self.decide_send(receiver, selector, &args) {
             Ok(step) => self.run_from_host(step, &args),
             Err(signal) => Err(signal),
@@ -983,7 +988,7 @@ impl Interpreter {
     /// The `platform` object (`docs/design/core-library.md`):
     /// memoized on first call, so every reference within one interpreter
     /// sees the same object identity.
-    pub fn platform(&mut self) -> Value {
+    pub fn platform_value(&mut self) -> Value {
         if let Some(p) = &self.platform_singleton {
             return *p;
         }
@@ -1308,7 +1313,7 @@ mod tests {
         )
         .expect("resolve");
         let mut interp = Interpreter::bootstrap();
-        let class = interp.load_module(&resolved);
+        let class = interp.load_module_unrooted(&resolved);
         (interp, class)
     }
 
@@ -1334,7 +1339,7 @@ mod tests {
             ) : ()
         "};
         let (mut interp, class) = load(src);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
         match interp.decide_send(instance, Symbol::intern("foo"), &[]) {
             Ok(Step::Method { method, .. }) => assert_eq!(method.selector.as_str(), "foo"),
             _ => panic!("a user method is decided as an activation"),
@@ -1366,13 +1371,13 @@ mod tests {
             ) : ()
         "};
         let (mut interp, class) = load(src);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
         let items = expect_ok(
-            interp.send(instance, Symbol::intern("items"), vec![]),
+            interp.send_unrooted(instance, Symbol::intern("items"), vec![]),
             "items",
         );
         let echo = expect_ok(
-            interp.send(instance, Symbol::intern("echo"), vec![]),
+            interp.send_unrooted(instance, Symbol::intern("echo"), vec![]),
             "echo",
         );
         match interp.decide_send(items, Symbol::intern("do:"), &[echo]) {
@@ -1412,7 +1417,7 @@ mod tests {
             ) : ()
         "};
         let (mut interp, class) = load(src);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
         let slot = match interp.decide_send(instance, Symbol::intern("N"), &[]) {
             Ok(Step::SuperclassClause(creation)) => {
                 assert!(
@@ -1470,11 +1475,23 @@ mod tests {
             ) : ()
         "};
         let (mut interp, class) = load(src);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        let p = expect_ok(interp.send(instance, Symbol::intern("P"), vec![]), "P");
-        let q = expect_ok(interp.send(instance, Symbol::intern("Q"), vec![]), "Q");
-        let r = expect_ok(interp.send(instance, Symbol::intern("R"), vec![]), "R");
-        let s = expect_ok(interp.send(instance, Symbol::intern("S"), vec![]), "S");
+        let instance = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
+        let p = expect_ok(
+            interp.send_unrooted(instance, Symbol::intern("P"), vec![]),
+            "P",
+        );
+        let q = expect_ok(
+            interp.send_unrooted(instance, Symbol::intern("Q"), vec![]),
+            "Q",
+        );
+        let r = expect_ok(
+            interp.send_unrooted(instance, Symbol::intern("R"), vec![]),
+            "R",
+        );
+        let s = expect_ok(
+            interp.send_unrooted(instance, Symbol::intern("S"), vec![]),
+            "S",
+        );
         let Value::Obj(p_class) = p else {
             panic!("`P` answers a class object")
         };
@@ -1542,12 +1559,15 @@ mod tests {
             ) : ()
         "};
         let (mut interp, class) = load(src);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        let r = expect_ok(interp.send(instance, Symbol::intern("R"), vec![]), "R");
+        let instance = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
+        let r = expect_ok(
+            interp.send_unrooted(instance, Symbol::intern("R"), vec![]),
+            "R",
+        );
         let Value::Obj(r) = r else {
             panic!("`R` answers a class object")
         };
-        expect_ok(interp.instantiate(r, vec![]), "R new");
+        expect_ok(interp.instantiate_unrooted(r, vec![]), "R new");
         assert_eq!(interp.spare_walks.len(), 1, "one walk ran at a time");
         let spare: *const Instantiation = &*interp.spare_walks[0];
         assert!(
@@ -1557,7 +1577,7 @@ mod tests {
                 .all(|state| matches!(state.instance, Value::Nil) && state.levels.is_empty()),
             "a spare holds no handle"
         );
-        expect_ok(interp.instantiate(r, vec![]), "R new again");
+        expect_ok(interp.instantiate_unrooted(r, vec![]), "R new again");
         assert_eq!(interp.spare_walks.len(), 1);
         assert!(
             std::ptr::eq(spare, &*interp.spare_walks[0]),
@@ -1587,15 +1607,15 @@ mod tests {
             ) : ()
         "};
         let (mut interp, class) = load(src);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
         let cell = expect_ok(
-            interp.send(instance, Symbol::intern("Cell"), vec![]),
+            interp.send_unrooted(instance, Symbol::intern("Cell"), vec![]),
             "Cell",
         );
         let Value::Obj(cell) = cell else {
             panic!("`Cell` answers a class object")
         };
-        expect_ok(interp.instantiate(cell, vec![]), "Cell new");
+        expect_ok(interp.instantiate_unrooted(cell, vec![]), "Cell new");
         assert_eq!(interp.spare_walks.len(), 1, "one walk ran");
         let state = &interp.spare_walks[0];
         assert!(matches!(state.instance, Value::Nil), "no instance handle");

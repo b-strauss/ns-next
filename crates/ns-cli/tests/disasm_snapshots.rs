@@ -274,7 +274,7 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
     let resolved = ns_runtime::resolve(module, Rc::from(src), SourceOrigin::File("bare.ns".into()))
         .expect("resolve");
     let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
+    let class = interp.load_module_unrooted(&resolved);
     let application = interp
         .heap_ref()
         .class_application(class)

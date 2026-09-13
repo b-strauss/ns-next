@@ -19,7 +19,7 @@ fn load(src: &str, lowering: Lowering) -> (Interpreter, ClassRef) {
     )
     .expect("resolve");
     let mut interp = Interpreter::bootstrap_with(lowering);
-    let class = interp.load_module(&resolved);
+    let class = interp.load_module_unrooted(&resolved);
     (interp, class)
 }
 
@@ -69,10 +69,10 @@ fn every_program_answers_the_same_under_both_lowerings() {
     ];
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(PROGRAMS, lowering);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
         for (selector, answer) in expected {
             let value = expect_ok(
-                interp.send(instance, Symbol::intern(selector), vec![]),
+                interp.send_unrooted(instance, Symbol::intern(selector), vec![]),
                 selector,
             );
             assert!(
@@ -174,7 +174,7 @@ fn every_resolvable_corpus_module_compiles_under_both_lowerings() {
             continue;
         };
         for lowering in [Lowering::Optimized, Lowering::Reference] {
-            Interpreter::bootstrap_with(lowering).load_module(&resolved);
+            Interpreter::bootstrap_with(lowering).load_module_unrooted(&resolved);
         }
         compiled += 1;
     }

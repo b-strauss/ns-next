@@ -58,7 +58,7 @@ pub(crate) fn bootstrap(
     lowering: ns_runtime::Lowering,
 ) -> (ns_runtime::Interpreter, ns_runtime::ClassRef) {
     let mut interp = ns_runtime::Interpreter::bootstrap_with(lowering);
-    let class = interp.load_module(&loaded.resolved);
+    let class = interp.load_module_unrooted(&loaded.resolved);
     (interp, class)
 }
 

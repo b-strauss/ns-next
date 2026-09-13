@@ -2130,7 +2130,7 @@ pub fn decode_tag_named_hashes(
         let target = match r.read_u8()? {
             HASHED_BUILTIN_CLASS => interp.builtin_class(read_builtin_class(r)?),
             HASHED_ROOT_CLASS => root_class,
-            HASHED_PLATFORM => match interp.platform() {
+            HASHED_PLATFORM => match interp.platform_value() {
                 Value::Obj(platform) => platform,
                 _ => unreachable!("the platform singleton is always an object"),
             },

@@ -17,7 +17,7 @@ fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
     )
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
+    let class = interp.load_module_unrooted(&resolved);
     (interp, class)
 }
 
@@ -42,7 +42,7 @@ fn as_string(heap: &Heap, value: &Value) -> String {
 fn integer_addition_via_direct_send_evaluates_correctly() {
     let mut interp = Interpreter::bootstrap();
 
-    let result = interp.send(
+    let result = interp.send_unrooted(
         Value::SmallInt(3),
         Symbol::intern("+"),
         vec![Value::SmallInt(4)],
@@ -61,7 +61,7 @@ fn integer_addition_via_direct_send_evaluates_correctly() {
 fn integer_addition_overflow_is_a_newspeak_error_not_a_panic() {
     let mut interp = Interpreter::bootstrap();
 
-    let result = interp.send(
+    let result = interp.send_unrooted(
         Value::SmallInt(i64::MAX),
         Symbol::intern("+"),
         vec![Value::SmallInt(1)],
@@ -98,8 +98,8 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
             ) : ()
         "};
         let (mut interp, class) = load(&src);
-        let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        let result = interp.send(receiver, Symbol::intern("m"), vec![]);
+        let receiver = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
+        let result = interp.send_unrooted(receiver, Symbol::intern("m"), vec![]);
         match expect_ok(result, body) {
             Value::SmallInt(1) => {}
             other => panic!(
@@ -128,8 +128,8 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
             ) : ()
         "};
         let (mut interp, class) = load(&src);
-        let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        let result = interp.send(receiver, Symbol::intern("m"), vec![]);
+        let receiver = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
+        let result = interp.send_unrooted(receiver, Symbol::intern("m"), vec![]);
         match expect_ok(result, body) {
             Value::SmallInt(5) => {}
             other => panic!(
@@ -167,8 +167,8 @@ fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
             ) : ()
         "};
         let (mut interp, class) = load(&src);
-        let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        let result = interp.send(receiver, Symbol::intern("m"), vec![]);
+        let receiver = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
+        let result = interp.send_unrooted(receiver, Symbol::intern("m"), vec![]);
         assert_eq!(
             as_string(interp.heap_ref(), &expect_ok(result, body)),
             "escaped",
@@ -198,8 +198,8 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
             ) : ()
         "};
         let (mut interp, class) = load(&src);
-        let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        let result = interp.send(receiver, Symbol::intern("m"), vec![]);
+        let receiver = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
+        let result = interp.send_unrooted(receiver, Symbol::intern("m"), vec![]);
         assert_eq!(
             as_string(interp.heap_ref(), &expect_ok(result, body)),
             "correct",
@@ -217,7 +217,7 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
 fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
     let mut interp = Interpreter::bootstrap();
 
-    let result = interp.send(
+    let result = interp.send_unrooted(
         Value::SmallInt(1),
         Symbol::intern("+"),
         vec![Value::Float(1.5)],
@@ -259,7 +259,7 @@ fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow()
 
     let arg = Value::Obj(interp.new_array(vec![]));
 
-    let result = interp.send(Value::SmallInt(1), Symbol::intern("+"), vec![arg]);
+    let result = interp.send_unrooted(Value::SmallInt(1), Symbol::intern("+"), vec![arg]);
 
     match result {
         Err(Signal::Error(e)) => {
@@ -283,7 +283,7 @@ fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow()
 fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
     let mut interp = Interpreter::bootstrap();
 
-    let result = interp.send(
+    let result = interp.send_unrooted(
         Value::SmallInt(1),
         Symbol::intern("<"),
         vec![Value::Float(1.5)],
@@ -309,7 +309,7 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
 fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
     let mut interp = Interpreter::bootstrap();
 
-    let result = interp.send(
+    let result = interp.send_unrooted(
         Value::SmallInt(1),
         Symbol::intern("="),
         vec![Value::Float(1.0)],
@@ -330,7 +330,7 @@ fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
 fn float_arithmetic_still_widens_an_integer_argument() {
     let mut interp = Interpreter::bootstrap();
 
-    let result = interp.send(
+    let result = interp.send_unrooted(
         Value::Float(1.5),
         Symbol::intern("+"),
         vec![Value::SmallInt(1)],
@@ -351,7 +351,7 @@ fn float_arithmetic_still_widens_an_integer_argument() {
 fn a_real_integer_overflow_is_still_reported_as_an_overflow() {
     let mut interp = Interpreter::bootstrap();
 
-    let result = interp.send(
+    let result = interp.send_unrooted(
         Value::SmallInt(i64::MAX),
         Symbol::intern("*"),
         vec![Value::SmallInt(2)],
@@ -384,8 +384,8 @@ fn a_radix_integer_literal_evaluates() {
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let receiver = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-    let result = interp.send(receiver, Symbol::intern("m"), vec![]);
+    let receiver = expect_ok(interp.instantiate_unrooted(class, vec![]), "instantiate");
+    let result = interp.send_unrooted(receiver, Symbol::intern("m"), vec![]);
     match expect_ok(result, "^16r1F") {
         Value::SmallInt(31) => {}
         other => panic!(

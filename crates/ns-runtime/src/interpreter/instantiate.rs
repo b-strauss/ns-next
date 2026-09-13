@@ -77,7 +77,7 @@ impl Interpreter {
     /// declaration it belongs to as the tree is built, so a class this
     /// returns is already runnable. It is compiled with the lowering this
     /// interpreter was bootstrapped with.
-    pub fn load_module(&mut self, resolved: &ResolvedModule) -> ClassRef {
+    pub fn load_module_unrooted(&mut self, resolved: &ResolvedModule) -> ClassRef {
         let decl = &resolved.module.root_class;
         let mixin = self.build_mixin(decl, &resolved.bindings);
         let superclass = self.resolve_superclass_receiver(decl);
@@ -274,7 +274,11 @@ impl Interpreter {
     /// `docs/design/object-model.md`, "Instantiation", decided
     /// (`decide_instantiation`) and then run from the outside
     /// (`run_from_host`), like a host's `send`.
-    pub fn instantiate(&mut self, class: ClassRef, factory_args: Vec<Value>) -> EvalResult {
+    pub fn instantiate_unrooted(
+        &mut self,
+        class: ClassRef,
+        factory_args: Vec<Value>,
+    ) -> EvalResult {
         match self.decide_instantiation(class, factory_args) {
             Ok(step) => self.run_from_host(step, &[]),
             Err(signal) => Err(signal),
