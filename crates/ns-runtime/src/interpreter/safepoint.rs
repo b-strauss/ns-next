@@ -15,18 +15,26 @@ use crate::types::*;
 impl Interpreter {
     /// The run loop's safepoint, when the heap has asked for one. In a debug
     /// build under the stress mode, a move when the schedule says one is
-    /// due. A release build has nothing that asks yet: the collector's
-    /// allocation counter will.
+    /// due, and the request stays set so that every safepoint comes here.
+    ///
+    /// Otherwise the safepoint that takes a request serves it, by clearing
+    /// it. Until the collector's allocation counter exists nothing in a
+    /// release build makes one, so there is nothing else to serve; but an
+    /// empty slow path would let the optimizer prove the call does nothing
+    /// and delete it, and the flag's load and branch with it, and the
+    /// release binary that is measured would carry no poll at all.
     #[cold]
     #[inline(never)]
     pub(crate) fn safepoint(&mut self) {
         #[cfg(debug_assertions)]
-        {
+        if self.stress.is_some() {
             let size = self.heap.traced_size();
             if self.stress.as_mut().is_some_and(|stress| stress.due(size)) {
                 self.move_everything();
             }
+            return;
         }
+        self.heap.clear_safepoint_request();
     }
 }
 

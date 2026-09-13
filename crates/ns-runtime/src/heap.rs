@@ -343,7 +343,9 @@ pub struct Heap {
     /// (`Interpreter::safepoint`). The poll is one compare of this flag
     /// (`docs/design/memory.md`, "Where a collection can happen"). Nothing
     /// sets it in a release build until the collector's allocation counter
-    /// exists; the stress mode sets it for good.
+    /// exists. In a debug build the stress mode keeps it set for as long as
+    /// the mode is on; otherwise the safepoint that takes a request clears
+    /// it.
     safepoint_requested: bool,
     /// This heap's distinct id, stamped onto every handle it mints. Debug
     /// builds only; see `next_heap_id`. No accessor exists for it: nothing
@@ -1788,6 +1790,11 @@ impl Heap {
     #[inline]
     pub(crate) fn safepoint_requested(&self) -> bool {
         self.safepoint_requested
+    }
+
+    /// A request served (`Interpreter::safepoint`).
+    pub(crate) fn clear_safepoint_request(&mut self) {
+        self.safepoint_requested = false;
     }
 
     #[cfg(debug_assertions)]
