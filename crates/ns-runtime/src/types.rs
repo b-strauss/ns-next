@@ -303,9 +303,10 @@ pub struct NestedClassCreation {
 /// level of the superclass chain the upward walk has reached with the factory
 /// arguments it gets, and which way the walk is going.
 ///
-/// Only the continuation of a body that has work left after it holds one,
-/// boxed, and then it is owned by exactly one stack entry; while the walk
-/// runs, its parts are values.
+/// Always boxed, in a box the interpreter reuses from one instantiation to
+/// the next (`Interpreter::walk_state`); while a body runs that has work left
+/// after it, the box is in that body's continuation, owned by exactly one
+/// stack entry.
 #[derive(Debug, Clone)]
 pub struct Instantiation {
     pub(crate) instance: Value,

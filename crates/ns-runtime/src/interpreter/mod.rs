@@ -169,6 +169,13 @@ pub struct Interpreter {
     /// cache slot; this only counts it, so a release build keeps nothing.
     #[cfg(debug_assertions)]
     creations_in_progress: usize,
+    /// Boxes finished instantiations left behind, emptied, for the next ones
+    /// to walk in (`instantiate.rs`'s `walk_state` and `retire_walk`).
+    /// Allocating a box and a list of levels per instantiation instead
+    /// measured 3-13% slower on instantiation benchmarks. They hold no
+    /// handle, so a collector has nothing to trace in them.
+    #[allow(clippy::vec_box)] // the boxes are what is reused, not only their contents
+    spare_walks: Vec<Box<Instantiation>>,
     /// The lowering every module this interpreter loads is compiled with
     /// (`docs/design/compiler.md`, "The reference lowering"). Fixed at
     /// construction, so one interpreter never mixes the two.
@@ -201,6 +208,7 @@ impl Interpreter {
             empty_class_sides: HashMap::new(),
             #[cfg(debug_assertions)]
             creations_in_progress: 0,
+            spare_walks: Vec::new(),
             lowering,
             arg_buffer: Vec::new(),
             running: false,
@@ -712,7 +720,7 @@ impl Interpreter {
                 nested::end_creation(self, &creation);
                 nested::after_clause(self, *creation, value)
             }
-            Continuation::Instantiate(state) => self.advance_instantiation(*state, value),
+            Continuation::Instantiate(state) => self.advance_instantiation(state, value),
         }
     }
 
@@ -1506,6 +1514,51 @@ mod tests {
             "`Q new` is decided as its instance"
         );
         assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
+    }
+
+    /// A finished instantiation leaves its walk's box among the spares for
+    /// the next one, and leaves it empty: a spare holds no handle, so it
+    /// keeps nothing alive and a collector need not trace it. The next
+    /// instantiation walks in the same box.
+    #[test]
+    fn a_finished_walk_leaves_an_empty_box_for_the_next() {
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              public class P x: a = Object new (
+                | v = a. |
+              ) (
+              ) : ()
+              public class R = P x: 1 (
+                | w = 2. |
+              ) (
+              ) : ()
+            ) : ()
+        "};
+        let (mut interp, class) = load(src);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let r = expect_ok(interp.send(instance, Symbol::intern("R"), vec![]), "R");
+        let Value::Obj(r) = r else {
+            panic!("`R` answers a class object")
+        };
+        expect_ok(interp.instantiate(r, vec![]), "R new");
+        assert_eq!(interp.spare_walks.len(), 1, "one walk ran at a time");
+        let spare: *const Instantiation = &*interp.spare_walks[0];
+        assert!(
+            interp
+                .spare_walks
+                .iter()
+                .all(|state| matches!(state.instance, Value::Nil) && state.levels.is_empty()),
+            "a spare holds no handle"
+        );
+        expect_ok(interp.instantiate(r, vec![]), "R new again");
+        assert_eq!(interp.spare_walks.len(), 1);
+        assert!(
+            std::ptr::eq(spare, &*interp.spare_walks[0]),
+            "the second walk ran in the first one's box"
+        );
     }
 
     /// Every decision answers a `Result<Step, Signal>`, so its size is paid
