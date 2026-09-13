@@ -3,10 +3,10 @@
 //! block to a live home and into a dead one.
 
 use indoc::indoc;
-use ns_runtime::{Interpreter, NewspeakError, Signal, Symbol, Value};
+use ns_runtime::{HostError, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
 
 /// Loads `src`, instantiates its root class and returns both.
-fn instance_of(src: &str) -> (Interpreter, Value) {
+fn instance_of(src: &str) -> (Interpreter, Root) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -15,32 +15,28 @@ fn instance_of(src: &str) -> (Interpreter, Value) {
     )
     .expect("resolve");
     let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module_unrooted(&resolved);
-    let receiver = match interp.instantiate_unrooted(class, vec![]) {
-        Ok(v) => v,
-        Err(Signal::Error(e)) => panic!("instantiate: unexpected Signal::Error: {}", e.message),
-        Err(Signal::Return(..)) => panic!("instantiate: unexpected Signal::Return"),
-    };
+    let class = interp.load_module(&resolved);
+    let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     (interp, receiver)
 }
 
-fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
-        Ok(v) => v,
-        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
-        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+        Ok(root) => root,
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
     }
 }
 
-fn expect_cannot_return(result: Result<Value, Signal>, what: &str) {
+fn expect_cannot_return(result: HostResult, what: &str) {
     match result {
-        Err(Signal::Error(NewspeakError { message, .. })) => assert!(
+        Err(HostSignal::Error(HostError { message, .. })) => assert!(
             message.contains("cannotReturn"),
             "{what}: expected cannotReturn, got: {message}"
         ),
         Ok(_) => panic!("{what}: expected cannotReturn, got a value"),
-        Err(Signal::Return(..)) => {
-            panic!("{what}: a return into a dead home escaped `send` as a raw Signal::Return")
+        Err(HostSignal::Return) => {
+            panic!("{what}: a return into a dead home escaped `send` as a raw HostSignal::Return")
         }
     }
 }
@@ -55,10 +51,8 @@ fn method_with_no_explicit_return_returns_self() {
           public bar = ( 1. 2 )
         ) : ()
     "});
-    let result = expect_ok(
-        interp.send_unrooted(receiver, Symbol::intern("bar"), vec![]),
-        "bar",
-    );
+    let result = expect_ok(interp.send(&receiver, Symbol::intern("bar"), &[]), "bar");
+    let (result, receiver) = (interp.fetch(&result), interp.fetch(&receiver));
     assert!(
         matches!((&result, &receiver), (Value::Obj(a), Value::Obj(b)) if a.same(*b)),
         "a method with no explicit return must yield the receiver, not the last expression's value"
@@ -76,10 +70,10 @@ fn method_with_explicit_return_returns_the_returned_value() {
         ) : ()
     "});
     let result = expect_ok(
-        interp.send_unrooted(receiver, Symbol::intern("answer"), vec![]),
+        interp.send(&receiver, Symbol::intern("answer"), &[]),
         "answer",
     );
-    assert!(matches!(result, Value::SmallInt(42)));
+    assert!(matches!(interp.fetch(&result), Value::SmallInt(42)));
 }
 
 /// A bare `OrderedCollection` (no `platform` prefix, outside any superclass
@@ -94,11 +88,8 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
           public bar = ( ^OrderedCollection new )
         ) : ()
     "});
-    let result = expect_ok(
-        interp.send_unrooted(receiver, Symbol::intern("bar"), vec![]),
-        "bar",
-    );
-    let Value::Obj(obj) = result else {
+    let result = expect_ok(interp.send(&receiver, Symbol::intern("bar"), &[]), "bar");
+    let Value::Obj(obj) = interp.fetch(&result) else {
         panic!("expected an OrderedCollection instance")
     };
     assert!(matches!(
@@ -119,11 +110,8 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
           public m = ( [ ^1 ] value. ^2 )
         ) : ()
     "});
-    let result = expect_ok(
-        interp.send_unrooted(receiver, Symbol::intern("m"), vec![]),
-        "m",
-    );
-    assert!(matches!(result, Value::SmallInt(1)));
+    let result = expect_ok(interp.send(&receiver, Symbol::intern("m"), &[]), "m");
+    assert!(matches!(interp.fetch(&result), Value::SmallInt(1)));
     assert_eq!(interp.heap_ref().activation_depth(), 0);
 }
 
@@ -139,13 +127,10 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
           public again = ( ^b value )
         ) : ()
     "});
-    let first = expect_ok(
-        interp.send_unrooted(receiver, Symbol::intern("m"), vec![]),
-        "m",
-    );
-    assert!(matches!(first, Value::SmallInt(1)));
+    let first = expect_ok(interp.send(&receiver, Symbol::intern("m"), &[]), "m");
+    assert!(matches!(interp.fetch(&first), Value::SmallInt(1)));
     expect_cannot_return(
-        interp.send_unrooted(receiver, Symbol::intern("again"), vec![]),
+        interp.send(&receiver, Symbol::intern("again"), &[]),
         "again",
     );
 }
@@ -163,11 +148,11 @@ fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() 
         ) : ()
     "});
     expect_ok(
-        interp.send_unrooted(receiver, Symbol::intern("capture"), vec![]),
+        interp.send(&receiver, Symbol::intern("capture"), &[]),
         "capture",
     );
     expect_cannot_return(
-        interp.send_unrooted(receiver, Symbol::intern("runIt"), vec![]),
+        interp.send(&receiver, Symbol::intern("runIt"), &[]),
         "runIt",
     );
 }
