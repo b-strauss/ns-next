@@ -1614,8 +1614,14 @@ is exactly why four were missed. A full suite run left 807 directories in the
 system temp folder; it now leaves none. Cleanup that every call site has to
 remember is cleanup that some call site will forget.
 
-`cli.rs` and `run.rs` keep their own handling: they remove what they create,
-and rewriting working tests for symmetry is tidying rather than fixing.
+`cli.rs` and `run.rs` were left with their own helpers at the time, on the
+reasoning that they removed what they created. They did not: `cli.rs`'s
+`tempdir()` never removed its directory, so every suite run left one behind
+(670 by 2026-09-13), and the other helpers removed theirs only when a test
+passed. Since 2026-09-13 every CLI test uses `ScratchDir`, whose `Drop` runs
+on the way out of a failing test too, and `ScratchDir` writes under the
+repository's git-ignored `.temp/` instead of the system temp folder, so that
+anything a killed run still leaves behind stays in the project.
 
 **Deferred follow-ups from the object-and-frame-arena branch — cleared
 2026-09-10.** Three items were left out of the arena commit deliberately;
