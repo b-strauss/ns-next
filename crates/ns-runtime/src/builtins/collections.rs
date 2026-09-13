@@ -81,7 +81,10 @@ fn dispatch_common(
     }
 }
 
-pub(crate) fn dispatch_array(
+/// `at:put:`, falling through to `dispatch_common` -- `dispatch_array`'s leaf
+/// half, kept apart from its `do:` arm so the two compose in `dispatch_array`
+/// without either copying the other's shape.
+fn array_leaf(
     interp: &mut Interpreter,
     receiver: Value,
     selector: Symbol,
@@ -113,7 +116,9 @@ pub(crate) fn dispatch_array(
     dispatch_common(interp, receiver, selector, args)
 }
 
-pub(crate) fn dispatch_ordered_collection(
+/// `add:`, falling through to `dispatch_common` -- `dispatch_ordered_collection`'s
+/// leaf half, kept apart from its `do:` arm for the same reason `array_leaf` is.
+fn ordered_collection_leaf(
     interp: &mut Interpreter,
     receiver: Value,
     selector: Symbol,
@@ -131,6 +136,42 @@ pub(crate) fn dispatch_ordered_collection(
         return Some(Ok(value));
     }
     dispatch_common(interp, receiver, selector, args)
+}
+
+/// Lifts a leaf's result into the step it is -- the shared tail of
+/// `dispatch_array` and `dispatch_ordered_collection` once each has ruled
+/// `do:` out, so neither copies the wrapping itself.
+fn leaf_step(result: Option<Result<Value, NewspeakError>>) -> Option<Result<Step, Signal>> {
+    Some(result?.map(Step::Value).map_err(Signal::Error))
+}
+
+/// `Array`'s native methods, `do:` included: checks `do:` first and answers
+/// `do_step`'s block-activation step for it, `array_leaf`'s plain value or
+/// error (through `leaf_step`) for everything else.
+pub(crate) fn dispatch_array(
+    interp: &mut Interpreter,
+    receiver: Value,
+    selector: Symbol,
+    args: &[Value],
+) -> Option<Result<Step, Signal>> {
+    if selector.as_str() == "do:" {
+        return do_step(interp, receiver, selector, args);
+    }
+    leaf_step(array_leaf(interp, receiver, selector, args))
+}
+
+/// `OrderedCollection`'s native methods, `do:` included -- same split as
+/// `dispatch_array`.
+pub(crate) fn dispatch_ordered_collection(
+    interp: &mut Interpreter,
+    receiver: Value,
+    selector: Symbol,
+    args: &[Value],
+) -> Option<Result<Step, Signal>> {
+    if selector.as_str() == "do:" {
+        return do_step(interp, receiver, selector, args);
+    }
+    leaf_step(ordered_collection_leaf(interp, receiver, selector, args))
 }
 
 /// `do:` on an `Array` or an `OrderedCollection`: the block activated for each

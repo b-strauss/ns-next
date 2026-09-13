@@ -17,13 +17,15 @@ use crate::{platform, Interpreter, Symbol};
 /// genuine Newspeak-level error (e.g. arithmetic overflow).
 ///
 /// No native calls a block. `boolean::dispatch`, `block::dispatch` and
-/// `collections::do_step` answer a `Step` themselves: the control-flow
-/// natives, `value` and `do:` return the block to activate instead of
-/// calling it (`docs/design/execution.md`, "The trampoline"), so a `^` out of
-/// that block unwinds the activation stack like any other and never passes
-/// through a native. Every other native is a leaf: it keeps a
-/// `Result<Value, NewspeakError>` signature, wrapped into the step it is right
-/// here, by `wrap_error`.
+/// `collections::dispatch_array`/`dispatch_ordered_collection` answer a
+/// `Step` themselves: the control-flow natives, `value` and `do:` return the
+/// block to activate instead of calling it (`docs/design/execution.md`, "The
+/// trampoline"), so a `^` out of that block unwinds the activation stack
+/// like any other and never passes through a native -- `collections` checks
+/// for `do:` itself and answers a step for it, a leaf (wrapped by its own
+/// `leaf_step`) for every other selector. Every other native here stays a
+/// plain leaf: it keeps a `Result<Value, NewspeakError>` signature, wrapped
+/// into the step it is right here, by `wrap_error`.
 pub(crate) fn dispatch_native(
     interp: &mut Interpreter,
     kind: BuiltinClass,
@@ -53,17 +55,9 @@ pub(crate) fn dispatch_native(
         BuiltinClass::Character => {
             text::dispatch_character(interp, receiver, selector, args).map(wrap_error)
         }
-        // `do:` activates its block, so it answers a step of its own; every
-        // other `Array` and `OrderedCollection` method is a leaf.
-        BuiltinClass::Array | BuiltinClass::OrderedCollection if selector.as_str() == "do:" => {
-            collections::do_step(interp, receiver, selector, args)
-        }
-        BuiltinClass::Array => {
-            collections::dispatch_array(interp, receiver, selector, args).map(wrap_error)
-        }
+        BuiltinClass::Array => collections::dispatch_array(interp, receiver, selector, args),
         BuiltinClass::OrderedCollection => {
             collections::dispatch_ordered_collection(interp, receiver, selector, args)
-                .map(wrap_error)
         }
         BuiltinClass::Block => block::dispatch(interp, receiver, selector, args),
         BuiltinClass::Platform => {
