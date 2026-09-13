@@ -404,6 +404,49 @@ impl Interpreter {
             return Ok(Step::Value(state.instance));
         };
         let level = state.levels[index].0;
+        let args = std::mem::take(&mut state.levels[index].1);
+        let instance = state.instance;
+        if initializing_level_below(&self.heap, &state.levels, index).is_none() {
+            // The last body of the walk, so all that is left once it returns
+            // is step 6, answering the instance -- which is exactly what the
+            // initializer answers: the compiler ends every instance
+            // initializer by answering `self` and discards a top-level `^`
+            // (`compiler::lower`'s `finish_body`, `compiler::reference`'s
+            // `end`). So its activation delivers its own value like a
+            // method's, and nothing of the walk outlives this step: the
+            // common instantiation allocates nothing for it. Making an
+            // initializer answer anything else breaks `new`;
+            // `tests/instantiate.rs`'s
+            // `new_answers_the_instance_its_initializers_ran_on` pins it. (A
+            // decoded image's initializer is not held to this; `new` then
+            // answers what that code answers, which is the image's program
+            // running, not a fault.)
+            return Ok(Step::Initializer {
+                receiver: instance,
+                level,
+                args,
+            });
+        }
+        let (code, slot_base) = self.initializer_body(level);
+        state.phase = InstantiationPhase::Descending { index };
+        Ok(Step::Body(Box::new(BodyStep {
+            receiver: instance,
+            current_class: level,
+            kind: FrameKind::Initializer(level),
+            slot_base,
+            code,
+            args,
+            then: Continuation::Instantiate(Box::new(state)),
+        })))
+    }
+
+    /// The compiled instance initializer of `level`, a level
+    /// `class_has_initializer_code` has confirmed, and the `slot_base` its
+    /// activation runs with.
+    pub(super) fn initializer_body(
+        &self,
+        level: ClassRef,
+    ) -> (Rc<crate::bytecode::CompiledCode>, usize) {
         let application = self
             .heap
             .class_application(level)
@@ -416,38 +459,8 @@ impl Interpreter {
         // every application of the mixin. This level's own
         // `MixinApplication.own_slot_base`, taken as the activation's
         // `slot_base`, turns it into an absolute index at run time; it is set
-        // here, with the rest of the level's identity, and never changes.
-        let slot_base = application.own_slot_base;
-        let args = std::mem::take(&mut state.levels[index].1);
-        let instance = state.instance;
-        let then = if initializing_level_below(&self.heap, &state.levels, index).is_some() {
-            state.phase = InstantiationPhase::Descending { index };
-            Continuation::Instantiate(Box::new(state))
-        } else {
-            // The last body of the walk, so all that is left once it returns
-            // is step 6, answering the instance -- which is exactly what the
-            // initializer answers: the compiler ends every instance
-            // initializer by answering `self` and discards a top-level `^`
-            // (`compiler::lower`'s `finish_body`, `compiler::reference`'s
-            // `end`). So its activation delivers its own value like a
-            // method's, and nothing of the walk outlives this step -- no box
-            // for the common instantiation. Making an initializer answer
-            // anything else breaks `new`; `tests/instantiate.rs`'s
-            // `new_answers_the_instance_its_initializers_ran_on` pins it.
-            // (A decoded image's initializer is not held to this; `new` then
-            // answers what that code answers, which is the image's program
-            // running, not a fault.)
-            Continuation::Deliver
-        };
-        Ok(Step::Body(Box::new(BodyStep {
-            receiver: instance,
-            current_class: level,
-            kind: FrameKind::Initializer(level),
-            slot_base,
-            code,
-            args,
-            then,
-        })))
+        // with the rest of the level's identity, and never changes.
+        (code, application.own_slot_base)
     }
 
     /// Rejects a factory-arity mismatch as a NewspeakError before this

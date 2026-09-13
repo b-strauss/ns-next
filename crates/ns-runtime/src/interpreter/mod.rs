@@ -66,6 +66,18 @@ pub(crate) enum Step {
     /// `Result<Step, Signal>` stays the size the hot path was measured at
     /// (`StepArgs::ControlFlow`'s comment says why that matters).
     Body(Box<BodyStep>),
+    /// Activate `level`'s instance initializer on `receiver`, and deliver its
+    /// value: an instantiation's last initializer, whose value is the
+    /// instance (`Interpreter::descend_levels` says why). The one body common
+    /// enough to be worth carrying inline -- every instantiation that runs
+    /// code ends in one -- and small enough to be: it carries no
+    /// continuation, and its code and slot base are `level`'s, found when it
+    /// is pushed.
+    Initializer {
+        receiver: Value,
+        level: ClassRef,
+        args: Vec<Value>,
+    },
 }
 
 /// Where an activation's arguments come from.
@@ -621,6 +633,27 @@ impl Interpreter {
                     self.nested_in_progress.push(entry);
                 }
                 Ok(act)
+            }
+            Step::Initializer {
+                receiver,
+                level,
+                args,
+            } => {
+                let (code, slot_base) = self.initializer_body(level);
+                let temps = (code.num_registers - code.num_args) as usize;
+                self.push(
+                    ActivationHeader {
+                        receiver,
+                        current_class: Some(level),
+                        kind: FrameKind::Initializer(level),
+                        slot_base,
+                        code,
+                        then: Continuation::Deliver,
+                        counted: true,
+                    },
+                    &args,
+                    temps,
+                )
             }
         }
     }
@@ -1400,13 +1433,13 @@ mod tests {
         let Value::Obj(p_class) = p else {
             panic!("`P` answers a class object")
         };
-        match interp.decide_send(p, Symbol::NEW, &[]) {
-            Ok(Step::Body(body)) => {
-                assert!(matches!(body.kind, FrameKind::Initializer(level) if level.same(p_class)));
-                assert!(matches!(body.then, Continuation::Deliver));
-            }
-            _ => panic!("`P new` is decided as P's initializer"),
-        }
+        assert!(
+            matches!(
+                interp.decide_send(p, Symbol::NEW, &[]),
+                Ok(Step::Initializer { level, .. }) if level.same(p_class)
+            ),
+            "`P new` is decided as P's initializer, which delivers"
+        );
         match interp.decide_send(r, Symbol::NEW, &[]) {
             Ok(Step::Body(body)) => {
                 assert!(matches!(body.kind, FrameKind::Initializer(level) if level.same(p_class)));
@@ -1422,5 +1455,15 @@ mod tests {
             "`Q new` is decided as its instance"
         );
         assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
+    }
+
+    /// Every decision answers a `Result<Step, Signal>`, so its size is paid
+    /// on every send; a variant that grows it is a cost on every benchmark,
+    /// not only on the path it serves (`StepArgs::ControlFlow`'s comment).
+    /// This is the size the hot path was measured at.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn a_decision_stays_the_size_the_hot_path_was_measured_at() {
+        assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 56);
     }
 }
