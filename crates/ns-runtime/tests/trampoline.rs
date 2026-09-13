@@ -7,9 +7,11 @@ use indoc::{formatdoc, indoc};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_runtime::{ClassRef, Interpreter, Lowering, Signal, SourceOrigin, Symbol, Value};
+use ns_runtime::{
+    HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol, Value,
+};
 
-fn load(src: &str, lowering: Lowering) -> (Interpreter, ClassRef) {
+fn load(src: &str, lowering: Lowering) -> (Interpreter, Root) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -22,13 +24,13 @@ fn load(src: &str, lowering: Lowering) -> (Interpreter, ClassRef) {
     (interp, class)
 }
 
-/// `Signal` carries no `Debug` impl, so `Result::expect` is unusable on an
-/// `EvalResult` -- unwrap by hand.
-fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+/// `HostSignal` carries no `Debug` impl, so `Result::expect` is unusable on
+/// a `HostResult` -- unwrap by hand.
+fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
-        Ok(v) => v,
-        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
-        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+        Ok(root) => root,
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
     }
 }
 
@@ -57,18 +59,21 @@ const DEPTH: &str = indoc! {"
 #[test]
 fn a_deep_method_recursion_runs_on_the_activation_stack() {
     let (mut interp, class) = load(DEPTH, Lowering::Optimized);
-    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     for selector in ["down:", "logic:", "loop:"] {
         let result = expect_ok(
             interp.send(
-                instance,
+                &instance,
                 Symbol::intern(selector),
-                vec![Value::SmallInt(50_000)],
+                &[interp.stash(Value::SmallInt(50_000))],
             ),
             selector,
         );
         assert!(
-            matches!(result, Value::SmallInt(0) | Value::Bool(true)),
+            matches!(
+                interp.fetch(&result),
+                Value::SmallInt(0) | Value::Bool(true)
+            ),
             "{selector}"
         );
         assert_eq!(
@@ -95,12 +100,9 @@ fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack() {
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        let result = expect_ok(
-            interp.send(instance, Symbol::intern("find"), vec![]),
-            "find",
-        );
-        assert_eq!(small_int(result), 30, "{lowering:?}");
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let result = expect_ok(interp.send(&instance, Symbol::intern("find"), &[]), "find");
+        assert_eq!(small_int(interp.fetch(&result)), 30, "{lowering:?}");
         assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
     }
 }
@@ -124,11 +126,11 @@ fn a_return_into_a_running_initializer_escapes_the_run() {
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        match interp.send(instance, Symbol::intern("make"), vec![]) {
-            Err(Signal::Return(..)) => {}
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        match interp.send(&instance, Symbol::intern("make"), &[]) {
+            Err(HostSignal::Return) => {}
             Ok(_) => panic!("{lowering:?}: the `^` must escape, not be answered"),
-            Err(Signal::Error(e)) => panic!("{lowering:?}: unexpected error: {}", e.message),
+            Err(HostSignal::Error(e)) => panic!("{lowering:?}: unexpected error: {}", e.message),
         }
         assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
     }
@@ -154,16 +156,16 @@ fn a_deep_recursion_through_instantiation_runs_on_the_activation_stack() {
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let height = expect_ok(
             interp.send(
-                instance,
+                &instance,
                 Symbol::intern("build:"),
-                vec![Value::SmallInt(20_000)],
+                &[interp.stash(Value::SmallInt(20_000))],
             ),
             "build:",
         );
-        assert_eq!(small_int(height), 20_000, "{lowering:?}");
+        assert_eq!(small_int(interp.fetch(&height)), 20_000, "{lowering:?}");
         assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
         assert_eq!(interp.heap_ref().counted_depth(), 0, "{lowering:?}");
     }
@@ -189,17 +191,21 @@ const THROUGH_NATIVES: &str = indoc! {"
 fn a_deep_recursion_through_native_block_activations_runs_on_the_activation_stack() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(THROUGH_NATIVES, lowering);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         for selector in ["viaValue:", "viaIf:", "viaOr:", "viaWhile:"] {
             let result = expect_ok(
                 interp.send(
-                    instance,
+                    &instance,
                     Symbol::intern(selector),
-                    vec![Value::SmallInt(40_000)],
+                    &[interp.stash(Value::SmallInt(40_000))],
                 ),
                 selector,
             );
-            assert_eq!(small_int(result), 0, "{selector} under {lowering:?}");
+            assert_eq!(
+                small_int(interp.fetch(&result)),
+                0,
+                "{selector} under {lowering:?}"
+            );
             assert_eq!(
                 interp.heap_ref().activation_depth(),
                 0,
@@ -211,10 +217,10 @@ fn a_deep_recursion_through_native_block_activations_runs_on_the_activation_stac
 
 const TOO_DEEP: &str = "stack overflow: recursion too deep";
 
-fn expect_too_deep(result: Result<Value, Signal>, what: &str) {
+fn expect_too_deep(result: HostResult, what: &str) {
     match result {
-        Err(Signal::Error(e)) => assert_eq!(e.message, TOO_DEEP, "{what}"),
-        Err(Signal::Return(..)) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(e)) => assert_eq!(e.message, TOO_DEEP, "{what}"),
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
         Ok(_) => panic!("{what}: ran past the depth limit"),
     }
 }
@@ -231,22 +237,22 @@ fn the_depth_limit_is_exact_and_counts_alike_under_both_lowerings() {
     assert_eq!(ns_runtime::interpreter::MAX_ACTIVATION_DEPTH, 100_000);
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(DEPTH, lowering);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         for selector in ["down:", "logic:", "loop:"] {
             let what = format!("{selector} under {lowering:?}");
             expect_ok(
                 interp.send(
-                    instance,
+                    &instance,
                     Symbol::intern(selector),
-                    vec![Value::SmallInt(99_999)],
+                    &[interp.stash(Value::SmallInt(99_999))],
                 ),
                 &what,
             );
             expect_too_deep(
                 interp.send(
-                    instance,
+                    &instance,
                     Symbol::intern(selector),
-                    vec![Value::SmallInt(100_000)],
+                    &[interp.stash(Value::SmallInt(100_000))],
                 ),
                 &what,
             );
@@ -263,9 +269,9 @@ fn the_depth_limit_is_exact_and_counts_alike_under_both_lowerings() {
             // An overflow is an ordinary error: the interpreter goes on.
             expect_ok(
                 interp.send(
-                    instance,
+                    &instance,
                     Symbol::intern(selector),
-                    vec![Value::SmallInt(10)],
+                    &[interp.stash(Value::SmallInt(10))],
                 ),
                 &what,
             );
@@ -279,12 +285,12 @@ fn the_depth_limit_is_exact_and_counts_alike_under_both_lowerings() {
 fn a_recursion_through_block_values_is_bounded_too() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(THROUGH_NATIVES, lowering);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         expect_too_deep(
             interp.send(
-                instance,
+                &instance,
                 Symbol::intern("viaValue:"),
-                vec![Value::SmallInt(250_000)],
+                &[interp.stash(Value::SmallInt(250_000))],
             ),
             &format!("viaValue: under {lowering:?}"),
         );
@@ -347,6 +353,11 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
     // reference lowering compiles it to a `SendPublic`, which the mutation
     // below turns into a `SendInlinable` -- the two share one operand layout.
     let (interp, class) = load(&src, Lowering::Reference);
+    // Nothing has run in this interpreter, so the class read from its root
+    // is current.
+    let Value::Obj(class) = interp.fetch(&class) else {
+        panic!("{block}: load_module answers a class object")
+    };
     let mut bytes = image::build(
         interp.heap_ref(),
         None,
@@ -395,11 +406,11 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
 
     let mut loaded = image::load(&bytes).expect("the mutated artifact decodes");
     let instance = expect_ok(
-        loaded.interp.instantiate(loaded.root_class, vec![]),
+        loaded.interp.instantiate(&loaded.root_class, &[]),
         "instantiate",
     );
     expect_too_deep(
-        loaded.interp.send(instance, Symbol::intern("main"), vec![]),
+        loaded.interp.send(&instance, Symbol::intern("main"), &[]),
         &format!("the crafted recursion through {block}"),
     );
     assert_eq!(loaded.interp.heap_ref().activation_depth(), 0, "{block}");
@@ -429,64 +440,118 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        let mut send = |receiver: Value, selector: &str, args: Vec<Value>| {
-            at_the_floor(&mut interp, lowering, receiver, selector, args)
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        // Each send takes the interpreter mutably, so the literal receivers
+        // and arguments are rooted before the first of them.
+        let [int_3, int_5, int_42, true_value, false_value] = [
+            Value::SmallInt(3),
+            Value::SmallInt(5),
+            Value::SmallInt(42),
+            Value::Bool(true),
+            Value::Bool(false),
+        ]
+        .map(|value| interp.stash(value));
+        // The arguments are borrowed, so one root can be passed several times.
+        let send = |interp: &mut Interpreter, receiver: &Root, selector: &str, args: &[&Root]| {
+            let args: Vec<Root> = args.iter().copied().cloned().collect();
+            at_the_floor(interp, lowering, receiver, selector, &args)
         };
-        let int = |n: i64| vec![Value::SmallInt(n)];
-        let below_three = expect_ok(send(instance, "below:", int(3)), "below:");
-        let at_least_five = expect_ok(send(instance, "atLeast:", int(5)), "atLeast:");
-        let step = expect_ok(send(instance, "step", vec![]), "step");
-        let three = expect_ok(send(instance, "constant:", int(3)), "constant:");
-        let yes = expect_ok(
-            send(instance, "constant:", vec![Value::Bool(true)]),
+        let below_three = expect_ok(send(&mut interp, &instance, "below:", &[&int_3]), "below:");
+        let at_least_five = expect_ok(
+            send(&mut interp, &instance, "atLeast:", &[&int_5]),
+            "atLeast:",
+        );
+        let step = expect_ok(send(&mut interp, &instance, "step", &[]), "step");
+        let three = expect_ok(
+            send(&mut interp, &instance, "constant:", &[&int_3]),
             "constant:",
         );
-        let answer = expect_ok(send(instance, "constant:", int(42)), "constant:");
+        let yes = expect_ok(
+            send(&mut interp, &instance, "constant:", &[&true_value]),
+            "constant:",
+        );
+        let answer = expect_ok(
+            send(&mut interp, &instance, "constant:", &[&int_42]),
+            "constant:",
+        );
         let what = |selector: &str| format!("{selector} under {lowering:?}");
 
         // `WhileCondition` and `WhileBody`, each replacing the other.
         let value = expect_ok(
-            send(below_three, "whileTrue:", vec![step]),
+            send(&mut interp, &below_three, "whileTrue:", &[&step]),
             &what("whileTrue:"),
         );
-        assert!(matches!(value, Value::Nil), "{}", what("whileTrue:"));
-        let count = expect_ok(send(instance, "count", vec![]), "count");
-        assert_eq!(small_int(count), 3, "{}", what("whileTrue:"));
+        assert!(
+            matches!(interp.fetch(&value), Value::Nil),
+            "{}",
+            what("whileTrue:")
+        );
+        let count = expect_ok(send(&mut interp, &instance, "count", &[]), "count");
+        assert_eq!(small_int(interp.fetch(&count)), 3, "{}", what("whileTrue:"));
         let value = expect_ok(
-            send(at_least_five, "whileFalse:", vec![step]),
+            send(&mut interp, &at_least_five, "whileFalse:", &[&step]),
             &what("whileFalse:"),
         );
-        assert!(matches!(value, Value::Nil), "{}", what("whileFalse:"));
-        let count = expect_ok(send(instance, "count", vec![]), "count");
-        assert_eq!(small_int(count), 5, "{}", what("whileFalse:"));
+        assert!(
+            matches!(interp.fetch(&value), Value::Nil),
+            "{}",
+            what("whileFalse:")
+        );
+        let count = expect_ok(send(&mut interp, &instance, "count", &[]), "count");
+        assert_eq!(
+            small_int(interp.fetch(&count)),
+            5,
+            "{}",
+            what("whileFalse:")
+        );
 
         // `Truthy`: only exactly `true` is true.
-        let value = expect_ok(send(Value::Bool(true), "and:", vec![three]), &what("and:"));
-        assert!(matches!(value, Value::Bool(false)), "{}", what("and:"));
-        let value = expect_ok(send(Value::Bool(true), "and:", vec![yes]), &what("and:"));
-        assert!(matches!(value, Value::Bool(true)), "{}", what("and:"));
-        let value = expect_ok(send(Value::Bool(false), "or:", vec![yes]), &what("or:"));
-        assert!(matches!(value, Value::Bool(true)), "{}", what("or:"));
+        let value = expect_ok(
+            send(&mut interp, &true_value, "and:", &[&three]),
+            &what("and:"),
+        );
+        assert!(
+            matches!(interp.fetch(&value), Value::Bool(false)),
+            "{}",
+            what("and:")
+        );
+        let value = expect_ok(
+            send(&mut interp, &true_value, "and:", &[&yes]),
+            &what("and:"),
+        );
+        assert!(
+            matches!(interp.fetch(&value), Value::Bool(true)),
+            "{}",
+            what("and:")
+        );
+        let value = expect_ok(
+            send(&mut interp, &false_value, "or:", &[&yes]),
+            &what("or:"),
+        );
+        assert!(
+            matches!(interp.fetch(&value), Value::Bool(true)),
+            "{}",
+            what("or:")
+        );
 
         // `Deliver`, the continuation every other activation has too.
         let value = expect_ok(
-            send(Value::Bool(true), "ifTrue:", vec![answer]),
+            send(&mut interp, &true_value, "ifTrue:", &[&answer]),
             &what("ifTrue:"),
         );
-        assert_eq!(small_int(value), 42, "{}", what("ifTrue:"));
+        assert_eq!(small_int(interp.fetch(&value)), 42, "{}", what("ifTrue:"));
 
         // A condition that answers a non-Boolean: the continuation decides a
         // `mustBeBoolean` send, which nothing here understands, and the error
         // leaves the floor as clean as a value does.
-        match send(three, "whileTrue:", vec![step]) {
-            Err(Signal::Error(e)) => assert!(
+        match send(&mut interp, &three, "whileTrue:", &[&step]) {
+            Err(HostSignal::Error(e)) => assert!(
                 e.message.contains("mustBeBoolean"),
                 "{}: {}",
                 what("whileTrue:"),
                 e.message
             ),
-            Err(Signal::Return(..)) => panic!("{}: a non-local return escaped", what("whileTrue:")),
+            Err(HostSignal::Return) => panic!("{}: a non-local return escaped", what("whileTrue:")),
             Ok(_) => panic!("{}: a non-Boolean condition must fail", what("whileTrue:")),
         }
     }
@@ -509,16 +574,16 @@ fn a_deep_recursion_through_do_runs_on_the_activation_stack() {
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let result = expect_ok(
             interp.send(
-                instance,
+                &instance,
                 Symbol::intern("d:"),
-                vec![Value::SmallInt(20_000)],
+                &[interp.stash(Value::SmallInt(20_000))],
             ),
             "d:",
         );
-        assert_eq!(small_int(result), 0, "{lowering:?}");
+        assert_eq!(small_int(interp.fetch(&result)), 0, "{lowering:?}");
         assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
         assert_eq!(interp.heap_ref().counted_depth(), 0, "{lowering:?}");
     }
@@ -547,9 +612,9 @@ fn a_recursion_through_the_nested_class_accessor_ends_at_the_activation_limit() 
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         expect_too_deep(
-            interp.send(instance, Symbol::intern("start"), vec![]),
+            interp.send(&instance, Symbol::intern("start"), &[]),
             &format!("start under {lowering:?}"),
         );
         assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
@@ -578,30 +643,34 @@ fn a_return_through_a_superclass_clause_abandons_its_creation() {
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(src, lowering);
-        let outer = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let outer = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let escaped = expect_ok(
-            at_the_floor(&mut interp, lowering, outer, "probe", vec![]),
+            at_the_floor(&mut interp, lowering, &outer, "probe", &[]),
             "the first probe",
         );
         assert_eq!(
-            small_int(escaped),
+            small_int(interp.fetch(&escaped)),
             7,
             "{lowering:?}: the `^` lands on `probe`"
         );
         let inner = expect_ok(
-            at_the_floor(&mut interp, lowering, outer, "probe", vec![]),
+            at_the_floor(&mut interp, lowering, &outer, "probe", &[]),
             "the second probe",
         );
-        let Value::Obj(inner) = inner else {
+        let Value::Obj(inner_obj) = interp.fetch(&inner) else {
             panic!("{lowering:?}: the second access answers a class object");
         };
-        assert!(interp.heap_ref().is_class(inner), "{lowering:?}");
+        assert!(interp.heap_ref().is_class(inner_obj), "{lowering:?}");
         let again = expect_ok(
-            at_the_floor(&mut interp, lowering, outer, "Inner", vec![]),
+            at_the_floor(&mut interp, lowering, &outer, "Inner", &[]),
             "the cached class",
         );
+        // Both class objects are read after the run that answered the second.
+        let Value::Obj(inner) = interp.fetch(&inner) else {
+            panic!("{lowering:?}: the second access answers a class object");
+        };
         assert!(
-            matches!(again, Value::Obj(again) if again.same(inner)),
+            matches!(interp.fetch(&again), Value::Obj(again) if again.same(inner)),
             "{lowering:?}: the class the second access built is the one cached"
         );
     }
@@ -635,13 +704,13 @@ fn a_return_in_a_clause_messages_block_hands_its_value_to_the_walk() {
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(src, lowering);
-        let outer = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let outer = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let made = expect_ok(
-            at_the_floor(&mut interp, lowering, outer, "make", vec![]),
+            at_the_floor(&mut interp, lowering, &outer, "make", &[]),
             "make",
         );
         assert_eq!(
-            small_int(made),
+            small_int(interp.fetch(&made)),
             34,
             "{lowering:?}: Base got the returned argument list, and Cell's own slot ran too"
         );
@@ -668,17 +737,17 @@ fn a_return_into_an_initializer_with_a_level_below_escapes_the_run() {
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        match at_the_floor(&mut interp, lowering, instance, "make", vec![]) {
-            Err(Signal::Return(..)) => {}
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        match at_the_floor(&mut interp, lowering, &instance, "make", &[]) {
+            Err(HostSignal::Return) => {}
             Ok(_) => panic!("{lowering:?}: the `^` must escape, not be answered"),
-            Err(Signal::Error(e)) => panic!("{lowering:?}: unexpected error: {}", e.message),
+            Err(HostSignal::Error(e)) => panic!("{lowering:?}: unexpected error: {}", e.message),
         }
         let fine = expect_ok(
-            at_the_floor(&mut interp, lowering, instance, "fine", vec![]),
+            at_the_floor(&mut interp, lowering, &instance, "fine", &[]),
             "fine",
         );
-        assert_eq!(small_int(fine), 42, "{lowering:?}");
+        assert_eq!(small_int(interp.fetch(&fine)), 42, "{lowering:?}");
     }
 }
 
@@ -701,20 +770,20 @@ fn an_error_in_a_clause_message_mid_climb_unwinds_the_run() {
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(src, lowering);
-        let outer = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        match at_the_floor(&mut interp, lowering, outer, "make", vec![]) {
-            Err(Signal::Error(e)) => assert_eq!(
+        let outer = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        match at_the_floor(&mut interp, lowering, &outer, "make", &[]) {
+            Err(HostSignal::Error(e)) => assert_eq!(
                 e.message, "an object does not understand #foo",
                 "{lowering:?}"
             ),
-            Err(Signal::Return(..)) => panic!("{lowering:?}: a non-local return escaped"),
+            Err(HostSignal::Return) => panic!("{lowering:?}: a non-local return escaped"),
             Ok(_) => panic!("{lowering:?}: `nil foo` must fail"),
         }
         let fine = expect_ok(
-            at_the_floor(&mut interp, lowering, outer, "fine", vec![]),
+            at_the_floor(&mut interp, lowering, &outer, "fine", &[]),
             "fine",
         );
-        assert_eq!(small_int(fine), 42, "{lowering:?}");
+        assert_eq!(small_int(interp.fetch(&fine)), 42, "{lowering:?}");
     }
 }
 
@@ -723,10 +792,10 @@ fn an_error_in_a_clause_message_mid_climb_unwinds_the_run() {
 fn at_the_floor(
     interp: &mut Interpreter,
     lowering: Lowering,
-    receiver: Value,
+    receiver: &Root,
     selector: &str,
-    args: Vec<Value>,
-) -> Result<Value, Signal> {
+    args: &[Root],
+) -> HostResult {
     let result = interp.send(receiver, Symbol::intern(selector), args);
     assert_eq!(
         interp.heap_ref().activation_depth(),

@@ -69,8 +69,9 @@ it and both arenas with it — but the peak is amplified against the bytes remai
 at the graph section, and both `bounded_count` calls divide the *same* remainder,
 so one file maxes out both arenas rather than trading one against the other:
 about **16.9x in a release build** (an `Object` is 56 bytes against a 6-byte
-minimum record, a frame-arena entry 136 against 18) and about 21.3x in a debug
-build, where both are larger. `bounded_count` is what keeps this proportional to
+minimum record, a frame-arena entry 136 against 18) and about 24.9x in a debug
+build, where both are larger because every handle carries its heap's id and its
+move epoch. `bounded_count` is what keeps this proportional to
 the input at all rather than to a `u32` — do not add a pre-allocation that is not
 bounded that way. `docs/design/memory.md` has the breakdown.
 
@@ -108,6 +109,18 @@ interpreter is still alive, before it goes out of scope. A
 so a debug-build test run catches it; a release build does not, which is why
 this is an invariant and not a check to rely on.
 
+A handle also means nothing across a move. A host keeps a value across a run
+only as a `Root` (`Interpreter::stash`/`fetch`, and every host entry takes and
+answers them); a value fetched from one is good until the next run. In a debug
+build every handle carries its move epoch and every accessor checks it, and
+`NS_NEXT_STRESS_MOVES=1` moves everything at the run loop's safepoints — at
+every one while the traced heap is within `STRESS_MOVE_BUDGET` (1,000 entries),
+and paced by heap size above it (`interpreter/safepoint.rs`) — so the stress
+runs under "Working in this repository", below, catch a value kept across a
+run and a handle the tracer (`trace.rs`) does not know about. Add a field that
+holds a handle to any runtime type, and its `Trace` impl stops compiling until
+it says what to do with it.
+
 **A running activation is an `ActivationRef`; only a `FrameRef` is ever
 stored.** An `ActivationRef` indexes the `Heap`'s activation stack and is
 valid only until its entry is popped -- the next activation at that depth
@@ -131,8 +144,10 @@ where `Heap::describe` answers "the String \"foo\"". `Signal` deliberately has n
 `Debug` impl of its own, which means `EvalResult` (`Result<Value, Signal>`) has none
 either: `Result::unwrap`/`expect` require `E: Debug`, so calling either — or writing
 `{:?}` on an `EvalResult` — is a compile error, not a lapse a reviewer has to catch by
-hand. Tests unwrap through a local `expect_ok` helper — copy the one in a neighbouring
-test file.
+hand. The same holds for a `HostResult` (`Result<Root, HostSignal>`), the result a
+host receives: `HostSignal`, `HostError` and `Root` have no `Debug`, so `unwrap` /
+`expect` on one does not compile either. Tests unwrap through a local `expect_ok`
+helper — copy the one in a neighbouring test file.
 
 **A class object is per enclosing instance; behaviour is the `MixinApplication`, shared.**
 `ClassData` carries identity and an `enclosing` object; method lookup, slots and layout
@@ -166,6 +181,9 @@ enclosing object.
 cargo build --workspace
 # the full suite, including the golden program outcomes
 cargo test --workspace
+# the same suite with every object moved at the run loop's safepoints
+# (debug builds only; Git Bash syntax)
+NS_NEXT_STRESS_MOVES=1 cargo test --workspace
 # before every commit
 cargo fmt --all
 # must be warning-free
@@ -174,6 +192,8 @@ cargo clippy --workspace --all-targets
 cargo run -p ns-cli -- parse-corpus corpus/modules
 # non-regression gate: must report "ran 6, failed 0, skipped 205"
 cargo run -p ns-cli -- run-corpus corpus/modules
+# non-regression gate under the stress mode, same report
+NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules
 ```
 
 Never judge performance from a debug build — `cargo build --workspace --release` is the

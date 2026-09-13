@@ -89,6 +89,8 @@ pub enum DecodeError {
     /// dispatch an object with no application, and `outer` would walk a
     /// chain that is not a declaration chain.
     NotAClassReference,
+    /// A closure frame's kind names an object that is not a closure.
+    NotAClosureReference,
     /// A class object's own `class` is another record in the image's object
     /// table. `Interpreter::new_class_object` always gives a class object
     /// the shared bootstrap `Object` placeholder, so no real world contains
@@ -294,6 +296,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::NotAClassReference => write!(
                 f,
                 "an image field that must name a class object names an ordinary object instead"
+            ),
+            DecodeError::NotAClosureReference => write!(
+                f,
+                "a closure frame in the image names an object that is not a closure"
             ),
             DecodeError::ClassOfAClassIsARecord => write!(
                 f,
@@ -1502,14 +1508,7 @@ pub fn decode_class_tag(
     match r.read_u8()? {
         CLS_BUILTIN => Ok(ctx.interp.builtin_class(read_builtin_class(r)?)),
         CLS_USER_ROOT => Ok(*ctx.root_class),
-        CLS_RECORD => {
-            let id = r.read_u32()?;
-            tables
-                .objects
-                .get(id as usize)
-                .copied()
-                .ok_or(DecodeError::BadObjectId(id))
-        }
+        CLS_RECORD => decode_object_id(r, tables),
         tag => Err(DecodeError::InvalidTag { what: "class", tag }),
     }
 }
@@ -1537,15 +1536,7 @@ fn decode_value(
         VAL_TRUE => Ok(Value::Bool(true)),
         VAL_SMALL_INT => Ok(Value::SmallInt(r.read_i64()?)),
         VAL_FLOAT => Ok(Value::Float(r.read_f64()?)),
-        VAL_OBJECT_ID => {
-            let id = r.read_u32()?;
-            tables
-                .objects
-                .get(id as usize)
-                .copied()
-                .map(Value::Obj)
-                .ok_or(DecodeError::BadObjectId(id))
-        }
+        VAL_OBJECT_ID => Ok(Value::Obj(decode_object_id(r, tables)?)),
         VAL_CLASS_TAG => Ok(Value::Obj(decode_class_tag(r, ctx, tables)?)),
         VAL_PLATFORM => Ok(ctx.platform),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
@@ -1563,6 +1554,17 @@ fn decode_values(
         values.push(decode_value(r, ctx, tables)?);
     }
     Ok(values)
+}
+
+/// An object id off the wire, resolved against the placeholders the first
+/// pass allocated: in range, or `BadObjectId` before anything indexes by it.
+fn decode_object_id(r: &mut Reader, tables: &Tables) -> Result<ObjRef, DecodeError> {
+    let id = r.read_u32()?;
+    tables
+        .objects
+        .get(id as usize)
+        .copied()
+        .ok_or(DecodeError::BadObjectId(id))
 }
 
 fn decode_frame_id(r: &mut Reader, tables: &Tables) -> Result<FrameRef, DecodeError> {
@@ -1664,13 +1666,11 @@ fn decode_frame(
             current_class.as_ref(),
             decode_symbol(r, symbols)?,
         )?),
-        FRAME_CLOSURE => {
-            FrameKind::Closure(Rc::new(decode_closure_record(r, ctx, tables, symbols)?))
-        }
         FRAME_TOP_LEVEL => FrameKind::TopLevel,
         FRAME_INITIALIZER => FrameKind::Initializer(decode_class_tag(r, ctx, tables)?),
         FRAME_SUPERCLASS_CLAUSE => FrameKind::SuperclassClause(decode_class_tag(r, ctx, tables)?),
         FRAME_SUPERCLASS_MESSAGE => FrameKind::SuperclassMessage(decode_class_tag(r, ctx, tables)?),
+        FRAME_CLOSURE_OBJECT => FrameKind::Closure(decode_object_id(r, tables)?),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "frame kind",
@@ -1941,6 +1941,12 @@ fn is_prebuilt_class(heap: &Heap, class: ClassRef, root_class: ClassRef) -> bool
 /// iterative `Drop` cannot hand to its worklist (it is not an `Option`, and
 /// the field's glue runs after `drop` returns): bounding the chain at one
 /// link is what keeps a crafted image from cascading through it.
+///
+/// It also holds every closure frame to naming a closure object. A closure
+/// frame's kind names an object-table id, and, like a tag-2 class
+/// reference, whether that record was a closure is only knowable once every
+/// record has been read. Everything that reaches a closure activation's
+/// body or captured frames reads through that object.
 fn check_class_references(
     heap: &Heap,
     objects: &[ObjRef],
@@ -1968,6 +1974,11 @@ fn check_class_references(
     for frame in frames {
         let current_class = heap.frame_current_class(*frame);
         let kind = heap.frame_kind(*frame);
+        if let FrameKind::Closure(closure) = &kind {
+            if !heap.is_closure(*closure) {
+                return Err(DecodeError::NotAClosureReference);
+            }
+        }
         let kind_class = match &kind {
             FrameKind::Initializer(c)
             | FrameKind::SuperclassClause(c)
@@ -2049,9 +2060,7 @@ pub fn decode_graph_section(
             OBJ_STR => ObjectData::Str(r.read_str()?),
             OBJ_SYM => ObjectData::Sym(decode_symbol(r, symbols)?),
             OBJ_ARRAY => ObjectData::Array(decode_values(r, ctx, &tables)?),
-            OBJ_CLOSURE => {
-                ObjectData::Closure(Rc::new(decode_closure_record(r, ctx, &tables, symbols)?))
-            }
+            OBJ_CLOSURE => ObjectData::Closure(decode_closure_record(r, ctx, &tables, symbols)?),
             OBJ_CLASS => {
                 let (data, mixin) = decode_class_record(r, ctx, &tables, &placeholder_application)?;
                 pending_classes.push(PendingClass {
@@ -2108,7 +2117,7 @@ pub fn decode_tag_named_hashes(
         let target = match r.read_u8()? {
             HASHED_BUILTIN_CLASS => interp.builtin_class(read_builtin_class(r)?),
             HASHED_ROOT_CLASS => root_class,
-            HASHED_PLATFORM => match interp.platform() {
+            HASHED_PLATFORM => match interp.platform_value() {
                 Value::Obj(platform) => platform,
                 _ => unreachable!("the platform singleton is always an object"),
             },
@@ -2242,7 +2251,7 @@ fn frame_body(heap: &Heap, frame: FrameRef) -> Option<Rc<CompiledCode>> {
         FrameKind::SuperclassMessage(class) => {
             frame_mixin(heap, *class).and_then(|m| m.superclass_message_code.clone())
         }
-        FrameKind::Closure(closure) => Some(closure.code.clone()),
+        FrameKind::Closure(closure) => heap.closure_code(*closure),
         FrameKind::TopLevel => None,
     }
 }
@@ -2301,14 +2310,13 @@ pub fn verify_graph(
             });
         }
     }
+    // Every closure the graph holds is an object record -- a closure frame
+    // names one of these (`check_class_references` refused any that does
+    // not) -- so this one loop also covers the closure of every closure
+    // activation.
     for object in &graph.objects {
         if let Some(closure) = heap.closure_data(*object) {
             verify_closure(&closure, table, &parents, &index_of, heap)?;
-        }
-    }
-    for frame in &graph.frames {
-        if let FrameKind::Closure(closure) = &heap.frame_kind(*frame) {
-            verify_closure(closure, table, &parents, &index_of, heap)?;
         }
     }
     Ok(())

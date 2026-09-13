@@ -76,7 +76,7 @@ pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> E
         // *that* a command-line entry point supplies the platform is a CLI
         // concern -- nothing in the runtime needs to know it was invoked
         // from a terminal.
-        match crate::entry::instantiate_root(&mut interp, root_class) {
+        match crate::entry::instantiate_root(&mut interp, &root_class) {
             Ok(v) => v,
             Err(code) => return code,
         }
@@ -112,7 +112,7 @@ pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> E
         }
     };
     let platform = interp.platform();
-    let args = match crate::entry::entry_args(selector, platform) {
+    let args = match crate::entry::entry_args(&interp, selector, &platform) {
         Ok(args) => args,
         Err(msg) => {
             eprintln!("error: {msg}");
@@ -120,8 +120,8 @@ pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> E
         }
     };
     crate::entry::report_entry_send(interp.send(
-        instance,
+        &instance,
         ns_runtime::Symbol::intern(selector),
-        args,
+        &args,
     ))
 }

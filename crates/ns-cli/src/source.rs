@@ -56,7 +56,7 @@ pub(crate) fn load_source(file: &Path) -> Result<LoadedSource, ExitCode> {
 pub(crate) fn bootstrap(
     loaded: &LoadedSource,
     lowering: ns_runtime::Lowering,
-) -> (ns_runtime::Interpreter, ns_runtime::ClassRef) {
+) -> (ns_runtime::Interpreter, ns_runtime::Root) {
     let mut interp = ns_runtime::Interpreter::bootstrap_with(lowering);
     let class = interp.load_module(&loaded.resolved);
     (interp, class)

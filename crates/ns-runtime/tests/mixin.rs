@@ -2,7 +2,7 @@ use indoc::indoc;
 use std::rc::Rc;
 
 use ns_runtime::mixin::{mixin_key, Mixin};
-use ns_runtime::{Interpreter, Symbol};
+use ns_runtime::{Interpreter, Root, Symbol, Value};
 use ns_syntax::{ast, span::Span};
 
 fn slot_decl(name: &str) -> ns_runtime::mixin::MixinSlot {
@@ -96,13 +96,7 @@ fn inherited_slots_are_counted_before_own_slots() {
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both.
 /// Same shape as `tests/instantiate.rs`'s helper.
-fn load(
-    src: &str,
-) -> (
-    Interpreter,
-    ns_runtime::ClassRef,
-    ns_runtime::ResolvedModule,
-) {
+fn load(src: &str) -> (Interpreter, Root, ns_runtime::ResolvedModule) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -115,6 +109,14 @@ fn load(
     (interp, class, resolved)
 }
 
+/// The object `root` holds, for the heap accessors that take one.
+fn obj(interp: &Interpreter, root: &Root) -> ns_runtime::ObjRef {
+    match interp.fetch(root) {
+        Value::Obj(obj) => obj,
+        _ => panic!("expected an object"),
+    }
+}
+
 #[test]
 fn a_class_object_carries_identity_and_its_application_carries_layout() {
     let src = indoc! {"
@@ -123,6 +125,7 @@ fn a_class_object_carries_identity_and_its_application_carries_layout() {
         class Point new = Object new (| x. y. |) ()
     "};
     let (interp, class, _resolved) = load(src);
+    let class = obj(&interp, &class);
     let application = interp
         .heap_ref()
         .class_application(class)
@@ -157,7 +160,7 @@ fn the_mixin_tree_contains_nested_and_class_side_declarations() {
     let (interp, class, _resolved) = load(NESTED_SRC);
     let application = interp
         .heap_ref()
-        .class_application(class)
+        .class_application(obj(&interp, &class))
         .unwrap_or_else(|| panic!("expected a class object"));
     let mixin = &application.mixin;
     assert_eq!(mixin.nested.len(), 1, "Inner must be in the mixin tree");
@@ -173,7 +176,7 @@ fn a_nested_declaration_reserves_a_hidden_cache_slot() {
     let (interp, class, _resolved) = load(NESTED_SRC);
     let app = interp
         .heap_ref()
-        .class_application(class)
+        .class_application(obj(&interp, &class))
         .unwrap_or_else(|| panic!("expected a class object"));
     assert_eq!(app.num_slots, 1, "Outer declares no slots but nests Inner");
     let inner = &app.mixin.nested[0];

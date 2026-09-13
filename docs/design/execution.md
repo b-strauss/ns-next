@@ -1,12 +1,13 @@
 # Execution — activations, the VM
 
 > **Status:** built, including the trampoline; nothing re-enters the run loop
-> from Rust.
+> from Rust, and the loop polls a safepoint.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > arena, the `ActivationRef` and `FrameRef` handles, every read and write of an
 > activation), `types.rs` (`Frame`, `Continuation` and the state its variants
-> carry), `vm.rs` (the run loop), `interpreter/` (the send decisions, `Step`,
-> every push, the depth limit, the host entry), `builtins/boolean.rs`,
+> carry), `vm.rs` (the run loop and its safepoint poll), `interpreter/` (the
+> send decisions, `Step`, every push, the depth limit, the host entry, the
+> safepoint's slow path), `builtins/boolean.rs`,
 > `builtins/block.rs` and `builtins/collections.rs` (the natives that answer
 > trampoline steps), `crates/ns-cli/src/main.rs` (the interpreter thread and
 > its stack).
@@ -86,7 +87,8 @@ struct ActivationStack {
 struct StackEntry {
     receiver: Value,
     current_class: Option<ClassRef>,
-    kind: FrameKind,           // Closure(Rc<ClosureData>) carries home and captured_frame
+    kind: FrameKind,           // Closure(ObjRef): the closure object, whose payload
+                               // carries home and captured_frame
     base: u32,                 // first register in `values`
     num_args: u32,
     pc: usize,
@@ -313,9 +315,10 @@ Four kinds of body run, and each reaches the loop one way:
 
 1. **Method body** — pushed by `push_step` for a `Step::Method`. A method
    activation catches a `^` that targets it (`Interpreter::catches_return`).
-2. **Block body** — pushed by `push_step` for a `Step::Block`, running
-   `ClosureData.code`. `value`, the control-flow natives and `do:` answer the
-   block as a step.
+2. **Block body** — pushed by `push_step` for a `Step::Block`, which names the
+   closure object; the activation runs the `code` of that object's
+   `ClosureData`. `value`, the control-flow natives and `do:` answer the block
+   as a step.
 3. **Instance initializer** — `descend_levels`, one per initializing level of
    the superclass chain, answers that level's compiled initializer: its own
    slot initializers and initializer expressions. While a level below it still
@@ -336,6 +339,24 @@ Rust enters the loop in one place, `Interpreter::run_from_host`, for a host's
 answered and runs `vm::run` on it. No decision, native or continuation runs
 code from Rust, and a debug build checks that the loop is never entered while
 it runs ("No re-entry from Rust" below).
+
+**The safepoint.** `run` polls one flag the heap owns (`vm::poll`) at every
+switch to another activation — a push, or a caller resumed — and at every
+backward jump, so every call and every loop iteration passes one, a loop that
+makes no send included; a forward jump does not poll. When the flag is set the
+poll calls `Interpreter::safepoint` (`interpreter/safepoint.rs`), out of line,
+which is where a collection will run ([memory.md](memory.md), "Where a
+collection can happen"); today only the debug-build stress mode sets it, and
+moves every object and every reified frame there. That is sound because of
+what the loop's locals are: the running `ActivationRef`, which indexes the
+stack, and no stack entry moves; its `Rc<CompiledCode>`, which holds no
+handle; its `pc`; and the run's floor, a stack depth. Every value the loop
+works on is read from a register or an operand when an instruction needs it
+and written back before the next, so between two instructions every handle is
+in a register on the stack, in a stack entry or the continuation it owns, in an
+arena record or in a root, where the tracer rewrites it. The reusable argument
+buffer, which a send fills and empties within one instruction, is empty at
+every safepoint.
 
 **The VM has no dispatch logic, no `doesNotUnderstand:` construction, no native
 dispatch and no error text of its own.** It pushes, pops, switches, writes
@@ -435,7 +456,10 @@ could support one today, but leaving `Signal` without one means
 `EvalResult` (`Result<Value, Signal>`) has none either, and
 `Result::unwrap`/`expect` require `E: Debug`. Calling either, or writing
 `{:?}` on an `EvalResult`, is therefore a compile error, not a lapse a
-reviewer has to catch. Tests unwrap through a local `expect_ok` helper.
+reviewer has to catch. The same holds for the `HostResult` a host receives
+(`Result<Root, HostSignal>`, [memory.md](memory.md), "Host roots"): `Root`,
+`HostSignal` and `HostError` have no `Debug` either. Tests unwrap through a
+local `expect_ok` helper.
 
 ## Measurements
 
@@ -444,9 +468,9 @@ compiling excluded — and reports the median of ten timed runs after a discarde
 warm-up. Its three fixtures each run a 50,000-iteration `whileTrue:` loop, which
 the compiler inlines: `bench_loop.ns` sums the counter, `bench_send.ns` adds a
 user-method send per iteration and `bench_block.ns` a method that creates and
-invokes a block. On a release build, on 2026-09-13, with nothing re-entering
-the loop from Rust, their medians were about 11.1, 14.0 and 23.6 ms ("What
-removing the re-entries moved" below).
+invokes a block. On a release build, on 2026-09-13, with the safepoint poll in
+the loop, their medians were about 11.3, 14.2 and 22.8 ms ("What 2b moved"
+below).
 
 Never judge performance from a debug build.
 
@@ -924,7 +948,10 @@ inline, so the loop never reaches `Interpreter::resume`. This is the uniform
 shift the first change of the step already showed on code it did not change
 (below), an artifact of inlining and register allocation as far as that
 investigation went. It is not isolated, and nothing removed from either
-benchmark's path explains it.
+benchmark's path explains it. The comparison with `be3eb40` is carried through
+every measurement up to step 3; step 2b's ("What 2b moved" below) puts
+`bench_loop.ns` at +1.1% in both of its sittings, the groups overlapping, and
+`bench_block.ns` 2.5% faster than `be3eb40`.
 
 Each change was measured against its parent on the way, in sittings of its
 own, so its figures are not compared with these:
@@ -986,6 +1013,92 @@ creation underway at each level, quadratic in the depth, where the bound on
 re-entries had stopped such a recursion at 1,000 levels. With the marker in the
 cache slot the check is one read, and `accessor-recursion` in
 `crates/ns-cli/tests/program_outcomes.rs` takes 0.3 s again.
+
+### What 2b moved
+
+Step 2b ([memory.md](memory.md), "Checked roots and a collector") put three
+things into a release build: the safepoint poll in the run loop ("The VM"
+above), a closure's payload inline in its object, and host roots at the host
+boundary; the tracing, the move and the stress mode exist only in a debug
+build. It was measured whole against the commit it started from, `4882a2c`,
+and against `be3eb40`, in two sittings on 2026-09-13, by the protocol of "What
+removing the re-entries moved" above: both before-binaries built in throwaway
+worktrees, `ns-next bench <source> --iterations 30` over the same seven
+sources, five rounds, alternating the three binaries within each round.
+Medians in ms from the first sitting, and each group's mean:
+
+| Source | `be3eb40`, rounds 1–5 | mean | `4882a2c`, rounds 1–5 | mean | After, rounds 1–5 | mean |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.22, 11.16, 11.12, 11.34, 11.21 | 11.21 | 11.64, 11.19, 11.40, 11.28, 11.37 | 11.38 | 11.32, 11.44, 11.30, 11.32, 11.28 | 11.33 |
+| `bench_send.ns` | 14.07, 13.93, 14.09, 14.21, 13.87 | 14.03 | 14.03, 14.19, 14.12, 14.13, 14.15 | 14.12 | 14.01, 14.35, 14.10, 14.23, 14.11 | 14.16 |
+| `bench_block.ns` | 23.26, 23.30, 23.52, 23.45, 23.17 | 23.34 | 23.87, 23.70, 23.52, 24.03, 23.64 | 23.75 | 22.76, 22.70, 22.67, 22.83, 22.82 | 22.76 |
+| `bench_do.ns` | 7.92, 8.17, 7.96, 7.98, 8.05 | 8.02 | 8.00, 8.10, 7.90, 7.88, 8.22 | 8.02 | 7.96, 7.97, 7.80, 8.00, 7.81 | 7.91 |
+| `bench_new.ns` | 7.46, 7.39, 7.49, 7.49, 7.37 | 7.44 | 7.44, 7.27, 7.41, 7.27, 7.31 | 7.34 | 7.32, 7.45, 7.46, 7.40, 7.42 | 7.41 |
+| `bench_new2.ns` | 8.34, 8.41, 8.47, 8.38, 8.50 | 8.42 | 8.24, 8.33, 8.26, 8.35, 8.42 | 8.32 | 8.48, 8.44, 8.32, 8.31, 8.22 | 8.35 |
+| `bench_newarg.ns` | 10.66, 10.45, 10.57, 10.59, 10.60 | 10.57 | 10.20, 10.24, 10.22, 10.27, 10.29 | 10.24 | 10.26, 10.21, 10.24, 10.26, 10.11 | 10.22 |
+
+The change of the after-group's mean in both sittings:
+
+| Source | Against `4882a2c`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
+|---|---|---|
+| `bench_loop.ns` | −0.4% / −0.9%, overlapping | +1.1% / +1.1%, overlapping |
+| `bench_send.ns` | +0.3% / −0.5%, overlapping | +0.9% / +1.4%, overlapping |
+| `bench_block.ns` | **−4.2% / −3.9%**, after entirely below in both | **−2.5% / −2.6%**, after entirely below in both |
+| `bench_do.ns` | −1.4% / −1.1%, overlapping | −1.4% / −1.3%, overlapping |
+| `bench_new.ns` | +1.0% / +0.7%, overlapping | −0.4% / −1.4%, the groups touching at 7.46 in the second |
+| `bench_new2.ns` | +0.4% / +0.8%, after entirely above in the second, by 0.01 ms | −0.8% / −0.6%, overlapping |
+| `bench_newarg.ns` | −0.3% / −0.4%, overlapping | −3.4% / −3.2%, after entirely below in both |
+
+**No source is slower than at `4882a2c` beyond the sittings' noise, and
+`bench_block.ns` is about 4% faster**, which is the closure split's (below).
+One group lay outside the rest: in the second sitting `bench_new2.ns`'s
+after-group sat entirely above its parent-group, 8.37–8.44 against 8.30–8.36
+ms. The first sitting overlapped, and a third, run to settle it, put it level
+(−0.2%, overlapping).
+
+**Against `be3eb40`, nothing is slower beyond the groups' spread.**
+`bench_loop.ns`, which 2a left 1.4–1.9% slower with its after-group entirely
+above, is +1.1% in both sittings, overlapping; `bench_block.ns`, which 2a left
+1.4–1.6% slower, is 2.5% faster. `bench_send.ns` is +0.9% and +1.4%,
+overlapping, where 2a measured +0.2% and +0.8%. That is 2a's figure read in
+other sittings rather than something 2b added: 2b's binary is level with
+`4882a2c`, and the unchanged `4882a2c` itself sat +0.6% and +1.9% above
+`be3eb40` in these two sittings, as the parents of the changes below sat +0.9%
+to +2.3% above it in theirs. Every other source is level with `be3eb40` or
+faster.
+
+Two changes were measured against their parents on the way, each in a sitting
+of its own, so their figures are not compared with these:
+
+- **A closure's payload inline in its object** ([memory.md](memory.md), "What
+  the collector traces"): `bench_block.ns` −4.4% and `bench_newarg.ns` −0.8%,
+  both entirely below, the rest level. `MakeClosure` no longer allocates an
+  `Rc` per closure, and a popped block activation no longer drops one. A
+  release `Object` stays 56 bytes: the inline `ClosureData` is 24 bytes, within
+  the payload's 48.
+- **The safepoint poll.** Its first measurement found no source slower, and
+  measured nothing: with an empty slow path in a release build, fat LTO had
+  deleted the poll's call, then its branch and the flag's load
+  ([memory.md](memory.md), "Where a collection can happen"). With the slow path
+  serving the request by clearing the flag, `vm::run`'s release assembly
+  compares the flag at every switch and every backward jump and calls the
+  safepoint when it is set, and the re-measurement found no source slower than
+  its parent: −3.0% on `bench_block.ns` to +0.9% on `bench_new2.ns`, every
+  group overlapping. Cog's fallback, folding the request into the depth check,
+  was not needed.
+
+Host roots changed what `bench` times, slightly: the timed span now fetches the
+send's arguments from their roots and roots its result, an `Rc` allocation and
+a push onto the table against a run of milliseconds. Every after-figure above
+includes it.
+
+The suite (`cargo test --workspace`, debug build, test binaries already built)
+takes 12.7 s, measured at 682 tests, against 12.5 s for 662 before the step. Under
+`NS_NEXT_STRESS_MOVES=1` it takes 190.2 s: almost half of that is
+`crates/ns-runtime/tests/trampoline.rs`'s depth-limit test, and most of the
+rest the CLI tests that spawn `ns-next` per fixture or golden
+([memory.md](memory.md), "Checking the roots before a collector exists: the
+stress mode").
 
 ## The trampoline
 
@@ -1312,15 +1425,17 @@ measured level with before. `a_decision_stays_the_size_the_hot_path_was_measured
 (`interpreter/mod.rs`) pins the size; it cannot see the niche. Every body is
 counted.
 
-**One host entry.** `Interpreter::send` and `Interpreter::instantiate` decide,
-and hand what they decided to `Interpreter::run_from_host`, which answers a
-value as it is and otherwise pushes the activation and runs `vm::run` on it.
+**One host entry.** `Interpreter::send` and `Interpreter::instantiate` fetch
+what the host's roots hold, decide, and hand what they decided to
+`Interpreter::run_from_host`, which answers a value as it is and otherwise
+pushes the activation and runs `vm::run` on it; what the run answers goes back
+to the host rooted ([memory.md](memory.md), "Host roots").
 It is the one place Rust enters the loop. A debug build checks there that the
 loop is not already running — nothing it calls can reach `run_from_host` —
 that the stack is left as deep as it was found, and that no nested class's
 creation outlives the run. That the loop is never nested is a debug assertion
 now; it becomes structure in step 2c, where nothing a native can reach offers
-`run` at all ([memory.md](memory.md), "The brand").
+`run` at all ([memory.md](memory.md), "Planned: the brand").
 
 `vm::send` still takes the interpreter's reusable argument buffer and gives it
 back, because the decision needs `&mut Interpreter` while it reads the
@@ -1343,8 +1458,9 @@ thread's stack was re-derived from what still recurses on the Rust stack
 The step was measured whole against the commit it started from: "What
 removing the re-entries moved" above. Instantiation, `do:` and `bench_send.ns`
 are level with it or faster; `bench_loop.ns` and `bench_block.ns`, which run
-none of the changed paths in their loops, are 1.4–1.9% slower, an open
-finding.
+none of the changed paths in their loops, came out 1.4–1.9% slower, an open
+finding that step 2b's measurement puts at +1.1%, overlapping, and −2.5%
+("What 2b moved" above).
 
 ### How this meets the liveness requirements
 
@@ -1469,6 +1585,12 @@ binds it is that no native code may ever enter an image.
   trampoline steps, so that no Rust frame is live below a safepoint and the
   root discipline has nothing to root but the host's values. The bound on
   re-entries went with them.
+- **The run loop polls a safepoint at every switch and every backward jump**
+  ("The VM"): one compare of a flag the heap owns and a cold call when it is
+  set, at the points where the loop's locals hold no handle a move would
+  change ([memory.md](memory.md), "Where a collection can happen"). The slow
+  path serves the request by clearing the flag, which is also what keeps the
+  optimizer from deleting the poll.
 - **A nested class's creation is marked in its own cache slot** ("No re-entry
   from Rust"), not listed beside the stack: the slot is keyed by exactly the
   pair a cyclic definition is, so the check is the read the accessor makes

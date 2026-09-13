@@ -14,7 +14,7 @@ ObjRef = a 32-bit index into the `Heap`'s object arena; ClassRef is an alias
 Object { class: ClassRef, identity_hash: u32, data: ObjectData }
 
 ObjectData = Instance(Vec<Value>) | Str(String) | Sym(Symbol)
-           | Array(Vec<Value>) | Closure(Rc<ClosureData>) | Class(ClassData)
+           | Array(Vec<Value>) | Closure(ClosureData) | Class(ClassData)
 ```
 
 `nil`, `true`, `false` and small integers are `Value` variants rather than heap
@@ -52,11 +52,16 @@ verbatim".
 
 `ClosureData { params, code, captured_frame: FrameRef, home: FrameRef }`
 captures its defining frame for closure semantics and its home activation for
-non-local return. A closure object holds it behind an `Rc`, so invoking a block
-bumps a reference count rather than copying it, and `params` is shared with the
-`MakeClosure` instruction that made it. **`home` is a `FrameRef`, not an `ObjRef`** — it names the
+non-local return. `params` and `code` are `Rc`s shared with the `MakeClosure`
+instruction that made the closure; the payload itself is inline in the closure
+object, never behind an `Rc` of its own, because a handle lives only where the
+tracer can rewrite it in place ([memory.md](memory.md), "What the collector
+traces") and an `Rc` shared by several holders is not such a place. So a block's
+activation (`FrameKind::Closure`), a native `whileTrue:` or `do:` loop's state
+and a decided block step name the closure object, and reach its body and its
+two frames through it. **`home` is a `FrameRef`, not an `ObjRef`** — it names the
 lexically enclosing *method* or initializer activation, which is what
-`raise_return` walks to. `types.rs` carries the same warning at the field,
+`raise_return` walks to. `types.rs` names it an activation at the field too,
 because the enclosing *object* is the tempting misreading and both are handles.
 
 **Never `{:?}` a `Value`.** `ObjRef`'s hand-written `Debug` prints its arena
@@ -296,8 +301,10 @@ and cheap to carry.
 
 `Rc<RefCell<Object>>` was the Milestone 1 model. It is gone: an object is an
 entry in one `Heap`'s arena and an `ObjRef` is a 32-bit index into it, private to
-`heap.rs`. The representation, what it measured, and the root discipline and
-collector that are still to come are designed in [memory.md](memory.md).
+`heap.rs`. The representation, what it measured, and the root discipline —
+two of its three parts built, the lifetime brand and the collector still to
+come — are designed in [memory.md](memory.md), "Checked roots and a
+collector".
 
 Two consequences belong here rather than there, because they are about this
 document's subject.

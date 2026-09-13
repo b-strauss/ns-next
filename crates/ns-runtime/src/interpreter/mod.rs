@@ -8,6 +8,7 @@ pub mod instantiate;
 pub(crate) mod literals;
 pub(crate) mod locals;
 pub(crate) mod nested;
+mod safepoint;
 pub(crate) mod sends;
 
 use std::collections::HashMap;
@@ -15,16 +16,41 @@ use std::rc::Rc;
 
 use crate::compiler::Lowering;
 use crate::dispatch::{self, Lookup};
-use crate::heap::{ActivationHeader, ActivationRef, Heap};
+use crate::heap::{ActivationHeader, ActivationRef, Heap, Root};
 use crate::types::*;
 use crate::Symbol;
 
-pub enum Signal {
+pub(crate) enum Signal {
     Return(ActivationRef, Value),
     Error(NewspeakError),
 }
 
-pub type EvalResult = Result<Value, Signal>;
+pub(crate) type EvalResult = Result<Value, Signal>;
+
+/// How a host's send or instantiation ended (`Interpreter::send`,
+/// `Interpreter::instantiate`): its value, rooted, or the signal that ended
+/// it.
+pub type HostResult = Result<Root, HostSignal>;
+
+/// A signal that left a host's send or instantiation. No `Debug`, for the
+/// reason `Signal` has none, so `unwrap` and `expect` on a `HostResult` do
+/// not compile.
+pub enum HostSignal {
+    /// A Newspeak error nothing handled.
+    Error(HostError),
+    /// A `^` that reached the host: its home had returned, or it aimed at a
+    /// running initializer, which catches none (`docs/design/execution.md`,
+    /// "Non-local return").
+    Return,
+}
+
+/// A Newspeak error as a host receives it: `NewspeakError` with its
+/// receiver rooted, since the host may read it after running more code.
+pub struct HostError {
+    pub selector: Symbol,
+    pub receiver: Root,
+    pub message: String,
+}
 
 /// L: the most activations that may be live at once, counted by the rule in
 /// `docs/design/compiler.md`, "How the limit counts". It bounds memory, not
@@ -52,11 +78,11 @@ pub(crate) enum Step {
         defining_class: ClassRef,
         args: StepArgs,
     },
-    /// Activate `closure`, and do `then` with its value. A builtin
-    /// control-flow native's block is marked by its `args`,
+    /// Activate the closure object `closure`, and do `then` with its value.
+    /// A builtin control-flow native's block is marked by its `args`,
     /// `StepArgs::ControlFlow`.
     Block {
-        closure: Rc<ClosureData>,
+        closure: ObjRef,
         args: StepArgs,
         then: Continuation,
     },
@@ -183,12 +209,18 @@ pub struct Interpreter {
     /// The reusable argument buffer the run loop gathers a send's arguments
     /// into (`vm::send`). Taken while a send is decided and pushed and given
     /// back afterwards, because the decision needs `&mut Interpreter` while
-    /// it reads the arguments.
+    /// it reads the arguments. Empty between instructions: it is cleared
+    /// when it is given back, so it holds no handle a move would have to
+    /// find.
     arg_buffer: Vec<Value>,
     /// Whether a host's run of the loop is in progress (`run_from_host`).
     /// Nothing the loop calls can start another -- no decision, native or
     /// continuation runs code from Rust -- and a debug build checks that.
     running: bool,
+    /// The stress mode's schedule, when it is on (`NS_NEXT_STRESS_MOVES`, or
+    /// `set_stress_moves`). Debug builds only.
+    #[cfg(debug_assertions)]
+    stress: Option<safepoint::StressMoves>,
 }
 
 impl Interpreter {
@@ -212,8 +244,15 @@ impl Interpreter {
             lowering,
             arg_buffer: Vec::new(),
             running: false,
+            #[cfg(debug_assertions)]
+            stress: safepoint::StressMoves::from_env(),
         };
         interp.builtin_classes = build_builtin_classes(&mut interp);
+        #[cfg(debug_assertions)]
+        {
+            let on = interp.stress.is_some();
+            interp.heap.set_safepoint_requested(on);
+        }
         interp
     }
 
@@ -247,14 +286,41 @@ impl Interpreter {
         &mut self.heap
     }
 
+    /// `Heap::stash`, for a host.
+    pub fn stash(&self, value: Value) -> Root {
+        self.heap.stash(value)
+    }
+
+    /// `Heap::fetch`, for a host.
+    pub fn fetch(&self, root: &Root) -> Value {
+        self.heap.fetch(root)
+    }
+
     /// An ordinary (explicit-receiver) send from a host: `newspeak-spec.pdf`
     /// §5.5, decided as `decide_send` decides it and run from the outside
     /// (`run_from_host`). A `Send*` the VM issues never comes through here:
     /// `vm.rs` decides it and pushes what was decided itself.
-    pub fn send(&mut self, receiver: Value, selector: Symbol, args: Vec<Value>) -> EvalResult {
-        match self.decide_send(receiver, selector, &args) {
+    pub fn send(&mut self, receiver: &Root, selector: Symbol, args: &[Root]) -> HostResult {
+        let receiver = self.fetch(receiver);
+        let args: Vec<Value> = args.iter().map(|arg| self.fetch(arg)).collect();
+        let result = match self.decide_send(receiver, selector, &args) {
             Ok(step) => self.run_from_host(step, &args),
             Err(signal) => Err(signal),
+        };
+        self.to_host(result)
+    }
+
+    /// A run's outcome as the host receives it. Nothing runs between the
+    /// run's last safepoint and here, so every value in `result` is current.
+    fn to_host(&self, result: EvalResult) -> HostResult {
+        match result {
+            Ok(value) => Ok(self.stash(value)),
+            Err(Signal::Error(e)) => Err(HostSignal::Error(HostError {
+                selector: e.selector,
+                receiver: self.stash(e.receiver),
+                message: e.message,
+            })),
+            Err(Signal::Return(..)) => Err(HostSignal::Return),
         }
     }
 
@@ -505,12 +571,14 @@ impl Interpreter {
     }
 
     pub(crate) fn take_arg_buffer(&mut self) -> Vec<Value> {
-        let mut buffer = std::mem::take(&mut self.arg_buffer);
-        buffer.clear();
-        buffer
+        std::mem::take(&mut self.arg_buffer)
     }
 
-    pub(crate) fn return_arg_buffer(&mut self, buffer: Vec<Value>) {
+    /// Cleared here rather than when it is taken, so that between two
+    /// instructions -- at every safepoint -- the buffer holds no value, and
+    /// so no handle a move would have to find.
+    pub(crate) fn return_arg_buffer(&mut self, mut buffer: Vec<Value>) {
+        buffer.clear();
         self.arg_buffer = buffer;
     }
 
@@ -575,7 +643,11 @@ impl Interpreter {
             } => {
                 let control_flow = matches!(args, StepArgs::ControlFlow);
                 let args = args.slice(send_args);
-                check_block_arity(&self.heap, &closure, args.len())?;
+                let (code, num_params, captured_frame) = self
+                    .heap
+                    .closure_activation(closure)
+                    .expect("internal: a block step is decided only for a closure object");
+                check_block_arity(&self.heap, num_params, captured_frame, args.len())?;
                 // Exempt exactly the activation the optimized lowering
                 // inlines away: a block a control-flow native activates for
                 // a `SendInlinable`, and only if the sending activation
@@ -587,12 +659,11 @@ impl Interpreter {
                 let created_by_sender = |heap: &Heap| {
                     sender
                         .and_then(|sender| heap.activation_reified(sender))
-                        .is_some_and(|frame| frame.same(closure.captured_frame))
+                        .is_some_and(|frame| frame.same(captured_frame))
                 };
                 let counted = !(inlinable && control_flow && created_by_sender(&self.heap));
-                let receiver = self.heap.frame_receiver(closure.captured_frame);
-                let current_class = self.heap.frame_current_class(closure.captured_frame);
-                let code = closure.code.clone();
+                let receiver = self.heap.frame_receiver(captured_frame);
+                let current_class = self.heap.frame_current_class(captured_frame);
                 let temps = (code.num_registers - code.num_args) as usize;
                 self.push(
                     ActivationHeader {
@@ -972,7 +1043,7 @@ impl Interpreter {
         self.new_instance_object(class, ObjectData::Str(c.to_string()))
     }
 
-    pub fn new_closure(&mut self, closure: Rc<ClosureData>) -> ObjRef {
+    pub fn new_closure(&mut self, closure: ClosureData) -> ObjRef {
         let class = self.builtin_class(BuiltinClass::Block);
         self.new_instance_object(class, ObjectData::Closure(closure))
     }
@@ -980,7 +1051,7 @@ impl Interpreter {
     /// The `platform` object (`docs/design/core-library.md`):
     /// memoized on first call, so every reference within one interpreter
     /// sees the same object identity.
-    pub fn platform(&mut self) -> Value {
+    pub(crate) fn platform_value(&mut self) -> Value {
         if let Some(p) = &self.platform_singleton {
             return *p;
         }
@@ -989,6 +1060,12 @@ impl Interpreter {
         let value = Value::Obj(obj);
         self.platform_singleton = Some(value);
         value
+    }
+
+    /// The `platform` object, rooted for a host.
+    pub fn platform(&mut self) -> Root {
+        let platform = self.platform_value();
+        self.stash(platform)
     }
 
     /// A `Transcript`-style stdout stream object -- see `crate::platform`'s
@@ -1167,18 +1244,19 @@ fn check_method_arity(
 /// before it can reach a register: the window is laid out from the arguments
 /// actually given, so too few would address registers past its end -- a panic
 /// -- and too many would silently shift every temporary.
-fn check_block_arity(heap: &Heap, closure: &ClosureData, given: usize) -> Result<(), Signal> {
-    if given == closure.params.len() {
+fn check_block_arity(
+    heap: &Heap,
+    num_params: usize,
+    captured_frame: FrameRef,
+    given: usize,
+) -> Result<(), Signal> {
+    if given == num_params {
         return Ok(());
     }
     Err(Signal::Error(NewspeakError {
         selector: Symbol::VALUE,
-        receiver: heap.frame_receiver(closure.captured_frame),
-        message: format!(
-            "wrong number of block arguments: block takes {}, got {}",
-            closure.params.len(),
-            given
-        ),
+        receiver: heap.frame_receiver(captured_frame),
+        message: format!("wrong number of block arguments: block takes {num_params}, got {given}"),
     }))
 }
 
@@ -1295,7 +1373,7 @@ mod tests {
     use indoc::indoc;
     use std::path::PathBuf;
 
-    fn load(src: &str) -> (Interpreter, ClassRef) {
+    fn load(src: &str) -> (Interpreter, Root) {
         let module = ns_syntax::parse(src).expect("parse");
         let resolved = crate::resolve(
             module,
@@ -1308,11 +1386,13 @@ mod tests {
         (interp, class)
     }
 
-    fn expect_ok(result: EvalResult, what: &str) -> Value {
+    fn expect_ok(result: HostResult, what: &str) -> Root {
         match result {
-            Ok(v) => v,
-            Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
-            Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+            Ok(root) => root,
+            Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+            Err(HostSignal::Error(e)) => {
+                panic!("{what}: unexpected Newspeak error: {}", e.message)
+            }
         }
     }
 
@@ -1330,8 +1410,9 @@ mod tests {
             ) : ()
         "};
         let (mut interp, class) = load(src);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        match interp.decide_send(instance, Symbol::intern("foo"), &[]) {
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let receiver = interp.fetch(&instance);
+        match interp.decide_send(receiver, Symbol::intern("foo"), &[]) {
             Ok(Step::Method { method, .. }) => assert_eq!(method.selector.as_str(), "foo"),
             _ => panic!("a user method is decided as an activation"),
         }
@@ -1362,15 +1443,13 @@ mod tests {
             ) : ()
         "};
         let (mut interp, class) = load(src);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let items = expect_ok(
-            interp.send(instance, Symbol::intern("items"), vec![]),
+            interp.send(&instance, Symbol::intern("items"), &[]),
             "items",
         );
-        let echo = expect_ok(
-            interp.send(instance, Symbol::intern("echo"), vec![]),
-            "echo",
-        );
+        let echo = expect_ok(interp.send(&instance, Symbol::intern("echo"), &[]), "echo");
+        let (items, echo) = (interp.fetch(&items), interp.fetch(&echo));
         match interp.decide_send(items, Symbol::intern("do:"), &[echo]) {
             Ok(Step::Block {
                 args: StepArgs::Owned(args),
@@ -1408,7 +1487,8 @@ mod tests {
             ) : ()
         "};
         let (mut interp, class) = load(src);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let instance = interp.fetch(&instance);
         let slot = match interp.decide_send(instance, Symbol::intern("N"), &[]) {
             Ok(Step::SuperclassClause(creation)) => {
                 assert!(
@@ -1466,11 +1546,17 @@ mod tests {
             ) : ()
         "};
         let (mut interp, class) = load(src);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        let p = expect_ok(interp.send(instance, Symbol::intern("P"), vec![]), "P");
-        let q = expect_ok(interp.send(instance, Symbol::intern("Q"), vec![]), "Q");
-        let r = expect_ok(interp.send(instance, Symbol::intern("R"), vec![]), "R");
-        let s = expect_ok(interp.send(instance, Symbol::intern("S"), vec![]), "S");
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let p = expect_ok(interp.send(&instance, Symbol::intern("P"), &[]), "P");
+        let q = expect_ok(interp.send(&instance, Symbol::intern("Q"), &[]), "Q");
+        let r = expect_ok(interp.send(&instance, Symbol::intern("R"), &[]), "R");
+        let s = expect_ok(interp.send(&instance, Symbol::intern("S"), &[]), "S");
+        let (p, q, r, s) = (
+            interp.fetch(&p),
+            interp.fetch(&q),
+            interp.fetch(&r),
+            interp.fetch(&s),
+        );
         let Value::Obj(p_class) = p else {
             panic!("`P` answers a class object")
         };
@@ -1538,12 +1624,12 @@ mod tests {
             ) : ()
         "};
         let (mut interp, class) = load(src);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        let r = expect_ok(interp.send(instance, Symbol::intern("R"), vec![]), "R");
-        let Value::Obj(r) = r else {
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let r = expect_ok(interp.send(&instance, Symbol::intern("R"), &[]), "R");
+        let Value::Obj(_) = interp.fetch(&r) else {
             panic!("`R` answers a class object")
         };
-        expect_ok(interp.instantiate(r, vec![]), "R new");
+        expect_ok(interp.instantiate(&r, &[]), "R new");
         assert_eq!(interp.spare_walks.len(), 1, "one walk ran at a time");
         let spare: *const Instantiation = &*interp.spare_walks[0];
         assert!(
@@ -1553,7 +1639,7 @@ mod tests {
                 .all(|state| matches!(state.instance, Value::Nil) && state.levels.is_empty()),
             "a spare holds no handle"
         );
-        expect_ok(interp.instantiate(r, vec![]), "R new again");
+        expect_ok(interp.instantiate(&r, &[]), "R new again");
         assert_eq!(interp.spare_walks.len(), 1);
         assert!(
             std::ptr::eq(spare, &*interp.spare_walks[0]),
@@ -1583,15 +1669,12 @@ mod tests {
             ) : ()
         "};
         let (mut interp, class) = load(src);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        let cell = expect_ok(
-            interp.send(instance, Symbol::intern("Cell"), vec![]),
-            "Cell",
-        );
-        let Value::Obj(cell) = cell else {
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let cell = expect_ok(interp.send(&instance, Symbol::intern("Cell"), &[]), "Cell");
+        let Value::Obj(_) = interp.fetch(&cell) else {
             panic!("`Cell` answers a class object")
         };
-        expect_ok(interp.instantiate(cell, vec![]), "Cell new");
+        expect_ok(interp.instantiate(&cell, &[]), "Cell new");
         assert_eq!(interp.spare_walks.len(), 1, "one walk ran");
         let state = &interp.spare_walks[0];
         assert!(matches!(state.instance, Value::Nil), "no instance handle");
@@ -1605,10 +1688,25 @@ mod tests {
     /// Every decision answers a `Result<Step, Signal>`, so its size is paid
     /// on every send; a variant that grows it is a cost on every benchmark,
     /// not only on the path it serves (`StepArgs::ControlFlow`'s comment).
-    /// This is the size the hot path was measured at.
-    #[cfg(target_pointer_width = "64")]
+    /// This is the size the hot path was measured at, in a release build: a
+    /// debug build's handles carry an origin and a move epoch besides their
+    /// index, so it measures something else. The measurement protocol runs
+    /// this with `--release`.
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn a_decision_stays_the_size_the_hot_path_was_measured_at() {
         assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 56);
+    }
+
+    /// The debug-build twin of the pin above, so that a variant that grows a
+    /// decision is noticed by the ordinary suite and not only by the release
+    /// run the measurement protocol makes. It only notices growth: the
+    /// release figure is the one the hot path was measured at, and a debug
+    /// handle carries its origin and move epoch besides its index, which is
+    /// what puts this above it.
+    #[cfg(all(target_pointer_width = "64", debug_assertions))]
+    #[test]
+    fn a_decision_stays_the_size_it_has_in_a_debug_build() {
+        assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 64);
     }
 }

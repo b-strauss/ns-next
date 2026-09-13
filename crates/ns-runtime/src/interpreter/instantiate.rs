@@ -8,12 +8,12 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
-use crate::heap::Heap;
+use crate::heap::{Heap, Root};
 use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
 use crate::types::*;
 use crate::Symbol;
 
-use super::{EvalResult, Interpreter, Signal, Step};
+use super::{HostError, HostResult, HostSignal, Interpreter, Signal, Step};
 
 /// How many finished walks' boxes `Interpreter::retire_walk` keeps for
 /// reuse, and how many levels of room each keeps. One box serves any number
@@ -76,8 +76,9 @@ impl Interpreter {
     /// Every method and every per-mixin body is compiled onto the
     /// declaration it belongs to as the tree is built, so a class this
     /// returns is already runnable. It is compiled with the lowering this
-    /// interpreter was bootstrapped with.
-    pub fn load_module(&mut self, resolved: &ResolvedModule) -> ClassRef {
+    /// interpreter was bootstrapped with. The class comes back rooted, for
+    /// the host that will instantiate it.
+    pub fn load_module(&mut self, resolved: &ResolvedModule) -> Root {
         let decl = &resolved.module.root_class;
         let mixin = self.build_mixin(decl, &resolved.bindings);
         let superclass = self.resolve_superclass_receiver(decl);
@@ -93,7 +94,8 @@ impl Interpreter {
         // class is the outermost level, so no object encloses it and no
         // declaration contains it. Every other class object in the system
         // comes from `interpreter::nested`, which passes both.
-        self.new_class_object(application, None, None, superclass)
+        let class = self.new_class_object(application, None, None, superclass);
+        self.stash(Value::Obj(class))
     }
 
     /// Builds the mixin for `decl`, recursively including its nested
@@ -270,15 +272,33 @@ impl Interpreter {
         None
     }
 
-    /// Instantiates `class` from a host: the six numbered steps in
-    /// `docs/design/object-model.md`, "Instantiation", decided
+    /// Instantiates the class `class` holds, from a host: the six numbered
+    /// steps in `docs/design/object-model.md`, "Instantiation", decided
     /// (`decide_instantiation`) and then run from the outside
-    /// (`run_from_host`), like a host's `send`.
-    pub fn instantiate(&mut self, class: ClassRef, factory_args: Vec<Value>) -> EvalResult {
-        match self.decide_instantiation(class, factory_args) {
+    /// (`run_from_host`), like a host's `send`. A root that holds anything
+    /// but a class object is refused as a Newspeak error, never a panic:
+    /// the caller is a host.
+    pub fn instantiate(&mut self, class: &Root, factory_args: &[Root]) -> HostResult {
+        let value = self.fetch(class);
+        let class = match value {
+            Value::Obj(obj) if self.heap.is_class(obj) => obj,
+            _ => {
+                return Err(HostSignal::Error(HostError {
+                    selector: Symbol::NEW,
+                    receiver: self.stash(value),
+                    message: format!(
+                        "cannot instantiate {}: it is not a class",
+                        self.heap.describe(&value)
+                    ),
+                }))
+            }
+        };
+        let factory_args: Vec<Value> = factory_args.iter().map(|arg| self.fetch(arg)).collect();
+        let result = match self.decide_instantiation(class, factory_args) {
             Ok(step) => self.run_from_host(step, &[]),
             Err(signal) => Err(signal),
-        }
+        };
+        self.to_host(result)
     }
 
     /// Decides an instantiation of `class` with `factory_args` without running

@@ -260,7 +260,7 @@ fn disasm_of_a_binary_matches_disasm_of_its_source() {
 /// would present it.
 #[test]
 fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
-    use ns_runtime::{Interpreter, Mixin, SourceOrigin, Symbol};
+    use ns_runtime::{Interpreter, Mixin, SourceOrigin, Symbol, Value};
     use std::rc::Rc;
 
     let src = indoc! {"
@@ -274,7 +274,11 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
     let resolved = ns_runtime::resolve(module, Rc::from(src), SourceOrigin::File("bare.ns".into()))
         .expect("resolve");
     let mut interp = Interpreter::bootstrap();
+    // Nothing runs from here on, so the class is fetched once, at once.
     let class = interp.load_module(&resolved);
+    let Value::Obj(class) = interp.fetch(&class) else {
+        panic!("load_module answers a class object")
+    };
     let application = interp
         .heap_ref()
         .class_application(class)

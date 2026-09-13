@@ -118,7 +118,10 @@ pub(crate) fn execute(
             return ExitCode::FAILURE;
         }
         match ns_runtime::image::load(&raw) {
-            Ok(loaded) => match root_mixin_of(loaded.interp.heap_ref(), loaded.root_class) {
+            Ok(loaded) => match root_mixin_of(
+                loaded.interp.heap_ref(),
+                crate::entry::class_ref(&loaded.interp, &loaded.root_class),
+            ) {
                 Ok(m) => m,
                 Err(msg) => {
                     eprintln!("error: {msg}");
@@ -137,7 +140,7 @@ pub(crate) fn execute(
         };
         let (interp, class) =
             source::bootstrap(&loaded, lowering.unwrap_or(ns_runtime::Lowering::Optimized));
-        match root_mixin_of(interp.heap_ref(), class) {
+        match root_mixin_of(interp.heap_ref(), crate::entry::class_ref(&interp, &class)) {
             Ok(m) => m,
             Err(msg) => {
                 eprintln!("error: {msg}");

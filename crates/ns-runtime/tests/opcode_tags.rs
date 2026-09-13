@@ -142,6 +142,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(FRAME_INITIALIZER, 3);
     assert_eq!(FRAME_SUPERCLASS_CLAUSE, 4);
     assert_eq!(FRAME_SUPERCLASS_MESSAGE, 5);
+    assert_eq!(FRAME_CLOSURE_OBJECT, 6);
 
     assert_eq!(PC_KIND_TREE_WALK, 0);
     assert_eq!(PC_KIND_BYTECODE, 1);
@@ -182,6 +183,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             FRAME_INITIALIZER,
             FRAME_SUPERCLASS_CLAUSE,
             FRAME_SUPERCLASS_MESSAGE,
+            FRAME_CLOSURE_OBJECT,
         ],
         &[PC_KIND_TREE_WALK, PC_KIND_BYTECODE],
         &[HASHED_BUILTIN_CLASS, HASHED_ROOT_CLASS, HASHED_PLATFORM],

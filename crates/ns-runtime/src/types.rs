@@ -47,7 +47,7 @@ pub enum ObjectData {
     Str(String),
     Sym(Symbol),
     Array(Vec<Value>),
-    Closure(Rc<ClosureData>),
+    Closure(ClosureData),
     Class(ClassData),
 }
 
@@ -143,15 +143,22 @@ impl BuiltinClass {
     ];
 }
 
+/// A block closure. Its parameter names and compiled body are `Rc`s it
+/// shares with the `MakeClosure` instruction that made it -- the same for
+/// every closure one instruction makes -- and the two frames it captured
+/// are its own. Stored inline in the closure object, never behind an `Rc`
+/// of its own: a handle lives only where the tracer can rewrite it in place
+/// (`docs/design/memory.md`, "What the collector traces"), so everything
+/// else that needs a closure -- an activation's `FrameKind`, a native
+/// loop's state, a decided `Step` -- names the closure object instead.
 #[derive(Debug, Clone)]
 pub struct ClosureData {
-    /// Shared with the `MakeClosure` instruction that created the closure --
-    /// the names are the same for every closure one instruction makes.
     pub params: Rc<Vec<Symbol>>,
     pub code: Rc<crate::bytecode::CompiledCode>,
+    /// The activation the closure was created in, reified.
     pub captured_frame: FrameRef,
-    /// The lexically enclosing *method* (or initializer) activation -- see
-    /// the design note above on why this is a `FrameRef`, not an `ObjRef`.
+    /// The lexically enclosing *method* (or initializer) activation, which a
+    /// `^` in the block returns from.
     pub home: FrameRef,
 }
 
@@ -194,7 +201,10 @@ pub enum SourceOrigin {
 #[derive(Debug, Clone)]
 pub enum FrameKind {
     Method(Rc<crate::mixin::MixinMethod>),
-    Closure(Rc<ClosureData>),
+    /// An activation of the closure object named. Its body and the frames
+    /// it captured are read through the object (`Heap::closure_activation`,
+    /// `Heap::activation_captured`).
+    Closure(ObjRef),
     /// A top-of-chain activation with no method or class of its own.
     /// Nothing that runs a program builds one (an instance initializer is
     /// `Initializer`); kept for the image format's frame table and a future
@@ -237,9 +247,9 @@ pub enum Continuation {
     /// (`builtins::boolean::truthy`).
     Truthy,
     /// A native `whileTrue:`/`whileFalse:` loop's condition returned.
-    WhileCondition(Rc<WhileLoop>),
+    WhileCondition(Box<WhileLoop>),
     /// Its body returned.
-    WhileBody(Rc<WhileLoop>),
+    WhileBody(Box<WhileLoop>),
     /// A native `do:` loop's block returned for one element: activate it for
     /// the next, or answer the receiver
     /// (`builtins::collections::after_element`).
@@ -258,23 +268,27 @@ pub enum Continuation {
 /// A native `whileTrue:`/`whileFalse:` loop in progress: its condition, its
 /// body -- any value, since a body that is not a block evaluates to itself --
 /// and the condition value that keeps it going.
-#[derive(Debug)]
+///
+/// Boxed in its continuation, and owned by exactly one stack entry.
+#[derive(Debug, Clone)]
 pub struct WhileLoop {
-    pub(crate) condition: Rc<ClosureData>,
+    /// The condition's closure object.
+    pub(crate) condition: ObjRef,
     pub(crate) body: Value,
     pub(crate) expect: bool,
 }
 
 /// A native `do:` loop in progress: the collection it answers when it is done,
-/// its block, the elements the collection had when the loop began -- `do:`
-/// walks that snapshot, so a block that changes the collection does not
-/// change the walk -- and the index of the next element to hand the block.
+/// its block's closure object, the elements the collection had when the loop
+/// began -- `do:` walks that snapshot, so a block that changes the collection
+/// does not change the walk -- and the index of the next element to hand the
+/// block.
 ///
 /// Boxed in its continuation, and owned by exactly one stack entry.
 #[derive(Debug, Clone)]
 pub struct DoLoop {
     pub(crate) receiver: Value,
-    pub(crate) block: Rc<ClosureData>,
+    pub(crate) block: ObjRef,
     pub(crate) items: Vec<Value>,
     pub(crate) next: usize,
 }

@@ -5,7 +5,7 @@
 use indoc::indoc;
 use ns_runtime::types::Value;
 use ns_runtime::Interpreter;
-use ns_runtime::{Signal, Symbol};
+use ns_runtime::{HostResult, HostSignal, Root, Symbol};
 
 #[test]
 fn array_accessors_read_and_write_through_the_seam() {
@@ -128,7 +128,7 @@ fn a_builtin_class_reports_its_kind_through_the_seam() {
     assert!(interp.heap_ref().class_builtin(class).is_some());
 }
 
-fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
+fn load(src: &str) -> (Interpreter, Root) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -141,11 +141,11 @@ fn load(src: &str) -> (Interpreter, ns_runtime::ClassRef) {
     (interp, class)
 }
 
-fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
-        Ok(v) => v,
-        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
-        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+        Ok(root) => root,
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
     }
 }
 
@@ -167,16 +167,16 @@ fn register_addressing_puts_arguments_before_temporaries() {
     // does `platform()`, so the two cannot be nested in one expression.
     let platform = interp.platform();
     let instance = expect_ok(
-        interp.send(
-            Value::Obj(class),
-            Symbol::intern("usingPlatform:"),
-            vec![platform],
-        ),
+        interp.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
         "instantiate",
     );
     let result = expect_ok(
-        interp.send(instance, Symbol::intern("run:"), vec![Value::SmallInt(41)]),
+        interp.send(
+            &instance,
+            Symbol::intern("run:"),
+            &[interp.stash(Value::SmallInt(41))],
+        ),
         "run:",
     );
-    assert!(matches!(result, Value::SmallInt(41)));
+    assert!(matches!(interp.fetch(&result), Value::SmallInt(41)));
 }

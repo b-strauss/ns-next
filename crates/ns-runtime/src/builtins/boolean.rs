@@ -73,9 +73,9 @@ pub(crate) fn dispatch(
 /// reference library's `ifTrue: aValue` convention.
 fn block_step(interp: &Interpreter, arg: Value, then: Continuation) -> Step {
     if let Value::Obj(obj) = arg {
-        if let Some(closure) = interp.heap_ref().closure_data(obj) {
+        if interp.heap_ref().is_closure(obj) {
             return Step::Block {
-                closure,
+                closure: obj,
                 args: StepArgs::ControlFlow,
                 then,
             };

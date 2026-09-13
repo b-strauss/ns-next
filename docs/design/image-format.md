@@ -61,6 +61,14 @@ They are **one format**, distinguished by a header flag. The binary is the
 image's leading sections stopping where the object graph would begin, plus a
 recorded entry point.
 
+A host holds what a load answers as roots: `image::load`'s `LoadedImage`
+carries the root class and the image's roots as `Root`s
+([memory.md](memory.md), "Host roots"), stashed once decoding and every
+verification are done — nothing runs while an artifact decodes, so
+nothing moves under the decoder's plain handles. `image::snapshot` and
+`image::build` take plain values, which a host fetches from its roots just
+before the call, for the same reason: encoding runs no code.
+
 ## Layout
 
 ```
@@ -174,7 +182,14 @@ disagreeing with the loader. A sixth family is *retired*: a frame record once
 carried a byte naming the unit its `pc` counted in, and only instruction indices
 were ever representable, so the byte was removed. Its two numbers, 0 and 1
 (`PC_KIND_*`), stay assigned and pinned, so a unit field that ever returns cannot
-give them a new meaning.
+give them a new meaning. One frame kind is retired the same way: `FRAME_CLOSURE`
+(1) carried a copy of the closure's record inline, from when the closure's data
+sat behind an `Rc` its object and every activation of it shared. That data now
+sits inline in the closure object, so that the tracer can rewrite its two frame
+handles in place ([memory.md](memory.md), "What the collector traces"), and a
+closure frame names the object instead, as `FRAME_CLOSURE_OBJECT` (6). The old
+number stays assigned so that a stale record is refused as an unknown tag rather
+than read with a layout it does not have.
 
 **Mixin table.** One row per declaration: the name, its own slot names, the
 primary factory selector and arity, the method table as selector → code id, the
@@ -196,7 +211,10 @@ frame and home as frame ids.
 
 **Frame table.** Every `Frame` reachable from the roots, with receiver, args,
 temps, `pc` — an instruction index into the frame's compiled body — `sender`,
-`home`, `current_class`, `kind` and `uncontinuable`.
+`home`, `current_class`, `kind` and `uncontinuable`. A closure frame's `kind`
+names the closure object it runs, by object id; that the id names a closure is
+checked once every record has been read (`NotAClosureReference`), as a class
+reference is.
 Frames and objects reference each other freely, so both tables are
 placeholder-allocated before either is filled.
 
@@ -242,8 +260,9 @@ what "verbatim" promises for every other object.
 Only through a closure. A running activation lives on the activation stack and
 is not in the object graph at all; a frame exists for it only once a block
 captured it ([execution.md](execution.md), "Activations"). So a frame enters the
-table only as a closure's `captured_frame` or `home`, or as the `captured_frame`
-or `home` of a frame already in it. A snapshot is taken at a **quiesced** point —
+table only as a closure's `captured_frame` or `home` — a closure a value names,
+or the one a closure frame already in the table runs — or as the `home` of a
+frame already in it. A snapshot is taken at a **quiesced** point —
 after instantiation, optionally after an entry send, with the Rust call stack
 already unwound and the activation stack empty; `image::snapshot` refuses to
 encode otherwise — so every frame in it is dead:

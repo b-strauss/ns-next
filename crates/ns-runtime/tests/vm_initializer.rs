@@ -6,12 +6,12 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::{
-    BuiltinClass, ClassData, ClassRef, FrameKind, Interpreter, Mixin, MixinApplication, ObjectData,
-    Signal, SourceOrigin, Symbol, Value,
+    BuiltinClass, ClassData, ClassRef, FrameKind, HostResult, HostSignal, Interpreter, Mixin,
+    MixinApplication, ObjectData, Root, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
-fn load(src: &str) -> (Interpreter, ClassRef) {
+fn load(src: &str) -> (Interpreter, Root) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -24,11 +24,11 @@ fn load(src: &str) -> (Interpreter, ClassRef) {
     (interp, class)
 }
 
-fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
-        Ok(v) => v,
-        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
-        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+        Ok(root) => root,
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
     }
 }
 
@@ -42,11 +42,13 @@ fn int_of(v: &Value) -> i64 {
 /// Instantiates with `factory_args`, sends `getter`, returns the result.
 fn instantiate_and_get(src: &str, factory_args: Vec<Value>, getter: &str) -> Value {
     let (mut interp, class) = load(src);
-    let instance = expect_ok(interp.instantiate(class, factory_args), "instantiate");
-    expect_ok(
-        interp.send(instance, Symbol::intern(getter), vec![]),
-        getter,
-    )
+    let factory_args: Vec<Root> = factory_args
+        .into_iter()
+        .map(|arg| interp.stash(arg))
+        .collect();
+    let instance = expect_ok(interp.instantiate(&class, &factory_args), "instantiate");
+    let result = expect_ok(interp.send(&instance, Symbol::intern(getter), &[]), getter);
+    interp.fetch(&result)
 }
 
 const FACTORY_PARAM: &str = indoc! {"
@@ -93,12 +95,9 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-    let v = expect_ok(
-        interp.send(instance, Symbol::intern("blk2"), vec![]),
-        "blk2",
-    );
-    let Value::Obj(obj) = &v else {
+    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    let v = expect_ok(interp.send(&instance, Symbol::intern("blk2"), &[]), "blk2");
+    let Value::Obj(obj) = &interp.fetch(&v) else {
         panic!("expected a closure object")
     };
     let closure = interp
@@ -116,7 +115,8 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
 fn a_return_inside_a_block_in_init_exprs_escapes_instantiate() {
     // A known gap (`docs/design/execution.md`, "Non-local return"): the
     // `Signal::Return` targets the initializer activation, which is still
-    // running, and nothing catches it.
+    // running, and nothing catches it: the host receives it as
+    // `HostSignal::Return`.
     let src = indoc! {"
         Newspeak3
         'T'
@@ -127,15 +127,15 @@ fn a_return_inside_a_block_in_init_exprs_escapes_instantiate() {
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let result = interp.instantiate(class, vec![]);
-    assert!(matches!(result, Err(Signal::Return(..))));
+    let result = interp.instantiate(&class, &[]);
+    assert!(matches!(result, Err(HostSignal::Return)));
 }
 
 #[test]
 fn a_factory_arity_mismatch_is_still_the_shared_error() {
     let (mut interp, class) = load(FACTORY_PARAM);
-    match interp.instantiate(class, vec![]) {
-        Err(Signal::Error(e)) => assert!(
+    match interp.instantiate(&class, &[]) {
+        Err(HostSignal::Error(e)) => assert!(
             e.message.contains("wrong number of factory arguments"),
             "{}",
             e.message
@@ -177,8 +177,8 @@ fn make_class(
     interp: &mut Interpreter,
     class_of_class: ClassRef,
     application: Rc<MixinApplication>,
-) -> ClassRef {
-    interp.heap_mut().alloc_object(
+) -> Root {
+    let class = interp.heap_mut().alloc_object(
         class_of_class,
         ObjectData::Class(ClassData {
             application,
@@ -193,7 +193,8 @@ fn make_class(
             builtin: None,
             metaclass: None,
         }),
-    )
+    );
+    interp.stash(Value::Obj(class))
 }
 
 /// The `SmallInt` held at `instance`'s field `index` -- `Value` has no
@@ -238,6 +239,9 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
         ) : ()
     "};
     let (mut interp, loaded) = load(src);
+    let Value::Obj(loaded) = interp.fetch(&loaded) else {
+        panic!("load_module answers a class object")
+    };
     let shared_mixin = interp
         .heap_ref()
         .class_application(loaded)
@@ -266,20 +270,20 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     let class_b = make_class(&mut interp, object_class, app_b.clone());
 
     let a = expect_ok(
-        interp.instantiate(class_a, vec![Value::SmallInt(11)]),
+        interp.instantiate(&class_a, &[interp.stash(Value::SmallInt(11))]),
         "instantiate a",
     );
     let b = expect_ok(
-        interp.instantiate(class_b, vec![Value::SmallInt(22)]),
+        interp.instantiate(&class_b, &[interp.stash(Value::SmallInt(22))]),
         "instantiate b",
     );
     assert_eq!(
-        field_at(interp.heap_ref(), &a, app_a.own_slot_base),
+        field_at(interp.heap_ref(), &interp.fetch(&a), app_a.own_slot_base),
         11,
         "a's own slot must land at its own application's absolute offset"
     );
     assert_eq!(
-        field_at(interp.heap_ref(), &b, app_b.own_slot_base),
+        field_at(interp.heap_ref(), &interp.fetch(&b), app_b.own_slot_base),
         22,
         "b's own slot must land at its own application's absolute offset"
     );
@@ -310,12 +314,13 @@ fn a_three_level_chain_initializes_every_level_at_its_own_absolute_offsets() {
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let module = expect_ok(interp.instantiate(class, vec![]), "instantiate Levels");
-    let leaf_class = expect_ok(interp.send(module, Symbol::intern("Leaf"), vec![]), "Leaf");
+    let module = expect_ok(interp.instantiate(&class, &[]), "instantiate Levels");
+    let leaf_class = expect_ok(interp.send(&module, Symbol::intern("Leaf"), &[]), "Leaf");
     let leaf = expect_ok(
-        interp.send(leaf_class, Symbol::intern("new"), vec![]),
+        interp.send(&leaf_class, Symbol::intern("new"), &[]),
         "Leaf new",
     );
+    let leaf = interp.fetch(&leaf);
     // `Middle withMiddle: 2` -> `Base withBase: 2 + 1`, so the deepest
     // level's own argument is the one its own clause computed.
     for (index, expected) in [(0, 3), (1, 10), (2, 2), (3, 20), (4, 3), (5, 30)] {

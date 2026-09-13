@@ -22,7 +22,7 @@ pub mod mixins;
 pub mod opcodes;
 pub mod symbols;
 
-use crate::heap::Heap;
+use crate::heap::{Heap, Root};
 use crate::types::{ClassRef, SourceOrigin, Value};
 use crate::{Interpreter, Symbol};
 
@@ -210,8 +210,11 @@ pub struct LoadedImage {
     /// Bootstrapped. The image's code lives on the declarations its mixin
     /// table rebuilt.
     pub interp: Interpreter,
-    pub root_class: ClassRef,
-    pub roots: Vec<Value>,
+    /// The module's root class, rooted for the host that will instantiate
+    /// it or snapshot it again.
+    pub root_class: Root,
+    /// The image's roots, rooted: a host sends to them, which runs code.
+    pub roots: Vec<Root>,
     /// Where the module came from. Provenance, not program text -- it is
     /// in every image, source blob or not.
     pub origin: SourceOrigin,
@@ -282,7 +285,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         // something to send.
         return Err("a stateless artifact must record an entry selector".to_string());
     }
-    let platform = interp.platform();
+    let platform = interp.platform_value();
     // A binary carries no graph section at all -- `decode_graph_section`
     // would read the next artifact's bytes (there are none) as if they were
     // one. `DecodedGraph::empty()` is the graph a binary has: no roots, no
@@ -315,10 +318,20 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         }
         .to_string());
     }
+    // Rooted only now, after every verification pass and the trailing-bytes
+    // check: nothing runs while an artifact decodes, so nothing moves under
+    // the plain handles above, and a refused artifact answers nothing to
+    // root (`docs/design/image-format.md`, "Two artifacts").
+    let root_class = interp.stash(Value::Obj(root_class));
+    let roots = graph
+        .roots
+        .into_iter()
+        .map(|root| interp.stash(root))
+        .collect();
     Ok(LoadedImage {
         interp,
         root_class,
-        roots: graph.roots,
+        roots,
         origin,
         source,
         entry,

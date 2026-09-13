@@ -12,8 +12,8 @@ use ns_runtime::image;
 use ns_runtime::image::{decode, encode, mixins, symbols};
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
-    BuiltinClass, ClassData, ClassRef, FrameKind, Heap, Interpreter, Mixin, MixinApplication,
-    ObjectData, Signal, SourceOrigin, Symbol, Value,
+    BuiltinClass, ClassData, ClassRef, FrameKind, Heap, HostResult, HostSignal, Interpreter, Mixin,
+    MixinApplication, ObjectData, Root, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
@@ -233,7 +233,7 @@ fn an_invalid_bool_tag_is_an_error_not_a_panic() {
 // The code table and the root list.
 // ---------------------------------------------------------------------------
 
-fn load(src: &str) -> (Interpreter, ClassRef) {
+fn load(src: &str) -> (Interpreter, Root) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -244,6 +244,15 @@ fn load(src: &str) -> (Interpreter, ClassRef) {
     let mut interp = Interpreter::bootstrap();
     let class = interp.load_module(&resolved);
     (interp, class)
+}
+
+/// The class object `root` holds, for the heap accessors and the encoder,
+/// which take one. Fetched where it is used: a run may move it.
+fn class_ref(interp: &Interpreter, root: &Root) -> ClassRef {
+    match interp.fetch(root) {
+        Value::Obj(class) => class,
+        _ => panic!("expected a class object"),
+    }
 }
 
 /// A `symbols::Table` holding exactly `strings`, in order -- so `strings[i]`
@@ -531,6 +540,7 @@ fn every_instr_variant_round_trips() {
         ) : ()
     "};
     let (mut interp, class) = load(src);
+    let class = class_ref(&interp, &class);
     let synthetic = Rc::new(every_instr_once());
     let doctored = Mixin {
         initializer_code: Some(synthetic.clone()),
@@ -550,6 +560,7 @@ fn every_instr_variant_round_trips() {
 #[test]
 fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents() {
     let (interp, class) = load(RICH);
+    let class = class_ref(&interp, &class);
     let (table, decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), class);
     let root = &decoded_mixins.code[0];
     assert_eq!(root.methods.len(), 3);
@@ -594,6 +605,7 @@ fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents()
 #[test]
 fn a_decoded_mixin_carries_the_bodies_its_row_names() {
     let (interp, class) = load(RICH);
+    let class = class_ref(&interp, &class);
     let (_table, decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), class);
     let root = decoded_mixins.root().expect("a root row");
     assert_eq!(root.methods.len(), 3);
@@ -772,6 +784,7 @@ fn an_invalid_builtin_class_tag_is_a_decode_error_not_a_panic() {
 #[test]
 fn a_truncated_code_table_is_a_decode_error_not_a_panic() {
     let (interp, class) = load(RICH);
+    let class = class_ref(&interp, &class);
     let mut w = encode::Writer::new();
     let mut symbols = symbols::Builder::new();
     encode::encode_code_table(&mut w, interp.heap_ref(), class, &mut symbols)
@@ -1104,6 +1117,7 @@ fn the_deepest_literal_array_the_parser_accepts_survives_a_round_trip() {
          MAX_LITERAL_DEPTH cannot be 64"
     );
     let (interp, class) = load(&source_with_nested_literal_array(levels));
+    let class = class_ref(&interp, &class);
     let original = method_code(interp.heap_ref(), class, "arr");
     assert_eq!(
         literal_array_depth(&original),
@@ -1189,6 +1203,9 @@ fn the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs() {
         .expect("resolve");
         let mut interp = Interpreter::bootstrap_with(lowering);
         let class = interp.load_module(&resolved);
+        // Nothing runs in this interpreter, so the class read from its root
+        // stays current.
+        let class = class_ref(&interp, &class);
         assert_eq!(
             block_nesting(&method_code(interp.heap_ref(), class, "nest")),
             levels,
@@ -1207,15 +1224,15 @@ fn the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs() {
             Err(e) => panic!("{lowering:?}: {levels} nested blocks must load: {e}"),
         };
         let instance = expect_ok(
-            loaded.interp.instantiate(loaded.root_class, vec![]),
+            loaded.interp.instantiate(&loaded.root_class, &[]),
             "instantiate",
         );
         let answer = expect_ok(
-            loaded.interp.send(instance, Symbol::intern("nest"), vec![]),
+            loaded.interp.send(&instance, Symbol::intern("nest"), &[]),
             "nest",
         );
         assert!(
-            matches!(answer, Value::Nil),
+            matches!(loaded.interp.fetch(&answer), Value::Nil),
             "{lowering:?}: `[] value` is nil"
         );
     }
@@ -1225,11 +1242,13 @@ fn the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs() {
 // The object table and the frame table.
 // ---------------------------------------------------------------------------
 
-fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+/// `HostSignal` carries no `Debug` impl, so `Result::expect` is unusable on
+/// a `HostResult` -- unwrap by hand.
+fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
-        Ok(v) => v,
-        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
-        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+        Ok(root) => root,
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
     }
 }
 
@@ -1249,13 +1268,20 @@ fn mixin_ids_for(
 /// Loads `src`, lets `make_roots` build the roots, encodes code table +
 /// graph section, decodes both with the same `Reader`, and returns
 /// (interp, class, original roots, decoded roots, max identity hash).
+///
+/// `make_roots` may run code, so the class and the roots stay rooted across
+/// it and are read out after it, for the encoder and the decoder, which run
+/// nothing -- so what this answers is current until the caller's next run.
 fn round_trip_graph(
     src: &str,
-    make_roots: impl FnOnce(&mut Interpreter, &ClassRef) -> Vec<Value>,
+    make_roots: impl FnOnce(&mut Interpreter, &Root) -> Vec<Root>,
 ) -> (Interpreter, ClassRef, Vec<Value>, Vec<Value>, u32) {
     let (mut interp, class) = load(src);
     let roots = make_roots(&mut interp, &class);
     let platform = interp.platform();
+    let class = class_ref(&interp, &class);
+    let roots: Vec<Value> = roots.iter().map(|root| interp.fetch(root)).collect();
+    let platform = interp.fetch(&platform);
     let mut symbols = symbols::Builder::new();
     let mut w = encode::Writer::new();
     let ids = encode::encode_code_table(&mut w, interp.heap_ref(), class, &mut symbols)
@@ -1315,11 +1341,8 @@ fn obj(v: &Value) -> &ns_runtime::ObjRef {
 fn instances_and_arrays_round_trip_with_shared_identity_preserved() {
     let (interp, _c, original, decoded, _max) = round_trip_graph(EMPTY, |interp, _| {
         let shared = Value::Obj(interp.new_string("shared".to_string()));
-        vec![Value::Obj(interp.new_array(vec![
-            shared,
-            shared,
-            Value::SmallInt(7),
-        ]))]
+        let array = interp.new_array(vec![shared, shared, Value::SmallInt(7)]);
+        vec![interp.stash(Value::Obj(array))]
     });
     let heap = interp.heap_ref();
     let elements = heap
@@ -1352,7 +1375,10 @@ fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
         // Requested in this order, so `second` holds the higher hash.
         interp.heap_mut().ensure_identity_hash(first);
         interp.heap_mut().ensure_identity_hash(second);
-        vec![Value::Obj(second), Value::Obj(first)]
+        vec![
+            interp.stash(Value::Obj(second)),
+            interp.stash(Value::Obj(first)),
+        ]
     });
     let heap = interp.heap_ref();
     let higher = heap.identity_hash(*obj(&original[0]));
@@ -1367,8 +1393,8 @@ fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
 fn class_references_resolve_to_the_same_live_class_objects() {
     let (interp, class, _o, decoded, _max) = round_trip_graph(EMPTY, |interp, class| {
         vec![
-            Value::Obj(interp.builtin_class(BuiltinClass::Integer)),
-            Value::Obj(*class),
+            interp.stash(Value::Obj(interp.builtin_class(BuiltinClass::Integer))),
+            class.clone(),
         ]
     });
     assert!(obj(&decoded[0]).same(interp.builtin_class(BuiltinClass::Integer)));
@@ -1379,7 +1405,8 @@ fn class_references_resolve_to_the_same_live_class_objects() {
 fn the_platform_singleton_resolves_to_the_interpreters_own() {
     let (mut interp, _c, _o, decoded, _max) =
         round_trip_graph(EMPTY, |interp, _| vec![interp.platform()]);
-    assert!(obj(&decoded[0]).same(*obj(&interp.platform())));
+    let platform = interp.platform();
+    assert!(obj(&decoded[0]).same(*obj(&interp.fetch(&platform))));
 }
 
 #[test]
@@ -1393,7 +1420,7 @@ fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
         ) : ()
     "};
     let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class| {
-        vec![expect_ok(interp.instantiate(*class, vec![]), "instantiate")]
+        vec![expect_ok(interp.instantiate(class, &[]), "instantiate")]
     });
     let heap = interp.heap_ref();
     let snapshot = heap.object_snapshot(*obj(&decoded[0]));
@@ -1420,9 +1447,9 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
         ) : ()
     "};
     let (interp, class, original, decoded, _max) = round_trip_graph(src, |interp, class| {
-        let instance = expect_ok(interp.instantiate(*class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate(class, &[]), "instantiate");
         let closure = expect_ok(
-            interp.send(instance, Symbol::intern("outer"), vec![]),
+            interp.send(&instance, Symbol::intern("outer"), &[]),
             "outer",
         );
         // Synthetic "paused" state: edit the home frame's pc and grow its
@@ -1430,7 +1457,7 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
         {
             let c = interp
                 .heap_ref()
-                .closure_data(*obj(&closure))
+                .closure_data(*obj(&interp.fetch(&closure)))
                 .expect("expected a closure");
             let (_, args_len, temps_len) = interp.heap_ref().frame_register_shape(c.home);
             interp.heap_mut().frame_grow_temps(c.home, temps_len + 1);
@@ -1501,7 +1528,7 @@ fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
         ) : ()
     "};
     let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class| {
-        vec![expect_ok(interp.instantiate(*class, vec![]), "instantiate")]
+        vec![expect_ok(interp.instantiate(class, &[]), "instantiate")]
     });
     let heap = interp.heap_ref();
     let held = heap
@@ -1530,8 +1557,12 @@ fn the_graph_section_encoding_is_deterministic() {
     let mut encodings = Vec::new();
     for _ in 0..2 {
         let (mut interp, class) = load(src);
-        let roots = vec![expect_ok(interp.instantiate(class, vec![]), "instantiate")];
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let platform = interp.platform();
+        // Read out after the last run, for the encoder, which runs nothing.
+        let class = class_ref(&interp, &class);
+        let roots = vec![interp.fetch(&instance)];
+        let platform = interp.fetch(&platform);
         let mut symbols = symbols::Builder::new();
         let mut w = encode::Writer::new();
         let ids = encode::encode_code_table(&mut w, interp.heap_ref(), class, &mut symbols)
@@ -1571,8 +1602,12 @@ struct GraphFixture {
 
 impl GraphFixture {
     fn new() -> GraphFixture {
+        // Nothing ever runs in a fixture's interpreter, so the class and the
+        // platform read out of their roots here stay current.
         let (mut interp, class) = load(EMPTY);
+        let class = class_ref(&interp, &class);
         let platform = interp.platform();
+        let platform = interp.fetch(&platform);
         let mixins = mixin_preorder(interp.heap_ref(), class);
         GraphFixture {
             interp,
@@ -1994,15 +2029,34 @@ fn a_method_frame_naming_a_selector_the_class_lost_is_a_decode_error() {
 }
 
 #[test]
-fn a_closure_frames_code_id_out_of_range_is_a_decode_error_not_a_panic() {
-    let mut w = one_frame_prefix();
-    w.write_u8(1); // frame kind: Closure
+fn a_closure_objects_code_id_out_of_range_is_a_decode_error_not_a_panic() {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 1, 0);
+    w.write_u8(0); // class tag: builtin
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
+    w.write_u32(1); // identity hash
+    w.write_u8(4); // object body: Closure
     w.write_u16(0); // no parameters
     w.write_u32(42); // code id, out of range for an empty code table
     let bytes = w.into_bytes();
     assert_eq!(
         GraphFixture::new().decode_err(&bytes),
         decode::DecodeError::BadCodeId(42)
+    );
+}
+
+/// A closure frame names its closure object by id, and an id past the
+/// object table is refused where it is read, before anything indexes by it.
+#[test]
+fn a_closure_frames_object_id_out_of_range_is_a_decode_error_not_a_panic() {
+    let mut w = one_frame_prefix();
+    w.write_u8(6); // frame kind: FRAME_CLOSURE_OBJECT...
+    w.write_u32(42); // ...naming an object past the empty object table
+    w.write_bool(false); // continuable
+    let bytes = w.into_bytes();
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::BadObjectId(42)
     );
 }
 
@@ -2017,8 +2071,13 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let roots = vec![expect_ok(interp.instantiate(class, vec![]), "instantiate")];
+    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let platform = interp.platform();
+    // Read out after the last run, for the encoder and the decoder, which run
+    // nothing.
+    let class = class_ref(&interp, &class);
+    let roots = vec![interp.fetch(&instance)];
+    let platform = interp.fetch(&platform);
     let mut symbols = symbols::Builder::new();
     let mut w = encode::Writer::new();
     let ids = encode::encode_code_table(&mut w, interp.heap_ref(), class, &mut symbols)
@@ -2071,9 +2130,9 @@ fn a_closure_capturing_a_block_activation_round_trips() {
         ) : ()
     "};
     let (interp, class, _o, decoded, _max) = round_trip_graph(src, |interp, class| {
-        let instance = expect_ok(interp.instantiate(*class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate(class, &[]), "instantiate");
         vec![expect_ok(
-            interp.send(instance, Symbol::intern("mk"), vec![]),
+            interp.send(&instance, Symbol::intern("mk"), &[]),
             "mk",
         )]
     });
@@ -2107,6 +2166,192 @@ fn a_closure_capturing_a_block_activation_round_trips() {
         decl,
         &application.mixin.methods[&Symbol::intern("mk")]
     ));
+}
+
+/// A closure frame names the closure object it runs, rather than carrying a
+/// copy of its record: after a round trip the inner closure's captured frame
+/// -- the outer block's activation -- names a decoded closure object, and it
+/// is the outer block, with its one parameter.
+#[test]
+fn a_closure_frame_names_the_closure_object_it_runs() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public mk = ( ^[:x | [ x ] ] value: 5 )
+        ) : ()
+    "};
+    let (interp, _class, _o, decoded, _max) = round_trip_graph(src, |interp, class| {
+        let instance = expect_ok(interp.instantiate(class, &[]), "instantiate");
+        vec![expect_ok(
+            interp.send(&instance, Symbol::intern("mk"), &[]),
+            "mk",
+        )]
+    });
+    let heap = interp.heap_ref();
+    let inner = heap
+        .closure_data(*obj(&decoded[0]))
+        .expect("expected the inner closure");
+    let FrameKind::Closure(outer) = heap.frame_kind(inner.captured_frame) else {
+        panic!("the captured frame is a block activation")
+    };
+    let outer = heap
+        .closure_data(outer)
+        .expect("a closure frame names a closure object");
+    assert_eq!(outer.params.len(), 1, "the outer block takes `x`");
+    assert!(
+        outer.home.same(inner.home),
+        "both closures share `mk`'s activation as their home"
+    );
+}
+
+/// A one-frame graph section whose frame carries the retired closure frame
+/// tag, for the two readers of a graph section below.
+fn retired_closure_frame_graph() -> Vec<u8> {
+    let mut w = one_frame_prefix();
+    w.write_u8(1); // frame kind: the retired FRAME_CLOSURE
+
+    // Padded past the shortest frame record the wire admits, so
+    // `bounded_count` admits the announced frame and the kind tag itself is
+    // what the reader rejects.
+    w.write_bool(false);
+    w.write_u32(0);
+    w.into_bytes()
+}
+
+/// The frame kind a stale artifact wrote for a closure activation, before
+/// the record named the closure object. Its number is retired: the decoder
+/// refuses it rather than read the old inline layout as the new one.
+#[test]
+fn the_retired_closure_frame_tag_is_refused() {
+    assert_eq!(
+        GraphFixture::new().decode_err(&retired_closure_frame_graph()),
+        decode::DecodeError::InvalidTag {
+            what: "frame kind",
+            tag: 1
+        }
+    );
+}
+
+/// `inspect` walks the graph with its own reader, so it has to refuse the
+/// retired tag itself: an artifact `load` refuses must not inspect as if it
+/// were well-formed. The describing sections come from a real snapshot and
+/// the graph section is the hand-written one above, spliced in where the
+/// snapshot's own graph began.
+#[test]
+fn inspect_refuses_the_retired_closure_frame_tag() {
+    let (mut interp, class) = load(TRIVIAL_MODULE);
+    let platform = interp.platform();
+    let mut bytes = image::snapshot(
+        &interp,
+        None,
+        &Origin::File(PathBuf::from("t.ns")),
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[],
+    )
+    .expect("snapshot");
+    let graph_start = image::inspect::inspect(&bytes)
+        .expect("inspect")
+        .sections
+        .iter()
+        .find(|s| s.name == "graph")
+        .expect("a snapshot has a graph section")
+        .start;
+    bytes.truncate(graph_start);
+    bytes.extend_from_slice(&retired_closure_frame_graph());
+    let err = match image::inspect::inspect(&bytes) {
+        Ok(_) => panic!("inspect accepted the retired closure frame tag"),
+        Err(e) => e,
+    };
+    assert_eq!(err, "invalid frame kind tag 1");
+    assert_eq!(load_err(&bytes), "invalid frame kind tag 1");
+}
+
+/// `inspect` renders a closure frame as the object id it names: after
+/// `[:x | [ x ] ] value: 5`, the inner closure's captured frame is the outer
+/// block's activation, and the object the frame line names is the outer
+/// block itself, with its one parameter.
+#[test]
+fn inspect_names_the_closure_object_a_closure_frame_runs() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public mk = ( ^[:x | [ x ] ] value: 5 )
+        ) : ()
+    "};
+    let (mut interp, class) = load(src);
+    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    let inner = expect_ok(interp.send(&instance, Symbol::intern("mk"), &[]), "mk");
+    let platform = interp.platform();
+    // Read out after the last run, for the encoder, which runs nothing.
+    let bytes = image::snapshot(
+        &interp,
+        None,
+        &Origin::File(PathBuf::from("t.ns")),
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&inner)],
+    )
+    .expect("snapshot");
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let closure_frames: Vec<&String> = report
+        .graph_frames
+        .iter()
+        .filter(|frame| frame.starts_with("closure object "))
+        .collect();
+    let [frame] = closure_frames[..] else {
+        panic!(
+            "expected one closure frame, the outer block's activation, in {:?}",
+            report.graph_frames
+        )
+    };
+    let id: usize = frame
+        .strip_prefix("closure object ")
+        .and_then(|rest| rest.split(',').next())
+        .expect("the id ends the kind")
+        .parse()
+        .expect("an object id");
+    let object = &report.graph_objects[id];
+    assert!(
+        object.contains("closure [x] code "),
+        "object {id} should be the outer block, with its parameter `x`: {object}"
+    );
+}
+
+/// A closure frame's object id is in range but names a string: refused once
+/// every record is read, like a class reference that names an ordinary
+/// object, since only then is it known what the record was.
+#[test]
+fn a_closure_frame_naming_an_object_that_is_not_a_closure_is_refused() {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 1, 1);
+    w.write_u8(0); // class tag: builtin
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Str));
+    w.write_u32(1); // identity hash
+    w.write_u8(1); // object body: Str
+    w.write_str("not a closure");
+    w.write_u8(0); // receiver: nil
+    w.write_u32(0); // no args
+    w.write_u32(0); // no temps
+    w.write_u32(0); // pc
+    w.write_bool(false); // no sender
+    w.write_bool(true); // a home...
+    w.write_u32(0); // ...frame 0 itself
+    w.write_bool(false); // no current class
+    w.write_u8(6); // frame kind: FRAME_CLOSURE_OBJECT...
+    w.write_u32(0); // ...naming object 0, the string
+    w.write_bool(false); // continuable
+    w.write_u32(0); // no roots
+    let err = GraphFixture::new().decode_err(&w.into_bytes());
+    assert_eq!(err, decode::DecodeError::NotAClosureReference);
+    assert_eq!(
+        err.to_string(),
+        "a closure frame in the image names an object that is not a closure"
+    );
 }
 
 #[test]
@@ -2252,26 +2497,25 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-    expect_ok(
-        interp.send(instance, Symbol::intern("bump"), vec![]),
-        "bump",
-    );
-    let max_hash = interp.heap_mut().ensure_identity_hash(*obj(&instance));
+    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    expect_ok(interp.send(&instance, Symbol::intern("bump"), &[]), "bump");
+    let instance_obj = *obj(&interp.fetch(&instance));
+    let max_hash = interp.heap_mut().ensure_identity_hash(instance_obj);
     let platform = interp.platform();
     let bytes = image::snapshot(
         &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
-        std::slice::from_ref(&instance),
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&instance)],
     )
     .expect("snapshot");
 
     let mut loaded = image::load(&bytes).expect("load");
+    let root_class = class_ref(&loaded.interp, &loaded.root_class);
     assert!(
-        !root_mixin_of(loaded.interp.heap_ref(), loaded.root_class)
+        !root_mixin_of(loaded.interp.heap_ref(), root_class)
             .methods
             .is_empty(),
         "the image's methods are rebuilt, each carrying its body"
@@ -2279,16 +2523,16 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
     assert!(loaded
         .interp
         .heap_ref()
-        .class_of_obj(*obj(&loaded.roots[0]))
-        .same(loaded.root_class));
+        .class_of_obj(*obj(&loaded.interp.fetch(&loaded.roots[0])))
+        .same(root_class));
     let n = expect_ok(
         loaded
             .interp
-            .send(loaded.roots[0], Symbol::intern("bump"), vec![]),
+            .send(&loaded.roots[0], Symbol::intern("bump"), &[]),
         "bump",
     );
     assert!(
-        matches!(n, Value::SmallInt(2)),
+        matches!(loaded.interp.fetch(&n), Value::SmallInt(2)),
         "slot state survived: 1 before the snapshot, 2 after"
     );
     let fresh = loaded.interp.new_string("fresh".to_string());
@@ -2313,8 +2557,8 @@ fn bytes_after_the_last_section_are_refused_not_ignored() {
         &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
         &[],
     )
     .expect("snapshot");
@@ -2343,8 +2587,8 @@ fn load_refuses_a_version_mismatch() {
         &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
         &[],
     )
     .unwrap();
@@ -2401,15 +2645,15 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let platform = interp.platform();
     let bytes = image::snapshot(
         &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
-        &[instance],
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&instance)],
     )
     .expect("snapshot");
     for cut in 0..bytes.len() {
@@ -2463,6 +2707,7 @@ fn a_real_modules_decoded_code_table_verifies() {
     // for a module using blocks, non-local return, loops and literal arrays
     // passes the structural pass unchanged.
     let (interp, class) = load(RICH);
+    let class = class_ref(&interp, &class);
     let (table, _decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), class);
     decode::verify_code_table(&table).expect("compiler-emitted code is structurally sound");
 }
@@ -2893,6 +3138,7 @@ fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_on_load() {
         ) : ()
     "};
     let (mut interp, class) = load(src);
+    let class = class_ref(&interp, &class);
     let body = CompiledCode {
         num_args: 2,
         ..(*method_code(interp.heap_ref(), class, "foo:")).clone()
@@ -2922,6 +3168,7 @@ fn a_method_root_naming_a_block_body_is_refused_on_load() {
         ) : ()
     "};
     let (mut interp, class) = load(src);
+    let class = class_ref(&interp, &class);
     let body = CompiledCode {
         kind: CodeKind::Block,
         ..(*method_code(interp.heap_ref(), class, "foo")).clone()
@@ -2954,8 +3201,12 @@ const ONE_METHOD: &str = indoc! {"
 /// that body. Everything a decoded closure over `block`
 /// needs to verify: its lexical parent is `foo`, which has two registers.
 fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
+    // Nothing ever runs in a fixture's interpreter, so the class and the
+    // platform read out of their roots here stay current.
     let (mut interp, class) = load(ONE_METHOD);
+    let class = class_ref(&interp, &class);
     let platform = interp.platform();
+    let platform = interp.fetch(&platform);
     let block = code_with(
         CodeKind::Block,
         0,
@@ -3118,34 +3369,31 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-    expect_ok(
-        interp.send(instance, Symbol::intern("keep"), vec![]),
-        "keep",
-    );
+    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    expect_ok(interp.send(&instance, Symbol::intern("keep"), &[]), "keep");
     let platform = interp.platform();
     let bytes = image::snapshot(
         &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
-        &[instance],
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&instance)],
     )
     .expect("snapshot");
     let mut loaded = image::load(&bytes).expect("load");
     let held = expect_ok(
         loaded
             .interp
-            .send(loaded.roots[0], Symbol::intern("keep"), vec![]),
+            .send(&loaded.roots[0], Symbol::intern("keep"), &[]),
         "keep",
     );
     let value = expect_ok(
-        loaded.interp.send(held, Symbol::intern("value"), vec![]),
+        loaded.interp.send(&held, Symbol::intern("value"), &[]),
         "value",
     );
     assert!(
-        matches!(value, Value::SmallInt(7)),
+        matches!(loaded.interp.fetch(&value), Value::SmallInt(7)),
         "the loaded closure reads its captured local"
     );
 }
@@ -3168,31 +3416,30 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-    expect_ok(
-        interp.send(instance, Symbol::intern("keep"), vec![]),
-        "keep",
-    );
+    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    expect_ok(interp.send(&instance, Symbol::intern("keep"), &[]), "keep");
     let platform = interp.platform();
     let bytes = image::snapshot(
         &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
-        std::slice::from_ref(&instance),
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&instance)],
     )
     .expect("snapshot");
     let mut loaded = image::load(&bytes).expect("load");
     let held = loaded
         .interp
         .heap_ref()
-        .instance_field(*obj(&loaded.roots[0]), 0)
+        .instance_field(*obj(&loaded.interp.fetch(&loaded.roots[0])), 0)
         .expect("expected an instance");
+    // Kept across the `value` send below.
+    let held = loaded.interp.stash(held);
     let captured = loaded
         .interp
         .heap_ref()
-        .closure_data(*obj(&held))
+        .closure_data(*obj(&loaded.interp.fetch(&held)))
         .expect("the slot holds the inner closure")
         .captured_frame;
     assert!(
@@ -3203,11 +3450,11 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
         "the inner closure was captured by the outer block's activation"
     );
     let value = expect_ok(
-        loaded.interp.send(held, Symbol::intern("value"), vec![]),
+        loaded.interp.send(&held, Symbol::intern("value"), &[]),
         "value",
     );
     assert!(
-        matches!(value, Value::SmallInt(5)),
+        matches!(loaded.interp.fetch(&value), Value::SmallInt(5)),
         "the loaded closure reads `x` two frames out"
     );
 }
@@ -3238,6 +3485,7 @@ fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_on_load() 
     // and its code half the second, so an image whose initializer id is
     // cleared would make the *first* `X new` after a load abort the process.
     let (mut interp, class) = load(NEEDS_INITIALIZER);
+    let class = class_ref(&interp, &class);
     assert!(
         mixin_of(interp.heap_ref(), class)
             .initializer_code
@@ -3273,8 +3521,9 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
     // object's own application, so this instance is already an instance of
     // the doctored class -- and instantiating the doctored class would run
     // into the very invariant this test crafts an image to violate.
-    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let platform = interp.platform();
+    let class = class_ref(&interp, &class);
     // Only the initializer is dropped, so the refusal this asserts cannot be
     // the superclass clause's.
     let doctored = Mixin {
@@ -3282,13 +3531,14 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
         ..mixin_of(interp.heap_ref(), class)
     };
     install_mixin(&mut interp, class, doctored);
+    // Read out after the last run, for the encoder, which runs nothing.
     let bytes = image::snapshot(
         &interp,
         Some(NEEDS_INITIALIZER),
         &Origin::File(PathBuf::from("t.ns")),
         class,
-        &platform,
-        std::slice::from_ref(&instance),
+        &interp.fetch(&platform),
+        &[interp.fetch(&instance)],
     )
     .expect("snapshot");
     let err = load_err(&bytes);
@@ -3338,18 +3588,19 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    let instance_obj = *obj(&interp.fetch(&instance));
     interp
         .heap_mut()
-        .set_identity_hash(*obj(&instance), u32::MAX - 1);
+        .set_identity_hash(instance_obj, u32::MAX - 1);
     let platform = interp.platform();
     let bytes = image::snapshot(
         &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
-        std::slice::from_ref(&instance),
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&instance)],
     )
     .expect("snapshot");
     let mut loaded = image::load(&bytes).expect("load");
@@ -3357,7 +3608,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         loaded
             .interp
             .heap_ref()
-            .identity_hash(*obj(&loaded.roots[0])),
+            .identity_hash(*obj(&loaded.interp.fetch(&loaded.roots[0]))),
         u32::MAX - 1,
         "the image's hash is preserved, not clamped"
     );
@@ -3385,26 +3636,32 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
         ) : ()
     "};
     let (mut interp, class) = load(src);
-    let hashed = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-    let unhashed = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-    let assigned = interp.heap_mut().ensure_identity_hash(*obj(&hashed));
+    let hashed = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    let unhashed = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    let hashed_obj = *obj(&interp.fetch(&hashed));
+    let assigned = interp.heap_mut().ensure_identity_hash(hashed_obj);
     let platform = interp.platform();
     let bytes = image::snapshot(
         &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
-        &[hashed, unhashed],
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&hashed), interp.fetch(&unhashed)],
     )
     .expect("snapshot");
     assert_eq!(
-        interp.heap_ref().identity_hash(*obj(&unhashed)),
+        interp
+            .heap_ref()
+            .identity_hash(*obj(&interp.fetch(&unhashed))),
         0,
         "snapshotting assigns no hash"
     );
     let mut loaded = image::load(&bytes).expect("load");
-    let (kept, fresh) = (*obj(&loaded.roots[0]), *obj(&loaded.roots[1]));
+    let (kept, fresh) = (
+        *obj(&loaded.interp.fetch(&loaded.roots[0])),
+        *obj(&loaded.interp.fetch(&loaded.roots[1])),
+    );
     let heap = loaded.interp.heap_mut();
     assert_eq!(
         heap.identity_hash(kept),
@@ -3433,8 +3690,12 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
         ) (
         ) : ()
     "};
+    // Nothing runs in either interpreter, so what is read out of a root
+    // stays current.
     let (mut interp, class) = load(src);
+    let class = class_ref(&interp, &class);
     let platform = interp.platform();
+    let platform = interp.fetch(&platform);
     let integer = interp.builtin_class(BuiltinClass::Integer);
     let integer_hash = interp.heap_mut().ensure_identity_hash(integer);
     let class_hash = interp.heap_mut().ensure_identity_hash(class);
@@ -3462,11 +3723,13 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
 
     let mut loaded = image::load(&bytes).expect("load");
     let loaded_platform = loaded.interp.platform();
+    let loaded_platform = loaded.interp.fetch(&loaded_platform);
+    let loaded_class = class_ref(&loaded.interp, &loaded.root_class);
     let loaded_integer = loaded.interp.builtin_class(BuiltinClass::Integer);
     let loaded_string = loaded.interp.builtin_class(BuiltinClass::Str);
     let heap = loaded.interp.heap_mut();
     assert_eq!(heap.identity_hash(loaded_integer), integer_hash);
-    assert_eq!(heap.identity_hash(loaded.root_class), class_hash);
+    assert_eq!(heap.identity_hash(loaded_class), class_hash);
     assert_eq!(heap.identity_hash(*obj(&loaded_platform)), platform_hash);
     assert_eq!(
         heap.identity_hash(loaded_string),
@@ -3483,6 +3746,7 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
 /// The closing table alone, decoded against a freshly loaded world.
 fn decode_tag_named(bytes: &[u8]) -> Result<u32, decode::DecodeError> {
     let (mut interp, class) = load(EMPTY);
+    let class = class_ref(&interp, &class);
     let mut r = decode::Reader::new(bytes);
     decode::decode_tag_named_hashes(&mut r, &mut interp, class)
 }
@@ -3620,6 +3884,7 @@ fn a_snapshotted_nested_mixins_method_and_initializer_survive_a_load() {
     // Checked here purely at the declaration level -- reaching the nested
     // method with an actual send is the next test.
     let (interp, class) = load(NESTED_MODULE);
+    let class = class_ref(&interp, &class);
     let (_table, decoded_mixins, _ids) = round_trip_code_table(interp.heap_ref(), class);
 
     // The *decoded* nested mixin, not the live one: its bodies are the ones
@@ -3654,21 +3919,24 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
     let (mut interp, class) = load(NESTED_MODULE);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform]),
+        interp.instantiate(&class, std::slice::from_ref(&platform)),
         "instantiate Outer",
     );
     let bytes = image::snapshot(
         &interp,
         Some(NESTED_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
-        std::slice::from_ref(&outer),
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&outer)],
     )
     .expect("snapshot");
 
     let mut loaded = image::load(&bytes).expect("load");
-    let root_mixin = root_mixin_of(loaded.interp.heap_ref(), loaded.root_class);
+    let root_mixin = root_mixin_of(
+        loaded.interp.heap_ref(),
+        class_ref(&loaded.interp, &loaded.root_class),
+    );
     let inner_mixin = root_mixin.nested[0].clone();
 
     // Nothing materializes a nested class's own class object without the
@@ -3689,17 +3957,18 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
         &inner_mixin,
         Some(&object_application),
     );
+    let inner_class = loaded.interp.stash(Value::Obj(inner_class));
     let inner_instance = expect_ok(
-        loaded.interp.instantiate(inner_class, vec![]),
+        loaded.interp.instantiate(&inner_class, &[]),
         "instantiate Inner",
     );
     let result = expect_ok(
         loaded
             .interp
-            .send(inner_instance, Symbol::intern("value"), vec![]),
+            .send(&inner_instance, Symbol::intern("value"), &[]),
         "send value",
     );
-    match result {
+    match loaded.interp.fetch(&result) {
         Value::SmallInt(9) => {}
         _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
     }
@@ -3716,16 +3985,16 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
     let (mut interp, class) = load(NESTED_MODULE);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform]),
+        interp.instantiate(&class, std::slice::from_ref(&platform)),
         "instantiate Outer",
     );
     let bytes = image::snapshot(
         &interp,
         Some(NESTED_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
-        std::slice::from_ref(&outer),
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&outer)],
     )
     .expect("snapshot");
 
@@ -3733,28 +4002,28 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
     let reloaded_outer = loaded
         .roots
         .first()
-        .copied()
+        .cloned()
         .expect("the snapshotted Outer");
     let inner_class = expect_ok(
         loaded
             .interp
-            .send(reloaded_outer, Symbol::intern("Inner"), vec![]),
+            .send(&reloaded_outer, Symbol::intern("Inner"), &[]),
         "Inner",
     );
-    let Value::Obj(inner_class) = inner_class else {
+    let Value::Obj(_) = loaded.interp.fetch(&inner_class) else {
         panic!("the accessor must yield a class object")
     };
     let inner_instance = expect_ok(
-        loaded.interp.instantiate(inner_class, vec![]),
+        loaded.interp.instantiate(&inner_class, &[]),
         "instantiate Inner",
     );
     let result = expect_ok(
         loaded
             .interp
-            .send(inner_instance, Symbol::intern("value"), vec![]),
+            .send(&inner_instance, Symbol::intern("value"), &[]),
         "send value",
     );
-    match result {
+    match loaded.interp.fetch(&result) {
         Value::SmallInt(9) => {}
         _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
     }
@@ -3763,30 +4032,33 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
 /// A world built from `src` with one instance of its root class -- the
 /// starting point every whole-image nesting test shares. Returns the
 /// interpreter, the root class, the `platform` singleton and the instance.
-fn instantiated_world(src: &str) -> (Interpreter, ClassRef, Value, Value) {
+fn instantiated_world(src: &str) -> (Interpreter, Root, Root, Root) {
     let (mut interp, class) = load(src);
     let platform = interp.platform();
     let root = expect_ok(
-        interp.instantiate(class, vec![platform]),
+        interp.instantiate(&class, std::slice::from_ref(&platform)),
         "instantiate the root class",
     );
     (interp, class, platform, root)
 }
 
+/// `image::snapshot` of a world a test keeps as roots, each read out right
+/// before the encoder, which runs nothing.
 fn snapshot_world(
     interp: &Interpreter,
     src: &str,
-    class: ClassRef,
-    platform: &Value,
-    roots: &[Value],
+    class: &Root,
+    platform: &Root,
+    roots: &[Root],
 ) -> Vec<u8> {
+    let roots: Vec<Value> = roots.iter().map(|root| interp.fetch(root)).collect();
     image::snapshot(
         interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        platform,
-        roots,
+        class_ref(interp, class),
+        &interp.fetch(platform),
+        &roots,
     )
     .expect("snapshot")
 }
@@ -3826,19 +4098,18 @@ fn cached_nested_class(heap: &ns_runtime::Heap, enclosing: &Value, name: &str) -
         .expect("an enclosing object is an instance")
 }
 
-fn send_to(loaded: &mut image::LoadedImage, receiver: Value, selector: &str) -> Value {
+fn send_to(loaded: &mut image::LoadedImage, receiver: &Root, selector: &str) -> Root {
     expect_ok(
-        loaded
-            .interp
-            .send(receiver, Symbol::intern(selector), vec![]),
+        loaded.interp.send(receiver, Symbol::intern(selector), &[]),
         selector,
     )
 }
 
 /// The class object the accessor for `selector` yields on `receiver`.
-fn nested_class_of(loaded: &mut image::LoadedImage, receiver: Value, selector: &str) -> ClassRef {
-    match send_to(loaded, receiver, selector) {
-        Value::Obj(class) => class,
+fn nested_class_of(loaded: &mut image::LoadedImage, receiver: &Root, selector: &str) -> Root {
+    let class = send_to(loaded, receiver, selector);
+    match loaded.interp.fetch(&class) {
+        Value::Obj(_) => class,
         _ => panic!("the accessor for {selector} must yield a class object"),
     }
 }
@@ -3852,17 +4123,17 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     // root. A class object is an ordinary record in the object table, which
     // is what makes both work.
     let (mut interp, class, platform, outer) = instantiated_world(NESTED_MODULE);
-    let inner_class = expect_ok(interp.send(outer, Symbol::intern("Inner"), vec![]), "Inner");
-    let Value::Obj(inner_class) = inner_class else {
+    let inner_class = expect_ok(interp.send(&outer, Symbol::intern("Inner"), &[]), "Inner");
+    let Value::Obj(_) = interp.fetch(&inner_class) else {
         panic!("the accessor must yield a class object")
     };
-    let inner_instance = expect_ok(interp.instantiate(inner_class, vec![]), "instantiate Inner");
+    let inner_instance = expect_ok(interp.instantiate(&inner_class, &[]), "instantiate Inner");
 
     // Reached as the cached value in Outer's hidden slot...
     let bytes = snapshot_world(
         &interp,
         NESTED_MODULE,
-        class,
+        &class,
         &platform,
         std::slice::from_ref(&outer),
     );
@@ -3870,18 +4141,22 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     let reloaded_outer = loaded
         .roots
         .first()
-        .copied()
+        .cloned()
         .expect("the snapshotted Outer");
-    let reloaded_inner = nested_class_of(&mut loaded, reloaded_outer, "Inner");
+    let reloaded_inner = nested_class_of(&mut loaded, &reloaded_outer, "Inner");
     assert_eq!(
-        class_name(loaded.interp.heap_ref(), reloaded_inner),
+        class_name(
+            loaded.interp.heap_ref(),
+            class_ref(&loaded.interp, &reloaded_inner)
+        ),
         "Inner"
     );
     let instance = expect_ok(
-        loaded.interp.instantiate(reloaded_inner, vec![]),
+        loaded.interp.instantiate(&reloaded_inner, &[]),
         "instantiate Inner",
     );
-    match send_to(&mut loaded, instance, "value") {
+    let value = send_to(&mut loaded, &instance, "value");
+    match loaded.interp.fetch(&value) {
         Value::SmallInt(9) => {}
         _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
     }
@@ -3890,7 +4165,7 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     let bytes = snapshot_world(
         &interp,
         NESTED_MODULE,
-        class,
+        &class,
         &platform,
         std::slice::from_ref(&inner_instance),
     );
@@ -3898,16 +4173,20 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     let reloaded_instance = loaded
         .roots
         .first()
-        .copied()
+        .cloned()
         .expect("the snapshotted Inner instance");
     assert_eq!(
         class_name(
             loaded.interp.heap_ref(),
-            class_of(loaded.interp.heap_ref(), &reloaded_instance)
+            class_of(
+                loaded.interp.heap_ref(),
+                &loaded.interp.fetch(&reloaded_instance)
+            )
         ),
         "Inner"
     );
-    match send_to(&mut loaded, reloaded_instance, "value") {
+    let value = send_to(&mut loaded, &reloaded_instance, "value");
+    match loaded.interp.fetch(&value) {
         Value::SmallInt(9) => {}
         _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
     }
@@ -3920,11 +4199,11 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
     // installed, with no field count to contradict it, rather than a decode
     // error.
     let (mut interp, class, platform, outer) = instantiated_world(NESTED_MODULE);
-    let _ = expect_ok(interp.send(outer, Symbol::intern("Inner"), vec![]), "Inner");
+    let _ = expect_ok(interp.send(&outer, Symbol::intern("Inner"), &[]), "Inner");
     let bytes = snapshot_world(
         &interp,
         NESTED_MODULE,
-        class,
+        &class,
         &platform,
         std::slice::from_ref(&outer),
     );
@@ -3932,10 +4211,12 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
     let reloaded_outer = loaded
         .roots
         .first()
-        .copied()
+        .cloned()
         .expect("the snapshotted Outer");
-    let root_class = loaded.root_class;
-    let inner = nested_class_of(&mut loaded, reloaded_outer, "Inner");
+    let inner = nested_class_of(&mut loaded, &reloaded_outer, "Inner");
+    // Both read out after the accessor ran, which may have moved them.
+    let root_class = class_ref(&loaded.interp, &loaded.root_class);
+    let inner = class_ref(&loaded.interp, &inner);
     assert_ne!(
         class_name(loaded.interp.heap_ref(), inner),
         class_name(loaded.interp.heap_ref(), root_class)
@@ -3956,16 +4237,22 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
     // the inline caches' call sites would go megamorphic after every load, which
     // is why this is a property test rather than a shape test.
     let (mut interp, class, platform, first) = instantiated_world(NESTED_MODULE);
-    let second = expect_ok(interp.instantiate(class, vec![platform]), "a second Outer");
-    let inner_of = |interp: &mut Interpreter, outer: &Value| match expect_ok(
-        interp.send(*outer, Symbol::intern("Inner"), vec![]),
-        "Inner",
-    ) {
-        Value::Obj(class) => class,
-        _ => panic!("the accessor must yield a class object"),
+    let second = expect_ok(
+        interp.instantiate(&class, std::slice::from_ref(&platform)),
+        "a second Outer",
+    );
+    let inner_of = |interp: &mut Interpreter, outer: &Root| {
+        let class = expect_ok(interp.send(outer, Symbol::intern("Inner"), &[]), "Inner");
+        match interp.fetch(&class) {
+            Value::Obj(_) => class,
+            _ => panic!("the accessor must yield a class object"),
+        }
     };
     let before_a = inner_of(&mut interp, &first);
     let before_b = inner_of(&mut interp, &second);
+    // Both read out after the last accessor ran.
+    let before_a = class_ref(&interp, &before_a);
+    let before_b = class_ref(&interp, &before_b);
     assert!(
         !before_a.same(before_b),
         "one class object per enclosing instance, before the snapshot"
@@ -3978,11 +4265,18 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
         "one shared application, before the snapshot"
     );
 
-    let bytes = snapshot_world(&interp, NESTED_MODULE, class, &platform, &[first, second]);
+    let bytes = snapshot_world(&interp, NESTED_MODULE, &class, &platform, &[first, second]);
     let mut loaded = image::load(&bytes).expect("load");
-    let outers: Vec<Value> = loaded.roots.clone();
-    let a = nested_class_of(&mut loaded, outers[0], "Inner");
-    let b = nested_class_of(&mut loaded, outers[1], "Inner");
+    let outers: Vec<Root> = loaded.roots.clone();
+    let a = nested_class_of(&mut loaded, &outers[0], "Inner");
+    let b = nested_class_of(&mut loaded, &outers[1], "Inner");
+    // Everything below is read out after the last accessor ran.
+    let a = class_ref(&loaded.interp, &a);
+    let b = class_ref(&loaded.interp, &b);
+    let outers: Vec<Value> = outers
+        .iter()
+        .map(|outer| loaded.interp.fetch(outer))
+        .collect();
     // The accessor answers out of the hidden cache slot, so `a` and `b` are
     // the *decoded* class objects and not two freshly materialized ones.
     // Pinned rather than assumed: a load that dropped the cached slots
@@ -4042,25 +4336,37 @@ const DEEP_OUTER_MODULE: &str = indoc! {"
 fn outer_still_resolves_through_a_declaration_chain_that_came_from_an_image() {
     let (mut interp, class, platform, outer) = instantiated_world(DEEP_OUTER_MODULE);
     let deep = expect_ok(
-        interp.send(outer, Symbol::intern("makeDeep"), vec![]),
+        interp.send(&outer, Symbol::intern("makeDeep"), &[]),
         "makeDeep",
     );
-    let bytes = snapshot_world(&interp, DEEP_OUTER_MODULE, class, &platform, &[outer, deep]);
+    let bytes = snapshot_world(
+        &interp,
+        DEEP_OUTER_MODULE,
+        &class,
+        &platform,
+        &[outer, deep],
+    );
     let mut loaded = image::load(&bytes).expect("load");
-    let reloaded_deep = loaded.roots[1];
+    let reloaded_deep = loaded.roots[1].clone();
     // `Deep`'s declaring class is `Base`, not `Derived` -- the two differ
     // exactly because `Derived` inherits the declaration across a nesting
     // boundary, which is the case a dynamic-chain walk gets wrong.
     assert_eq!(
         class_name(
             loaded.interp.heap_ref(),
-            class_of(loaded.interp.heap_ref(), &reloaded_deep)
+            class_of(
+                loaded.interp.heap_ref(),
+                &loaded.interp.fetch(&reloaded_deep)
+            )
         ),
         "Deep",
         "the reloaded instance keeps its own nested class"
     );
-    let described = send_to(&mut loaded, reloaded_deep, "describe");
-    assert_eq!(string_contents(loaded.interp.heap_ref(), &described), "top");
+    let described = send_to(&mut loaded, &reloaded_deep, "describe");
+    assert_eq!(
+        string_contents(loaded.interp.heap_ref(), &loaded.interp.fetch(&described)),
+        "top"
+    );
 }
 
 /// The text of a decoded `Str` object. Never `{:?}`s the `Value`.
@@ -4091,41 +4397,39 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
     let (mut interp, class) = load(NESTED_SUPERCLASS_ARGS);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform]),
+        interp.instantiate(&class, std::slice::from_ref(&platform)),
         "instantiate Args",
     );
     let bytes = image::snapshot(
         &interp,
         Some(NESTED_SUPERCLASS_ARGS),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
-        std::slice::from_ref(&outer),
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&outer)],
     )
     .expect("snapshot");
 
     let mut loaded = image::load(&bytes).expect("load");
-    let reloaded = loaded.roots.first().copied().expect("the snapshotted Args");
+    let reloaded = loaded.roots.first().cloned().expect("the snapshotted Args");
     let derived = expect_ok(
         loaded
             .interp
-            .send(reloaded, Symbol::intern("Derived"), vec![]),
+            .send(&reloaded, Symbol::intern("Derived"), &[]),
         "Derived",
     );
-    let Value::Obj(derived) = derived else {
+    let Value::Obj(_) = loaded.interp.fetch(&derived) else {
         panic!("the accessor must yield a class object")
     };
     let instance = expect_ok(
-        loaded.interp.instantiate(derived, vec![]),
+        loaded.interp.instantiate(&derived, &[]),
         "instantiate Derived",
     );
     let result = expect_ok(
-        loaded
-            .interp
-            .send(instance, Symbol::intern("value"), vec![]),
+        loaded.interp.send(&instance, Symbol::intern("value"), &[]),
         "send value",
     );
-    match result {
+    match loaded.interp.fetch(&result) {
         Value::SmallInt(7) => {}
         _ => panic!("expected SmallInt(7) -- the clause's own argument -- from Base's slot"),
     }
@@ -4138,6 +4442,7 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
 #[test]
 fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_refused() {
     let (mut interp, class) = load(NESTED_SUPERCLASS_ARGS);
+    let class = class_ref(&interp, &class);
     let derived = mixin_of(interp.heap_ref(), class)
         .nested
         .iter()
@@ -4170,6 +4475,7 @@ fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_ref
 #[test]
 fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
     let (mut interp, class) = load(NESTED_SUPERCLASS_ARGS);
+    let class = class_ref(&interp, &class);
     let derived = mixin_of(interp.heap_ref(), class)
         .nested
         .iter()
@@ -4202,6 +4508,7 @@ fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
 #[test]
 fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_panic() {
     let (mut interp, class) = load(NESTED_SUPERCLASS_ARGS);
+    let class = class_ref(&interp, &class);
     // The one thing an image can present that the load-time checks let
     // through: right kind, right arity, wrong value.
     let doctored = Rc::new(CompiledCode {
@@ -4238,30 +4545,32 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
         None,
         &Origin::File(PathBuf::from("t.ns")),
         class,
-        &platform,
+        &interp.fetch(&platform),
         &[],
     )
     .expect("snapshot");
     let mut loaded = image::load(&bytes).expect("load");
     let platform = loaded.interp.platform();
     let outer = expect_ok(
-        loaded.interp.instantiate(loaded.root_class, vec![platform]),
+        loaded
+            .interp
+            .instantiate(&loaded.root_class, std::slice::from_ref(&platform)),
         "instantiate Args",
     );
     let derived = expect_ok(
-        loaded.interp.send(outer, Symbol::intern("Derived"), vec![]),
+        loaded.interp.send(&outer, Symbol::intern("Derived"), &[]),
         "Derived",
     );
-    let Value::Obj(derived) = derived else {
+    let Value::Obj(_) = loaded.interp.fetch(&derived) else {
         panic!("the accessor must yield a class object")
     };
-    match loaded.interp.instantiate(derived, vec![]) {
-        Err(Signal::Error(e)) => assert!(
+    match loaded.interp.instantiate(&derived, &[]) {
+        Err(HostSignal::Error(e)) => assert!(
             e.message.contains("did not evaluate its message arguments"),
             "unexpected error message: {}",
             e.message
         ),
-        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `instantiate`"),
+        Err(HostSignal::Return) => panic!("a non-local return escaped `instantiate`"),
         Ok(_) => panic!("expected a NewspeakError, got an instance"),
     }
 }
@@ -4318,8 +4627,8 @@ fn snapshot_of(src: &str) -> Vec<u8> {
         &interp,
         Some(src),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
         &[],
     )
     .expect("snapshot")
@@ -4445,14 +4754,11 @@ fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywh
     "});
     let mut loaded = image::load(&bytes).expect("load");
     let instance = expect_ok(
-        loaded.interp.instantiate(loaded.root_class, vec![]),
+        loaded.interp.instantiate(&loaded.root_class, &[]),
         "instantiate",
     );
-    let result = expect_ok(
-        loaded.interp.send(instance, Symbol::intern("a"), vec![]),
-        "a",
-    );
-    assert!(matches!(result, Value::SmallInt(42)));
+    let result = expect_ok(loaded.interp.send(&instance, Symbol::intern("a"), &[]), "a");
+    assert!(matches!(loaded.interp.fetch(&result), Value::SmallInt(42)));
 }
 
 // ---------------------------------------------------------------------------
@@ -4637,16 +4943,16 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
     let (mut interp, class) = load(NESTED_SUPERCLASS_ARGS);
     let platform = interp.platform();
     let outer = expect_ok(
-        interp.instantiate(class, vec![platform]),
+        interp.instantiate(&class, std::slice::from_ref(&platform)),
         "instantiate Args",
     );
     let bytes = image::snapshot(
         &interp,
         Some(NESTED_SUPERCLASS_ARGS),
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
-        std::slice::from_ref(&outer),
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&outer)],
     )
     .expect("snapshot");
 
@@ -4674,27 +4980,25 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
     assert!(clause.has_args, "`Base withBase: 7` passes an argument");
 
     let mut loaded = image::load(&bytes).expect("load");
-    let reloaded = loaded.roots.first().copied().expect("the snapshotted Args");
+    let reloaded = loaded.roots.first().cloned().expect("the snapshotted Args");
     let derived_class = expect_ok(
         loaded
             .interp
-            .send(reloaded, Symbol::intern("Derived"), vec![]),
+            .send(&reloaded, Symbol::intern("Derived"), &[]),
         "Derived",
     );
-    let Value::Obj(derived_class) = derived_class else {
+    let Value::Obj(_) = loaded.interp.fetch(&derived_class) else {
         panic!("the accessor must yield a class object")
     };
     let instance = expect_ok(
-        loaded.interp.instantiate(derived_class, vec![]),
+        loaded.interp.instantiate(&derived_class, &[]),
         "instantiate Derived",
     );
     let result = expect_ok(
-        loaded
-            .interp
-            .send(instance, Symbol::intern("value"), vec![]),
+        loaded.interp.send(&instance, Symbol::intern("value"), &[]),
         "value",
     );
-    assert!(matches!(result, Value::SmallInt(7)));
+    assert!(matches!(loaded.interp.fetch(&result), Value::SmallInt(7)));
 }
 
 // ---------------------------------------------------------------------------
@@ -4816,7 +5120,7 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
         Some(TRIVIAL_MODULE),
         &Origin::File(PathBuf::from("t.ns")),
         class,
-        &platform,
+        &interp.fetch(&platform),
         &[],
     ) else {
         panic!("a class tree past the ceiling must not encode");
@@ -4950,13 +5254,16 @@ fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
     // chain a four-megabyte image describes.
     let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
     let mut loaded = image::load(&bytes).expect("load");
-    let head = loaded.roots[0];
-    assert_eq!(superclass_depth(loaded.interp.heap_ref(), &head), DEEP);
+    let head = loaded.roots[0].clone();
+    assert_eq!(
+        superclass_depth(loaded.interp.heap_ref(), &loaded.interp.fetch(&head)),
+        DEEP
+    );
     // Nothing on the chain declares the selector, so the send ends in an
     // ordinary Newspeak error. That it ends at all is the point.
     let answered = loaded
         .interp
-        .send(head, Symbol::intern("noSuchThing"), vec![])
+        .send(&head, Symbol::intern("noSuchThing"), &[])
         .is_ok();
     assert!(!answered, "no class on the chain declares `noSuchThing`");
 }
@@ -4971,14 +5278,17 @@ fn instantiating_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack
     // would abort here.
     let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
     let mut loaded = image::load(&bytes).expect("load");
-    let head = loaded.roots[0];
-    assert_eq!(superclass_depth(loaded.interp.heap_ref(), &head), DEEP);
-    let Value::Obj(class) = head else {
+    let head = loaded.roots[0].clone();
+    assert_eq!(
+        superclass_depth(loaded.interp.heap_ref(), &loaded.interp.fetch(&head)),
+        DEEP
+    );
+    let Value::Obj(_) = loaded.interp.fetch(&head) else {
         panic!("the root is a class object");
     };
-    let instance = expect_ok(loaded.interp.instantiate(class, vec![]), "instantiate");
+    let instance = expect_ok(loaded.interp.instantiate(&head, &[]), "instantiate");
     assert!(
-        matches!(instance, Value::Obj(_)),
+        matches!(loaded.interp.fetch(&instance), Value::Obj(_)),
         "an instance of the head class"
     );
     assert_eq!(loaded.interp.heap_ref().activation_depth(), 0);
@@ -4994,7 +5304,10 @@ fn dropping_a_loaded_world_whose_root_heads_a_long_class_chain_does_not_blow_the
     let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
     let loaded = image::load(&bytes).expect("load");
     assert_eq!(
-        superclass_depth(loaded.interp.heap_ref(), &loaded.roots[0]),
+        superclass_depth(
+            loaded.interp.heap_ref(),
+            &loaded.interp.fetch(&loaded.roots[0])
+        ),
         DEEP
     );
     drop(loaded);
@@ -5005,7 +5318,10 @@ fn dropping_a_loaded_world_whose_root_heads_a_long_instance_chain_does_not_blow_
     let bytes = image_with_graph_section(&instance_chain_graph(DEEP));
     let loaded = image::load(&bytes).expect("load");
     assert_eq!(
-        instance_chain_depth(loaded.interp.heap_ref(), &loaded.roots[0]),
+        instance_chain_depth(
+            loaded.interp.heap_ref(),
+            &loaded.interp.fetch(&loaded.roots[0])
+        ),
         DEEP
     );
     drop(loaded);
@@ -5069,20 +5385,25 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 fn snapshot_module(src: &str, source: Option<&str>, extra_send: Option<&str>) -> Vec<u8> {
     let (mut interp, class) = load(src);
     let platform = interp.platform();
-    let instance = expect_ok(interp.instantiate(class, vec![platform]), "instantiate");
-    let mut roots = vec![instance];
+    let instance = expect_ok(
+        interp.instantiate(&class, std::slice::from_ref(&platform)),
+        "instantiate",
+    );
+    let mut roots = vec![instance.clone()];
     if let Some(selector) = extra_send {
         roots.push(expect_ok(
-            interp.send(instance, Symbol::intern(selector), vec![]),
+            interp.send(&instance, Symbol::intern(selector), &[]),
             selector,
         ));
     }
+    // Read out after the last run, for the encoder, which runs nothing.
+    let roots: Vec<Value> = roots.iter().map(|root| interp.fetch(root)).collect();
     image::snapshot(
         &interp,
         source,
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
         &roots,
     )
     .expect("snapshot")
@@ -5101,15 +5422,13 @@ fn a_source_free_image_still_runs() {
     );
     let mut loaded = image::load(&bytes).expect("load");
     assert!(loaded.source.is_none());
-    let instance = loaded.roots.first().copied().expect("the root instance");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
     let result = expect_ok(
-        loaded
-            .interp
-            .send(instance, Symbol::intern("answer"), vec![]),
+        loaded.interp.send(&instance, Symbol::intern("answer"), &[]),
         "answer",
     );
     assert!(
-        matches!(result, Value::SmallInt(42)),
+        matches!(loaded.interp.fetch(&result), Value::SmallInt(42)),
         "the entry send must run through the decoded code table"
     );
 }
@@ -5121,13 +5440,14 @@ fn a_source_free_image_still_runs() {
 fn a_source_free_image_still_reaches_its_nested_classes() {
     let bytes = snapshot_module(SOURCE_FREE_MODULE, None, None);
     let mut loaded = image::load(&bytes).expect("load");
-    let outer = loaded.roots.first().copied().expect("the root instance");
-    let inner_class = nested_class_of(&mut loaded, outer, "Inner");
+    let outer = loaded.roots.first().cloned().expect("the root instance");
+    let inner_class = nested_class_of(&mut loaded, &outer, "Inner");
     let instance = expect_ok(
-        loaded.interp.instantiate(inner_class, vec![]),
+        loaded.interp.instantiate(&inner_class, &[]),
         "instantiate Inner",
     );
-    match send_to(&mut loaded, instance, "value") {
+    let value = send_to(&mut loaded, &instance, "value");
+    match loaded.interp.fetch(&value) {
         Value::SmallInt(9) => {}
         _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
     }
@@ -5144,14 +5464,12 @@ fn the_debug_variant_still_carries_source() {
         "the debug variant hands its source back verbatim"
     );
     // And it is still a working world, not merely a readable file.
-    let instance = loaded.roots.first().copied().expect("the root instance");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
     let result = expect_ok(
-        loaded
-            .interp
-            .send(instance, Symbol::intern("answer"), vec![]),
+        loaded.interp.send(&instance, Symbol::intern("answer"), &[]),
         "answer",
     );
-    assert!(matches!(result, Value::SmallInt(42)));
+    assert!(matches!(loaded.interp.fetch(&result), Value::SmallInt(42)));
 }
 
 /// The two variants differ only in the source blob: everything a world
@@ -5225,8 +5543,8 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
         &interp,
         None,
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
         &[],
     );
     interp.heap_mut().pop_activation(running);
@@ -5244,7 +5562,10 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
 #[test]
 fn a_frames_sender_survives_a_round_trip() {
     let (interp, _class, _o, decoded, _max) = round_trip_graph(TRIVIAL_MODULE, |interp, class| {
-        let foo = method_code(interp.heap_ref(), *class, "foo");
+        // Nothing runs in here, so the class read out of its root stays
+        // current.
+        let class = class_ref(interp, class);
+        let foo = method_code(interp.heap_ref(), class, "foo");
         let frame_running = |receiver: i64, sender| ns_runtime::Frame {
             receiver: Value::SmallInt(receiver),
             args: vec![],
@@ -5252,7 +5573,7 @@ fn a_frames_sender_survives_a_round_trip() {
             pc: 0,
             sender,
             home: None,
-            current_class: Some(*class),
+            current_class: Some(class),
             kind: FrameKind::TopLevel,
             uncontinuable: true,
             slot_base: 0,
@@ -5262,15 +5583,16 @@ fn a_frames_sender_survives_a_round_trip() {
             .heap_mut()
             .alloc_frame(frame_running(8, Some(sender)));
         let block_class = interp.builtin_class(BuiltinClass::Block);
-        vec![Value::Obj(interp.heap_mut().alloc_object(
+        let closure = interp.heap_mut().alloc_object(
             block_class,
-            ObjectData::Closure(std::rc::Rc::new(ns_runtime::ClosureData {
+            ObjectData::Closure(ns_runtime::ClosureData {
                 params: std::rc::Rc::new(vec![]),
                 code: foo.clone(),
                 captured_frame: frame,
                 home: frame,
-            })),
-        ))]
+            }),
+        );
+        vec![interp.stash(Value::Obj(closure))]
     });
     let heap = interp.heap_ref();
     let c = heap
@@ -5303,13 +5625,13 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
     "};
     let (mut interp, class) = load(src);
     let platform = interp.platform();
-    let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-    let closure = expect_ok(interp.send(instance, Symbol::intern("mk"), vec![]), "mk");
+    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    let closure = expect_ok(interp.send(&instance, Symbol::intern("mk"), &[]), "mk");
     // `mk` has returned, so its frame is divorced and marked uncontinuable.
     // Clear the flag, as a hand-edited file could.
     let home = interp
         .heap_ref()
-        .closure_data(*obj(&closure))
+        .closure_data(*obj(&interp.fetch(&closure)))
         .expect("expected a closure")
         .home;
     let mut forged = interp.heap_ref().frame_snapshot(home);
@@ -5320,18 +5642,18 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
         &interp,
         None,
         &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
-        &[instance, closure],
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&instance), interp.fetch(&closure)],
     )
     .expect("snapshot");
 
     let mut loaded = image::load(&bytes).expect("load");
-    let decoded = loaded.roots[1];
+    let decoded = loaded.roots[1].clone();
     let decoded_home = loaded
         .interp
         .heap_ref()
-        .closure_data(*obj(&decoded))
+        .closure_data(*obj(&loaded.interp.fetch(&decoded)))
         .expect("expected a closure")
         .home;
     assert!(
@@ -5346,9 +5668,9 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
         .heap_ref()
         .frame_activation(decoded_home)
         .is_none());
-    match loaded.interp.send(decoded, Symbol::intern("value"), vec![]) {
-        Err(Signal::Error(e)) => assert!(e.message.contains("cannotReturn"), "{}", e.message),
-        Err(Signal::Return(..)) => panic!("the return escaped instead of being refused"),
+    match loaded.interp.send(&decoded, Symbol::intern("value"), &[]) {
+        Err(HostSignal::Error(e)) => assert!(e.message.contains("cannotReturn"), "{}", e.message),
+        Err(HostSignal::Return) => panic!("the return escaped instead of being refused"),
         Ok(_) => panic!("a `^` into a decoded home must not return normally"),
     }
 }
@@ -5439,8 +5761,9 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
     // And the world the source-free image describes still runs -- so what
     // was left out really was only text.
     let mut loaded = image::load(&bytes).expect("load");
-    let instance = loaded.roots.first().copied().expect("the root instance");
-    match send_to(&mut loaded, instance, "quixoticAccumulator") {
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let value = send_to(&mut loaded, &instance, "quixoticAccumulator");
+    match loaded.interp.fetch(&value) {
         Value::SmallInt(146) => {}
         _ => panic!("expected SmallInt(146) from the loaded world, got a different Value"),
     }
@@ -5498,14 +5821,18 @@ const GOLDEN_SRC: &str = indoc! {"
 fn snapshot_of_without_source(src: &str) -> Vec<u8> {
     let (mut interp, class) = load(src);
     let platform = interp.platform();
-    let instance = expect_ok(interp.instantiate(class, vec![platform]), "instantiate");
+    let instance = expect_ok(
+        interp.instantiate(&class, std::slice::from_ref(&platform)),
+        "instantiate",
+    );
+    // Read out after the run, for the encoder, which runs nothing.
     image::snapshot(
         &interp,
         None,
         &Origin::File(PathBuf::from("golden.ns")),
-        class,
-        &platform,
-        &[instance],
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[interp.fetch(&instance)],
     )
     .expect("snapshot")
 }
@@ -5617,6 +5944,7 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
     // artifact shape, then compare through the inspector rather than by raw
     // offset: a raw offset says two files differ, a section says which one.
     let (mut interp, class) = load(ENTRY_SRC);
+    let class = class_ref(&interp, &class);
     let platform = interp.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
@@ -5628,7 +5956,8 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
         Symbol::intern("main:args:"),
     )
     .expect("build");
-    let img = image::snapshot(&interp, None, &origin, class, &platform, &[]).expect("snapshot");
+    let img = image::snapshot(&interp, None, &origin, class, &interp.fetch(&platform), &[])
+        .expect("snapshot");
 
     let b = image::inspect::inspect(&binary).expect("inspect binary");
     let i = image::inspect::inspect(&img).expect("inspect image");
@@ -5681,6 +6010,7 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
 #[test]
 fn build_accepts_an_entry_selector_the_module_never_declares() {
     let (interp, class) = load(TRIVIAL_MODULE);
+    let class = class_ref(&interp, &class);
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let binary = image::build(
@@ -5704,6 +6034,7 @@ fn build_accepts_an_entry_selector_the_module_never_declares() {
 #[test]
 fn a_binary_loads_with_no_roots_and_its_entry() {
     let (interp, class) = load(ENTRY_SRC);
+    let class = class_ref(&interp, &class);
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let binary = image::build(
@@ -5723,9 +6054,12 @@ fn a_binary_loads_with_no_roots_and_its_entry() {
         Some("main:args:")
     );
     assert!(
-        !root_mixin_of(loaded.interp.heap_ref(), loaded.root_class)
-            .methods
-            .is_empty(),
+        !root_mixin_of(
+            loaded.interp.heap_ref(),
+            class_ref(&loaded.interp, &loaded.root_class)
+        )
+        .methods
+        .is_empty(),
         "the binary's methods must be rebuilt, each carrying its body"
     );
 }
@@ -5745,7 +6079,15 @@ fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
     let platform = interp.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let img = image::snapshot(&interp, None, &origin, class, &platform, &[]).expect("snapshot");
+    let img = image::snapshot(
+        &interp,
+        None,
+        &origin,
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[],
+    )
+    .expect("snapshot");
 
     let loaded = image::load(&img).expect("load a stateful image with no roots");
     assert!(
@@ -5766,6 +6108,7 @@ fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
 #[test]
 fn a_stateless_artifact_without_an_entry_is_refused() {
     let (interp, class) = load(ENTRY_SRC);
+    let class = class_ref(&interp, &class);
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let mut bytes = image::build(
@@ -5809,6 +6152,7 @@ fn a_stateless_artifact_without_an_entry_is_refused() {
 #[test]
 fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
     let (interp, class) = load(ENTRY_SRC);
+    let class = class_ref(&interp, &class);
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let binary = image::build(
@@ -5852,6 +6196,7 @@ fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
 #[test]
 fn a_binary_with_a_graph_appended_is_refused() {
     let (mut interp, class) = load(ENTRY_SRC);
+    let class = class_ref(&interp, &class);
     let platform = interp.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
@@ -5863,8 +6208,8 @@ fn a_binary_with_a_graph_appended_is_refused() {
         Symbol::intern("main:args:"),
     )
     .expect("build");
-    let image_bytes =
-        image::snapshot(&interp, None, &origin, class, &platform, &[]).expect("snapshot");
+    let image_bytes = image::snapshot(&interp, None, &origin, class, &interp.fetch(&platform), &[])
+        .expect("snapshot");
     // The append below only exercises anything if the image actually
     // extends past where the binary ends -- a snapshot's graph section
     // guarantees that here, but assert it so a future change to either
@@ -5910,8 +6255,15 @@ fn a_relabelled_snapshot_is_refused_for_missing_entry() {
     let platform = interp.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let mut bytes =
-        image::snapshot(&interp, None, &origin, class, &platform, &[]).expect("snapshot");
+    let mut bytes = image::snapshot(
+        &interp,
+        None,
+        &origin,
+        class_ref(&interp, &class),
+        &interp.fetch(&platform),
+        &[],
+    )
+    .expect("snapshot");
 
     // Locate the flag byte from the header layout instead of hard-coding an
     // offset, so a header change fails this assertion loudly rather than
@@ -5960,15 +6312,23 @@ fn the_graph_walk_consumes_the_section_exactly() {
         let (mut interp, class) = load(src);
         let platform = interp.platform();
         let origin = Origin::File(PathBuf::from("t.ns"));
-        let instance = interp.instantiate(class, vec![platform]);
+        let instance = interp.instantiate(&class, std::slice::from_ref(&platform));
+        // Read out after the run, for the encoder, which runs nothing.
         let roots: Vec<_> = match instance {
-            Ok(v) => vec![v],
+            Ok(root) => vec![interp.fetch(&root)],
             // A module whose factory takes no platform argument still gives a
             // graph worth walking -- just without an instance in it.
             Err(_) => Vec::new(),
         };
-        let img =
-            image::snapshot(&interp, None, &origin, class, &platform, &roots).expect("snapshot");
+        let img = image::snapshot(
+            &interp,
+            None,
+            &origin,
+            class_ref(&interp, &class),
+            &interp.fetch(&platform),
+            &roots,
+        )
+        .expect("snapshot");
 
         let report = image::inspect::inspect(&img).expect("inspect the image");
         let graph = report

@@ -2,14 +2,20 @@
 //! methods, wired through `crate::builtins::dispatch_native` via
 //! `Interpreter::send`.
 
-use ns_runtime::{Heap, Interpreter, Signal, Symbol, Value};
+use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
 
-fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
-        Ok(v) => v,
-        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
-        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+        Ok(root) => root,
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
     }
+}
+
+/// A new string, rooted.
+fn string(interp: &mut Interpreter, s: &str) -> Root {
+    let obj = interp.new_string(s.to_string());
+    interp.stash(Value::Obj(obj))
 }
 
 fn as_string(heap: &Heap, value: &Value) -> String {
@@ -25,30 +31,37 @@ fn as_string(heap: &Heap, value: &Value) -> String {
 fn string_concatenation_joins_two_strings() {
     let mut interp = Interpreter::bootstrap();
 
-    let a = Value::Obj(interp.new_string("foo".to_string()));
-    let b = Value::Obj(interp.new_string("bar".to_string()));
+    let a = string(&mut interp, "foo");
+    let b = string(&mut interp, "bar");
 
-    let result = interp.send(a, Symbol::intern(","), vec![b]);
+    let result = interp.send(&a, Symbol::intern(","), &[b]);
 
     let joined = expect_ok(result, "'foo' , 'bar'");
-    assert_eq!(as_string(interp.heap_ref(), &joined), "foobar");
+    assert_eq!(
+        as_string(interp.heap_ref(), &interp.fetch(&joined)),
+        "foobar"
+    );
 }
 
 #[test]
 fn string_concatenation_with_a_non_string_argument_is_a_newspeak_error_not_a_panic() {
     let mut interp = Interpreter::bootstrap();
 
-    let a = Value::Obj(interp.new_string("foo".to_string()));
+    let a = string(&mut interp, "foo");
 
-    let result = interp.send(a, Symbol::intern(","), vec![Value::SmallInt(42)]);
+    let result = interp.send(
+        &a,
+        Symbol::intern(","),
+        &[interp.stash(Value::SmallInt(42))],
+    );
 
     match result {
-        Err(Signal::Error(_)) => {}
+        Err(HostSignal::Error(_)) => {}
         Ok(v) => panic!(
-            "expected a NewspeakError for 'foo' , 42, got Ok({})",
-            interp.heap_ref().describe(&v)
+            "expected a Newspeak error for 'foo' , 42, got Ok({})",
+            interp.heap_ref().describe(&interp.fetch(&v))
         ),
-        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
+        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
     }
 }
 
@@ -61,22 +74,23 @@ fn concatenating_a_string_with_an_object_is_an_error_not_a_stack_overflow() {
     // harmlessly and so could not catch it.
     let mut interp = Interpreter::bootstrap();
 
-    let a = Value::Obj(interp.new_string("foo".to_string()));
-    let arg = Value::Obj(interp.new_array(vec![]));
+    let a = string(&mut interp, "foo");
+    let arg = interp.new_array(vec![]);
+    let arg = interp.stash(Value::Obj(arg));
 
-    let result = interp.send(a, Symbol::intern(","), vec![arg]);
+    let result = interp.send(&a, Symbol::intern(","), &[arg]);
 
     match result {
-        Err(Signal::Error(e)) => assert!(
+        Err(HostSignal::Error(e)) => assert!(
             e.message.contains("requires a String argument"),
             "unexpected message: {}",
             e.message
         ),
         Ok(v) => panic!(
-            "expected a NewspeakError for 'foo' , anArray, got Ok({})",
-            interp.heap_ref().describe(&v)
+            "expected a Newspeak error for 'foo' , anArray, got Ok({})",
+            interp.heap_ref().describe(&interp.fetch(&v))
         ),
-        Err(Signal::Return(..)) => panic!("unexpected Signal::Return escaping `send`"),
+        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
     }
 }
 
@@ -84,37 +98,40 @@ fn concatenating_a_string_with_an_object_is_an_error_not_a_stack_overflow() {
 fn string_equality_compares_payloads() {
     let mut interp = Interpreter::bootstrap();
 
-    let a = Value::Obj(interp.new_string("same".to_string()));
-    let b = Value::Obj(interp.new_string("same".to_string()));
-    let c = Value::Obj(interp.new_string("different".to_string()));
+    let a = string(&mut interp, "same");
+    let b = string(&mut interp, "same");
+    let c = string(&mut interp, "different");
 
     let equal = expect_ok(
-        interp.send(a, Symbol::intern("="), vec![b]),
+        interp.send(&a, Symbol::intern("="), &[b]),
         "'same' = 'same'",
     );
-    assert!(matches!(equal, Value::Bool(true)));
+    assert!(matches!(interp.fetch(&equal), Value::Bool(true)));
 
     let not_equal = expect_ok(
-        interp.send(a, Symbol::intern("="), vec![c]),
+        interp.send(&a, Symbol::intern("="), &[c]),
         "'same' = 'different'",
     );
-    assert!(matches!(not_equal, Value::Bool(false)));
+    assert!(matches!(interp.fetch(&not_equal), Value::Bool(false)));
 }
 
 #[test]
 fn string_print_string_quotes_and_doubles_embedded_quotes() {
     let mut interp = Interpreter::bootstrap();
 
-    let s = Value::Obj(interp.new_string("it's".to_string()));
+    let s = string(&mut interp, "it's");
 
     let result = expect_ok(
-        interp.send(s, Symbol::intern("printString"), vec![]),
+        interp.send(&s, Symbol::intern("printString"), &[]),
         "'it''s' printString",
     );
 
     // Mirrors `ns_syntax::lexer::Lexer::lex_string`'s own escaping rule: an
     // embedded `'` is written as two consecutive `'` characters.
-    assert_eq!(as_string(interp.heap_ref(), &result), "'it''s'");
+    assert_eq!(
+        as_string(interp.heap_ref(), &interp.fetch(&result)),
+        "'it''s'"
+    );
 }
 
 #[test]
@@ -122,17 +139,22 @@ fn symbol_round_trips_through_as_string_and_as_symbol() {
     let mut interp = Interpreter::bootstrap();
 
     let sym = interp.new_symbol(Symbol::intern("foo:bar:"));
+    let sym = interp.stash(sym);
 
     let as_str = expect_ok(
-        interp.send(sym, Symbol::intern("asString"), vec![]),
+        interp.send(&sym, Symbol::intern("asString"), &[]),
         "#foo:bar: asString",
     );
-    assert_eq!(as_string(interp.heap_ref(), &as_str), "foo:bar:");
+    assert_eq!(
+        as_string(interp.heap_ref(), &interp.fetch(&as_str)),
+        "foo:bar:"
+    );
 
     let back_to_symbol = expect_ok(
-        interp.send(as_str, Symbol::intern("asSymbol"), vec![]),
+        interp.send(&as_str, Symbol::intern("asSymbol"), &[]),
         "'foo:bar:' asSymbol",
     );
+    let back_to_symbol = interp.fetch(&back_to_symbol);
     match &back_to_symbol {
         Value::Obj(obj) => match interp.heap_ref().sym_value(*obj) {
             Some(s) => assert_eq!(s, Symbol::intern("foo:bar:")),
@@ -152,12 +174,13 @@ fn symbol_round_trips_through_as_string_and_as_symbol() {
 fn character_constant_as_integer_yields_its_unicode_code_point() {
     let mut interp = Interpreter::bootstrap();
 
-    let a = Value::Obj(interp.new_character('A'));
+    let a = interp.new_character('A');
+    let a = interp.stash(Value::Obj(a));
 
     let result = expect_ok(
-        interp.send(a, Symbol::intern("asInteger"), vec![]),
+        interp.send(&a, Symbol::intern("asInteger"), &[]),
         "$A asInteger",
     );
 
-    assert!(matches!(result, Value::SmallInt(65)));
+    assert!(matches!(interp.fetch(&result), Value::SmallInt(65)));
 }

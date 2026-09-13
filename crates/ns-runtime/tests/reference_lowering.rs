@@ -8,9 +8,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use ns_runtime::bytecode::Instr;
-use ns_runtime::{ClassRef, Interpreter, Lowering, Signal, SourceOrigin, Symbol, Value};
+use ns_runtime::{
+    HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol, Value,
+};
 
-fn load(src: &str, lowering: Lowering) -> (Interpreter, ClassRef) {
+fn load(src: &str, lowering: Lowering) -> (Interpreter, Root) {
     let module = ns_syntax::parse(src).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -23,13 +25,13 @@ fn load(src: &str, lowering: Lowering) -> (Interpreter, ClassRef) {
     (interp, class)
 }
 
-/// `Signal` carries no `Debug` impl, so `Result::expect` is unusable on an
-/// `EvalResult` -- unwrap by hand.
-fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+/// `HostSignal` carries no `Debug` impl, so `Result::expect` is unusable on
+/// a `HostResult` -- unwrap by hand.
+fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
-        Ok(v) => v,
-        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
-        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+        Ok(root) => root,
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
     }
 }
 
@@ -69,14 +71,14 @@ fn every_program_answers_the_same_under_both_lowerings() {
     ];
     for lowering in [Lowering::Optimized, Lowering::Reference] {
         let (mut interp, class) = load(PROGRAMS, lowering);
-        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         for (selector, answer) in expected {
             let value = expect_ok(
-                interp.send(instance, Symbol::intern(selector), vec![]),
+                interp.send(&instance, Symbol::intern(selector), &[]),
                 selector,
             );
             assert!(
-                matches!(value, Value::SmallInt(n) if n == answer),
+                matches!(interp.fetch(&value), Value::SmallInt(n) if n == answer),
                 "{selector} under {lowering:?} did not answer {answer}"
             );
         }
@@ -98,6 +100,9 @@ fn a_reference_initializer_initializes_each_slot_then_answers_self() {
         ) : ()
     "};
     let (interp, class) = load(src, Lowering::Reference);
+    let Value::Obj(class) = interp.fetch(&class) else {
+        panic!("load_module answers a class object")
+    };
     let mixin = interp
         .heap_ref()
         .class_application(class)

@@ -5,13 +5,13 @@
 //! spawning a process, and check the singleton/identity behavior a
 //! process-level test can't easily observe.
 
-use ns_runtime::{BuiltinClass, Interpreter, Signal, Symbol, Value};
+use ns_runtime::{BuiltinClass, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
 
-fn expect_ok(result: Result<Value, Signal>, what: &str) -> Value {
+fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
-        Ok(v) => v,
-        Err(Signal::Return(..)) => panic!("{what}: unexpected Signal::Return"),
-        Err(Signal::Error(e)) => panic!("{what}: unexpected Signal::Error: {}", e.message),
+        Ok(root) => root,
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
     }
 }
 
@@ -20,7 +20,7 @@ fn platform_is_memoized_across_calls() {
     let mut interp = Interpreter::bootstrap();
     let a = interp.platform();
     let b = interp.platform();
-    match (a, b) {
+    match (interp.fetch(&a), interp.fetch(&b)) {
         (Value::Obj(a), Value::Obj(b)) => assert!(a.same(b)),
         _ => panic!("expected Value::Obj"),
     }
@@ -32,24 +32,25 @@ fn platform_transcript_show_and_new_line_round_trip() {
     let platform = interp.platform();
 
     let transcript = expect_ok(
-        interp.send(platform, Symbol::intern("transcript"), vec![]),
+        interp.send(&platform, Symbol::intern("transcript"), &[]),
         "platform transcript",
     );
 
-    let s = Value::Obj(interp.new_string("hi".to_string()));
+    let s = interp.new_string("hi".to_string());
+    let s = interp.stash(Value::Obj(s));
     let after_show = expect_ok(
-        interp.send(transcript, Symbol::intern("show:"), vec![s]),
+        interp.send(&transcript, Symbol::intern("show:"), &[s]),
         "transcript show: 'hi'",
     );
     // `show:` returns the receiver (the `Transcript`-style convention
     // `platform.rs`'s doc comment describes).
-    match (&after_show, &transcript) {
-        (Value::Obj(a), Value::Obj(b)) => assert!(a.same(*b)),
+    match (interp.fetch(&after_show), interp.fetch(&transcript)) {
+        (Value::Obj(a), Value::Obj(b)) => assert!(a.same(b)),
         _ => panic!("expected Value::Obj"),
     }
 
     expect_ok(
-        interp.send(transcript, Symbol::intern("newLine"), vec![]),
+        interp.send(&transcript, Symbol::intern("newLine"), &[]),
         "transcript newLine",
     );
 }
@@ -57,14 +58,14 @@ fn platform_transcript_show_and_new_line_round_trip() {
 #[test]
 fn platform_class_accessors_return_the_matching_builtin_class() {
     let mut interp = Interpreter::bootstrap();
-    let expected = interp.builtin_class(BuiltinClass::OrderedCollection);
     let platform = interp.platform();
 
     let got = expect_ok(
-        interp.send(platform, Symbol::intern("OrderedCollection"), vec![]),
+        interp.send(&platform, Symbol::intern("OrderedCollection"), &[]),
         "platform OrderedCollection",
     );
-    match got {
+    let expected = interp.builtin_class(BuiltinClass::OrderedCollection);
+    match interp.fetch(&got) {
         Value::Obj(obj) => assert!(obj.same(expected)),
         other => panic!(
             "expected Value::Obj, got {}",
@@ -80,18 +81,18 @@ fn platform_class_accessors_return_the_matching_builtin_class() {
 #[test]
 fn platform_collections_answers_list_with_the_ordered_collection_class() {
     let mut interp = Interpreter::bootstrap();
-    let expected = interp.builtin_class(BuiltinClass::OrderedCollection);
     let platform = interp.platform();
 
     let collections = expect_ok(
-        interp.send(platform, Symbol::intern("collections"), vec![]),
+        interp.send(&platform, Symbol::intern("collections"), &[]),
         "platform collections",
     );
     let got = expect_ok(
-        interp.send(collections, Symbol::intern("List"), vec![]),
+        interp.send(&collections, Symbol::intern("List"), &[]),
         "platform collections List",
     );
-    match got {
+    let expected = interp.builtin_class(BuiltinClass::OrderedCollection);
+    match interp.fetch(&got) {
         Value::Obj(obj) => assert!(obj.same(expected)),
         _ => panic!("expected a class object"),
     }
@@ -107,16 +108,16 @@ fn platform_collections_does_not_invent_a_map() {
     let platform = interp.platform();
 
     let collections = expect_ok(
-        interp.send(platform, Symbol::intern("collections"), vec![]),
+        interp.send(&platform, Symbol::intern("collections"), &[]),
         "platform collections",
     );
-    match interp.send(collections, Symbol::intern("Map"), vec![]) {
-        Err(Signal::Error(e)) => assert!(
+    match interp.send(&collections, Symbol::intern("Map"), &[]) {
+        Err(HostSignal::Error(e)) => assert!(
             e.message.contains("does not understand"),
             "message was: {}",
             e.message
         ),
-        Err(Signal::Return(..)) => panic!("unexpected Signal::Return"),
+        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return"),
         Ok(_) => panic!("expected `collections Map` to be refused"),
     }
 }
@@ -130,16 +131,16 @@ fn the_collections_namespace_is_not_a_transcript() {
     let platform = interp.platform();
 
     let collections = expect_ok(
-        interp.send(platform, Symbol::intern("collections"), vec![]),
+        interp.send(&platform, Symbol::intern("collections"), &[]),
         "platform collections",
     );
-    match interp.send(collections, Symbol::intern("newLine"), vec![]) {
-        Err(Signal::Error(e)) => assert!(
+    match interp.send(&collections, Symbol::intern("newLine"), &[]) {
+        Err(HostSignal::Error(e)) => assert!(
             e.message.contains("does not understand"),
             "message was: {}",
             e.message
         ),
-        Err(Signal::Return(..)) => panic!("unexpected Signal::Return"),
+        Err(HostSignal::Return) => panic!("unexpected HostSignal::Return"),
         Ok(_) => panic!("expected `collections newLine` to be refused"),
     }
 }

@@ -4,14 +4,21 @@
 > addressed by 32-bit handles; activations live on an activation stack in
 > the same `Heap` and reach the frame arena only when a block captures one.
 > Identity, layout ownership and the seam that routes every access through
-> `Heap` are built. Nothing reclaims an arena slot: there is no collector,
-> and no root discipline for one to use; the discipline is designed, in
-> "Planned: checked roots and a collector", and its first part is built:
-> nothing re-enters the run loop from Rust, so no Rust frame is live below a
-> safepoint (step 2a).
+> `Heap` are built. Nothing reclaims an arena slot: there is no collector.
+> The root discipline one will use is designed, in "Checked roots and a
+> collector", and two of its three parts are built: nothing re-enters the run
+> loop from Rust, so no Rust frame is live below a safepoint (step 2a); and
+> the run loop polls a safepoint, every handle the collector would trace is
+> enumerated, a host keeps values across runs only as `Root`s, and a
+> debug-build stress mode moves everything at the safepoints to check all of
+> it (step 2b). The lifetime brand that would make holding a handle across a
+> safepoint a compile error is not built (step 2c).
 > **Code:** `crates/ns-runtime/src/heap.rs` (the arenas, the activation
-> stack, the handle types, every accessor), `types.rs` (`Value`, `Object`,
-> `Frame`), `mixin.rs` (layout, and the one remaining iterative `Drop`).
+> stack, the handle types, every accessor, the host root table, the move),
+> `trace.rs` (everything the collector traces), `interpreter/safepoint.rs`
+> (the safepoint and the stress mode), `vm.rs` (the poll), `types.rs`
+> (`Value`, `Object`, `Frame`), `mixin.rs` (layout, and the one remaining
+> iterative `Drop`).
 
 ## What exists
 
@@ -106,10 +113,12 @@ names a different, perfectly valid object, so the read answers the wrong thing
 rather than failing. A `debug_assertions`-only guard makes that explicit rather
 than conventional: each `Heap` carries a distinct id, each handle records the id
 of the heap that minted it, and every accessor that takes a handle asserts the two
-match — 63 sites in `heap.rs`, 17 of them through an `ActivationRef`, whose check
+match — 69 sites in `heap.rs`, 16 of them through an `ActivationRef`, whose check
 also compares a generation, because a stack index is reused as soon as its entry
-is popped. In a release build neither the fields nor the checks exist, and a
-handle is exactly its 32-bit index.
+is popped. An `ObjRef` or a `FrameRef` also carries the heap's move epoch, which
+the same check compares ("Checking the roots before a collector exists: the
+stress mode" below). In a release build neither the fields nor the checks
+exist, and a handle is exactly its 32-bit index.
 
 The room the actor milestone needs is still there. Actors are designed to get one
 heap each so that pauses stay local
@@ -248,18 +257,22 @@ file next starts from a list rather than from rediscovery.
   `&Heap` borrow, and the borrow checker enforces the rest. Whether to add one
   is a measurement, and neither site named here is on a measured path.
 
-## Planned: checked roots and a collector
+## Checked roots and a collector
 
-What would change: a collection could run — only at a safepoint in the run
-loop — and move objects, and every handle the runtime holds would be either
-where the collector can find and rewrite it or a compile error. Designed on
-2026-09-13 as step 2 of Milestone 4, in three parts that each land green and
-measured on their own: **2a**, built, removed every re-entry of the run loop
-from Rust ([execution.md](execution.md), "No re-entry from Rust"); **2b** adds
-the safepoint, the enumeration of everything the collector traces, host roots
-and a stress mode that moves every object at every safepoint; **2c** brands
-every movable handle with a lifetime, so that holding one across a safepoint
-is a compile error. The collector itself is step 5.
+**Partial:** the safepoint, the tracing, host roots and the stress mode are
+built; the lifetime brand and the collector are not. What the whole would
+change: a collection could run — only at a safepoint in the run loop — and move
+objects, and every handle the runtime holds would be either where the collector
+can find and rewrite it, which is built and checked, or a compile error, which
+is not. Designed on 2026-09-13 as step 2 of Milestone 4,
+in three parts that each land green and measured on their own: **2a**, built,
+removed every re-entry of the run loop from Rust ([execution.md](execution.md),
+"No re-entry from Rust"); **2b**, built, is the safepoint, the enumeration of
+everything the collector traces, host roots, and a debug-build stress mode that
+moves every object at the safepoints and so checks the enumeration against the
+whole suite; **2c**, planned, brands every movable handle with a lifetime, so
+that holding one across a safepoint is a compile error. The collector itself is
+step 5, and until it exists nothing requests a collection in a release build.
 
 **The collector has to move objects.** `become:`-style identity swap and object
 forwarding are requirements, not conveniences: adding an instance variable to a
@@ -278,17 +291,19 @@ checks.
 
 ### Where a collection can happen: only at a safepoint in the run loop
 
-An allocation will never collect. It will count what it allocates and, past a
-threshold, *request* a collection, which runs at the next safepoint of the run
-loop. `vm::run` reaches one at every switch to another activation — a push, or
-a caller resumed — and at every backward jump, so every call and every loop
-iteration passes one. Between two instructions `run` holds the running
-`ActivationRef`, its `Rc<CompiledCode>` and its `pc`, and no handle the
-collector would move; every live value is in a register on the activation
-stack or in one of the places "What the collector traces" below lists. The
-interpreter's reusable argument buffer is empty there — a send gathers into
-it, decides and pushes within one instruction — so it is not a root, and a
-debug assertion at the safepoint says so.
+An allocation never collects. Once the collector exists, an allocation will
+count what it allocates and, past a threshold, *request* a collection, which
+runs at the next safepoint of the run loop. `vm::run` polls one at every switch
+to another activation — a push, or a caller resumed — and at every backward
+jump, so every call and every loop iteration passes one, a loop that makes no
+send included; a forward jump does not poll. Between two instructions `run`
+holds the running `ActivationRef`, its `Rc<CompiledCode>` and its `pc`, and no
+handle the collector would move; every live value is in a register on the
+activation stack or in one of the places "What the collector traces" below
+lists. The interpreter's reusable argument buffer is empty there — a send
+gathers into it, decides and pushes within one instruction, and it is cleared
+when it is given back — so it is not a root, and a debug assertion before
+every move says so (`Interpreter::check_quiescent_state`).
 
 The first four systems below chose this placement; the last four collect
 elsewhere, and their right-hand column is what that costs their runtime code:
@@ -316,10 +331,36 @@ heap can pass its threshold by what one step allocates. A large object going
 straight to a large-object space and a small reserve absorb that, as they do in
 Cog and Primordial Soup.
 
-The poll will be one compare of a flag the heap owns. If a measurement shows
-its price on the send path, Cog's trick is the fallback: a request lowers the
-limit `Interpreter::push` already compares the activation depth against, so a
-send pays nothing it does not pay today.
+**The poll** (`vm::poll`, inlined into `vm::run`) is one compare of a flag the
+heap owns, `safepoint_requested`. When the flag is set it calls
+`Interpreter::safepoint` (`interpreter/safepoint.rs`), `#[cold]` and out of
+line, so `vm.rs` holds the compare and the call and nothing of what a
+safepoint does. The safepoint serves a request by clearing the flag, except
+under the stress mode below, which keeps it set. Nothing sets it in a release
+build yet: the allocation counter that will is the collector's.
+
+That the slow path serves the request, although nothing in a release build
+makes one, is what keeps the poll in the binary. With an empty release slow
+path, fat LTO proved the call free of side effects and deleted it — then the
+branch, then the flag's load — so the release binary carried no poll at all,
+and the first measurement of it measured nothing. Clearing the flag leaves a
+compare-and-branch at both poll sites and a cold call in `vm::run`'s release
+assembly. The collector's trigger has to keep the same thing in mind: a
+measurement of the poll means something only on a binary whose assembly still
+contains it, so the price it shows is the price the collector will pay rather
+than one the optimizer hid.
+
+Measured with the poll in the binary, on a release build in one sitting
+against its parent, no source was slower: from −3.0% on `bench_block.ns` to
++0.9% on `bench_new2.ns`, every group overlapping its parent's. Measured with
+the rest of step 2b against the commit 2b started from, in two sittings, no
+source was slower beyond the sittings' noise, and `bench_block.ns` was 4%
+faster for another reason ([execution.md](execution.md), "What 2b moved",
+which also has the one borderline group). So Cog's trick was not
+needed; it stays the fallback should a later measurement show the poll's price
+on the send path: a request lowers the limit `Interpreter::push` already
+compares the activation depth against, so a send pays nothing it does not pay
+anyway.
 
 ### No Rust frame is live below a safepoint
 
@@ -332,12 +373,15 @@ nested run would hold values across that run's safepoints, and rooting them is
 what Nova's `Scoped` values are for; ns-next removed the frames instead. So at
 every point between two instructions the Rust stack holds the host and the run
 loop and nothing between them — piccolo's property — and what is left to root
-is only what the host keeps. The safepoint that relies on it is step 2b.
+is only what the host keeps ("Host roots" below). The safepoint relies on it.
 
-### The brand: checked by the compiler, not by convention
+### Planned: the brand, checked by the compiler rather than by convention
 
-Step 2c. Every handle a collector can move — `ObjRef`, `ClassRef`, `FrameRef`,
-and so `Value` and every type that contains one (`ObjectData`, `ClassData`,
+What would change: holding a handle across a safepoint, and a native
+re-entering the run loop, would be compile errors rather than mistakes the
+stress mode finds at run time. Step 2c. Every handle a collector can move —
+`ObjRef`, `ClassRef`, `FrameRef`, and so `Value` and every type that contains
+one (`ObjectData`, `ClassData`,
 `Frame`, `FrameKind`, `Continuation`, `Step`, `Signal`, `NewspeakError`) — will
 carry a lifetime `'gc`, invariant so that it can be neither shortened nor
 extended. The only way to obtain one is `Interpreter::enter`, which runs a
@@ -354,6 +398,12 @@ compile rather than corrupt the heap under collection pressure: holding a
 handle across a safepoint, and a native re-entering the run loop.
 `compile_fail` doctests pin both, and a third: storing a branded handle in a
 host's own field.
+
+It also closes the one case the stress mode's epoch check cannot reach:
+`same` compares two handles with no heap in reach, so it can check their
+epochs only against each other, and two stale handles from the same old epoch
+pass it where a live handle against a stale one panics. Under the brand
+neither could have been held past the safepoint that moved them.
 
 `ActivationRef` stays unbranded: the collector moves no stack entry, and its
 generation check already covers an index reused after a pop.
@@ -377,64 +427,164 @@ the stress mode what the tracer knows.
 ### Host roots
 
 A host keeps values across runs: `ns-next bench` sends to the same instance 22
-times, and `snapshot` encodes after its send. The heap will keep a root table
-the collector traces. A `Root` is an `Rc`-shared slot the table also holds —
-gc-arena's `DynamicRootSet` model — so a root whose last handle outside the
-table is dropped is swept at the next collection, and releasing one needs no
-access to the heap. `Interpreter::send`, `instantiate` and `image::load` take
-and answer `Root`s, a Newspeak error reaches the host with its receiver as a
-`Root`, and a host reads through `enter`; `heap_ref()` and `heap_mut()` go.
-Step 2b adds the table and converts the CLI and the tests to it, checked by the
-stress mode below; step 2c makes it the only way a host can hold a value.
+times, and `snapshot` encodes after its send. A run may move every object, so
+what a host holds across one must be where a move rewrites it: in the heap's
+root table, which the tracer walks. A `Root` (`heap.rs`) is an `Rc`-shared
+`Cell<Value>` slot the table also holds — gc-arena's `DynamicRootSet` model —
+so releasing one needs no access to the heap: once the last clone outside the
+table is dropped, the table holds the only reference, and its next sweep drops
+the slot. The table is swept at every move, and by `stash` whenever it has
+doubled since its last sweep (never below 64 slots), so it stays proportional
+to the roots a host still holds in a release build too, where nothing moves.
+
+`Interpreter::stash` and `Interpreter::fetch` (`Heap::stash`/`fetch`) take
+`&self`, the table sitting behind a `RefCell`, so that a host can stash an
+argument inside the call that sends it — `interp.send(&r, sel,
+&[interp.stash(v)])` — as `DynamicRootSet::stash` allows. A value `fetch`
+answers is good until the next run, which may move it; a host reads the root
+again after one.
+
+Every host entry takes and answers roots: `Interpreter::send`, `instantiate`,
+`load_module` and `platform`, and `image::load`, whose `LoadedImage` carries
+the root class and the image's roots as `Root`s. A send or an instantiation
+answers a `HostResult`, `Result<Root, HostSignal>`: its value rooted
+(`Interpreter::to_host`), a Newspeak error as a `HostError` whose receiver is a
+`Root`, or a `^` that reached the host as `HostSignal::Return`. `Signal` and
+`EvalResult` are crate-private, so no plain value leaves a run by any other
+way than `fetch`; and since a `Root` can hold any value, `instantiate` refuses
+one that holds no class object with a Newspeak error. `image::snapshot` and
+`image::build` take plain values, which a host fetches from its roots just
+before the call: encoding runs no code, so nothing moves under it. `Root`,
+`HostSignal` and `HostError` have no `Debug`, for the reason `Signal` has none
+(`CLAUDE.md`). The CLI and every test hold what they keep across runs as roots,
+and the stress mode below checks that they do.
+
+What 2c still changes here: `heap_ref()` and `heap_mut()` remain, and a value
+`fetch` answers is a plain `Value` that a host could keep across a run by
+mistake, which only the stress mode would catch. 2c's `Interpreter::enter`
+replaces both — a host reads through `enter`, and nothing branded leaves it —
+so that a root becomes the only way a host can hold a value.
 
 ### What the collector traces
 
-- The bootstrap: `builtin_classes` and `platform_singleton`.
-- The activation stack: each entry's receiver, registers, `current_class`, the
-  `ClassRef` its `FrameKind` names, and the state its continuation carries.
-- Every arena record: an object's class and payload, a frame's fields.
+`trace.rs` enumerates it, type by type: a `Trace` impl hands every field that
+holds an `ObjRef`, a `ClassRef` or a `FrameRef` to a `Tracer`, one `&mut` at a
+time.
+
+- The bootstrap: `builtin_classes` and `platform_singleton`, which the
+  interpreter forwards itself, after the heap (`Interpreter::move_everything`).
+- The activation stack: each entry's receiver, `current_class`, the
+  `ClassRef` or closure object its `FrameKind` names, the frame it is married
+  to, and the state its continuation carries — a `WhileLoop`'s condition and
+  body, a `DoLoop`'s receiver, block and elements, a `NestedClassCreation`'s
+  enclosing object and declaring class, an `Instantiation`'s instance, levels
+  with their arguments, and phase; and every register. `StackEntry`'s impl is
+  in `heap.rs`, where its fields are private.
+- Every arena record: an object's class and payload — an instance's or an
+  array's fields, a closure's captured frame and home, a class's enclosing
+  object, declaring class, superclass and metaclass — and a frame's receiver,
+  registers, sender, home, current class and kind. A married frame's registers
+  are its entry's, traced with the stack.
 - The host root table.
+
+**Every impl names every field and matches every variant**, with no `..` and
+no `_` arm, so a field or a variant added later does not compile until someone
+decides whether it holds a handle. That is what keeps the enumeration complete
+as the types grow; the stress mode checks that the places it is applied to are
+complete. Enumerating is `trace.rs`'s and rewriting is `heap.rs`'s
+(`Forwarder`), since only `heap.rs` can mint a handle. `trace.rs` exists in a
+debug build only, until the collector needs it in every build.
 
 A reified frame is not a root of its own: it is reached through the closure
 that captured it, or through the live entry it is married to. Two things the
-interpreter keeps hold no handle, on purpose: a nested class being created is
-marked in its own cache slot by a primitive (`false`), while the enclosing
-object stays in the continuation of the clause's stack entry, where the stack
-is traced anyway; and the spare boxes finished instantiations leave for the
-next ones are emptied of every handle when they are put back (step 2a,
-built; [execution.md](execution.md), "No re-entry from Rust").
+interpreter keeps hold no handle, on purpose, and a debug assertion before
+every move checks both: a send's argument buffer, empty between instructions
+("Where a collection can happen" above); and the spare boxes finished
+instantiations leave for the next ones, emptied of every handle when they are
+put back ([execution.md](execution.md), "No re-entry from Rust"). A nested
+class being created is marked in its own cache slot by a primitive (`false`),
+while the enclosing object stays in the continuation of the clause's stack
+entry, where the stack is traced anyway.
 
 **A handle lives only where the tracer can rewrite it in place**: in an arena
 record, in a stack entry, in a continuation that one stack entry owns, or in an
-interpreter root — never behind a shared `Rc`. `Rc<ClosureData>` breaks that
-today. Its `captured_frame` and `home` are `FrameRef`s, and the same `Rc` hangs
-off the closure object, off `FrameKind::Closure` on every activation of the
-closure, off `WhileLoop.condition` and off `DoLoop.block`. Step 2b splits it:
-the shared part keeps `params` and `code`, the two handles move into the
-closure object's own payload, and `FrameKind::Closure`, `WhileLoop` and
-`DoLoop` refer to the closure object.
+interpreter root — never behind a shared `Rc`, which the tracer could reach
+only through a shared reference. So a closure's two frame handles live in the
+closure object: `ClosureData` is stored inline in the object's payload,
+sharing only `params` and `code`, which hold no handle, through their own
+`Rc`s with the `MakeClosure` instruction that made it; and everything else
+that needs a closure — `FrameKind::Closure` on each of its activations,
+`WhileLoop.condition`, `DoLoop.block`, `Step::Block` — names the closure object,
+whose `captured_frame` and `home` the tracer then rewrites once, in its record.
+A native loop's state is boxed in its continuation (`Box<WhileLoop>`,
+`Box<DoLoop>`), owned by exactly one stack entry.
 
 ### Checking the roots before a collector exists: the stress mode
 
-Step 2b. The brand checks what Rust locals hold; it cannot check that the list
-above is complete. A debug-build stress mode, switched on by an environment
-variable so that the whole existing suite runs under it unchanged, requests a
-move at every safepoint. A move reorders both arenas by a permutation with no
-fixed point and rewrites every traced handle: a compacting collection that
-treats everything as live. Every handle also carries, in a debug build and
-beside the origin it already carries, the heap's move epoch, and every accessor
-compares the two, so a handle the tracer missed panics at its first read
-instead of perhaps printing a wrong answer. The permutation checks the
-forwarding; the epoch checks the completeness. It builds the tracing and
-forwarding the collector will need first, under the suite that pins every
-program's outcome. V8's `--stress-compaction`, SpiderMonkey's compacting GC
-zeal mode and HotSpot's `ScavengeALot` exist for the same reason.
+The brand (2c) will check what Rust locals hold; it cannot check that the list
+above is complete, and nothing checks that at compile time. A debug-build
+stress mode checks it by running. With `NS_NEXT_STRESS_MOVES` set to anything
+but empty or `0`, every interpreter the process bootstraps — the `ns-next`
+binary the CLI tests spawn included — keeps the safepoint flag set and moves
+everything at the safepoints its schedule picks, so the whole existing suite,
+which pins every program's outcome, runs under it unchanged.
 
-Step 2b's gates are the ordinary suite, the same suite with the stress mode on
-(`cargo test --workspace` under the variable), `run-corpus` under it with both
-lowerings, and a before-and-after measurement of the three benchmarks on a
-release build for the poll, which is the only part a release build contains.
-The stress run joins the commands `CLAUDE.md` requires.
+A move (`Heap::move_everything`, then `Interpreter::move_everything` for the
+interpreter's own roots) rotates each arena by a shift in `1..len` that varies
+with the epoch, so no slot keeps its index, and rewrites every traced handle: a
+compacting collection that treats everything as live. Every `ObjRef` and
+`FrameRef` carries, in a debug build and beside the origin it already carries,
+the heap's move epoch when it was minted or last forwarded, and every accessor
+compares the two, so a handle the tracer missed panics at its first read
+("stale handle") instead of perhaps printing a wrong answer. The rotation
+checks the forwarding; the epoch checks the completeness. The `Forwarder`
+checks each handle it rewrites as well — its origin, and that its epoch is the
+one being moved from — because a foreign or stale handle stored in the heap is
+a mistake the move would otherwise make permanent. `ActivationRef` carries no
+epoch: no stack entry moves, and its generation already covers an index reused
+after a pop. V8's `--stress-compaction`, SpiderMonkey's compacting GC zeal mode
+and HotSpot's `ScavengeALot` exist for the same reason. Here the stress mode
+also comes first: the tracing and forwarding the collector will need are built,
+and held to the whole suite, before the collector is.
+
+**The schedule is budgeted, not every safepoint.** A move costs work
+proportional to what it traces — both arenas, the activation stack's entries
+and registers, and the host roots (`Heap::traced_size`) — so moving at every
+safepoint is quadratic in a deep recursion: the tests and goldens that recurse
+to 100,000 activations, and the `bench_*` fixtures, would take hours per suite
+run in a debug build. So while the traced size is at most
+`STRESS_MOVE_BUDGET`, 1,000, every safepoint moves; above it, a safepoint moves
+once the safepoints since the last move reach the traced size over the budget,
+rounded up (`StressMoves::due`, `interpreter/safepoint.rs`). That spends about
+1,000 handle rewrites per safepoint on average, the size-proportional pacing a
+collector's allocation-driven trigger has, and every small program keeps a
+move at every safepoint. The prior art uses a fixed frequency instead:
+HotSpot's `ScavengeALotInterval`, SpiderMonkey's `JS_GC_ZEAL=mode,N`, V8's
+`--gc-interval`. A fixed interval of one is the quadratic case, and any larger
+one takes coverage from the small tests to spare the large ones, so pacing by
+size was chosen instead, with the user, on 2026-09-13. A move comes only at a
+safepoint, and a run that makes no send and closes no loop — a host's send of
+`answer = ( ^42 )` — passes none, so a test made only of such runs is not
+moved at all.
+
+What it costs is time. The whole suite, test binaries already built, takes
+190.2 s under the variable against 12.7 s without it, measured at 682 tests
+either way. Almost
+half of that is `crates/ns-runtime/tests/trampoline.rs`, 91.5 s against 3.0 s,
+nearly all of it in `the_depth_limit_is_exact_and_counts_alike_under_both_lowerings`;
+most of the rest is the three CLI test binaries that spawn `ns-next` per
+fixture or golden — `build_load.rs` 47.9 s against 3.5 s, `run_fixtures.rs`
+24.1 s against 1.6 s, `snapshot_load.rs` 21.0 s against 1.7 s — so
+`cargo test -p ns-cli` alone takes about 96 s against 7.6 s. `run-corpus`,
+whose six modules are small, takes about a third of a second either way.
+
+The stress runs are gates: `CLAUDE.md` requires the whole suite and
+`run-corpus` — every runnable module from source and as a built binary, under
+both lowerings — under the variable before every commit. A release build
+contains none of it: `trace.rs`, the epoch, the move, the schedule and the
+test hooks (`Interpreter::move_now`, `moves`, `stress_safepoints`,
+`set_stress_moves`) are `#[cfg(debug_assertions)]`, and only the poll is
+left, whose price is measured in "Where a collection can happen" above.
 
 ### Considered and rejected: Nova's scopes
 
@@ -449,7 +599,7 @@ machinery would stand with nothing to root, its `unbind` a hole in the static
 guarantee.
 A `Scoped` value is also retained for the whole call, past its last use, which
 the brand never does. Engineering effort was not the constraint, so the brand is
-built directly rather than after it.
+to be built directly rather than after it.
 
 ### Considered and rejected: conservative stack scanning
 
@@ -468,8 +618,10 @@ list in "What the collector traces" above. Most of it is two things: the
 bootstrap, standing in for upstream's object store, and the activation stack
 ([execution.md](execution.md), "Activations") — a contiguous, precisely typed
 pair of arrays rather than a pointer-chased chain of individually allocated
-frames. Step 2b leaves the collector the safepoint, the tracing and the
-forwarding; what it adds is liveness, reclamation, the allocation counter that
+frames. The safepoint exists in every build, and the tracing (`trace.rs`) and
+the forwarding (`Forwarder`, `Heap::move_everything`) exist in a debug build,
+checked by the stress mode. The collector un-gates the tracing and the
+forwarding, and adds liveness, reclamation, the allocation counter that
 requests a collection, and the spaces — a nursery, a large-object space.
 
 Closure conversion ([execution.md](execution.md), "Planned: closure
@@ -572,10 +724,13 @@ its variables. After it, a surviving block holds exactly what it captured.
   |---|---|---|---|
   | Record minimum | 6 B | 18 B | — |
   | Release size | 56 B → 9.3x | 136 B → 7.6x | **~16.9x** |
-  | Debug size | 80 B → 13.3x | 144 B → 8.0x | ~21.3x |
+  | Debug size | 96 B → 16.0x | 160 B → 8.9x | ~24.9x |
 
   A frame-arena entry is a `FrameSlot`: the `Frame` (128 B in a release build,
-  136 B in a debug one) and the `live` marriage field beside it, 8 bytes more.
+  152 B in a debug one) and the `live` marriage field beside it, 8 bytes more.
+  The debug sizes are larger because every handle there carries, besides its
+  index, the id of the heap that minted it and the move epoch the stress mode
+  checks it against.
 
   `bounded_count` is what keeps this proportional to the input at all rather
   than to a 32-bit count — without it a crafted `u32::MAX` would allocate
@@ -647,3 +802,18 @@ its variables. After it, a surviving block holds exactly what it captured.
 - **The roots' completeness is checked by moving everything**, in a debug-build
   stress mode, before a collector exists, because the brand cannot see a handle
   stored somewhere the tracer does not know about.
+- **The stress mode moves on a budget paced by heap size**, not at literally
+  every safepoint (decided with the user on 2026-09-13): at every safepoint
+  while the traced size is within `STRESS_MOVE_BUDGET`, and above it once per
+  size-over-budget safepoints. A move at every safepoint is quadratic in a deep
+  recursion, and a fixed interval, as HotSpot, SpiderMonkey and V8 use, would
+  take coverage from small programs to spare large ones.
+- **A host keeps values across runs only as `Root`s**, slots it shares with the
+  heap's root table (gc-arena's `DynamicRootSet`), so the tracer finds and
+  rewrites every value a host holds and releasing one needs no heap.
+- **A closure's payload is inline in the closure object**, not behind an `Rc`
+  of its own, and everything else that needs a closure names the object: a
+  handle behind a shared `Rc` cannot be rewritten in place. Only `params` and
+  `code`, which hold no handle, stay shared. It also made `bench_block.ns`
+  about 4% faster, since `MakeClosure` no longer allocates an `Rc` and a popped
+  block activation drops none.
