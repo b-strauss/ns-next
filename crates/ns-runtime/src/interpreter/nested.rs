@@ -26,7 +26,6 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
-use crate::heap::Heap;
 use crate::mixin::{mixin_key, Mixin};
 use crate::types::*;
 use crate::Symbol;
@@ -117,22 +116,22 @@ pub(crate) fn nested_class(
     nested: &Rc<Mixin>,
     declaring_class: ClassRef,
 ) -> Result<Step, Signal> {
-    let Some((obj, index)) = cache_slot(interp, receiver, nested) else {
+    let Some((obj, index, cached)) = cache_slot(interp, receiver, nested) else {
         return Err(no_cache_slot_error(receiver, nested.name));
     };
-    // Step 1: the receiver's own cache. `Nil` is the "not yet" marker --
-    // `instantiate` fills every slot, hidden ones included, with `Nil`, and
-    // a materialized class object is never `Nil`, so no separate occupancy
-    // flag is needed.
-    if let Some(cached) = read_cache_slot(&interp.heap, receiver, index) {
-        return Ok(Step::Value(cached));
+    // Step 1: the receiver's own cache. `Nil` is "not yet" -- `instantiate`
+    // fills every slot, hidden ones included, with `Nil`, and a materialized
+    // class object is never `Nil` -- and `CREATION_IN_PROGRESS` is "underway,
+    // further down the stack", so the slot answers both questions and no
+    // side table is needed.
+    match cached {
+        Value::Nil => {}
+        cached if is_creation_in_progress(cached) => {
+            return Err(cyclic_definition_error(receiver, nested.name));
+        }
+        cached => return Ok(Step::Value(cached)),
     }
-    // Step 2: the superclass clause, evaluated in the receiver's context --
-    // guarded against a class whose own creation is already underway on
-    // this receiver.
-    if in_progress(interp, obj, nested) {
-        return Err(cyclic_definition_error(receiver, nested.name));
-    }
+    // Step 2: the superclass clause, evaluated in the receiver's context.
     let creation = NestedClassCreation {
         enclosing: obj,
         index,
@@ -219,7 +218,8 @@ pub(crate) fn after_clause(
 }
 
 /// `receiver`'s own object handle together with the absolute index of
-/// `nested`'s hidden cache slot in its layout, or `None` when `receiver`
+/// `nested`'s hidden cache slot in its layout and what that slot holds, or
+/// `None` when `receiver`
 /// has no such slot -- either because its class's application does not
 /// know the declaration (an internal inconsistency) or because its payload
 /// is not an `Instance` at all, which a user class inheriting a builtin's
@@ -238,7 +238,7 @@ fn cache_slot(
     interp: &Interpreter,
     receiver: &Value,
     nested: &Rc<Mixin>,
-) -> Option<(ObjRef, usize)> {
+) -> Option<(ObjRef, usize, Value)> {
     let class = interp.class_of(receiver);
     let index = interp
         .heap
@@ -250,37 +250,76 @@ fn cache_slot(
         Value::Obj(obj) => interp
             .heap
             .instance_field(*obj, index)
-            .map(|_| (*obj, index)),
+            .map(|cached| (*obj, index, cached)),
         _ => None,
     }
 }
 
-/// The entry `Interpreter::nested_in_progress` records while `creation`'s
-/// clause runs: the enclosing object and the declaration's identity. The
-/// declaration, not its name, for the same reason `cache_slot` uses it:
-/// `class N = super N (...)` is a subclass redeclaring what it inherits, not
-/// a cycle, and a name key would report the legal shape as one.
-pub(super) fn in_progress_entry(creation: &NestedClassCreation) -> (ObjRef, usize) {
-    (creation.enclosing, mixin_key(&creation.nested))
+/// What a nested class's cache slot holds while the class is being created
+/// for that enclosing object -- exactly while the activation evaluating its
+/// superclass clause is on the stack. An access that finds it is a cycle
+/// (`cyclic_definition_error`).
+///
+/// The slot itself, rather than a list of the creations underway, because
+/// the slot is already keyed by exactly the pair a cycle is: the enclosing
+/// object and the declaration's identity (`MixinApplication::nested_slot`), so
+/// `class N = super N (...)`, a subclass redeclaring what it inherits, has a
+/// slot of its own and is not reported as a cycle. The check is one read the
+/// accessor makes anyway, where a list was scanned in full at every level of
+/// a deep chain of creations -- quadratic in that depth -- and nothing here
+/// is an object identity a moving collector would have to rewrite. SOMns
+/// likewise keeps a class slot's whole state in the slot
+/// (`ClassSlotAccessNode`, where nil means "create").
+///
+/// A primitive, not a new kind of `Value`: it is written only over `Nil` and
+/// only by `begin_creation`, and replaced by the class or by `Nil` again when
+/// the clause's activation is popped, so no Newspeak code ever reads it --
+/// nothing but this accessor reads a hidden slot -- and no image holds it,
+/// since only a host snapshots, between runs. An image that stores `false`
+/// in a hidden slot itself gets a cyclic-definition error on access, the
+/// same kind of wrong-but-safe answer as any other non-class value it puts
+/// there, which the accessor answers as the class.
+const CREATION_IN_PROGRESS: Value = Value::Bool(false);
+
+fn is_creation_in_progress(value: Value) -> bool {
+    matches!(value, Value::Bool(false))
 }
 
-/// Whether the class `nested` declares is being created for `enclosing`
-/// right now, further down the stack.
-fn in_progress(interp: &Interpreter, enclosing: ObjRef, nested: &Rc<Mixin>) -> bool {
-    let key = mixin_key(nested);
+/// The clause activation of a creation has just been pushed: mark its class
+/// as being created, in slot `index` of `enclosing`, where it will be cached.
+/// Only a slot `nested_class` found `Nil` gets here.
+pub(super) fn begin_creation(interp: &mut Interpreter, enclosing: ObjRef, index: usize) {
     interp
-        .nested_in_progress
-        .iter()
-        .any(|(obj, entry)| *entry == key && obj.same(enclosing))
+        .heap
+        .set_instance_field(enclosing, index, CREATION_IN_PROGRESS);
+    #[cfg(debug_assertions)]
+    {
+        interp.creations_in_progress += 1;
+    }
 }
 
-fn read_cache_slot(heap: &Heap, receiver: &Value, index: usize) -> Option<Value> {
-    let Value::Obj(obj) = receiver else {
-        return None;
-    };
-    match heap.instance_field(*obj, index) {
-        Some(Value::Nil) | None => None,
-        Some(value) => Some(value),
+/// `creation`'s clause activation has been popped, by a return or by an
+/// unwind: the class is no longer being created, and its slot is `Nil` again
+/// until `after_clause` caches the class there.
+///
+/// It resets the marker only where the marker still is. A slot the program
+/// can reach never changes under it, but the decoder does not bound
+/// `InitSlot`'s field index, so an image's clause body can overwrite the
+/// slot; that value is left as the image wrote it, and is why this is not an
+/// assertion, which such an image would turn into a panic.
+pub(super) fn end_creation(interp: &mut Interpreter, creation: &NestedClassCreation) {
+    if interp
+        .heap
+        .instance_field(creation.enclosing, creation.index)
+        .is_some_and(is_creation_in_progress)
+    {
+        interp
+            .heap
+            .set_instance_field(creation.enclosing, creation.index, Value::Nil);
+    }
+    #[cfg(debug_assertions)]
+    {
+        interp.creations_in_progress -= 1;
     }
 }
 
@@ -308,9 +347,8 @@ fn not_a_class_error(name: Symbol, value: Value) -> Signal {
 /// This is a cycle in class *creation*, not general user recursion: the
 /// creation of one class object for one receiver happens exactly once, so a
 /// second entry for the same (receiver, declaration) is unconditionally a
-/// cycle. `Interpreter::nested_in_progress` is the stack that detects it in
-/// O(depth) with no allocation on the ordinary path -- it is empty except
-/// while a clause is actually being evaluated.
+/// cycle. The cache slot detects it, holding `CREATION_IN_PROGRESS` while the
+/// first entry's clause runs.
 fn cyclic_definition_error(receiver: &Value, name: Symbol) -> Signal {
     Signal::Error(NewspeakError {
         selector: name,

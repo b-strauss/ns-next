@@ -150,20 +150,12 @@ pub struct Interpreter {
     /// exactly what the inline caches will guard on. It would
     /// also grow `applications` without bound.
     empty_class_sides: HashMap<usize, Rc<crate::mixin::Mixin>>,
-    /// The nested classes whose creation is underway: for each, the
-    /// enclosing object and the declaration's identity -- see
-    /// `nested::cyclic_definition_error`. An entry exists exactly while the
-    /// activation evaluating that class's superclass clause is on the stack:
-    /// `push_step` records it once the push has succeeded, and `resume` or
-    /// `abandon` takes it off when the activation is popped, so this list and
-    /// the stack pop in the same order. The object is an `ObjRef`, compared
-    /// with `same`, not an arena index, because a moving collector must be
-    /// able to rewrite it (`docs/design/memory.md`, "What the collector
-    /// traces"). A stack, not a set: it is empty on every path that is not
-    /// inside a superclass clause, and a clause nests only as deep as a
-    /// program actually chains class creations, so a linear scan beats
-    /// hashing and allocates nothing in the common case.
-    nested_in_progress: Vec<(ObjRef, usize)>,
+    /// How many nested classes are marked as being created
+    /// (`nested::begin_creation`), for `run_from_host`'s check that none
+    /// outlives the run that began it. The mark itself lives in the class's
+    /// cache slot; this only counts it, so a release build keeps nothing.
+    #[cfg(debug_assertions)]
+    creations_in_progress: usize,
     /// The lowering every module this interpreter loads is compiled with
     /// (`docs/design/compiler.md`, "The reference lowering"). Fixed at
     /// construction, so one interpreter never mixes the two.
@@ -194,7 +186,8 @@ impl Interpreter {
             platform_singleton: None,
             applications: HashMap::new(),
             empty_class_sides: HashMap::new(),
-            nested_in_progress: Vec::new(),
+            #[cfg(debug_assertions)]
+            creations_in_progress: 0,
             lowering,
             arg_buffer: Vec::new(),
             running: false,
@@ -280,8 +273,9 @@ impl Interpreter {
             depth,
             "a host's send or instantiation must leave the activation stack as it found it"
         );
-        debug_assert!(
-            self.nested_in_progress.is_empty(),
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            self.creations_in_progress, 0,
             "internal: a nested class's creation outlived the run that began it"
         );
         result
@@ -607,13 +601,13 @@ impl Interpreter {
                     then,
                 } = *body;
                 // A nested class's creation is in progress exactly while its
-                // clause's activation is on the stack: recorded once the push
-                // has succeeded, and taken off by `resume` or `abandon` when
+                // clause's activation is on the stack: marked once the push
+                // has succeeded, and unmarked by `resume` or `abandon` when
                 // the activation is popped. A push refused at the depth limit
-                // records nothing.
-                let in_progress = match &then {
+                // marks nothing.
+                let creation = match &then {
                     Continuation::NestedClass(creation) => {
-                        Some(nested::in_progress_entry(creation))
+                        Some((creation.enclosing, creation.index))
                     }
                     _ => None,
                 };
@@ -631,8 +625,8 @@ impl Interpreter {
                     &args,
                     temps,
                 )?;
-                if let Some(entry) = in_progress {
-                    self.nested_in_progress.push(entry);
+                if let Some((enclosing, index)) = creation {
+                    nested::begin_creation(self, enclosing, index);
                 }
                 Ok(act)
             }
@@ -682,7 +676,7 @@ impl Interpreter {
                 Ok(crate::builtins::collections::after_element(state))
             }
             Continuation::NestedClass(creation) => {
-                self.leave_nested_class(&creation);
+                nested::end_creation(self, &creation);
                 nested::after_clause(self, *creation, value)
             }
             Continuation::Instantiate(state) => self.advance_instantiation(*state, value),
@@ -692,25 +686,12 @@ impl Interpreter {
     /// What a continuation undoes when its activation is thrown away rather
     /// than returned from: the counterpart of `resume`, which `vm::unwind`
     /// calls for every activation it pops. Only a nested class's creation has
-    /// begun anything -- it is in progress -- so only it has anything to undo;
-    /// every other continuation is simply dropped.
+    /// begun anything -- its cache slot is marked as in progress -- so only it
+    /// has anything to undo; every other continuation is simply dropped.
     pub(crate) fn abandon(&mut self, then: Continuation) {
         if let Continuation::NestedClass(creation) = then {
-            self.leave_nested_class(&creation);
+            nested::end_creation(self, &creation);
         }
-    }
-
-    /// Takes `creation` off `nested_in_progress`: its clause's activation has
-    /// been popped, by a return or by an unwind.
-    fn leave_nested_class(&mut self, creation: &NestedClassCreation) {
-        let left = self.nested_in_progress.pop();
-        debug_assert!(
-            left.is_some_and(
-                |(obj, key)| key == crate::mixin::mixin_key(&creation.nested)
-                    && obj.same(creation.enclosing)
-            ),
-            "internal: nested-class creations end in the order their clauses were pushed"
-        );
     }
 
     /// Pushes the activation a continuation decided (`resume`), in place of
@@ -1369,8 +1350,9 @@ mod tests {
 
     /// The nested-class accessor is decided as the activation of the
     /// superclass clause, with steps 3-5 in the continuation. Nothing is
-    /// pushed, so no creation is in progress yet: one is recorded only once
-    /// its clause's activation is on the stack.
+    /// pushed, so no creation is in progress yet: one is marked only once its
+    /// clause's activation is on the stack, and the cache slot is still
+    /// `Nil`.
     #[test]
     fn deciding_a_nested_class_answers_its_superclass_clause_as_an_activation() {
         let src = indoc! {"
@@ -1386,19 +1368,27 @@ mod tests {
         "};
         let (mut interp, class) = load(src);
         let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
-        match interp.decide_send(instance, Symbol::intern("N"), &[]) {
+        let slot = match interp.decide_send(instance, Symbol::intern("N"), &[]) {
             Ok(Step::Body(body)) => {
                 assert!(matches!(body.kind, FrameKind::SuperclassClause(_)));
-                assert!(matches!(body.then, Continuation::NestedClass(_)));
                 assert!(body.args.is_empty(), "a clause takes no arguments");
+                match body.then {
+                    Continuation::NestedClass(creation) => creation.index,
+                    _ => panic!("the clause's continuation builds the class"),
+                }
             }
             _ => panic!("a nested class is decided as its clause's activation"),
-        }
+        };
         assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
+        let Value::Obj(obj) = instance else {
+            panic!("an instance is an object");
+        };
         assert!(
-            interp.nested_in_progress.is_empty(),
-            "nothing is in progress"
+            matches!(interp.heap.instance_field(obj, slot), Some(Value::Nil)),
+            "nothing is marked as in progress"
         );
+        #[cfg(debug_assertions)]
+        assert_eq!(interp.creations_in_progress, 0, "nothing is counted");
     }
 
     /// A factory send is decided as the instantiation's first body to run --
