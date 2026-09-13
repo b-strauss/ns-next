@@ -1,3 +1,6 @@
+mod common;
+
+use common::ScratchDir;
 use indoc::indoc;
 use std::process::Command;
 
@@ -17,7 +20,7 @@ fn repo_root() -> std::path::PathBuf {
 
 #[test]
 fn parse_ok_file() {
-    let dir = tempdir();
+    let dir = ScratchDir::new("parse-ok");
     let f = dir.join("Ok.ns");
     std::fs::write(
         &f,
@@ -38,7 +41,7 @@ fn parse_ok_file() {
 
 #[test]
 fn parse_bad_file_exits_1() {
-    let dir = tempdir();
+    let dir = ScratchDir::new("parse-bad");
     let f = dir.join("Bad.ns");
     std::fs::write(
         &f,
@@ -56,7 +59,7 @@ fn parse_bad_file_exits_1() {
 
 #[test]
 fn parse_corpus_reports_counts() {
-    let dir = tempdir_named("corpus-counts");
+    let dir = ScratchDir::new("corpus-counts");
     let modules = dir.join("modules");
     std::fs::create_dir_all(&modules).unwrap();
     std::fs::write(
@@ -109,12 +112,11 @@ fn parse_corpus_reports_counts() {
     assert!(stdout.contains("parsed 2"), "{stdout}");
     assert!(stdout.contains("failed 0"), "{stdout}");
     assert!(stdout.contains("expected-fail 1"), "{stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn parse_corpus_stale_blacklist_entry_fails() {
-    let dir = tempdir_named("corpus-stale");
+    let dir = ScratchDir::new("corpus-stale");
     let modules = dir.join("modules");
     std::fs::create_dir_all(&modules).unwrap();
     std::fs::write(
@@ -149,12 +151,11 @@ fn parse_corpus_stale_blacklist_entry_fails() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn parse_corpus_malformed_blacklist_fails_with_error() {
-    let dir = tempdir_named("corpus-malformed");
+    let dir = ScratchDir::new("corpus-malformed");
     let modules = dir.join("modules");
     std::fs::create_dir_all(&modules).unwrap();
     std::fs::write(
@@ -179,7 +180,6 @@ fn parse_corpus_malformed_blacklist_fails_with_error() {
     assert_ne!(out.status.code(), Some(0));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("blacklist"), "stderr: {stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A module whose entry method writes to the transcript, so a synthetic
@@ -197,15 +197,16 @@ const TALKATIVE: &str = indoc! {"
 "};
 
 /// Lays out a `modules/` directory with `Talkative.ns` in it plus a
-/// sibling `runnable.toml` holding `whitelist`, and returns the modules
-/// directory to point `run-corpus` at.
-fn run_corpus_fixture(name: &str, whitelist: &str) -> std::path::PathBuf {
-    let dir = tempdir_named(name);
+/// sibling `runnable.toml` holding `whitelist`, in a scratch directory the
+/// caller keeps alive for as long as `run-corpus` reads it; point
+/// `run-corpus` at its `modules` subdirectory.
+fn run_corpus_fixture(name: &str, whitelist: &str) -> ScratchDir {
+    let dir = ScratchDir::new(name);
     let modules = dir.join("modules");
     std::fs::create_dir_all(&modules).unwrap();
     std::fs::write(modules.join("Talkative.ns"), TALKATIVE).unwrap();
     std::fs::write(dir.join("runnable.toml"), whitelist).unwrap();
-    modules
+    dir
 }
 
 #[test]
@@ -228,11 +229,12 @@ fn the_run_corpus_gate_reports_its_counts() {
 
 #[test]
 fn run_corpus_checks_a_whitelisted_module_against_its_expected_stdout() {
-    let modules = run_corpus_fixture(
+    let dir = run_corpus_fixture(
         "run-corpus-ok",
         "[[entry]]\nfile = \"Talkative.ns\"\nsend = \"main:args:\"\n\
          expected_status = 0\nexpected_stdout = \"hi\\n\"\nreason = \"fixture\"\n",
     );
+    let modules = dir.join("modules");
     let out = ns_next().arg("run-corpus").arg(&modules).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
@@ -242,16 +244,16 @@ fn run_corpus_checks_a_whitelisted_module_against_its_expected_stdout() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(stdout.contains("ran 1, failed 0, skipped 0"), "{stdout}");
-    let _ = std::fs::remove_dir_all(modules.parent().unwrap());
 }
 
 #[test]
 fn run_corpus_fails_when_the_recorded_stdout_no_longer_matches() {
-    let modules = run_corpus_fixture(
+    let dir = run_corpus_fixture(
         "run-corpus-drift",
         "[[entry]]\nfile = \"Talkative.ns\"\nsend = \"main:args:\"\n\
          expected_status = 0\nexpected_stdout = \"something else\"\nreason = \"fixture\"\n",
     );
+    let modules = dir.join("modules");
     let out = ns_next().arg("run-corpus").arg(&modules).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -261,16 +263,16 @@ fn run_corpus_fails_when_the_recorded_stdout_no_longer_matches() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = std::fs::remove_dir_all(modules.parent().unwrap());
 }
 
 #[test]
 fn run_corpus_fails_when_a_whitelisted_module_no_longer_runs() {
-    let modules = run_corpus_fixture(
+    let dir = run_corpus_fixture(
         "run-corpus-regressed",
         "[[entry]]\nfile = \"Talkative.ns\"\nsend = \"noSuchSelector\"\n\
          expected_status = 0\nexpected_stdout = \"\"\nreason = \"fixture\"\n",
     );
+    let modules = dir.join("modules");
     let out = ns_next().arg("run-corpus").arg(&modules).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(
@@ -278,7 +280,6 @@ fn run_corpus_fails_when_a_whitelisted_module_no_longer_runs() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = std::fs::remove_dir_all(modules.parent().unwrap());
 }
 
 /// An empty whitelist must report zero rather than pass silently: `ran 0`
@@ -286,17 +287,18 @@ fn run_corpus_fails_when_a_whitelisted_module_no_longer_runs() {
 /// quietly lost its entries cannot masquerade as a green gate.
 #[test]
 fn run_corpus_with_an_empty_whitelist_reports_running_nothing() {
-    let modules = run_corpus_fixture("run-corpus-empty", "# no entries\n");
+    let dir = run_corpus_fixture("run-corpus-empty", "# no entries\n");
+    let modules = dir.join("modules");
     let out = ns_next().arg("run-corpus").arg(&modules).output().unwrap();
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("ran 0, failed 0, skipped 1"), "{stdout}");
-    let _ = std::fs::remove_dir_all(modules.parent().unwrap());
 }
 
 #[test]
 fn run_corpus_malformed_whitelist_fails_with_error() {
-    let modules = run_corpus_fixture("run-corpus-malformed", "this is not toml :::\n[[entry\n");
+    let dir = run_corpus_fixture("run-corpus-malformed", "this is not toml :::\n[[entry\n");
+    let modules = dir.join("modules");
     let out = ns_next().arg("run-corpus").arg(&modules).output().unwrap();
     assert_ne!(out.status.code(), Some(0));
     assert!(
@@ -304,7 +306,6 @@ fn run_corpus_malformed_whitelist_fails_with_error() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = std::fs::remove_dir_all(modules.parent().unwrap());
 }
 
 #[test]
@@ -340,20 +341,4 @@ fn bench_rejects_zero_iterations() {
         .unwrap();
     assert_ne!(out.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&out.stderr).contains("iterations"));
-}
-
-// minimal tempdir helper to avoid a dev-dependency
-fn tempdir() -> std::path::PathBuf {
-    let p = std::env::temp_dir().join(format!("ns-cli-test-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&p);
-    p
-}
-
-// A per-test uniquely named temp dir, so tests running in parallel do not
-// collide and each cleans up after itself.
-fn tempdir_named(name: &str) -> std::path::PathBuf {
-    let p = std::env::temp_dir().join(format!("ns-cli-test-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).unwrap();
-    p
 }

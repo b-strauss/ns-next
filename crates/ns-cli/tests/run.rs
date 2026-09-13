@@ -1,3 +1,6 @@
+mod common;
+
+use common::ScratchDir;
 use indoc::indoc;
 use std::path::Path;
 use std::process::Command;
@@ -17,18 +20,9 @@ fn corpus_module(name: &str) -> std::path::PathBuf {
         .join(name)
 }
 
-// A per-test uniquely named temp dir, so tests running in parallel do not
-// collide and each cleans up after itself -- same helper as `tests/cli.rs`.
-fn tempdir_named(name: &str) -> std::path::PathBuf {
-    let p = std::env::temp_dir().join(format!("ns-cli-run-test-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).unwrap();
-    p
-}
-
 #[test]
 fn run_sends_main_args_and_prints_via_platform_transcript() {
-    let dir = tempdir_named("hello");
+    let dir = ScratchDir::new("hello");
     let f = dir.join("Hello.ns");
     std::fs::write(
         &f,
@@ -53,7 +47,6 @@ fn run_sends_main_args_and_prints_via_platform_transcript() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(stdout, "hi\n", "unexpected stdout: {stdout:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -96,7 +89,7 @@ fn a_zero_argument_factory_reaches_its_public_entry_method() {
     // send's argument list to the selector's arity, so `foo:` still gets
     // the platform as its one argument -- only the *factory* call is now
     // zero-argument) so the fix's effect is directly observable on stdout.
-    let dir = tempdir_named("zero-arg-factory");
+    let dir = ScratchDir::new("zero-arg-factory");
     let f = dir.join("NoPlatform.ns");
     std::fs::write(
         &f,
@@ -127,12 +120,11 @@ fn a_zero_argument_factory_reaches_its_public_entry_method() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "99");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn a_multi_parameter_factory_is_refused_with_a_clear_error() {
-    let dir = tempdir_named("multi-arg-factory");
+    let dir = ScratchDir::new("multi-arg-factory");
     let f = dir.join("TwoArgs.ns");
     std::fs::write(
         &f,
@@ -157,12 +149,11 @@ fn a_multi_parameter_factory_is_refused_with_a_clear_error() {
         stderr.contains('2'),
         "stderr did not name the declared arity: {stderr}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn run_reports_a_parse_error_and_exits_nonzero() {
-    let dir = tempdir_named("bad-parse");
+    let dir = ScratchDir::new("bad-parse");
     let f = dir.join("Bad.ns");
     std::fs::write(
         &f,
@@ -177,12 +168,11 @@ fn run_reports_a_parse_error_and_exits_nonzero() {
     let out = ns_next().arg("run").arg(&f).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(!String::from_utf8_lossy(&out.stderr).is_empty());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn run_supports_a_custom_entry_selector_via_send() {
-    let dir = tempdir_named("custom-send");
+    let dir = ScratchDir::new("custom-send");
     let f = dir.join("Greet.ns");
     std::fs::write(
         &f,
@@ -213,7 +203,6 @@ fn run_supports_a_custom_entry_selector_via_send() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(stdout, "custom\n", "unexpected stdout: {stdout:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A frame-shift probe, end to end: a *unary* entry point with a declared
@@ -240,7 +229,7 @@ const UNARY_PROBE: &str = indoc! {"
 
 #[test]
 fn a_unary_entry_selector_gets_no_arguments_and_reads_its_temporary_as_nil() {
-    let dir = tempdir_named("unary-send");
+    let dir = ScratchDir::new("unary-send");
     let f = dir.join("Probe.ns");
     std::fs::write(&f, UNARY_PROBE).unwrap();
 
@@ -258,12 +247,11 @@ fn a_unary_entry_selector_gets_no_arguments_and_reads_its_temporary_as_nil() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
     assert_eq!(stdout, "nil-ok\n", "unexpected stdout");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn an_entry_selector_the_cli_cannot_fill_is_refused_before_the_send() {
-    let dir = tempdir_named("wide-send");
+    let dir = ScratchDir::new("wide-send");
     let f = dir.join("Wide.ns");
     std::fs::write(
         &f,
@@ -291,5 +279,4 @@ fn an_entry_selector_the_cli_cannot_fill_is_refused_before_the_send() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("a:b:c:"), "stderr: {stderr}");
     assert!(stderr.contains("3 argument(s)"), "stderr: {stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
