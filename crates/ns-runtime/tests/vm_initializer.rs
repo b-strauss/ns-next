@@ -186,7 +186,7 @@ fn make_class(
             declaring_class: None,
             // Deliberately no class-object superclass link: this test only
             // checks where the mixin's *own* slot lands, never a superclass
-            // level's own slots, so `run_initializer_levels` (which walks
+            // level's own slots, so `climb_levels` (which walks
             // this field, not the application's) finding no level above
             // this one is exactly right.
             superclass: None,

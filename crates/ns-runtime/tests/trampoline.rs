@@ -107,13 +107,12 @@ fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack() {
 
 /// A `^` into an initializer that is still running escapes -- the known gap
 /// in `docs/design/execution.md`, "Non-local return" -- and it escapes as the
-/// signal it always was, not as a panic. The run the initializer belongs to
-/// pops it, so by the time the signal reaches the run of the method that
-/// sent `new`, its target is an activation that has returned: that run must
-/// let the signal pass without reading the target. Closing the gap changes
-/// what this expects; nothing else should.
+/// signal it always was, not as a panic: an initializer catches no return,
+/// so the unwind pops everything down to the floor of the host's run and
+/// leaves it with the signal. Closing the gap changes what this expects;
+/// nothing else should.
 #[test]
-fn a_return_into_a_running_initializer_escapes_the_runs_below_it() {
+fn a_return_into_a_running_initializer_escapes_the_run() {
     let src = indoc! {"
         Newspeak3
         'T'
@@ -132,6 +131,41 @@ fn a_return_into_a_running_initializer_escapes_the_runs_below_it() {
             Err(Signal::Error(e)) => panic!("{lowering:?}: unexpected error: {}", e.message),
         }
         assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
+    }
+}
+
+/// Instantiation is a trampoline step: a class whose slot initializer
+/// instantiates it again, twenty thousand levels deep, is twenty thousand
+/// initializer activations on the stack and nothing on the Rust stack.
+#[test]
+fn a_deep_recursion_through_instantiation_runs_on_the_activation_stack() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class Tower = Object new (
+        ) (
+            public class Floor n: k = Object new (
+                | below = k = 0 ifTrue: [nil] ifFalse: [Floor n: k - 1]. |
+            ) (
+                public height = ( ^below == nil ifTrue: [0] ifFalse: [1 + below height] )
+            ) : ()
+            public build: k = ( ^(Floor n: k) height )
+        ) : ()
+    "};
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        let (mut interp, class) = load(src, lowering);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let height = expect_ok(
+            interp.send(
+                instance,
+                Symbol::intern("build:"),
+                vec![Value::SmallInt(20_000)],
+            ),
+            "build:",
+        );
+        assert_eq!(small_int(height), 20_000, "{lowering:?}");
+        assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
+        assert_eq!(interp.heap_ref().counted_depth(), 0, "{lowering:?}");
     }
 }
 

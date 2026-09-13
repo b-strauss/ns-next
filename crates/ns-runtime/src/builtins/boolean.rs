@@ -87,7 +87,8 @@ fn block_step(interp: &Interpreter, arg: Value, then: Continuation) -> Step {
         Continuation::WhileCondition(_)
         | Continuation::WhileBody(_)
         | Continuation::DoElement(_)
-        | Continuation::NestedClass(_) => {
+        | Continuation::NestedClass(_)
+        | Continuation::Instantiate(_) => {
             unreachable!("internal: a Boolean's control-flow native runs no loop")
         }
     }

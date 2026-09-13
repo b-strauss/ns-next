@@ -32,14 +32,8 @@ pub type EvalResult = Result<Value, Signal>;
 /// exempt block activations, at most one per level of block nesting above
 /// each counted one, the stack holds at most 129 x L entries -- 128 being
 /// the parser's nesting ceiling, which `image::decode` holds an artifact to
-/// as well (`docs/design/execution.md`, "Two bounds, not one").
+/// as well (`docs/design/execution.md`, "The depth limit").
 pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
-
-/// N: how deep Rust may re-enter the run loop -- `do:`, instantiation, the
-/// nested-class accessor. It is what bounds the native stack; the CLI sizes
-/// its interpreter thread for it (`docs/design/execution.md`, "Two bounds, not
-/// one").
-pub const MAX_NATIVE_DEPTH: usize = 1_000;
 
 /// What a send decided, before anything runs (`docs/design/execution.md`,
 /// "Deciding, then running"). Deciding is `interpreter/`'s -- lookup,
@@ -163,13 +157,14 @@ pub struct Interpreter {
     /// construction, so one interpreter never mixes the two.
     lowering: Lowering,
     /// The reusable argument buffer the run loop gathers a send's arguments
-    /// into (`vm::send`). Taken while a decision runs and given back
-    /// afterwards, so a decision that re-enters the loop takes a fresh one
-    /// instead of clobbering its caller's.
+    /// into (`vm::send`). Taken while a send is decided and pushed and given
+    /// back afterwards, because the decision needs `&mut Interpreter` while
+    /// it reads the arguments.
     arg_buffer: Vec<Value>,
-    /// How many runs of the loop Rust has re-entered and not yet left
-    /// (`reenter`), checked against `MAX_NATIVE_DEPTH`.
-    native_depth: usize,
+    /// Whether a host's run of the loop is in progress (`run_from_host`).
+    /// Nothing the loop calls can start another -- no decision, native or
+    /// continuation runs code from Rust -- and a debug build checks that.
+    running: bool,
 }
 
 impl Interpreter {
@@ -190,7 +185,7 @@ impl Interpreter {
             nested_in_progress: Vec::new(),
             lowering,
             arg_buffer: Vec::new(),
-            native_depth: 0,
+            running: false,
         };
         interp.builtin_classes = build_builtin_classes(&mut interp);
         interp
@@ -226,36 +221,56 @@ impl Interpreter {
         &mut self.heap
     }
 
-    /// An ordinary (explicit-receiver) send: `newspeak-spec.pdf` §5.5. See
-    /// `decide_send` for the order the cases are tried in.
-    ///
-    /// A send leaves the activation stack exactly as it found it: every
-    /// activation it pushes is popped on every exit, error paths included.
-    /// Checked here, at every host-initiated send (`ns-next run --send`,
-    /// `snapshot --send`, `load --send`) -- a leaked entry is otherwise
-    /// silent, a later activation sitting on top of a dead one's registers.
-    /// A `Send*` the VM issues does not run through this check (`vm.rs`
-    /// decides it and pushes what was decided itself, never through `send`),
-    /// but a leak there is still caught: `Heap::pop_activation` itself
-    /// debug-asserts that the activation it is given is the top of the
-    /// stack, which a leaked entry underneath it would violate.
+    /// An ordinary (explicit-receiver) send from a host: `newspeak-spec.pdf`
+    /// §5.5, decided as `decide_send` decides it and run from the outside
+    /// (`run_from_host`). A `Send*` the VM issues never comes through here:
+    /// `vm.rs` decides it and pushes what was decided itself.
     pub fn send(&mut self, receiver: Value, selector: Symbol, args: Vec<Value>) -> EvalResult {
-        let depth = self.heap.activation_depth();
-        let result = match self.decide_send(receiver, selector, &args) {
-            Ok(Step::Value(value)) => Ok(value),
-            Ok(step) => self.reenter(|interp| interp.push_step(step, &args, None, false)),
+        match self.decide_send(receiver, selector, &args) {
+            Ok(step) => self.run_from_host(step, &args),
             Err(signal) => Err(signal),
+        }
+    }
+
+    /// Runs what a host's send or instantiation decided. It is the only way
+    /// Rust enters the run loop (`docs/design/execution.md`, "No re-entry from
+    /// Rust"): a value needs no activation, and anything else is pushed and
+    /// run by `vm::run`, which pops it and everything it activates on every
+    /// path out.
+    ///
+    /// Three things are checked in a debug build, because each is otherwise
+    /// silent. The loop is never entered while it is running -- nothing it
+    /// calls can reach here. The stack is left as deep as it was found: a
+    /// leaked entry would put a later activation on top of a dead one's
+    /// registers (a leak inside a run is caught too, by
+    /// `Heap::pop_activation`'s check that it pops the top). And no nested
+    /// class's creation outlives the run that began it.
+    fn run_from_host(&mut self, step: Step, send_args: &[Value]) -> EvalResult {
+        debug_assert!(
+            !self.running,
+            "internal: the run loop was re-entered from Rust"
+        );
+        let depth = self.heap.activation_depth();
+        let result = match step {
+            Step::Value(value) => Ok(value),
+            step => match self.push_step(step, send_args, None, false) {
+                Ok(act) => {
+                    self.running = true;
+                    let result = crate::vm::run(self, act);
+                    self.running = false;
+                    result
+                }
+                Err(signal) => Err(signal),
+            },
         };
         debug_assert_eq!(
             self.heap.activation_depth(),
             depth,
-            "a send must leave the activation stack as it found it"
+            "a host's send or instantiation must leave the activation stack as it found it"
         );
-        // A creation begun below a host's send ends before the send returns,
-        // however it returns: `resume` or `abandon` takes it off.
         debug_assert!(
-            depth != 0 || self.nested_in_progress.is_empty(),
-            "internal: a nested class's creation outlived the send that began it"
+            self.nested_in_progress.is_empty(),
+            "internal: a nested class's creation outlived the run that began it"
         );
         result
     }
@@ -272,7 +287,7 @@ impl Interpreter {
     /// (`instantiate.rs`) recognizes the shape and routes to
     /// `instantiate` directly; see its own doc comment for why this can
     /// never double-fire against the superclass clause's own deferred
-    /// factory message (`run_initializer_levels` never calls `send`).
+    /// factory message (`climb_levels` never decides a send).
     pub(crate) fn decide_send(
         &mut self,
         receiver: Value,
@@ -280,7 +295,7 @@ impl Interpreter {
         args: &[Value],
     ) -> Result<Step, Signal> {
         if let Some(result) = self.try_factory_send(&receiver, selector, args) {
-            return result.map(Step::Value);
+            return result;
         }
         // §6.3: a class object's class-side methods are reached through its
         // metaclass, consulted before the class object's own (ordinary,
@@ -635,6 +650,7 @@ impl Interpreter {
                 self.leave_nested_class(&creation);
                 nested::after_clause(self, *creation, value)
             }
+            Continuation::Instantiate(state) => self.advance_instantiation(state, value),
         }
     }
 
@@ -688,30 +704,6 @@ impl Interpreter {
         // the one a continuation makes -- `mustBeBoolean` -- has none), so
         // `&[]` is always right here.
         self.push_step(step, &[], sender, !replaced_counted)
-    }
-
-    /// Every re-entry of the run loop from Rust: `push` pushes one
-    /// activation, and the loop runs it and everything it activates and pops
-    /// all of it (`vm::run`). The public `send`, each initializing level of an
-    /// instantiation and its clause message, and the nested-class accessor's
-    /// clause come through here -- the paths "What stays recursive" in
-    /// `docs/design/execution.md` names.
-    ///
-    /// Each re-entry costs native stack, so it is counted against
-    /// `MAX_NATIVE_DEPTH`, and one past it is refused before anything is
-    /// pushed.
-    pub(crate) fn reenter(
-        &mut self,
-        push: impl FnOnce(&mut Interpreter) -> Result<ActivationRef, Signal>,
-    ) -> EvalResult {
-        if self.native_depth >= MAX_NATIVE_DEPTH {
-            return Err(too_many_nested_native_calls());
-        }
-        let act = push(self)?;
-        self.native_depth += 1;
-        let result = crate::vm::run(self, act);
-        self.native_depth -= 1;
-        result
     }
 
     /// Whether a `^` aimed at `act` ends at `act`: a method's does, and a
@@ -1133,10 +1125,10 @@ fn check_block_arity(heap: &Heap, closure: &ClosureData, given: usize) -> Result
     }))
 }
 
-/// L's error, for the activation `header` describes. Neither depth error
-/// names its limit, so that changing one changes no recorded answer. Both are
-/// kept out of line, so that the check on every push is a compare and a
-/// branch and nothing more.
+/// L's error, for the activation `header` describes. The error does not name
+/// its limit, so that changing it changes no recorded answer. It is kept out
+/// of line, so that the check on every push is a compare and a branch and
+/// nothing more.
 #[cold]
 #[inline(never)]
 fn recursion_too_deep(header: &ActivationHeader) -> Signal {
@@ -1149,17 +1141,6 @@ fn recursion_too_deep(header: &ActivationHeader) -> Signal {
         selector,
         receiver: header.receiver,
         message: "stack overflow: recursion too deep".to_string(),
-    })
-}
-
-/// N's error.
-#[cold]
-#[inline(never)]
-fn too_many_nested_native_calls() -> Signal {
-    Signal::Error(NewspeakError {
-        selector: Symbol::UNKNOWN,
-        receiver: Value::Nil,
-        message: "stack overflow: too many nested native calls".to_string(),
     })
 }
 
@@ -1383,5 +1364,46 @@ mod tests {
             interp.nested_in_progress.is_empty(),
             "nothing is in progress"
         );
+    }
+
+    /// A factory send is decided as the instantiation's first body to run --
+    /// here `P`'s initializer -- with the rest of the walk in the
+    /// continuation; a class with nothing to initialize at any level is
+    /// decided as its instance outright.
+    #[test]
+    fn deciding_new_answers_the_first_initializer_as_an_activation() {
+        let src = indoc! {"
+            Newspeak3
+            'T'
+            class X = Object new (
+            ) (
+              public class P = Object new (
+                | v = 1. |
+              ) (
+              ) : ()
+              public class Q = Object new (
+              ) (
+              ) : ()
+            ) : ()
+        "};
+        let (mut interp, class) = load(src);
+        let instance = expect_ok(interp.instantiate(class, vec![]), "instantiate");
+        let p = expect_ok(interp.send(instance, Symbol::intern("P"), vec![]), "P");
+        let q = expect_ok(interp.send(instance, Symbol::intern("Q"), vec![]), "Q");
+        match interp.decide_send(p, Symbol::NEW, &[]) {
+            Ok(Step::Body(body)) => {
+                assert!(matches!(body.kind, FrameKind::Initializer(_)));
+                assert!(matches!(body.then, Continuation::Instantiate(_)));
+            }
+            _ => panic!("`P new` is decided as P's initializer"),
+        }
+        assert!(
+            matches!(
+                interp.decide_send(q, Symbol::NEW, &[]),
+                Ok(Step::Value(Value::Obj(_)))
+            ),
+            "`Q new` is decided as its instance"
+        );
+        assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
     }
 }

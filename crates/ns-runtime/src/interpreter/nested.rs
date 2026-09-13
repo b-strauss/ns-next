@@ -17,19 +17,21 @@
 //!
 //! This lives under `interpreter/` rather than in `mixin.rs` because it is
 //! the one part of nesting that *evaluates Newspeak code*: the superclass
-//! clause. That code runs compiled, in an activation of its own, the same
-//! way `instantiate.rs` runs a superclass clause's deferred message.
+//! clause. That code runs compiled, in an activation of its own -- a
+//! `Step::Body`, exactly as `instantiate.rs` runs a superclass clause's
+//! deferred message, one with `Continuation::NestedClass` and the other with
+//! `Continuation::Instantiate`.
 
 use std::rc::Rc;
 
 use ns_syntax::ast;
 
-use crate::heap::{ActivationHeader, Heap};
+use crate::heap::Heap;
 use crate::mixin::{mixin_key, Mixin};
 use crate::types::*;
 use crate::Symbol;
 
-use super::{BodyStep, EvalResult, Interpreter, Signal, Step};
+use super::{BodyStep, Interpreter, Signal, Step};
 
 /// What a superclass clause evaluates: the `ec` of `newspeak-spec.pdf` §6.1,
 /// as an ordinary expression.
@@ -96,6 +98,11 @@ pub(crate) fn superclass_clause_message_args_expr(
 /// enclosing object `r`; `nested` is the declaration `dispatch` found on
 /// `r`'s class chain; `declaring_class` is the class object of the level
 /// that declares it -- the `ClassRef` `Lookup::NestedClass` carries.
+///
+/// Decides the accessor without running anything: `receiver`'s own cache if
+/// it is already filled, or -- for a declaration with no clause at all --
+/// `Object` as a value outright, and otherwise the clause's activation, with
+/// steps 3-5 in its continuation (`after_clause`).
 ///
 /// `declaring_class` is *not* `r`'s own class whenever the declaration is
 /// inherited, and the difference is observable: the clause is lexically
@@ -275,37 +282,6 @@ fn read_cache_slot(heap: &Heap, receiver: &Value, index: usize) -> Option<Value>
         Some(Value::Nil) | None => None,
         Some(value) => Some(value),
     }
-}
-
-/// A superclass clause's *message arguments*, compiled onto the mixin, in a
-/// fresh activation the run loop runs and pops (`Interpreter::reenter`) --
-/// `instantiate`'s deferred clause message, one level down. The nested-class
-/// accessor evaluates a clause's receiver as a trampoline step instead
-/// (`nested_class`); this goes when instantiation is one too.
-pub(super) fn run_clause_body(
-    interp: &mut Interpreter,
-    receiver: &Value,
-    args: Vec<Value>,
-    current_class: ClassRef,
-    kind: FrameKind,
-    code: Rc<crate::bytecode::CompiledCode>,
-) -> EvalResult {
-    let temps = (code.num_registers - code.num_args) as usize;
-    interp.reenter(|interp| {
-        interp.push(
-            ActivationHeader {
-                receiver: *receiver,
-                current_class: Some(current_class),
-                kind,
-                slot_base: 0, // no clause body ever contains InitSlot
-                code,
-                then: Continuation::Deliver,
-                counted: true,
-            },
-            &args,
-            temps,
-        )
-    })
 }
 
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if ec does not evaluate

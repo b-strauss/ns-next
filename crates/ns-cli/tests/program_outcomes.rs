@@ -600,10 +600,13 @@ fn a_recursion_through_do_is_bounded_by_the_activation_limit() {
     );
 }
 
-/// Instantiation re-enters the loop for each initializer level, so a class
-/// whose slot initializer instantiates it again is bounded by the same limit.
+/// Instantiation runs each initializer level as a trampoline step, so a class
+/// whose slot initializer instantiates it again is a chain of counted
+/// initializer activations and ends at the activation limit. It used to end at
+/// the limit on re-entries of the run loop from Rust, which no longer exists
+/// (`docs/design/execution.md`, "No re-entry from Rust").
 #[test]
-fn a_recursive_instantiation_is_bounded_by_the_native_limit() {
+fn a_recursive_instantiation_is_bounded_by_the_activation_limit() {
     assert_outcome(
         "instantiation-recursion",
         indoc! {"
@@ -620,7 +623,7 @@ fn a_recursive_instantiation_is_bounded_by_the_native_limit() {
         "},
         1,
         "",
-        "Uncaught Newspeak error: stack overflow: too many nested native calls\n",
+        "Uncaught Newspeak error: stack overflow: recursion too deep\n",
     );
 }
 

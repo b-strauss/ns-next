@@ -248,6 +248,10 @@ pub enum Continuation {
     /// superclass: build, cache and answer the class
     /// (`interpreter::nested::after_clause`).
     NestedClass(Box<NestedClassCreation>),
+    /// A body an instantiation ran returned -- a clause message's arguments,
+    /// or a level's initializer: carry the walk on
+    /// (`Interpreter::advance_instantiation`).
+    Instantiate(Box<Instantiation>),
 }
 
 /// A native `whileTrue:`/`whileFalse:` loop in progress: its condition, its
@@ -293,6 +297,33 @@ pub struct NestedClassCreation {
     pub(crate) declaring_class: ClassRef,
 }
 
+/// An instantiation in progress (`newspeak-spec.pdf` §6.2, and the six steps
+/// of `docs/design/object-model.md`, "Instantiation"): the instance, every
+/// level of the superclass chain the upward walk has reached with the factory
+/// arguments it gets, and which way the walk is going.
+///
+/// Boxed in its continuation, and owned by exactly one stack entry.
+#[derive(Debug, Clone)]
+pub struct Instantiation {
+    pub(crate) instance: Value,
+    /// Nearest level first: the class instantiated, then its superclass, and
+    /// so on up, as the upward walk reaches them.
+    pub(crate) levels: Vec<(ClassRef, Vec<Value>)>,
+    pub(crate) phase: InstantiationPhase,
+}
+
+/// Which way an instantiation's walk is going.
+#[derive(Debug, Clone, Copy)]
+pub enum InstantiationPhase {
+    /// Upward. A body running for this instantiation is the clause message
+    /// of the last level in `levels`, and its value is its superclass's
+    /// factory arguments.
+    Climbing,
+    /// Downward. A body running for this instantiation is the initializer of
+    /// `levels[index]`.
+    Descending { index: usize },
+}
+
 /// A *reified* activation: one a block captured, or one the image decoder
 /// rebuilt. A running activation lives on the `Heap`'s activation stack and
 /// becomes a `Frame` only when `Heap::reify` is asked for one; while it runs,
@@ -331,7 +362,7 @@ pub struct Frame {
     /// class level the activation initializes. The value `InitSlot` reads
     /// while the body runs is the live activation's own `slot_base`
     /// (`Heap::activation_slot_base`), one activation per initializing level
-    /// of the superclass chain (`Interpreter::run_own_initializer`); a
+    /// of the superclass chain (`Interpreter::descend_levels`); a
     /// frame carries a copy only if that activation was reified. The image
     /// does not record it -- a decoded frame has 0, since nothing re-activates
     /// one. Set once, where the activation is pushed, and never changed.
