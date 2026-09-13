@@ -180,14 +180,6 @@ pub(crate) fn dispatch_ordered_collection(
 /// on Newspeak code (`docs/design/execution.md`, "No re-entry from Rust").
 /// `None` when `receiver` has no `ObjectData::Array` payload, so the send
 /// falls through to `doesNotUnderstand:` as every other selector here does.
-///
-/// `#[inline(never)]`: `do:` is off the leaf natives' hot path -- a benchmark
-/// that never sends it still runs `dispatch_native`'s `match kind` on every
-/// send, and inlining this (larger) function into that match measured a
-/// reproducible ~5% regression on `bench_loop.ns`, a pure `whileTrue:` loop
-/// that touches no collection at all (see the Task 1 report's measurement
-/// finding).
-#[inline(never)]
 pub(crate) fn do_step(
     interp: &Interpreter,
     receiver: Value,
