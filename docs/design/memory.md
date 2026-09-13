@@ -6,7 +6,9 @@
 > Identity, layout ownership and the seam that routes every access through
 > `Heap` are built. Nothing reclaims an arena slot: there is no collector,
 > and no root discipline for one to use; the discipline is designed, in
-> "Planned: checked roots and a collector".
+> "Planned: checked roots and a collector", and its first part is built:
+> nothing re-enters the run loop from Rust, so no Rust frame is live below a
+> safepoint (step 2a).
 > **Code:** `crates/ns-runtime/src/heap.rs` (the arenas, the activation
 > stack, the handle types, every accessor), `types.rs` (`Value`, `Object`,
 > `Frame`), `mixin.rs` (layout, and the one remaining iterative `Drop`).
@@ -118,9 +120,9 @@ debug guard is already the place that knows a handle has an origin at all.
 
 One deliberate escape exists, and it is opaque rather than a hole.
 `Heap::object_identity_key` and `Heap::frame_identity_key` are `pub(crate)` and
-return the index as a `usize` for the three places that need a handle as a
-`HashMap`/`HashSet` key rather than a comparison: `image/encode.rs`,
-`image/decode.rs` and `interpreter/nested.rs`, seven call sites in all. Every
+return the index as a `usize` for the two places that need a handle as a
+`HashMap`/`HashSet` key rather than a comparison: `image/encode.rs` and
+`image/decode.rs`, six call sites in all. Every
 one stores it, compares it, or looks it up; none does arithmetic on it, and none
 assumes it is an index into anything. So the property that matters survives — a
 handle's *encoding* is still `heap.rs`'s alone to change — but the narrower
@@ -252,8 +254,8 @@ What would change: a collection could run — only at a safepoint in the run
 loop — and move objects, and every handle the runtime holds would be either
 where the collector can find and rewrite it or a compile error. Designed on
 2026-09-13 as step 2 of Milestone 4, in three parts that each land green and
-measured on their own: **2a** removes every re-entry of the run loop from Rust
-([execution.md](execution.md), "Planned: no re-entry from Rust"); **2b** adds
+measured on their own: **2a**, built, removed every re-entry of the run loop
+from Rust ([execution.md](execution.md), "No re-entry from Rust"); **2b** adds
 the safepoint, the enumeration of everything the collector traces, host roots
 and a stress mode that moves every object at every safepoint; **2c** brands
 every movable handle with a lifetime, so that holding one across a safepoint
@@ -321,17 +323,16 @@ send pays nothing it does not pay today.
 
 ### No Rust frame is live below a safepoint
 
-The run loop is re-entered from Rust today, on four paths: the host's `send`,
-`do:`, instantiation's initializer levels and clause messages, and the
-nested-class accessor's clause ([execution.md](execution.md), "What stays
-recursive"). A Rust frame below a nested run holds values across that run's
-safepoints, and rooting them is what Nova's `Scoped` values are for. ns-next
-removes the frames instead (step 2a): `do:`, instantiation and the accessor
-become trampoline steps with continuations, as `whileTrue:` already is, and
-Rust enters the loop only as its outermost caller, the host. At every
-safepoint the Rust stack then holds the run loop and the host and nothing
-else — piccolo's property — and what is left to root is only what the host
-keeps.
+Rust enters the run loop only as the host, its outermost caller
+(`Interpreter::run_from_host`). `do:`, instantiation and the nested-class
+accessor, which once ran Newspeak code in nested runs of the loop, are
+trampoline steps with continuations, as `whileTrue:` is (step 2a, built;
+[execution.md](execution.md), "No re-entry from Rust"). A Rust frame below a
+nested run would hold values across that run's safepoints, and rooting them is
+what Nova's `Scoped` values are for; ns-next removed the frames instead. So at
+every point between two instructions the Rust stack holds the host and the run
+loop and nothing between them — piccolo's property — and what is left to root
+is only what the host keeps. The safepoint that relies on it is step 2b.
 
 ### The brand: checked by the compiler, not by convention
 
@@ -392,8 +393,8 @@ stress mode below; step 2c makes it the only way a host can hold a value.
 - The activation stack: each entry's receiver, registers, `current_class`, the
   `ClassRef` its `FrameKind` names, and the state its continuation carries.
 - Every arena record: an object's class and payload, a frame's fields.
-- `nested_in_progress`, whose entries become `ObjRef`s rather than the arena
-  indices they are today (step 2a).
+- `nested_in_progress`, whose entries hold the enclosing object as an `ObjRef`,
+  not an arena index, so the tracer can rewrite it (step 2a, built).
 - The host root table.
 
 A reified frame is not a root of its own: it is reached through the closure
@@ -435,11 +436,12 @@ The stress run joins the commands `CLAUDE.md` requires.
 Nova's `GcScope`/`NoGcScope` with `Scoped` roots was this section's plan until
 2026-09-13. It roots what a Rust frame holds across a call that can collect, and
 it would have covered the four re-entry paths without removing them. It was
-rejected because the paths are to go anyway — core-library's rule that a native
+rejected because the paths were to go anyway — core-library's rule that a native
 must not call back into Newspeak, and suspension and the debugger, need them
 gone ([core-library.md](core-library.md), [image-format.md](image-format.md),
-"Planned: suspend and resume") — and once they are gone Nova's machinery is
-left standing with nothing to root, its `unbind` a hole in the static guarantee.
+"Planned: suspend and resume") — and with them gone, as they now are, Nova's
+machinery would stand with nothing to root, its `unbind` a hole in the static
+guarantee.
 A `Scoped` value is also retained for the whole call, past its last use, which
 the brand never does. Engineering effort was not the constraint, so the brand is
 built directly rather than after it.

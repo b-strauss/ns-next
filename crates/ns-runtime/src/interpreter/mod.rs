@@ -296,8 +296,10 @@ impl Interpreter {
     /// empty method table (see `build_builtin_classes` below), so an
     /// ordinary `lookup_public` search would just fall through to
     /// `doesNotUnderstand:` every time. `try_factory_send`
-    /// (`instantiate.rs`) recognizes the shape and routes to
-    /// `instantiate` directly; see its own doc comment for why this can
+    /// (`instantiate.rs`) recognizes the shape and decides it as an
+    /// instantiation (`decide_instantiation`) -- not through the host entry
+    /// `instantiate`, which would enter the run loop from inside it, the
+    /// re-entry `run_from_host` refuses; see its own doc comment for why this can
     /// never double-fire against the superclass clause's own deferred
     /// factory message (`climb_levels` never decides a send).
     pub(crate) fn decide_send(

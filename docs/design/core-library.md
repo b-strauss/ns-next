@@ -71,9 +71,9 @@ when a whitelisted module demands it" still governs what gets added.
 What is decided is *where a builtin may live*, and it is a constraint on future
 work rather than a wish. Everything in this runtime must stay optimizable,
 builtins included: a builtin must eventually be able to become native code. A
-Rust native that calls back into Newspeak cannot. Written as a Rust loop that
-re-enters the interpreter, `do:` can never have its block inlined into the loop,
-never be type-specialized, and never be compiled as a unit — not because the JIT
+Rust native that calls back into Newspeak cannot. A `do:` written as a Rust
+loop that re-enters the interpreter can never have its block inlined into the
+loop, never be type-specialized, and never be compiled as a unit — not because the JIT
 is immature, but because no compiler optimizes through an opaque Rust function
 body. That is a permanent ceiling on the methods that are hottest in real code.
 
@@ -86,25 +86,24 @@ operations as primitives.
 
 **The rule: a native that calls back into Newspeak must not stay a Rust native.**
 A native that is a leaf computation should stay one, and should get an inlined
-fast path instead. Of the natives that run a block, only one still calls back,
-through `builtins::call_block`:
+fast path instead. No native calls back into Newspeak: each native that runs a
+block answers it as a trampoline step instead of calling it:
 
 | Selector | How it runs its block |
 |---|---|
 | `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler for a literal block, with the native kept as the guarded fallback. The native is a trampoline step: it returns the block to activate instead of calling it, with a continuation for what `and:` and `or:` do with its value ([execution.md](execution.md), "The trampoline") |
 | `whileTrue:`, `whileFalse:` | The same, both halves: the native is a trampoline step that returns the condition block, and its continuation activates the body or ends the loop |
 | `value`, `value:`, … | A trampoline step that returns the block to activate: activating a closure is what the activation stack does. See [execution.md](execution.md) |
-| `do:` | Still a Rust loop that calls the block for each element and so re-enters the run loop. Planned: a trampoline step with a continuation per element, as `whileTrue:` is, in step 2a of Milestone 4; written in Newspeak after the inline caches |
+| `do:` | A trampoline step: it answers the block for the first element, and its continuation activates it for each next one ([execution.md](execution.md), "No re-entry from Rust"); written in Newspeak after the inline caches |
 
-So exactly one method still calls back, and it is the one that moves to
-Newspeak. It stops calling back before that: the root discipline needs no Rust
-frame to be live below a safepoint ([memory.md](memory.md), "No Rust frame is
-live below a safepoint"), so step 2a of Milestone 4 makes `do:` a trampoline
-step ([execution.md](execution.md), "Planned: no re-entry from Rust"). That
-removes the callback without writing any Newspeak, and it does not make the
-move harder, for the reason the end of this section gives. Everything else in `builtins/` — `size`, `at:`, `class`, `hash`,
-`printString`, the arithmetic, the comparisons, `asString`, `asSymbol` — is a
-leaf, and its computation stays in Rust.
+So no native calls back into Newspeak, which the root discipline needs as well:
+no Rust frame may be live below a safepoint ([memory.md](memory.md), "No Rust
+frame is live below a safepoint"). `do:` still moves to Newspeak after the
+caches, so that it becomes a real method, one that lookup, mirrors and the
+debugger see; being a trampoline step does not make that move harder, for the
+reason the end of this section gives. Everything else in `builtins/` — `size`,
+`at:`, `class`, `hash`, `printString`, the arithmetic, the comparisons,
+`asString`, `asSymbol` — is a leaf, and its computation stays in Rust.
 
 **Where this is going: the core library as Newspeak source, with Rust
 primitives underneath** (the user's direction, 2026-09-12). Primordial Soup
@@ -142,8 +141,8 @@ activation stack moved"), and the per-call lookup the inline caches remove is
 still in it. A regression today, so the move happens *after* the caches, not
 before. What Milestone 4 owes this section is only that it not deepen the
 investment in Rust callbacks while it is rewriting the code around them; step
-2a goes further and takes the last callback away, as a trampoline step rather
-than as Newspeak, which leaves this ordering as it is.
+2a took the last callback away, as a trampoline step rather than as Newspeak,
+which leaves this ordering as it is.
 
 A related item, same cause: native dispatch selects with `match
 selector.as_str()`, a string-comparison chain on the hot path that is not a

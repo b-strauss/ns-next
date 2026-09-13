@@ -368,15 +368,17 @@ fn resume_caller(interp: &mut Interpreter, caller: ActivationRef, value: Value) 
 /// is one of this run's activations and catches a return (a method, or a
 /// superclass clause or its message -- `Interpreter::catches_return`) ends
 /// there: everything above the target is popped and the target returns the
-/// value. Anything else pops every activation of this run, `base` included,
-/// and leaves `run` with the signal, for the Rust frame that re-entered the
-/// loop to pass on.
+/// value. Anything else pops every activation of the run, `base` included,
+/// and leaves `run` with the signal, for the host that started the run
+/// (`Interpreter::run_from_host`).
 ///
-/// A target that catches no return is popped with the rest, and the signal
-/// goes on naming it; the runs below this one see a target that has
-/// returned, which is why liveness is asked first. Every activation it pops
-/// hands its continuation to `Interpreter::abandon`, which undoes what a
-/// continuation that will now never run had begun.
+/// A target that catches no return -- a running initializer -- is popped
+/// with the rest, and the signal goes on naming it, out to the host: the
+/// known gap in `docs/design/execution.md`, "Non-local return". Liveness is
+/// asked first, because it is the one question a handle whose entry may
+/// have been popped can be asked (`Heap::activation_is_live`). Every
+/// activation it pops hands its continuation to `Interpreter::abandon`, which
+/// undoes what a continuation that will now never run had begun.
 fn unwind(interp: &mut Interpreter, signal: Signal, floor: usize) -> Flow {
     if let Signal::Return(target, value) = &signal {
         let (target, value) = (*target, *value);

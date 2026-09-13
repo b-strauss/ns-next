@@ -77,9 +77,9 @@ bounded that way. `docs/design/memory.md` has the breakdown.
 That guarantee covers **decoding**. `ns-next load` on a stateless binary instantiates
 and sends the recorded entry with no flag at all, so loading one *runs its code* --
 with the same exposure as running the equivalent source. Recursion depth is bounded
-by two counted limits -- 100,000 activations and 1,000 re-entries of the run loop
-from Rust -- each an ordinary Newspeak error, not a native stack overflow (see
-`docs/design/execution.md`, "Two bounds, not one"). A mutated binary that decodes
+by a counted limit of 100,000 activations -- an ordinary Newspeak error, not a
+native stack overflow, since nothing re-enters the run loop from Rust (see
+`docs/design/execution.md`, "The depth limit"). A mutated binary that decodes
 cleanly can still abort while executing -- a native indexing `args` it was not
 given, for one -- and that is not a decoder defect.
 
@@ -116,8 +116,9 @@ valid activation. `ClosureData`, `Frame` and every image record take a
 `FrameRef` (get one with `Heap::reify`), so storing an `ActivationRef` is a
 compile error; a `debug_assertions`-only generation check turns a stale
 read into a panic. The run loop pops every activation it runs, on every exit,
-error paths included (`vm::run`) -- `Interpreter::send` and `instantiate`
-debug-assert that the stack is balanced. A reified frame is married to its
+error paths included (`vm::run`) -- `Interpreter::run_from_host`, the one way
+a host's `send` or `instantiate` enters the loop, debug-asserts that the stack
+is balanced. A reified frame is married to its
 live entry and divorced on pop, which copies its registers out, because a
 block reads its method's variables by reference
 (`docs/design/execution.md`, "Activations").
@@ -198,10 +199,11 @@ the canonical Newspeak on Squeak, its cross-language benchmark suite, Ryan Macna
 Primordial Soup (a Newspeak VM in C++, with its own bytecode set, image format and
 collector) and Stefan Marr's SOMns (a Newspeak on Truffle/Graal). Two are there because
 the design documents name them as models for this runtime's own representation: `nova/`
-for the arena of typed handles, which ns-next now has, and the `GcScope`/`NoGcScope`
-root discipline, which is still ahead (`memory.md`); `opensmalltalk-vm/` for Cog's
-activations on a stack, reified on demand, which ns-next now has, and its divorce of
-whole stack pages, which suspension and the debugger still need (`execution.md`).
+for the arena of typed handles, which ns-next now has (its `GcScope`/`NoGcScope` root
+discipline was weighed and rejected for a gc-arena-style lifetime brand, `memory.md`);
+`opensmalltalk-vm/` for Cog's activations on a stack, reified on demand, which ns-next
+now has, and its divorce of whole stack pages, which suspension and the debugger still
+need (`execution.md`).
 
 When a question is "how should this work", read how a working system answered it and
 cite that, rather than reasoning from first principles alone. Nothing under

@@ -10,31 +10,53 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
 
-M4 is under way. **1b, the trampoline, is done** — see "M4 — The trampoline"
-below — and **the next piece is step 2, the compiler-checked root
-discipline**, designed on 2026-09-13 ([memory.md](design/memory.md), "Planned:
-checked roots and a collector"). It lands in three parts, **2a first**: take
-every re-entry of the run loop from Rust away — `do:`, instantiation and the
-nested-class accessor become trampoline steps ([execution.md](design/execution.md),
-"Planned: no re-entry from Rust"). Then 2b, the safepoint, the tracing, host
-roots and the stress mode; then 2c, the lifetime brand. Each gets its own plan
-under `docs/superpowers/plans/` once the one before it has merged, so that it
-is written against the code as it then is. The profile of `bench_block.ns` that
-the trampoline's [plan](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md)
-owed was taken last, with the user; see below.
+M4 is under way. Step 2, the compiler-checked root discipline, designed on
+2026-09-13 ([memory.md](design/memory.md), "Planned: checked roots and a
+collector"), lands in three parts. **2a, no re-entry from Rust, is done** —
+`do:`, instantiation and the nested-class accessor are trampoline steps, so
+Rust enters the run loop only as the host; see "M4 — No re-entry from Rust"
+below. **The next piece is 2b**: the safepoint in the run loop, the enumeration
+of everything the collector traces, host roots and the stress mode that moves
+every object at every safepoint, to be planned against the code as 2a left it
+([memory.md](design/memory.md), "Planned: checked roots and a collector").
+Then 2c, the lifetime brand. Each gets its own plan under
+`docs/superpowers/plans/` once the one before it has merged, so that it is
+written against the code as it then is.
+
+**Open findings from 2a**, for whoever plans next to weigh:
+
+- **Two benchmarks are slower.** Measured whole against the commit 2a started
+  from, `be3eb40`, `bench_block.ns` is about 2.6% slower (23.00 → 23.60 ms)
+  and `bench_new.ns`, a throwaway source of 20,000 instantiations that each
+  run an initializer, about 3.1% (7.38 → 7.61 ms); on both the after-group
+  lies entirely above the before-group, and a second sitting reproduced both
+  (+2.7%, +3.4%). `bench_loop.ns` and `bench_send.ns` moved +0.7% with the
+  groups overlapping; `bench_do.ns` moved −0.6%, and +1.3% in the second
+  sitting on the strength of one round, overlapping both times. The cause is
+  not isolated ([execution.md](design/execution.md), "What removing the
+  re-entries moved").
+- **The suite takes twice as long**, 12.5 s → 25 s, almost all of it two tests
+  that recurse through the nested-class accessor to the activation limit: the
+  cyclic-definition check scans `nested_in_progress` linearly, which makes that
+  recursion quadratic in its depth now that it runs to 100,000 activations
+  instead of 1,000 re-entries (7.8 s each in a debug build, 0.44 s in a
+  release one). A candidate, not yet designed or measured, is an in-progress
+  marker in the enclosing object's own cache slot, which would make the check
+  constant-time and remove `nested_in_progress`, and with it an entry of
+  "What the collector traces" ([memory.md](design/memory.md)).
 
 Sends run on the activation stack rather than the Rust stack, in one loop that
-pushes, pops and resumes; `value` and the control-flow natives are trampoline
-steps rather than callbacks; and recursion depth has two counted bounds —
+pushes, pops and resumes; `value`, the control-flow natives, `do:`,
+instantiation and the nested-class accessor are trampoline steps, so nothing
+re-enters the loop from Rust; and recursion depth has one counted bound,
 100,000 activations, counted by the rule in [compiler.md](design/compiler.md),
-"How the limit counts", and 1,000 re-entries of the loop from Rust — each an
-ordinary Newspeak error that agrees under both lowerings
-([execution.md](design/execution.md), "The trampoline"). The bytecode
+"How the limit counts" — an ordinary Newspeak error that agrees under both
+lowerings ([execution.md](design/execution.md), "The depth limit"). The bytecode
 VM is the only engine ([execution.md](design/execution.md), "One engine"):
 step A retired the tree-walker on 2026-09-11, because designing 1b showed that
 a recursive AST evaluator cannot take part in what the trampoline exists for —
@@ -64,7 +86,7 @@ why the object and activation representations were converted together rather
 than one at a time. Each piece is designed in the document for its own aspect;
 those documents are the authority, and this is only the map to them.
 
-**Seven pieces are done.** The heap seam routes every object and activation
+**Eight pieces are done.** The heap seam routes every object and activation
 access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
 it replaced `Rc<RefCell<_>>`: an `ObjRef` or a `FrameRef` is a 32-bit index
 into a `Vec` the `Heap` owns, with a private field so the compiler enforces the
@@ -80,7 +102,8 @@ retired the tree-walker, step B cleaned up after it, and step C built the
 reference lowering as the differential oracle; see "M4 — Retiring the
 tree-walker", "M4 — Cleaning up with one engine" and "M4 — The reference
 lowering" below. Then 1b took sends off the Rust stack; see "M4 — The
-trampoline" below.
+trampoline" below. Then 2a took the last re-entries of the run loop from Rust
+away; see "M4 — No re-entry from Rust" below.
 
 **The profile of `bench_block.ns` is taken**
 ([execution.md](design/execution.md), "What the profiles show"). The question
@@ -99,7 +122,7 @@ symbol and a hasher for `u32`-shaped keys would take most of it out sooner,
 and are a candidate small step of their own before the caches.
 
 The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
-and all three done, 1b done, everything from step 2 on still ahead — and it is
+and all three done, 1b done, 2a done, everything from 2b on still ahead — and it is
 not the order the milestone was originally sketched in. Two things settled the order of the
 numbered steps, neither of them a preference.
 
@@ -136,12 +159,13 @@ so nothing is lost by it going second.
      activation, run by one loop on the activation stack; arguments gathered
      into one reusable buffer instead of a vector per send; `Block value` and
      the control-flow natives trampoline steps; recursion depth an ordinary
-     Newspeak error under two bounds, the first counted by the rule in
+     Newspeak error under two bounds (2a removed the second, on re-entries from
+     Rust), the first counted by the rule in
      [compiler.md](design/compiler.md), "How the limit counts", with
      `SendInlinable` and the counter added together. `bench_loop.ns` fell by
      about 32%, `bench_send.ns` 31% and `bench_block.ns` 22%; see "M4 — The
      trampoline" below.
-2. **A compiler-checked root discipline. Next.** [memory.md](design/memory.md),
+2. **A compiler-checked root discipline. In progress.** [memory.md](design/memory.md),
    "Planned: checked roots and a collector". Designed on 2026-09-13, from how
    Cog, Nova, CPython, piccolo, V8, HotSpot, Primordial Soup and SOMns place
    their collections: a collection only ever at a safepoint in the run loop,
@@ -151,10 +175,13 @@ so nothing is lost by it going second.
    `GcScope`/`NoGcScope`, whose scopes would root the re-entry paths rather
    than remove them. Free at run time; the ergonomic cost is accepted
    deliberately. Split in three, each landing green and measured on its own:
-   - **2a — no re-entry from Rust. Next.** `do:`, instantiation and the
-     nested-class accessor become trampoline steps, and N goes
-     ([execution.md](design/execution.md), "Planned: no re-entry from Rust").
-   - **2b — the safepoint, the tracing, host roots and the stress mode.** Every
+   - **2a — no re-entry from Rust. Done.** `do:`, instantiation and the
+     nested-class accessor are trampoline steps, and the bound on re-entries
+     went with them ([execution.md](design/execution.md), "No re-entry from
+     Rust"). Measured whole, `bench_block.ns` came out about 2.6% slower and
+     `bench_new.ns` about 3.1%, the other three sources within their groups'
+     spread — an open finding, above; see "M4 — No re-entry from Rust" below.
+   - **2b — the safepoint, the tracing, host roots and the stress mode. Next.** Every
      place a handle is stored enumerated, `Rc<ClosureData>` split so that no
      handle sits behind a shared `Rc`, and a debug-build mode that moves every
      object at every safepoint, under which the whole suite must pass.
@@ -180,19 +207,21 @@ so nothing is lost by it going second.
    This is what ends the arena's never-reclaim interim.
 
 Deferred past the milestone on purpose: moving `do:` out of Rust and into
-Newspeak. It is required eventually, because a Rust native that calls back into
-Newspeak is a permanent barrier to optimization
-([core-library.md](design/core-library.md)), but doing it before the steps above
-makes the numbers worse and after them costs nothing. M4 owes it only that the
-rewrite not deepen the investment in Rust callbacks — and step 2a takes the
-callback away earlier, as a trampoline step rather than as Newspeak.
+Newspeak. It is required eventually, so that `do:` becomes a real method that
+lookup, mirrors, the debugger and a JIT see — a Rust native is a permanent
+barrier to optimization ([core-library.md](design/core-library.md)) — but
+doing it before the steps above makes the numbers worse and after them costs
+nothing. M4 owed it only that the rewrite not deepen the investment in Rust
+callbacks, and step 2a took the last callback away, as a trampoline step
+rather than as Newspeak.
 
 What M4 unlocks beyond speed is recorded where it applies: suspending a running
-computation and serializing it needed the trampoline, which is built, and still
-needs a yield path out of the run loop and a way past the paths that re-enter it
-from Rust, which step 2a removes ([image-format.md](design/image-format.md), "Planned: suspend and
-resume"), and so does the debugger; `become:`-based class mutation waits on
-the collector ([liveness-and-reflection.md](design/liveness-and-reflection.md)).
+computation and serializing it needed the trampoline and the removal of the
+re-entries from Rust, both built, and still needs a yield path out of the run
+loop and a re-entry point for a decoded frame
+([image-format.md](design/image-format.md), "Planned: suspend and resume"),
+and so does the debugger; `become:`-based class mutation waits on the
+collector ([liveness-and-reflection.md](design/liveness-and-reflection.md)).
 
 ## M1 — Frontend (2026-09-01)
 
@@ -1145,9 +1174,9 @@ test runs three recursions to 100,000 counted activations under each lowering.
 **Left, deliberately:**
 
 - **Instantiation, the nested-class accessor and `do:` stay re-entries of the
-  loop**, counted against N ([execution.md](design/execution.md), "What stays
-  recursive"). `do:` moves to Newspeak after the inline caches; the other two
-  could become trampoline steps once something needs it.
+  loop**, counted against N. `do:` moves to Newspeak after the inline caches;
+  the other two could become trampoline steps once something needs it. (All
+  three became trampoline steps in 2a; see "M4 — No re-entry from Rust" below.)
 - **The unchecked `args[0]`** in the control-flow natives (`builtins/boolean.rs`,
   `builtins/block.rs`). The decoder does not check a send's argument count
   against its selector, so a crafted artifact that sends `ifTrue:` with no
@@ -1161,8 +1190,8 @@ test runs three recursions to 100,000 counted activations under each lowering.
   needs the activation generation in every build first
   ([execution.md](design/execution.md), "Non-local return").
 - **Suspending a running computation**: a yield path out of the loop, and a way
-  past its re-entries from Rust ([image-format.md](design/image-format.md),
-  "Planned: suspend and resume").
+  past its re-entries from Rust, which went in 2a
+  ([image-format.md](design/image-format.md), "Planned: suspend and resume").
 - **Small follow-ups the task reviews deferred.** A nested run's argument
   buffer is dropped when the outer one is given back, so a re-entry with
   arguments allocates once, and a returned buffer keeps its stale values until
@@ -1180,13 +1209,159 @@ test runs three recursions to 100,000 counted activations under each lowering.
   code table may nest blocks 128 deep, the parser's own limit, so up to 128
   exempt activations can sit above each counted one: at most 129 × L stack
   entries, about 1.3 GB of entries at the size measured when this landed
-  ([execution.md](design/execution.md), "Two bounds, not one"). The encoder
+  ([execution.md](design/execution.md), "The depth limit"). The encoder
   does not refuse deeper nesting itself — no parsed source can produce it, so
   only a hand-built `CompiledCode` could write an image the decoder then
   refuses.
 - **The two error messages that name a milestone, `ClosureData.params` and the
   lexical-send slot lookup** (now in `sends::decide_lexical_send`), still as
   listed under "M4 — Cleaning up with one engine".
+
+## M4 — No re-entry from Rust (2026-09-13)
+
+Plan: [ns-next-no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md).
+
+Step 2a, the first part of the root discipline. Rust enters the run loop only
+as the host, its outermost caller: `do:`, instantiation and the nested-class
+accessor, the three paths that ran Newspeak code in nested runs of the loop,
+are trampoline steps, so no Rust frame is live below a safepoint — the ground
+2b and 2c stand on ([execution.md](design/execution.md), "No re-entry from
+Rust"; [memory.md](design/memory.md), "No Rust frame is live below a
+safepoint"). The design was settled and recorded in the design documents
+(`be3eb40`) before the plan (`6f940ba`); the step's commits follow the plan on
+`feature/root-discipline-2a`, from `aa8323a`.
+
+**Four decisions**, settled with the user on 2026-09-13:
+
+1. **The root discipline removes the re-entries rather than rooting them.**
+   Step 2 is split into 2a, 2b (safepoint, tracing, host roots, stress mode)
+   and 2c (the lifetime brand), each planned once the one before it has
+   merged.
+2. **`do:` becomes a continuation step now**, like `whileTrue:`; it moves to
+   Newspeak only after the inline caches.
+3. **N goes**, and the three goldens that ended at it end at L.
+4. **`INTERPRETER_STACK_BYTES` is re-derived** from what still recurses on the
+   Rust stack. The thread stays, because the symbol interner is thread-local.
+
+**What changed**, in the plan's order:
+
+1. **`do:` as a step.** `do:` answers its block for the first element with
+   `Continuation::DoElement`, whose `DoLoop` carries the snapshot and the next
+   index, and `builtins::collections::after_element` activates the block for
+   each next element. **A deviation:** the plan routed `do:` through a guarded
+   arm in `dispatch_native`; `collections::dispatch_array` and
+   `dispatch_ordered_collection` check for `do:` themselves and answer its step,
+   so `dispatch_native` keeps one arm per class. It measured no worse, and it
+   keeps that match uniform. An `#[inline(never)]` on `do_step`, tried while
+   chasing the shift below, helped nowhere and was dropped.
+2. **The nested-class accessor as a step.** A body that is neither a method nor
+   a block is pushed through `Step::Body(Box<BodyStep>)`, boxed so that
+   `Result<Step, Signal>` stays 56 bytes. The accessor answers its clause as
+   one with `Continuation::NestedClass`, and `nested::after_clause` builds,
+   caches and answers the class when the clause returns.
+   `nested_in_progress` holds the enclosing object as an `ObjRef`; `push_step`
+   records an entry once the clause's push succeeded, and `resume` or the new
+   `Interpreter::abandon` — to which `vm::unwind` hands every continuation it
+   pops — takes it off.
+3. **Instantiation as a state machine, and one host entry.**
+   `decide_instantiation`, `climb_levels`, `descend_levels` and
+   `advance_instantiation` behind `Continuation::Instantiate`;
+   `try_factory_send` is an ordinary decision, and `Interpreter::send` and
+   `instantiate` both enter the loop through `Interpreter::run_from_host`,
+   which debug-checks that the loop is never entered while it runs.
+   `reenter`, `invoke_closure`, `builtins::call_block`, the native-depth count,
+   `MAX_NATIVE_DEPTH` and its error went. Then the fix for the slowdown below:
+   the walk's state is held by value and boxed only into a continuation with
+   work left after it, and **a deviation** — the walk's last initializer is a
+   fifth `Step` variant, `Step::Initializer`, inline and delivering its own
+   value, since an instance initializer always answers `self` under both
+   lowerings; `new_answers_the_instance_its_initializers_ran_on` pins that.
+   `a_decision_stays_the_size_the_hot_path_was_measured_at` pins the 56 bytes.
+4. **The interpreter thread's stack**, 32 MiB → 8 MiB: four times the 2 MiB
+   libtest threads on which the suite runs the deepest nesting the parser
+   accepts through every stage in a debug build.
+5. **The documents**, and a sweep of the comments that still named functions
+   the step removed or described re-entry.
+
+**Three golden outcomes changed**, each in the task that removed its re-entry:
+`do-recursion`, `instantiation-recursion` and `accessor-recursion`
+(`crates/ns-cli/tests/program_outcomes.rs`) ended in `stack overflow: too many
+nested native calls` and end in `stack overflow: recursion too deep`. Each of
+those recursions is made only of counted activations now, so it ends at L like
+any other; the limit the old text reported no longer exists. That is why each
+change is right — none was recorded because the code produced it. Every other
+fixture, golden and `run-corpus` row keeps its answer under both lowerings.
+
+**Two measurement findings on the way, each settled by a ruling.** Every task
+on the hot path was measured against its parent over the three fixtures and
+two throwaway sources, `bench_do.ns` and `bench_new.ns`
+([execution.md](design/execution.md), "What removing the re-entries moved"):
+
+- **`do:` as a step moved every source by a uniform 2–4%**, `bench_loop.ns`
+  included, which runs no `do:`. A control — the parent plus only the new
+  `Continuation` variant — did not reproduce it; `vm::finish` is out of line in
+  every build, and in the changed one `object_class::dispatch` was inlined
+  into `dispatch_native` and `run`'s register allocation differed. Accepted as
+  an LLVM inlining and layout artifact on unchanged executed code, not
+  bisected further, with this whole-step measurement to re-check the net.
+- **Instantiation first measured about 15.6% slower on `bench_new.ns`.**
+  Counting allocations found two more boxes per instantiation, the walk's state
+  and the body step. Delivering the last initializer's value, and carrying that
+  initializer inline, restored the count (2 allocations, 144 bytes, per
+  `Cell new`) and left about +1.8%, some 7 ns per instantiation: the
+  initializer now runs in the same loop where it used to run in a nested one
+  and come back as a value. Accepted.
+
+Measured whole against `be3eb40` in one sitting on a release build, five
+rounds of `ns-next bench <source> --iterations 30`, alternating the binaries
+within each round, the "before" built in a throwaway worktree. Medians in ms,
+rounds 1–5, and each group's mean:
+
+| Source | Before | mean | After | mean |
+|---|---|---|---|---|
+| `bench_loop.ns` | 10.89, 11.05, 11.31, 11.03, 10.99 | 11.05 | 10.95, 10.99, 11.09, 11.28, 11.35 | 11.13 |
+| `bench_send.ns` | 13.86, 13.79, 13.99, 13.95, 13.96 | 13.91 | 13.87, 14.12, 14.01, 14.08, 13.96 | 14.01 |
+| `bench_block.ns` | 22.86, 22.95, 23.04, 23.09, 23.03 | 23.00 | 23.32, 23.46, 23.75, 23.96, 23.52 | 23.60 |
+| `bench_do.ns` | 7.77, 7.75, 7.90, 7.86, 7.92 | 7.84 | 7.72, 7.83, 7.81, 7.77, 7.82 | 7.79 |
+| `bench_new.ns` | 7.38, 7.38, 7.37, 7.36, 7.41 | 7.38 | 7.74, 7.51, 7.52, 7.70, 7.56 | 7.61 |
+
+**The step is slower on two sources, an open finding.** `bench_block.ns` is
+about 2.6% slower and `bench_new.ns` about 3.1%; on both the after-group lies
+entirely above the before-group, which fails the plan's gate that no source be
+slower. A second sitting reproduced both, +2.7% and +3.4%. `bench_loop.ns` and
+`bench_send.ns` moved +0.7%, the groups overlapping; `bench_do.ns` moved
+−0.6%, and +1.3% in the second sitting on the strength of one round, the
+groups overlapping both times, so `do:` as a step came out not faster, as the
+design expected, and not clearly slower. `bench_block.ns` runs no `do:`,
+instantiation or accessor in its loop, and the cause is not isolated.
+
+Suite running time (`cargo test --workspace`, debug build, test binaries
+already built) went from 12.53 s and 12.54 s to 24.85 s and 25.55 s. Almost
+all of the difference is the two tests that recurse through the nested-class
+accessor to the activation limit, 7.8 s each, which set the running time of
+`program_outcomes.rs` (0.3 s → 7.8 s) and `trampoline.rs` (3.0 s → 7.9 s):
+the cyclic-definition check scans `nested_in_progress` linearly, and such a
+recursion has one creation in progress per level, so it is quadratic in its
+depth, which N used to cap at 1,000 levels. Cutting the scan to the top entry
+alone, a probe that was not kept, took the golden from 7.8 s to 0.29 s.
+
+656 tests pass, with one ignored (644 before); `parse-corpus` stays at
+**210/0/1/0** and `run-corpus` at **6/0/205**.
+
+**Left, deliberately:**
+
+- **The two slower benchmarks**, above, and **the quadratic in-progress
+  check**, for whoever plans next to weigh ("Where the next session starts").
+- **`do:`'s per-element argument vector.** Each element's block activation
+  takes a one-element `StepArgs::Owned` vector; a one-value `StepArgs` variant
+  would avoid it, and would change `Step`'s layout, which the trampoline
+  measured as a 4–8% risk.
+- **A decoded image's last initializer is not held to answering `self`.** `new`
+  then answers whatever that code answers — wrong but safe, no panic.
+  `image::decode::verify_mixins` could refuse such an initializer.
+- **A `^` into a running initializer** still escapes as "internal: non-local
+  return escaped the entry send", the known gap, unchanged.
+- **Moving `do:` into Newspeak**, after the inline caches, as before.
 
 ## Notes
 

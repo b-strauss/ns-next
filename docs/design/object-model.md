@@ -185,9 +185,11 @@ nested class. That this falls out of ordinary dispatch is evidence the layering
 is right.
 
 **The accessor lives in `interpreter/`**, beside dispatch. It evaluates Newspeak
-code — the superclass clause, compiled like any other body — and runs it through
-`nested::run_clause_body`, the same path `instantiate` runs the clause's deferred
-message through. It is deliberately not synthesized bytecode: what it does
+code — the superclass clause, compiled like any other body — which runs as a
+`Step::Body` with `Continuation::NestedClass`, the same way instantiation runs
+the clause's deferred message ([execution.md](execution.md), "No re-entry from
+Rust"); steps 3 to 5 run when the clause returns. It is deliberately not
+synthesized bytecode: what it does
 around that code — caching the class object per enclosing instance, detecting a
 cyclic definition, applying the mixin — is dispatch-side work, and a
 compiler-side copy of it would drift from the interpreter's in exactly the way

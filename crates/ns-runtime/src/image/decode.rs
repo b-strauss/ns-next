@@ -152,7 +152,7 @@ pub enum DecodeError {
     UnknownSelector(String),
     /// A mixin-table row declares slots or `initExpr`s but carries no
     /// compiled initializer. Instantiating such a class runs initializer
-    /// code on every `X new`, and `descend_levels` panics on that
+    /// code on every `X new`, and `Interpreter::initializer_body` panics on that
     /// invariant rather than failing -- so only refusing here keeps a
     /// crafted image from aborting the process at the first `X new`.
     MissingInitializer,
@@ -757,7 +757,7 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
                 mixin.factory.map_or(0, |factory| factory.num_args),
             )?,
             // A class with slots or `initExpr`s runs compiled initializer
-            // code on every `X new`, and `descend_levels` *panics*
+            // code on every `X new`, and `Interpreter::initializer_body` *panics*
             // when the mixin carries none. The row's declaration half says
             // the mixin needs one and its code half says whether the image
             // carries it -- two fields only this function compares.

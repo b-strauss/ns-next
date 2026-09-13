@@ -1386,11 +1386,13 @@ impl Heap {
     /// Whether `act` is still on the stack -- the one question that may be
     /// asked of a handle whose activation has returned. A non-local return
     /// into an activation that catches none (an initializer) pops its target
-    /// on its way out and goes on naming it, and each run the signal leaves
-    /// asks this before reading the target. Nothing is pushed while a signal
-    /// propagates (`ActivationRef::same`), so the target is live exactly
-    /// while the stack still reaches its index; a debug build checks that
-    /// the entry there is still the one the handle was minted for.
+    /// on its way out and goes on naming it, out to the host that started
+    /// the run; the unwind asks this before it reads a target, and a host
+    /// holding the escaped signal may ask nothing else. Nothing is pushed
+    /// while a signal propagates (`ActivationRef::same`), so the target is
+    /// live exactly while the stack still reaches its index; a debug build
+    /// checks that the entry there is still the one the handle was minted
+    /// for.
     ///
     /// A release build has only the index, so its answer is sound only
     /// while that holds. Anything that runs code while a signal propagates

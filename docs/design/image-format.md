@@ -31,13 +31,13 @@ iterative.
 That guarantee is about **decoding**. `load` on a stateless binary instantiates
 and sends the recorded entry with no flag at all, so starting one executes its
 code with the same exposure as running the equivalent source. Recursion depth
-is bounded by two counted limits, 100,000 activations and 1,000 re-entries of
-the run loop from Rust, each an ordinary Newspeak error rather than a native
-stack overflow, and a crafted `SendInlinable` cannot use the count's one
+is bounded by one counted limit, 100,000 activations, an ordinary Newspeak
+error rather than a native stack overflow, since nothing re-enters the run loop
+from Rust; and a crafted `SendInlinable` cannot use the count's one
 exemption to recurse uncounted. Nor can it stack more exempt activations above
 a counted one than source can: that number is bounded by how deeply blocks
 nest, which the decoder caps at the parser's own ceiling ("Verification"
-below); see [execution.md](execution.md), "Two bounds, not one". A mutated
+below); see [execution.md](execution.md), "The depth limit". A mutated
 binary that decodes cleanly can still abort while executing — a native that
 indexes an argument it was not given, for one: the control-flow natives read
 `args[0]` unchecked, and the decoder does not check a send's argument count
@@ -470,16 +470,12 @@ the new flag, the entry field and the trailing-byte check
 An image cannot be taken mid-execution, and the obstacle is control flow rather
 than format. A reified `Frame` is fully encoded, every running activation is an
 entry on the explicit activation stack ([execution.md](execution.md),
-"Activations"), and sends no longer recurse through the Rust call stack: the
-trampoline made the activation stack the only copy of a running computation
-([execution.md](execution.md), "The trampoline"), apart from the paths that
-still re-enter the run loop from Rust — `do:`, instantiation and the
-nested-class accessor — each of which holds a Rust frame while it runs. Step 2a
-of Milestone 4 makes all three trampoline steps ([execution.md](execution.md),
-"Planned: no re-entry from Rust"), which removes those frames. What is
-missing is a yield path out of `vm::run`, a way through or around those Rust
-frames until then, and a re-entry point that would continue a decoded frame at
-its `pc`.
+"Activations"), and nothing a running computation does holds a Rust frame: the
+activation stack is its only copy, since sends do not recurse through the Rust
+call stack ([execution.md](execution.md), "The trampoline") and nothing
+re-enters the run loop from Rust ([execution.md](execution.md), "No re-entry
+from Rust"). What is missing is a yield path out of `vm::run` and a re-entry
+point that would continue a decoded frame at its `pc`.
 Suspending then means reifying and divorcing the whole stack, which is the same
 operation a debugger performs on the frames it touches — and the same operation upstream
 performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)

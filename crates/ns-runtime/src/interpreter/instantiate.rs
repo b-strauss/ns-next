@@ -285,7 +285,9 @@ impl Interpreter {
     /// The walk's state is a value while it runs and is boxed only into the
     /// continuation of a body that has work left after it, so the common
     /// instantiation -- code in the class itself, a builtin above it --
-    /// allocates none (`descend_levels` says why its last body needs none).
+    /// boxes neither the state nor a body step; what it allocates is the
+    /// instance's fields and the list of levels (`descend_levels` says why
+    /// its last body needs no continuation).
     pub(crate) fn decide_instantiation(
         &mut self,
         class: ClassRef,
@@ -414,7 +416,8 @@ impl Interpreter {
             // (`compiler::lower`'s `finish_body`, `compiler::reference`'s
             // `end`). So its activation delivers its own value like a
             // method's, and nothing of the walk outlives this step: the
-            // common instantiation allocates nothing for it. Making an
+            // common instantiation boxes neither the walk's state nor a
+            // continuation for it. Making an
             // initializer answer anything else breaks `new`;
             // `tests/instantiate.rs`'s
             // `new_answers_the_instance_its_initializers_ran_on` pins it. (A
@@ -711,7 +714,7 @@ fn initializing_level_below(
 ///
 /// `pub(crate)` for `image::decode::verify_mixins`, which must refuse
 /// an image that has no compiled initializer for a mixin that needs one
-/// rather than let `descend_levels` above panic on the invariant --
+/// rather than let `Interpreter::initializer_body` above panic on the invariant --
 /// checked per mixin, since every mixin of the tree carries its own.
 pub(crate) fn mixin_needs_initializer_code(mixin: &crate::mixin::Mixin) -> bool {
     !mixin.slots.is_empty() || mixin.has_init_exprs

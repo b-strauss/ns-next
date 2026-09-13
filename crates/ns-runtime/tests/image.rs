@@ -3231,7 +3231,7 @@ const NEEDS_INITIALIZER: &str = indoc! {"
 
 #[test]
 fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_on_load() {
-    // `descend_levels` panics -- "internal: class needs an instance
+    // `Interpreter::initializer_body` panics -- "internal: class needs an instance
     // initializer and its mixin carries none" -- when the class has
     // initializer code and its mixin has none. A mixin-table row's
     // declaration half decides the first (it names slots or `initExpr`s)

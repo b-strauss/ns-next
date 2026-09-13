@@ -36,7 +36,7 @@ that cannot name its code is describing an intention, and should say so.
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | inline-cache slots wired up |
-| Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline | no re-entry from Rust, closure conversion, JIT tiers |
+| Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust | closure conversion, JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena and the activation stack are built, nothing reclaims an arena slot | checked roots (designed: safepoints in the run loop, a lifetime brand, a stress mode), a collector |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | Partial | the leaf/callback split |
@@ -101,11 +101,11 @@ See [image-format.md](image-format.md).
 `parse`, `parse-corpus`, `run-corpus`, `run`, `snapshot`, `load`, `bench`,
 `disasm`, `inspect`, `build` — one module each under
 `crates/ns-cli/src/commands/`. `main.rs` holds only the argument parser, the
-dispatch to them and the thread every command runs on, spawned with the stack
-the interpreter's native-depth bound needs ([execution.md](execution.md), "Two
-bounds, not one"); loading a source file, and instantiating the root class and
-sending the entry, which several commands share, live in `source.rs` and
-`entry.rs`.
+dispatch to them and the thread every command runs on — a thread of its own
+because the symbol interner is thread-local, spawned with the stack the front
+end needs ([execution.md](execution.md), "The depth limit"); loading a source
+file, and instantiating the root class and sending the entry, which several
+commands share, live in `source.rs` and `entry.rs`.
 
 ## Gates
 

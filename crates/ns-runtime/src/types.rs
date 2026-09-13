@@ -364,7 +364,8 @@ pub struct Frame {
     /// class level the activation initializes. The value `InitSlot` reads
     /// while the body runs is the live activation's own `slot_base`
     /// (`Heap::activation_slot_base`), one activation per initializing level
-    /// of the superclass chain (`Interpreter::descend_levels`); a
+    /// of the superclass chain, pushed with the slot base
+    /// `Interpreter::initializer_body` finds; a
     /// frame carries a copy only if that activation was reified. The image
     /// does not record it -- a decoded frame has 0, since nothing re-activates
     /// one. Set once, where the activation is pushed, and never changed.
