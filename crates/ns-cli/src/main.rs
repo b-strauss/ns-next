@@ -173,14 +173,15 @@ enum Cmd {
     },
 }
 
-/// The native stack the interpreter runs on. Sends no longer recurse on it,
-/// but the paths that re-enter the run loop from Rust -- `do:`, instantiation,
-/// the nested-class accessor -- still do, up to
-/// `ns_runtime::interpreter::MAX_NATIVE_DEPTH` deep. This is that many
-/// re-entries at the cost measured for a debug build, twice over
-/// (`docs/design/execution.md`, "Two bounds, not one"). Reserved, not
-/// committed: only what a program uses is backed by memory.
-const INTERPRETER_STACK_BYTES: usize = 32 * 1024 * 1024;
+/// The native stack the interpreter runs on. Nothing re-enters the run loop
+/// from Rust (`docs/design/execution.md`, "No re-entry from Rust"), so what
+/// recurses on it is the front end and the compiler, whose depth the parser's
+/// nesting ceiling bounds. The test suite runs the deepest nesting the parser
+/// accepts through every stage on libtest's default 2 MiB threads in a debug
+/// build; this is four times that. Reserved, not committed: only what a
+/// program uses is backed by memory. The thread itself is needed regardless,
+/// because the symbol interner is thread-local.
+const INTERPRETER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 fn main() -> ExitCode {
     let command = Cli::parse().command;
