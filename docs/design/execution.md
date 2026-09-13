@@ -890,9 +890,20 @@ in the second, the groups overlapping both times and the second mean carried by
 one round at 8.26 ms: running `do:`'s block as a step instead of a nested run
 did not make it faster, as the design expected, and is not clearly slower
 either. `bench_block.ns` runs neither `do:`, an instantiation nor the
-accessor in its loop; what it runs that the step changed is shared —
-`builtins::dispatch_native`, `Interpreter::push_step` and `vm::finish` with
-`Interpreter::resume`, whose matches gained arms. The cause is not isolated.
+accessor in its loop: its `whileTrue:` is inlined, and each iteration makes
+lexical sends for the slots and `bump:`, public sends of `<`, `+` and `value:`,
+and one block creation. Everything it runs that the step changed,
+`bench_send.ns` runs too, and that moved only +0.7%: `Interpreter::decide_send`
+and `sends::decide_lexical_send`, whose factory-send and nested-class branches
+now answer a `Step` (neither is taken here); `builtins::dispatch_native`, whose
+`Array` and `OrderedCollection` arms now answer a `Step` themselves, with no
+arm added; `Interpreter::push_step`, whose match gained the two body arms
+(`bench_block.ns` also takes its block arm, for `value:`); and the types every
+one of those sends passes through — `Step`, which gained two variants, and the
+`Continuation` `vm::finish` reads, which gained three. Every activation the
+loop pops continues with `Continuation::Deliver` — `value:` answers its block
+with it (`builtins/block.rs`) — which `vm::finish` handles inline, so the loop
+never reaches `Interpreter::resume`. The cause is not isolated.
 
 Each hot-path change was measured against its parent on the way, in sittings
 of its own, so its figures are not compared with these:
