@@ -1473,8 +1473,10 @@ collector"). The step's commits follow the plan (`0cfe9dd`) on
 4. **The root table lives in `Heap` behind a `RefCell`**, so `stash` and
    `fetch` take `&self`, and it is swept at every move and whenever it has
    doubled, so it stays bounded in a release build too.
-5. **A release build contains only the poll**; the tracing, the epoch, the
-   move, the schedule and the test hooks are `#[cfg(debug_assertions)]`.
+5. **A release build keeps the root table, `Root`, `HostResult` and the
+   flag-clearing slow path**; the checking machinery — `trace.rs`, the move
+   epoch, the move, the stress schedule and its test hooks — is
+   `#[cfg(debug_assertions)]`.
 
 **What changed**, in the plan's order:
 

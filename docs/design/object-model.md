@@ -301,8 +301,10 @@ and cheap to carry.
 
 `Rc<RefCell<Object>>` was the Milestone 1 model. It is gone: an object is an
 entry in one `Heap`'s arena and an `ObjRef` is a 32-bit index into it, private to
-`heap.rs`. The representation, what it measured, and the root discipline and
-collector that are still to come are designed in [memory.md](memory.md).
+`heap.rs`. The representation, what it measured, and the root discipline —
+two of its three parts built, the lifetime brand and the collector still to
+come — are designed in [memory.md](memory.md), "Checked roots and a
+collector".
 
 Two consequences belong here rather than there, because they are about this
 document's subject.

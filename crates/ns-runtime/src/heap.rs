@@ -407,7 +407,7 @@ impl Rotation {
     /// object: the permutation checks the forwarding, the epoch the
     /// completeness. An arena of one slot or none cannot move anything.
     fn new(len: usize, epoch: u32) -> Rotation {
-        let len = u32::try_from(len).expect("an arena is addressed by 32-bit indices");
+        let len = u32::try_from(len).expect("internal: an arena is addressed by 32-bit indices");
         let shift = if len < 2 { 0 } else { 1 + epoch % (len - 1) };
         Rotation { shift, len }
     }

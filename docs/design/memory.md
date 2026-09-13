@@ -592,7 +592,7 @@ machinery would stand with nothing to root, its `unbind` a hole in the static
 guarantee.
 A `Scoped` value is also retained for the whole call, past its last use, which
 the brand never does. Engineering effort was not the constraint, so the brand is
-built directly rather than after it.
+to be built directly rather than after it.
 
 ### Considered and rejected: conservative stack scanning
 
