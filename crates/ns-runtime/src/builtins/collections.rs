@@ -180,7 +180,7 @@ pub(crate) fn dispatch_ordered_collection(
 /// on Newspeak code (`docs/design/execution.md`, "No re-entry from Rust").
 /// `None` when `receiver` has no `ObjectData::Array` payload, so the send
 /// falls through to `doesNotUnderstand:` as every other selector here does.
-pub(crate) fn do_step(
+fn do_step(
     interp: &Interpreter,
     receiver: Value,
     selector: Symbol,
@@ -197,6 +197,11 @@ pub(crate) fn do_step(
             message: "do: requires a block argument".to_string(),
         })));
     };
+    // No element, no activation: the loop is over before it starts, so it
+    // needs no state either.
+    if items.is_empty() {
+        return Some(Ok(Step::Value(receiver)));
+    }
     // A non-block stands for its own value, so handing it the elements
     // observes nothing: the loop is over before it starts.
     let closure = match block {

@@ -526,8 +526,8 @@ fn a_deep_recursion_through_do_runs_on_the_activation_stack() {
 
 /// The nested-class accessor is a trampoline step: a recursion through it --
 /// each level a fresh `Link` whose `Next` clause reaches the accessor again --
-/// ends at the activation limit, and the unwind takes every creation in
-/// progress back off (`Interpreter::send` debug-asserts that).
+/// ends at the activation limit, and the unwind unmarks every creation in
+/// progress (`Interpreter::run_from_host` debug-asserts that).
 #[test]
 fn a_recursion_through_the_nested_class_accessor_ends_at_the_activation_limit() {
     let src = indoc! {"

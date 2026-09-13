@@ -1268,9 +1268,9 @@ impl Heap {
         handle
     }
 
-    /// How many activations are live. `Interpreter::send` and
-    /// `Interpreter::instantiate` assert that they leave it where they
-    /// found it.
+    /// How many activations are live. `Interpreter::run_from_host`, through
+    /// which a host's send or instantiation runs, asserts that it leaves it
+    /// where it found it.
     pub fn activation_depth(&self) -> usize {
         self.stack.entries.len()
     }
