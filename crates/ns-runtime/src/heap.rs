@@ -47,6 +47,14 @@ pub struct ObjRef {
     /// read. See `Heap::check_object_origin`.
     #[cfg(debug_assertions)]
     origin: u32,
+    /// The heap's move epoch when this handle was minted or last forwarded.
+    /// Debug builds only: a move rewrites every handle the tracer knows
+    /// about into the new epoch, so one still carrying an old epoch is one
+    /// the tracer missed, and reading it panics instead of answering for
+    /// whatever object took its slot (`docs/design/memory.md`, "Checking
+    /// the roots before a collector exists: the stress mode").
+    #[cfg(debug_assertions)]
+    epoch: u32,
 }
 
 impl ObjRef {
@@ -65,6 +73,12 @@ impl ObjRef {
             self.origin, other.origin,
             "handle belongs to a different heap (comparing handle from heap {}, with handle from heap {})",
             self.origin, other.origin
+        );
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            self.epoch, other.epoch,
+            "stale handle: comparing handles minted in move epochs {} and {}",
+            self.epoch, other.epoch
         );
         self.index == other.index
     }
@@ -108,6 +122,14 @@ pub struct FrameRef {
     /// read. See `Heap::check_frame_origin`.
     #[cfg(debug_assertions)]
     origin: u32,
+    /// The heap's move epoch when this handle was minted or last forwarded.
+    /// Debug builds only: a move rewrites every handle the tracer knows
+    /// about into the new epoch, so one still carrying an old epoch is one
+    /// the tracer missed, and reading it panics instead of answering for
+    /// whatever object took its slot (`docs/design/memory.md`, "Checking
+    /// the roots before a collector exists: the stress mode").
+    #[cfg(debug_assertions)]
+    epoch: u32,
 }
 
 impl FrameRef {
@@ -121,6 +143,12 @@ impl FrameRef {
             self.origin, other.origin,
             "handle belongs to a different heap (comparing handle from heap {}, with handle from heap {})",
             self.origin, other.origin
+        );
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            self.epoch, other.epoch,
+            "stale handle: comparing handles minted in move epochs {} and {}",
+            self.epoch, other.epoch
         );
         self.index == other.index
     }
@@ -317,6 +345,10 @@ pub struct Heap {
     /// exist in a release build.
     #[cfg(debug_assertions)]
     heap_id: u32,
+    /// How many times this heap has moved everything. Debug builds only; see
+    /// `ObjRef::epoch`.
+    #[cfg(debug_assertions)]
+    epoch: u32,
 }
 
 /// Prints the counter and both arenas' lengths, never their contents. A
@@ -349,6 +381,107 @@ impl Default for Heap {
     }
 }
 
+/// A rotation of one arena: slot `i` moves to `(i + shift) % len`.
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy)]
+struct Rotation {
+    shift: u32,
+    len: u32,
+}
+
+#[cfg(debug_assertions)]
+impl Rotation {
+    /// A shift in `1..len`, varied by `epoch` so that successive moves do
+    /// not undo one another. No slot keeps its index, so a handle the
+    /// tracer missed both carries an old epoch and names a different
+    /// object: the permutation checks the forwarding, the epoch the
+    /// completeness. An arena of one slot or none cannot move anything.
+    fn new(len: usize, epoch: u32) -> Rotation {
+        let len = u32::try_from(len).expect("an arena is addressed by 32-bit indices");
+        let shift = if len < 2 { 0 } else { 1 + epoch % (len - 1) };
+        Rotation { shift, len }
+    }
+
+    fn apply(self, index: u32) -> u32 {
+        if self.len == 0 {
+            return index;
+        }
+        ((u64::from(index) + u64::from(self.shift)) % u64::from(self.len)) as u32
+    }
+}
+
+/// The tracer a move forwards every handle with. It also checks each handle
+/// it forwards: one from another heap, or one already stale, was stored in
+/// this heap by a mistake the move would otherwise make permanent.
+#[cfg(debug_assertions)]
+pub(crate) struct Forwarder {
+    heap_id: u32,
+    from: u32,
+    to: u32,
+    objects: Rotation,
+    frames: Rotation,
+}
+
+#[cfg(debug_assertions)]
+impl crate::trace::Tracer for Forwarder {
+    fn object(&mut self, handle: &mut ObjRef) {
+        assert_eq!(
+            handle.origin, self.heap_id,
+            "a handle from another heap is stored in this one"
+        );
+        assert_eq!(
+            handle.epoch, self.from,
+            "a stale handle is stored in the heap: minted before move {}, found during move {}",
+            handle.epoch, self.to
+        );
+        handle.index = self.objects.apply(handle.index);
+        handle.epoch = self.to;
+    }
+
+    fn frame(&mut self, handle: &mut FrameRef) {
+        assert_eq!(
+            handle.origin, self.heap_id,
+            "a handle from another heap is stored in this one"
+        );
+        assert_eq!(
+            handle.epoch, self.from,
+            "a stale handle is stored in the heap: minted before move {}, found during move {}",
+            handle.epoch, self.to
+        );
+        handle.index = self.frames.apply(handle.index);
+        handle.epoch = self.to;
+    }
+}
+
+#[cfg(debug_assertions)]
+impl crate::trace::Trace for StackEntry {
+    fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
+        let StackEntry {
+            receiver,
+            current_class,
+            kind,
+            base: _,
+            num_args: _,
+            pc: _,
+            slot_base: _,
+            code: _,
+            then,
+            counted: _,
+            reified,
+            generation: _,
+        } = self;
+        tracer.value(receiver);
+        if let Some(class) = current_class {
+            tracer.object(class);
+        }
+        kind.trace(tracer);
+        then.trace(tracer);
+        if let Some(frame) = reified {
+            tracer.frame(frame);
+        }
+    }
+}
+
 impl Heap {
     /// A `Heap` built on the spot -- rather than the one `Interpreter` owns
     /// -- is an empty arena: every object and frame accessor indexes
@@ -377,6 +510,8 @@ impl Heap {
             }),
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
+            #[cfg(debug_assertions)]
+            epoch: 0,
         }
     }
 
@@ -469,6 +604,8 @@ impl Heap {
             index,
             #[cfg(debug_assertions)]
             origin: self.heap_id,
+            #[cfg(debug_assertions)]
+            epoch: self.epoch,
         }
     }
 
@@ -477,6 +614,8 @@ impl Heap {
             index,
             #[cfg(debug_assertions)]
             origin: self.heap_id,
+            #[cfg(debug_assertions)]
+            epoch: self.epoch,
         }
     }
 
@@ -540,6 +679,13 @@ impl Heap {
             "handle belongs to a different heap (handle from heap {}, read through heap {})",
             obj.origin, self.heap_id
         );
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            obj.epoch, self.epoch,
+            "stale handle: minted before move {} of this heap, read after move {} -- \
+             a host keeps a value across a run only as a `Root`",
+            obj.epoch, self.epoch
+        );
         let _ = obj;
     }
 
@@ -550,6 +696,13 @@ impl Heap {
             frame.origin, self.heap_id,
             "handle belongs to a different heap (handle from heap {}, read through heap {})",
             frame.origin, self.heap_id
+        );
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            frame.epoch, self.epoch,
+            "stale handle: minted before move {} of this heap, read after move {} -- \
+             a host keeps a value across a run only as a `Root`",
+            frame.epoch, self.epoch
         );
         let _ = frame;
     }
@@ -1622,6 +1775,69 @@ impl Heap {
             .live
             .map(|entry| self.activation_handle(entry))
     }
+
+    // ---------- Moving everything (debug builds only) ----------
+
+    /// How many times this heap has moved everything.
+    #[cfg(debug_assertions)]
+    pub(crate) fn move_epoch(&self) -> u32 {
+        self.epoch
+    }
+
+    /// Moves every object and every reified frame to a new index and
+    /// rewrites every handle the heap itself holds -- in every arena record,
+    /// in every stack entry and the continuation it owns, in every register,
+    /// and in every host root -- into the next epoch. What the heap does not
+    /// hold, the caller forwards with the answer: the interpreter's own
+    /// roots (`Interpreter::move_everything`). A compacting collection that
+    /// treats everything as live; the stress mode will run one at every
+    /// safepoint (`docs/design/memory.md`, "Checking the roots before a
+    /// collector exists").
+    ///
+    /// Sound only where nothing outside the heap and the interpreter holds a
+    /// handle: at a safepoint of the run loop, or between runs.
+    #[cfg(debug_assertions)]
+    pub(crate) fn move_everything(&mut self) -> Forwarder {
+        use crate::trace::{Trace, Tracer};
+        let from = self.epoch;
+        let to = from.wrapping_add(1);
+        let objects = Rotation::new(self.objects.len(), to);
+        let frames = Rotation::new(self.frames.len(), to);
+        self.objects.rotate_right(objects.shift as usize);
+        self.frames.rotate_right(frames.shift as usize);
+        self.epoch = to;
+        let mut forwarder = Forwarder {
+            heap_id: self.heap_id,
+            from,
+            to,
+            objects,
+            frames,
+        };
+        for object in &mut self.objects {
+            object.trace(&mut forwarder);
+        }
+        // A married frame's registers are its entry's, traced below with
+        // the stack; `live` is a stack index, and no stack entry moves.
+        for slot in &mut self.frames {
+            slot.frame.trace(&mut forwarder);
+        }
+        for entry in &mut self.stack.entries {
+            entry.trace(&mut forwarder);
+        }
+        for value in &mut self.stack.values {
+            forwarder.value(value);
+        }
+        let roots = self.host_roots.get_mut();
+        roots
+            .slots
+            .retain(|slot| std::rc::Rc::strong_count(slot) > 1);
+        for slot in &roots.slots {
+            let mut value = slot.get();
+            forwarder.value(&mut value);
+            slot.set(value);
+        }
+        forwarder
+    }
 }
 
 #[cfg(test)]
@@ -2252,5 +2468,129 @@ mod tests {
 
         heap.pop_activation(closure_act);
         heap.pop_activation(method_act);
+    }
+
+    /// A move gives every object and every frame a new index -- the
+    /// rotation has no fixed point -- and rewrites everything that names
+    /// one: an array's element, a closure's two frames, a frame's receiver,
+    /// a class's own class, and the host roots.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn a_move_gives_every_slot_a_new_index_and_rewrites_what_names_it() {
+        let mut heap = Heap::new();
+        let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let a = heap.alloc_object(class, ObjectData::Str("a".to_string()));
+        let b = heap.alloc_object(class, ObjectData::Array(vec![Value::Obj(a)]));
+        let frame = heap.alloc_frame(Frame {
+            receiver: Value::Obj(a),
+            ..top_level_frame()
+        });
+        heap.alloc_frame(top_level_frame());
+        let closure = heap.alloc_object(
+            class,
+            ObjectData::Closure(ClosureData {
+                params: std::rc::Rc::new(vec![]),
+                code: trivial_code(),
+                captured_frame: frame,
+                home: frame,
+            }),
+        );
+        let before = [
+            heap.object_identity_key(class),
+            heap.object_identity_key(a),
+            heap.object_identity_key(b),
+            heap.object_identity_key(closure),
+        ];
+        let frame_before = heap.frame_identity_key(frame);
+        let roots = [
+            heap.stash(Value::Obj(class)),
+            heap.stash(Value::Obj(a)),
+            heap.stash(Value::Obj(b)),
+            heap.stash(Value::Obj(closure)),
+        ];
+        heap.move_everything();
+        let after: Vec<ObjRef> = roots
+            .iter()
+            .map(|root| match heap.fetch(root) {
+                Value::Obj(obj) => obj,
+                _ => panic!("a root keeps its object"),
+            })
+            .collect();
+        for (key, obj) in before.iter().zip(&after) {
+            assert_ne!(*key, heap.object_identity_key(*obj), "every object moved");
+        }
+        let (class, a, b, closure) = (after[0], after[1], after[2], after[3]);
+        assert!(
+            heap.class_of_obj(class).same(class),
+            "a class's own class is rewritten"
+        );
+        assert!(matches!(heap.array_at(b, 0), Some(Value::Obj(e)) if e.same(a)));
+        assert_eq!(heap.str_value(a).as_deref(), Some("a"));
+        let data = heap.closure_data(closure).expect("still a closure");
+        assert!(data.captured_frame.same(data.home));
+        assert_ne!(
+            frame_before,
+            heap.frame_identity_key(data.captured_frame),
+            "every frame moved"
+        );
+        assert!(matches!(heap.frame_receiver(data.captured_frame), Value::Obj(r) if r.same(a)));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "stale handle")]
+    fn reading_an_object_handle_minted_before_a_move_panics() {
+        let mut heap = Heap::new();
+        let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let a = heap.alloc_object(class, ObjectData::Str("a".to_string()));
+        heap.move_everything();
+        let _ = heap.str_value(a);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "stale handle")]
+    fn reading_a_frame_handle_minted_before_a_move_panics() {
+        let mut heap = Heap::new();
+        let frame = heap.alloc_frame(top_level_frame());
+        heap.alloc_frame(top_level_frame());
+        heap.move_everything();
+        let _ = heap.frame_receiver(frame);
+    }
+
+    /// `same` reads no heap, so a stale handle compared with a fresh one
+    /// must be refused there too, or the two could answer "identical".
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "stale handle")]
+    fn comparing_a_stale_handle_with_a_fresh_one_panics() {
+        let mut heap = Heap::new();
+        let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let root = heap.stash(Value::Obj(class));
+        heap.move_everything();
+        let Value::Obj(fresh) = heap.fetch(&root) else {
+            panic!("a root keeps its object")
+        };
+        let _ = class.same(fresh);
+    }
+
+    /// A stale handle written into the heap -- a host that stored a value it
+    /// kept past a run -- is caught by the next move, which finds it among
+    /// the handles it forwards, rather than forwarded as if it were current.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "stale handle is stored in the heap")]
+    fn a_stale_handle_stored_in_the_heap_is_caught_by_the_next_move() {
+        let mut heap = Heap::new();
+        let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let stale = heap.alloc_object(class, ObjectData::Str("stale".to_string()));
+        let array = heap.alloc_object(class, ObjectData::Array(vec![]));
+        let root = heap.stash(Value::Obj(array));
+        heap.move_everything();
+        let Value::Obj(array) = heap.fetch(&root) else {
+            panic!("a root keeps its object")
+        };
+        heap.array_push(array, Value::Obj(stale));
+        heap.move_everything();
     }
 }

@@ -69,8 +69,9 @@ it and both arenas with it — but the peak is amplified against the bytes remai
 at the graph section, and both `bounded_count` calls divide the *same* remainder,
 so one file maxes out both arenas rather than trading one against the other:
 about **16.9x in a release build** (an `Object` is 56 bytes against a 6-byte
-minimum record, a frame-arena entry 136 against 18) and about 21.3x in a debug
-build, where both are larger. `bounded_count` is what keeps this proportional to
+minimum record, a frame-arena entry 136 against 18) and about 24.9x in a debug
+build, where both are larger because every handle carries its heap's id and its
+move epoch. `bounded_count` is what keeps this proportional to
 the input at all rather than to a `u32` — do not add a pre-allocation that is not
 bounded that way. `docs/design/memory.md` has the breakdown.
 

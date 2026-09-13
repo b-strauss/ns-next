@@ -8,6 +8,7 @@ pub mod instantiate;
 pub(crate) mod literals;
 pub(crate) mod locals;
 pub(crate) mod nested;
+mod safepoint;
 pub(crate) mod sends;
 
 use std::collections::HashMap;
@@ -208,7 +209,9 @@ pub struct Interpreter {
     /// The reusable argument buffer the run loop gathers a send's arguments
     /// into (`vm::send`). Taken while a send is decided and pushed and given
     /// back afterwards, because the decision needs `&mut Interpreter` while
-    /// it reads the arguments.
+    /// it reads the arguments. Empty between instructions: it is cleared
+    /// when it is given back, so it holds no handle a move would have to
+    /// find.
     arg_buffer: Vec<Value>,
     /// Whether a host's run of the loop is in progress (`run_from_host`).
     /// Nothing the loop calls can start another -- no decision, native or
@@ -571,12 +574,14 @@ impl Interpreter {
     }
 
     pub(crate) fn take_arg_buffer(&mut self) -> Vec<Value> {
-        let mut buffer = std::mem::take(&mut self.arg_buffer);
-        buffer.clear();
-        buffer
+        std::mem::take(&mut self.arg_buffer)
     }
 
-    pub(crate) fn return_arg_buffer(&mut self, buffer: Vec<Value>) {
+    /// Cleared here rather than when it is taken, so that between two
+    /// instructions -- at every safepoint -- the buffer holds no value, and
+    /// so no handle a move would have to find.
+    pub(crate) fn return_arg_buffer(&mut self, mut buffer: Vec<Value>) {
+        buffer.clear();
         self.arg_buffer = buffer;
     }
 
@@ -1696,8 +1701,11 @@ mod tests {
     /// Every decision answers a `Result<Step, Signal>`, so its size is paid
     /// on every send; a variant that grows it is a cost on every benchmark,
     /// not only on the path it serves (`StepArgs::ControlFlow`'s comment).
-    /// This is the size the hot path was measured at.
-    #[cfg(target_pointer_width = "64")]
+    /// This is the size the hot path was measured at, in a release build: a
+    /// debug build's handles carry an origin and a move epoch besides their
+    /// index, so it measures something else. The measurement protocol runs
+    /// this with `--release`.
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn a_decision_stays_the_size_the_hot_path_was_measured_at() {
         assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 56);

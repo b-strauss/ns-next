@@ -574,10 +574,13 @@ its variables. After it, a surviving block holds exactly what it captured.
   |---|---|---|---|
   | Record minimum | 6 B | 18 B | — |
   | Release size | 56 B → 9.3x | 136 B → 7.6x | **~16.9x** |
-  | Debug size | 80 B → 13.3x | 144 B → 8.0x | ~21.3x |
+  | Debug size | 96 B → 16.0x | 160 B → 8.9x | ~24.9x |
 
   A frame-arena entry is a `FrameSlot`: the `Frame` (128 B in a release build,
-  136 B in a debug one) and the `live` marriage field beside it, 8 bytes more.
+  152 B in a debug one) and the `live` marriage field beside it, 8 bytes more.
+  The debug sizes are larger because every handle there carries, besides its
+  index, the id of the heap that minted it and the move epoch the stress mode
+  checks it against.
 
   `bounded_count` is what keeps this proportional to the input at all rather
   than to a 32-bit count — without it a crafted `u32::MAX` would allocate

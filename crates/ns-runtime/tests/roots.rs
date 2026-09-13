@@ -123,3 +123,76 @@ fn fetching_a_root_through_another_interpreter_panics() {
     let (other, _other_class) = load(COUNTER);
     let _ = other.fetch(&class);
 }
+
+/// Gated like its only caller: a move exists only in a debug build.
+#[cfg(debug_assertions)]
+const GRAPH: &str = indoc! {"
+    Newspeak3
+    'T'
+    class X = Object new (
+      | cell ::= nil. counter ::= nil. |
+    ) (
+      public class Cell = Object new (
+        | v ::= 7. |
+      ) (
+        public v = ( ^v )
+      ) : ()
+      public build = (
+        | n |
+        n := 40.
+        counter := [n := n + 1. n].
+        cell := Cell new.
+        ^{cell. counter}
+      )
+      public read = ( ^cell v + counter value )
+    ) : (
+      public marker = ( ^3 )
+    )
+"};
+
+/// What a host holds as roots survives a move of every object and every
+/// reified frame, and so does everything reachable from it: an instance's
+/// slots, a nested class and its enclosing object, a closure and the
+/// divorced frame whose variable it writes, a cached metaclass, and the
+/// builtin classes every send to an integer reaches.
+#[test]
+#[cfg(debug_assertions)]
+fn a_world_reached_from_roots_survives_moves() {
+    let (mut interp, class) = load(GRAPH);
+    let x = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    let built = expect_ok(interp.send(&x, Symbol::intern("build"), &[]), "build");
+    let before = interp.moves();
+    interp.move_now();
+    let read = expect_ok(interp.send(&x, Symbol::intern("read"), &[]), "read");
+    assert!(matches!(interp.fetch(&read), Value::SmallInt(48)));
+    interp.move_now();
+    let read = expect_ok(interp.send(&x, Symbol::intern("read"), &[]), "read");
+    assert!(matches!(interp.fetch(&read), Value::SmallInt(49)));
+    let marker = expect_ok(interp.send(&class, Symbol::intern("marker"), &[]), "marker");
+    assert!(matches!(interp.fetch(&marker), Value::SmallInt(3)));
+    interp.move_now();
+    let marker = expect_ok(interp.send(&class, Symbol::intern("marker"), &[]), "marker");
+    assert!(matches!(interp.fetch(&marker), Value::SmallInt(3)));
+    assert_eq!(interp.moves(), before + 3);
+    let heap = interp.heap_ref();
+    let Value::Obj(built) = interp.fetch(&built) else {
+        panic!("`build` answers an array")
+    };
+    assert_eq!(heap.array_len(built), Some(2));
+    let cell = heap.array_at(built, 0).expect("the cell");
+    assert_eq!(heap.describe(&cell), "an instance of Cell");
+}
+
+/// A value a host fetched and kept past a move names nothing any more: the
+/// debug build refuses the read rather than answer for whatever object took
+/// its slot.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "stale handle")]
+fn a_value_kept_past_a_move_is_refused() {
+    let (mut interp, class) = load(COUNTER);
+    let counter = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    let kept = interp.fetch(&counter);
+    interp.move_now();
+    let _ = interp.heap_ref().describe(&kept);
+}
