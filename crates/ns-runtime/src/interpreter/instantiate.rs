@@ -13,7 +13,7 @@ use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
 use crate::types::*;
 use crate::Symbol;
 
-use super::{EvalResult, HostError, HostResult, HostSignal, Interpreter, Signal, Step};
+use super::{HostError, HostResult, HostSignal, Interpreter, Signal, Step};
 
 /// How many finished walks' boxes `Interpreter::retire_walk` keeps for
 /// reuse, and how many levels of room each keeps. One box serves any number
@@ -76,11 +76,9 @@ impl Interpreter {
     /// Every method and every per-mixin body is compiled onto the
     /// declaration it belongs to as the tree is built, so a class this
     /// returns is already runnable. It is compiled with the lowering this
-    /// interpreter was bootstrapped with.
-    ///
-    /// Transitional: the unrooted form the tests used before hosts held
-    /// roots; removed once every test uses roots.
-    pub fn load_module_unrooted(&mut self, resolved: &ResolvedModule) -> ClassRef {
+    /// interpreter was bootstrapped with. The class comes back rooted, for
+    /// the host that will instantiate it.
+    pub fn load_module(&mut self, resolved: &ResolvedModule) -> Root {
         let decl = &resolved.module.root_class;
         let mixin = self.build_mixin(decl, &resolved.bindings);
         let superclass = self.resolve_superclass_receiver(decl);
@@ -96,13 +94,7 @@ impl Interpreter {
         // class is the outermost level, so no object encloses it and no
         // declaration contains it. Every other class object in the system
         // comes from `interpreter::nested`, which passes both.
-        self.new_class_object(application, None, None, superclass)
-    }
-
-    /// Materializes the module's root class (`load_module_unrooted`), rooted
-    /// for the host that will instantiate it.
-    pub fn load_module(&mut self, resolved: &ResolvedModule) -> Root {
-        let class = self.load_module_unrooted(resolved);
+        let class = self.new_class_object(application, None, None, superclass);
         self.stash(Value::Obj(class))
     }
 
@@ -307,19 +299,6 @@ impl Interpreter {
             Err(signal) => Err(signal),
         };
         self.to_host(result)
-    }
-
-    /// Transitional: the unrooted form the tests used before hosts held
-    /// roots; removed once every test uses roots.
-    pub fn instantiate_unrooted(
-        &mut self,
-        class: ClassRef,
-        factory_args: Vec<Value>,
-    ) -> EvalResult {
-        match self.decide_instantiation(class, factory_args) {
-            Ok(step) => self.run_from_host(step, &[]),
-            Err(signal) => Err(signal),
-        }
     }
 
     /// Decides an instantiation of `class` with `factory_args` without running

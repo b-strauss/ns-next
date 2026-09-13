@@ -20,12 +20,12 @@ use crate::heap::{ActivationHeader, ActivationRef, Heap, Root};
 use crate::types::*;
 use crate::Symbol;
 
-pub enum Signal {
+pub(crate) enum Signal {
     Return(ActivationRef, Value),
     Error(NewspeakError),
 }
 
-pub type EvalResult = Result<Value, Signal>;
+pub(crate) type EvalResult = Result<Value, Signal>;
 
 /// How a host's send or instantiation ended (`Interpreter::send`,
 /// `Interpreter::instantiate`): its value, rooted, or the signal that ended
@@ -308,20 +308,6 @@ impl Interpreter {
             Err(signal) => Err(signal),
         };
         self.to_host(result)
-    }
-
-    /// Transitional: the unrooted form the tests used before hosts held
-    /// roots; removed once every test uses roots.
-    pub fn send_unrooted(
-        &mut self,
-        receiver: Value,
-        selector: Symbol,
-        args: Vec<Value>,
-    ) -> EvalResult {
-        match self.decide_send(receiver, selector, &args) {
-            Ok(step) => self.run_from_host(step, &args),
-            Err(signal) => Err(signal),
-        }
     }
 
     /// A run's outcome as the host receives it. Nothing runs between the
@@ -1065,7 +1051,7 @@ impl Interpreter {
     /// The `platform` object (`docs/design/core-library.md`):
     /// memoized on first call, so every reference within one interpreter
     /// sees the same object identity.
-    pub fn platform_value(&mut self) -> Value {
+    pub(crate) fn platform_value(&mut self) -> Value {
         if let Some(p) = &self.platform_singleton {
             return *p;
         }

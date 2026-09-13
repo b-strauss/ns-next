@@ -51,7 +51,7 @@ enum Flow {
 /// starts from the `pc` stored just before), and `NonLocalReturn` (control
 /// leaves with a signal). Nothing reads `pc` while a straight-line
 /// instruction executes.
-pub fn run(interp: &mut Interpreter, base: ActivationRef) -> EvalResult {
+pub(crate) fn run(interp: &mut Interpreter, base: ActivationRef) -> EvalResult {
     let floor = interp.heap.activation_position(base);
     let mut act = base;
     let mut code = interp.heap.activation_code(act);
