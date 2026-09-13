@@ -274,29 +274,28 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
     let resolved = ns_runtime::resolve(module, Rc::from(src), SourceOrigin::File("bare.ns".into()))
         .expect("resolve");
     let mut interp = Interpreter::bootstrap();
-    // Nothing runs from here on, so the class is fetched once, at once.
     let class = interp.load_module(&resolved);
-    let Value::Obj(class) = interp.fetch(&class) else {
-        panic!("load_module answers a class object")
-    };
-    let application = interp
-        .heap_ref()
-        .class_application(class)
-        .expect("a class object");
-    let bare = Mixin {
-        initializer_code: None,
-        ..(*application.mixin).clone()
-    };
-    let rewired = interp.apply_mixin(&Rc::new(bare), application.superclass.as_ref());
-    assert!(interp.heap_mut().set_class_application(class, rewired));
-    let bytes = ns_runtime::image::build(
-        interp.heap_ref(),
-        None,
-        &SourceOrigin::File("bare.ns".into()),
-        class,
-        Symbol::intern("main:args:"),
-    )
-    .expect("build");
+    // Nothing runs from here on, so the whole rewrite happens in one entry.
+    let bytes = interp.enter(|m| {
+        let Value::Obj(class) = m.fetch(&class) else {
+            panic!("load_module answers a class object")
+        };
+        let application = m.heap().class_application(class).expect("a class object");
+        let bare = Mixin {
+            initializer_code: None,
+            ..(*application.mixin).clone()
+        };
+        let rewired = m.apply_mixin(&Rc::new(bare), application.superclass.as_ref());
+        assert!(m.heap_mut().set_class_application(class, rewired));
+        ns_runtime::image::build(
+            m.heap(),
+            None,
+            &SourceOrigin::File("bare.ns".into()),
+            class,
+            Symbol::intern("main:args:"),
+        )
+        .expect("build")
+    });
 
     let dir = ScratchDir::new("disasm-no-init");
     let bin = dir.join("bare.nsb");

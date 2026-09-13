@@ -1524,20 +1524,22 @@ mod tests {
         "};
         let (mut interp, class) = load(src);
         let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
-        let receiver = interp.fetch(&instance);
-        match interp.decide_send(receiver, Symbol::intern("foo"), &[]) {
-            Ok(Step::Method { method, .. }) => assert_eq!(method.selector.as_str(), "foo"),
-            _ => panic!("a user method is decided as an activation"),
-        }
-        assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
-        match interp.decide_send(
-            Value::SmallInt(3),
-            Symbol::intern("+"),
-            &[Value::SmallInt(4)],
-        ) {
-            Ok(Step::Value(Value::SmallInt(7))) => {}
-            _ => panic!("a native leaf is decided as its value"),
-        }
+        interp.enter(|m| {
+            let receiver = m.fetch(&instance);
+            match m.decide_send(receiver, Symbol::intern("foo"), &[]) {
+                Ok(Step::Method { method, .. }) => assert_eq!(method.selector.as_str(), "foo"),
+                _ => panic!("a user method is decided as an activation"),
+            }
+            assert_eq!(m.heap().activation_depth(), 0, "nothing was pushed");
+            match m.decide_send(
+                Value::SmallInt(3),
+                Symbol::intern("+"),
+                &[Value::SmallInt(4)],
+            ) {
+                Ok(Step::Value(Value::SmallInt(7))) => {}
+                _ => panic!("a native leaf is decided as its value"),
+            }
+        });
     }
 
     /// `do:` is decided as the activation of its block for the first
@@ -1562,23 +1564,25 @@ mod tests {
             "items",
         );
         let echo = expect_ok(interp.send(&instance, Symbol::intern("echo"), &[]), "echo");
-        let (items, echo) = (interp.fetch(&items), interp.fetch(&echo));
-        match interp.decide_send(items, Symbol::intern("do:"), &[echo]) {
-            Ok(Step::Block {
-                args: StepArgs::Owned(args),
-                then: Continuation::DoElement(state),
-                ..
-            }) => {
-                assert!(
-                    matches!(args.as_slice(), [Value::SmallInt(10)]),
-                    "the first element"
-                );
-                assert_eq!(state.next, 1, "the second element is next");
-                assert_eq!(state.items.len(), 3, "the whole snapshot rides along");
+        interp.enter(|m| {
+            let (items, echo) = (m.fetch(&items), m.fetch(&echo));
+            match m.decide_send(items, Symbol::intern("do:"), &[echo]) {
+                Ok(Step::Block {
+                    args: StepArgs::Owned(args),
+                    then: Continuation::DoElement(state),
+                    ..
+                }) => {
+                    assert!(
+                        matches!(args.as_slice(), [Value::SmallInt(10)]),
+                        "the first element"
+                    );
+                    assert_eq!(state.next, 1, "the second element is next");
+                    assert_eq!(state.items.len(), 3, "the whole snapshot rides along");
+                }
+                _ => panic!("`do:` is decided as its block's first activation"),
             }
-            _ => panic!("`do:` is decided as its block's first activation"),
-        }
-        assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
+            assert_eq!(m.heap().activation_depth(), 0, "nothing was pushed");
+        });
     }
 
     /// The nested-class accessor is decided as the activation of the
@@ -1601,27 +1605,29 @@ mod tests {
         "};
         let (mut interp, class) = load(src);
         let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
-        let instance = interp.fetch(&instance);
-        let slot = match interp.decide_send(instance, Symbol::intern("N"), &[]) {
-            Ok(Step::SuperclassClause(creation)) => {
-                assert!(
-                    matches!(instance, Value::Obj(obj) if obj.same(creation.enclosing)),
-                    "the clause runs on the enclosing object"
-                );
-                creation.index
-            }
-            _ => panic!("a nested class is decided as its clause's activation"),
-        };
-        assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
-        let Value::Obj(obj) = instance else {
-            panic!("an instance is an object");
-        };
-        assert!(
-            matches!(interp.heap.instance_field(obj, slot), Some(Value::Nil)),
-            "nothing is marked as in progress"
-        );
-        #[cfg(debug_assertions)]
-        assert_eq!(interp.creations_in_progress, 0, "nothing is counted");
+        interp.enter(|m| {
+            let instance = m.fetch(&instance);
+            let slot = match m.decide_send(instance, Symbol::intern("N"), &[]) {
+                Ok(Step::SuperclassClause(creation)) => {
+                    assert!(
+                        matches!(instance, Value::Obj(obj) if obj.same(creation.enclosing)),
+                        "the clause runs on the enclosing object"
+                    );
+                    creation.index
+                }
+                _ => panic!("a nested class is decided as its clause's activation"),
+            };
+            assert_eq!(m.heap().activation_depth(), 0, "nothing was pushed");
+            let Value::Obj(obj) = instance else {
+                panic!("an instance is an object");
+            };
+            assert!(
+                matches!(m.heap().instance_field(obj, slot), Some(Value::Nil)),
+                "nothing is marked as in progress"
+            );
+            #[cfg(debug_assertions)]
+            assert_eq!(m.creations_in_progress, 0, "nothing is counted");
+        });
     }
 
     /// A factory send is decided as the instantiation's first body to run --
@@ -1664,55 +1670,54 @@ mod tests {
         let q = expect_ok(interp.send(&instance, Symbol::intern("Q"), &[]), "Q");
         let r = expect_ok(interp.send(&instance, Symbol::intern("R"), &[]), "R");
         let s = expect_ok(interp.send(&instance, Symbol::intern("S"), &[]), "S");
-        let (p, q, r, s) = (
-            interp.fetch(&p),
-            interp.fetch(&q),
-            interp.fetch(&r),
-            interp.fetch(&s),
-        );
-        let Value::Obj(p_class) = p else {
-            panic!("`P` answers a class object")
-        };
-        let Value::Obj(s_class) = s else {
-            panic!("`S` answers a class object")
-        };
-        assert!(
-            matches!(
-                interp.decide_send(p, Symbol::NEW, &[]),
-                Ok(Step::Initializer { level, .. }) if level.same(p_class)
-            ),
-            "`P new` is decided as P's initializer, which delivers"
-        );
-        match interp.decide_send(r, Symbol::NEW, &[]) {
-            Ok(Step::InitializerThen {
-                level, then: state, ..
-            }) => {
-                assert!(level.same(p_class));
-                assert!(matches!(
-                    state.phase,
-                    InstantiationPhase::Descending { index: 1 }
-                ));
+        interp.enter(|m| {
+            let (p, q, r, s) = (m.fetch(&p), m.fetch(&q), m.fetch(&r), m.fetch(&s));
+            let Value::Obj(p_class) = p else {
+                panic!("`P` answers a class object")
+            };
+            let Value::Obj(s_class) = s else {
+                panic!("`S` answers a class object")
+            };
+            assert!(
+                matches!(
+                    m.decide_send(p, Symbol::NEW, &[]),
+                    Ok(Step::Initializer { level, .. }) if level.same(p_class)
+                ),
+                "`P new` is decided as P's initializer, which delivers"
+            );
+            match m.decide_send(r, Symbol::NEW, &[]) {
+                Ok(Step::InitializerThen {
+                    level, then: state, ..
+                }) => {
+                    assert!(level.same(p_class));
+                    assert!(matches!(
+                        state.phase,
+                        InstantiationPhase::Descending { index: 1 }
+                    ));
+                }
+                _ => {
+                    panic!("`R new` is decided as its superclass P's initializer, R's still to run")
+                }
             }
-            _ => panic!("`R new` is decided as its superclass P's initializer, R's still to run"),
-        }
-        match interp.decide_send(s, Symbol::NEW, &[]) {
-            Ok(Step::ClauseMessage { level, then, .. }) => {
-                assert!(level.same(s_class));
-                assert!(matches!(
-                    then.phase,
-                    InstantiationPhase::Climbing { level, .. } if level.same(s_class)
-                ));
+            match m.decide_send(s, Symbol::NEW, &[]) {
+                Ok(Step::ClauseMessage { level, then, .. }) => {
+                    assert!(level.same(s_class));
+                    assert!(matches!(
+                        then.phase,
+                        InstantiationPhase::Climbing { level, .. } if level.same(s_class)
+                    ));
+                }
+                _ => panic!("`S new` is decided as its clause message's activation"),
             }
-            _ => panic!("`S new` is decided as its clause message's activation"),
-        }
-        assert!(
-            matches!(
-                interp.decide_send(q, Symbol::NEW, &[]),
-                Ok(Step::Value(Value::Obj(_)))
-            ),
-            "`Q new` is decided as its instance"
-        );
-        assert_eq!(interp.heap.activation_depth(), 0, "nothing was pushed");
+            assert!(
+                matches!(
+                    m.decide_send(q, Symbol::NEW, &[]),
+                    Ok(Step::Value(Value::Obj(_)))
+                ),
+                "`Q new` is decided as its instance"
+            );
+            assert_eq!(m.heap().activation_depth(), 0, "nothing was pushed");
+        });
     }
 
     /// A finished instantiation leaves its walk's box among the spares for
@@ -1739,23 +1744,31 @@ mod tests {
         let (mut interp, class) = load(src);
         let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let r = expect_ok(interp.send(&instance, Symbol::intern("R"), &[]), "R");
-        let Value::Obj(_) = interp.fetch(&r) else {
-            panic!("`R` answers a class object")
-        };
+        interp.enter(|m| {
+            let Value::Obj(_) = m.fetch(&r) else {
+                panic!("`R` answers a class object")
+            };
+        });
         expect_ok(interp.instantiate(&r, &[]), "R new");
-        assert_eq!(interp.spare_walks.len(), 1, "one walk ran at a time");
-        let spare: *const Instantiation = &*interp.spare_walks[0];
+        assert_eq!(
+            interp.enter(|m| m.spare_walks.len()),
+            1,
+            "one walk ran at a time"
+        );
+        // The address holds no handle, so it may leave the entry that took it.
+        let spare: *const Instantiation =
+            interp.enter(|m| &*m.spare_walks[0] as *const Instantiation);
         assert!(
-            interp
+            interp.enter(|m| m
                 .spare_walks
                 .iter()
-                .all(|state| matches!(state.instance, Value::Nil) && state.levels.is_empty()),
+                .all(|state| matches!(state.instance, Value::Nil) && state.levels.is_empty())),
             "a spare holds no handle"
         );
         expect_ok(interp.instantiate(&r, &[]), "R new again");
-        assert_eq!(interp.spare_walks.len(), 1);
+        assert_eq!(interp.enter(|m| m.spare_walks.len()), 1);
         assert!(
-            std::ptr::eq(spare, &*interp.spare_walks[0]),
+            interp.enter(|m| std::ptr::eq(spare, &*m.spare_walks[0])),
             "the second walk ran in the first one's box"
         );
     }
@@ -1784,18 +1797,22 @@ mod tests {
         let (mut interp, class) = load(src);
         let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let cell = expect_ok(interp.send(&instance, Symbol::intern("Cell"), &[]), "Cell");
-        let Value::Obj(_) = interp.fetch(&cell) else {
-            panic!("`Cell` answers a class object")
-        };
+        interp.enter(|m| {
+            let Value::Obj(_) = m.fetch(&cell) else {
+                panic!("`Cell` answers a class object")
+            };
+        });
         expect_ok(interp.instantiate(&cell, &[]), "Cell new");
-        assert_eq!(interp.spare_walks.len(), 1, "one walk ran");
-        let state = &interp.spare_walks[0];
-        assert!(matches!(state.instance, Value::Nil), "no instance handle");
-        assert!(state.levels.is_empty(), "no levels");
-        assert!(
-            matches!(state.phase, InstantiationPhase::Descending { .. }),
-            "a retired box's phase holds no ClassRef either"
-        );
+        interp.enter(|m| {
+            assert_eq!(m.spare_walks.len(), 1, "one walk ran");
+            let state = &m.spare_walks[0];
+            assert!(matches!(state.instance, Value::Nil), "no instance handle");
+            assert!(state.levels.is_empty(), "no levels");
+            assert!(
+                matches!(state.phase, InstantiationPhase::Descending { .. }),
+                "a retired box's phase holds no ClassRef either"
+            );
+        });
     }
 
     /// Every decision answers a `Result<Step, Signal>`, so its size is paid

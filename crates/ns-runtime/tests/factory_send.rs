@@ -26,25 +26,25 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 #[test]
 fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and_size() {
     let mut interp = Interpreter::bootstrap();
-    let class_value = interp.stash(Value::Obj(
-        interp.builtin_class(BuiltinClass::OrderedCollection),
-    ));
+    let class_value = interp.enter(|m| {
+        let class = m.builtin_class(BuiltinClass::OrderedCollection);
+        m.stash(Value::Obj(class))
+    });
 
     let result = interp.send(&class_value, Symbol::intern("new"), &[]);
     let receiver = expect_ok(result, "OrderedCollection new");
 
-    let fetched = interp.fetch(&receiver);
-    let Value::Obj(obj) = &fetched else {
-        panic!(
-            "expected Value::Obj, got {}",
-            interp.heap_ref().describe(&fetched)
+    interp.enter(|m| {
+        let fetched = m.fetch(&receiver);
+        let Value::Obj(obj) = &fetched else {
+            panic!("expected Value::Obj, got {}", m.heap().describe(&fetched));
+        };
+        let elements = m.heap().array_elements(*obj);
+        assert!(
+            matches!(&elements, Some(items) if items.is_empty()),
+            "expected an empty ObjectData::Array payload"
         );
-    };
-    let elements = interp.heap_ref().array_elements(*obj);
-    assert!(
-        matches!(&elements, Some(items) if items.is_empty()),
-        "expected an empty ObjectData::Array payload"
-    );
+    });
 
     let add_result = expect_ok(
         interp.send(
@@ -54,25 +54,25 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
         ),
         "OrderedCollection new add: 1",
     );
-    match interp.fetch(&add_result) {
+    interp.enter(|m| match m.fetch(&add_result) {
         Value::SmallInt(1) => {}
         other => panic!(
             "expected add: to return its argument, got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 
     let size_result = expect_ok(
         interp.send(&receiver, Symbol::intern("size"), &[]),
         "OrderedCollection new (after add:) size",
     );
-    match interp.fetch(&size_result) {
+    interp.enter(|m| match m.fetch(&size_result) {
         Value::SmallInt(1) => {}
         other => panic!(
             "expected Value::SmallInt(1), got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 }
 
 /// `Array new` via ordinary `send` must also be `Array`-tagged (not
@@ -81,7 +81,10 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
 #[test]
 fn array_new_via_ordinary_send_does_not_understand_add() {
     let mut interp = Interpreter::bootstrap();
-    let class_value = interp.stash(Value::Obj(interp.builtin_class(BuiltinClass::Array)));
+    let class_value = interp.enter(|m| {
+        let class = m.builtin_class(BuiltinClass::Array);
+        m.stash(Value::Obj(class))
+    });
 
     let receiver = expect_ok(
         interp.send(&class_value, Symbol::intern("new"), &[]),
@@ -96,10 +99,10 @@ fn array_new_via_ordinary_send_does_not_understand_add() {
         Err(HostSignal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("add:"));
         }
-        Ok(v) => panic!(
-            "expected doesNotUnderstand: add:, got Ok({})",
-            interp.heap_ref().describe(&interp.fetch(&v))
-        ),
+        Ok(v) => {
+            let got = interp.enter(|m| m.heap().describe(&m.fetch(&v)));
+            panic!("expected doesNotUnderstand: add:, got Ok({got})")
+        }
         Err(HostSignal::Return) => {
             panic!("expected doesNotUnderstand: add:, got HostSignal::Return")
         }
@@ -145,16 +148,15 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
         "instantiate(Foo) bar",
     );
 
-    match (
-        interp_a.fetch(&via_send_bar),
-        interp_b.fetch(&via_instantiate_bar),
-    ) {
+    let a = interp_a.enter(|m| m.fetch(&via_send_bar));
+    let b = interp_b.enter(|m| m.fetch(&via_instantiate_bar));
+    match (a, b) {
         (Value::SmallInt(a), Value::SmallInt(b)) => assert_eq!(a, b),
-        (a, b) => panic!(
-            "expected two equal Value::SmallInt, got {} and {}",
-            interp_a.heap_ref().describe(&a),
-            interp_b.heap_ref().describe(&b)
-        ),
+        (a, b) => {
+            let da = interp_a.enter(|m| m.heap().describe(&a));
+            let db = interp_b.enter(|m| m.heap().describe(&b));
+            panic!("expected two equal Value::SmallInt, got {da} and {db}")
+        }
     }
 }
 
@@ -166,9 +168,10 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
 #[test]
 fn a_class_object_receiving_a_non_factory_selector_falls_through_to_ordinary_dispatch() {
     let mut interp = Interpreter::bootstrap();
-    let class_value = interp.stash(Value::Obj(
-        interp.builtin_class(BuiltinClass::OrderedCollection),
-    ));
+    let class_value = interp.enter(|m| {
+        let class = m.builtin_class(BuiltinClass::OrderedCollection);
+        m.stash(Value::Obj(class))
+    });
 
     match interp.send(
         &class_value,
@@ -178,10 +181,10 @@ fn a_class_object_receiving_a_non_factory_selector_falls_through_to_ordinary_dis
         Err(HostSignal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("thisSelectorDoesNotExist"));
         }
-        Ok(v) => panic!(
-            "expected doesNotUnderstand:, got Ok({})",
-            interp.heap_ref().describe(&interp.fetch(&v))
-        ),
+        Ok(v) => {
+            let got = interp.enter(|m| m.heap().describe(&m.fetch(&v)));
+            panic!("expected doesNotUnderstand:, got Ok({got})")
+        }
         Err(HostSignal::Return) => panic!("expected doesNotUnderstand:, got HostSignal::Return"),
     }
 }

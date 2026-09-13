@@ -48,7 +48,7 @@ fn instantiate_and_get(src: &str, factory_args: Vec<Value>, getter: &str) -> Val
         .collect();
     let instance = expect_ok(interp.instantiate(&class, &factory_args), "instantiate");
     let result = expect_ok(interp.send(&instance, Symbol::intern(getter), &[]), getter);
-    interp.fetch(&result)
+    interp.enter(|m| m.fetch(&result))
 }
 
 const FACTORY_PARAM: &str = indoc! {"
@@ -97,18 +97,20 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
     let (mut interp, class) = load(src);
     let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let v = expect_ok(interp.send(&instance, Symbol::intern("blk2"), &[]), "blk2");
-    let Value::Obj(obj) = &interp.fetch(&v) else {
-        panic!("expected a closure object")
-    };
-    let closure = interp
-        .heap_ref()
-        .closure_data(*obj)
-        .unwrap_or_else(|| panic!("expected a closure"));
-    assert_eq!(closure.code.num_args, 0);
-    assert!(matches!(
-        interp.heap_ref().frame_kind(closure.home),
-        FrameKind::Initializer(_)
-    ));
+    interp.enter(|m| {
+        let Value::Obj(obj) = m.fetch(&v) else {
+            panic!("expected a closure object")
+        };
+        let closure = m
+            .heap()
+            .closure_data(obj)
+            .unwrap_or_else(|| panic!("expected a closure"));
+        assert_eq!(closure.code.num_args, 0);
+        assert!(matches!(
+            m.heap().frame_kind(closure.home),
+            FrameKind::Initializer(_)
+        ));
+    });
 }
 
 #[test]
@@ -178,23 +180,25 @@ fn make_class(
     class_of_class: ClassRef,
     application: Rc<MixinApplication>,
 ) -> Root {
-    let class = interp.heap_mut().alloc_object(
-        class_of_class,
-        ObjectData::Class(ClassData {
-            application,
-            enclosing: None,
-            declaring_class: None,
-            // Deliberately no class-object superclass link: this test only
-            // checks where the mixin's *own* slot lands, never a superclass
-            // level's own slots, so `climb_levels` (which walks
-            // this field, not the application's) finding no level above
-            // this one is exactly right.
-            superclass: None,
-            builtin: None,
-            metaclass: None,
-        }),
-    );
-    interp.stash(Value::Obj(class))
+    interp.enter(|m| {
+        let class = m.heap_mut().alloc_object(
+            class_of_class,
+            ObjectData::Class(ClassData {
+                application,
+                enclosing: None,
+                declaring_class: None,
+                // Deliberately no class-object superclass link: this test
+                // only checks where the mixin's *own* slot lands, never a
+                // superclass level's own slots, so `climb_levels` (which
+                // walks this field, not the application's) finding no level
+                // above this one is exactly right.
+                superclass: None,
+                builtin: None,
+                metaclass: None,
+            }),
+        );
+        m.stash(Value::Obj(class))
+    })
 }
 
 /// The `SmallInt` held at `instance`'s field `index` -- `Value` has no
@@ -239,28 +243,33 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
         ) : ()
     "};
     let (mut interp, loaded) = load(src);
-    let Value::Obj(loaded) = interp.fetch(&loaded) else {
-        panic!("load_module answers a class object")
-    };
-    let shared_mixin = interp
-        .heap_ref()
-        .class_application(loaded)
-        .expect("a class object")
-        .mixin
-        .clone();
-    let object_class = interp.builtin_class(BuiltinClass::Object);
+    let (shared_mixin, object_class) = interp.enter(|m| {
+        let Value::Obj(loaded) = m.fetch(&loaded) else {
+            panic!("load_module answers a class object")
+        };
+        let mixin = m
+            .heap()
+            .class_application(loaded)
+            .expect("a class object")
+            .mixin
+            .clone();
+        let object_class = m.builtin_class(BuiltinClass::Object);
+        (mixin, object_class)
+    });
 
     // Two structurally different superclass shapes for the same mixin: one
     // application inherits two slots (own_slot_base must be 2), the other
     // inherits none (own_slot_base must be 0).
-    let two_slots = Rc::new(Mixin {
-        slots: vec![slot_decl("p"), slot_decl("q")],
-        ..Mixin::empty(Symbol::intern("TwoSlots"))
+    let (app_a, app_b) = interp.enter(|m| {
+        let two_slots = Rc::new(Mixin {
+            slots: vec![slot_decl("p"), slot_decl("q")],
+            ..Mixin::empty(Symbol::intern("TwoSlots"))
+        });
+        let two_slot_super = m.apply_mixin(&two_slots, None);
+        let app_a = m.apply_mixin(&shared_mixin, Some(&two_slot_super));
+        let app_b = m.apply_mixin(&shared_mixin, None);
+        (app_a, app_b)
     });
-    let two_slot_super = interp.apply_mixin(&two_slots, None);
-
-    let app_a = interp.apply_mixin(&shared_mixin, Some(&two_slot_super));
-    let app_b = interp.apply_mixin(&shared_mixin, None);
     assert_ne!(
         app_a.own_slot_base, app_b.own_slot_base,
         "the setup must actually give the two applications different bases"
@@ -277,16 +286,18 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
         interp.instantiate(&class_b, &[interp.stash(Value::SmallInt(22))]),
         "instantiate b",
     );
-    assert_eq!(
-        field_at(interp.heap_ref(), &interp.fetch(&a), app_a.own_slot_base),
-        11,
-        "a's own slot must land at its own application's absolute offset"
-    );
-    assert_eq!(
-        field_at(interp.heap_ref(), &interp.fetch(&b), app_b.own_slot_base),
-        22,
-        "b's own slot must land at its own application's absolute offset"
-    );
+    interp.enter(|m| {
+        assert_eq!(
+            field_at(m.heap(), &m.fetch(&a), app_a.own_slot_base),
+            11,
+            "a's own slot must land at its own application's absolute offset"
+        );
+        assert_eq!(
+            field_at(m.heap(), &m.fetch(&b), app_b.own_slot_base),
+            22,
+            "b's own slot must land at its own application's absolute offset"
+        );
+    });
 }
 
 /// A real three-level chain -- `Leaf` -> `Middle` -> `Base`, each level
@@ -320,14 +331,16 @@ fn a_three_level_chain_initializes_every_level_at_its_own_absolute_offsets() {
         interp.send(&leaf_class, Symbol::intern("new"), &[]),
         "Leaf new",
     );
-    let leaf = interp.fetch(&leaf);
     // `Middle withMiddle: 2` -> `Base withBase: 2 + 1`, so the deepest
     // level's own argument is the one its own clause computed.
-    for (index, expected) in [(0, 3), (1, 10), (2, 2), (3, 20), (4, 3), (5, 30)] {
-        assert_eq!(
-            field_at(interp.heap_ref(), &leaf, index),
-            expected,
-            "field {index} holds the wrong level's value"
-        );
-    }
+    interp.enter(|m| {
+        let leaf = m.fetch(&leaf);
+        for (index, expected) in [(0, 3), (1, 10), (2, 2), (3, 20), (4, 3), (5, 30)] {
+            assert_eq!(
+                field_at(m.heap(), &leaf, index),
+                expected,
+                "field {index} holds the wrong level's value"
+            );
+        }
+    });
 }

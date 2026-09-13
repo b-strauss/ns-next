@@ -76,7 +76,7 @@ fn run_every_continuation(stress: bool) -> (i64, u32, usize) {
     interp.set_stress_moves(stress);
     let s = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let sum = expect_ok(interp.send(&s, Symbol::intern("run"), &[]), "run");
-    let Value::SmallInt(sum) = interp.fetch(&sum) else {
+    let Value::SmallInt(sum) = interp.enter(|m| m.fetch(&sum)) else {
         panic!("`run` answers an integer")
     };
     (sum, interp.moves(), interp.stress_safepoints())
@@ -108,10 +108,10 @@ fn a_value_a_host_keeps_across_a_run_is_refused_under_stress() {
     let (mut interp, class) = load(EVERY_CONTINUATION);
     interp.set_stress_moves(true);
     let s = expect_ok(interp.instantiate(&class, &[]), "instantiate");
-    let kept = interp.fetch(&s);
+    let kept = interp.enter(|m| m.fetch(&s));
     expect_ok(interp.send(&s, Symbol::intern("run"), &[]), "run");
     let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        interp.heap_ref().describe(&kept)
+        interp.enter(|m| m.heap().describe(&kept))
     }));
     let Err(payload) = read else {
         panic!("a value kept across a run was read as if it were current")

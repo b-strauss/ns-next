@@ -26,13 +26,13 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-fn expect_error(interp: &Interpreter, result: HostResult, what: &str) -> HostError {
+fn expect_error(interp: &mut Interpreter, result: HostResult, what: &str) -> HostError {
     match result {
         Err(HostSignal::Error(e)) => e,
-        Ok(root) => panic!(
-            "{what}: expected a Newspeak error, got {}",
-            interp.heap_ref().describe(&interp.fetch(&root))
-        ),
+        Ok(root) => {
+            let got = interp.enter(|m| m.heap().describe(&m.fetch(&root)));
+            panic!("{what}: expected a Newspeak error, got {got}")
+        }
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
     }
 }
@@ -60,7 +60,7 @@ fn a_host_sends_to_roots_and_gets_roots_back() {
         interp.send(&counter, bump, &[interp.stash(Value::SmallInt(3))]),
         "bump: 3",
     );
-    assert!(matches!(interp.fetch(&n), Value::SmallInt(5)));
+    assert!(interp.enter(|m| matches!(m.fetch(&n), Value::SmallInt(5))));
 }
 
 #[test]
@@ -68,9 +68,9 @@ fn a_newspeak_error_reaches_the_host_with_its_receiver_as_a_root() {
     let (mut interp, _class) = load(COUNTER);
     let three = interp.stash(Value::SmallInt(3));
     let result = interp.send(&three, Symbol::intern("frobnicate"), &[]);
-    let e = expect_error(&interp, result, "3 frobnicate");
+    let e = expect_error(&mut interp, result, "3 frobnicate");
     assert_eq!(e.selector.as_str(), "frobnicate");
-    assert!(matches!(interp.fetch(&e.receiver), Value::SmallInt(3)));
+    assert!(interp.enter(|m| matches!(m.fetch(&e.receiver), Value::SmallInt(3))));
 }
 
 #[test]
@@ -78,7 +78,7 @@ fn instantiating_a_root_that_holds_no_class_is_a_newspeak_error() {
     let (mut interp, _class) = load(COUNTER);
     let three = interp.stash(Value::SmallInt(3));
     let result = interp.instantiate(&three, &[]);
-    let e = expect_error(&interp, result, "instantiate 3");
+    let e = expect_error(&mut interp, result, "instantiate 3");
     assert_eq!(e.message, "cannot instantiate 3: it is not a class");
 }
 
@@ -92,14 +92,14 @@ fn instantiating_a_root_that_holds_no_class_is_a_newspeak_error() {
 #[test]
 fn roots_a_host_has_dropped_are_swept() {
     const HELD: usize = 100;
-    let (interp, _class) = load(COUNTER);
+    let (mut interp, _class) = load(COUNTER);
     let held: Vec<Root> = (0..HELD as i64)
         .map(|i| interp.stash(Value::SmallInt(-i)))
         .collect();
     for i in 0..10_000 {
         let _ = interp.stash(Value::SmallInt(i));
     }
-    let count = interp.heap_ref().host_root_count();
+    let count = interp.enter(|m| m.heap().host_root_count());
     assert!(
         count >= HELD,
         "the table holds {count} roots while the host still holds {HELD}"
@@ -108,9 +108,11 @@ fn roots_a_host_has_dropped_are_swept() {
         count < 3 * HELD,
         "the table holds {count} roots after 10,000 dropped ones, with {HELD} held"
     );
-    for (i, root) in held.iter().enumerate() {
-        assert!(matches!(interp.fetch(root), Value::SmallInt(v) if v == -(i as i64)));
-    }
+    interp.enter(|m| {
+        for (i, root) in held.iter().enumerate() {
+            assert!(matches!(m.fetch(root), Value::SmallInt(v) if v == -(i as i64)));
+        }
+    });
 }
 
 /// A root belongs to the heap that stashed it: another heap's table does
@@ -120,8 +122,8 @@ fn roots_a_host_has_dropped_are_swept() {
 #[should_panic(expected = "handle belongs to a different heap")]
 fn fetching_a_root_through_another_interpreter_panics() {
     let (_interp, class) = load(COUNTER);
-    let (other, _other_class) = load(COUNTER);
-    let _ = other.fetch(&class);
+    let (mut other, _other_class) = load(COUNTER);
+    let _ = other.enter(|m| m.fetch(&class));
 }
 
 /// Gated like its only caller: a move exists only in a debug build.
@@ -178,39 +180,45 @@ fn a_world_reached_from_roots_survives_moves() {
     let built = expect_ok(interp.send(&x, Symbol::intern("build"), &[]), "build");
     move_once(&mut interp);
     let read = expect_ok(interp.send(&x, Symbol::intern("read"), &[]), "read");
-    assert!(matches!(interp.fetch(&read), Value::SmallInt(48)));
+    assert!(interp.enter(|m| matches!(m.fetch(&read), Value::SmallInt(48))));
     let secret = expect_ok(
         interp.send(&x, Symbol::intern("throughCell"), &[]),
         "throughCell",
     );
-    assert!(matches!(interp.fetch(&secret), Value::SmallInt(11)));
+    assert!(interp.enter(|m| matches!(m.fetch(&secret), Value::SmallInt(11))));
     move_once(&mut interp);
     let read = expect_ok(interp.send(&x, Symbol::intern("read"), &[]), "read");
-    assert!(matches!(interp.fetch(&read), Value::SmallInt(49)));
+    assert!(interp.enter(|m| matches!(m.fetch(&read), Value::SmallInt(49))));
     let marker = expect_ok(interp.send(&class, Symbol::intern("marker"), &[]), "marker");
-    assert!(matches!(interp.fetch(&marker), Value::SmallInt(3)));
+    assert!(interp.enter(|m| matches!(m.fetch(&marker), Value::SmallInt(3))));
     move_once(&mut interp);
     let marker = expect_ok(interp.send(&class, Symbol::intern("marker"), &[]), "marker");
-    assert!(matches!(interp.fetch(&marker), Value::SmallInt(3)));
-    let heap = interp.heap_ref();
-    let Value::Obj(built) = interp.fetch(&built) else {
-        panic!("`build` answers an array")
-    };
-    assert_eq!(heap.array_len(built), Some(2));
-    let cell = heap.array_at(built, 0).expect("the cell");
-    assert_eq!(heap.describe(&cell), "an instance of Cell");
+    assert!(interp.enter(|m| matches!(m.fetch(&marker), Value::SmallInt(3))));
+    interp.enter(|m| {
+        let Value::Obj(built) = m.fetch(&built) else {
+            panic!("`build` answers an array")
+        };
+        assert_eq!(m.heap().array_len(built), Some(2));
+        let cell = m.heap().array_at(built, 0).expect("the cell");
+        assert_eq!(m.heap().describe(&cell), "an instance of Cell");
+    });
 }
 
 /// A value a host fetched and kept past a move names nothing any more: the
 /// debug build refuses the read rather than answer for whatever object took
 /// its slot.
+///
+/// Converted literally per the 2c plan rather than following the "nothing
+/// that holds a handle leaves an entry" rule: this test's whole point is the
+/// mistake of keeping a fetched value past a move. Task 4's brand makes this
+/// a compile error, and replaces this test with a `compile_fail` doctest.
 #[test]
 #[cfg(debug_assertions)]
 #[should_panic(expected = "stale handle")]
 fn a_value_kept_past_a_move_is_refused() {
     let (mut interp, class) = load(COUNTER);
     let counter = expect_ok(interp.instantiate(&class, &[]), "instantiate");
-    let kept = interp.fetch(&counter);
+    let kept = interp.enter(|m| m.fetch(&counter));
     interp.move_now();
-    let _ = interp.heap_ref().describe(&kept);
+    let _ = interp.enter(|m| m.heap().describe(&kept));
 }

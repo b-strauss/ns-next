@@ -78,7 +78,7 @@ fn every_program_answers_the_same_under_both_lowerings() {
                 selector,
             );
             assert!(
-                matches!(interp.fetch(&value), Value::SmallInt(n) if n == answer),
+                interp.enter(|m| matches!(m.fetch(&value), Value::SmallInt(n) if n == answer)),
                 "{selector} under {lowering:?} did not answer {answer}"
             );
         }
@@ -99,17 +99,19 @@ fn a_reference_initializer_initializes_each_slot_then_answers_self() {
         ) (
         ) : ()
     "};
-    let (interp, class) = load(src, Lowering::Reference);
-    let Value::Obj(class) = interp.fetch(&class) else {
-        panic!("load_module answers a class object")
-    };
-    let mixin = interp
-        .heap_ref()
-        .class_application(class)
-        .expect("a class")
-        .mixin
-        .clone();
-    let code = mixin.initializer_code.clone().expect("an initializer");
+    let (mut interp, class) = load(src, Lowering::Reference);
+    let code = interp.enter(|m| {
+        let Value::Obj(class) = m.fetch(&class) else {
+            panic!("load_module answers a class object")
+        };
+        let mixin = m
+            .heap()
+            .class_application(class)
+            .expect("a class")
+            .mixin
+            .clone();
+        mixin.initializer_code.clone().expect("an initializer")
+    });
     assert!(matches!(code.instrs[0], Instr::LoadLiteral { dst: 0, .. }));
     assert_eq!(
         code.instrs[1],

@@ -31,13 +31,13 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-fn expect_error(interp: &Interpreter, result: HostResult, what: &str) -> HostError {
+fn expect_error(interp: &mut Interpreter, result: HostResult, what: &str) -> HostError {
     match result {
         Err(HostSignal::Error(e)) => e,
-        Ok(root) => panic!(
-            "{what}: expected a Newspeak error, got {}",
-            interp.heap_ref().describe(&interp.fetch(&root))
-        ),
+        Ok(root) => {
+            let got = interp.enter(|m| m.heap().describe(&m.fetch(&root)));
+            panic!("{what}: expected a Newspeak error, got {got}")
+        }
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
     }
 }
@@ -78,7 +78,7 @@ fn a_user_method_runs_as_bytecode_and_returns_its_value() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = expect_ok(send(&mut interp, &instance, "answer", &[]), "answer");
-    assert_eq!(int_of(&interp.fetch(&result)), 42);
+    assert_eq!(int_of(&interp.enter(|m| m.fetch(&result))), 42);
 }
 
 #[test]
@@ -94,22 +94,22 @@ fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let block = expect_ok(send(&mut interp, &instance, "makeBlock", &[]), "makeBlock");
-    {
-        let Value::Obj(obj) = &interp.fetch(&block) else {
+    interp.enter(|m| {
+        let Value::Obj(obj) = m.fetch(&block) else {
             panic!("expected a closure object")
         };
-        let closure = interp
-            .heap_ref()
-            .closure_data(*obj)
+        let closure = m
+            .heap()
+            .closure_data(obj)
             .unwrap_or_else(|| panic!("expected a closure"));
         assert_eq!(
             closure.code.num_args, 1,
             "the closure carries the compiled body of `[ :x | x + 1 ]`"
         );
-    }
+    });
     let nine = interp.stash(Value::SmallInt(9));
     let result = expect_ok(send(&mut interp, &block, "value:", &[nine]), "value:");
-    assert_eq!(int_of(&interp.fetch(&result)), 10);
+    assert_eq!(int_of(&interp.enter(|m| m.fetch(&result))), 10);
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn temps_implicit_self_sends_and_arithmetic_work() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = expect_ok(send(&mut interp, &instance, "foo", &[]), "foo");
-    assert_eq!(int_of(&interp.fetch(&result)), 42);
+    assert_eq!(int_of(&interp.enter(|m| m.fetch(&result))), 42);
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn slots_read_and_write_through_lexical_sends() {
     let instance = new_instance(&mut interp, &class);
     expect_ok(send(&mut interp, &instance, "bump", &[]), "bump");
     let result = expect_ok(send(&mut interp, &instance, "bump", &[]), "bump");
-    assert_eq!(int_of(&interp.fetch(&result)), 3);
+    assert_eq!(int_of(&interp.enter(|m| m.fetch(&result))), 3);
 }
 
 #[test]
@@ -159,7 +159,7 @@ fn an_unknown_selector_produces_the_shared_does_not_understand_error() {
     let (mut interp, _class) = load(src);
     let three = interp.stash(Value::SmallInt(3));
     let result = send(&mut interp, &three, "nonexistentSelector", &[]);
-    let err = expect_error(&interp, result, "dnu");
+    let err = expect_error(&mut interp, result, "dnu");
     assert!(
         err.message
             .contains("does not understand #nonexistentSelector"),
@@ -181,10 +181,9 @@ fn a_super_send_falls_through_to_objects_native_print_string() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = expect_ok(send(&mut interp, &instance, "foo", &[]), "foo");
-    assert_eq!(
-        string_of(interp.heap_ref(), &interp.fetch(&result)),
-        "an Object"
-    );
+    interp.enter(|m| {
+        assert_eq!(string_of(m.heap(), &m.fetch(&result)), "an Object");
+    });
 }
 
 #[test]
@@ -200,7 +199,7 @@ fn cascades_and_builtin_instantiation_work() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = expect_ok(send(&mut interp, &instance, "foo", &[]), "foo");
-    assert_eq!(int_of(&interp.fetch(&result)), 2);
+    assert_eq!(int_of(&interp.enter(|m| m.fetch(&result))), 2);
 }
 
 #[test]
@@ -217,10 +216,9 @@ fn a_non_local_return_from_a_natively_invoked_block_unwinds_to_the_bytecode_fram
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = expect_ok(send(&mut interp, &instance, "main", &[]), "main");
-    assert_eq!(
-        string_of(interp.heap_ref(), &interp.fetch(&result)),
-        "foundnot found"
-    );
+    interp.enter(|m| {
+        assert_eq!(string_of(m.heap(), &m.fetch(&result)), "foundnot found");
+    });
 }
 
 #[test]
@@ -236,7 +234,7 @@ fn a_block_writes_an_enclosing_temp_through_store_outer_local() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = expect_ok(send(&mut interp, &instance, "sum", &[]), "sum");
-    assert_eq!(int_of(&interp.fetch(&result)), 6);
+    assert_eq!(int_of(&interp.enter(|m| m.fetch(&result))), 6);
 }
 
 #[test]
@@ -253,9 +251,9 @@ fn empty_and_multi_statement_blocks_return_nil_and_the_last_value() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let empty = expect_ok(send(&mut interp, &instance, "empty", &[]), "empty");
-    assert!(matches!(interp.fetch(&empty), Value::Nil));
+    assert!(interp.enter(|m| matches!(m.fetch(&empty), Value::Nil)));
     let last = expect_ok(send(&mut interp, &instance, "last", &[]), "last");
-    assert_eq!(int_of(&interp.fetch(&last)), 2);
+    assert_eq!(int_of(&interp.enter(|m| m.fetch(&last))), 2);
 }
 
 #[test]
@@ -272,10 +270,14 @@ fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks()
     let instance = new_instance(&mut interp, &class);
     let yes = interp.stash(Value::Bool(true));
     let yes = expect_ok(send(&mut interp, &instance, "foo:", &[yes]), "foo:");
-    assert_eq!(string_of(interp.heap_ref(), &interp.fetch(&yes)), "yes");
+    interp.enter(|m| {
+        assert_eq!(string_of(m.heap(), &m.fetch(&yes)), "yes");
+    });
     let no = interp.stash(Value::Bool(false));
     let no = expect_ok(send(&mut interp, &instance, "foo:", &[no]), "foo:");
-    assert_eq!(string_of(interp.heap_ref(), &interp.fetch(&no)), "no");
+    interp.enter(|m| {
+        assert_eq!(string_of(m.heap(), &m.fetch(&no)), "no");
+    });
 }
 
 #[test]
@@ -292,7 +294,7 @@ fn a_block_invoked_after_its_home_returned_gets_cannot_return() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = send(&mut interp, &instance, "run", &[]);
-    let err = expect_error(&interp, result, "run");
+    let err = expect_error(&mut interp, result, "run");
     assert!(err.message.contains("cannotReturn"), "{}", err.message);
 }
 
@@ -309,7 +311,7 @@ fn a_malformed_integer_literal_raises_an_out_of_range_error_when_evaluated() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = send(&mut interp, &instance, "foo", &[]);
-    let err = expect_error(&interp, result, "foo");
+    let err = expect_error(&mut interp, result, "foo");
     assert!(err.message.contains("out of i64 range"), "{}", err.message);
     assert_eq!(err.selector, Symbol::intern("parse"));
 }
@@ -327,17 +329,19 @@ fn a_dynamic_array_literal_evaluates_its_elements() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = expect_ok(send(&mut interp, &instance, "foo", &[]), "foo");
-    let Value::Obj(obj) = &interp.fetch(&result) else {
-        panic!("expected an array object")
-    };
-    let elements = interp
-        .heap_ref()
-        .array_elements(*obj)
-        .unwrap_or_else(|| panic!("expected ObjectData::Array"));
-    assert_eq!(
-        elements.iter().map(int_of).collect::<Vec<_>>(),
-        vec![1, 2, 3]
-    );
+    interp.enter(|m| {
+        let Value::Obj(obj) = m.fetch(&result) else {
+            panic!("expected an array object")
+        };
+        let elements = m
+            .heap()
+            .array_elements(obj)
+            .unwrap_or_else(|| panic!("expected ObjectData::Array"));
+        assert_eq!(
+            elements.iter().map(int_of).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    });
 }
 
 #[test]
@@ -353,8 +357,10 @@ fn a_method_that_falls_off_its_end_implicitly_returns_self() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let result = expect_ok(send(&mut interp, &instance, "foo", &[]), "foo");
-    let (result, instance) = (interp.fetch(&result), interp.fetch(&instance));
-    assert!(matches!((&result, &instance), (Value::Obj(a), Value::Obj(b)) if a.same(*b)));
+    interp.enter(|m| {
+        let (result, instance) = (m.fetch(&result), m.fetch(&instance));
+        assert!(matches!((&result, &instance), (Value::Obj(a), Value::Obj(b)) if a.same(*b)));
+    });
 }
 
 /// Loading and compiling are one step: a class `load_module` returns is
@@ -373,14 +379,16 @@ fn loading_a_module_installs_its_compiled_code() {
     let (mut interp, class) = load(src);
     let instance = new_instance(&mut interp, &class);
     let block = expect_ok(send(&mut interp, &instance, "makeBlock", &[]), "makeBlock");
-    let Value::Obj(obj) = &interp.fetch(&block) else {
-        panic!("expected a closure object")
-    };
-    let closure = interp
-        .heap_ref()
-        .closure_data(*obj)
-        .unwrap_or_else(|| panic!("expected ObjectData::Closure"));
-    assert_eq!(closure.code.num_args, 0);
+    interp.enter(|m| {
+        let Value::Obj(obj) = m.fetch(&block) else {
+            panic!("expected a closure object")
+        };
+        let closure = m
+            .heap()
+            .closure_data(obj)
+            .unwrap_or_else(|| panic!("expected ObjectData::Closure"));
+        assert_eq!(closure.code.num_args, 0);
+    });
 }
 
 /// A second `load_module` into the same interpreter adds its code to the
@@ -418,8 +426,8 @@ fn loading_a_second_module_keeps_the_first_modules_code() {
     let b_instance = new_instance(&mut interp, &b);
     let from_a = expect_ok(send(&mut interp, &a_instance, "answer", &[]), "A answer");
     let from_b = expect_ok(send(&mut interp, &b_instance, "answer", &[]), "B answer");
-    assert_eq!(int_of(&interp.fetch(&from_a)), 1);
-    assert_eq!(int_of(&interp.fetch(&from_b)), 2);
+    assert_eq!(int_of(&interp.enter(|m| m.fetch(&from_a))), 1);
+    assert_eq!(int_of(&interp.enter(|m| m.fetch(&from_b))), 2);
 }
 
 /// The probe that exposed the frame-shift defect: a method with a declared
@@ -449,10 +457,9 @@ fn a_correctly_sent_method_reads_its_temporary_as_nil() {
     let (mut interp, class) = load(ARITY_PROBE);
     let instance = new_instance(&mut interp, &class);
     let result = expect_ok(send(&mut interp, &instance, "probe", &[]), "probe");
-    assert_eq!(
-        string_of(interp.heap_ref(), &interp.fetch(&result)),
-        "nil-ok"
-    );
+    interp.enter(|m| {
+        assert_eq!(string_of(m.heap(), &m.fetch(&result)), "nil-ok");
+    });
 }
 
 #[test]
@@ -462,7 +469,7 @@ fn a_wrong_arity_send_is_refused() {
     let platform = interp.platform();
     let nil = interp.stash(Value::Nil);
     let result = send(&mut interp, &instance, "probe", &[platform, nil]);
-    let error = expect_error(&interp, result, "probe with two surplus arguments");
+    let error = expect_error(&mut interp, result, "probe with two surplus arguments");
     assert_eq!(
         error.message,
         "wrong number of arguments: `probe` takes 0, got 2"

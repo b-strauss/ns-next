@@ -4,7 +4,7 @@
 //! numbered steps this exercises.
 
 use indoc::indoc;
-use ns_runtime::{HostResult, HostSignal, Interpreter, Lowering, Root, Symbol, Value};
+use ns_runtime::{HostResult, HostSignal, Interpreter, Lowering, Mutator, Root, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both.
@@ -37,9 +37,10 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-/// The object `root` holds, for the heap accessors that take one.
-fn obj(interp: &Interpreter, root: &Root) -> ns_runtime::ObjRef {
-    match interp.fetch(root) {
+/// The object `root` holds, for the heap accessors that take one. Every
+/// caller is already inside an entry.
+fn obj(m: &Mutator, root: &Root) -> ns_runtime::ObjRef {
+    match m.fetch(root) {
         Value::Obj(obj) => obj,
         _ => panic!("expected an object"),
     }
@@ -61,12 +62,14 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 
     let result = interp.send(&receiver, Symbol::intern("bar"), &[]);
 
-    match result.map(|root| interp.fetch(&root)) {
-        Ok(Value::SmallInt(42)) => {}
-        Ok(other) => panic!(
-            "expected Value::SmallInt(42), got {}",
-            interp.heap_ref().describe(&other)
-        ),
+    match result {
+        Ok(root) => interp.enter(|m| match m.fetch(&root) {
+            Value::SmallInt(42) => {}
+            other => panic!(
+                "expected Value::SmallInt(42), got {}",
+                m.heap().describe(&other)
+            ),
+        }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
         Err(HostSignal::Error(e)) => panic!("unexpected Newspeak error: {}", e.message),
     }
@@ -131,39 +134,42 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
     // Sup's one inherited slot -- hand-editing the layout would let the two
     // chains disagree about the instance's shape. Nothing has run yet, so
     // the class objects read from their roots here are current.
-    let sup_class = obj(&interp, &sup_class);
-    let sub_class = obj(&interp, &sub_root);
-    let sup_application = interp
-        .heap_ref()
-        .class_application(sup_class)
-        .unwrap_or_else(|| panic!("expected Sup to be a class object"));
-    let sub_mixin = interp
-        .heap_ref()
-        .class_application(sub_class)
-        .unwrap_or_else(|| panic!("expected Sub to be a class object"))
-        .mixin
-        .clone();
-    let sub_application = interp.apply_mixin(&sub_mixin, Some(&sup_application));
-    let relinked = interp.heap_mut().set_class_superclass(sub_class, sup_class)
-        && interp
-            .heap_mut()
-            .set_class_application(sub_class, sub_application);
+    let relinked = interp.enter(|m| {
+        let sup_class = obj(m, &sup_class);
+        let sub_class = obj(m, &sub_root);
+        let sup_application = m
+            .heap()
+            .class_application(sup_class)
+            .unwrap_or_else(|| panic!("expected Sup to be a class object"));
+        let sub_mixin = m
+            .heap()
+            .class_application(sub_class)
+            .unwrap_or_else(|| panic!("expected Sub to be a class object"))
+            .mixin
+            .clone();
+        let sub_application = m.apply_mixin(&sub_mixin, Some(&sup_application));
+        m.heap_mut().set_class_superclass(sub_class, sup_class)
+            && m.heap_mut()
+                .set_class_application(sub_class, sub_application)
+    });
     assert!(relinked, "expected Sub to be a class object");
 
     let receiver = expect_ok(interp.instantiate(&sub_root, &[]), "instantiate");
 
     let result = interp.send(&receiver, Symbol::intern("getB"), &[]);
 
-    match result.map(|root| interp.fetch(&root)) {
-        Ok(Value::SmallInt(10)) => {}
-        Ok(Value::Nil) => panic!(
-            "getB returned nil -- the superclass's own slot initializer (a = 10) did not run \
-             before the subclass's own slot initializer (b = a) read it"
-        ),
-        Ok(other) => panic!(
-            "expected Value::SmallInt(10), got {}",
-            interp.heap_ref().describe(&other)
-        ),
+    match result {
+        Ok(root) => interp.enter(|m| match m.fetch(&root) {
+            Value::SmallInt(10) => {}
+            Value::Nil => panic!(
+                "getB returned nil -- the superclass's own slot initializer (a = 10) did not run \
+                 before the subclass's own slot initializer (b = a) read it"
+            ),
+            other => panic!(
+                "expected Value::SmallInt(10), got {}",
+                m.heap().describe(&other)
+            ),
+        }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
         Err(HostSignal::Error(e)) => panic!("unexpected Newspeak error: {}", e.message),
     }
@@ -193,14 +199,14 @@ fn a_factory_parameter_is_visible_in_a_slot_initializer() {
 
     let result = interp.send(&receiver, Symbol::intern("getT"), &[]);
 
-    match result.map(|root| interp.fetch(&root)) {
-        Ok(Value::SmallInt(99)) => {}
-        Ok(other) => {
-            panic!(
+    match result {
+        Ok(root) => interp.enter(|m| match m.fetch(&root) {
+            Value::SmallInt(99) => {}
+            other => panic!(
                 "expected the slot to hold the factory argument (SmallInt(99)), got {}",
-                interp.heap_ref().describe(&other)
-            )
-        }
+                m.heap().describe(&other)
+            ),
+        }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
         Err(HostSignal::Error(e)) => panic!("unexpected Newspeak error: {}", e.message),
     }
@@ -230,20 +236,22 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
 
     let result = expect_ok(interp.send(&receiver, Symbol::intern("getT"), &[]), "getT");
 
-    let result = interp.fetch(&result);
-    match &result {
-        Value::Obj(obj) => match interp.heap_ref().str_value(*obj) {
-            Some(s) => assert_eq!(s, "99"),
-            None => panic!(
-                "expected ObjectData::Str(\"99\"), got {}",
-                interp.heap_ref().describe(&result)
+    interp.enter(|m| {
+        let result = m.fetch(&result);
+        match &result {
+            Value::Obj(obj) => match m.heap().str_value(*obj) {
+                Some(s) => assert_eq!(s, "99"),
+                None => panic!(
+                    "expected ObjectData::Str(\"99\"), got {}",
+                    m.heap().describe(&result)
+                ),
+            },
+            other => panic!(
+                "expected Value::Obj(<String>), got {}",
+                m.heap().describe(other)
             ),
-        },
-        other => panic!(
-            "expected Value::Obj(<String>), got {}",
-            interp.heap_ref().describe(other)
-        ),
-    }
+        }
+    });
 }
 
 /// An `initExprs` statement (the class header's trailing statements, spec
@@ -270,12 +278,14 @@ fn a_factory_parameter_is_visible_in_an_init_expr() {
 
     let result = interp.send(&receiver, Symbol::intern("getT"), &[]);
 
-    match result.map(|root| interp.fetch(&root)) {
-        Ok(Value::SmallInt(7)) => {}
-        Ok(other) => panic!(
-            "expected SmallInt(7) assigned by the initExpr, got {}",
-            interp.heap_ref().describe(&other)
-        ),
+    match result {
+        Ok(root) => interp.enter(|m| match m.fetch(&root) {
+            Value::SmallInt(7) => {}
+            other => panic!(
+                "expected SmallInt(7) assigned by the initExpr, got {}",
+                m.heap().describe(&other)
+            ),
+        }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
         Err(HostSignal::Error(e)) => panic!("unexpected Newspeak error: {}", e.message),
     }
@@ -308,10 +318,10 @@ fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
                 e.message
             );
         }
-        Ok(v) => panic!(
-            "expected a factory-arity Newspeak error, got Ok({})",
-            interp.heap_ref().describe(&interp.fetch(&v))
-        ),
+        Ok(v) => {
+            let got = interp.enter(|m| m.heap().describe(&m.fetch(&v)));
+            panic!("expected a factory-arity Newspeak error, got Ok({got})")
+        }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `instantiate`"),
     }
 }
@@ -333,10 +343,10 @@ fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
         Err(HostSignal::Error(e)) => {
             assert_eq!(e.selector, Symbol::intern("thisSelectorDoesNotExist"));
         }
-        Ok(v) => panic!(
-            "expected a doesNotUnderstand: error, got Ok({})",
-            interp.heap_ref().describe(&interp.fetch(&v))
-        ),
+        Ok(v) => {
+            let got = interp.enter(|m| m.heap().describe(&m.fetch(&v)));
+            panic!("expected a doesNotUnderstand: error, got Ok({got})")
+        }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
     }
 }
@@ -381,7 +391,7 @@ fn a_superclass_factory_message_receives_its_own_arguments() {
     );
     let stored = expect_ok(interp.send(&instance, Symbol::intern("base"), &[]), "base");
     assert!(
-        matches!(interp.fetch(&stored), Value::SmallInt(7)),
+        interp.enter(|m| matches!(m.fetch(&stored), Value::SmallInt(7))),
         "the superclass's slot initializer did not see the clause's own argument"
     );
 }
@@ -440,9 +450,11 @@ fn new_answers_the_instance_its_initializers_ran_on() {
         ];
         for (name, slots) in cases {
             let class = expect_ok(interp.send(&module, Symbol::intern(name), &[]), name);
-            let Value::Obj(_) = interp.fetch(&class) else {
-                panic!("{name} answers a class object")
-            };
+            interp.enter(|m| {
+                let Value::Obj(_) = m.fetch(&class) else {
+                    panic!("{name} answers a class object")
+                };
+            });
             for from_newspeak in [false, true] {
                 let what = format!("{name} new, {lowering:?}, from Newspeak: {from_newspeak}");
                 let instance = if from_newspeak {
@@ -461,25 +473,29 @@ fn new_answers_the_instance_its_initializers_ran_on() {
                 );
                 // Every handle compared below is read after `lastSeen`, the
                 // last run before the comparisons.
-                let (Value::Obj(instance_obj), Value::Obj(seen_obj)) =
-                    (interp.fetch(&instance), interp.fetch(&seen))
-                else {
-                    panic!("{what}: answered something other than an object");
-                };
-                let class_obj = obj(&interp, &class);
-                assert!(
-                    instance_obj.same(seen_obj),
-                    "{what}: answered an object other than the one its initializers ran on"
-                );
-                assert!(
-                    interp.class_of(&Value::Obj(instance_obj)).same(class_obj),
-                    "{what}: answered an instance of another class"
-                );
+                interp.enter(|m| {
+                    let (Value::Obj(instance_obj), Value::Obj(seen_obj)) =
+                        (m.fetch(&instance), m.fetch(&seen))
+                    else {
+                        panic!("{what}: answered something other than an object");
+                    };
+                    let class_obj = obj(m, &class);
+                    assert!(
+                        instance_obj.same(seen_obj),
+                        "{what}: answered an object other than the one its initializers ran on"
+                    );
+                    assert!(
+                        m.class_of(&Value::Obj(instance_obj)).same(class_obj),
+                        "{what}: answered an instance of another class"
+                    );
+                });
                 for (getter, expected) in slots {
                     let value =
                         expect_ok(interp.send(&instance, Symbol::intern(getter), &[]), getter);
                     assert!(
-                        matches!(interp.fetch(&value), Value::SmallInt(n) if n == *expected),
+                        interp.enter(
+                            |m| matches!(m.fetch(&value), Value::SmallInt(n) if n == *expected)
+                        ),
                         "{what}: slot {getter}"
                     );
                 }

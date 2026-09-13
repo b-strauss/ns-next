@@ -70,14 +70,11 @@ fn a_deep_method_recursion_runs_on_the_activation_stack() {
             selector,
         );
         assert!(
-            matches!(
-                interp.fetch(&result),
-                Value::SmallInt(0) | Value::Bool(true)
-            ),
+            interp.enter(|m| matches!(m.fetch(&result), Value::SmallInt(0) | Value::Bool(true))),
             "{selector}"
         );
         assert_eq!(
-            interp.heap_ref().activation_depth(),
+            interp.enter(|m| m.heap().activation_depth()),
             0,
             "{selector}: nothing left behind"
         );
@@ -102,8 +99,16 @@ fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack() {
         let (mut interp, class) = load(src, lowering);
         let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let result = expect_ok(interp.send(&instance, Symbol::intern("find"), &[]), "find");
-        assert_eq!(small_int(interp.fetch(&result)), 30, "{lowering:?}");
-        assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
+        assert_eq!(
+            small_int(interp.enter(|m| m.fetch(&result))),
+            30,
+            "{lowering:?}"
+        );
+        assert_eq!(
+            interp.enter(|m| m.heap().activation_depth()),
+            0,
+            "{lowering:?}"
+        );
     }
 }
 
@@ -132,7 +137,11 @@ fn a_return_into_a_running_initializer_escapes_the_run() {
             Ok(_) => panic!("{lowering:?}: the `^` must escape, not be answered"),
             Err(HostSignal::Error(e)) => panic!("{lowering:?}: unexpected error: {}", e.message),
         }
-        assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
+        assert_eq!(
+            interp.enter(|m| m.heap().activation_depth()),
+            0,
+            "{lowering:?}"
+        );
     }
 }
 
@@ -165,9 +174,15 @@ fn a_deep_recursion_through_instantiation_runs_on_the_activation_stack() {
             ),
             "build:",
         );
-        assert_eq!(small_int(interp.fetch(&height)), 20_000, "{lowering:?}");
-        assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
-        assert_eq!(interp.heap_ref().counted_depth(), 0, "{lowering:?}");
+        assert_eq!(
+            small_int(interp.enter(|m| m.fetch(&height))),
+            20_000,
+            "{lowering:?}"
+        );
+        interp.enter(|m| {
+            assert_eq!(m.heap().activation_depth(), 0, "{lowering:?}");
+            assert_eq!(m.heap().counted_depth(), 0, "{lowering:?}");
+        });
     }
 }
 
@@ -202,12 +217,12 @@ fn a_deep_recursion_through_native_block_activations_runs_on_the_activation_stac
                 selector,
             );
             assert_eq!(
-                small_int(interp.fetch(&result)),
+                small_int(interp.enter(|m| m.fetch(&result))),
                 0,
                 "{selector} under {lowering:?}"
             );
             assert_eq!(
-                interp.heap_ref().activation_depth(),
+                interp.enter(|m| m.heap().activation_depth()),
                 0,
                 "{selector} under {lowering:?}"
             );
@@ -256,16 +271,18 @@ fn the_depth_limit_is_exact_and_counts_alike_under_both_lowerings() {
                 ),
                 &what,
             );
-            assert_eq!(
-                interp.heap_ref().activation_depth(),
-                0,
-                "{what}: nothing left behind"
-            );
-            assert_eq!(
-                interp.heap_ref().counted_depth(),
-                0,
-                "{what}: the unwind uncounted every activation it popped"
-            );
+            interp.enter(|m| {
+                assert_eq!(
+                    m.heap().activation_depth(),
+                    0,
+                    "{what}: nothing left behind"
+                );
+                assert_eq!(
+                    m.heap().counted_depth(),
+                    0,
+                    "{what}: the unwind uncounted every activation it popped"
+                );
+            });
             // An overflow is an ordinary error: the interpreter goes on.
             expect_ok(
                 interp.send(
@@ -352,20 +369,24 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
     // `n < 200000 ifTrue: b` is not a literal-block send, so even the
     // reference lowering compiles it to a `SendPublic`, which the mutation
     // below turns into a `SendInlinable` -- the two share one operand layout.
-    let (interp, class) = load(&src, Lowering::Reference);
+    let (mut interp, class) = load(&src, Lowering::Reference);
     // Nothing has run in this interpreter, so the class read from its root
-    // is current.
-    let Value::Obj(class) = interp.fetch(&class) else {
-        panic!("{block}: load_module answers a class object")
-    };
-    let mut bytes = image::build(
-        interp.heap_ref(),
-        None,
-        &SourceOrigin::File(PathBuf::from("t.ns")),
-        class,
-        Symbol::intern("main"),
-    )
-    .expect("build");
+    // is current, and building the artifact runs nothing either -- both
+    // happen in one entry.
+    let mut bytes = interp
+        .enter(|m| {
+            let Value::Obj(class) = m.fetch(&class) else {
+                panic!("{block}: load_module answers a class object")
+            };
+            image::build(
+                m.heap(),
+                None,
+                &SourceOrigin::File(PathBuf::from("t.ns")),
+                class,
+                Symbol::intern("main"),
+            )
+        })
+        .expect("build");
     let report = image::inspect::inspect(&bytes).expect("inspect");
     let id = report
         .symbols
@@ -413,8 +434,10 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
         loaded.interp.send(&instance, Symbol::intern("main"), &[]),
         &format!("the crafted recursion through {block}"),
     );
-    assert_eq!(loaded.interp.heap_ref().activation_depth(), 0, "{block}");
-    assert_eq!(loaded.interp.heap_ref().counted_depth(), 0, "{block}");
+    loaded.interp.enter(|m| {
+        assert_eq!(m.heap().activation_depth(), 0, "{block}");
+        assert_eq!(m.heap().counted_depth(), 0, "{block}");
+    });
 }
 
 /// A control-flow native sent from Rust, not from the loop: its block is
@@ -482,24 +505,29 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
             &what("whileTrue:"),
         );
         assert!(
-            matches!(interp.fetch(&value), Value::Nil),
+            interp.enter(|m| matches!(m.fetch(&value), Value::Nil)),
             "{}",
             what("whileTrue:")
         );
         let count = expect_ok(send(&mut interp, &instance, "count", &[]), "count");
-        assert_eq!(small_int(interp.fetch(&count)), 3, "{}", what("whileTrue:"));
+        assert_eq!(
+            small_int(interp.enter(|m| m.fetch(&count))),
+            3,
+            "{}",
+            what("whileTrue:")
+        );
         let value = expect_ok(
             send(&mut interp, &at_least_five, "whileFalse:", &[&step]),
             &what("whileFalse:"),
         );
         assert!(
-            matches!(interp.fetch(&value), Value::Nil),
+            interp.enter(|m| matches!(m.fetch(&value), Value::Nil)),
             "{}",
             what("whileFalse:")
         );
         let count = expect_ok(send(&mut interp, &instance, "count", &[]), "count");
         assert_eq!(
-            small_int(interp.fetch(&count)),
+            small_int(interp.enter(|m| m.fetch(&count))),
             5,
             "{}",
             what("whileFalse:")
@@ -511,7 +539,7 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
             &what("and:"),
         );
         assert!(
-            matches!(interp.fetch(&value), Value::Bool(false)),
+            interp.enter(|m| matches!(m.fetch(&value), Value::Bool(false))),
             "{}",
             what("and:")
         );
@@ -520,7 +548,7 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
             &what("and:"),
         );
         assert!(
-            matches!(interp.fetch(&value), Value::Bool(true)),
+            interp.enter(|m| matches!(m.fetch(&value), Value::Bool(true))),
             "{}",
             what("and:")
         );
@@ -529,7 +557,7 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
             &what("or:"),
         );
         assert!(
-            matches!(interp.fetch(&value), Value::Bool(true)),
+            interp.enter(|m| matches!(m.fetch(&value), Value::Bool(true))),
             "{}",
             what("or:")
         );
@@ -539,7 +567,12 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
             send(&mut interp, &true_value, "ifTrue:", &[&answer]),
             &what("ifTrue:"),
         );
-        assert_eq!(small_int(interp.fetch(&value)), 42, "{}", what("ifTrue:"));
+        assert_eq!(
+            small_int(interp.enter(|m| m.fetch(&value))),
+            42,
+            "{}",
+            what("ifTrue:")
+        );
 
         // A condition that answers a non-Boolean: the continuation decides a
         // `mustBeBoolean` send, which nothing here understands, and the error
@@ -583,9 +616,15 @@ fn a_deep_recursion_through_do_runs_on_the_activation_stack() {
             ),
             "d:",
         );
-        assert_eq!(small_int(interp.fetch(&result)), 0, "{lowering:?}");
-        assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
-        assert_eq!(interp.heap_ref().counted_depth(), 0, "{lowering:?}");
+        assert_eq!(
+            small_int(interp.enter(|m| m.fetch(&result))),
+            0,
+            "{lowering:?}"
+        );
+        interp.enter(|m| {
+            assert_eq!(m.heap().activation_depth(), 0, "{lowering:?}");
+            assert_eq!(m.heap().counted_depth(), 0, "{lowering:?}");
+        });
     }
 }
 
@@ -617,8 +656,10 @@ fn a_recursion_through_the_nested_class_accessor_ends_at_the_activation_limit() 
             interp.send(&instance, Symbol::intern("start"), &[]),
             &format!("start under {lowering:?}"),
         );
-        assert_eq!(interp.heap_ref().activation_depth(), 0, "{lowering:?}");
-        assert_eq!(interp.heap_ref().counted_depth(), 0, "{lowering:?}");
+        interp.enter(|m| {
+            assert_eq!(m.heap().activation_depth(), 0, "{lowering:?}");
+            assert_eq!(m.heap().counted_depth(), 0, "{lowering:?}");
+        });
     }
 }
 
@@ -649,7 +690,7 @@ fn a_return_through_a_superclass_clause_abandons_its_creation() {
             "the first probe",
         );
         assert_eq!(
-            small_int(interp.fetch(&escaped)),
+            small_int(interp.enter(|m| m.fetch(&escaped))),
             7,
             "{lowering:?}: the `^` lands on `probe`"
         );
@@ -657,22 +698,26 @@ fn a_return_through_a_superclass_clause_abandons_its_creation() {
             at_the_floor(&mut interp, lowering, &outer, "probe", &[]),
             "the second probe",
         );
-        let Value::Obj(inner_obj) = interp.fetch(&inner) else {
-            panic!("{lowering:?}: the second access answers a class object");
-        };
-        assert!(interp.heap_ref().is_class(inner_obj), "{lowering:?}");
+        interp.enter(|m| {
+            let Value::Obj(inner_obj) = m.fetch(&inner) else {
+                panic!("{lowering:?}: the second access answers a class object");
+            };
+            assert!(m.heap().is_class(inner_obj), "{lowering:?}");
+        });
         let again = expect_ok(
             at_the_floor(&mut interp, lowering, &outer, "Inner", &[]),
             "the cached class",
         );
         // Both class objects are read after the run that answered the second.
-        let Value::Obj(inner) = interp.fetch(&inner) else {
-            panic!("{lowering:?}: the second access answers a class object");
-        };
-        assert!(
-            matches!(interp.fetch(&again), Value::Obj(again) if again.same(inner)),
-            "{lowering:?}: the class the second access built is the one cached"
-        );
+        interp.enter(|m| {
+            let Value::Obj(inner) = m.fetch(&inner) else {
+                panic!("{lowering:?}: the second access answers a class object");
+            };
+            assert!(
+                matches!(m.fetch(&again), Value::Obj(again) if again.same(inner)),
+                "{lowering:?}: the class the second access built is the one cached"
+            );
+        });
     }
 }
 
@@ -710,7 +755,7 @@ fn a_return_in_a_clause_messages_block_hands_its_value_to_the_walk() {
             "make",
         );
         assert_eq!(
-            small_int(interp.fetch(&made)),
+            small_int(interp.enter(|m| m.fetch(&made))),
             34,
             "{lowering:?}: Base got the returned argument list, and Cell's own slot ran too"
         );
@@ -747,7 +792,11 @@ fn a_return_into_an_initializer_with_a_level_below_escapes_the_run() {
             at_the_floor(&mut interp, lowering, &instance, "fine", &[]),
             "fine",
         );
-        assert_eq!(small_int(interp.fetch(&fine)), 42, "{lowering:?}");
+        assert_eq!(
+            small_int(interp.enter(|m| m.fetch(&fine))),
+            42,
+            "{lowering:?}"
+        );
     }
 }
 
@@ -783,7 +832,11 @@ fn an_error_in_a_clause_message_mid_climb_unwinds_the_run() {
             at_the_floor(&mut interp, lowering, &outer, "fine", &[]),
             "fine",
         );
-        assert_eq!(small_int(interp.fetch(&fine)), 42, "{lowering:?}");
+        assert_eq!(
+            small_int(interp.enter(|m| m.fetch(&fine))),
+            42,
+            "{lowering:?}"
+        );
     }
 }
 
@@ -797,15 +850,13 @@ fn at_the_floor(
     args: &[Root],
 ) -> HostResult {
     let result = interp.send(receiver, Symbol::intern(selector), args);
-    assert_eq!(
-        interp.heap_ref().activation_depth(),
-        0,
-        "{selector} under {lowering:?}"
-    );
-    assert_eq!(
-        interp.heap_ref().counted_depth(),
-        0,
-        "{selector} under {lowering:?}"
-    );
+    interp.enter(|m| {
+        assert_eq!(
+            m.heap().activation_depth(),
+            0,
+            "{selector} under {lowering:?}"
+        );
+        assert_eq!(m.heap().counted_depth(), 0, "{selector} under {lowering:?}");
+    });
     result
 }

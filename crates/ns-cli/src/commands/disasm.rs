@@ -108,7 +108,9 @@ pub(crate) fn execute(
     // `class`'s data: in a debug build the origin guard panics at the read,
     // and in a release build the index is in range and names whatever
     // object that heap put there -- a different, perfectly valid object,
-    // disassembled without a word of complaint.
+    // disassembled without a word of complaint. Reads through
+    // `interp.enter` while that interpreter is still alive, before it goes
+    // out of scope.
     let root_mixin = if looks_like_an_artifact(&raw) {
         if lowering.is_some() {
             eprintln!(
@@ -118,16 +120,22 @@ pub(crate) fn execute(
             return ExitCode::FAILURE;
         }
         match ns_runtime::image::load(&raw) {
-            Ok(loaded) => match root_mixin_of(
-                loaded.interp.heap_ref(),
-                crate::entry::class_ref(&loaded.interp, &loaded.root_class),
-            ) {
-                Ok(m) => m,
-                Err(msg) => {
-                    eprintln!("error: {msg}");
-                    return ExitCode::FAILURE;
+            Ok(loaded) => {
+                let ns_runtime::image::LoadedImage {
+                    mut interp,
+                    root_class,
+                    ..
+                } = loaded;
+                match interp
+                    .enter(|m| root_mixin_of(m.heap(), crate::entry::class_ref(m, &root_class)))
+                {
+                    Ok(m) => m,
+                    Err(msg) => {
+                        eprintln!("error: {msg}");
+                        return ExitCode::FAILURE;
+                    }
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("error: {}: {e}", file.display());
                 return ExitCode::FAILURE;
@@ -138,9 +146,9 @@ pub(crate) fn execute(
             Ok(l) => l,
             Err(code) => return code,
         };
-        let (interp, class) =
+        let (mut interp, class) =
             source::bootstrap(&loaded, lowering.unwrap_or(ns_runtime::Lowering::Optimized));
-        match root_mixin_of(interp.heap_ref(), crate::entry::class_ref(&interp, &class)) {
+        match interp.enter(|m| root_mixin_of(m.heap(), crate::entry::class_ref(m, &class))) {
             Ok(m) => m,
             Err(msg) => {
                 eprintln!("error: {msg}");

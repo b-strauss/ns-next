@@ -79,10 +79,12 @@ fn the_accessor_returns_the_same_class_object_every_time() {
         interp.send(&outer, Symbol::intern("innerClass"), &[]),
         "second Inner",
     );
-    let (Value::Obj(a), Value::Obj(b)) = (interp.fetch(&first), interp.fetch(&second)) else {
-        panic!("a nested class access must yield a class object");
-    };
-    assert!(a.same(b), "spec 6: cached within r");
+    interp.enter(|m| {
+        let (Value::Obj(a), Value::Obj(b)) = (m.fetch(&first), m.fetch(&second)) else {
+            panic!("a nested class access must yield a class object");
+        };
+        assert!(a.same(b), "spec 6: cached within r");
+    });
 }
 
 #[test]
@@ -105,21 +107,22 @@ fn two_enclosing_instances_get_distinct_nested_classes() {
         interp.send(&two, Symbol::intern("innerClass"), &[]),
         "second",
     );
-    let (Value::Obj(a), Value::Obj(b)) = (interp.fetch(&a), interp.fetch(&b)) else {
-        panic!("class objects")
-    };
-    assert!(!a.same(b), "spec 6: a distinct class per instance");
-    let (Some(a_application), Some(b_application)) = (
-        interp.heap_ref().class_application(a),
-        interp.heap_ref().class_application(b),
-    ) else {
-        panic!("class data")
-    };
-    assert!(
-        Rc::ptr_eq(&a_application, &b_application),
-        "spec 6.2: applications of one mixin share code and structure -- this \
-         is what keeps a call site monomorphic across enclosing instances"
-    );
+    interp.enter(|m| {
+        let (Value::Obj(a), Value::Obj(b)) = (m.fetch(&a), m.fetch(&b)) else {
+            panic!("class objects")
+        };
+        assert!(!a.same(b), "spec 6: a distinct class per instance");
+        let (Some(a_application), Some(b_application)) =
+            (m.heap().class_application(a), m.heap().class_application(b))
+        else {
+            panic!("class data")
+        };
+        assert!(
+            Rc::ptr_eq(&a_application, &b_application),
+            "spec 6.2: applications of one mixin share code and structure -- this \
+             is what keeps a call site monomorphic across enclosing instances"
+        );
+    });
 }
 
 #[test]
@@ -131,15 +134,16 @@ fn the_nested_class_remembers_its_enclosing_object() {
         interp.send(&outer, Symbol::intern("innerClass"), &[]),
         "Inner",
     );
-    let (Value::Obj(inner), Value::Obj(outer)) = (interp.fetch(&inner), interp.fetch(&outer))
-    else {
-        panic!("class object and instance")
-    };
-    let enclosing = interp
-        .heap_ref()
-        .class_enclosing(inner)
-        .expect("spec 6: a nested class's one piece of state is its enclosing object");
-    assert!(enclosing.same(outer));
+    interp.enter(|m| {
+        let (Value::Obj(inner), Value::Obj(outer)) = (m.fetch(&inner), m.fetch(&outer)) else {
+            panic!("class object and instance")
+        };
+        let enclosing = m
+            .heap()
+            .class_enclosing(inner)
+            .expect("spec 6: a nested class's one piece of state is its enclosing object");
+        assert!(enclosing.same(outer));
+    });
 }
 
 #[test]
@@ -155,7 +159,7 @@ fn a_nested_class_can_be_instantiated_through_its_accessor() {
         interp.send(&instance, Symbol::intern("value"), &[]),
         "value",
     );
-    let Value::SmallInt(value) = interp.fetch(&value) else {
+    let Value::SmallInt(value) = interp.enter(|m| m.fetch(&value)) else {
         panic!("expected a SmallInt from `Inner new value`")
     };
     assert_eq!(value, 42);
@@ -210,7 +214,7 @@ fn a_nested_class_defaults_to_protected_accessibility() {
     let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     // Lexically, from inside Outer: reachable, and it really is a class.
     let value = expect_ok(interp.send(&outer, Symbol::intern("reach"), &[]), "reach");
-    let Value::SmallInt(value) = interp.fetch(&value) else {
+    let Value::SmallInt(value) = interp.enter(|m| m.fetch(&value)) else {
         panic!("expected a SmallInt from `Hidden new value`")
     };
     assert_eq!(value, 7);
@@ -254,33 +258,34 @@ fn an_inherited_nested_declaration_is_reached_through_the_chain() {
     // `N` is declared on Base, reached here through Derived's chain -- and
     // its hidden cache slot is the inherited entry in Derived's layout.
     let n_class = expect_ok(interp.send(&derived, Symbol::intern("N"), &[]), "N");
-    let (Value::Obj(n_class_obj), Value::Obj(derived_obj)) =
-        (interp.fetch(&n_class), interp.fetch(&derived))
-    else {
-        panic!("class object and instance")
-    };
-    {
-        let enclosing = interp
-            .heap_ref()
+    interp.enter(|m| {
+        let (Value::Obj(n_class_obj), Value::Obj(derived_obj)) =
+            (m.fetch(&n_class), m.fetch(&derived))
+        else {
+            panic!("class object and instance")
+        };
+        let enclosing = m
+            .heap()
             .class_enclosing(n_class_obj)
             .expect("an enclosing object");
         assert!(
             enclosing.same(derived_obj),
             "the enclosing object is the receiver, not the declaring level"
         );
-    }
+    });
     // Still cached per receiver across the inherited path. Both class
     // objects are read after the run that answered the second.
     let again = expect_ok(interp.send(&derived, Symbol::intern("N"), &[]), "N again");
-    let (Value::Obj(n_class_obj), Value::Obj(again)) =
-        (interp.fetch(&n_class), interp.fetch(&again))
-    else {
-        panic!("class object")
-    };
-    assert!(n_class_obj.same(again), "spec 6: cached within r");
+    interp.enter(|m| {
+        let (Value::Obj(n_class_obj), Value::Obj(again)) = (m.fetch(&n_class), m.fetch(&again))
+        else {
+            panic!("class object")
+        };
+        assert!(n_class_obj.same(again), "spec 6: cached within r");
+    });
     let instance = expect_ok(interp.instantiate(&n_class, &[]), "instantiate N");
     let tag = expect_ok(interp.send(&instance, Symbol::intern("tag"), &[]), "tag");
-    let Value::SmallInt(tag) = interp.fetch(&tag) else {
+    let Value::SmallInt(tag) = interp.enter(|m| m.fetch(&tag)) else {
         panic!("expected a SmallInt from `N new tag`")
     };
     assert_eq!(tag, 11);
@@ -312,10 +317,12 @@ fn a_super_prefixed_clause_answers_a_class_object() {
         interp.send(&outer, Symbol::intern("innerClass"), &[]),
         "innerClass",
     );
-    let Value::Obj(inner) = interp.fetch(&inner) else {
-        panic!("the accessor must yield a class object")
-    };
-    assert!(interp.heap_ref().is_class(inner));
+    interp.enter(|m| {
+        let Value::Obj(inner) = m.fetch(&inner) else {
+            panic!("the accessor must yield a class object")
+        };
+        assert!(m.heap().is_class(inner));
+    });
 }
 
 /// A class whose creation requires itself. §6 evaluates the declaration on
@@ -389,10 +396,9 @@ fn a_nested_class_built_on_the_one_it_redeclares_is_not_a_cycle() {
     let (mut interp, class) = load(src);
     let outer = expect_ok(interp.instantiate(&class, &[]), "instantiate Outer");
     let both = expect_ok(interp.send(&outer, Symbol::intern("both"), &[]), "both");
-    assert_eq!(
-        string_contents(interp.heap_ref(), &interp.fetch(&both)),
-        "basesub"
-    );
+    interp.enter(|m| {
+        assert_eq!(string_contents(m.heap(), &m.fetch(&both)), "basesub");
+    });
 }
 
 const CLASS_SIDE_SRC: &str = indoc! {"
@@ -413,10 +419,12 @@ fn a_class_side_method_dispatches_on_the_class_object() {
         interp.send(&class, Symbol::intern("describe"), &[]),
         "class-side send",
     );
-    assert_eq!(
-        string_contents(interp.heap_ref(), &interp.fetch(&described)),
-        "a widget class"
-    );
+    interp.enter(|m| {
+        assert_eq!(
+            string_contents(m.heap(), &m.fetch(&described)),
+            "a widget class"
+        );
+    });
 }
 
 /// A class with no class side at all must still fall through to the
@@ -468,18 +476,22 @@ fn a_subclass_with_no_class_side_inherits_the_superclasss_class_side_method() {
         interp.send(&special_widget, Symbol::intern("describe"), &[]),
         "inherited class-side send",
     );
-    assert_eq!(
-        string_contents(interp.heap_ref(), &interp.fetch(&described)),
-        "a widget class"
-    );
+    interp.enter(|m| {
+        assert_eq!(
+            string_contents(m.heap(), &m.fetch(&described)),
+            "a widget class"
+        );
+    });
 }
 
 /// The class object a nested declaration's accessor answers for `enclosing`.
 fn nested_class_object(interp: &mut Interpreter, enclosing: &Root, name: &str) -> Root {
     let class = expect_ok(interp.send(enclosing, Symbol::intern(name), &[]), name);
-    let Value::Obj(_) = interp.fetch(&class) else {
-        panic!("{name} answers a class object")
-    };
+    interp.enter(|m| {
+        let Value::Obj(_) = m.fetch(&class) else {
+            panic!("{name} answers a class object")
+        };
+    });
     class
 }
 
@@ -515,35 +527,32 @@ fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
     );
     let a = nested_class_object(&mut interp, &one, "SpecialWidget");
     let b = nested_class_object(&mut interp, &two, "SpecialWidget");
-    // Both are read after the last run; building metaclasses below runs
-    // nothing.
-    let (Value::Obj(a), Value::Obj(b)) = (interp.fetch(&a), interp.fetch(&b)) else {
-        panic!("SpecialWidget answers a class object")
-    };
-    assert!(
-        !a.same(b),
-        "spec 6: one class object per enclosing instance"
-    );
-    assert!(
-        Rc::ptr_eq(
-            &application_of(interp.heap_ref(), a),
-            &application_of(interp.heap_ref(), b)
-        ),
-        "spec 6.2: both share one instance-side application"
-    );
-    let ma = interp
-        .metaclass_of(a)
-        .expect("SpecialWidget inherits Widget's class side");
-    let mb = interp
-        .metaclass_of(b)
-        .expect("SpecialWidget inherits Widget's class side");
-    assert!(
-        Rc::ptr_eq(
-            &application_of(interp.heap_ref(), ma),
-            &application_of(interp.heap_ref(), mb)
-        ),
-        "spec 6.2: an inherited class side must share one metaclass application too"
-    );
+    // Both are read after the last run; everything below -- reading the
+    // class objects, building their metaclasses, and comparing applications
+    // -- runs nothing, so it all happens in one entry.
+    interp.enter(|m| {
+        let (Value::Obj(a), Value::Obj(b)) = (m.fetch(&a), m.fetch(&b)) else {
+            panic!("SpecialWidget answers a class object")
+        };
+        assert!(
+            !a.same(b),
+            "spec 6: one class object per enclosing instance"
+        );
+        assert!(
+            Rc::ptr_eq(&application_of(m.heap(), a), &application_of(m.heap(), b)),
+            "spec 6.2: both share one instance-side application"
+        );
+        let ma = m
+            .metaclass_of(a)
+            .expect("SpecialWidget inherits Widget's class side");
+        let mb = m
+            .metaclass_of(b)
+            .expect("SpecialWidget inherits Widget's class side");
+        assert!(
+            Rc::ptr_eq(&application_of(m.heap(), ma), &application_of(m.heap(), mb)),
+            "spec 6.2: an inherited class side must share one metaclass application too"
+        );
+    });
 }
 
 /// A class that declares its own class-side method of the same name still
@@ -562,10 +571,12 @@ fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name() {
         interp.send(&overriding_widget, Symbol::intern("describe"), &[]),
         "overriding class-side send",
     );
-    assert_eq!(
-        string_contents(interp.heap_ref(), &interp.fetch(&described)),
-        "a special widget class"
-    );
+    interp.enter(|m| {
+        assert_eq!(
+            string_contents(m.heap(), &m.fetch(&described)),
+            "a special widget class"
+        );
+    });
 }
 
 /// `Frame.current_class` must be the class object of the level
@@ -596,10 +607,12 @@ fn super_and_outer_both_resolve_through_the_defining_level() {
     let platform = interp.platform();
     let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     let described = expect_ok(interp.send(&outer, Symbol::intern("run"), &[]), "run");
-    assert_eq!(
-        string_contents(interp.heap_ref(), &interp.fetch(&described)),
-        "outer/derived"
-    );
+    interp.enter(|m| {
+        assert_eq!(
+            string_contents(m.heap(), &m.fetch(&described)),
+            "outer/derived"
+        );
+    });
 }
 
 /// A *three*-level hierarchy where the middle level (`Mid`) is reached only
@@ -633,10 +646,9 @@ fn a_super_chain_progresses_through_an_inherited_middle_level() {
     let platform = interp.platform();
     let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     let described = expect_ok(interp.send(&outer, Symbol::intern("run"), &[]), "run");
-    assert_eq!(
-        string_contents(interp.heap_ref(), &interp.fetch(&described)),
-        "grand/mid"
-    );
+    interp.enter(|m| {
+        assert_eq!(string_contents(m.heap(), &m.fetch(&described)), "grand/mid");
+    });
 }
 
 /// §3.3: an activation's enclosing objects belong to the level that
@@ -669,10 +681,9 @@ fn outer_in_an_inherited_method_resolves_from_the_defining_level() {
     let platform = interp.platform();
     let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     let described = expect_ok(interp.send(&outer, Symbol::intern("run"), &[]), "run");
-    assert_eq!(
-        string_contents(interp.heap_ref(), &interp.fetch(&described)),
-        "top"
-    );
+    interp.enter(|m| {
+        assert_eq!(string_contents(m.heap(), &m.fetch(&described)), "top");
+    });
 }
 
 /// The same defect one hop further out, which only a lexical *declaration*
@@ -705,10 +716,9 @@ fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
     let platform = interp.platform();
     let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
     let described = expect_ok(interp.send(&outer, Symbol::intern("run"), &[]), "run");
-    assert_eq!(
-        string_contents(interp.heap_ref(), &interp.fetch(&described)),
-        "top"
-    );
+    interp.enter(|m| {
+        assert_eq!(string_contents(m.heap(), &m.fetch(&described)), "top");
+    });
 }
 
 /// §6.3.1: a class side is written inside the same class declaration its
@@ -747,15 +757,13 @@ fn outer_in_a_class_side_method_reaches_the_enclosing_object() {
         interp.send(&outer, Symbol::intern("shallow"), &[]),
         "shallow",
     );
-    assert_eq!(
-        string_contents(interp.heap_ref(), &interp.fetch(&shallow)),
-        "top"
-    );
+    interp.enter(|m| {
+        assert_eq!(string_contents(m.heap(), &m.fetch(&shallow)), "top");
+    });
     let deep = expect_ok(interp.send(&outer, Symbol::intern("deep"), &[]), "deep");
-    assert_eq!(
-        string_contents(interp.heap_ref(), &interp.fetch(&deep)),
-        "top"
-    );
+    interp.enter(|m| {
+        assert_eq!(string_contents(m.heap(), &m.fetch(&deep)), "top");
+    });
 }
 
 /// A superclass clause that fails leaves no creation in progress behind: the
@@ -790,8 +798,10 @@ fn a_failed_superclass_clause_is_retried_rather_than_reported_as_a_cycle() {
         interp.send(&outer, Symbol::intern("Inner"), &[]),
         "the second access",
     );
-    let Value::Obj(inner) = interp.fetch(&inner) else {
-        panic!("a class object");
-    };
-    assert!(interp.heap_ref().is_class(inner));
+    interp.enter(|m| {
+        let Value::Obj(inner) = m.fetch(&inner) else {
+            panic!("a class object");
+        };
+        assert!(m.heap().is_class(inner));
+    });
 }

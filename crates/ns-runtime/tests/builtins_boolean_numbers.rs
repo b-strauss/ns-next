@@ -50,13 +50,13 @@ fn integer_addition_via_direct_send_evaluates_correctly() {
     );
 
     let sum = expect_ok(result, "3 + 4");
-    match interp.fetch(&sum) {
+    interp.enter(|m| match m.fetch(&sum) {
         Value::SmallInt(7) => {}
         other => panic!(
             "expected Value::SmallInt(7), got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 }
 
 #[test]
@@ -78,10 +78,10 @@ fn integer_addition_overflow_is_a_newspeak_error_not_a_panic() {
                 e.message
             );
         }
-        Ok(v) => panic!(
-            "expected a Newspeak error for i64::MAX + 1, got Ok({})",
-            interp.heap_ref().describe(&interp.fetch(&v))
-        ),
+        Ok(v) => {
+            let got = interp.enter(|m| m.heap().describe(&m.fetch(&v)));
+            panic!("expected a Newspeak error for i64::MAX + 1, got Ok({got})")
+        }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
     }
 }
@@ -103,13 +103,14 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
         let (mut interp, class) = load(&src);
         let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-        match interp.fetch(&expect_ok(result, body)) {
+        let result = expect_ok(result, body);
+        interp.enter(|m| match m.fetch(&result) {
             Value::SmallInt(1) => {}
             other => panic!(
                 "{body}: expected Value::SmallInt(1), got {}",
-                interp.heap_ref().describe(&other)
+                m.heap().describe(&other)
             ),
-        }
+        });
     }
 }
 
@@ -133,13 +134,14 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
         let (mut interp, class) = load(&src);
         let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-        match interp.fetch(&expect_ok(result, body)) {
+        let result = expect_ok(result, body);
+        interp.enter(|m| match m.fetch(&result) {
             Value::SmallInt(5) => {}
             other => panic!(
                 "{body}: expected Value::SmallInt(5), got {}",
-                interp.heap_ref().describe(&other)
+                m.heap().describe(&other)
             ),
-        }
+        });
     }
 }
 
@@ -172,11 +174,14 @@ fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
         let (mut interp, class) = load(&src);
         let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-        assert_eq!(
-            as_string(interp.heap_ref(), &interp.fetch(&expect_ok(result, body))),
-            "escaped",
-            "the block's non-local return must unwind `m`'s own activation directly, not be swallowed into `false` and fall through to the second statement"
-        );
+        let result = expect_ok(result, body);
+        interp.enter(|m| {
+            assert_eq!(
+                as_string(m.heap(), &m.fetch(&result)),
+                "escaped",
+                "the block's non-local return must unwind `m`'s own activation directly, not be swallowed into `false` and fall through to the second statement"
+            );
+        });
     }
 }
 
@@ -203,11 +208,14 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
         let (mut interp, class) = load(&src);
         let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
         let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-        assert_eq!(
-            as_string(interp.heap_ref(), &interp.fetch(&expect_ok(result, body))),
-            "correct",
-            "false and: [...] and true or: [...] must never invoke their block argument at all"
-        );
+        let result = expect_ok(result, body);
+        interp.enter(|m| {
+            assert_eq!(
+                as_string(m.heap(), &m.fetch(&result)),
+                "correct",
+                "false and: [...] and true or: [...] must never invoke their block argument at all"
+            );
+        });
     }
 }
 
@@ -240,10 +248,10 @@ fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
                 e.message
             );
         }
-        Ok(v) => panic!(
-            "expected a Newspeak error for `1 + 1.5`, got Ok({})",
-            interp.heap_ref().describe(&interp.fetch(&v))
-        ),
+        Ok(v) => {
+            let got = interp.enter(|m| m.heap().describe(&m.fetch(&v)));
+            panic!("expected a Newspeak error for `1 + 1.5`, got Ok({got})")
+        }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
     }
 }
@@ -261,8 +269,10 @@ fn mixed_integer_float_arithmetic_reports_a_type_mismatch_not_an_overflow() {
 fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow() {
     let mut interp = Interpreter::bootstrap();
 
-    let arg = interp.new_array(vec![]);
-    let arg = interp.stash(Value::Obj(arg));
+    let arg = interp.enter(|m| {
+        let arr = m.new_array(vec![]);
+        m.stash(Value::Obj(arr))
+    });
     let one = interp.stash(Value::SmallInt(1));
 
     let result = interp.send(&one, Symbol::intern("+"), &[arg]);
@@ -275,10 +285,10 @@ fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow()
                 e.message
             );
         }
-        Ok(v) => panic!(
-            "expected a Newspeak error for `1 + anArray`, got Ok({})",
-            interp.heap_ref().describe(&interp.fetch(&v))
-        ),
+        Ok(v) => {
+            let got = interp.enter(|m| m.heap().describe(&m.fetch(&v)));
+            panic!("expected a Newspeak error for `1 + anArray`, got Ok({got})")
+        }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
     }
 }
@@ -296,15 +306,17 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
         &[interp.stash(Value::Float(1.5))],
     );
 
-    match result.map(|root| interp.fetch(&root)) {
+    match result {
         Err(HostSignal::Error(e)) => assert!(e.message.contains("coercion"), "got: {}", e.message),
-        Ok(Value::Bool(false)) => {
-            panic!("`1 < 1.5` silently answered false instead of reporting the type mismatch")
-        }
-        Ok(v) => panic!(
-            "expected a Newspeak error, got Ok({})",
-            interp.heap_ref().describe(&v)
-        ),
+        Ok(v) => interp.enter(|m| match m.fetch(&v) {
+            Value::Bool(false) => {
+                panic!("`1 < 1.5` silently answered false instead of reporting the type mismatch")
+            }
+            other => panic!(
+                "expected a Newspeak error, got Ok({})",
+                m.heap().describe(&other)
+            ),
+        }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
     }
 }
@@ -323,13 +335,14 @@ fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
         &[interp.stash(Value::Float(1.0))],
     );
 
-    match interp.fetch(&expect_ok(result, "1 = 1.0")) {
+    let result = expect_ok(result, "1 = 1.0");
+    interp.enter(|m| match m.fetch(&result) {
         Value::Bool(false) => {}
         other => panic!(
             "expected Value::Bool(false), got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 }
 
 /// The one direction the runtime *does* widen: `Float`'s own arithmetic
@@ -345,13 +358,14 @@ fn float_arithmetic_still_widens_an_integer_argument() {
         &[interp.stash(Value::SmallInt(1))],
     );
 
-    match interp.fetch(&expect_ok(result, "1.5 + 1")) {
+    let result = expect_ok(result, "1.5 + 1");
+    interp.enter(|m| match m.fetch(&result) {
         Value::Float(f) => assert!((f - 2.5).abs() < f64::EPSILON, "expected 2.5, got {f}"),
         other => panic!(
             "expected Value::Float(2.5), got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 }
 
 /// A genuine overflow must still be reported as an overflow -- the I7 change
@@ -373,10 +387,10 @@ fn a_real_integer_overflow_is_still_reported_as_an_overflow() {
             "expected an overflow-shaped message, got: {}",
             e.message
         ),
-        Ok(v) => panic!(
-            "expected a Newspeak error, got Ok({})",
-            interp.heap_ref().describe(&interp.fetch(&v))
-        ),
+        Ok(v) => {
+            let got = interp.enter(|m| m.heap().describe(&m.fetch(&v)));
+            panic!("expected a Newspeak error, got Ok({got})")
+        }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
     }
 }
@@ -396,11 +410,12 @@ fn a_radix_integer_literal_evaluates() {
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-    match interp.fetch(&expect_ok(result, "^16r1F")) {
+    let result = expect_ok(result, "^16r1F");
+    interp.enter(|m| match m.fetch(&result) {
         Value::SmallInt(31) => {}
         other => panic!(
             "expected Value::SmallInt(31), got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 }

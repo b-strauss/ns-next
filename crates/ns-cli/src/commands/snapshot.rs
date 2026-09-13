@@ -42,16 +42,18 @@ pub(crate) fn execute(
     }
     // Fetched only now, right before encoding: encoding runs no code, so
     // nothing can move these values between here and the write.
-    let platform = interp.fetch(&platform);
-    let root_values: Vec<ns_runtime::Value> = roots.iter().map(|r| interp.fetch(r)).collect();
-    let bytes = match ns_runtime::image::snapshot(
-        &interp,
-        debug_source.then_some(loaded.source.as_str()),
-        &loaded.origin,
-        entry::class_ref(&interp, &class),
-        &platform,
-        &root_values,
-    ) {
+    let bytes = match interp.enter(|m| {
+        let platform = m.fetch(&platform);
+        let root_values: Vec<ns_runtime::Value> = roots.iter().map(|r| m.fetch(r)).collect();
+        ns_runtime::image::snapshot(
+            m,
+            debug_source.then_some(loaded.source.as_str()),
+            &loaded.origin,
+            entry::class_ref(m, &class),
+            &platform,
+            &root_values,
+        )
+    }) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: snapshot failed: {e}");

@@ -59,11 +59,8 @@ fn timed_send(
 fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<BenchStats, String> {
     let (mut interp, class) = source::bootstrap(loaded, ns_runtime::Lowering::Optimized);
     let platform = interp.platform();
-    let factory_args = entry::factory_args_for(
-        interp.heap_ref(),
-        entry::class_ref(&interp, &class),
-        &platform,
-    )?;
+    let factory_args = interp
+        .enter(|m| entry::factory_args_for(m.heap(), entry::class_ref(m, &class), &platform))?;
     let entry_args_list = entry::entry_args(&interp, send, &platform)?;
     let selector = ns_runtime::Symbol::intern(send);
 

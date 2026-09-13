@@ -69,25 +69,26 @@ fn module(body: &str) -> String {
 
 #[test]
 fn while_true_loops_until_the_condition_is_false_and_answers_nil() {
-    let (interp, result) = run_method(
+    let (mut interp, result) = run_method(
         &module("| n c b | n := 0. c := [n < 3]. b := [n := n + 1]. c whileTrue: b. ^n"),
         "run",
     );
     let v = expect_ok(result, "run");
-    assert_eq!(int_of(&interp.fetch(&v)), 3);
-    let (interp, result) = run_method(&module("| c | c := [false]. ^c whileTrue: [nil]"), "run");
+    assert_eq!(interp.enter(|m| int_of(&m.fetch(&v))), 3);
+    let (mut interp, result) =
+        run_method(&module("| c | c := [false]. ^c whileTrue: [nil]"), "run");
     let v = expect_ok(result, "run");
-    assert!(matches!(interp.fetch(&v), Value::Nil));
+    assert!(interp.enter(|m| matches!(m.fetch(&v), Value::Nil)));
 }
 
 #[test]
 fn while_false_loops_until_the_condition_is_true() {
-    let (interp, result) = run_method(
+    let (mut interp, result) = run_method(
         &module("| n c | n := 0. c := [n = 3]. c whileFalse: [n := n + 1]. ^n"),
         "run",
     );
     let v = expect_ok(result, "run");
-    assert_eq!(int_of(&interp.fetch(&v)), 3);
+    assert_eq!(interp.enter(|m| int_of(&m.fetch(&v))), 3);
 }
 
 #[test]
@@ -107,26 +108,26 @@ fn a_non_boolean_condition_sends_must_be_boolean() {
 
 #[test]
 fn a_non_local_return_escapes_a_while_loop() {
-    let (interp, result) = run_method(
+    let (mut interp, result) = run_method(
         &module("| n c | n := 0. c := [true]. c whileTrue: [n := n + 1. n = 5 ifTrue: [^n]]"),
         "run",
     );
     let v = expect_ok(result, "run");
-    assert_eq!(int_of(&interp.fetch(&v)), 5);
+    assert_eq!(interp.enter(|m| int_of(&m.fetch(&v))), 5);
 }
 
 #[test]
 fn if_false_if_true_picks_the_right_block() {
-    let (interp, result) = run_method(
+    let (mut interp, result) = run_method(
         &module("| f t | f := ['f']. t := ['t']. ^true ifFalse: f ifTrue: t"),
         "run",
     );
     let v = expect_ok(result, "run");
-    assert_eq!(string_of(interp.heap_ref(), &interp.fetch(&v)), "t");
-    let (interp, result) = run_method(
+    assert_eq!(interp.enter(|m| string_of(m.heap(), &m.fetch(&v))), "t");
+    let (mut interp, result) = run_method(
         &module("| f t | f := ['f']. t := ['t']. ^false ifFalse: f ifTrue: t"),
         "run",
     );
     let v = expect_ok(result, "run");
-    assert_eq!(string_of(interp.heap_ref(), &interp.fetch(&v)), "f");
+    assert_eq!(interp.enter(|m| string_of(m.heap(), &m.fetch(&v))), "f");
 }

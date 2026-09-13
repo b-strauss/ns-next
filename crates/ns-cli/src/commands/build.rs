@@ -76,11 +76,13 @@ pub(crate) fn execute(
         Err(code) => return code,
     };
     let (mut interp, class) = source::bootstrap(&loaded, lowering);
-    let class = crate::entry::class_ref(&interp, &class);
 
     let entry = match entry {
         Some(e) => e.to_string(),
-        None if root_class_answers(interp.heap_ref(), class, "main:args:") => {
+        None if interp.enter(|m| {
+            root_class_answers(m.heap(), crate::entry::class_ref(m, &class), "main:args:")
+        }) =>
+        {
             "main:args:".to_string()
         }
         None => {
@@ -97,7 +99,9 @@ pub(crate) fn execute(
         eprintln!("error: cannot use `{entry}` as an entry point: {msg}");
         return ExitCode::FAILURE;
     }
-    if !root_class_answers(interp.heap_ref(), class, &entry) {
+    let answers_entry =
+        interp.enter(|m| root_class_answers(m.heap(), crate::entry::class_ref(m, &class), &entry));
+    if !answers_entry {
         eprintln!(
             "error: the root class of {} does not answer `{entry}`",
             file.display()
@@ -105,13 +109,15 @@ pub(crate) fn execute(
         return ExitCode::FAILURE;
     }
 
-    let bytes = match ns_runtime::image::build(
-        interp.heap_ref(),
-        debug_source.then_some(loaded.source.as_str()),
-        &loaded.origin,
-        class,
-        ns_runtime::Symbol::intern(&entry),
-    ) {
+    let bytes = match interp.enter(|m| {
+        ns_runtime::image::build(
+            m.heap(),
+            debug_source.then_some(loaded.source.as_str()),
+            &loaded.origin,
+            crate::entry::class_ref(m, &class),
+            ns_runtime::Symbol::intern(&entry),
+        )
+    }) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: build failed: {e}");

@@ -52,11 +52,13 @@ fn method_with_no_explicit_return_returns_self() {
         ) : ()
     "});
     let result = expect_ok(interp.send(&receiver, Symbol::intern("bar"), &[]), "bar");
-    let (result, receiver) = (interp.fetch(&result), interp.fetch(&receiver));
-    assert!(
-        matches!((&result, &receiver), (Value::Obj(a), Value::Obj(b)) if a.same(*b)),
-        "a method with no explicit return must yield the receiver, not the last expression's value"
-    );
+    interp.enter(|m| {
+        let (result, receiver) = (m.fetch(&result), m.fetch(&receiver));
+        assert!(
+            matches!((&result, &receiver), (Value::Obj(a), Value::Obj(b)) if a.same(*b)),
+            "a method with no explicit return must yield the receiver, not the last expression's value"
+        );
+    });
 }
 
 #[test]
@@ -73,7 +75,7 @@ fn method_with_explicit_return_returns_the_returned_value() {
         interp.send(&receiver, Symbol::intern("answer"), &[]),
         "answer",
     );
-    assert!(matches!(interp.fetch(&result), Value::SmallInt(42)));
+    assert!(interp.enter(|m| matches!(m.fetch(&result), Value::SmallInt(42))));
 }
 
 /// A bare `OrderedCollection` (no `platform` prefix, outside any superclass
@@ -89,13 +91,15 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
         ) : ()
     "});
     let result = expect_ok(interp.send(&receiver, Symbol::intern("bar"), &[]), "bar");
-    let Value::Obj(obj) = interp.fetch(&result) else {
-        panic!("expected an OrderedCollection instance")
-    };
-    assert!(matches!(
-        interp.heap_ref().array_elements(obj),
-        Some(elements) if elements.is_empty()
-    ));
+    interp.enter(|m| {
+        let Value::Obj(obj) = m.fetch(&result) else {
+            panic!("expected an OrderedCollection instance")
+        };
+        assert!(matches!(
+            m.heap().array_elements(obj),
+            Some(elements) if elements.is_empty()
+        ));
+    });
 }
 
 /// `[ ^1 ] value`, invoked while its home method is still running, returns
@@ -111,8 +115,8 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
         ) : ()
     "});
     let result = expect_ok(interp.send(&receiver, Symbol::intern("m"), &[]), "m");
-    assert!(matches!(interp.fetch(&result), Value::SmallInt(1)));
-    assert_eq!(interp.heap_ref().activation_depth(), 0);
+    assert!(interp.enter(|m| matches!(m.fetch(&result), Value::SmallInt(1))));
+    assert_eq!(interp.enter(|m| m.heap().activation_depth()), 0);
 }
 
 /// The same block, stored and invoked again after its home returned, is
@@ -128,7 +132,7 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
         ) : ()
     "});
     let first = expect_ok(interp.send(&receiver, Symbol::intern("m"), &[]), "m");
-    assert!(matches!(interp.fetch(&first), Value::SmallInt(1)));
+    assert!(interp.enter(|m| matches!(m.fetch(&first), Value::SmallInt(1))));
     expect_cannot_return(
         interp.send(&receiver, Symbol::intern("again"), &[]),
         "again",

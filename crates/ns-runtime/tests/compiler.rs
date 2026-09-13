@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use ns_runtime::bytecode::{CallSite, CodeKind, Instr, Literal};
 use ns_runtime::dispatch::Lookup;
-use ns_runtime::{Interpreter, Mixin, Root, SourceOrigin, Symbol, Value};
+use ns_runtime::{Interpreter, Mixin, Mutator, Root, SourceOrigin, Symbol, Value};
 
 fn load(src: &str) -> (Interpreter, Root) {
     let module = ns_syntax::parse(src).expect("parse");
@@ -21,21 +21,23 @@ fn load(src: &str) -> (Interpreter, Root) {
     (interp, class)
 }
 
-/// The object `root` holds, for the heap accessors that take one.
-fn obj(interp: &Interpreter, root: &Root) -> ns_runtime::ObjRef {
-    match interp.fetch(root) {
+/// The object `root` holds, for the heap accessors that take one. Every
+/// caller is already inside an entry.
+fn obj(m: &Mutator, root: &Root) -> ns_runtime::ObjRef {
+    match m.fetch(root) {
         Value::Obj(obj) => obj,
         _ => panic!("expected an object"),
     }
 }
 
-fn root_mixin(interp: &Interpreter, class: &Root) -> Rc<Mixin> {
-    interp
-        .heap_ref()
-        .class_application(obj(interp, class))
-        .unwrap_or_else(|| panic!("not a class"))
-        .mixin
-        .clone()
+fn root_mixin(interp: &mut Interpreter, class: &Root) -> Rc<Mixin> {
+    interp.enter(|m| {
+        m.heap()
+            .class_application(obj(m, class))
+            .unwrap_or_else(|| panic!("not a class"))
+            .mixin
+            .clone()
+    })
 }
 
 #[test]
@@ -49,8 +51,8 @@ fn loading_compiles_every_method_and_the_initializer_onto_the_mixin() {
           bar = ( ^2 )
         ) : ()
     "};
-    let (interp, class) = load(src);
-    let mixin = root_mixin(&interp, &class);
+    let (mut interp, class) = load(src);
+    let mixin = root_mixin(&mut interp, &class);
     assert_eq!(mixin.methods.len(), 2);
     for method in mixin.methods.values() {
         assert_eq!(method.code.kind, CodeKind::Method);
@@ -80,17 +82,19 @@ fn the_method_dispatch_finds_carries_its_body() {
           foo = ( ^1 )
         ) : ()
     "};
-    let (interp, class) = load(src);
+    let (mut interp, class) = load(src);
     // Access-blind: the fixture's unmarked `foo` is protected, which
     // `lookup_public` would not find.
-    match ns_runtime::dispatch::lookup_defined_for(
-        interp.heap_ref(),
-        obj(&interp, &class),
-        Symbol::intern("foo"),
-    ) {
-        Lookup::Method(method, _) => assert_eq!(method.code.kind, CodeKind::Method),
-        _ => panic!("expected a method"),
-    }
+    interp.enter(|m| {
+        match ns_runtime::dispatch::lookup_defined_for(
+            m.heap(),
+            obj(m, &class),
+            Symbol::intern("foo"),
+        ) {
+            Lookup::Method(method, _) => assert_eq!(method.code.kind, CodeKind::Method),
+            _ => panic!("expected a method"),
+        }
+    });
 }
 
 #[test]
@@ -104,8 +108,8 @@ fn the_initializer_lowers_slots_then_init_exprs_with_own_slot_indices() {
         ) (
         ) : ()
     "};
-    let (interp, class) = load(src);
-    let init = root_mixin(&interp, &class)
+    let (mut interp, class) = load(src);
+    let init = root_mixin(&mut interp, &class)
         .initializer_code
         .clone()
         .expect("an initializer");
@@ -166,8 +170,8 @@ fn an_uninitialized_slot_emits_nothing() {
         ) (
         ) : ()
     "};
-    let (interp, class) = load(src);
-    let init = root_mixin(&interp, &class)
+    let (mut interp, class) = load(src);
+    let init = root_mixin(&mut interp, &class)
         .initializer_code
         .clone()
         .expect("an initializer");
@@ -201,8 +205,8 @@ const NESTED_SRC: &str = indoc! {"
 
 #[test]
 fn every_mixin_in_the_tree_gets_its_bodies() {
-    let (interp, class) = load(NESTED_SRC);
-    let mixin = root_mixin(&interp, &class);
+    let (mut interp, class) = load(NESTED_SRC);
+    let mixin = root_mixin(&mut interp, &class);
 
     // The nested mixin's own method must be compiled -- proof the tree was
     // compiled past the root's own method table into `nested`.

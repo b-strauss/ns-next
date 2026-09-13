@@ -20,10 +20,10 @@ fn platform_is_memoized_across_calls() {
     let mut interp = Interpreter::bootstrap();
     let a = interp.platform();
     let b = interp.platform();
-    match (interp.fetch(&a), interp.fetch(&b)) {
+    interp.enter(|m| match (m.fetch(&a), m.fetch(&b)) {
         (Value::Obj(a), Value::Obj(b)) => assert!(a.same(b)),
         _ => panic!("expected Value::Obj"),
-    }
+    });
 }
 
 #[test]
@@ -36,18 +36,20 @@ fn platform_transcript_show_and_new_line_round_trip() {
         "platform transcript",
     );
 
-    let s = interp.new_string("hi".to_string());
-    let s = interp.stash(Value::Obj(s));
+    let s = interp.enter(|m| {
+        let obj = m.new_string("hi".to_string());
+        m.stash(Value::Obj(obj))
+    });
     let after_show = expect_ok(
         interp.send(&transcript, Symbol::intern("show:"), &[s]),
         "transcript show: 'hi'",
     );
     // `show:` returns the receiver (the `Transcript`-style convention
     // `platform.rs`'s doc comment describes).
-    match (interp.fetch(&after_show), interp.fetch(&transcript)) {
+    interp.enter(|m| match (m.fetch(&after_show), m.fetch(&transcript)) {
         (Value::Obj(a), Value::Obj(b)) => assert!(a.same(b)),
         _ => panic!("expected Value::Obj"),
-    }
+    });
 
     expect_ok(
         interp.send(&transcript, Symbol::intern("newLine"), &[]),
@@ -64,14 +66,13 @@ fn platform_class_accessors_return_the_matching_builtin_class() {
         interp.send(&platform, Symbol::intern("OrderedCollection"), &[]),
         "platform OrderedCollection",
     );
-    let expected = interp.builtin_class(BuiltinClass::OrderedCollection);
-    match interp.fetch(&got) {
-        Value::Obj(obj) => assert!(obj.same(expected)),
-        other => panic!(
-            "expected Value::Obj, got {}",
-            interp.heap_ref().describe(&other)
-        ),
-    }
+    interp.enter(|m| {
+        let expected = m.builtin_class(BuiltinClass::OrderedCollection);
+        match m.fetch(&got) {
+            Value::Obj(obj) => assert!(obj.same(expected)),
+            other => panic!("expected Value::Obj, got {}", m.heap().describe(&other)),
+        }
+    });
 }
 
 /// `platform collections List` exists because three whitelisted corpus
@@ -91,11 +92,13 @@ fn platform_collections_answers_list_with_the_ordered_collection_class() {
         interp.send(&collections, Symbol::intern("List"), &[]),
         "platform collections List",
     );
-    let expected = interp.builtin_class(BuiltinClass::OrderedCollection);
-    match interp.fetch(&got) {
-        Value::Obj(obj) => assert!(obj.same(expected)),
-        _ => panic!("expected a class object"),
-    }
+    interp.enter(|m| {
+        let expected = m.builtin_class(BuiltinClass::OrderedCollection);
+        match m.fetch(&got) {
+            Value::Obj(obj) => assert!(obj.same(expected)),
+            _ => panic!("expected a class object"),
+        }
+    });
 }
 
 /// The namespace answers exactly what a whitelisted module asks for, and

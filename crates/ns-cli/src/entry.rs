@@ -37,11 +37,8 @@ fn report_signal(signal: ns_runtime::HostSignal) -> ExitCode {
 
 /// The class object a module's root-class `Root` holds: `load_module` and
 /// `image::load` only ever root a class object there.
-pub(crate) fn class_ref(
-    interp: &ns_runtime::Interpreter,
-    class: &ns_runtime::Root,
-) -> ns_runtime::ClassRef {
-    match interp.fetch(class) {
+pub(crate) fn class_ref(m: &ns_runtime::Mutator, class: &ns_runtime::Root) -> ns_runtime::ClassRef {
+    match m.fetch(class) {
         ns_runtime::Value::Obj(class) => class,
         _ => unreachable!("internal: a module's root class is a class object"),
     }
@@ -166,7 +163,8 @@ pub(crate) fn instantiate_root(
     class: &ns_runtime::Root,
 ) -> Result<ns_runtime::Root, ExitCode> {
     let platform = interp.platform();
-    let factory_args = factory_args_for(interp.heap_ref(), class_ref(interp, class), &platform)
+    let factory_args = interp
+        .enter(|m| factory_args_for(m.heap(), class_ref(m, class), &platform))
         .map_err(|msg| {
             eprintln!("error: {msg}");
             ExitCode::FAILURE

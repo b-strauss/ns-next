@@ -32,13 +32,13 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-fn expect_error(interp: &Interpreter, result: HostResult, what: &str) -> HostError {
+fn expect_error(interp: &mut Interpreter, result: HostResult, what: &str) -> HostError {
     match result {
         Err(HostSignal::Error(e)) => e,
-        Ok(root) => panic!(
-            "{what}: expected a Newspeak error, got {}",
-            interp.heap_ref().describe(&interp.fetch(&root))
-        ),
+        Ok(root) => {
+            let got = interp.enter(|m| m.heap().describe(&m.fetch(&root)));
+            panic!("{what}: expected a Newspeak error, got {got}")
+        }
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
     }
 }
@@ -48,11 +48,11 @@ fn expect_error(interp: &Interpreter, result: HostResult, what: &str) -> HostErr
 /// the shape `try_factory_send` gives `OrderedCollection new`. Constructing
 /// it without a send is sufficient to exercise `dispatch_ordered_collection`.
 fn new_ordered_collection(interp: &mut Interpreter) -> Root {
-    let class = interp.builtin_class(BuiltinClass::OrderedCollection);
-    let collection = interp
-        .heap_mut()
-        .alloc_object(class, ObjectData::Array(vec![]));
-    interp.stash(Value::Obj(collection))
+    interp.enter(|m| {
+        let class = m.builtin_class(BuiltinClass::OrderedCollection);
+        let collection = m.heap_mut().alloc_object(class, ObjectData::Array(vec![]));
+        m.stash(Value::Obj(collection))
+    })
 }
 
 #[test]
@@ -68,13 +68,14 @@ fn array_at_returns_the_one_based_element() {
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-    match interp.fetch(&expect_ok(result, "{1. 2. 3} at: 2")) {
+    let result = expect_ok(result, "{1. 2. 3} at: 2");
+    interp.enter(|m| match m.fetch(&result) {
         Value::SmallInt(2) => {}
         other => panic!(
             "expected Value::SmallInt(2), got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 }
 
 #[test]
@@ -90,7 +91,7 @@ fn array_at_out_of_range_is_a_newspeak_error_not_a_panic() {
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-    let err = expect_error(&interp, result, "{1. 2. 3} at: 5");
+    let err = expect_error(&mut interp, result, "{1. 2. 3} at: 5");
     assert!(
         err.message.to_lowercase().contains("range"),
         "expected an out-of-range-shaped error message, got: {}",
@@ -111,13 +112,14 @@ fn array_at_put_writes_and_returns_the_receiver() {
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-    match interp.fetch(&expect_ok(result, "at:put: then at:")) {
+    let result = expect_ok(result, "at:put: then at:");
+    interp.enter(|m| match m.fetch(&result) {
         Value::SmallInt(99) => {}
         other => panic!(
             "expected Value::SmallInt(99), got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 }
 
 /// `do:` traversal via a mutable-slot accumulator. Also exercises `do:`
@@ -136,13 +138,14 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-    match interp.fetch(&expect_ok(result, "{1. 2. 3} do: [:x | sum := sum + x]")) {
+    let result = expect_ok(result, "{1. 2. 3} do: [:x | sum := sum + x]");
+    interp.enter(|m| match m.fetch(&result) {
         Value::SmallInt(6) => {}
         other => panic!(
             "expected Value::SmallInt(6), got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 }
 
 /// `OrderedCollection new add: 1; add: 2; size` -> `2` -- exercises cascades
@@ -164,16 +167,14 @@ fn ordered_collection_add_and_size_through_a_real_cascade() {
     let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let oc = new_ordered_collection(&mut interp);
     let result = interp.send(&receiver, Symbol::intern("m:"), &[oc]);
-    match interp.fetch(&expect_ok(
-        result,
-        "OrderedCollection new add: 1; add: 2; size",
-    )) {
+    let result = expect_ok(result, "OrderedCollection new add: 1; add: 2; size");
+    interp.enter(|m| match m.fetch(&result) {
         Value::SmallInt(2) => {}
         other => panic!(
             "expected Value::SmallInt(2), got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 }
 
 #[test]
@@ -185,13 +186,14 @@ fn ordered_collection_add_returns_the_argument_not_the_receiver() {
         Symbol::intern("add:"),
         &[interp.stash(Value::SmallInt(42))],
     );
-    match interp.fetch(&expect_ok(result, "OrderedCollection add: 42")) {
+    let result = expect_ok(result, "OrderedCollection add: 42");
+    interp.enter(|m| match m.fetch(&result) {
         Value::SmallInt(42) => {}
         other => panic!(
             "expected Value::SmallInt(42) (the argument), got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 }
 
 #[test]
@@ -203,7 +205,7 @@ fn ordered_collection_at_out_of_range_is_a_newspeak_error_not_a_panic() {
         Symbol::intern("at:"),
         &[interp.stash(Value::SmallInt(1))],
     );
-    let err = expect_error(&interp, result, "OrderedCollection (empty) at: 1");
+    let err = expect_error(&mut interp, result, "OrderedCollection (empty) at: 1");
     assert!(
         err.message.to_lowercase().contains("range"),
         "expected an out-of-range-shaped error message, got: {}",
@@ -219,14 +221,18 @@ fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
     // instead of reporting. Every other `at:` test here passes a `SmallInt`
     // index, which formats harmlessly and so could not catch it.
     let mut interp = Interpreter::bootstrap();
-    let receiver = interp.new_array(vec![Value::SmallInt(1)]);
-    let receiver = interp.stash(Value::Obj(receiver));
-    let index = interp.new_string("not an integer".to_string());
-    let index = interp.stash(Value::Obj(index));
+    let receiver = interp.enter(|m| {
+        let obj = m.new_array(vec![Value::SmallInt(1)]);
+        m.stash(Value::Obj(obj))
+    });
+    let index = interp.enter(|m| {
+        let obj = m.new_string("not an integer".to_string());
+        m.stash(Value::Obj(obj))
+    });
 
     let result = interp.send(&receiver, Symbol::intern("at:"), &[index]);
 
-    let err = expect_error(&interp, result, "{1} at: 'not an integer'");
+    let err = expect_error(&mut interp, result, "{1} at: 'not an integer'");
     assert!(
         err.message.contains("requires an Integer index"),
         "unexpected message: {}",
@@ -257,10 +263,11 @@ fn do_walks_a_snapshot_of_its_receiver() {
     let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let oc = new_ordered_collection(&mut interp);
     let result = interp.send(&receiver, Symbol::intern("m:"), &[oc]);
-    match interp.fetch(&expect_ok(result, "do: over a collection it grows")) {
+    let result = expect_ok(result, "do: over a collection it grows");
+    interp.enter(|m| match m.fetch(&result) {
         Value::SmallInt(204) => {}
-        other => panic!("expected 204, got {}", interp.heap_ref().describe(&other)),
-    }
+        other => panic!("expected 204, got {}", m.heap().describe(&other)),
+    });
 }
 
 /// A non-block argument stands for its own value, so `do:` hands it every
@@ -278,10 +285,8 @@ fn do_with_a_non_block_answers_its_receiver() {
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-    assert!(matches!(
-        interp.fetch(&expect_ok(result, "{1. 2} do: 3")),
-        Value::Bool(true)
-    ));
+    let result = expect_ok(result, "{1. 2} do: 3");
+    assert!(interp.enter(|m| matches!(m.fetch(&result), Value::Bool(true))));
 }
 
 /// A block of the wrong arity fails at the first element; an empty
@@ -304,7 +309,7 @@ fn do_checks_its_block_arity_at_each_element() {
         "#() do: with a two-argument block",
     );
     let result = interp.send(&receiver, Symbol::intern("full"), &[]);
-    let err = expect_error(&interp, result, "#(1) do: with a two-argument block");
+    let err = expect_error(&mut interp, result, "#(1) do: with a two-argument block");
     assert!(
         err.message.contains("wrong number of block arguments"),
         "got: {}",
@@ -325,13 +330,14 @@ fn block_value_invokes_a_zero_arg_closure() {
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-    match interp.fetch(&expect_ok(result, "[42] value")) {
+    let result = expect_ok(result, "[42] value");
+    interp.enter(|m| match m.fetch(&result) {
         Value::SmallInt(42) => {}
         other => panic!(
             "expected Value::SmallInt(42), got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 }
 
 #[test]
@@ -347,13 +353,14 @@ fn block_value_colon_passes_the_argument_positionally() {
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-    match interp.fetch(&expect_ok(result, "[:x | x + 1] value: 41")) {
+    let result = expect_ok(result, "[:x | x + 1] value: 41");
+    interp.enter(|m| match m.fetch(&result) {
         Value::SmallInt(42) => {}
         other => panic!(
             "expected Value::SmallInt(42), got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 }
 
 #[test]
@@ -369,13 +376,14 @@ fn block_num_args_reports_the_declared_parameter_count() {
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-    match interp.fetch(&expect_ok(result, "[:x :y | x + y] numArgs")) {
+    let result = expect_ok(result, "[:x :y | x + y] numArgs");
+    interp.enter(|m| match m.fetch(&result) {
         Value::SmallInt(2) => {}
         other => panic!(
             "expected Value::SmallInt(2), got {}",
-            interp.heap_ref().describe(&other)
+            m.heap().describe(&other)
         ),
-    }
+    });
 }
 
 /// A block called with too few arguments must be a `NewspeakError`, never a
@@ -394,7 +402,7 @@ fn block_called_with_too_few_arguments_is_a_newspeak_error_not_a_panic() {
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-    let err = expect_error(&interp, result, "[:x | x] value (0 args, 1 param)");
+    let err = expect_error(&mut interp, result, "[:x | x] value (0 args, 1 param)");
     assert!(
         err.message.to_lowercase().contains("argument"),
         "expected an argument-count-shaped error message, got: {}",
@@ -416,7 +424,7 @@ fn block_called_with_too_many_arguments_is_a_newspeak_error_not_a_panic() {
     let (mut interp, class) = load(src);
     let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
     let result = interp.send(&receiver, Symbol::intern("m"), &[]);
-    let err = expect_error(&interp, result, "[42] value: 1 (1 arg, 0 params)");
+    let err = expect_error(&mut interp, result, "[42] value: 1 (1 arg, 0 params)");
     assert!(
         err.message.to_lowercase().contains("argument"),
         "expected an argument-count-shaped error message, got: {}",

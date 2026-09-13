@@ -2,7 +2,7 @@ use indoc::indoc;
 use std::rc::Rc;
 
 use ns_runtime::mixin::{mixin_key, Mixin};
-use ns_runtime::{Interpreter, Root, Symbol, Value};
+use ns_runtime::{Interpreter, Mutator, Root, Symbol, Value};
 use ns_syntax::{ast, span::Span};
 
 fn slot_decl(name: &str) -> ns_runtime::mixin::MixinSlot {
@@ -32,9 +32,8 @@ fn bare_mixin(name: &str) -> Rc<Mixin> {
 #[test]
 fn applying_the_same_mixin_to_the_same_superclass_is_cached() {
     let mut interp = Interpreter::bootstrap();
-    let m = bare_mixin("Inner");
-    let a = interp.apply_mixin(&m, None);
-    let b = interp.apply_mixin(&m, None);
+    let mixin = bare_mixin("Inner");
+    let (a, b) = interp.enter(|mu| (mu.apply_mixin(&mixin, None), mu.apply_mixin(&mixin, None)));
     assert!(
         Rc::ptr_eq(&a, &b),
         "the application cache must return one behaviour per (mixin, super)"
@@ -44,11 +43,15 @@ fn applying_the_same_mixin_to_the_same_superclass_is_cached() {
 #[test]
 fn different_superclasses_produce_different_applications() {
     let mut interp = Interpreter::bootstrap();
-    let sup_a = interp.apply_mixin(&bare_mixin("A"), None);
-    let sup_b = interp.apply_mixin(&bare_mixin("B"), None);
-    let m = bare_mixin("Inner");
-    let x = interp.apply_mixin(&m, Some(&sup_a));
-    let y = interp.apply_mixin(&m, Some(&sup_b));
+    let (x, y) = interp.enter(|mu| {
+        let sup_a = mu.apply_mixin(&bare_mixin("A"), None);
+        let sup_b = mu.apply_mixin(&bare_mixin("B"), None);
+        let mixin = bare_mixin("Inner");
+        (
+            mu.apply_mixin(&mixin, Some(&sup_a)),
+            mu.apply_mixin(&mixin, Some(&sup_b)),
+        )
+    });
     assert!(!Rc::ptr_eq(&x, &y));
 }
 
@@ -60,11 +63,13 @@ fn inherited_slots_are_counted_before_own_slots() {
     let mut interp = Interpreter::bootstrap();
     let mut sup = bare_mixin("Sup");
     Rc::get_mut(&mut sup).unwrap().slots = vec![slot_decl("a"), slot_decl("b")];
-    let sup_app = interp.apply_mixin(&sup, None);
-
     let mut sub = bare_mixin("Sub");
     Rc::get_mut(&mut sub).unwrap().slots = vec![slot_decl("c")];
-    let sub_app = interp.apply_mixin(&sub, Some(&sup_app));
+    let (sup_app, sub_app) = interp.enter(|mu| {
+        let sup_app = mu.apply_mixin(&sup, None);
+        let sub_app = mu.apply_mixin(&sub, Some(&sup_app));
+        (sup_app, sub_app)
+    });
 
     // Slot count includes inherited and own.
     assert_eq!(sup_app.num_slots, 2, "superclass should have 2 slots");
@@ -109,9 +114,10 @@ fn load(src: &str) -> (Interpreter, Root, ns_runtime::ResolvedModule) {
     (interp, class, resolved)
 }
 
-/// The object `root` holds, for the heap accessors that take one.
-fn obj(interp: &Interpreter, root: &Root) -> ns_runtime::ObjRef {
-    match interp.fetch(root) {
+/// The object `root` holds, for the heap accessors that take one. Every
+/// caller is already inside an entry.
+fn obj(m: &Mutator, root: &Root) -> ns_runtime::ObjRef {
+    match m.fetch(root) {
         Value::Obj(obj) => obj,
         _ => panic!("expected an object"),
     }
@@ -124,22 +130,24 @@ fn a_class_object_carries_identity_and_its_application_carries_layout() {
         'Test'
         class Point new = Object new (| x. y. |) ()
     "};
-    let (interp, class, _resolved) = load(src);
-    let class = obj(&interp, &class);
-    let application = interp
-        .heap_ref()
-        .class_application(class)
-        .unwrap_or_else(|| panic!("load_module must produce a class object"));
-    assert_eq!(application.num_slots, 2);
-    assert!(
-        interp.heap_ref().class_enclosing(class).is_none(),
-        "a module's enclosing object is nil"
-    );
-    assert_eq!(
-        application.slot_index[&Symbol::intern("y")],
-        1,
-        "layout lives on the application, not on the class object"
-    );
+    let (mut interp, class, _resolved) = load(src);
+    interp.enter(|m| {
+        let class = obj(m, &class);
+        let application = m
+            .heap()
+            .class_application(class)
+            .unwrap_or_else(|| panic!("load_module must produce a class object"));
+        assert_eq!(application.num_slots, 2);
+        assert!(
+            m.heap().class_enclosing(class).is_none(),
+            "a module's enclosing object is nil"
+        );
+        assert_eq!(
+            application.slot_index[&Symbol::intern("y")],
+            1,
+            "layout lives on the application, not on the class object"
+        );
+    });
 }
 
 const NESTED_SRC: &str = indoc! {"
@@ -157,31 +165,35 @@ const NESTED_SRC: &str = indoc! {"
 
 #[test]
 fn the_mixin_tree_contains_nested_and_class_side_declarations() {
-    let (interp, class, _resolved) = load(NESTED_SRC);
-    let application = interp
-        .heap_ref()
-        .class_application(obj(&interp, &class))
-        .unwrap_or_else(|| panic!("expected a class object"));
-    let mixin = &application.mixin;
-    assert_eq!(mixin.nested.len(), 1, "Inner must be in the mixin tree");
-    assert_eq!(mixin.nested[0].name, Symbol::intern("Inner"));
-    assert!(
-        mixin.class_side.is_some(),
-        "a class side is a mixin now, not something to discard"
-    );
+    let (mut interp, class, _resolved) = load(NESTED_SRC);
+    interp.enter(|m| {
+        let application = m
+            .heap()
+            .class_application(obj(m, &class))
+            .unwrap_or_else(|| panic!("expected a class object"));
+        let mixin = &application.mixin;
+        assert_eq!(mixin.nested.len(), 1, "Inner must be in the mixin tree");
+        assert_eq!(mixin.nested[0].name, Symbol::intern("Inner"));
+        assert!(
+            mixin.class_side.is_some(),
+            "a class side is a mixin now, not something to discard"
+        );
+    });
 }
 
 #[test]
 fn a_nested_declaration_reserves_a_hidden_cache_slot() {
-    let (interp, class, _resolved) = load(NESTED_SRC);
-    let app = interp
-        .heap_ref()
-        .class_application(obj(&interp, &class))
-        .unwrap_or_else(|| panic!("expected a class object"));
-    assert_eq!(app.num_slots, 1, "Outer declares no slots but nests Inner");
-    let inner = &app.mixin.nested[0];
-    assert_eq!(inner.name, Symbol::intern("Inner"));
-    assert_eq!(app.nested_slot[&mixin_key(inner)], 0);
+    let (mut interp, class, _resolved) = load(NESTED_SRC);
+    interp.enter(|m| {
+        let app = m
+            .heap()
+            .class_application(obj(m, &class))
+            .unwrap_or_else(|| panic!("expected a class object"));
+        assert_eq!(app.num_slots, 1, "Outer declares no slots but nests Inner");
+        let inner = &app.mixin.nested[0];
+        assert_eq!(inner.name, Symbol::intern("Inner"));
+        assert_eq!(app.nested_slot[&mixin_key(inner)], 0);
+    });
 }
 
 #[test]
@@ -198,14 +210,14 @@ fn inherited_nested_declarations_keep_their_declaring_levels_slot() {
         sup.nested = vec![bare_mixin("Inner")];
     }
     let sup_inner = sup.nested[0].clone();
-    let sup_app = interp.apply_mixin(&sup, None);
+    let sup_app = interp.enter(|mu| mu.apply_mixin(&sup, None));
     assert_eq!(sup_app.slot_index[&Symbol::intern("a")], 0);
     assert_eq!(sup_app.nested_slot[&mixin_key(&sup_inner)], 1);
     assert_eq!(sup_app.num_slots, 2);
 
     let mut sub = bare_mixin("Sub");
     Rc::get_mut(&mut sub).unwrap().slots = vec![slot_decl("own")];
-    let sub_app = interp.apply_mixin(&sub, Some(&sup_app));
+    let sub_app = interp.enter(|mu| mu.apply_mixin(&sub, Some(&sup_app)));
     assert_eq!(
         sub_app.nested_slot[&mixin_key(&sup_inner)],
         1,
@@ -225,12 +237,12 @@ fn a_redeclared_nested_class_gets_its_own_cache_slot() {
     let mut sup = bare_mixin("Sup");
     Rc::get_mut(&mut sup).unwrap().nested = vec![bare_mixin("Inner")];
     let sup_inner = sup.nested[0].clone();
-    let sup_app = interp.apply_mixin(&sup, None);
+    let sup_app = interp.enter(|mu| mu.apply_mixin(&sup, None));
 
     let mut sub = bare_mixin("Sub");
     Rc::get_mut(&mut sub).unwrap().nested = vec![bare_mixin("Inner")];
     let sub_inner = sub.nested[0].clone();
-    let sub_app = interp.apply_mixin(&sub, Some(&sup_app));
+    let sub_app = interp.enter(|mu| mu.apply_mixin(&sub, Some(&sup_app)));
 
     assert_eq!(sub_app.num_slots, 2, "one hidden slot per declaration");
     assert_eq!(sub_app.nested_slot[&mixin_key(&sup_inner)], 0);
