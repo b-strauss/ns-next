@@ -205,13 +205,12 @@ fn execute(
             interp.heap.set_activation_pc(act, pc);
             let captured_frame = interp.heap.reify(act);
             let home = home_of(&mut interp.heap, act);
-            let closure = Rc::new(ClosureData {
+            let v = Value::Obj(interp.new_closure(ClosureData {
                 params: params.clone(),
                 code: block.clone(),
                 captured_frame,
                 home,
-            });
-            let v = Value::Obj(interp.new_closure(closure));
+            }));
             write_local(&mut interp.heap, act, *dst, v);
             Flow::Next
         }

@@ -204,13 +204,12 @@ fn do_step(
     }
     // A non-block stands for its own value, so handing it the elements
     // observes nothing: the loop is over before it starts.
-    let closure = match block {
-        Value::Obj(block) => interp.heap.closure_data(block),
-        _ => None,
-    };
-    let Some(block) = closure else {
+    let Value::Obj(block) = block else {
         return Some(Ok(Step::Value(receiver)));
     };
+    if !interp.heap.is_closure(block) {
+        return Some(Ok(Step::Value(receiver)));
+    }
     Some(Ok(element_step(Box::new(DoLoop {
         receiver,
         block,
@@ -236,7 +235,7 @@ fn element_step(mut state: Box<DoLoop>) -> Step {
     };
     state.next += 1;
     Step::Block {
-        closure: state.block.clone(),
+        closure: state.block,
         args: StepArgs::Owned(vec![item]),
         then: Continuation::DoElement(state),
     }

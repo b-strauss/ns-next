@@ -1994,15 +1994,34 @@ fn a_method_frame_naming_a_selector_the_class_lost_is_a_decode_error() {
 }
 
 #[test]
-fn a_closure_frames_code_id_out_of_range_is_a_decode_error_not_a_panic() {
-    let mut w = one_frame_prefix();
-    w.write_u8(1); // frame kind: Closure
+fn a_closure_objects_code_id_out_of_range_is_a_decode_error_not_a_panic() {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 1, 0);
+    w.write_u8(0); // class tag: builtin
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
+    w.write_u32(1); // identity hash
+    w.write_u8(4); // object body: Closure
     w.write_u16(0); // no parameters
     w.write_u32(42); // code id, out of range for an empty code table
     let bytes = w.into_bytes();
     assert_eq!(
         GraphFixture::new().decode_err(&bytes),
         decode::DecodeError::BadCodeId(42)
+    );
+}
+
+/// A closure frame names its closure object by id, and an id past the
+/// object table is refused where it is read, before anything indexes by it.
+#[test]
+fn a_closure_frames_object_id_out_of_range_is_a_decode_error_not_a_panic() {
+    let mut w = one_frame_prefix();
+    w.write_u8(6); // frame kind: FRAME_CLOSURE_OBJECT...
+    w.write_u32(42); // ...naming an object past the empty object table
+    w.write_bool(false); // continuable
+    let bytes = w.into_bytes();
+    assert_eq!(
+        GraphFixture::new().decode_err(&bytes),
+        decode::DecodeError::BadObjectId(42)
     );
 }
 
@@ -2107,6 +2126,105 @@ fn a_closure_capturing_a_block_activation_round_trips() {
         decl,
         &application.mixin.methods[&Symbol::intern("mk")]
     ));
+}
+
+/// A closure frame names the closure object it runs, rather than carrying a
+/// copy of its record: after a round trip the inner closure's captured frame
+/// -- the outer block's activation -- names a decoded closure object, and it
+/// is the outer block, with its one parameter.
+#[test]
+fn a_closure_frame_names_the_closure_object_it_runs() {
+    let src = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+        ) (
+          public mk = ( ^[:x | [ x ] ] value: 5 )
+        ) : ()
+    "};
+    let (interp, _class, _o, decoded, _max) = round_trip_graph(src, |interp, class| {
+        let instance = expect_ok(interp.instantiate(*class, vec![]), "instantiate");
+        vec![expect_ok(
+            interp.send(instance, Symbol::intern("mk"), vec![]),
+            "mk",
+        )]
+    });
+    let heap = interp.heap_ref();
+    let inner = heap
+        .closure_data(*obj(&decoded[0]))
+        .expect("expected the inner closure");
+    let FrameKind::Closure(outer) = heap.frame_kind(inner.captured_frame) else {
+        panic!("the captured frame is a block activation")
+    };
+    let outer = heap
+        .closure_data(outer)
+        .expect("a closure frame names a closure object");
+    assert_eq!(outer.params.len(), 1, "the outer block takes `x`");
+    assert!(
+        outer.home.same(inner.home),
+        "both closures share `mk`'s activation as their home"
+    );
+}
+
+/// The frame kind a stale artifact wrote for a closure activation, before
+/// the record named the closure object. Its number is retired: the decoder
+/// refuses it rather than read the old inline layout as the new one.
+#[test]
+fn the_retired_closure_frame_tag_is_refused() {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 0, 1);
+    w.write_u8(0); // receiver: nil
+    w.write_u32(0); // no args
+    w.write_u32(0); // no temps
+    w.write_u32(0); // pc
+    w.write_bool(false); // no sender
+    w.write_bool(false); // no home
+    w.write_bool(false); // no current class
+    w.write_u8(1); // frame kind: the retired FRAME_CLOSURE
+                   // Padded past the shortest frame record the wire admits, so
+                   // `bounded_count` admits the announced frame and the kind tag itself is
+                   // what the decoder rejects.
+    w.write_bool(false);
+    w.write_u32(0);
+    assert_eq!(
+        GraphFixture::new().decode_err(&w.into_bytes()),
+        decode::DecodeError::InvalidTag {
+            what: "frame kind",
+            tag: 1
+        }
+    );
+}
+
+/// A closure frame's object id is in range but names a string: refused once
+/// every record is read, like a class reference that names an ordinary
+/// object, since only then is it known what the record was.
+#[test]
+fn a_closure_frame_naming_an_object_that_is_not_a_closure_is_refused() {
+    let mut w = encode::Writer::new();
+    graph_counts(&mut w, 1, 1);
+    w.write_u8(0); // class tag: builtin
+    w.write_u8(encode::builtin_class_tag(BuiltinClass::Str));
+    w.write_u32(1); // identity hash
+    w.write_u8(1); // object body: Str
+    w.write_str("not a closure");
+    w.write_u8(0); // receiver: nil
+    w.write_u32(0); // no args
+    w.write_u32(0); // no temps
+    w.write_u32(0); // pc
+    w.write_bool(false); // no sender
+    w.write_bool(true); // a home...
+    w.write_u32(0); // ...frame 0 itself
+    w.write_bool(false); // no current class
+    w.write_u8(6); // frame kind: FRAME_CLOSURE_OBJECT...
+    w.write_u32(0); // ...naming object 0, the string
+    w.write_bool(false); // continuable
+    w.write_u32(0); // no roots
+    let err = GraphFixture::new().decode_err(&w.into_bytes());
+    assert_eq!(err, decode::DecodeError::NotAClosureReference);
+    assert_eq!(
+        err.to_string(),
+        "a closure frame in the image names an object that is not a closure"
+    );
 }
 
 #[test]
@@ -5264,12 +5382,12 @@ fn a_frames_sender_survives_a_round_trip() {
         let block_class = interp.builtin_class(BuiltinClass::Block);
         vec![Value::Obj(interp.heap_mut().alloc_object(
             block_class,
-            ObjectData::Closure(std::rc::Rc::new(ns_runtime::ClosureData {
+            ObjectData::Closure(ns_runtime::ClosureData {
                 params: std::rc::Rc::new(vec![]),
                 code: foo.clone(),
                 captured_frame: frame,
                 home: frame,
-            })),
+            }),
         ))]
     });
     let heap = interp.heap_ref();

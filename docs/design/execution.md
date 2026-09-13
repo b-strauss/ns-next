@@ -86,7 +86,8 @@ struct ActivationStack {
 struct StackEntry {
     receiver: Value,
     current_class: Option<ClassRef>,
-    kind: FrameKind,           // Closure(Rc<ClosureData>) carries home and captured_frame
+    kind: FrameKind,           // Closure(ObjRef): the closure object, whose payload
+                               // carries home and captured_frame
     base: u32,                 // first register in `values`
     num_args: u32,
     pc: usize,
@@ -313,9 +314,10 @@ Four kinds of body run, and each reaches the loop one way:
 
 1. **Method body** — pushed by `push_step` for a `Step::Method`. A method
    activation catches a `^` that targets it (`Interpreter::catches_return`).
-2. **Block body** — pushed by `push_step` for a `Step::Block`, running
-   `ClosureData.code`. `value`, the control-flow natives and `do:` answer the
-   block as a step.
+2. **Block body** — pushed by `push_step` for a `Step::Block`, which names the
+   closure object; the activation runs the `code` of that object's
+   `ClosureData`. `value`, the control-flow natives and `do:` answer the block
+   as a step.
 3. **Instance initializer** — `descend_levels`, one per initializing level of
    the superclass chain, answers that level's compiled initializer: its own
    slot initializers and initializer expressions. While a level below it still

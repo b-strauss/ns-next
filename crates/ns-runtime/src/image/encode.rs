@@ -706,11 +706,10 @@ impl GraphTable {
                     .map(|c| Pending::Value(Value::Obj(c))),
             );
             match &f.kind {
-                // A `FrameKind::Closure` frame's own closure record is
-                // encoded inline, so its two frame references need ids too.
-                FrameKind::Closure(c) => {
-                    stack.push(Pending::Frame(c.captured_frame));
-                    stack.push(Pending::Frame(c.home));
+                // The closure object a closure activation runs is a record
+                // of its own, so it needs an id like any other object.
+                FrameKind::Closure(closure) => {
+                    stack.push(Pending::Value(Value::Obj(*closure)));
                 }
                 // The three class-carrying kinds name a class the same way
                 // `current_class` does, so the class needs an id the same way.
@@ -976,9 +975,9 @@ fn encode_frame(
             w.write_u8(FRAME_METHOD);
             w.write_u32(symbols.intern(method.selector.as_str()));
         }
-        FrameKind::Closure(c) => {
-            w.write_u8(FRAME_CLOSURE);
-            encode_closure_record(w, c, ctx, symbols);
+        FrameKind::Closure(closure) => {
+            w.write_u8(FRAME_CLOSURE_OBJECT);
+            w.write_u32(ctx.table.object_id(ctx.heap, *closure));
         }
         FrameKind::TopLevel => w.write_u8(FRAME_TOP_LEVEL),
         FrameKind::Initializer(class) => {

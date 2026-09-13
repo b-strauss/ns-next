@@ -52,11 +52,11 @@ pub(crate) enum Step {
         defining_class: ClassRef,
         args: StepArgs,
     },
-    /// Activate `closure`, and do `then` with its value. A builtin
-    /// control-flow native's block is marked by its `args`,
+    /// Activate the closure object `closure`, and do `then` with its value.
+    /// A builtin control-flow native's block is marked by its `args`,
     /// `StepArgs::ControlFlow`.
     Block {
-        closure: Rc<ClosureData>,
+        closure: ObjRef,
         args: StepArgs,
         then: Continuation,
     },
@@ -575,7 +575,11 @@ impl Interpreter {
             } => {
                 let control_flow = matches!(args, StepArgs::ControlFlow);
                 let args = args.slice(send_args);
-                check_block_arity(&self.heap, &closure, args.len())?;
+                let (code, num_params, captured_frame) = self
+                    .heap
+                    .closure_activation(closure)
+                    .expect("internal: a block step is decided only for a closure object");
+                check_block_arity(&self.heap, num_params, captured_frame, args.len())?;
                 // Exempt exactly the activation the optimized lowering
                 // inlines away: a block a control-flow native activates for
                 // a `SendInlinable`, and only if the sending activation
@@ -587,12 +591,11 @@ impl Interpreter {
                 let created_by_sender = |heap: &Heap| {
                     sender
                         .and_then(|sender| heap.activation_reified(sender))
-                        .is_some_and(|frame| frame.same(closure.captured_frame))
+                        .is_some_and(|frame| frame.same(captured_frame))
                 };
                 let counted = !(inlinable && control_flow && created_by_sender(&self.heap));
-                let receiver = self.heap.frame_receiver(closure.captured_frame);
-                let current_class = self.heap.frame_current_class(closure.captured_frame);
-                let code = closure.code.clone();
+                let receiver = self.heap.frame_receiver(captured_frame);
+                let current_class = self.heap.frame_current_class(captured_frame);
                 let temps = (code.num_registers - code.num_args) as usize;
                 self.push(
                     ActivationHeader {
@@ -972,7 +975,7 @@ impl Interpreter {
         self.new_instance_object(class, ObjectData::Str(c.to_string()))
     }
 
-    pub fn new_closure(&mut self, closure: Rc<ClosureData>) -> ObjRef {
+    pub fn new_closure(&mut self, closure: ClosureData) -> ObjRef {
         let class = self.builtin_class(BuiltinClass::Block);
         self.new_instance_object(class, ObjectData::Closure(closure))
     }
@@ -1167,18 +1170,19 @@ fn check_method_arity(
 /// before it can reach a register: the window is laid out from the arguments
 /// actually given, so too few would address registers past its end -- a panic
 /// -- and too many would silently shift every temporary.
-fn check_block_arity(heap: &Heap, closure: &ClosureData, given: usize) -> Result<(), Signal> {
-    if given == closure.params.len() {
+fn check_block_arity(
+    heap: &Heap,
+    num_params: usize,
+    captured_frame: FrameRef,
+    given: usize,
+) -> Result<(), Signal> {
+    if given == num_params {
         return Ok(());
     }
     Err(Signal::Error(NewspeakError {
         selector: Symbol::VALUE,
-        receiver: heap.frame_receiver(closure.captured_frame),
-        message: format!(
-            "wrong number of block arguments: block takes {}, got {}",
-            closure.params.len(),
-            given
-        ),
+        receiver: heap.frame_receiver(captured_frame),
+        message: format!("wrong number of block arguments: block takes {num_params}, got {given}"),
     }))
 }
 

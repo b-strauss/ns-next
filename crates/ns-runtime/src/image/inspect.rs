@@ -291,7 +291,6 @@ fn walk_graph(
         let current_class = read_optional_class(r)?;
         let kind = match r.read_u8()? {
             opcodes::FRAME_METHOD => format!("method {}", symbols.get(r.read_u32()?)?),
-            opcodes::FRAME_CLOSURE => format!("closure {}", read_closure_record(r, symbols)?),
             opcodes::FRAME_TOP_LEVEL => "top level".to_string(),
             opcodes::FRAME_INITIALIZER => format!("initializer of {}", read_class_tag(r)?),
             opcodes::FRAME_SUPERCLASS_CLAUSE => {
@@ -300,6 +299,7 @@ fn walk_graph(
             opcodes::FRAME_SUPERCLASS_MESSAGE => {
                 format!("superclass message of {}", read_class_tag(r)?)
             }
+            opcodes::FRAME_CLOSURE_OBJECT => format!("closure object {}", r.read_u32()?),
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
                     what: "frame kind",

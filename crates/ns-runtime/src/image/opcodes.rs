@@ -99,11 +99,18 @@ pub const CLS_RECORD: u8 = 2;
 
 /// What a frame was activated for.
 pub const FRAME_METHOD: u8 = 0;
+/// Retired. A closure frame record once carried a copy of its closure's
+/// record inline, from when the closure's data sat behind an `Rc` its object
+/// and its activations shared. It names the closure object now
+/// (`FRAME_CLOSURE_OBJECT`); the number stays assigned so that a stale
+/// record is refused rather than read with a layout it does not have.
 pub const FRAME_CLOSURE: u8 = 1;
 pub const FRAME_TOP_LEVEL: u8 = 2;
 pub const FRAME_INITIALIZER: u8 = 3;
 pub const FRAME_SUPERCLASS_CLAUSE: u8 = 4;
 pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
+/// A closure activation: the object id of the closure object it runs.
+pub const FRAME_CLOSURE_OBJECT: u8 = 6;
 
 /// Retired. A frame record once said which unit its `pc` counted in -- a
 /// statement or an instruction -- and only bytecode was ever representable,

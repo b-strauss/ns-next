@@ -763,11 +763,77 @@ impl Heap {
         }
     }
 
-    /// An `Rc` bump, not a copy: a closure is immutable once made.
-    pub fn closure_data(&self, obj: ObjRef) -> Option<std::rc::Rc<ClosureData>> {
+    /// Whether `obj` is a closure -- what a control-flow native asks of a
+    /// value before activating it as a block.
+    pub fn is_closure(&self, obj: ObjRef) -> bool {
+        self.check_object_origin(obj);
+        matches!(
+            self.objects[obj.index as usize].data,
+            ObjectData::Closure(_)
+        )
+    }
+
+    /// How many parameters closure `obj` declares, or `None` when `obj` is
+    /// not a closure.
+    pub fn closure_param_count(&self, obj: ObjRef) -> Option<usize> {
         self.check_object_origin(obj);
         match &self.objects[obj.index as usize].data {
-            ObjectData::Closure(c) => Some(c.clone()),
+            ObjectData::Closure(closure) => Some(closure.params.len()),
+            _ => None,
+        }
+    }
+
+    /// Closure `obj`'s compiled body, or `None` when `obj` is not a closure.
+    /// `image::decode::frame_body` resolves a closure frame's body by it.
+    pub fn closure_code(&self, obj: ObjRef) -> Option<std::rc::Rc<crate::bytecode::CompiledCode>> {
+        self.check_object_origin(obj);
+        match &self.objects[obj.index as usize].data {
+            ObjectData::Closure(closure) => Some(closure.code.clone()),
+            _ => None,
+        }
+    }
+
+    /// What activating closure `obj` needs, read in one borrow: its body,
+    /// how many parameters it declares, and the frame it captured, whose
+    /// receiver and current class the activation takes. `None` when `obj`
+    /// is not a closure.
+    pub(crate) fn closure_activation(
+        &self,
+        obj: ObjRef,
+    ) -> Option<(std::rc::Rc<crate::bytecode::CompiledCode>, usize, FrameRef)> {
+        self.check_object_origin(obj);
+        match &self.objects[obj.index as usize].data {
+            ObjectData::Closure(closure) => Some((
+                closure.code.clone(),
+                closure.params.len(),
+                closure.captured_frame,
+            )),
+            _ => None,
+        }
+    }
+
+    /// A copy of closure `obj`'s payload -- two `Rc` bumps, since its
+    /// parameter names and body are shared with the instruction that made
+    /// it. For the image encoder and verifier and for tests; the run loop
+    /// reads what it needs through the narrower accessors above.
+    pub fn closure_data(&self, obj: ObjRef) -> Option<ClosureData> {
+        self.check_object_origin(obj);
+        match &self.objects[obj.index as usize].data {
+            ObjectData::Closure(closure) => Some(closure.clone()),
+            _ => None,
+        }
+    }
+
+    /// Closure `obj`'s captured frame and home, or `None` when `obj` is not
+    /// a closure: what a closure activation's kind reaches through. A
+    /// frame kind decoded from an image names an object the decoder has
+    /// confirmed is a closure (`NotAClosureReference`), but answering `None`
+    /// rather than panicking keeps a future change there from turning an
+    /// untrusted image into a panic here.
+    fn closure_frames(&self, obj: ObjRef) -> Option<(FrameRef, FrameRef)> {
+        self.check_object_origin(obj);
+        match &self.objects[obj.index as usize].data {
+            ObjectData::Closure(closure) => Some((closure.captured_frame, closure.home)),
             _ => None,
         }
     }
@@ -1077,7 +1143,9 @@ impl Heap {
     pub fn frame_captured(&self, frame: FrameRef) -> Option<FrameRef> {
         self.check_frame_origin(frame);
         match &self.frames[frame.index as usize].frame.kind {
-            FrameKind::Closure(closure) => Some(closure.captured_frame),
+            FrameKind::Closure(closure) => {
+                self.closure_frames(*closure).map(|(captured, _)| captured)
+            }
             _ => None,
         }
     }
@@ -1254,7 +1322,7 @@ impl Heap {
             pc: entry.pc,
             sender: None,
             home: match &entry.kind {
-                FrameKind::Closure(closure) => Some(closure.home),
+                FrameKind::Closure(closure) => self.closure_frames(*closure).map(|(_, home)| home),
                 _ => None,
             },
             current_class: entry.current_class,
@@ -1337,7 +1405,7 @@ impl Heap {
     pub fn activation_home(&self, act: ActivationRef) -> Option<FrameRef> {
         self.check_activation(act);
         match &self.stack.entries[act.index as usize].kind {
-            FrameKind::Closure(closure) => Some(closure.home),
+            FrameKind::Closure(closure) => self.closure_frames(*closure).map(|(_, home)| home),
             _ => None,
         }
     }
@@ -1347,7 +1415,9 @@ impl Heap {
     pub fn activation_captured(&self, act: ActivationRef) -> Option<FrameRef> {
         self.check_activation(act);
         match &self.stack.entries[act.index as usize].kind {
-            FrameKind::Closure(closure) => Some(closure.captured_frame),
+            FrameKind::Closure(closure) => {
+                self.closure_frames(*closure).map(|(captured, _)| captured)
+            }
             _ => None,
         }
     }
@@ -2062,25 +2132,29 @@ mod tests {
         let method_act = heap.push_activation(header(), &[], 0);
         let home_frame = heap.reify(method_act);
 
-        let closure_data = ClosureData {
-            params: std::rc::Rc::new(vec![]),
-            code: std::rc::Rc::new(crate::bytecode::CompiledCode {
-                kind: crate::bytecode::CodeKind::Block,
-                instrs: vec![crate::bytecode::Instr::ImplicitReturn { reg: 0 }],
-                num_args: 0,
-                num_registers: 1,
-                statement_pc: vec![],
-                call_sites: vec![],
-                source: ns_syntax::Span::new(0, 0),
+        let class = heap.alloc_self_referential_class(ObjectData::Instance(vec![]));
+        let closure = heap.alloc_object(
+            class,
+            ObjectData::Closure(ClosureData {
+                params: std::rc::Rc::new(vec![]),
+                code: std::rc::Rc::new(crate::bytecode::CompiledCode {
+                    kind: crate::bytecode::CodeKind::Block,
+                    instrs: vec![crate::bytecode::Instr::ImplicitReturn { reg: 0 }],
+                    num_args: 0,
+                    num_registers: 1,
+                    statement_pc: vec![],
+                    call_sites: vec![],
+                    source: ns_syntax::Span::new(0, 0),
+                }),
+                captured_frame: home_frame,
+                home: home_frame,
             }),
-            captured_frame: home_frame,
-            home: home_frame,
-        };
+        );
         let closure_act = heap.push_activation(
             ActivationHeader {
                 receiver: Value::Nil,
                 current_class: None,
-                kind: FrameKind::Closure(std::rc::Rc::new(closure_data)),
+                kind: FrameKind::Closure(closure),
                 slot_base: 0,
                 code: trivial_code(),
                 then: Continuation::Deliver,

@@ -391,7 +391,8 @@ stress mode below; step 2c makes it the only way a host can hold a value.
 
 - The bootstrap: `builtin_classes` and `platform_singleton`.
 - The activation stack: each entry's receiver, registers, `current_class`, the
-  `ClassRef` its `FrameKind` names, and the state its continuation carries.
+  `ClassRef` or closure object its `FrameKind` names, and the state its
+  continuation carries.
 - Every arena record: an object's class and payload, a frame's fields.
 - The host root table.
 
@@ -406,13 +407,14 @@ built; [execution.md](execution.md), "No re-entry from Rust").
 
 **A handle lives only where the tracer can rewrite it in place**: in an arena
 record, in a stack entry, in a continuation that one stack entry owns, or in an
-interpreter root — never behind a shared `Rc`. `Rc<ClosureData>` breaks that
-today. Its `captured_frame` and `home` are `FrameRef`s, and the same `Rc` hangs
-off the closure object, off `FrameKind::Closure` on every activation of the
-closure, off `WhileLoop.condition` and off `DoLoop.block`. Step 2b splits it:
-the shared part keeps `params` and `code`, the two handles move into the
-closure object's own payload, and `FrameKind::Closure`, `WhileLoop` and
-`DoLoop` refer to the closure object.
+interpreter root — never behind a shared `Rc`. `Rc<ClosureData>` broke that
+until step 2b split it: its `captured_frame` and `home` are `FrameRef`s, and
+the same `Rc` hung off the closure object, off `FrameKind::Closure` on every
+activation of the closure, off `WhileLoop.condition` and off `DoLoop.block`.
+Now `ClosureData` sits inline in the closure object's payload, sharing only
+`params` and `code` through their own `Rc`s, and `FrameKind::Closure`,
+`WhileLoop`, `DoLoop` and `Step::Block` name the closure object, whose two
+frame handles are therefore in an arena record the tracer can rewrite.
 
 ### Checking the roots before a collector exists: the stress mode
 
