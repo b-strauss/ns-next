@@ -320,7 +320,17 @@ fn send(
 fn finish(interp: &mut Interpreter, act: ActivationRef, value: Value, floor: usize) -> Flow {
     let popped = interp.heap.pop_activation(act);
     let value = match popped.then {
-        Continuation::Deliver => value,
+        // `Deliver` owns nothing, so forgetting it is dropping it. Written
+        // out because otherwise the continuation, left in `popped`, is
+        // dropped at the end of the function through `Continuation`'s drop
+        // glue, which the boxed variants made large enough to stay out of
+        // line: a call on every return, where the tag check used to be
+        // inline. Forgetting it here measured about 1% faster on the
+        // benchmarks that return most.
+        deliver @ Continuation::Deliver => {
+            std::mem::forget(deliver);
+            value
+        }
         then => match interp.resume(then, value) {
             Ok(Step::Value(v)) => v,
             Ok(step) => {
