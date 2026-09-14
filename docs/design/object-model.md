@@ -107,8 +107,8 @@ Hence three layers:
 ```rust
 struct Mixin {                    // one per declaration, shared for its lifetime
     name: Symbol,
-    methods: HashMap<Symbol, Rc<ast::MethodDeclaration>>,
-    instance_slots: Vec<Rc<ast::SlotDeclaration>>,
+    methods: IdentityMap<Symbol, MethodEntry>,  // compiled methods and slot accessors
+    slots: Vec<MixinSlot>,        // name, mutability, accessibility
     initializer_expressions: Vec<ast::Statement>,
     factory: Option<Rc<ast::MessagePattern>>,
     nested: Vec<Rc<Mixin>>,       // the nested declarations, for their accessors
@@ -118,8 +118,8 @@ struct Mixin {                    // one per declaration, shared for its lifetim
 struct MixinApplication {         // (mixin, super application) -> behaviour
     mixin: Rc<Mixin>,
     superclass: Option<Rc<MixinApplication>>,
-    slot_index: HashMap<Symbol, usize>,   // absolute layout, inherited slots included
-    slot_count: usize,
+    own_slot_base: usize,         // where this level's own slots start
+    slot_count: usize,            // inherited slots included
 }
 
 struct ClassData {                // one per enclosing instance, per level
@@ -146,9 +146,20 @@ behaviour.
   (`declaring_class`).
 - The **application chain** carries code and layout, and is shared.
 
-`slot_index`, `slot_count` and method lookup live on `MixinApplication` rather
-than on `ClassData`, because a superclass contributes slots and can differ
-between instances of the same enclosing class.
+`own_slot_base`, `slot_count` and method lookup live on `MixinApplication`
+rather than on `ClassData`, because a superclass contributes slots and can
+differ between instances of the same enclosing class.
+
+**A slot is reached through its accessors, which are method-table entries.**
+§6.3.2 has every slot declaration define a getter and, for a mutable slot, a
+setter, each with the slot's accessibility; they are entries of the declaring
+mixin's `methods` beside the compiled methods, found and overridden like any
+method ([dispatch.md](dispatch.md), "Slot accessors"). An entry names its slot by
+position among the mixin's *own* slots, so one entry serves every application:
+the absolute field is the defining application's `own_slot_base` plus that
+position — the same mixin-relative addressing `InitializeSlot` uses, and for the
+same reason. Nothing maps a slot name to a field any more; nothing but an
+accessor needs to.
 
 ## The nested-class accessor
 
