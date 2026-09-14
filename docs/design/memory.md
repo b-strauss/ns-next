@@ -470,9 +470,9 @@ at-rest lifetime to that shorter one, which the compiler cannot check through
 the projection. Nova's `Bindable for Box<T>` rebrands a payload that already
 exists from one lifetime to another (`prior-art/nova/nova_vm/src/engine/context.rs`).
 Here `'gc` names no real reference, only the `PhantomData` in a handle, and
-`Mutator` is a plain type with a lifetime parameter: nothing is ever brought
-from one brand to another, because the at-rest `'static` is itself one of the
-lifetimes the closure is checked for.
+`Mutator` is a plain type with a lifetime parameter: no step state is ever
+brought from one brand to another, because the at-rest `'static` is itself
+one of the lifetimes the closure is checked for.
 
 The stress mode below keeps running under the brand: the brand covers what
 Rust holds, the stress mode what the tracer knows. Its price is ergonomic —
