@@ -781,3 +781,52 @@ fn a_private_nested_class_is_unreachable_from_outside() {
         "Uncaught Newspeak error: an object does not understand #Hidden\n",
     );
 }
+
+/// `newspeak-spec.pdf` §6.3.2: an immutable slot "may be accessed exclusively
+/// by invoking a getter method" -- "There is no setter method associated with
+/// the slot", however public the slot is.
+#[test]
+fn an_immutable_slot_has_no_setter() {
+    assert_outcome(
+        "immutable-setter",
+        indoc! {"
+            Newspeak3
+            'T'
+            class ImmutableSetter usingPlatform: platform = Object new (
+            ) (
+                class Holder = Object new (| public y = 1. |) ()
+                public main: pl args: a = (
+                    Holder new y: 2
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #y:\n",
+    );
+}
+
+/// `newspeak-spec.pdf` §6.3.1: "If no access modifier is declared, the
+/// default is protected", and §6.3.2 gives the getter "the same"
+/// accessibility as the slot -- so §5.5's `lookupPublic` finds a protected
+/// method and answers "Undefined".
+#[test]
+fn a_protected_slot_does_not_answer_an_explicit_receiver() {
+    assert_outcome(
+        "protected-slot",
+        indoc! {"
+            Newspeak3
+            'T'
+            class ProtectedSlot usingPlatform: platform = Object new (
+            ) (
+                class Holder = Object new (| w = 3. |) ()
+                public main: pl args: a = (
+                    Holder new w
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #w\n",
+    );
+}

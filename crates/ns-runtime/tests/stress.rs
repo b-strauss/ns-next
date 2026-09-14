@@ -42,14 +42,14 @@ const EVERY_CONTINUATION: &str = indoc! {"
     class S = Object new (
     ) (
       public class Base x: a = Object new (
-        | u ::= a. |
+        | uValue ::= a. |
       ) (
-        public u = ( ^u )
+        public u = ( ^uValue )
       ) : ()
       public class Cell = Base x: 5 (
-        | v ::= 1. |
+        | vValue ::= 1. |
       ) (
-        public v = ( ^v )
+        public v = ( ^vValue )
       ) : ()
       public class Late = self base (
       ) (

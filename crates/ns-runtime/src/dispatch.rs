@@ -7,12 +7,16 @@ use std::rc::Rc;
 use ns_syntax::ast;
 
 use crate::heap::Heap;
-use crate::mixin::{Mixin, MixinApplication, MixinMethod};
+use crate::mixin::{MethodEntry, Mixin, MixinApplication, MixinMethod, SlotAccessor};
 use crate::types::*;
 use crate::Symbol;
 
 pub enum Lookup<'gc> {
     Method(Rc<MixinMethod>, ClassReference<'gc>),
+    /// One of the accessors a slot declaration defines (`newspeak-spec.pdf`
+    /// §6.3.2), with the absolute field it reads or writes: the declaring
+    /// application's `own_slot_base` plus the slot's mixin-relative index.
+    SlotAccessor(SlotAccessor, usize),
     /// A nested class declaration, reached through the implicit accessor
     /// `newspeak-spec.pdf` §6 says every such declaration defines in its
     /// enclosing class. The `ClassReference` is the class object of the level
@@ -140,9 +144,9 @@ pub fn private_member<'gc>(
     let Some(application) = heap.class_application(lexical_class) else {
         return Lookup::NotFound;
     };
-    if let Some(method) = application.mixin.methods.get(&selector) {
-        return if method.access == ast::AccessModifier::Private {
-            Lookup::Method(method.clone(), lexical_class)
+    if let Some(entry) = application.mixin.methods.get(&selector) {
+        return if entry.access() == ast::AccessModifier::Private {
+            found_entry(entry, &application, lexical_class)
         } else {
             Lookup::NotFound
         };
@@ -226,9 +230,9 @@ fn walk<'gc>(
             return Lookup::NotFound;
         };
         let next = next_level(superclass, &application);
-        if let Some(method) = application.mixin.methods.get(&selector).cloned() {
-            match verdict(method.access) {
-                Verdict::Accept => return Lookup::Method(method, level_class),
+        if let Some(entry) = application.mixin.methods.get(&selector) {
+            match verdict(entry.access()) {
+                Verdict::Accept => return found_entry(entry, &application, level_class),
                 Verdict::Stop => return Lookup::NotFound,
                 Verdict::Skip => {
                     level = next;
@@ -268,6 +272,25 @@ fn walk<'gc>(
     Lookup::NotFound
 }
 
+/// The answer a method-table entry found at `level_class`'s level gives: a
+/// compiled method with that level as its defining class, or a slot accessor
+/// with its field resolved against that level's application -- the level
+/// whose mixin declares the slot, so `own_slot_base` places it (§6.3.2, as
+/// `InitializeSlot` places a slot's initial value).
+fn found_entry<'gc>(
+    entry: &MethodEntry,
+    application: &MixinApplication,
+    level_class: ClassReference<'gc>,
+) -> Lookup<'gc> {
+    match entry {
+        MethodEntry::Compiled(method) => Lookup::Method(method.clone(), level_class),
+        MethodEntry::SlotAccessor(accessor) => Lookup::SlotAccessor(
+            *accessor,
+            application.own_slot_base + accessor.own_index as usize,
+        ),
+    }
+}
+
 /// One level of the two chains a lookup walks: the application supplies the
 /// code, the class object supplies the identity `Frame.current_class` needs
 /// for `super` and `outer`. Returns `None` for a non-class object, which is
@@ -293,24 +316,6 @@ fn next_level<'gc>(
     let superclass = superclass?;
     let super_application = application.superclass.clone()?;
     Some((superclass, super_application))
-}
-
-/// `name`'s absolute instance-field index, if any. No chain walk: the
-/// application's `slot_index` already carries every inherited slot at its
-/// absolute offset, with an own slot's entry overriding an inherited one of
-/// the same name. There is no access check -- slot access is never
-/// access-controlled the way a method send is, which is a known gap. Used
-/// by `sends::decide_lexical_send` before falling through to
-/// `lookup_defined_for`/`lookup_protected`.
-pub fn lookup_slot<'gc>(
-    heap: &Heap<'gc>,
-    class: ClassReference<'gc>,
-    name: Symbol,
-) -> Option<usize> {
-    heap.class_application(class)?
-        .slot_index
-        .get(&name)
-        .copied()
 }
 
 #[cfg(test)]
@@ -360,11 +365,11 @@ mod tests {
         let mut methods = HashMap::new();
         methods.insert(
             Symbol::intern(selector.trim_end_matches(':')),
-            Rc::new(MixinMethod::from_declaration(
+            MethodEntry::Compiled(Rc::new(MixinMethod::from_declaration(
                 Rc::new(method),
                 &Rc::new(HashMap::new()),
                 crate::compiler::Lowering::Optimized,
-            )),
+            ))),
         );
         // The application chain must be linked wherever the class-object
         // chain is: `next_level` steps both, so a superclass linked on only
@@ -379,7 +384,6 @@ mod tests {
                 ..crate::mixin::Mixin::empty(Symbol::intern(name))
             }),
             superclass: super_application,
-            slot_index: HashMap::new(),
             nested_slot: HashMap::new(),
             slot_count: 0,
             own_slot_base: 0,

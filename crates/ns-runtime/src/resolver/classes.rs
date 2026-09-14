@@ -82,6 +82,26 @@ pub(super) fn own_member_names(declaration: &ast::ClassDeclaration) -> HashSet<S
     names
 }
 
+/// The names one side of `declaration` declares more than once, each once.
+/// The specification states no rule; the canonical compiler refuses them
+/// (`prior-art/newspeak/Newspeak2SqueakCompilation.ns`,
+/// `checkForDuplicateNames:`), and a mixin's method table cannot hold two
+/// members under one selector. Each side is its own table, so a name the
+/// instance side and the class side both declare is not a duplicate.
+pub(super) fn duplicate_member_names(declaration: &ast::ClassDeclaration) -> Vec<Symbol> {
+    let mut duplicates = Vec::new();
+    let sides = std::iter::once(&declaration.instance_side).chain(declaration.class_side.as_ref());
+    for side in sides {
+        let mut seen = HashSet::new();
+        for member in declared_members(side) {
+            if !seen.insert(member) && !duplicates.contains(&member) {
+                duplicates.push(member);
+            }
+        }
+    }
+    duplicates
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

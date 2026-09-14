@@ -9,7 +9,9 @@ use ns_syntax::ast;
 use ns_syntax::Span;
 
 use crate::heap::{Heap, Root};
-use crate::mixin::{Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
+use crate::mixin::{
+    slot_accessors, Factory, MethodEntry, Mixin, MixinMethod, MixinSlot, SuperclassClause,
+};
 use crate::types::*;
 use crate::Symbol;
 
@@ -22,23 +24,30 @@ use super::{HostError, HostResult, HostSignal, HostStart, Interpreter, Mutator, 
 const SPARE_WALKS: usize = 16;
 const SPARE_LEVELS: usize = 64;
 
-/// A class body's methods as a mixin's method dictionary: everything a
-/// lookup or `Mutator::push_step` reads is lifted out of the
-/// declaration here, so that a mixin decoded from an image -- which has no
-/// declaration at all -- answers the same questions from the same fields.
+/// A class body's method table: its methods and the accessors its `slots`
+/// define (`newspeak-spec.pdf` §6.3.2). Everything a lookup or
+/// `Mutator::push_step` reads is lifted out of the declaration here, so that
+/// a mixin decoded from an image -- which has no declaration at all --
+/// answers the same questions from the same fields. No selector is declared
+/// twice: the resolver has already refused a body that declares one member
+/// twice (`resolver::classes::duplicate_member_names`).
 fn build_methods(
     body: &ast::ClassBody,
+    slots: &[MixinSlot],
     bindings: &Rc<HashMap<Span, Binding>>,
     lowering: crate::compiler::Lowering,
-) -> HashMap<Symbol, Rc<MixinMethod>> {
-    body.methods
-        .iter()
-        .map(|declaration| {
-            let method =
-                MixinMethod::from_declaration(Rc::new(declaration.clone()), bindings, lowering);
-            (method.selector, Rc::new(method))
-        })
-        .collect()
+) -> HashMap<Symbol, MethodEntry> {
+    let mut methods: HashMap<Symbol, MethodEntry> = slot_accessors(slots).into_iter().collect();
+    for declaration in &body.methods {
+        let method =
+            MixinMethod::from_declaration(Rc::new(declaration.clone()), bindings, lowering);
+        let previous = methods.insert(method.selector, MethodEntry::Compiled(Rc::new(method)));
+        debug_assert!(
+            previous.is_none(),
+            "the resolver refuses a duplicate member"
+        );
+    }
+    methods
 }
 
 fn build_slots(body: &ast::ClassBody) -> Vec<MixinSlot> {
@@ -130,8 +139,8 @@ impl<'gc> Mutator<'gc> {
         let superclass = self.resolve_superclass_receiver(declaration);
         // The slot layout is the application's job, not the class object's:
         // `apply_mixin` offsets this class's own slots past every inherited
-        // one and merges the superclass's map in, so a class object never
-        // computes -- or can disagree about -- an instance's shape.
+        // one (`own_slot_base`), so a class object never computes -- or can
+        // disagree about -- an instance's shape.
         let super_application = superclass
             .as_ref()
             .and_then(|superclass| self.heap.class_application(*superclass));
@@ -159,8 +168,8 @@ impl<'gc> Mutator<'gc> {
         declaration: &ast::ClassDeclaration,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Rc<Mixin> {
-        let methods = build_methods(&declaration.instance_side, bindings, self.lowering);
         let slots = build_slots(&declaration.instance_side);
+        let methods = build_methods(&declaration.instance_side, &slots, bindings, self.lowering);
         let nested = declaration
             .instance_side
             .nested_classes
@@ -225,9 +234,10 @@ impl<'gc> Mutator<'gc> {
         side: &ast::ClassBody,
         bindings: &Rc<HashMap<Span, Binding>>,
     ) -> Rc<Mixin> {
+        let slots = build_slots(side);
         let mut mixin = Mixin {
-            methods: build_methods(side, bindings, self.lowering),
-            slots: build_slots(side),
+            methods: build_methods(side, &slots, bindings, self.lowering),
+            slots,
             has_initializer_expressions: !side.initializer_expressions.is_empty(),
             initializer_expressions: side.initializer_expressions.clone(),
             span: side.span,

@@ -106,6 +106,12 @@ impl Resolver {
         member_sets: &HashMap<Symbol, HashSet<Symbol>>,
     ) {
         let name = Symbol::intern(&declaration.name.name);
+        for duplicate in classes::duplicate_member_names(declaration) {
+            self.errors.push(ResolveError {
+                span: declaration.name.span,
+                message: format!("class `{name}` has multiple definitions of `{duplicate}`"),
+            });
+        }
         let mut chain: Vec<Symbol> = enclosing.to_vec();
         chain.push(name);
         // Innermost first for the chain we hand to `sends::depth_search`.

@@ -10,6 +10,7 @@ pub(crate) mod locals;
 pub(crate) mod nested;
 mod safepoint;
 pub(crate) mod sends;
+mod slots;
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -568,6 +569,9 @@ impl<'gc> Mutator<'gc> {
                                 arguments: StepArguments::Send,
                             });
                         }
+                        Lookup::SlotAccessor(accessor, field) => {
+                            return self.decide_slot_accessor(receiver, accessor, field, arguments);
+                        }
                         Lookup::NestedClass(mixin, declaring_class) => {
                             return nested::nested_class(self, &receiver, &mixin, declaring_class);
                         }
@@ -589,6 +593,11 @@ impl<'gc> Mutator<'gc> {
                 defining_class,
                 arguments: StepArguments::Send,
             }),
+            // §6.3.2: a slot's accessors answer an explicit-receiver send
+            // exactly when a method with the slot's accessibility would.
+            Lookup::SlotAccessor(accessor, field) => {
+                self.decide_slot_accessor(receiver, accessor, field, arguments)
+            }
             // §6: the implicit accessor a nested declaration defines is
             // reached exactly like any other member, and it ignores `arguments`
             // -- the accessor is unary, so a send that supplied arguments
@@ -719,6 +728,15 @@ impl<'gc> Mutator<'gc> {
                     defining_class,
                     arguments: StepArguments::Owned(vec![message_argument]),
                 })
+            }
+            // §6.3.2: a mutable slot named `doesNotUnderstand` defines the
+            // setter `doesNotUnderstand:`, a method like any other -- so it
+            // is the handler, and stores the message.
+            Lookup::SlotAccessor(accessor, field) => {
+                let selector_value = self.new_symbol(selector);
+                let arguments_value = Value::Object(self.new_array(arguments.to_vec()));
+                let message_argument = Value::Object(self.new_array(vec![selector_value, arguments_value]));
+                self.decide_slot_accessor(receiver, accessor, field, &[message_argument])
             }
             Lookup::Native(kind) => {
                 let selector_value = self.new_symbol(selector);
@@ -1341,12 +1359,6 @@ impl<'gc> Mutator<'gc> {
         let inherited = superclass.map_or(0, |superclass_application| {
             superclass_application.slot_count
         });
-        let mut slot_index = superclass.map_or_else(HashMap::new, |superclass_application| {
-            superclass_application.slot_index.clone()
-        });
-        for (index, slot) in mixin.slots.iter().enumerate() {
-            slot_index.insert(slot.name, inherited + index);
-        }
         // The nested-class cache slots. They are part of the instance layout
         // because the spec caches a nested class in the enclosing *object*;
         // a side table keyed by object would cost a hash lookup on a path
@@ -1367,7 +1379,6 @@ impl<'gc> Mutator<'gc> {
             mixin: mixin.clone(),
             superclass: superclass.cloned(),
             slot_count: next,
-            slot_index,
             nested_slot,
             own_slot_base: inherited,
         });

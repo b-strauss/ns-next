@@ -9,24 +9,6 @@ use crate::Symbol;
 
 use super::{Mutator, Signal, Step, StepArguments};
 
-/// A slot's getter (`x`, no colon) or setter (`x:`, exactly one trailing
-/// colon and no others) shape, per `newspeak-spec.pdf` §6.3.2 -- a slot's
-/// getter/setter are "implicitly defined by the slot declaration", not real
-/// `MethodDeclaration`s in the class's mixin, so `decide_lexical_send` must
-/// recognize and serve them directly rather than relying on method lookup
-/// to ever find them. Returns `None` for a genuine multi-keyword selector
-/// (e.g. `at:put:`), which can never denote a slot access.
-fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
-    let text = selector.as_str();
-    if !text.contains(':') {
-        return Some((selector, false));
-    }
-    if text.ends_with(':') && text.matches(':').count() == 1 {
-        return Some((Symbol::intern(&text[..text.len() - 1]), true));
-    }
-    None
-}
-
 /// `newspeak-spec.pdf` §5.7-§5.9: an implicit receiver send whose declaring
 /// class N is at lexical depth `k` is `outer N m`. `enclosing` is the kth
 /// enclosing object of this activation's defining level
@@ -36,7 +18,9 @@ fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
 /// private member is never overridden and there is nothing to search.
 /// "Otherwise, Let f = lookupProtected(s, R) where R is the class of o" --
 /// virtual, on `enclosing`'s actual class, and, when `enclosing` is a class
-/// object, on its metaclass first (§6.3).
+/// object, on its metaclass first (§6.3). A slot's accessors are found by
+/// the same lookups as any method (§6.3.2), so a subclass that overrides one
+/// is obeyed here too.
 pub(crate) fn decide_lexical_send<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -53,26 +37,6 @@ pub(crate) fn decide_lexical_send<'gc>(
     let enclosing =
         dispatch::kth_enclosing_object(&mutator.heap, &self_value, defining_class.as_ref(), depth);
     let class = mutator.class_of(&enclosing);
-    // A `LexicalSend` to a user-defined class's own slot must resolve here,
-    // *before* the method/native lookups below -- `build_mixin` never puts a
-    // slot's implicit getter/setter into the mixin's method table, so
-    // `lookup_defined_for`/`lookup_protected` would never find one.
-    // Known gap: unlike a method send, this is never
-    // access-controlled by the slot's own declared modifier -- revisit if a
-    // fixture needs it.
-    if let Some((name, is_setter)) = slot_selector_shape(selector) {
-        if let Some(index) = dispatch::lookup_slot(&mutator.heap, class, name) {
-            if let Value::Object(object) = &enclosing {
-                if is_setter {
-                    let value = arguments.first().copied().unwrap_or(Value::Nil);
-                    mutator.heap.set_instance_field(*object, index, value);
-                    return Ok(Step::Value(enclosing));
-                } else if let Some(value) = mutator.heap.instance_field(*object, index) {
-                    return Ok(Step::Value(value));
-                }
-            }
-        }
-    }
     // §6.3: a class object's class side is the behaviour of that class
     // object, so a send written inside a class-side method with no explicit
     // receiver has to search the metaclass before the class object's own
@@ -98,7 +62,12 @@ pub(crate) fn decide_lexical_send<'gc>(
         metaclass
             .as_ref()
             .map(|metaclass| dispatch::lookup_protected(&mutator.heap, *metaclass, selector))
-            .filter(|found| matches!(found, Lookup::Method(..) | Lookup::NestedClass(..)))
+            .filter(|found| {
+                matches!(
+                    found,
+                    Lookup::Method(..) | Lookup::SlotAccessor(..) | Lookup::NestedClass(..)
+                )
+            })
             .unwrap_or_else(|| dispatch::lookup_protected(&mutator.heap, class, selector))
     });
     match lookup {
@@ -108,6 +77,9 @@ pub(crate) fn decide_lexical_send<'gc>(
             defining_class,
             arguments: StepArguments::Send,
         }),
+        Lookup::SlotAccessor(accessor, field) => {
+            mutator.decide_slot_accessor(enclosing, accessor, field, arguments)
+        }
         Lookup::NestedClass(mixin, declaring_class) => {
             crate::interpreter::nested::nested_class(mutator, &enclosing, &mixin, declaring_class)
         }
@@ -162,6 +134,11 @@ pub(crate) fn decide_super_send<'gc>(
             defining_class,
             arguments: StepArguments::Send,
         }),
+        // `super x` reaches the superclass's accessor even where the
+        // receiver's own class overrides it (§5.10, §6.3.2).
+        Lookup::SlotAccessor(accessor, field) => {
+            mutator.decide_slot_accessor(self_value, accessor, field, arguments)
+        }
         // `super N` for a nested class the superclass declares. The
         // receiver stays `self` (§5.10), which is also the enclosing object
         // the accessor caches against -- so `super N` and `N` name the same

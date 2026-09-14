@@ -1,13 +1,16 @@
 use indoc::indoc;
 use std::rc::Rc;
 
-use ns_runtime::mixin::{mixin_key, Mixin};
+use ns_runtime::dispatch::{self, Lookup};
+use ns_runtime::mixin::{mixin_key, AccessorKind, Mixin};
 use ns_runtime::{Interpreter, Mutator, Root, Symbol, Value};
 use ns_syntax::{ast, span::Span};
 
 fn slot_declaration(name: &str) -> ns_runtime::mixin::MixinSlot {
     ns_runtime::mixin::MixinSlot {
         name: Symbol::intern(name),
+        mutable: false,
+        access: ast::AccessModifier::Protected,
         declaration: Some(raw_slot_declaration(name)),
     }
 }
@@ -63,8 +66,9 @@ fn different_superclasses_produce_different_applications() {
 #[test]
 fn inherited_slots_are_counted_before_own_slots() {
     // A superclass application with two slots (a, b), a subclass mixin with one slot (c).
-    // The subclass's own slots must start past the inherited ones, and slot_index must
-    // map both inherited and own slots to their absolute offsets.
+    // The subclass's own slots must start past the inherited ones: its
+    // `own_slot_base` is what turns a mixin-relative slot index into an
+    // absolute field.
     let mut interpreter = Interpreter::bootstrap();
     let mut superclass_mixin = bare_mixin("Sup");
     Rc::get_mut(&mut superclass_mixin).unwrap().slots =
@@ -88,23 +92,12 @@ fn inherited_slots_are_counted_before_own_slots() {
         "subclass should have 3 slots (2 inherited + 1 own)"
     );
 
-    // Inherited slots must be reachable by name and map to their declaring level's index.
+    // Inherited slots keep their declaring level's offsets; own slots land
+    // past them.
+    assert_eq!(superclass_application.own_slot_base, 0);
     assert_eq!(
-        subclass_application.slot_index.get(&Symbol::intern("a")),
-        Some(&0),
-        "inherited slot 'a' must resolve to index 0"
-    );
-    assert_eq!(
-        subclass_application.slot_index.get(&Symbol::intern("b")),
-        Some(&1),
-        "inherited slot 'b' must resolve to index 1"
-    );
-
-    // Own slots must land past inherited ones.
-    assert_eq!(
-        subclass_application.slot_index.get(&Symbol::intern("c")),
-        Some(&2),
-        "own slot 'c' must resolve to index 2 (past the 2 inherited slots)"
+        subclass_application.own_slot_base, 2,
+        "own slot 'c' must start at index 2 (past the 2 inherited slots)"
     );
 }
 
@@ -152,11 +145,18 @@ fn a_class_object_carries_identity_and_its_application_carries_layout() {
             mutator.heap().class_enclosing(class).is_none(),
             "a module's enclosing object is nil"
         );
-        assert_eq!(
-            application.slot_index[&Symbol::intern("y")],
-            1,
-            "layout lives on the application, not on the class object"
-        );
+        // §6.3.2: the slot's getter is a method-table entry, resolved by
+        // the ordinary lookup to the field the application lays it out at.
+        match dispatch::lookup_protected(mutator.heap(), class, Symbol::intern("y")) {
+            Lookup::SlotAccessor(accessor, field) => {
+                assert_eq!(accessor.kind, AccessorKind::Getter);
+                assert_eq!(
+                    field, 1,
+                    "layout lives on the application, not on the class object"
+                );
+            }
+            _ => panic!("`y` must find the slot's getter"),
+        }
     });
 }
 
@@ -225,7 +225,7 @@ fn inherited_nested_declarations_keep_their_declaring_levels_slot() {
     let superclass_inner = superclass_mixin.nested[0].clone();
     let superclass_application =
         interpreter.enter(|mutator| mutator.apply_mixin(&superclass_mixin, None));
-    assert_eq!(superclass_application.slot_index[&Symbol::intern("a")], 0);
+    assert_eq!(superclass_application.own_slot_base, 0);
     assert_eq!(
         superclass_application.nested_slot[&mixin_key(&superclass_inner)],
         1
@@ -241,8 +241,53 @@ fn inherited_nested_declarations_keep_their_declaring_levels_slot() {
         1,
         "an inherited nested declaration keeps its declaring level's slot"
     );
-    assert_eq!(subclass_application.slot_index[&Symbol::intern("own")], 2);
+    assert_eq!(
+        subclass_application.own_slot_base, 2,
+        "the subclass's own slot lands after the inherited hidden slot"
+    );
     assert_eq!(subclass_application.slot_count, 3);
+}
+
+/// §6.3.2: a slot defines a getter under its name and, when mutable, a
+/// setter under the name with `:` appended -- entries of the method table
+/// with the slot's own accessibility, beside the methods.
+#[test]
+fn a_slot_declaration_defines_accessor_entries() {
+    let source = indoc! {"
+        Newspeak3
+        'Test'
+        class Holder = Object new (| public fixed = 1. private mutable ::= 2. |) (
+            public other = ( ^3 )
+        )
+    "};
+    let (mut interpreter, class, _resolved) = load(source);
+    interpreter.enter(|mutator| {
+        let application = mutator
+            .heap()
+            .class_application(object(mutator, &class))
+            .unwrap_or_else(|| panic!("expected a class object"));
+        let mixin = &application.mixin;
+        let accessor = |selector: &str| match mixin.methods.get(&Symbol::intern(selector)) {
+            Some(ns_runtime::mixin::MethodEntry::SlotAccessor(accessor)) => Some(*accessor),
+            _ => None,
+        };
+        let fixed = accessor("fixed").expect("`fixed` has a getter");
+        assert_eq!(
+            (fixed.kind, fixed.access, fixed.own_index),
+            (AccessorKind::Getter, ast::AccessModifier::Public, 0)
+        );
+        assert!(
+            accessor("fixed:").is_none(),
+            "an immutable slot has no setter"
+        );
+        let setter = accessor("mutable:").expect("`mutable:` is the mutable slot's setter");
+        assert_eq!(
+            (setter.kind, setter.access, setter.own_index),
+            (AccessorKind::Setter, ast::AccessModifier::Private, 1)
+        );
+        assert!(mixin.compiled_method(Symbol::intern("other")).is_some());
+        assert_eq!(mixin.methods.len(), 4, "fixed, mutable, mutable: and other");
+    });
 }
 
 /// A subclass redeclaring a nested class its superclass already declares.

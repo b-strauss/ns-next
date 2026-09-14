@@ -119,8 +119,10 @@ pub enum DecodeError {
     MixinTableNotATree {
         row: u32,
     },
-    /// One mixin-table row named the same selector twice, which would leave
-    /// its rebuilt method dictionary smaller than its own code list.
+    /// One mixin-table row declares a member twice: a method, a slot's
+    /// accessor or a nested class under a name another of them already has.
+    /// Its rebuilt method table would silently keep only one of the two, and
+    /// the resolver refuses such a declaration from source.
     DuplicateSelector(String),
     /// A selector or name reference (a send's selector, a method-dictionary
     /// key, a closure's parameter name, a `Symbol` object's text, ...) that
@@ -322,7 +324,7 @@ impl std::fmt::Display for DecodeError {
             ),
             DecodeError::DuplicateSelector(selector) => write!(
                 f,
-                "a mixin-table row names method `{selector}` more than once"
+                "a mixin-table row declares member `{selector}` more than once"
             ),
             DecodeError::ClosureArityMismatch { parameters, argument_count } => write!(
                 f,
@@ -744,7 +746,7 @@ fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError>
 /// this before anything is built on the code.
 pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
     for mixin in &mixins.mixins {
-        let mut methods: Vec<&Rc<crate::mixin::MixinMethod>> = mixin.methods.values().collect();
+        let mut methods: Vec<&Rc<crate::mixin::MixinMethod>> = mixin.compiled_methods().collect();
         methods.sort_by(|left, right| left.selector.as_str().cmp(right.selector.as_str()));
         for method in methods {
             check_code_arity(
@@ -1679,7 +1681,7 @@ fn method_declaration<'gc>(
         .mutator
         .heap
         .class_application(*class)
-        .and_then(|application| application.mixin.methods.get(&selector).cloned());
+        .and_then(|application| application.mixin.compiled_method(selector).cloned());
     found.ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
 }
 

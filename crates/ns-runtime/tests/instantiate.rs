@@ -431,22 +431,22 @@ fn new_answers_the_instance_its_initializers_ran_on() {
             | seen ::= nil. |
         ) (
             public class One = Object new (
-                | a = 1. |
+                | aValue = 1. |
                 note: self.
             ) (
-                public a = ( ^a )
+                public a = ( ^aValue )
             )
             public class Base = Object new (
-                | b = 2. |
+                | bValue = 2. |
                 note: self.
             ) (
-                public b = ( ^b )
+                public b = ( ^bValue )
             )
             public class Two = Base new (
-                | c = 3. |
+                | cValue = 3. |
                 note: self.
             ) (
-                public c = ( ^c )
+                public c = ( ^cValue )
             )
             public class Bare = Base new (
             ) (

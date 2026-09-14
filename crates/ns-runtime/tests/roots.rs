@@ -140,9 +140,9 @@ const GRAPH: &str = indoc! {"
       | cell ::= nil. counter ::= nil. |
     ) (
       public class Cell = Object new (
-        | v ::= 7. |
+        | held ::= 7. |
       ) (
-        public v = ( ^v )
+        public v = ( ^held )
         public secret = ( ^outer X secret )
       ) : ()
       public build = (
