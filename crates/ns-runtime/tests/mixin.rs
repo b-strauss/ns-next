@@ -49,12 +49,12 @@ fn applying_the_same_mixin_to_the_same_superclass_is_cached() {
 fn different_superclasses_produce_different_applications() {
     let mut interpreter = Interpreter::bootstrap();
     let (first, second) = interpreter.enter(|mutator| {
-        let superclass_a = mutator.apply_mixin(&bare_mixin("A"), None);
-        let superclass_b = mutator.apply_mixin(&bare_mixin("B"), None);
+        let a_superclass = mutator.apply_mixin(&bare_mixin("A"), None);
+        let b_superclass = mutator.apply_mixin(&bare_mixin("B"), None);
         let mixin = bare_mixin("Inner");
         (
-            mutator.apply_mixin(&mixin, Some(&superclass_a)),
-            mutator.apply_mixin(&mixin, Some(&superclass_b)),
+            mutator.apply_mixin(&mixin, Some(&a_superclass)),
+            mutator.apply_mixin(&mixin, Some(&b_superclass)),
         )
     });
     assert!(!Rc::ptr_eq(&first, &second));

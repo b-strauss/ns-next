@@ -461,7 +461,7 @@ fn loading_a_second_module_keeps_the_first_modules_code() {
           public answer = ( ^2 )
         ) : ()
     "};
-    let (mut interpreter, class_a) = load(first);
+    let (mut interpreter, a_class) = load(first);
     let module = ns_syntax::parse(second).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -469,23 +469,23 @@ fn loading_a_second_module_keeps_the_first_modules_code() {
         SourceOrigin::File(PathBuf::from("b.ns")),
     )
     .expect("resolve");
-    let class_b = interpreter.load_module(&resolved);
-    let a_instance = new_instance(&mut interpreter, &class_a);
-    let b_instance = new_instance(&mut interpreter, &class_b);
-    let from_a = expect_ok(
+    let b_class = interpreter.load_module(&resolved);
+    let a_instance = new_instance(&mut interpreter, &a_class);
+    let b_instance = new_instance(&mut interpreter, &b_class);
+    let a_answer = expect_ok(
         send(&mut interpreter, &a_instance, "answer", &[]),
         "A answer",
     );
-    let from_b = expect_ok(
+    let b_answer = expect_ok(
         send(&mut interpreter, &b_instance, "answer", &[]),
         "B answer",
     );
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&from_a))),
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&a_answer))),
         1
     );
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&from_b))),
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&b_answer))),
         2
     );
 }

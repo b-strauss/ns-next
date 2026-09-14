@@ -271,46 +271,46 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     // Two structurally different superclass shapes for the same mixin: one
     // application inherits two slots (own_slot_base must be 2), the other
     // inherits none (own_slot_base must be 0).
-    let (application_a, application_b) = interpreter.enter(|mutator| {
+    let (a_application, b_application) = interpreter.enter(|mutator| {
         let two_slots = Rc::new(Mixin {
             slots: vec![slot_declaration("p"), slot_declaration("q")],
             ..Mixin::empty(Symbol::intern("TwoSlots"))
         });
         let two_slot_super = mutator.apply_mixin(&two_slots, None);
-        let application_a = mutator.apply_mixin(&shared_mixin, Some(&two_slot_super));
-        let application_b = mutator.apply_mixin(&shared_mixin, None);
-        (application_a, application_b)
+        let a_application = mutator.apply_mixin(&shared_mixin, Some(&two_slot_super));
+        let b_application = mutator.apply_mixin(&shared_mixin, None);
+        (a_application, b_application)
     });
     assert_ne!(
-        application_a.own_slot_base, application_b.own_slot_base,
+        a_application.own_slot_base, b_application.own_slot_base,
         "the setup must actually give the two applications different bases"
     );
 
-    let class_a = make_class(
+    let a_class = make_class(
         &mut interpreter,
         BuiltinClass::Object,
-        application_a.clone(),
+        a_application.clone(),
     );
-    let class_b = make_class(
+    let b_class = make_class(
         &mut interpreter,
         BuiltinClass::Object,
-        application_b.clone(),
+        b_application.clone(),
     );
 
-    let instance_a = expect_ok(
-        interpreter.instantiate(&class_a, &[interpreter.stash(Value::SmallInteger(11))]),
+    let a_instance = expect_ok(
+        interpreter.instantiate(&a_class, &[interpreter.stash(Value::SmallInteger(11))]),
         "instantiate a",
     );
-    let instance_b = expect_ok(
-        interpreter.instantiate(&class_b, &[interpreter.stash(Value::SmallInteger(22))]),
+    let b_instance = expect_ok(
+        interpreter.instantiate(&b_class, &[interpreter.stash(Value::SmallInteger(22))]),
         "instantiate b",
     );
     interpreter.enter(|mutator| {
         assert_eq!(
             field_at(
                 mutator.heap(),
-                &mutator.fetch(&instance_a),
-                application_a.own_slot_base
+                &mutator.fetch(&a_instance),
+                a_application.own_slot_base
             ),
             11,
             "a's own slot must land at its own application's absolute offset"
@@ -318,8 +318,8 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
         assert_eq!(
             field_at(
                 mutator.heap(),
-                &mutator.fetch(&instance_b),
-                application_b.own_slot_base
+                &mutator.fetch(&b_instance),
+                b_application.own_slot_base
             ),
             22,
             "b's own slot must land at its own application's absolute offset"

@@ -133,34 +133,34 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
     .expect("resolve");
 
     // Path A: `Foo new` via ordinary `send`.
-    let mut interpreter_a = Interpreter::bootstrap();
-    let class_a = interpreter_a.load_module(&resolved);
+    let mut a_interpreter = Interpreter::bootstrap();
+    let a_class = a_interpreter.load_module(&resolved);
     let via_send = expect_ok(
-        interpreter_a.send(&class_a, Symbol::intern("new"), &[]),
+        a_interpreter.send(&a_class, Symbol::intern("new"), &[]),
         "Foo new (via send)",
     );
     let via_send_bar = expect_ok(
-        interpreter_a.send(&via_send, Symbol::intern("bar"), &[]),
+        a_interpreter.send(&via_send, Symbol::intern("bar"), &[]),
         "Foo new bar (via send)",
     );
 
     // Path B: `interpreter.instantiate(...)` called directly.
-    let mut interpreter_b = Interpreter::bootstrap();
-    let class_b = interpreter_b.load_module(&resolved);
-    let via_instantiate = expect_ok(interpreter_b.instantiate(&class_b, &[]), "instantiate(Foo)");
+    let mut b_interpreter = Interpreter::bootstrap();
+    let b_class = b_interpreter.load_module(&resolved);
+    let via_instantiate = expect_ok(b_interpreter.instantiate(&b_class, &[]), "instantiate(Foo)");
     let via_instantiate_bar = expect_ok(
-        interpreter_b.send(&via_instantiate, Symbol::intern("bar"), &[]),
+        b_interpreter.send(&via_instantiate, Symbol::intern("bar"), &[]),
         "instantiate(Foo) bar",
     );
 
     // Each side leaves its interpreter's entry as the integer it answered,
     // or as the description of whatever else it answered.
-    let from_send = interpreter_a.enter(|mutator| match mutator.fetch(&via_send_bar) {
+    let from_send = a_interpreter.enter(|mutator| match mutator.fetch(&via_send_bar) {
         Value::SmallInteger(integer) => Ok(integer),
         other => Err(mutator.heap().describe(&other)),
     });
     let from_instantiate =
-        interpreter_b.enter(|mutator| match mutator.fetch(&via_instantiate_bar) {
+        b_interpreter.enter(|mutator| match mutator.fetch(&via_instantiate_bar) {
             Value::SmallInteger(integer) => Ok(integer),
             other => Err(mutator.heap().describe(&other)),
         });

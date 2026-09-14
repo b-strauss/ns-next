@@ -1838,13 +1838,13 @@ mod tests {
         "};
         let (mut interpreter, class) = load(source);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-        let class_r = expect_ok(interpreter.send(&instance, Symbol::intern("R"), &[]), "R");
+        let r_class_root = expect_ok(interpreter.send(&instance, Symbol::intern("R"), &[]), "R");
         interpreter.enter(|mutator| {
-            let Value::Object(_) = mutator.fetch(&class_r) else {
+            let Value::Object(_) = mutator.fetch(&r_class_root) else {
                 panic!("`R` answers a class object")
             };
         });
-        expect_ok(interpreter.instantiate(&class_r, &[]), "R new");
+        expect_ok(interpreter.instantiate(&r_class_root, &[]), "R new");
         assert_eq!(
             interpreter.enter(|mutator| mutator.spare_walks.len()),
             1,
@@ -1863,7 +1863,7 @@ mod tests {
                 .is_empty())),
             "a spare holds no handle"
         );
-        expect_ok(interpreter.instantiate(&class_r, &[]), "R new again");
+        expect_ok(interpreter.instantiate(&r_class_root, &[]), "R new again");
         assert_eq!(interpreter.enter(|mutator| mutator.spare_walks.len()), 1);
         assert!(
             interpreter.enter(|mutator| std::ptr::eq(

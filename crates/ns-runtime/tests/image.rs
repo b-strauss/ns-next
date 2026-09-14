@@ -3917,11 +3917,12 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
     let unhashed = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let platform = interpreter.platform();
     let (bytes, assigned) = interpreter.enter(|mutator| {
-        let hashed_object = *object(&mutator.fetch(&hashed));
-        let assigned = mutator.heap_mut().ensure_identity_hash(hashed_object);
+        let hashed_value = mutator.fetch(&hashed);
+        let assigned = mutator
+            .heap_mut()
+            .ensure_identity_hash(*object(&hashed_value));
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        let hashed_value = mutator.fetch(&hashed);
         let unhashed_value = mutator.fetch(&unhashed);
         let bytes = image::snapshot(
             mutator,
@@ -4585,20 +4586,20 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
         });
         class
     };
-    let before_a = inner_of(&mut interpreter, &first);
-    let before_b = inner_of(&mut interpreter, &second);
+    let first_inner_before = inner_of(&mut interpreter, &first);
+    let second_inner_before = inner_of(&mut interpreter, &second);
     // Both read out after the last accessor ran.
     interpreter.enter(|mutator| {
-        let before_a = class_reference(mutator, &before_a);
-        let before_b = class_reference(mutator, &before_b);
+        let first_inner_before = class_reference(mutator, &first_inner_before);
+        let second_inner_before = class_reference(mutator, &second_inner_before);
         assert!(
-            !before_a.same(before_b),
+            !first_inner_before.same(second_inner_before),
             "one class object per enclosing instance, before the snapshot"
         );
         assert!(
             Rc::ptr_eq(
-                &application_of(mutator.heap(), before_a),
-                &application_of(mutator.heap(), before_b)
+                &application_of(mutator.heap(), first_inner_before),
+                &application_of(mutator.heap(), second_inner_before)
             ),
             "one shared application, before the snapshot"
         );
