@@ -218,7 +218,12 @@ NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules
 ```
 
 Never judge performance from a debug build — `cargo build --workspace --release` is the
-one to measure.
+one to measure. Every binary a measurement compares is built with the same codegen
+flags: `.cargo/config.toml` pins every function start to a 64-byte boundary, so a
+throwaway worktree of a commit from before that pin gets the whole flag set through
+`RUSTFLAGS` — which replaces the configuration's flags, `+crt-static` included — as
+`docs/design/execution.md`'s measurement protocol ("What removing the re-entries
+moved") spells out.
 
 A file that legitimately cannot parse yet belongs in `corpus/blacklist.toml`. A corpus
 module that runs end to end belongs in `corpus/runnable.toml`, with the entry selector

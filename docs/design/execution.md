@@ -480,7 +480,7 @@ the compiler inlines: `bench_loop.ns` sums the counter, `bench_send.ns` adds a
 user-method send per iteration and `bench_block.ns` a method that creates and
 invokes a block. On a release build, on 2026-09-14, with the safepoint poll in
 the loop and each instruction an entry of the step state, their medians were
-about 11.3, 14.3 and 23.1 ms ("What 2c moved" below).
+about 11.2, 14.1 and 22.6 ms ("What 2c moved" below).
 
 Never judge performance from a debug build.
 
@@ -915,8 +915,25 @@ printing the sum it accumulates:
 They are not fixtures; the first two are written out in the step's
 [plan](../superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md),
 "Measurement protocol", and the other two are `bench_new.ns` with the classes
-above. Medians in ms from the first sitting, each group's mean, and the change
-of the mean in both sittings:
+above.
+
+Every binary a measurement compares is built with the same codegen flags.
+Since 2c, `.cargo/config.toml` pins every function start to a 64-byte
+boundary (`-C llvm-args=-align-all-functions=6`; "What 2c moved" below says
+why), and a throwaway worktree of an older commit has no such entry, so its
+build gets the whole set through the environment:
+`RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`,
+for that build only. `RUSTFLAGS` replaces the configuration's flags rather
+than adding to them, which is why `+crt-static` is repeated there and why the
+current tree is built from its configuration with `RUSTFLAGS` unset. Before
+timing, check that no binary imports `VCRUNTIME140.dll` (`dumpbin
+/dependents`) and that each prints the expected output for every source; a
+linker map (`-C link-arg=/MAP:<file>`) shows every function of the crate at a
+multiple of 64 — the only symbols off the boundary are the static C runtime's
+own objects.
+
+Medians in ms from the first sitting, each group's mean, and the change of
+the mean in both sittings:
 
 | Source | Before, rounds 1–5 | mean | After, rounds 1–5 | mean | Change, sitting 1 / 2 |
 |---|---|---|---|---|---|
@@ -958,7 +975,10 @@ inline, so the loop never reaches `Interpreter::resume`. This is the uniform
 shift the first change of the step already showed on code it did not change
 (below), an artifact of inlining and register allocation as far as that
 investigation went. It is not isolated, and nothing removed from either
-benchmark's path explains it. The comparison with `be3eb40` is carried through
+benchmark's path explains it. Code placement is the likely mechanism — a
+change elsewhere moving the hot functions into another 64-byte phase — but
+that was verified only for 2c, whose investigation found it and pinned it
+("What 2c moved" below). The comparison with `be3eb40` is carried through
 every measurement up to step 3; step 2b's ("What 2b moved" below) puts
 `bench_loop.ns` at +1.1% in both of its sittings, the groups overlapping, and
 `bench_block.ns` 2.5% faster than `be3eb40`.
@@ -975,7 +995,8 @@ own, so its figures are not compared with these:
   register allocation differed, doing the same work. Moving the continuation
   handling out of `finish` and marking `do_step` `#[inline(never)]` recovered
   nothing. It was accepted as an LLVM inlining and layout artifact on unchanged
-  executed code, not bisected further.
+  executed code, not bisected further. Code placement is the likely mechanism,
+  verified only for 2c ("What 2c moved" below).
 - **The nested-class accessor as a step** made no source slower; by the
   protocol's rule `bench_send.ns`, `bench_block.ns` and `bench_new.ns` came out
   faster, with nothing on their paths to explain it.
@@ -1117,105 +1138,132 @@ than by convention") put one thing into a release build: the step state
 behind `World::enter`, entered once per instruction the run loop executes
 ("The VM" above). The brand itself is a zero-sized lifetime and changes no
 layout: `Object`, `FrameSlot` and `Result<Step, Signal>` kept their release
-sizes, 56, 136 and 56 bytes. The step was measured whole
-against the commit it started from, `a5d1e05`, and against `be3eb40`, in two
-sittings on 2026-09-14, by the protocol of "What removing the re-entries
-moved" above: both before-binaries built in throwaway worktrees, `ns-next
+sizes, 56, 136 and 56 bytes. The step was measured whole against the commit
+it started from, `a5d1e05`, and against `be3eb40`, in two sittings on
+2026-09-14, by the protocol of "What removing the re-entries moved" above,
+every binary built with every function start pinned to a 64-byte boundary
+(the protocol's rule on codegen flags; "The pin" below says where the rule
+comes from): the before-binaries built in throwaway worktrees, `ns-next
 bench <source> --iterations 30` over the same seven sources, five rounds,
-alternating the three binaries within each round. Medians in ms, and each
-group's mean, from the first sitting:
+alternating the binaries within each round. A fourth binary ran in the same
+rounds — `a5d1e05` as its own configuration builds it, unpinned — to show
+what the pin itself does. Medians in ms, and each group's mean, from the
+first sitting:
 
-| Source | `be3eb40`, rounds 1–5 | mean | `a5d1e05`, rounds 1–5 | mean | After, rounds 1–5 | mean |
-|---|---|---|---|---|---|---|
-| `bench_loop.ns` | 10.94, 11.10, 11.05, 11.00, 11.06 | 11.03 | 11.26, 11.43, 11.25, 11.31, 11.50 | 11.35 | 11.19, 11.30, 11.29, 11.43, 11.33 | 11.31 |
-| `bench_send.ns` | 13.86, 13.91, 13.99, 13.95, 13.89 | 13.92 | 14.12, 14.11, 14.09, 14.13, 14.16 | 14.12 | 14.12, 14.42, 14.20, 14.29, 14.14 | 14.23 |
-| `bench_block.ns` | 23.10, 23.16, 23.35, 23.31, 23.06 | 23.20 | 22.77, 22.43, 22.43, 22.66, 22.52 | 22.56 | 22.97, 23.00, 23.24, 23.28, 23.15 | 23.13 |
-| `bench_do.ns` | 7.78, 7.96, 8.48, 7.83, 7.99 | 8.01 | 8.16, 8.28, 7.81, 7.78, 7.93 | 7.99 | 7.78, 7.84, 7.74, 7.81, 7.74 | 7.78 |
-| `bench_new.ns` | 7.36, 7.38, 7.34, 7.41, 7.34 | 7.36 | 7.29, 7.26, 7.35, 7.24, 7.27 | 7.28 | 7.35, 7.42, 7.55, 7.43, 7.42 | 7.43 |
-| `bench_new2.ns` | 8.54, 8.37, 8.28, 8.24, 8.31 | 8.35 | 8.17, 8.23, 8.36, 8.26, 8.26 | 8.26 | 8.37, 8.43, 8.40, 8.48, 8.38 | 8.41 |
-| `bench_newarg.ns` | 10.40, 10.37, 10.41, 10.64, 10.47 | 10.46 | 10.00, 10.20, 10.18, 10.26, 10.13 | 10.15 | 10.27, 10.22, 10.31, 10.36, 10.22 | 10.28 |
+| Source | `be3eb40`, rounds 1–5 | mean | `a5d1e05`, rounds 1–5 | mean | `a5d1e05` unpinned, rounds 1–5 | mean | After, rounds 1–5 | mean |
+|---|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 10.95, 11.01, 11.06, 11.12, 11.22 | 11.07 | 11.20, 11.14, 11.24, 11.19, 11.21 | 11.20 | 11.15, 11.17, 11.19, 11.16, 11.21 | 11.17 | 11.30, 11.27, 11.26, 11.24, 11.21 | 11.26 |
+| `bench_send.ns` | 13.63, 13.77, 13.74, 13.99, 13.73 | 13.77 | 14.08, 14.16, 14.17, 14.14, 14.03 | 14.12 | 13.89, 14.02, 14.15, 14.20, 14.00 | 14.05 | 14.04, 14.14, 14.38, 14.25, 14.19 | 14.20 |
+| `bench_block.ns` | 23.01, 23.35, 23.21, 23.10, 23.11 | 23.16 | 22.60, 23.12, 22.62, 22.53, 22.52 | 22.68 | 22.40, 22.50, 22.49, 22.71, 22.88 | 22.59 | 22.56, 22.66, 22.61, 22.47, 22.98 | 22.66 |
+| `bench_do.ns` | 7.86, 8.07, 8.08, 8.13, 8.07 | 8.04 | 7.72, 7.79, 7.70, 7.71, 7.78 | 7.74 | 7.80, 7.70, 7.73, 7.68, 7.73 | 7.73 | 7.73, 7.77, 7.79, 7.78, 7.71 | 7.76 |
+| `bench_new.ns` | 7.34, 7.40, 7.38, 7.36, 7.43 | 7.38 | 7.37, 7.39, 7.37, 7.33, 7.58 | 7.40 | 7.25, 7.30, 7.32, 7.26, 7.38 | 7.30 | 7.30, 7.36, 7.27, 7.34, 7.34 | 7.32 |
+| `bench_new2.ns` | 8.44, 8.36, 8.32, 8.28, 8.54 | 8.39 | 8.25, 8.40, 8.39, 8.31, 8.48 | 8.36 | 8.21, 8.23, 8.17, 8.23, 8.22 | 8.21 | 8.32, 8.22, 8.40, 8.31, 8.35 | 8.32 |
+| `bench_newarg.ns` | 10.36, 10.50, 10.51, 10.56, 10.61 | 10.51 | 10.29, 10.34, 10.20, 10.23, 10.23 | 10.26 | 10.09, 10.04, 10.25, 10.10, 10.09 | 10.11 | 10.09, 10.15, 10.40, 10.08, 10.29 | 10.20 |
 
 And from the second:
 
-| Source | `be3eb40`, rounds 1–5 | mean | `a5d1e05`, rounds 1–5 | mean | After, rounds 1–5 | mean |
-|---|---|---|---|---|---|---|
-| `bench_loop.ns` | 11.01, 10.99, 11.10, 11.33, 11.14 | 11.12 | 11.13, 11.30, 11.19, 11.31, 11.20 | 11.23 | 11.28, 11.31, 11.27, 11.44, 11.32 | 11.32 |
-| `bench_send.ns` | 13.78, 13.93, 13.92, 13.83, 13.98 | 13.89 | 13.93, 14.09, 14.24, 14.14, 14.30 | 14.14 | 14.28, 14.47, 14.27, 14.31, 14.28 | 14.32 |
-| `bench_block.ns` | 23.36, 23.26, 23.24, 23.38, 22.98 | 23.25 | 23.01, 22.74, 22.44, 22.43, 22.75 | 22.67 | 22.93, 22.99, 23.13, 23.19, 23.15 | 23.08 |
-| `bench_do.ns` | 7.81, 7.84, 7.92, 8.01, 7.83 | 7.88 | 7.85, 7.85, 7.84, 7.77, 7.69 | 7.80 | 7.78, 7.73, 7.81, 7.75, 7.80 | 7.77 |
-| `bench_new.ns` | 7.35, 7.37, 7.35, 7.41, 7.39 | 7.37 | 7.29, 7.26, 7.38, 7.41, 7.25 | 7.32 | 7.38, 7.34, 7.42, 7.38, 7.34 | 7.37 |
-| `bench_new2.ns` | 8.25, 8.38, 8.28, 8.55, 8.28 | 8.35 | 8.17, 8.15, 8.15, 8.33, 8.21 | 8.20 | 8.35, 8.45, 8.40, 8.46, 8.35 | 8.40 |
-| `bench_newarg.ns` | 10.37, 10.37, 10.37, 10.49, 10.34 | 10.39 | 10.15, 10.17, 10.11, 10.11, 10.07 | 10.12 | 10.31, 10.22, 10.30, 10.20, 10.42 | 10.29 |
+| Source | `be3eb40`, rounds 1–5 | mean | `a5d1e05`, rounds 1–5 | mean | `a5d1e05` unpinned, rounds 1–5 | mean | After, rounds 1–5 | mean |
+|---|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.02, 11.03, 11.07, 11.10, 10.96 | 11.03 | 11.36, 11.16, 11.24, 11.19, 11.32 | 11.25 | 11.29, 11.26, 11.22, 11.20, 11.11 | 11.21 | 11.20, 11.25, 11.27, 11.18, 11.21 | 11.22 |
+| `bench_send.ns` | 13.70, 13.83, 13.80, 13.77, 13.84 | 13.79 | 14.23, 14.06, 14.26, 14.11, 14.11 | 14.16 | 14.15, 13.97, 14.13, 13.99, 14.05 | 14.06 | 14.09, 14.15, 14.13, 14.07, 14.03 | 14.09 |
+| `bench_block.ns` | 23.32, 23.17, 23.27, 23.31, 23.39 | 23.29 | 22.39, 22.54, 23.38, 23.03, 22.90 | 22.85 | 22.86, 22.60, 22.54, 22.94, 22.44 | 22.68 | 22.47, 22.50, 22.74, 22.53, 22.44 | 22.54 |
+| `bench_do.ns` | 7.87, 7.94, 7.93, 8.11, 7.97 | 7.96 | 7.65, 7.79, 7.72, 7.75, 7.76 | 7.73 | 7.79, 7.89, 7.70, 7.70, 7.83 | 7.78 | 7.77, 7.83, 7.80, 7.74, 7.66 | 7.76 |
+| `bench_new.ns` | 7.35, 7.43, 7.33, 7.43, 7.34 | 7.37 | 7.29, 7.40, 7.34, 7.34, 7.33 | 7.34 | 7.40, 7.23, 7.45, 7.27, 7.40 | 7.35 | 7.45, 7.35, 7.32, 7.31, 7.25 | 7.34 |
+| `bench_new2.ns` | 8.43, 8.32, 8.32, 8.38, 8.26 | 8.34 | 8.31, 8.39, 8.23, 8.32, 8.21 | 8.29 | 8.21, 8.28, 8.30, 8.12, 8.34 | 8.25 | 8.35, 8.34, 8.30, 8.28, 8.28 | 8.31 |
+| `bench_newarg.ns` | 10.40, 10.31, 10.40, 10.42, 10.49 | 10.41 | 10.28, 10.20, 10.30, 10.16, 10.38 | 10.26 | 10.09, 10.18, 10.04, 10.14, 10.05 | 10.10 | 10.14, 10.15, 10.20, 10.16, 10.27 | 10.18 |
 
-The change of the after-group's mean in both sittings:
+The change of the after-group's mean in both sittings, and what the pin
+itself does — the unpinned `a5d1e05` against the pinned one:
 
-| Source | Against `a5d1e05`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
-|---|---|---|
-| `bench_loop.ns` | −0.4% / +0.9%, overlapping | +2.5% / +1.9%, after entirely above in the first |
-| `bench_send.ns` | +0.8% / +1.3%, overlapping | +2.2% / +3.1%, after entirely above in both |
-| `bench_block.ns` | **+2.5% / +1.8%**, after entirely above in the first | −0.3% / −0.7%, overlapping |
-| `bench_do.ns` | −2.6% / −0.3%, overlapping | −2.8% / −1.4%, overlapping |
-| `bench_new.ns` | +2.1% / +0.7%, overlapping, touching at 7.35 in the first | +1.0% / +0.0%, overlapping |
-| `bench_new2.ns` | **+1.8% / +2.5%, after entirely above in both** | +0.8% / +0.7%, overlapping |
-| `bench_newarg.ns` | **+1.2% / +1.7%**, after entirely above in the second | −1.8% / −0.9%, after entirely below in the first |
+| Source | Against `a5d1e05`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 | `a5d1e05` unpinned against pinned, sitting 1 / 2 |
+|---|---|---|---|
+| `bench_loop.ns` | +0.5% / −0.3%, overlapping | +1.7% / +1.7%, after entirely above in the second | −0.2% / −0.4%, overlapping |
+| `bench_send.ns` | +0.6% / −0.4%, overlapping | +3.1% / +2.2%, after entirely above in both | −0.4% / −0.7%, overlapping |
+| `bench_block.ns` | −0.1% / −1.4%, overlapping | −2.2% / −3.2%, after entirely below in both | −0.4% / −0.8%, overlapping |
+| `bench_do.ns` | +0.2% / +0.4%, overlapping | −3.5% / −2.5%, after entirely below in both | −0.1% / +0.6%, overlapping |
+| `bench_new.ns` | −1.1% / +0.0%, overlapping | −0.8% / −0.5%, overlapping | −1.4% / +0.2%, overlapping |
+| `bench_new2.ns` | −0.5% / +0.2%, overlapping | −0.8% / −0.4%, overlapping | −1.8% / −0.5%, unpinned entirely below in the first |
+| `bench_newarg.ns` | −0.5% / −0.8%, overlapping | −2.9% / −2.1%, after entirely below in the second | −1.4% / −1.6%, overlapping |
 
-**`bench_new2.ns` is slower than at `a5d1e05` beyond the sittings' noise**,
-by 1.8% and 2.5%: its after-group lay entirely above its parent-group in both
-sittings, 8.37–8.48 against 8.17–8.36 ms and 8.35–8.46 against 8.15–8.33 ms.
-Two more groups lay entirely above in one sitting and overlapped in the
-other: `bench_block.ns`, 22.97–23.28 against 22.43–22.77 ms in the first
-(+2.5%) and overlapping by 0.08 ms in the second (+1.8%); and
-`bench_newarg.ns`, 10.20–10.42 against 10.07–10.17 ms in the second (+1.7%)
-and overlapping in the first (+1.2%). `bench_new.ns` read +2.1% in the first
-sitting with the groups touching, +0.7% in the second. `bench_loop.ns`,
-`bench_send.ns` and `bench_do.ns` are level. So the step is level on the
-loop, the send and `do:`, and 1–2.5% slower on the block and the
-instantiation benchmarks, one of them beyond noise. It is an open finding
-(`docs/PROGRESS.md`, "Where the next session starts"), not chased.
+**Every source is level with `a5d1e05`**: the after-group overlaps its
+parent-group on all seven sources in both sittings, the change of the mean
+between −1.4% and +0.6%. A zero-sized lifetime and an entry that inlines away
+cost nothing at run time, as the design expected.
 
-**Against `be3eb40`**, the parent's own shift in these sittings is 2b's,
-read again: `bench_block.ns` −2.7% and −2.5%, `bench_newarg.ns` −2.9% and
-−2.6%, `bench_loop.ns` +2.9% and +1.0%, `bench_send.ns` +1.4% and +1.8%. The
-after-binary adds its own shift to it: `bench_block.ns`, which 2b left 2.5%
-faster than `be3eb40`, is −0.3% and −0.7%, overlapping — a growth of about
-0.4–0.5 ms, more than either group's spread in both sittings; `bench_send.ns`
-is +2.2% and +3.1%, entirely above in both, where 2b left +0.9% to +1.4%, a
-growth past both groups' spread in the second sitting; and
-`bench_newarg.ns`, −1.8% and −0.9%, against 2b's −3.2% to −3.4%, grew past
-both spreads in the second sitting too. `bench_loop.ns` at +2.5% and +1.9%
-grew by less than its groups' spread, the parent sitting as high in the
-first sitting. `bench_do.ns` is still faster than `be3eb40`, and
-`bench_new.ns` and `bench_new2.ns` are level with it.
+**Against `be3eb40`**, the after-binary's shift is the parent's, read again:
+`a5d1e05` itself sits +2.5% and +2.7% above `be3eb40` on `bench_send.ns`
+and +1.1% and +2.0% on `bench_loop.ns` in these sittings — 2a's shift on
+those two sources ("What removing the re-entries moved" above) — and the
+after-binary +3.1% / +2.2% and +1.7% / +1.7%, level with its parent. No
+source's shift against `be3eb40` grew past what 2b left by more than either
+group's spread: `bench_send.ns`, which 2b left at +0.9% to +1.4%, grew by
+0.24 and 0.11 ms against `be3eb40`-group spreads of 0.36 and 0.14 ms, within
+them, just so in the second sitting. `bench_block.ns` is 2.2% and 3.2%
+faster than `be3eb40`, `bench_do.ns` 2.5–3.5%, `bench_newarg.ns` 2.1–2.9%,
+and `bench_new.ns` and `bench_new2.ns` are level with it.
 
-Two sittings of their own, so their figures are not compared with these:
+**What the pin itself does** is the last column: the unpinned `a5d1e05`
+reads −0.1% to −1.8% against the pinned one, the groups overlapping on every
+source in both sittings but one (`bench_new2.ns` in the first, the unpinned
+group entirely below by 1.8%). So the unpinned binary is, if anything,
+slightly faster: the pin fixes the phase of every function start, not the
+phase the compiler's own layout gives the loop headers inside a function,
+and `a5d1e05`'s hot functions happened to sit well. What the pin buys is
+that a change elsewhere can no longer move them, which is the history below.
+It costs about 110 KB of padding — 2,091,520 against 1,979,904 bytes, 5.6%,
+some 4,600 functions each padded to the next boundary.
 
-- **The per-instruction entry** (Task 1 of the step, `d27e40b`, the step
-  state moved behind `World::enter` with no lifetime yet), against
-  `a5d1e05` in one sitting on 2026-09-14: level on every source, every group
-  overlapping its parent's — `bench_loop.ns` +0.1%, `bench_send.ns` −0.3%,
-  `bench_block.ns` −0.9%, `bench_do.ns` +0.4%, `bench_new.ns` +0.9%,
-  `bench_new2.ns` −0.0%, `bench_newarg.ns` +0.5%. So the entry inlines away,
-  as `#[inline(always)]` asks, and the shift above came later.
-- **A bisection sitting**, after the two whole-step sittings: the four
-  sources that moved, over the step's commits, five rounds, the change of
-  each group's mean against `a5d1e05`:
+**The pin.** Before it, the same step measured 1–2.5% slower on the block
+and instantiation benchmarks, and finding out why is where the pin comes
+from. Two sittings of the same protocol on 2026-09-14, with the binaries as
+their configurations built them, put `bench_new2.ns` at +1.8% and +2.5%
+against `a5d1e05`, entirely above in both, `bench_block.ns` at +2.5% / +1.8%
+and `bench_newarg.ns` at +1.2% / +1.7%, each entirely above in one; the
+loop, the send and `do:` level. A bisection sitting over the step's commits
+— the four sources that moved, five rounds, the change of each group's mean
+against `a5d1e05` — placed the shift on the brand commit:
 
-  | Source | `d27e40b` (the entry) | `7b41649` (the names written out) | `e59dc52` (hosts through `enter`) | `1549fb0` (the brand) | After (`2caf3e0`, no cast) |
-  |---|---|---|---|---|---|
-  | `bench_send.ns` | +0.7% | +0.8% | +0.6% | +1.6% | +1.0% |
-  | `bench_block.ns` | +0.5% | +1.1% | +1.4% | +2.8% | +3.1% |
-  | `bench_new2.ns` | −0.3% | +0.0% | +0.7% | +1.6% | +1.5% |
-  | `bench_newarg.ns` | +0.5% | +0.1% | +0.1% | +1.3% | +1.6% |
+| Source | `d27e40b` (the entry) | `7b41649` (the names written out) | `e59dc52` (hosts through `enter`) | `1549fb0` (the brand) | `2caf3e0` (no cast) |
+|---|---|---|---|---|---|
+| `bench_send.ns` | +0.7% | +0.8% | +0.6% | +1.6% | +1.0% |
+| `bench_block.ns` | +0.5% | +1.1% | +1.4% | +2.8% | +3.1% |
+| `bench_new2.ns` | −0.3% | +0.0% | +0.7% | +1.6% | +1.5% |
+| `bench_newarg.ns` | +0.5% | +0.1% | +0.1% | +1.3% | +1.6% |
 
-  The one step between neighbours that separates groups is the brand commit,
-  `1549fb0`: `bench_block.ns` 22.88–23.19 against 22.65–22.84 ms, and
-  `bench_newarg.ns` 10.21–10.40 against 10.11–10.20 ms, entirely above
-  `e59dc52`; `bench_block.ns` also creeps up by 0.3–0.6% per commit before
-  it, within each group's spread. The brand commit changes types and
-  signatures, apart from `rebrand` in `Heap::stash`/`fetch`, which `bench`'s
-  timed span reaches once per send, and small reshapes the lifetimes
-  required; its release binary is 512 bytes smaller than its parent's, so
-  the generated code did change. Where, and why it is slower, was not traced.
+`e59dc52` to `1549fb0` is the one step between neighbours that separates
+groups, though the brand commit's diff is types and signatures apart from
+`rebrand` and small reshapes the lifetimes required, and its binary 512
+bytes smaller. The post-LTO assembly of both commits, split into functions
+and diffed, explained it: the hot path is instruction for instruction
+identical — `Interpreter::run_from_host` with `vm::run` inlined (2,470
+instructions), `builtins::dispatch_native` (3,082), `vm::finish`,
+`Mutator::decide_send`, `push_step`'s block and method arms,
+`Heap::push_activation`, `pop_activation` and `reify`, the lookups — and
+only cold host code differs: the `for<'gc>` closure through
+`Interpreter::enter` needs a smaller stack frame in `Interpreter::send`,
+`instantiate` and ns-cli's command dispatcher (−16, −16 and −256 bytes), and
+the `CREATION_IN_PROGRESS` constant that became a function stores 2 bytes
+where it stored 16. The linker map showed every function behind them moved
+by 224 or 240 bytes — 32 or 16 modulo 64 — so every hot entry point, and
+with it every loop header and branch target in the run loop, sat in a
+different 64-byte line than before. Rebuilding both commits with
+`-C llvm-args=-align-all-functions=6` changed no instruction and brought
+them level in two sittings (`bench_block.ns` from +1.5% / +1.8% to −0.3% /
+−0.1%, `bench_send.ns` from +1.5% / +0.8% to +0.4% / +0.2%). That is the
+mechanism, and the pin in `.cargo/config.toml` is the decision, 2026-09-14:
+a change to cold code must not move the hot loop's phase, so every function
+starts on a 64-byte boundary in every build, and every binary a measurement
+compares is built with the same flags — the tables above are that
+measurement, re-run under the pin.
+
+One sitting of its own, so its figures are not compared with these: **the
+per-instruction entry** (Task 1 of the step, `d27e40b`, the step state moved
+behind `World::enter` with no lifetime yet), against `a5d1e05` in one
+sitting on 2026-09-14, unpinned: level on every source, every group
+overlapping its parent's — `bench_loop.ns` +0.1%, `bench_send.ns` −0.3%,
+`bench_block.ns` −0.9%, `bench_do.ns` +0.4%, `bench_new.ns` +0.9%,
+`bench_new2.ns` −0.0%, `bench_newarg.ns` +0.5%. So the entry inlines away,
+as `#[inline(always)]` asks.
 
 The suite (`cargo test --workspace`, debug build, test binaries already
 built) takes 13.1 s at 691 tests, and 190.3 s under `NS_NEXT_STRESS_MOVES=1`,

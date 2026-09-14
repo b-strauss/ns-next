@@ -133,7 +133,11 @@ which refuses identifiers of one or two characters: names are written out
 (`CLAUDE.md`, "Conventions").
 
 Never judge performance from a debug build; `cargo build --workspace --release`
-is the one to measure.
+is the one to measure, and every binary a measurement compares is built with
+the same codegen flags — `.cargo/config.toml` pins function alignment, and a
+commit from before the pin gets the same flags through `RUSTFLAGS`
+([execution.md](execution.md), "What removing the re-entries moved", the
+protocol).
 
 ## Deviations from the language specification
 

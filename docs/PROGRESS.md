@@ -29,7 +29,9 @@ roots and the stress mode" below. **2c, the lifetime brand** — every movable
 handle carries a lifetime obtainable only inside `Interpreter::enter`, in safe
 Rust, so holding one across a safepoint, keeping one outside an entry, and a
 native re-entering the loop fail to compile; see "M4 — The lifetime brand"
-below. Its measurement left one open finding, the first below.
+below. Measured whole, it is level with `a5d1e05` on every source; its first
+measurement was not, and finding out why pinned every function start to a
+64-byte boundary in `.cargo/config.toml` (the first finding below).
 
 **The next piece is step 3, the inline caches** ([dispatch.md](design/dispatch.md),
 "Planned: inline caches"; item 3 of the order of work below). A candidate
@@ -53,43 +55,56 @@ measured, not assumed: the protocol and the seven sources of "What removing
 the re-entries moved" ([execution.md](design/execution.md); the four
 throwaway sources are written out in the
 [2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
-"Measurement protocol"), the before-binaries built in throwaway worktrees,
-two sittings for a whole step, and a comparison against `be3eb40` as well as
-against the commit the step starts from (the first finding below).
+"Measurement protocol"), the before-binaries built in throwaway worktrees
+**with the same codegen flags as the current tree** — an older commit has
+no alignment pin in its configuration and gets the whole flag set through
+`RUSTFLAGS`, as the protocol says — two sittings for a whole step, and a
+comparison against `be3eb40` as well as against the commit the step starts
+from (the second finding below).
 
 **Open findings**, for whoever plans next to weigh:
 
-- **2c left `bench_new2.ns` slower than before the step, beyond noise.** Its
-  whole-step measurement against `a5d1e05` put `bench_new2.ns` at +1.8% and
-  +2.5%, the after-group entirely above its parent's in both sittings, by
-  0.01–0.02 ms; `bench_block.ns` (+2.5% / +1.8%) and `bench_newarg.ns`
-  (+1.2% / +1.7%) lay entirely above in one sitting each, and `bench_loop.ns`,
-  `bench_send.ns` and `bench_do.ns` are level. Task 1's sitting found the
-  per-instruction entry level, and a bisection sitting over the step's
-  commits places the step on the brand commit, `1549fb0`, whose diff is
-  types and signatures apart from `rebrand` and small reshapes; why its
-  generated code is slower was not traced
-  ([execution.md](design/execution.md), "What 2c moved"). Whether to chase
-  it before step 3, which rebuilds the send path these benchmarks run, is
-  for whoever plans next to decide; step 3's own measurement will show
-  whether it survives.
+- **Function alignment is pinned, and a measurement builds every binary
+  with the same flags.** 2c's first whole-step measurement read 1–2.5%
+  slower than `a5d1e05` on the block and instantiation benchmarks,
+  `bench_new2.ns` beyond noise in both sittings, and a bisection placed it
+  on the brand commit, `1549fb0`. The cause was placement, not code: the
+  brand commit's hot machine code is instruction for instruction identical
+  to its parent's, but smaller cold host code ahead of it moved every hot
+  function by 224 or 240 bytes into a different 64-byte phase, and with
+  function starts pinned to 64 bytes the two commits measured level. So
+  `.cargo/config.toml` now passes `-C llvm-args=-align-all-functions=6` to
+  every build (about 110 KB of padding), and under it the whole step is
+  level with `a5d1e05` on every source in both sittings, −1.4% to +0.6%,
+  every group overlapping ([execution.md](design/execution.md), "What 2c
+  moved"). The pin itself reads −0.1% to −1.8% against the unpinned parent,
+  overlapping on all but one group: it buys repeatability, not speed. The
+  two earlier "uniform shift on unchanged code" findings of 2a likely share
+  the mechanism, verified only for 2c. What it means for whoever measures
+  next: a throwaway worktree of a commit before the pin must be built with
+  `RUSTFLAGS` carrying the whole set, `+crt-static` included, since
+  `RUSTFLAGS` replaces the configuration's flags
+  ([execution.md](design/execution.md), "What removing the re-entries
+  moved", the protocol).
 - **The comparison with `be3eb40` continues.** 2a left `bench_loop.ns` 1.4–1.9%
   and `bench_block.ns` 1.4–1.6% slower than `be3eb40`, the commit it started
   from — a uniform codegen shift in `vm::run` and `dispatch_native`, traced as
-  far as inlining and register allocation and not bisected. 2b took
-  `bench_block.ns` to 2.5% faster than `be3eb40`, and 2c gave most of that
-  back: its whole-step measurement puts `bench_block.ns` at −0.3% and −0.7%,
-  `bench_newarg.ns` at −1.8% and −0.9% (2b: −3.2% to −3.4%), `bench_send.ns`
-  at +2.2% and +3.1%, entirely above `be3eb40` in both sittings (2b: +0.9% to
-  +1.4%), and `bench_loop.ns` at +2.5% and +1.9%, with `a5d1e05` itself
-  sitting +1.0% to +2.9% above `be3eb40` on the loop and the send in the same
-  sittings; `bench_do.ns` is still faster than `be3eb40`, and `bench_new.ns`
-  and `bench_new2.ns` level with it ([execution.md](design/execution.md),
-  "What 2c moved"). The rule stays: **every performance measurement up to and
-  including step 3 compares against `be3eb40` as well as against the commit
-  it starts from**, and reports both. If a source is still slower than
-  `be3eb40` once step 3 has landed, the shift is chased then, on the rebuilt
-  send path.
+  far as inlining and register allocation and not bisected; code placement,
+  the mechanism 2c pinned, is the likely cause, verified only for 2c. 2b
+  took `bench_block.ns` to 2.5% faster than `be3eb40`, and 2c, measured
+  under the pin, keeps it: `bench_block.ns` −2.2% and −3.2%,
+  `bench_newarg.ns` −2.9% and −2.1% (2b: −3.2% to −3.4%), `bench_do.ns`
+  −3.5% and −2.5%, `bench_new.ns` and `bench_new2.ns` level. `bench_send.ns`
+  is +3.1% and +2.2%, entirely above `be3eb40` in both sittings (2b: +0.9%
+  to +1.4%), and `bench_loop.ns` +1.7% and +1.7% — the parent's own shift,
+  `a5d1e05` sitting +2.5% to +2.7% above `be3eb40` on the send and +1.1% to
+  +2.0% on the loop in the same sittings, with 2c level with it
+  ([execution.md](design/execution.md), "What 2c moved"). The rule stays:
+  **every performance measurement up to and including step 3 compares
+  against `be3eb40` as well as against the commit it starts from**, reports
+  both, and builds every binary with the same codegen flags (the finding
+  above). If a source is still slower than `be3eb40` once step 3 has landed,
+  the shift is chased then, on the rebuilt send path.
 - **A decoded image's last initializer is not held to answering `self`**, so
   `new` answers whatever it answers — wrong but safe, no panic.
   `image::decode::verify_mixins` could refuse such an initializer, which would
@@ -255,9 +270,10 @@ so nothing is lost by it going second.
      `Mutator`, to a closure generic over it in safe Rust — the crate forbids
      `unsafe` code — once per instruction the run loop executes, so a host
      holds values only as `Root`s and reads through `enter`. Measured whole,
-     the loop, the send and `do:` are level and the block and instantiation
-     benchmarks 1–2.5% slower, `bench_new2.ns` beyond noise — an open finding,
-     above; see "M4 — The lifetime brand" below.
+     every source is level with `a5d1e05`; a first measurement read 1–2.5%
+     slower on the block and instantiation benchmarks, which turned out to be
+     code placement and pinned every function start to a 64-byte boundary
+     (the first finding above); see "M4 — The lifetime brand" below.
 3. **Inline caches** — [dispatch.md](design/dispatch.md). The call-site slots are
    already emitted and inert, so no bytecode format break. A cache must guard on
    the **mixin application**, not on the class object; the obvious key is the
@@ -1712,32 +1728,46 @@ cast.
 
 Measured whole against `a5d1e05` and `be3eb40` in two sittings on a release
 build, five rounds of `ns-next bench <source> --iterations 30`, alternating
-the three binaries within each round, the two before-binaries built in
-throwaway worktrees. Means of the five medians in ms from the first sitting,
+the binaries within each round, the before-binaries built in throwaway
+worktrees, every binary with every function start pinned to a 64-byte
+boundary (below). Means of the five medians in ms from the first sitting,
 and the change in each sitting:
 
 | Source | `be3eb40` | `a5d1e05` | After | Against `a5d1e05`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
 |---|---|---|---|---|---|
-| `bench_loop.ns` | 11.03 | 11.35 | 11.31 | −0.4% / +0.9% | +2.5% / +1.9% |
-| `bench_send.ns` | 13.92 | 14.12 | 14.23 | +0.8% / +1.3% | +2.2% / +3.1%, after entirely above in both |
-| `bench_block.ns` | 23.20 | 22.56 | 23.13 | **+2.5% / +1.8%**, after entirely above in the first | −0.3% / −0.7% |
-| `bench_do.ns` | 8.01 | 7.99 | 7.78 | −2.6% / −0.3% | −2.8% / −1.4% |
-| `bench_new.ns` | 7.36 | 7.28 | 7.43 | +2.1% / +0.7% | +1.0% / +0.0% |
-| `bench_new2.ns` | 8.35 | 8.26 | 8.41 | **+1.8% / +2.5%, after entirely above in both** | +0.8% / +0.7% |
-| `bench_newarg.ns` | 10.46 | 10.15 | 10.28 | **+1.2% / +1.7%**, after entirely above in the second | −1.8% / −0.9% |
+| `bench_loop.ns` | 11.07 | 11.20 | 11.26 | +0.5% / −0.3% | +1.7% / +1.7%, after entirely above in the second |
+| `bench_send.ns` | 13.77 | 14.12 | 14.20 | +0.6% / −0.4% | +3.1% / +2.2%, after entirely above in both |
+| `bench_block.ns` | 23.16 | 22.68 | 22.66 | −0.1% / −1.4% | −2.2% / −3.2%, after entirely below in both |
+| `bench_do.ns` | 8.04 | 7.74 | 7.76 | +0.2% / +0.4% | −3.5% / −2.5%, after entirely below in both |
+| `bench_new.ns` | 7.38 | 7.40 | 7.32 | −1.1% / +0.0% | −0.8% / −0.5% |
+| `bench_new2.ns` | 8.39 | 8.36 | 8.32 | −0.5% / +0.2% | −0.8% / −0.4% |
+| `bench_newarg.ns` | 10.51 | 10.26 | 10.20 | −0.5% / −0.8% | −2.9% / −2.1%, after entirely below in the second |
 
-**The loop, the send and `do:` are level; the block and instantiation
-benchmarks are 1–2.5% slower, and `bench_new2.ns` beyond the sittings'
-noise**, its after-group entirely above its parent-group in both sittings.
-Task 1's own sitting had found the per-instruction entry level on every
-source, and a bisection sitting over the step's commits puts the shift on
-the brand commit, `1549fb0` — a change of types and signatures, apart from
-`rebrand` and a few reshapes the lifetimes required, whose generated code is
-nevertheless slower for a reason not traced. It is carried as an open
-finding ("Where the next session starts"); [execution.md](design/execution.md),
-"What 2c moved", has every sitting's figures. Against `be3eb40`,
-`bench_block.ns` gave back most of the 2.5% 2b had gained, and `bench_send.ns`
-reads +2.2% and +3.1%.
+**Every source is level with `a5d1e05`**, every group overlapping its
+parent's in both sittings, and against `be3eb40` the after-binary sits where
+its parent sits: `a5d1e05` itself is +2.5% to +2.7% above `be3eb40` on the
+send and +1.1% to +2.0% on the loop in these sittings.
+
+**The pin.** A first measurement of the step, with the binaries as their
+configurations built them, read 1–2.5% slower on the block and
+instantiation benchmarks, `bench_new2.ns` entirely above its parent's group
+in both sittings, and a bisection placed it on the brand commit, `1549fb0`.
+Diffing the post-LTO assembly function by function showed its hot code
+instruction for instruction identical to its parent's — the whole run loop,
+`dispatch_native`, `finish`, the pushes and pops — and only cold host code
+smaller, by 224 bytes ahead of the hot functions, which moved every one of
+them into a different 64-byte phase; rebuilt with function starts pinned to
+64 bytes, the two commits measured level. On 2026-09-14 the user decided to
+pin it: `.cargo/config.toml` passes `-C llvm-args=-align-all-functions=6`
+to every build, in a `cfg` table Cargo joins with the `+crt-static` entry,
+at about 110 KB of padding (2,091,520 against 1,979,904 bytes). The tables
+above are the step re-measured under the pin, with a fourth binary — the
+unpinned `a5d1e05` — in the same rounds: it reads −0.1% to −1.8% against
+the pinned one, overlapping on all but one group, so the pin buys
+repeatability, not speed. [execution.md](design/execution.md), "What 2c
+moved", has every sitting's figures, the bisection and the evidence; the
+protocol there says how a commit from before the pin is built for a
+comparison.
 
 The suite (`cargo test --workspace`, debug build, test binaries already
 built) takes 13.1 s, where 2b left 12.7 s. Under

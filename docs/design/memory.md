@@ -473,10 +473,12 @@ The stress mode below keeps running under the brand: the brand covers what
 Rust holds, the stress mode what the tracer knows. Its price is ergonomic —
 every host and test reads through `enter` — and that price is accepted. What
 the whole step measured is in [execution.md](execution.md), "What 2c moved":
-level on most sources, and 1–2.5% slower than the commit it started from on
-the instantiation and block benchmarks, one of them beyond noise in both
-sittings — an open finding (`docs/PROGRESS.md`, "Where the next session
-starts").
+level with the commit it started from on every source, every group
+overlapping in both sittings. A first measurement had read 1–2.5% slower on
+the instantiation and block benchmarks; the brand commit's hot machine code
+turned out identical to its parent's, moved into another 64-byte phase by
+smaller cold code ahead of it, which is why every build now pins function
+starts to 64 bytes (`.cargo/config.toml`).
 
 ### Host roots
 
