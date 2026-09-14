@@ -1259,13 +1259,15 @@ instructions), `builtins::dispatch_native` (3,082), `vm::finish`,
 `Mutator::decide_send`, `push_step`'s block and method arms,
 `Heap::push_activation`, `pop_activation` and `reify`, the lookups — and
 only cold host code differs: the `for<'gc>` closure through
-`Interpreter::enter` needs a smaller stack frame in `Interpreter::send`,
-`instantiate` and ns-cli's command dispatcher (−16, −16 and −256 bytes), and
-the `CREATION_IN_PROGRESS` constant that became a function stores 2 bytes
-where it stored 16. The linker map showed every function behind them moved
-by 224 or 240 bytes — 32 or 16 modulo 64 — so every hot entry point, and
-with it every loop header and branch target in the run loop, sat in a
-different 64-byte line than before. Rebuilding both commits with
+`Interpreter::enter` needs a smaller stack frame in the host entries —
+`Interpreter::send`, ns-cli's `entry::instantiate_root` and its command
+dispatcher shrink by 16, 16 and 256 bytes, `Interpreter::instantiate` grows
+by two instructions — and the `CREATION_IN_PROGRESS` constant that became a
+function stores 2 bytes where it stored 16, in `push_step`'s cold
+nested-class arm (−16 bytes). The linker map showed every function behind
+them moved by 224 or 240 bytes — 32 or 16 modulo 64 — so every hot entry
+point, and with it every loop header and branch target in the run loop, sat
+in a different 64-byte line than before. Rebuilding both commits with
 `-C llvm-args=-align-all-functions=6` changed no instruction and brought
 them level in two sittings (`bench_block.ns` from +1.5% / +1.8% to −0.3% /
 −0.1%, `bench_send.ns` from +1.5% / +0.8% to +0.4% / +0.2%). That is the

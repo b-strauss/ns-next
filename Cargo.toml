@@ -31,13 +31,15 @@ indoc = "2"
 lto = "fat"
 codegen-units = 1
 
-# `Value`, `ObjRef` and `FrameRef` are `Copy`, so an iterator chain ending in
-# `.cloned()` reads as a deep copy of what is really a register move. This lint
-# is in `clippy::pedantic` and off by default; enabling it here is what keeps the
-# distinction enforced by `cargo clippy --workspace --all-targets` rather than by
-# a note somewhere reminding whoever looks next to re-derive the list.
-# `ObjRef`, `ClassRef`, `FrameRef` and `ActivationRef` are `Copy` indices; a
-# reference to one is an indirection that buys nothing. Sized by `clippy.toml`.
+# `Value`, `ObjectReference` and `FrameReference` are `Copy`, so an iterator
+# chain ending in `.cloned()` reads as a deep copy of what is really a register
+# move. This lint is in `clippy::pedantic` and off by default; enabling it here
+# is what keeps the distinction enforced by `cargo clippy --workspace --all-targets`
+# rather than by a note somewhere reminding whoever looks next to re-derive the
+# list.
+# `ObjectReference`, `ClassReference`, `FrameReference` and
+# `ActivationReference` are `Copy` indices; a reference to one is an indirection
+# that buys nothing. Sized by `clippy.toml`.
 [workspace.lints.clippy]
 cloned_instead_of_copied = "warn"
 trivially_copy_pass_by_ref = "warn"

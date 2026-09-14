@@ -76,11 +76,11 @@ below).
   (`-C llvm-args=-align-all-functions=6`) the two commits measured level.
   Under the pin the whole step is level with `a5d1e05` on every source in
   both sittings, −1.4% to +0.6%, every group overlapping
-  ([execution.md](design/execution.md), "What 2c moved"). The pin itself
-  reads −0.1% to −1.8% against the unpinned parent, overlapping on all but
-  one group, and costs about 110 KB of padding, 5.6% of the binary: it buys
-  repeatability, not speed. So the user decided on 2026-09-14 that the pin
-  belongs to the measurement protocol only — `.cargo/config.toml` carries
+  ([execution.md](design/execution.md), "What 2c moved"). The unpinned
+  parent reads −0.1% to −1.8% against the pinned one, overlapping on all but
+  one group, and the pin costs about 110 KB of padding, 5.6% of the binary:
+  it buys repeatability, not speed. So the user decided on 2026-09-14 that the
+  pin belongs to the measurement protocol only — `.cargo/config.toml` carries
   `+crt-static` and nothing else, and every binary a measurement compares,
   the current tree included, is built with
   `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`
@@ -1759,15 +1759,15 @@ in both sittings, and a bisection placed it on the brand commit, `1549fb0`.
 Diffing the post-LTO assembly function by function showed its hot code
 instruction for instruction identical to its parent's — the whole run loop,
 `dispatch_native`, `finish`, the pushes and pops — and only cold host code
-smaller, by 224 bytes ahead of the hot functions, which moved every one of
-them into a different 64-byte phase; rebuilt with function starts pinned to
-64 bytes (`-C llvm-args=-align-all-functions=6`), the two commits measured
-level. The tables above are the step re-measured with every binary pinned,
-with a fourth binary — the unpinned `a5d1e05` — in the same rounds: it
-reads −0.1% to −1.8% against the pinned one, overlapping on all but one
-group, so the pin buys repeatability, not speed, at about 110 KB of padding
-(2,091,520 against 1,979,904 bytes, 5.6%). On 2026-09-14 the user decided
-that the pin belongs to the measurement protocol only: the shipped build
+smaller, ahead of the hot functions, which moved every hot function by 224
+or 240 bytes into a different 64-byte phase; rebuilt with function starts
+pinned to 64 bytes (`-C llvm-args=-align-all-functions=6`), the two commits
+measured level. The tables above are the step re-measured with every
+binary pinned, with a fourth binary — the unpinned `a5d1e05` — in the same
+rounds: it reads −0.1% to −1.8% against the pinned one, overlapping on all
+but one group, so the pin buys repeatability, not speed, at about 110 KB of
+padding (2,091,520 against 1,979,904 bytes, 5.6%). On 2026-09-14 the user
+decided that the pin belongs to the measurement protocol only: the shipped build
 stays unpinned, `.cargo/config.toml` carries `+crt-static` and nothing
 else, and every binary a measurement compares — the current tree included
 — gets the whole flag set through `RUSTFLAGS`.
