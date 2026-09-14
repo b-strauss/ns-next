@@ -9,6 +9,9 @@ safepoint, a native re-entering the run loop, and a host storing a handle
 in its own field then fail to compile, and a `Root` is the only way a host
 keeps a value across a run.
 
+> Revised during execution: the cast described below was found unnecessary
+> and the crate forbids `unsafe` code — see Decision 1's revision.
+
 **Architecture:** The interpreter's step state — its heap, builtin classes,
 caches, argument buffer and spare instantiation boxes — moves out of
 `Interpreter` into a new `Mutator`. At rest it is held as a
@@ -66,6 +69,9 @@ repository's invariants:
    `PhantomData` in `ObjectReference` and `FrameReference`. No field of any branded type may
    ever hold a real reference with lifetime `'gc` — that is the cast's
    safety condition, stated at the cast and in `CLAUDE.md` (Task 5).
+
+   Revised during execution (Task 4 review, 2026-09-14): no cast, so no
+   cast safety condition — see Task 5.
 3. **There is no public `unbind`.** Two private functions in `heap.rs`
    convert a `Value` between its branded and its at-rest form, for the host
    root table, whose slots a host shares from outside every entry. Nothing

@@ -63,11 +63,13 @@ recorded entry point.
 
 A host holds what a load answers as roots: `image::load`'s `LoadedImage`
 carries the root class and the image's roots as `Root`s
-([memory.md](memory.md), "Host roots"), stashed once decoding and every
-verification are done — nothing runs while an artifact decodes, so
-nothing moves under the decoder's plain handles. `image::snapshot` and
-`image::build` take plain values, which a host fetches from its roots just
-before the call, for the same reason: encoding runs no code.
+([memory.md](memory.md), "Host roots"). `image::load` decodes inside one
+entry of the interpreter it bootstraps and stashes them once decoding and
+every verification are done, before that entry ends — nothing runs while an
+artifact decodes, so nothing moves under the decoder's handles.
+`image::snapshot` takes a `&Mutator` and `image::build` a `&Heap`, with
+values a host fetches from its roots in the same entry, for the same reason:
+encoding runs no code.
 
 ## Layout
 
@@ -526,7 +528,7 @@ each frame against, but it never cross-checks `home` against `kind`: a
 crafted image can pair a method-kind frame (`home` meaningful only for
 `FrameKind::Closure`) with a non-nil `home`. Nothing observes the
 mismatch today, because the VM never runs a frame loaded from an image
--- only ever an activation `Interpreter::push` built.
+-- only ever an activation `Mutator::push` built.
 A decoded home is only ever consulted as a return target, and a decoded
 frame is never married to a live activation, so a `^` into one is
 `cannotReturn` whatever its record says.

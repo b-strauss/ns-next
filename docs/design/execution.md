@@ -1,10 +1,12 @@
 # Execution — activations, the VM
 
 > **Status:** built, including the trampoline; nothing re-enters the run loop
-> from Rust, and the loop polls a safepoint.
+> from Rust, the loop polls a safepoint, and each instruction it executes is
+> one entry of the step state.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > arena, the `ActivationReference` and `FrameReference` handles, every read and write of an
-> activation), `types.rs` (`Frame`, `Continuation` and the state its variants
+> activation), `heap/world.rs` (the step state at rest, and its entry),
+> `types.rs` (`Frame`, `Continuation` and the state its variants
 > carry), `vm.rs` (the run loop and its safepoint poll), `interpreter/` (the
 > send decisions, `Step`, every push, the depth limit, the host entry, the
 > safepoint's slow path), `builtins/boolean.rs`,
@@ -118,9 +120,9 @@ pub struct ActivationReference {
   the temporaries with nil and appends a `StackEntry`. Both vectors keep their
   capacity across pops, so once they have grown to the program's depth a push
   allocates nothing. Every activation the runtime pushes goes through one
-  function, `Interpreter::push`, which refuses a push past the depth limit ("The
+  function, `Mutator::push`, which refuses a push past the depth limit ("The
   depth limit" below) before it reaches the heap, so no new push site can skip
-  the check. It is called from one place, `Interpreter::push_step`, for the
+  the check. It is called from one place, `Mutator::push_step`, for the
   method, block or body a decision answered. An activation nothing reifies
   leaves nothing behind; only a block the compiler did not inline reifies one,
   since an inlined `ifTrue:`/`and:`/`whileTrue:` argument creates no closure.
@@ -172,7 +174,7 @@ creation, the VM's `MakeClosure`: directly for the new closure's
 closure activation's own `home` on and reifies any other activation as its own
 home. Every block creation reifies the activation that creates it, whether or
 not the block reads one of its variables, because `captured_frame` is also where
-`Interpreter::push_step` reads the block's receiver and current class from.
+`Mutator::push_step` reads the block's receiver and current class from.
 
 **Pop.** The run loop pops every activation it runs, on *every* exit, error
 paths included (`vm::run`), and only the top entry can be popped. Popping hands
@@ -212,7 +214,7 @@ outlives a call — a closure, another frame, an image record — holds a `Frame
   no `sender` parameter. It was removed rather than retyped to an `ActivationReference`: its only
   use was to fill `Frame.sender`, and once a live activation's sender is the
   entry below it, nothing read it. No native takes an activation handle at all.
-  The one function handed the sending activation is `Interpreter::push_step`,
+  The one function handed the sending activation is `Mutator::push_step`,
   which reads its reified frame for the depth count's exemption and stores
   nothing.
 - `vm::run` receives the `ActivationReference` of an activation its caller has just
@@ -271,7 +273,14 @@ Everything in `interpreter/` decides *what* to run; `vm.rs` runs it.
 `vm::run(interpreter, base)` is the run loop. It is handed an activation its caller
 has just pushed — its *base* — and runs it and everything it activates, one
 instruction at a time (`execute`, a `match` over `Instruction`), with the running
-activation, its code and its `program_counter` in locals. It never recurses: a send pushes
+activation, its code and its `program_counter` in locals. **Each instruction is
+one entry** (`Interpreter::enter`, [memory.md](memory.md), "The brand"):
+`execute` runs inside it with a `&mut Mutator`, and `run` itself — its locals,
+the switch to another activation and the safepoint poll — is outside every
+one, so none of `run`'s locals can name a brand. A run ends inside its last
+entry: `vm::finish` or `vm::unwind` roots its answer for the host
+(`Mutator::to_host`), and `run` answers that `HostResult`, never a branded
+value. It never recurses: a send pushes
 the callee and switches to it, a return pops the callee and switches back to
 the caller. It pops everything it ran, `base` included, on every path out — a
 return from `base`, an error, or a non-local return aimed below `base` — so the
@@ -280,8 +289,8 @@ depth `base` sits at, the run's *floor*, is how the loop tells its own
 activations from its callers'.
 
 - **A send** (`vm::send`) gathers its arguments from the caller's registers
-  into the interpreter's reusable buffer, stores the caller's `program_counter`, and asks
-  `interpreter/` what the send means: `Interpreter::decide_send`,
+  into the step state's reusable buffer, stores the caller's `program_counter`, and asks
+  `interpreter/` what the send means: `Mutator::decide_send`,
   `sends::decide_lexical_send` or `sends::decide_super_send`, which answer a
   `Step`. `Step::Value` — a native leaf, a slot access, a nested class or an
   instantiation that runs no code — is written to the send's `destination`,
@@ -289,7 +298,7 @@ activations from its callers'.
   `Step::Block`, or one of the bodies an instantiation or a nested-class
   accessor runs, `Step::Initializer`, `Step::InitializerThen`,
   `Step::ClauseMessage` and `Step::SuperclassClause`. It is
-  pushed by `Interpreter::push_step`, which checks a method's or block's arity
+  pushed by `Mutator::push_step`, which checks a method's or block's arity
   and the depth limit, and the loop switches to the new activation at `program_counter` 0,
   its window filled straight from the buffer. A send allocates no vector once
   the buffer has grown to the widest one.
@@ -299,22 +308,22 @@ activations from its callers'.
   the value to that send's `destination` and continues at the next instruction — or,
   when the popped activation was `base`, the loop leaves `run` with it. Every
   other continuation — a control-flow native's, `do:`'s, the nested-class
-  accessor's, an instantiation's — is applied by `Interpreter::resume`, which
+  accessor's, an instantiation's — is applied by `Mutator::resume`, which
   calls into `builtins/` or `interpreter/`; it may answer a value, or another
   activation — a native loop's next block, `do:`'s block for the next element,
   an instantiation's next body, or the method a non-Boolean condition's
-  `mustBeBoolean` send finds — which `Interpreter::push_continuation` pushes
+  `mustBeBoolean` send finds — which `Mutator::push_continuation` pushes
   in the popped activation's place ("The trampoline" below).
 - **A signal** — a Newspeak error, or a non-local return — goes to
   `vm::unwind`, which pops what it has to and either returns from the
   non-local return's target or leaves `run` with the signal ("Non-local
   return" below). Every activation it pops hands its continuation to
-  `Interpreter::abandon`, which undoes what that continuation had begun.
+  `Mutator::abandon`, which undoes what that continuation had begun.
 
 Four kinds of body run, and each reaches the loop one way:
 
 1. **Method body** — pushed by `push_step` for a `Step::Method`. A method
-   activation catches a `^` that targets it (`Interpreter::catches_return`).
+   activation catches a `^` that targets it (`Mutator::catches_return`).
 2. **Block body** — pushed by `push_step` for a `Step::Block`, which names the
    closure object; the activation runs the `code` of that object's
    `ClosureData`. `value`, the control-flow natives and `do:` answer the block
@@ -328,7 +337,7 @@ Four kinds of body run, and each reaches the loop one way:
    value, the instance ("No re-entry from Rust" below). A class with no
    compiled initializer and no slots is a no-op; a user class whose mixin
    carries no initializer is refused on load and panics if built any other way
-   (`Interpreter::initializer_body`).
+   (`Mutator::initializer_body`).
 4. **Superclass clause and its message arguments** — the nested-class
    accessor's clause is a `Step::SuperclassClause`, continuing with
    `Continuation::NestedClass`; an instantiation's clause message is a
@@ -348,7 +357,8 @@ poll calls `Interpreter::safepoint` (`interpreter/safepoint.rs`), out of line,
 which is where a collection will run ([memory.md](memory.md), "Where a
 collection can happen"); today only the debug-build stress mode sets it, and
 moves every object and every reified frame there. That is sound because of
-what the loop's locals are: the running `ActivationReference`, which indexes the
+what the loop's locals are, which the compiler holds it to, since each
+instruction's entry has ended before the poll: the running `ActivationReference`, which indexes the
 stack, and no stack entry moves; its `Rc<CompiledCode>`, which holds no
 handle; its `program_counter`; and the run's floor, a stack depth. Every value the loop
 works on is read from a register or an operand when an instruction needs it
@@ -413,13 +423,13 @@ the target is the activation itself.
 
 The loop unwinds the activation stack to it (`vm::unwind`). A target that is
 still live (`Heap::activation_is_live`), sits at or above the run's floor and
-catches a return (`Interpreter::catches_return`: a method, a superclass
+catches a return (`Mutator::catches_return`: a method, a superclass
 clause or its message) ends the unwind: every activation above it is popped,
 and the target returns the value through the ordinary return path, so a
 reified frame is divorced exactly as on any return. The popped activations'
 continuations are not applied, so a `^` out of an `and:` block, a native
 loop's body or a `do:` block abandons the coercion or the loop; they go to
-`Interpreter::abandon` instead, which unmarks a nested class's creation in its
+`Mutator::abandon` instead, which unmarks a nested class's creation in its
 cache slot and drops every other. Any other signal — an error, or a
 return whose target catches none — pops every activation of the run, `base`
 included, through `abandon` in the same way, and leaves `vm::run` with it, for
@@ -468,9 +478,9 @@ compiling excluded — and reports the median of ten timed runs after a discarde
 warm-up. Its three fixtures each run a 50,000-iteration `whileTrue:` loop, which
 the compiler inlines: `bench_loop.ns` sums the counter, `bench_send.ns` adds a
 user-method send per iteration and `bench_block.ns` a method that creates and
-invokes a block. On a release build, on 2026-09-13, with the safepoint poll in
-the loop, their medians were about 11.3, 14.2 and 22.8 ms ("What 2b moved"
-below).
+invokes a block. On a release build, on 2026-09-14, with the safepoint poll in
+the loop and each instruction an entry of the step state, their medians were
+about 11.3, 14.3 and 23.1 ms ("What 2c moved" below).
 
 Never judge performance from a debug build.
 
@@ -1100,6 +1110,118 @@ rest the CLI tests that spawn `ns-next` per fixture or golden
 ([memory.md](memory.md), "Checking the roots before a collector exists: the
 stress mode").
 
+### What 2c moved
+
+Step 2c ([memory.md](memory.md), "The brand, checked by the compiler rather
+than by convention") put one thing into a release build: the step state
+behind `World::enter`, entered once per instruction the run loop executes
+("The VM" above). The brand itself is a zero-sized lifetime and changes no
+layout: `Object`, `FrameSlot` and `Result<Step, Signal>` kept their release
+sizes, 56, 136 and 56 bytes. The step was measured whole
+against the commit it started from, `a5d1e05`, and against `be3eb40`, in two
+sittings on 2026-09-14, by the protocol of "What removing the re-entries
+moved" above: both before-binaries built in throwaway worktrees, `ns-next
+bench <source> --iterations 30` over the same seven sources, five rounds,
+alternating the three binaries within each round. Medians in ms, and each
+group's mean, from the first sitting:
+
+| Source | `be3eb40`, rounds 1–5 | mean | `a5d1e05`, rounds 1–5 | mean | After, rounds 1–5 | mean |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 10.94, 11.10, 11.05, 11.00, 11.06 | 11.03 | 11.26, 11.43, 11.25, 11.31, 11.50 | 11.35 | 11.19, 11.30, 11.29, 11.43, 11.33 | 11.31 |
+| `bench_send.ns` | 13.86, 13.91, 13.99, 13.95, 13.89 | 13.92 | 14.12, 14.11, 14.09, 14.13, 14.16 | 14.12 | 14.12, 14.42, 14.20, 14.29, 14.14 | 14.23 |
+| `bench_block.ns` | 23.10, 23.16, 23.35, 23.31, 23.06 | 23.20 | 22.77, 22.43, 22.43, 22.66, 22.52 | 22.56 | 22.97, 23.00, 23.24, 23.28, 23.15 | 23.13 |
+| `bench_do.ns` | 7.78, 7.96, 8.48, 7.83, 7.99 | 8.01 | 8.16, 8.28, 7.81, 7.78, 7.93 | 7.99 | 7.78, 7.84, 7.74, 7.81, 7.74 | 7.78 |
+| `bench_new.ns` | 7.36, 7.38, 7.34, 7.41, 7.34 | 7.36 | 7.29, 7.26, 7.35, 7.24, 7.27 | 7.28 | 7.35, 7.42, 7.55, 7.43, 7.42 | 7.43 |
+| `bench_new2.ns` | 8.54, 8.37, 8.28, 8.24, 8.31 | 8.35 | 8.17, 8.23, 8.36, 8.26, 8.26 | 8.26 | 8.37, 8.43, 8.40, 8.48, 8.38 | 8.41 |
+| `bench_newarg.ns` | 10.40, 10.37, 10.41, 10.64, 10.47 | 10.46 | 10.00, 10.20, 10.18, 10.26, 10.13 | 10.15 | 10.27, 10.22, 10.31, 10.36, 10.22 | 10.28 |
+
+And from the second:
+
+| Source | `be3eb40`, rounds 1–5 | mean | `a5d1e05`, rounds 1–5 | mean | After, rounds 1–5 | mean |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.01, 10.99, 11.10, 11.33, 11.14 | 11.12 | 11.13, 11.30, 11.19, 11.31, 11.20 | 11.23 | 11.28, 11.31, 11.27, 11.44, 11.32 | 11.32 |
+| `bench_send.ns` | 13.78, 13.93, 13.92, 13.83, 13.98 | 13.89 | 13.93, 14.09, 14.24, 14.14, 14.30 | 14.14 | 14.28, 14.47, 14.27, 14.31, 14.28 | 14.32 |
+| `bench_block.ns` | 23.36, 23.26, 23.24, 23.38, 22.98 | 23.25 | 23.01, 22.74, 22.44, 22.43, 22.75 | 22.67 | 22.93, 22.99, 23.13, 23.19, 23.15 | 23.08 |
+| `bench_do.ns` | 7.81, 7.84, 7.92, 8.01, 7.83 | 7.88 | 7.85, 7.85, 7.84, 7.77, 7.69 | 7.80 | 7.78, 7.73, 7.81, 7.75, 7.80 | 7.77 |
+| `bench_new.ns` | 7.35, 7.37, 7.35, 7.41, 7.39 | 7.37 | 7.29, 7.26, 7.38, 7.41, 7.25 | 7.32 | 7.38, 7.34, 7.42, 7.38, 7.34 | 7.37 |
+| `bench_new2.ns` | 8.25, 8.38, 8.28, 8.55, 8.28 | 8.35 | 8.17, 8.15, 8.15, 8.33, 8.21 | 8.20 | 8.35, 8.45, 8.40, 8.46, 8.35 | 8.40 |
+| `bench_newarg.ns` | 10.37, 10.37, 10.37, 10.49, 10.34 | 10.39 | 10.15, 10.17, 10.11, 10.11, 10.07 | 10.12 | 10.31, 10.22, 10.30, 10.20, 10.42 | 10.29 |
+
+The change of the after-group's mean in both sittings:
+
+| Source | Against `a5d1e05`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
+|---|---|---|
+| `bench_loop.ns` | −0.4% / +0.9%, overlapping | +2.5% / +1.9%, after entirely above in the first |
+| `bench_send.ns` | +0.8% / +1.3%, overlapping | +2.2% / +3.1%, after entirely above in both |
+| `bench_block.ns` | **+2.5% / +1.8%**, after entirely above in the first | −0.3% / −0.7%, overlapping |
+| `bench_do.ns` | −2.6% / −0.3%, overlapping | −2.8% / −1.4%, overlapping |
+| `bench_new.ns` | +2.1% / +0.7%, overlapping, touching at 7.35 in the first | +1.0% / +0.0%, overlapping |
+| `bench_new2.ns` | **+1.8% / +2.5%, after entirely above in both** | +0.8% / +0.7%, overlapping |
+| `bench_newarg.ns` | **+1.2% / +1.7%**, after entirely above in the second | −1.8% / −0.9%, after entirely below in the first |
+
+**`bench_new2.ns` is slower than at `a5d1e05` beyond the sittings' noise**,
+by 1.8% and 2.5%: its after-group lay entirely above its parent-group in both
+sittings, 8.37–8.48 against 8.17–8.36 ms and 8.35–8.46 against 8.15–8.33 ms.
+Two more groups lay entirely above in one sitting and overlapped in the
+other: `bench_block.ns`, 22.97–23.28 against 22.43–22.77 ms in the first
+(+2.5%) and overlapping by 0.08 ms in the second (+1.8%); and
+`bench_newarg.ns`, 10.20–10.42 against 10.07–10.17 ms in the second (+1.7%)
+and overlapping in the first (+1.2%). `bench_new.ns` read +2.1% in the first
+sitting with the groups touching, +0.7% in the second. `bench_loop.ns`,
+`bench_send.ns` and `bench_do.ns` are level. So the step is level on the
+loop, the send and `do:`, and 1–2.5% slower on the block and the
+instantiation benchmarks, one of them beyond noise. It is an open finding
+(`docs/PROGRESS.md`, "Where the next session starts"), not chased.
+
+**Against `be3eb40`**, the parent's own shift in these sittings is 2b's,
+read again: `bench_block.ns` −2.7% and −2.5%, `bench_newarg.ns` −2.9% and
+−2.6%, `bench_loop.ns` +2.9% and +1.0%, `bench_send.ns` +1.4% and +1.8%. The
+after-binary adds its own shift to it: `bench_block.ns`, which 2b left 2.5%
+faster than `be3eb40`, is −0.3% and −0.7%, overlapping — a growth of about
+0.4–0.5 ms, more than either group's spread in both sittings; `bench_send.ns`
+is +2.2% and +3.1%, entirely above in both, where 2b left +0.9% to +1.4%, a
+growth past both groups' spread in the second sitting; and
+`bench_newarg.ns`, −1.8% and −0.9%, against 2b's −3.2% to −3.4%, grew past
+both spreads in the second sitting too. `bench_loop.ns` at +2.5% and +1.9%
+grew by less than its groups' spread, the parent sitting as high in the
+first sitting. `bench_do.ns` is still faster than `be3eb40`, and
+`bench_new.ns` and `bench_new2.ns` are level with it.
+
+Two sittings of their own, so their figures are not compared with these:
+
+- **The per-instruction entry** (Task 1 of the step, `d27e40b`, the step
+  state moved behind `World::enter` with no lifetime yet), against
+  `a5d1e05` in one sitting on 2026-09-14: level on every source, every group
+  overlapping its parent's — `bench_loop.ns` +0.1%, `bench_send.ns` −0.3%,
+  `bench_block.ns` −0.9%, `bench_do.ns` +0.4%, `bench_new.ns` +0.9%,
+  `bench_new2.ns` −0.0%, `bench_newarg.ns` +0.5%. So the entry inlines away,
+  as `#[inline(always)]` asks, and the shift above came later.
+- **A bisection sitting**, after the two whole-step sittings: the four
+  sources that moved, over the step's commits, five rounds, the change of
+  each group's mean against `a5d1e05`:
+
+  | Source | `d27e40b` (the entry) | `7b41649` (the names written out) | `e59dc52` (hosts through `enter`) | `1549fb0` (the brand) | After (`2caf3e0`, no cast) |
+  |---|---|---|---|---|---|
+  | `bench_send.ns` | +0.7% | +0.8% | +0.6% | +1.6% | +1.0% |
+  | `bench_block.ns` | +0.5% | +1.1% | +1.4% | +2.8% | +3.1% |
+  | `bench_new2.ns` | −0.3% | +0.0% | +0.7% | +1.6% | +1.5% |
+  | `bench_newarg.ns` | +0.5% | +0.1% | +0.1% | +1.3% | +1.6% |
+
+  The one step between neighbours that separates groups is the brand commit,
+  `1549fb0`: `bench_block.ns` 22.88–23.19 against 22.65–22.84 ms, and
+  `bench_newarg.ns` 10.21–10.40 against 10.11–10.20 ms, entirely above
+  `e59dc52`; `bench_block.ns` also creeps up by 0.3–0.6% per commit before
+  it, within each group's spread. The brand commit changes types and
+  signatures, apart from `rebrand` in `Heap::stash`/`fetch`, which `bench`'s
+  timed span reaches once per send, and small reshapes the lifetimes
+  required; its release binary is 512 bytes smaller than its parent's, so
+  the generated code did change. Where, and why it is slower, was not traced.
+
+The suite (`cargo test --workspace`, debug build, test binaries already
+built) takes 13.1 s at 691 tests, and 190.3 s under `NS_NEXT_STRESS_MOVES=1`,
+where 2b left 12.7 s and 190.2 s ([memory.md](memory.md), "Checking the
+roots before a collector exists: the stress mode").
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -1116,7 +1238,7 @@ stack is what a trampolined run loop needs, so replacing the Rust-stack
 recursion with a loop that pushes is the same change viewed from the other
 side. Getting there split every send so that it *decides* without *executing*:
 lookup, `doesNotUnderstand:`, native dispatch and the nested-class accessor stay
-in `interpreter/` (`Interpreter::decide_send`, `sends::decide_lexical_send`,
+in `interpreter/` (`Mutator::decide_send`, `sends::decide_lexical_send`,
 `sends::decide_super_send`), unchanged in what they produce, but they answer a
 `Step` — a value, a method to activate, or a block to activate and what to do
 with its value — instead of activating it. That keeps `vm.rs` free of dispatch
@@ -1141,7 +1263,7 @@ Three things the trampoline settles on its own:
   ends the loop (`builtins::block::after_condition`), and the body's
   `Continuation::WhileBody` activates the condition again. The continuation
   rides on the block activation's stack entry and `vm::finish` applies it,
-  through `Interpreter::resume`, when it pops the activation, so a loop's
+  through `Mutator::resume`, when it pops the activation, so a loop's
   condition and body replace each other on the stack instead of nesting. This
   is Primordial Soup's model with one activation
   fewer: there `True>>ifTrue: then = (^then value)` is a Newspeak method whose
@@ -1202,13 +1324,13 @@ do not, so that changing the value later changes no recorded answer. It
 unwinds to the entry send like every other Newspeak error; nothing catches it
 yet.
 
-- **L is checked on every push.** `Interpreter::push`, the one function every
+- **L is checked on every push.** `Mutator::push`, the one function every
   activation the runtime pushes goes through, refuses a counted push when
   `Heap::counted_depth` has reached the limit. The heap keeps that count as a
   running total on push and pop, so an error path — which pops through
   `vm::unwind` like any other — leaves it exact. Whether an activation counts
   is recorded on its stack entry. Only the block arm of
-  `Interpreter::push_step` ever records an exemption; a method, and every body
+  `Mutator::push_step` ever records an exemption; a method, and every body
   an instantiation or a nested-class accessor runs — an initializer level, a
   superclass clause or its message — are counted by construction.
 - **The exemption is marked by the arguments.** A block a control-flow native
@@ -1217,7 +1339,7 @@ yet.
   was a `SendInlinable` and the block's `captured_frame` is the reified frame
   of the activation that sent it ([compiler.md](compiler.md), "How the limit
   counts"). A native loop's next block goes through
-  `Interpreter::push_continuation`, which exempts it only if the one it
+  `Mutator::push_continuation`, which exempts it only if the one it
   replaces was; the loop forwards that entry's flag and decides nothing. The
   mark rides on the arguments rather than in a field of its own
   because the field measured 4–8% slower ("What the trampoline moved" above);
@@ -1252,7 +1374,7 @@ and the second also between a debug and a release build.
 ### A superclass chain is walked iteratively
 
 `climb_levels` and `descend_levels` (`interpreter/instantiate.rs`) walk it with
-an explicit list, as a state machine `Interpreter::advance_instantiation`
+an explicit list, as a state machine `Mutator::advance_instantiation`
 resumes whenever a body it answered returns: each level's factory arity
 checked and its clause message evaluated from the class upward, each level's
 arguments kept, then the initializers from the top down — the order of every
@@ -1319,7 +1441,7 @@ loop holds a value.
 
 All three follow the pattern `whileTrue:` set: a decision answers an activation
 together with a `Continuation`, the continuation rides on the activation's
-stack entry, and `Interpreter::resume` applies it when the activation returns.
+stack entry, and `Mutator::resume` applies it when the activation returns.
 The semantics and the order of every observable effect are what they were
 when these paths ran in nested runs of the loop.
 
@@ -1352,7 +1474,7 @@ when these paths ran in nested runs of the loop.
   class. While the clause runs, the class's cache slot itself says that its
   creation is underway: `push_step` writes a marker into it once the clause's
   push has succeeded (`nested::begin_creation`), and `resume` or
-  `Interpreter::abandon` sets it back to nil when the activation is popped
+  `Mutator::abandon` sets it back to nil when the activation is popped
   (`nested::end_creation`), before `after_clause` caches the class there. An
   access that finds the marker is the cyclic-definition error; the slot is
   already keyed by the enclosing object and the declaration, the pair a cycle
@@ -1410,7 +1532,7 @@ when these paths ran in nested runs of the loop.
 `Step::InitializerThen`, `Step::ClauseMessage` and `Step::SuperclassClause` each
 carry only what their push cannot find from their level or declaration — the
 code and slot base of an initializer are its level's, found when it is pushed
-(`Interpreter::initializer_body`), and a clause's are its declaration's — so
+(`Mutator::initializer_body`), and a clause's are its declaration's — so
 none needs a boxed description of its activation; boxing one per body, beside
 a fresh box for the walk's state, made a chain of two levels with code 15–18%
 slower than running it in a nested run of the loop had been
@@ -1433,12 +1555,13 @@ to the host rooted ([memory.md](memory.md), "Host roots").
 It is the one place Rust enters the loop. A debug build checks there that the
 loop is not already running — nothing it calls can reach `run_from_host` —
 that the stack is left as deep as it was found, and that no nested class's
-creation outlives the run. That the loop is never nested is a debug assertion
-now; it becomes structure in step 2c, where nothing a native can reach offers
-`run` at all ([memory.md](memory.md), "Planned: the brand").
+creation outlives the run. That the loop is never nested is also structure,
+which the debug assertion only confirms: a decision, a native or a
+continuation is handed only a `&mut Mutator`, which offers no way back to the
+`Interpreter` and so no `run` at all ([memory.md](memory.md), "The brand").
 
-`vm::send` still takes the interpreter's reusable argument buffer and gives it
-back, because the decision needs `&mut Interpreter` while it reads the
+`vm::send` still takes the step state's reusable argument buffer and gives it
+back, because the decision needs `&mut Mutator` while it reads the
 arguments. No decision runs code any more, so none takes a second, fresh
 buffer of its own. `Interpreter::reenter`, `invoke_closure`,
 `builtins::call_block`, the count of re-entries and its bound, and that

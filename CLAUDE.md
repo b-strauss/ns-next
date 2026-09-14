@@ -11,7 +11,10 @@ Rust 1.98.0, edition 2021, three crates:
   (`builtins/`), image format (`image/`). Objects live in an arena owned by one
   `Heap` (`heap.rs`) and are addressed by 32-bit handles; activations live on an
   activation stack in the same `Heap` and are reified into the frame arena only
-  when a block captures one. Nothing reclaims an arena slot yet.
+  when a block captures one. Nothing reclaims an arena slot yet. The heap and
+  everything else a step of the run loop uses are the step state, `Mutator`
+  (`interpreter/mod.rs`), held at rest by `World` (`heap/world.rs`) and reached
+  only through `Interpreter::enter`.
 - `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
   `snapshot`, `load`, `bench`, `disasm`, `inspect`, `build`.
 
@@ -96,10 +99,12 @@ nothing. Retiring numbers means those bytes hit an unknown tag and are refused.
 
 **A handle means nothing against a `Heap` that did not mint it.** An `ObjectReference`, a
 `ClassReference`, a `FrameReference` and an `ActivationReference` are indices into one `Heap`'s arenas
-and activation stack. Never build a `Heap::new()` to stand in for one that is out of
-scope, and never hold a handle across the death of the interpreter that allocated
-it: the index is in range in the other heap too, so the read answers a **different,
-perfectly valid object** rather than failing. Reach the real `Heap` instead:
+and activation stack. Nothing outside the heap module can build a `Heap` to
+stand in for one that is out of scope — `Heap::new` is private to it, and
+`World` builds the one an interpreter has. Never hold a handle across the
+death of the interpreter that allocated it: the index is in range in the other
+heap too, so the read answers a **different, perfectly valid object** rather
+than failing. Reach the real `Heap` instead:
 `image::encode::encode_code_table` and `image::mixins::plan` take a `&Heap`
 parameter for exactly this reason, and `ns-cli`'s `disasm` command
 (`crates/ns-cli/src/commands/disasm.rs`) — which builds its own class object and
@@ -110,16 +115,32 @@ so a debug-build test run catches it; a release build does not, which is why
 this is an invariant and not a check to rely on.
 
 A handle also means nothing across a move. A host keeps a value across a run
-only as a `Root` (`Interpreter::stash`/`fetch`, and every host entry takes and
-answers them); a value fetched from one is good until the next run. In a debug
-build every handle carries its move epoch and every accessor checks it, and
-`NS_NEXT_STRESS_MOVES=1` moves everything at the run loop's safepoints — at
-every one while the traced heap is within `STRESS_MOVE_BUDGET` (1,000 entries),
-and paced by heap size above it (`interpreter/safepoint.rs`) — so the stress
-runs under "Working in this repository", below, catch a value kept across a
-run and a handle the tracer (`trace.rs`) does not know about. Add a field that
-holds a handle to any runtime type, and its `Trace` impl stops compiling until
-it says what to do with it.
+only as a `Root` (`Mutator::stash`/`fetch` inside an entry, `Interpreter::stash`
+for an immediate, and every host entry takes and answers them), and the
+compiler enforces it: every movable handle is branded with the entry that
+minted it (`Interpreter::enter`), so one that leaves its entry does not
+compile, and a value fetched from a root is good until that entry ends. In a
+debug build every handle also carries its move epoch and every accessor checks
+it, and `NS_NEXT_STRESS_MOVES=1` moves everything at the run loop's safepoints
+— at every one while the traced heap is within `STRESS_MOVE_BUDGET` (1,000
+entries), and paced by heap size above it (`interpreter/safepoint.rs`) — so
+the stress runs under "Working in this repository", below, still catch a
+handle the tracer (`trace.rs`) does not know about, which the brand cannot
+see. Add a field that holds a handle to any runtime type, and its `Trace` impl
+stops compiling until it says what to do with it.
+
+**The brand is the compiler's, and needs no cast.** `heap/world.rs`'s
+`World::enter` hands the at-rest `Mutator<'static>` to a closure generic over
+`'gc` (`for<'gc> FnOnce(&mut Mutator<'gc>) -> R`), in safe Rust: the closure
+is checked for every `'gc`, so it can neither assume the brand is `'static`
+nor let a branded value out. The crate forbids unsafe code
+(`#![forbid(unsafe_code)]`) and the brand needs none. What keeps it meaning
+something: never add a public way to change a handle's brand — `heap.rs`'s
+private `rebrand`, for the host root table, is the only conversion, and there
+is no `unbind` — and never give `Mutator` a way to reach the `Interpreter`,
+which is what keeps a step (a decision, a native, a continuation) from
+running the loop. The three `compile_fail` doctests on `Interpreter::enter`
+pin the mistakes (`docs/design/memory.md`, "The brand").
 
 **A running activation is an `ActivationReference`; only a `FrameReference` is ever
 stored.** An `ActivationReference` indexes the `Heap`'s activation stack and is

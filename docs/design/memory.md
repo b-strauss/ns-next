@@ -5,20 +5,23 @@
 > the same `Heap` and reach the frame arena only when a block captures one.
 > Identity, layout ownership and the seam that routes every access through
 > `Heap` are built. Nothing reclaims an arena slot: there is no collector.
-> The root discipline one will use is designed, in "Checked roots and a
-> collector", and two of its three parts are built: nothing re-enters the run
-> loop from Rust, so no Rust frame is live below a safepoint (step 2a); and
-> the run loop polls a safepoint, every handle the collector would trace is
-> enumerated, a host keeps values across runs only as `Root`s, and a
-> debug-build stress mode moves everything at the safepoints to check all of
-> it (step 2b). The lifetime brand that would make holding a handle across a
-> safepoint a compile error is not built (step 2c).
+> The root discipline one will use, in "Checked roots and a collector", is
+> built in all three of its parts: nothing re-enters the run loop from Rust,
+> so no Rust frame is live below a safepoint (step 2a); the run loop polls a
+> safepoint, every handle the collector would trace is enumerated, a host
+> keeps values across runs only as `Root`s, and a debug-build stress mode
+> moves everything at the safepoints to check all of it (step 2b); and every
+> movable handle carries a lifetime brand, so that holding one across a
+> safepoint is a compile error (step 2c). Only the collector is not built.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the arenas, the activation
-> stack, the handle types, every accessor, the host root table, the move),
-> `trace.rs` (everything the collector traces), `interpreter/safepoint.rs`
-> (the safepoint and the stress mode), `vm.rs` (the poll), `types.rs`
-> (`Value`, `Object`, `Frame`), `mixin.rs` (layout, and the one remaining
-> iterative `Drop`).
+> stack, the handle types and their brand, every accessor, the host root
+> table, the move), `heap/world.rs` (the step state at rest, and the entry
+> that lends it out), `interpreter/mod.rs` (`Mutator`, and
+> `Interpreter::enter` with the doctests that pin the brand), `trace.rs`
+> (everything the collector traces), `interpreter/safepoint.rs` (the
+> safepoint and the stress mode), `vm.rs` (one entry per instruction, and
+> the poll), `types.rs` (`Value`, `Object`, `Frame`), `mixin.rs` (layout,
+> and the one remaining iterative `Drop`).
 
 ## What exists
 
@@ -86,9 +89,10 @@ Three properties follow from an index that did not follow from a pointer.
 
 **A slot's index is known before the slot is filled.** Building an object that
 names itself — a bootstrap class whose own class is itself — used to need
-`Rc::new_uninit` and `Rc::from_raw`, the only `unsafe` in the crate. `Heap`
+`Rc::new_uninit` and `Rc::from_raw`, which were the crate's `unsafe`. `Heap`
 reserves the index, then writes the record that mentions it, in safe Rust.
-`heap.rs` contains no `unsafe`.
+The crate now forbids `unsafe` code outright (`#![forbid(unsafe_code)]` in
+`lib.rs`; "The brand" below says why it needs none).
 
 **There is no reference chain to unwind.** See "Iterative teardown" below.
 
@@ -259,20 +263,20 @@ file next starts from a list rather than from rediscovery.
 
 ## Checked roots and a collector
 
-**Partial:** the safepoint, the tracing, host roots and the stress mode are
-built; the lifetime brand and the collector are not. What the whole would
+**Partial:** the safepoint, the tracing, host roots, the stress mode and the
+lifetime brand are built; the collector is not. What the collector would
 change: a collection could run — only at a safepoint in the run loop — and move
-objects, and every handle the runtime holds would be either where the collector
-can find and rewrite it, which is built and checked, or a compile error, which
-is not. Designed on 2026-09-13 as step 2 of Milestone 4,
-in three parts that each land green and measured on their own: **2a**, built,
-removed every re-entry of the run loop from Rust ([execution.md](execution.md),
-"No re-entry from Rust"); **2b**, built, is the safepoint, the enumeration of
-everything the collector traces, host roots, and a debug-build stress mode that
-moves every object at the safepoints and so checks the enumeration against the
-whole suite; **2c**, planned, brands every movable handle with a lifetime, so
-that holding one across a safepoint is a compile error. The collector itself is
-step 5, and until it exists nothing requests a collection in a release build.
+objects. Every handle the runtime holds is already either where a collector can
+find and rewrite it, which the stress mode checks, or a compile error, which
+the brand makes it. Designed on 2026-09-13 as step 2 of Milestone 4, in three
+parts that each landed green and measured on their own: **2a** removed every
+re-entry of the run loop from Rust ([execution.md](execution.md), "No re-entry
+from Rust"); **2b** is the safepoint, the enumeration of everything the
+collector traces, host roots, and a debug-build stress mode that moves every
+object at the safepoints and so checks the enumeration against the whole
+suite; **2c** brands every movable handle with a lifetime, so that holding one
+across a safepoint is a compile error. The collector itself is step 5, and
+until it exists nothing requests a collection in a release build.
 
 **The collector has to move objects.** `become:`-style identity swap and object
 forwarding are requirements, not conveniences: adding an instance variable to a
@@ -297,13 +301,15 @@ runs at the next safepoint of the run loop. `vm::run` polls one at every switch
 to another activation — a push, or a caller resumed — and at every backward
 jump, so every call and every loop iteration passes one, a loop that makes no
 send included; a forward jump does not poll. Between two instructions `run`
-holds the running `ActivationReference`, its `Rc<CompiledCode>` and its `program_counter`, and no
-handle the collector would move; every live value is in a register on the
-activation stack or in one of the places "What the collector traces" below
-lists. The interpreter's reusable argument buffer is empty there — a send
-gathers into it, decides and pushes within one instruction, and it is cleared
-when it is given back — so it is not a root, and a debug assertion before
-every move says so (`Interpreter::check_quiescent_state`).
+holds the running `ActivationReference`, its `Rc<CompiledCode>` and its
+`program_counter`, and no handle the collector would move — each instruction
+is an entry of its own and the poll is outside every one, so the compiler
+refuses anything else ("The brand" below); every live value is in a register
+on the activation stack or in one of the places "What the collector traces"
+below lists. The step state's reusable argument buffer is empty there — a
+send gathers into it, decides and pushes within one instruction, and it is
+cleared when it is given back — so it is not a root, and a debug assertion
+before every move says so (`World::check_quiescent_state`).
 
 The first four systems below chose this placement; the last four collect
 elsewhere, and their right-hand column is what that costs their runtime code:
@@ -358,7 +364,7 @@ source was slower beyond the sittings' noise, and `bench_block.ns` was 4%
 faster for another reason ([execution.md](execution.md), "What 2b moved",
 which also has the one borderline group). So Cog's trick was not
 needed; it stays the fallback should a later measurement show the poll's price
-on the send path: a request lowers the limit `Interpreter::push` already
+on the send path: a request lowers the limit `Mutator::push` already
 compares the activation depth against, so a send pays nothing it does not pay
 anyway.
 
@@ -375,54 +381,102 @@ every point between two instructions the Rust stack holds the host and the run
 loop and nothing between them — piccolo's property — and what is left to root
 is only what the host keeps ("Host roots" below). The safepoint relies on it.
 
-### Planned: the brand, checked by the compiler rather than by convention
+### The brand, checked by the compiler rather than by convention
 
-What would change: holding a handle across a safepoint, and a native
-re-entering the run loop, would be compile errors rather than mistakes the
-stress mode finds at run time. Step 2c. Every handle a collector can move —
-`ObjectReference`, `ClassReference`, `FrameReference`, and so `Value` and every type that contains
-one (`ObjectData`, `ClassData`,
-`Frame`, `FrameKind`, `Continuation`, `Step`, `Signal`, `NewspeakError`) — will
-carry a lifetime `'gc`, invariant so that it can be neither shortened nor
-extended. The only way to obtain one is `Interpreter::enter`, which runs a
-closure generic over `'gc` — `for<'gc> FnOnce(&mut Mutator<'gc>) -> R`,
-gc-arena's `mutate` — whose result type cannot name `'gc`, so nothing branded
-leaves it. `Mutator<'gc>` offers everything a step does: heap access,
-allocation, the send decisions, the natives, the compiler, the image codec. It
-offers nothing that reaches a safepoint: `vm::run` and the safepoint exist only
-on `Interpreter`, outside every `enter`, and each instruction the loop executes
-is one `enter`. What the loop carries from one instruction to the next names
-no brand — the running `ActivationReference`, its code and its `program_counter` — and the value
-a run ends with leaves it as a host `Root` (below). Two mistakes then fail to
-compile rather than corrupt the heap under collection pressure: holding a
-handle across a safepoint, and a native re-entering the run loop.
-`compile_fail` doctests pin both, and a third: storing a branded handle in a
-host's own field.
+Holding a handle across a safepoint, and a native re-entering the run loop,
+are compile errors rather than mistakes the stress mode finds at run time
+(step 2c). Every handle a collector can move — `ObjectReference`,
+`ClassReference`, `FrameReference`, and so `Value` and every type that
+contains one (`Object`, `ObjectData`, `ClassData`, `ClosureData`, `Frame`,
+`FrameKind`, `Continuation` and the state its variants carry, `Step`,
+`Signal`, `NewspeakError`, `Heap` itself) — carries a lifetime `'gc`,
+invariant (`heap.rs`'s `Brand<'gc>`, a zero-sized `PhantomData<fn(&'gc ()) ->
+&'gc ()>`) so that it can be neither shortened nor extended. A release handle
+is still exactly its 32-bit index.
 
-It also closes the one case the stress mode's epoch check cannot reach:
-`same` compares two handles with no heap in reach, so it can check their
-epochs only against each other, and two stale handles from the same old epoch
-pass it where a live handle against a stale one panics. Under the brand
-neither could have been held past the safepoint that moved them.
+**The step state is a `Mutator<'gc>`** (`interpreter/mod.rs`): the heap, the
+builtin classes, the application caches, the argument buffer and the spare
+instantiation boxes, and every method a step uses — heap access, allocation,
+the send decisions and pushes, the natives, the compiler, the image codec. At
+rest it is a `Mutator<'static>` held by a `World` (`heap/world.rs`), which the
+`Interpreter` owns beside what only the run loop needs between steps. The only
+way to reach it is `Interpreter::enter`, which calls `World::enter`: that runs
+a closure `for<'gc> FnOnce(&mut Mutator<'gc>) -> R` — gc-arena's `mutate` —
+and hands it the at-rest state as it is, `body(&mut self.mutator)`, with no
+cast and no `unsafe`. The call instantiates `'gc` as `'static`, and the
+closure cannot tell: the compiler checks it once for every `'gc`, so it can
+neither assume that `'gc` is `'static` nor let a branded value out, since `R`
+is chosen outside the `for<'gc>` and cannot name it. The crate forbids
+`unsafe` code (`#![forbid(unsafe_code)]`, `lib.rs`), and the brand needs none.
 
-`ActivationReference` stays unbranded: the collector moves no stack entry, and its
-generation check already covers an index reused after a pop.
+**Nothing branded leaves an entry, and nothing in an entry reaches the loop.**
+`Mutator` offers no way back to the `Interpreter`, so no step — no decision,
+native or continuation, each of which is handed only a `&mut Mutator` — can
+run `vm::run`, reach the safepoint or start a host's send. Each instruction
+the loop executes is one entry, and the poll is outside every one; what the
+loop carries from one instruction to the next names no brand — the running
+`ActivationReference`, its code and its `program_counter` — and a run ends
+inside its last entry, its answer rooted for the host (`vm::run`, and
+[execution.md](execution.md), "The VM"). A host makes one entry per read.
+`World::enter` is `#[inline(always)]`, and a lifetime is gone before code is
+generated.
 
-The heap stores the brand-erased form. Rebranding a handle copies its `u32`,
-and a payload is copied into the arena when it is allocated; both conversions
-are private to `heap.rs`, and there is **no public `unbind`** — which is where
-Nova's discipline leaves a hole that its own documentation closes by
-convention ("NEVER unbind a `Value` into a local variable"). `heap.rs` stays
-free of `unsafe`. Should a payload conversion measure as a cost, the fallback is
-one audited lifetime cast of the kind Nova's `Bindable` makes, decided by that
-measurement.
+**Only `heap.rs` changes a brand.** A host root's slot is shared with a host
+outside every entry, so it holds a `Value<'static>`, and `Heap::stash` and
+`fetch` pass a value through `rebrand`, private to `heap.rs`, on the way in
+and out. It is the one conversion of a brand, and there is **no public
+`unbind`** — which is where Nova's discipline leaves a hole that its own
+documentation closes by convention ("NEVER unbind a `Value` into a local
+variable"). `Heap::new` and `Heap::move_everything` are private to the heap
+module, so only `World` builds the heap an interpreter has and only `World`
+moves it — never while a `Mutator` is lent out, since `enter` holds `&mut
+self`.
 
-It costs nothing at run time: the lifetimes are gone after monomorphization,
-and `enter` is a call through a thin wrapper around `&mut Interpreter` that
-should inline away — a before-and-after measurement of all three benchmarks is
-a gate of step 2c. Its price is ergonomic, and that price is accepted. The
-stress mode below keeps running under it: the brand covers what Rust holds,
-the stress mode what the tracer knows.
+**Three `compile_fail` doctests pin it**, on `Interpreter::enter`
+(`interpreter/mod.rs`), each beside a passing twin that differs from it in
+the one line that matters, so that each fails for the reason it names:
+answering a handle out of an entry ("lifetime may not live long enough"),
+storing one in a host's own field (E0521), and a host's send from inside an
+entry, the shape a native re-entering the loop would have (the interpreter is
+already borrowed by the entry).
+
+**No branded code can hold a stale handle.** `same` compares two handles with
+no heap in reach, so a debug build can check their move epochs only against
+each other, and two stale handles from the same old epoch would pass it where
+a live handle against a stale one panics. Within one entry nothing moves, and
+no handle survives from one entry to the next, so every handle `same` is
+handed was minted or read in the entry that compares it. Only a bare `Heap`
+in `heap.rs`'s own unit tests can still make a stale handle, and those tests
+are about the debug check itself.
+
+`ActivationReference` stays unbranded: the collector moves no stack entry,
+and its generation check already covers an index reused after a pop.
+
+**Why no cast is needed.** The heap stores handles in their at-rest form and
+a step sees them branded, so something has to connect the two. Converting
+each payload safely was rejected for its cost ("Considered and rejected: a
+safe conversion per payload" below), and one audited lifetime cast of the
+whole step state was chosen in its place, then found unnecessary ("Considered
+and rejected: an audited lifetime cast"). The two systems that cast have
+reasons that do not apply here. gc-arena's `Gc<'gc, T>` is a real pointer
+whose `'gc` must end with the borrow of the arena, so `mutate` has to bring
+its root, a generic type projected through `Rootable<'gc>`, down from its
+at-rest lifetime to that shorter one, which the compiler cannot check through
+the projection. Nova's `Bindable for Box<T>` rebrands a payload that already
+exists from one lifetime to another (`prior-art/nova/nova_vm/src/engine/context.rs`).
+Here `'gc` names no real reference, only the `PhantomData` in a handle, and
+`Mutator` is a plain type with a lifetime parameter: nothing is ever brought
+from one brand to another, because the at-rest `'static` is itself one of the
+lifetimes the closure is checked for.
+
+The stress mode below keeps running under the brand: the brand covers what
+Rust holds, the stress mode what the tracer knows. Its price is ergonomic —
+every host and test reads through `enter` — and that price is accepted. What
+the whole step measured is in [execution.md](execution.md), "What 2c moved":
+level on most sources, and 1–2.5% slower than the commit it started from on
+the instantiation and block benchmarks, one of them beyond noise in both
+sittings — an open finding (`docs/PROGRESS.md`, "Where the next session
+starts").
 
 ### Host roots
 
@@ -437,33 +491,39 @@ the slot. The table is swept at every move, and by `stash` whenever it has
 doubled since its last sweep (never below 64 slots), so it stays proportional
 to the roots a host still holds in a release build too, where nothing moves.
 
-`Interpreter::stash` and `Interpreter::fetch` (`Heap::stash`/`fetch`) take
-`&self`, the table sitting behind a `RefCell`, so that a host can stash an
-argument inside the call that sends it — `interpreter.send(&receiver, selector,
-&[interpreter.stash(value)])` — as `DynamicRootSet::stash` allows. A value `fetch`
-answers is good until the next run, which may move it; a host reads the root
-again after one.
+Inside an entry, `Mutator::stash` roots any value and `Mutator::fetch` reads
+one back (`Heap::stash`/`fetch`). Outside every entry, `Interpreter::stash`
+roots an immediate a host built itself — `nil`, a Boolean, a `SmallInteger`,
+a `Float` — and takes a `Value<'static>`: a host can build an immediate but
+never hold an object handle outside an entry, so a `Value<'static>` holds
+none. All of them take `&self`, the table sitting behind a `RefCell`, so that
+a host can stash an argument inside the call that sends it —
+`interpreter.send(&receiver, selector, &[interpreter.stash(value)])` — as
+`DynamicRootSet::stash` allows. A value `fetch` answers carries the brand of
+the entry it was read in, so it is good until that entry ends, and a host
+reads the root again in the next one.
 
 Every host entry takes and answers roots: `Interpreter::send`, `instantiate`,
 `load_module` and `platform`, and `image::load`, whose `LoadedImage` carries
 the root class and the image's roots as `Root`s. A send or an instantiation
 answers a `HostResult`, `Result<Root, HostSignal>`: its value rooted
-(`Interpreter::to_host`), a Newspeak error as a `HostError` whose receiver is a
+(`Mutator::to_host`), a Newspeak error as a `HostError` whose receiver is a
 `Root`, or a `^` that reached the host as `HostSignal::Return`. `Signal` and
 `EvaluationResult` are crate-private, so no plain value leaves a run by any other
 way than `fetch`; and since a `Root` can hold any value, `instantiate` refuses
-one that holds no class object with a Newspeak error. `image::snapshot` and
-`image::build` take plain values, which a host fetches from its roots just
-before the call: encoding runs no code, so nothing moves under it. `Root`,
-`HostSignal` and `HostError` have no `Debug`, for the reason `Signal` has none
-(`CLAUDE.md`). The CLI and every test hold what they keep across runs as roots,
-and the stress mode below checks that they do.
+one that holds no class object with a Newspeak error. The codec runs inside
+an entry: `image::snapshot` takes a `&Mutator<'gc>` and branded values,
+`image::build` a `&Heap<'gc>`, which a host fetches from its roots in the
+same entry — encoding runs no code, so nothing moves under it — and
+`image::load` decodes inside one entry of the interpreter it bootstraps and
+roots what it answers before that entry ends. `Root`, `HostSignal` and
+`HostError` have no `Debug`, for the reason `Signal` has none (`CLAUDE.md`).
 
-What 2c still changes here: `heap_reference()` and `heap_mut()` remain, and a value
-`fetch` answers is a plain `Value` that a host could keep across a run by
-mistake, which only the stress mode would catch. 2c's `Interpreter::enter`
-replaces both — a host reads through `enter`, and nothing branded leaves it —
-so that a root becomes the only way a host can hold a value.
+A host reads the heap only through `Interpreter::enter`, and nothing branded
+leaves an entry, so a root is the only way a host can hold a value across a
+run — the CLI and every test hold what they keep that way. That is a
+compile-time guarantee ("The brand" above), no longer one only the stress
+mode checks.
 
 ### What the collector traces
 
@@ -471,8 +531,8 @@ so that a root becomes the only way a host can hold a value.
 holds an `ObjectReference`, a `ClassReference` or a `FrameReference` to a `Tracer`, one `&mut` at a
 time.
 
-- The bootstrap: `builtin_classes` and `platform_singleton`, which the
-  interpreter forwards itself, after the heap (`Interpreter::move_everything`).
+- The bootstrap: `builtin_classes` and `platform_singleton`, which the step
+  state holds beside the heap and `World::move_everything` forwards after it.
 - The activation stack: each entry's receiver, `current_class`, the
   `ClassReference` or closure object its `FrameKind` names, the frame it is married
   to, and the state its continuation carries — a `WhileLoop`'s condition and
@@ -497,7 +557,7 @@ debug build only, until the collector needs it in every build.
 
 A reified frame is not a root of its own: it is reached through the closure
 that captured it, or through the live entry it is married to. Two things the
-interpreter keeps hold no handle, on purpose, and a debug assertion before
+step state keeps hold no handle, on purpose, and a debug assertion before
 every move checks both: a send's argument buffer, empty between instructions
 ("Where a collection can happen" above); and the spare boxes finished
 instantiations leave for the next ones, emptied of every handle when they are
@@ -507,8 +567,8 @@ while the enclosing object stays in the continuation of the clause's stack
 entry, where the stack is traced anyway.
 
 **A handle lives only where the tracer can rewrite it in place**: in an arena
-record, in a stack entry, in a continuation that one stack entry owns, or in an
-interpreter root — never behind a shared `Rc`, which the tracer could reach
+record, in a stack entry, in a continuation that one stack entry owns, or in
+the step state's own roots — never behind a shared `Rc`, which the tracer could reach
 only through a shared reference. So a closure's two frame handles live in the
 closure object: `ClosureData` is stored inline in the object's payload,
 sharing only `parameters` and `code`, which hold no handle, through their own
@@ -521,16 +581,16 @@ A native loop's state is boxed in its continuation (`Box<WhileLoop>`,
 
 ### Checking the roots before a collector exists: the stress mode
 
-The brand (2c) will check what Rust locals hold; it cannot check that the list
-above is complete, and nothing checks that at compile time. A debug-build
+The brand checks what Rust locals hold; it cannot check that the list above
+is complete, and nothing checks that at compile time. A debug-build
 stress mode checks it by running. With `NS_NEXT_STRESS_MOVES` set to anything
 but empty or `0`, every interpreter the process bootstraps — the `ns-next`
 binary the CLI tests spawn included — keeps the safepoint flag set and moves
 everything at the safepoints its schedule picks, so the whole existing suite,
 which pins every program's outcome, runs under it unchanged.
 
-A move (`Heap::move_everything`, then `Interpreter::move_everything` for the
-interpreter's own roots) rotates each arena by a shift in `1..len` that varies
+A move (`World::move_everything`: `Heap::move_everything`, then the step
+state's own roots) rotates each arena by a shift in `1..len` that varies
 with the epoch, so no slot keeps its index, and rewrites every traced handle: a
 compacting collection that treats everything as live. Every `ObjectReference` and
 `FrameReference` carries, in a debug build and beside the origin it already carries,
@@ -568,14 +628,14 @@ safepoint, and a run that makes no send and closes no loop — a host's send of
 moved at all.
 
 What it costs is time. The whole suite, test binaries already built, takes
-190.2 s under the variable against 12.7 s without it, measured at 682 tests
-either way. Almost
-half of that is `crates/ns-runtime/tests/trampoline.rs`, 91.5 s against 3.0 s,
+190.3 s under the variable against 13.1 s without it, measured at 691 tests
+either way (2026-09-14, after step 2c). Almost
+half of that is `crates/ns-runtime/tests/trampoline.rs`, 90.8 s against 3.1 s,
 nearly all of it in `the_depth_limit_is_exact_and_counts_alike_under_both_lowerings`;
 most of the rest is the three CLI test binaries that spawn `ns-next` per
-fixture or golden — `build_load.rs` 47.9 s against 3.5 s, `run_fixtures.rs`
-24.1 s against 1.6 s, `snapshot_load.rs` 21.0 s against 1.7 s — so
-`cargo test -p ns-cli` alone takes about 96 s against 7.6 s. `run-corpus`,
+fixture or golden — `build_load.rs` 48.3 s against 3.5 s, `run_fixtures.rs`
+24.5 s against 1.6 s, `snapshot_load.rs` 20.7 s against 1.7 s — so
+`cargo test -p ns-cli` alone takes about 97 s against 7.5 s. `run-corpus`,
 whose six modules are small, takes about a third of a second either way.
 
 The stress runs are gates: `CLAUDE.md` requires the whole suite and
@@ -598,8 +658,35 @@ gone ([core-library.md](core-library.md), [image-format.md](image-format.md),
 machinery would stand with nothing to root, its `unbind` a hole in the static
 guarantee.
 A `Scoped` value is also retained for the whole call, past its last use, which
-the brand never does. Engineering effort was not the constraint, so the brand is
-to be built directly rather than after it.
+the brand never does. Engineering effort was not the constraint, so the brand
+was built directly rather than after it.
+
+### Considered and rejected: a safe conversion per payload
+
+The heap stores handles at rest and a step sees them branded. Converting each
+payload safely at the boundary — at a push, a pop, an allocation — rebuilds
+it, and a `Box<WhileLoop>`, `Box<DoLoop>`, `Box<NestedClassCreation>` or
+`Box<Instantiation>` can change its lifetime in safe Rust only by
+reallocating: at every push and pop of a stack entry that carries one, which
+is every iteration of a native `whileTrue:` or `do:` and every step of an
+instantiation. The reuse of `spare_walks`' boxes, which measured 3–13% on the
+instantiation benchmarks, could not have survived either. Rejected for that
+cost, with the user, on 2026-09-13. Nothing is converted at a push, a pop or
+an allocation: the whole step state is handed over as it rests.
+
+### Considered and rejected: an audited lifetime cast
+
+Chosen with the user on 2026-09-13 in the per-payload conversion's place: the
+step state resting as `Mutator<'static>`, and `World::enter` casting `&mut
+Mutator<'static>` to `&mut Mutator<'gc>` once per entry — gc-arena's
+`Arena::mutate`, which casts its root the same way — as the crate's one
+`unsafe`, under a crate-wide `deny(unsafe_code)`. Found unnecessary in the
+review of the step's brand on 2026-09-14, because the higher-ranked closure
+alone gives the guarantee: `body(&mut self.mutator)` compiles under
+`#![forbid(unsafe_code)]`, and a closure that answers a handle still fails
+with "lifetime may not live long enough", one that stores a handle in a
+host's field with E0521. Why gc-arena and Nova need a cast and this does not
+is in "The brand" above.
 
 ### Considered and rejected: conservative stack scanning
 
@@ -799,6 +886,11 @@ its variables. After it, a surviving block holds exactly what it captured.
 - **The root discipline is enforced by the type system**, not by convention: a
   generative lifetime brand, gc-arena's rather than Nova's scopes, with no
   public `unbind`. The ergonomic cost is accepted rather than traded away.
+- **The brand needs no cast** (decided 2026-09-14): the step state rests as a
+  `Mutator<'static>` and is handed to a closure generic over `'gc` as it is,
+  and the crate forbids `unsafe` code. A safe conversion per payload was
+  rejected for its reallocations, and an audited cast, chosen in its place,
+  turned out to add nothing the higher-ranked closure does not already give.
 - **The roots' completeness is checked by moving everything**, in a debug-build
   stress mode, before a collector exists, because the brand cannot see a handle
   stored somewhere the tracer does not know about.

@@ -37,7 +37,7 @@ that cannot name its code is describing an intention, and should say so.
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | inline-cache slots wired up |
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, and the loop polls a safepoint | closure conversion, JIT tiers |
-| Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena, the activation stack, the safepoint, tracing, host roots and the stress mode are built; nothing reclaims an arena slot | the lifetime brand (2c), a collector |
+| Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena, the activation stack, the safepoint, tracing, host roots, the stress mode and the lifetime brand are built; nothing reclaims an arena slot | a collector |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | Partial | the core library as Newspeak source |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
@@ -67,7 +67,11 @@ site outside `heap.rs` and `types.rs` changed for either the object or the
 frame conversion. The handle types are not hidden, on purpose: the two
 activation handles are distinct types in every signature — a closure, a frame
 and an image record take only a `FrameReference` — so storing an `ActivationReference` in
-anything that outlives its call is a compile error. Start
+anything that outlives its call is a compile error. And every movable handle
+carries the brand of the entry that minted it, a lifetime obtainable only
+inside `Interpreter::enter`, which `heap/world.rs`'s `World::enter` gives in
+safe Rust — the crate forbids `unsafe` code — so a handle held across a
+safepoint, or kept by a host outside an entry, is a compile error too. Start
 at [memory.md](memory.md) for what the heap guarantees and what it does not —
 notably that nothing reclaims an arena slot yet — and at
 [execution.md](execution.md), "Activations", for the stack.
@@ -115,7 +119,7 @@ regression.
 ```bash
 cargo test --workspace          # includes the golden program outcomes
 NS_NEXT_STRESS_MOVES=1 cargo test --workspace   # the same, moving everything at the run loop's safepoints
-cargo clippy --workspace --all-targets   # must be warning-free
+cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
 cargo fmt --all                 # before every commit
 cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 210, failed 0, expected-fail 1, stale 0
 cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 205 -- every row under both lowerings
@@ -124,7 +128,9 @@ NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules   # the 
 
 The two stress runs are Git Bash syntax and do anything only in a debug build
 ([memory.md](memory.md), "Checking the roots before a collector exists: the
-stress mode").
+stress mode"). Clippy's gate includes `min_ident_chars` (`clippy.toml`),
+which refuses identifiers of one or two characters: names are written out
+(`CLAUDE.md`, "Conventions").
 
 Never judge performance from a debug build; `cargo build --workspace --release`
 is the one to measure.

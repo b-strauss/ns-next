@@ -180,7 +180,7 @@ drift. Something needed there is widened to `pub(crate)`, not duplicated.
 An arity check belongs here too: a method activation addresses its arguments and
 temporaries as one run of registers, so a send whose argument count does not
 match the declaration would silently shift every temporary rather than fail.
-`Interpreter::push_step` refuses the mismatch outright.
+`Mutator::push_step` refuses the mismatch outright.
 
 ## Deviation: slots are not reachable through an explicit receiver
 

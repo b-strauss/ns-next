@@ -584,18 +584,18 @@ by memory and Nova by a fixed count of contexts ([execution.md](execution.md),
 "How other systems bound recursion depth"); none has two lowerings that must
 agree, so this rule is ns-next's own.
 
-**Where it is decided.** The block arm of `Interpreter::push_step`
+**Where it is decided.** The block arm of `Mutator::push_step`
 (`crates/ns-runtime/src/interpreter/mod.rs`) is the one place an activation is
 exempted. Every other push is counted by construction: `push_step`'s method arm
 and its body arms, for an initializer level, a superclass clause or its
 message, record `counted: true`. The flag
-rides on the stack entry, and `Interpreter::push` refuses a counted push at the
+rides on the stack entry, and `Mutator::push` refuses a counted push at the
 limit. A block is exempt when it carries
 `StepArguments::ControlFlow` — the arguments only the control-flow natives build —
 the send that led to it was a `SendInlinable`, and its `captured_frame` is the
 sending activation's reified frame. The VM decides a `SendInlinable` exactly as
 it does a `SendPublic` and only hands `push_step` the fact that it was one. A
-native loop's next block is pushed by `Interpreter::push_continuation`, which
+native loop's next block is pushed by `Mutator::push_continuation`, which
 exempts it only if the one it replaces was; the VM forwards the popped entry's
 flag and decides nothing. `&` and
 `|` share `and:`'s and `or:`'s native, so their block carries the mark as

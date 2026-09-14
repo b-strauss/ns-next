@@ -10,64 +10,84 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
 
-M4 is under way. Step 2, the compiler-checked root discipline, designed on
-2026-09-13 ([memory.md](design/memory.md), "Checked roots and a collector"),
-lands in three parts. **2a, no re-entry from Rust, is done** — `do:`,
+M4 is under way. **Step 2, the compiler-checked root discipline, is done**,
+in the three parts it was designed in on 2026-09-13 ([memory.md](design/memory.md),
+"Checked roots and a collector"). **2a, no re-entry from Rust** — `do:`,
 instantiation and the nested-class accessor are trampoline steps, so Rust
 enters the run loop only as the host; see "M4 — No re-entry from Rust" below.
-**2b, the safepoint, the tracing, host roots and the stress mode, is done** —
-the run loop polls a safepoint, `trace.rs` enumerates every handle a collector
-would trace, a host keeps values across runs only as `Root`s, and
+**2b, the safepoint, the tracing, host roots and the stress mode** — the run
+loop polls a safepoint, `trace.rs` enumerates every handle a collector would
+trace, a host keeps values across runs only as `Root`s, and
 `NS_NEXT_STRESS_MOVES=1` moves everything at the safepoints under the whole
 suite, which `CLAUDE.md` makes a gate; see "M4 — The safepoint, tracing, host
-roots and the stress mode" below.
+roots and the stress mode" below. **2c, the lifetime brand** — every movable
+handle carries a lifetime obtainable only inside `Interpreter::enter`, in safe
+Rust, so holding one across a safepoint, keeping one outside an entry, and a
+native re-entering the loop fail to compile; see "M4 — The lifetime brand"
+below. Its measurement left one open finding, the first below.
 
-**The next piece is 2c, the lifetime brand** ([memory.md](design/memory.md),
-"Planned: the brand, checked by the compiler rather than by convention"). Every
-movable handle — `ObjectReference`, `ClassReference`, `FrameReference`, and so `Value` and every
-type that contains one — carries an invariant lifetime `'gc`, obtainable only
-inside `Interpreter::enter`, whose result cannot name it; each instruction the
-run loop executes is one `enter`, and `vm::run` and the safepoint stay outside
-every one. Holding a handle across a safepoint and a native re-entering the
-run loop then fail to compile, `heap_reference()` and `heap_mut()` go, and a host
-reads through `enter`, so a `Root` becomes the only way it can keep a value.
-Its gates, beside the usual ones and the two stress runs, are `compile_fail`
-doctests for both mistakes and for storing a branded handle in a host's own
-field, and a before-and-after measurement of the benchmarks, since `enter`
-should cost nothing. It gets its own plan under `docs/superpowers/plans/`,
-written against the code as 2b left it.
-A naming interlude between that plan's Tasks 2 and 3 wrote every identifier
-out -- no one- or two-character names and no truncated words (`CLAUDE.md`,
-"Conventions"; clippy's `min_ident_chars` in `clippy.toml` refuses the short
-ones) -- and the plan's remaining tasks use the new names.
+**The next piece is step 3, the inline caches** ([dispatch.md](design/dispatch.md),
+"Planned: inline caches"; item 3 of the order of work below). A candidate
+small step of its own comes before them: a cached getter symbol for
+setter-shaped lexical sends and a hasher for `u32`-shaped keys in the method
+and slot tables, which would take most of `Symbol::intern`'s 11.9% of
+`bench_send.ns` out before a lexical-send cache entry removes the lookup
+altogether ("The profile of `bench_block.ns` is taken" below says why). Each
+gets its own plan under `docs/superpowers/plans/`, written against the code
+as 2c left it. Read for it: [dispatch.md](design/dispatch.md), "Planned:
+inline caches" (a cache guards on the mixin application, and a native entry
+carries an enumerated primitive); [compiler.md](design/compiler.md),
+"Safepoints and call-site identity", for the inert call-site slots every
+`CompiledCode` already carries;
+[execution.md](design/execution.md), "The VM", for the send path the caches
+sit on, where each instruction is one entry of the step state, `Mutator`; and
+[memory.md](design/memory.md), "The brand" and "What the collector traces" —
+code is shared behind an `Rc`, where no handle may live, so a cache entry in
+it must hold none, which a key on the application satisfies. Performance is
+measured, not assumed: the protocol and the seven sources of "What removing
+the re-entries moved" ([execution.md](design/execution.md); the four
+throwaway sources are written out in the
+[2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
+"Measurement protocol"), the before-binaries built in throwaway worktrees,
+two sittings for a whole step, and a comparison against `be3eb40` as well as
+against the commit the step starts from (the first finding below).
 
 **Open findings**, for whoever plans next to weigh:
 
+- **2c left `bench_new2.ns` slower than before the step, beyond noise.** Its
+  whole-step measurement against `a5d1e05` put `bench_new2.ns` at +1.8% and
+  +2.5%, the after-group entirely above its parent's in both sittings, by
+  0.01–0.02 ms; `bench_block.ns` (+2.5% / +1.8%) and `bench_newarg.ns`
+  (+1.2% / +1.7%) lay entirely above in one sitting each, and `bench_loop.ns`,
+  `bench_send.ns` and `bench_do.ns` are level. Task 1's sitting found the
+  per-instruction entry level, and a bisection sitting over the step's
+  commits places the step on the brand commit, `1549fb0`, whose diff is
+  types and signatures apart from `rebrand` and small reshapes; why its
+  generated code is slower was not traced
+  ([execution.md](design/execution.md), "What 2c moved"). Whether to chase
+  it before step 3, which rebuilds the send path these benchmarks run, is
+  for whoever plans next to decide; step 3's own measurement will show
+  whether it survives.
 - **The comparison with `be3eb40` continues.** 2a left `bench_loop.ns` 1.4–1.9%
   and `bench_block.ns` 1.4–1.6% slower than `be3eb40`, the commit it started
   from — a uniform codegen shift in `vm::run` and `dispatch_native`, traced as
-  far as inlining and register allocation and not bisected. 2b's whole-step
-  measurement, in two sittings, puts `bench_loop.ns` at +1.1% in both,
-  overlapping, and `bench_block.ns` at −2.5% and −2.6%, entirely below, since
-  the closure split made it faster. `bench_send.ns` is at +0.9% and +1.4%,
-  overlapping, where 2a measured +0.2% and +0.8%; 2b's binary is level with
-  2a's, and 2a's own binary sat +0.6% and +1.9% above `be3eb40` in the same
-  sittings, so that is spread between sittings rather than something 2b added.
-  Every other source is level or faster
-  ([execution.md](design/execution.md), "What 2b moved"). Nothing is slower
-  than `be3eb40` beyond the groups' spread now, but the rule stays: **every
-  performance measurement up to and including step 3 compares against
-  `be3eb40` as well as against the commit it starts from**, with the protocol
-  and the seven sources of "What removing the re-entries moved"
-  ([execution.md](design/execution.md); the four throwaway sources are written
-  out in the [no-reentry plan](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md)
-  and the [2b plan](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md),
-  "Measurement protocol"), and reports both. If a source is still slower than
+  far as inlining and register allocation and not bisected. 2b took
+  `bench_block.ns` to 2.5% faster than `be3eb40`, and 2c gave most of that
+  back: its whole-step measurement puts `bench_block.ns` at −0.3% and −0.7%,
+  `bench_newarg.ns` at −1.8% and −0.9% (2b: −3.2% to −3.4%), `bench_send.ns`
+  at +2.2% and +3.1%, entirely above `be3eb40` in both sittings (2b: +0.9% to
+  +1.4%), and `bench_loop.ns` at +2.5% and +1.9%, with `a5d1e05` itself
+  sitting +1.0% to +2.9% above `be3eb40` on the loop and the send in the same
+  sittings; `bench_do.ns` is still faster than `be3eb40`, and `bench_new.ns`
+  and `bench_new2.ns` level with it ([execution.md](design/execution.md),
+  "What 2c moved"). The rule stays: **every performance measurement up to and
+  including step 3 compares against `be3eb40` as well as against the commit
+  it starts from**, and reports both. If a source is still slower than
   `be3eb40` once step 3 has landed, the shift is chased then, on the rebuilt
   send path.
 - **A decoded image's last initializer is not held to answering `self`**, so
@@ -79,14 +99,9 @@ ones) -- and the plan's remaining tasks use the new names.
   block in that body; the clause *message*'s case, a `^` caught by the
   message's activation, is pinned
   (`a_return_in_a_clause_messages_block_hands_its_value_to_the_walk`).
-- **Two stale handles from the same old epoch compare in `same()` without a
-  panic.** `same` has no heap in reach, so it can check the two epochs only
-  against each other; a live handle against a stale one panics. That is what
-  2c's brand closes ([memory.md](design/memory.md), "Planned: the brand"),
-  and it is the one finding 2b's reviews left.
-- **The stress suite takes three minutes** (190 s against 12.7 s), almost half
+- **The stress suite takes three minutes** (190 s against 13.1 s), almost half
   of it one test, `the_depth_limit_is_exact_and_counts_alike_under_both_lowerings`.
-  It is a gate before every commit, so 2c's plan should budget for it.
+  It is a gate before every commit, so step 3's plan should budget for it.
 
 Sends run on the activation stack rather than the Rust stack, in one loop that
 pushes, pops and resumes; `value`, the control-flow natives, `do:`,
@@ -124,7 +139,7 @@ why the object and activation representations were converted together rather
 than one at a time. Each piece is designed in the document for its own aspect;
 those documents are the authority, and this is only the map to them.
 
-**Nine pieces are done.** The heap seam routes every object and activation
+**Ten pieces are done.** The heap seam routes every object and activation
 access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
 it replaced `Rc<RefCell<_>>`: an `ObjectReference` or a `FrameReference` is a 32-bit index
 into a `Vec` the `Heap` owns, with a private field so the compiler enforces the
@@ -144,7 +159,10 @@ trampoline" below. Then 2a took the last re-entries of the run loop from Rust
 away; see "M4 — No re-entry from Rust" below. Then 2b put a safepoint into the
 run loop, enumerated every handle a collector would trace, rooted what a host
 keeps, and checked all of it by moving everything under the whole suite; see
-"M4 — The safepoint, tracing, host roots and the stress mode" below.
+"M4 — The safepoint, tracing, host roots and the stress mode" below. Then 2c
+branded every movable handle with the lifetime of the entry that minted it,
+so the compiler checks what 2b's stress mode could only find at run time; see
+"M4 — The lifetime brand" below.
 
 **The profile of `bench_block.ns` is taken**
 ([execution.md](design/execution.md), "What the profiles show"). The question
@@ -163,7 +181,7 @@ symbol and a hasher for `u32`-shaped keys would take most of it out sooner,
 and are a candidate small step of their own before the caches.
 
 The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
-and all three done, 1b done, 2a and 2b done, everything from 2c on still ahead — and it is
+and all three done, 1b done, 2 done in all three parts, everything from 3 on still ahead — and it is
 not the order the milestone was originally sketched in. Two things settled the order of the
 numbered steps, neither of them a preference.
 
@@ -206,7 +224,7 @@ so nothing is lost by it going second.
      `SendInlinable` and the counter added together. `bench_loop.ns` fell by
      about 32%, `bench_send.ns` 31% and `bench_block.ns` 22%; see "M4 — The
      trampoline" below.
-2. **A compiler-checked root discipline. In progress.** [memory.md](design/memory.md),
+2. **A compiler-checked root discipline. Done.** [memory.md](design/memory.md),
    "Checked roots and a collector". Designed on 2026-09-13, from how
    Cog, Nova, CPython, piccolo, V8, HotSpot, Primordial Soup and SOMns place
    their collections: a collection only ever at a safepoint in the run loop,
@@ -214,8 +232,8 @@ so nothing is lost by it going second.
    the style of gc-arena, which makes holding a handle across a safepoint a
    compile error. That replaced the earlier plan of Nova's
    `GcScope`/`NoGcScope`, whose scopes would root the re-entry paths rather
-   than remove them. Free at run time; the ergonomic cost is accepted
-   deliberately. Split in three, each landing green and measured on its own:
+   than remove them. The ergonomic cost is accepted deliberately. Split in
+   three, each landing green and measured on its own:
    - **2a — no re-entry from Rust. Done.** `do:`, instantiation and the
      nested-class accessor are trampoline steps, and the bound on re-entries
      went with them ([execution.md](design/execution.md), "No re-entry from
@@ -232,10 +250,14 @@ so nothing is lost by it going second.
      the step beyond noise and `bench_block.ns` is about 4% faster; the suite
      takes 12.7 s, and 190 s under the stress mode; see "M4 — The safepoint,
      tracing, host roots and the stress mode" below.
-   - **2c — the brand. Next.** `Value<'gc>` and every movable handle,
-     obtainable only inside `Interpreter::enter`; `heap_reference()` and
-     `heap_mut()` go, so a host holds values only as `Root`s and reads
-     through `enter`.
+   - **2c — the brand. Done.** Every movable handle carries a lifetime
+     obtainable only inside `Interpreter::enter`, which lends the step state,
+     `Mutator`, to a closure generic over it in safe Rust — the crate forbids
+     `unsafe` code — once per instruction the run loop executes, so a host
+     holds values only as `Root`s and reads through `enter`. Measured whole,
+     the loop, the send and `do:` are level and the block and instantiation
+     benchmarks 1–2.5% slower, `bench_new2.ns` beyond noise — an open finding,
+     above; see "M4 — The lifetime brand" below.
 3. **Inline caches** — [dispatch.md](design/dispatch.md). The call-site slots are
    already emitted and inert, so no bytecode format break. A cache must guard on
    the **mixin application**, not on the class object; the obvious key is the
@@ -420,9 +442,10 @@ What it deleted rather than moved:
   `Mixin`'s `nested`/`class_side` links still drop recursively, bounded by
   `image/mixins.rs`'s `MAX_MIXIN_DEPTH` rather than by iteration.
 - `bootstrap_self_referential_object`'s `Rc::new_uninit`/`Rc::from_raw`
-  construction, the crate's only `unsafe`. An arena knows a slot's index before
-  it fills the slot, so an object can name itself in safe Rust.
-  `grep -rn "unsafe" crates/ns-runtime/src/heap.rs` is empty.
+  construction, then the crate's only `unsafe`. An arena knows a slot's index
+  before it fills the slot, so an object can name itself in safe Rust.
+  `grep -rn "unsafe" crates/ns-runtime/src/heap.rs` is empty, and since 2c
+  the whole crate forbids `unsafe` code.
 
 What it added: a `debug_assertions`-only origin guard. Each `Heap` carries an id,
 each handle records the id of the heap that minted it, and all 46 accessor sites
@@ -1590,8 +1613,140 @@ against 7.6 s.
 
 **Left, deliberately**, the one finding of the reviews that is not closed:
 two stale handles from the same old epoch compare in `same()` without a
-panic, since `same` has no heap to check them against. That is what 2c's
-brand closes ([memory.md](design/memory.md), "Planned: the brand").
+panic, since `same` has no heap to check them against. 2c's brand closed it
+([memory.md](design/memory.md), "The brand").
+
+## M4 — The lifetime brand (2026-09-14)
+
+Plan: [ns-next-lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md).
+
+Step 2c, the third and last part of the root discipline. Every movable
+handle — `ObjectReference`, `ClassReference`, `FrameReference`, and so
+`Value` and every type that holds one — carries an invariant lifetime `'gc`
+obtainable only inside `Interpreter::enter`, so holding a handle across a
+safepoint, keeping one outside an entry, and a native re-entering the run
+loop are compile errors rather than mistakes the stress mode finds at run
+time ([memory.md](design/memory.md), "The brand, checked by the compiler
+rather than by convention"). The step's commits follow the plan (`7903050`)
+on `feature/lifetime-brand-2c`, from `a5d1e05`.
+
+**Decisions**, settled with the user on 2026-09-13 or following from the
+design, and one revised on the way:
+
+1. **Nothing is converted at a push, a pop or an allocation.** A safe
+   conversion per payload would reallocate every boxed continuation at every
+   push and pop and lose the spare instantiation boxes' reuse; the whole step
+   state rests as `Mutator<'static>` instead and is handed over as it is.
+   The plan made that one audited cast; Task 4's review found it
+   unnecessary — `body(&mut self.mutator)` gives the same guarantee in safe
+   Rust, since the closure is checked for every `'gc` — so the crate has
+   `#![forbid(unsafe_code)]` and no `unsafe` at all. Both alternatives are
+   recorded as considered and rejected in memory.md.
+2. **The brand is phantom**: `'gc` appears in a field only through the
+   `PhantomData` in a handle, which is why no conversion of the state is
+   needed.
+3. **No public `unbind`**: `rebrand`, private to `heap.rs`, converts a value
+   for the host root table, and nothing else changes a brand.
+4. **`Mutator` never reaches the `Interpreter`**: `vm::run`, the safepoint
+   and the host entries take `&mut Interpreter`, and a decision, a native or
+   a continuation only a `&mut Mutator`.
+5. **`World` lives in `heap/world.rs`**, a child of the heap module, so
+   `Heap::new` and `Heap::move_everything` are private to it.
+6. **Each instruction is one entry**, and `vm::run` answers roots.
+7. **The host API**: `Interpreter::enter` is public; `send`, `instantiate`,
+   `load_module` and `platform` take and answer roots; `Interpreter::stash`
+   takes a `Value<'static>`, an immediate; heap access, `fetch` and every
+   step method are on `Mutator`.
+8. **The codec runs inside an entry**: `image::snapshot` takes a
+   `&Mutator<'gc>`, `image::build` a `&Heap<'gc>`, and `image::load` decodes
+   in one entry and roots what it answers.
+9. **`ActivationReference` stays unbranded**: nothing moves a stack entry.
+10. **Two stages**: Tasks 1–3 moved the code into its final shape with no
+    lifetime, and Task 4 added `'gc` and nothing else.
+11. **Three `compile_fail` doctests on `Interpreter::enter`**, each beside a
+    passing twin that differs from it in the one line that matters.
+12. **The finding "two stale handles from the same old epoch compare in
+    `same()` without a panic" closes**: within one entry nothing moves, and
+    no handle survives from one entry to the next.
+
+**What changed**, in the plan's order:
+
+1. **The step state becomes a `Mutator` the run loop enters per
+   instruction** (`d27e40b`): `World`, `Interpreter::enter`, and every step
+   method moved from `Interpreter` onto `Mutator`; `vm::run` makes one entry
+   per instruction and roots its answer in the last.
+2. **Hosts and tests read through `enter`** (`7425f22`, `1c61f1e`), the CLI
+   first, and nothing that holds a handle leaves an entry.
+3. **Only `enter` reaches the step state** (`e59dc52`, `9066e58`): the
+   transitional `Deref` from `Interpreter` to `Mutator` and the old heap
+   accessors and `Interpreter::fetch` went, and the image tests' graph
+   fixture keeps roots and inspects a decoded graph inside its entry.
+4. **The brand** (`1549fb0`, `2caf3e0`): `'gc` on every movable handle and
+   every type that holds one, `Heap::new` and `Heap::move_everything`
+   private, the three doctests, and then the cast replaced by the plain call
+   and the crate's `#![forbid(unsafe_code)]`. Two runtime tests that kept a
+   value across a run on purpose went with it, since that mistake no longer
+   compiles and the doctests pin it; the stress mode still checks what the
+   tracer knows.
+5. **The documents**, and the whole-step measurement below.
+
+**Names are written out.** Between Tasks 2 and 3, the user decided on
+2026-09-14 that no identifier in the workspace is one or two characters long
+or a truncated word — `interpreter`, not `interp`; `program_counter`, not
+`pc`; `ObjectReference`, not `ObjRef` — `ns-syntax` included (`a5c3a0f`,
+`41b8107`, `6b186cf`, `7b41649`). Clippy's `min_ident_chars`, configured in
+`clippy.toml`, refuses the short names, so the warning-free clippy gate
+enforces it; the rule and its exceptions are in `CLAUDE.md`, "Conventions".
+The one snapshot that changed, `ns-syntax`'s parse snapshot, is a dump of
+the AST's type and field names and differs from before in names only.
+
+No golden, no `.expected` file and no `run-corpus` row changed.
+
+**What reviews found**, each fixed before its task closed: values and a class
+handle answered out of one entry and used in the next, at about thirty test
+sites, and the image tests' graph fixture keeping a class and a decoded
+graph across entries — each the shape the brand would reject, found by
+review before Task 4 made it a compile error; closure parameters the rename
+had named `mutator` though they bound something else; and the unnecessary
+cast.
+
+Measured whole against `a5d1e05` and `be3eb40` in two sittings on a release
+build, five rounds of `ns-next bench <source> --iterations 30`, alternating
+the three binaries within each round, the two before-binaries built in
+throwaway worktrees. Means of the five medians in ms from the first sitting,
+and the change in each sitting:
+
+| Source | `be3eb40` | `a5d1e05` | After | Against `a5d1e05`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.03 | 11.35 | 11.31 | −0.4% / +0.9% | +2.5% / +1.9% |
+| `bench_send.ns` | 13.92 | 14.12 | 14.23 | +0.8% / +1.3% | +2.2% / +3.1%, after entirely above in both |
+| `bench_block.ns` | 23.20 | 22.56 | 23.13 | **+2.5% / +1.8%**, after entirely above in the first | −0.3% / −0.7% |
+| `bench_do.ns` | 8.01 | 7.99 | 7.78 | −2.6% / −0.3% | −2.8% / −1.4% |
+| `bench_new.ns` | 7.36 | 7.28 | 7.43 | +2.1% / +0.7% | +1.0% / +0.0% |
+| `bench_new2.ns` | 8.35 | 8.26 | 8.41 | **+1.8% / +2.5%, after entirely above in both** | +0.8% / +0.7% |
+| `bench_newarg.ns` | 10.46 | 10.15 | 10.28 | **+1.2% / +1.7%**, after entirely above in the second | −1.8% / −0.9% |
+
+**The loop, the send and `do:` are level; the block and instantiation
+benchmarks are 1–2.5% slower, and `bench_new2.ns` beyond the sittings'
+noise**, its after-group entirely above its parent-group in both sittings.
+Task 1's own sitting had found the per-instruction entry level on every
+source, and a bisection sitting over the step's commits puts the shift on
+the brand commit, `1549fb0` — a change of types and signatures, apart from
+`rebrand` and a few reshapes the lifetimes required, whose generated code is
+nevertheless slower for a reason not traced. It is carried as an open
+finding ("Where the next session starts"); [execution.md](design/execution.md),
+"What 2c moved", has every sitting's figures. Against `be3eb40`,
+`bench_block.ns` gave back most of the 2.5% 2b had gained, and `bench_send.ns`
+reads +2.2% and +3.1%.
+
+The suite (`cargo test --workspace`, debug build, test binaries already
+built) takes 13.1 s, where 2b left 12.7 s. Under
+`NS_NEXT_STRESS_MOVES=1` it takes 190.3 s: `crates/ns-runtime/tests/trampoline.rs`
+90.8 s against 3.1 s, and `ns-cli`'s tests, which spawn `ns-next` per
+fixture or golden, about 97 s against 7.5 s.
+
+690 tests pass, with one ignored (685 when 2b closed); `parse-corpus` stays at
+**210/0/1/0** and `run-corpus` at **6/0/205**, plain and under the stress mode.
 
 ## Notes
 
