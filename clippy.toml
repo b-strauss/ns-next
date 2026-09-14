@@ -11,3 +11,13 @@
 # otherwise leave them alone.
 trivial-copy-size-limit = 12
 avoid-breaking-exported-api = false
+
+# Names are written out (CLAUDE.md, "Conventions"): clippy refuses any
+# identifier shorter than three characters that the workspace declares.
+min-ident-chars-threshold = 2
+# Type parameters keep Rust's single-capital convention; `ok`, `id` and `Or`
+# are words.
+# `'a` and `'_`: the lint counts a lifetime with its quote, and lifetimes keep
+# the convention too. `Rc`: std's name, flagged where it is imported. `vm`: a
+# module name, and module names are not renamed.
+allowed-idents-below-min-chars = ["T", "R", "E", "id", "ok", "Or", "'a", "'_", "Rc", "vm"]

@@ -41,3 +41,4 @@ codegen-units = 1
 [workspace.lints.clippy]
 cloned_instead_of_copied = "warn"
 trivially_copy_pass_by_ref = "warn"
+min_ident_chars = "warn"
