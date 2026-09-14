@@ -10,3 +10,25 @@ rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Start every function on a 64-byte boundary, so that a change to cold code cannot move
+# the hot loop. Step 2c's brand commit changed no instruction of the run loop, yet it
+# measured 1-2% slower than its parent: cold host code ahead of it got 224 bytes smaller,
+# and every hot function behind it -- `run_from_host`, `dispatch_native`, `push_step`,
+# `finish` -- moved into a different 64-byte phase, which is enough to move a benchmark
+# by that much (docs/design/execution.md, "What 2c moved"). With every function start
+# pinned, the two builds measured level. Costs about 110 KB of padding, 5.6% of the
+# release binary: some 4,600 functions, each padded to the next 64-byte boundary.
+#
+# `-align-all-functions` is an LLVM option, not a rustc one, so it goes through
+# `llvm-args`; 6 is the power of two, 2^6 = 64. It applies to debug builds too, where
+# the padding is harmless. Cargo takes rustflags from exactly one source, so this sits in
+# a `cfg` table that every target matches and that Cargo joins with the triple's entry
+# above; a `[build]` entry would be ignored wherever a `[target]` entry matches, and a
+# `RUSTFLAGS` environment variable replaces both. A binary compared with this one in a
+# measurement must be built with the same flags -- an older commit without this file's
+# entry gets them through `RUSTFLAGS`, with `+crt-static` repeated
+# (docs/design/execution.md, "What removing the re-entries moved", the protocol).
+
+[target.'cfg(all())']
+rustflags = ["-C", "llvm-args=-align-all-functions=6"]
