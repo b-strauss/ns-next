@@ -61,7 +61,7 @@ task; the living design documents this plan updates are
 | 6 | §5.5 `lookupPublic` skips a private declaration | `PrivateShadow new foo` | `1` | `doesNotUnderstand:` | 2 |
 | 7 | §5.10 a super send finds only public or protected methods | `super p` on a private `p` | `doesNotUnderstand: #p` | `10` | 2 |
 | 8 | §5.10 a super send that finds nothing invokes `doesNotUnderstand:` defined for S | `super foo` with no `foo` above | S's `doesNotUnderstand:` | unbounded recursion | 2 |
-| 9 | §5.7/§2.3.1 only lexically *declared* members are visible; inherited ones are not | the dyla paper's case 2 | `91` | `42` | 4 |
+| 9 | §5.7/§2.3.1 only lexically *declared* members are visible; inherited ones are not | an inherited `m` against an enclosing class's `m` | `91` | `42` | 4 |
 | 10 | §5.7 a member is found under its full selector | `foo:bar:` must not capture `foo:` | `foo:` via `self` | `foo:bar:`'s class once #9 is fixed | 4 |
 | 11 | §5.7/§6.3.2 an immutable slot declares no member `y:` | implicit `y: 7` past an immutable `y` | the enclosing class's `y:` | the immutable slot | 4 |
 | 12 | §5.8 a parenthesized `self` is a self send | `(self) secret` | `5` | `5` (pinned) | 5 |
@@ -87,8 +87,10 @@ right, pinned in Task 5.
   declares the selector is N and the send is `outer N m`; if none does, it is
   `self m`, and the receiver's inheritance chain decides (§2.3.1: "only if no
   lexically visible matching method is found, do we proceed up the inheritance
-  chain of self"). Quote the dyla paper's rule 4 and say that an inherited
-  member of an *enclosing* class is reached only by an explicit `outer N m`.
+  chain of self"), and §5.7's commentary on figure 4 ("Only if this fails is
+  the receiver's inheritance chain followed"): an inherited member of an
+  *enclosing* class is reached only by an explicit `outer N m`. The spec is the
+  authority; the paper it cites for the rationale, [Bra07b], is background only.
   Record the open question: both sides of a class declaration contribute to
   one member set today; the specification is silent and the canonical
   compiler scopes the class side apart (`Newspeak2SqueakCompilation.ns`,
@@ -325,7 +327,7 @@ Expected output: `1`.
 - Create: `tests-fixtures/spec_5_7_immutable_slot_declares_no_setter.ns`, `.expected`
 - Modify: `crates/ns-cli/tests/program_outcomes.rs`
 
-- [ ] **Step 1: Fixture for #9** (the dyla paper's case 2, `dyla-final.pdf` §3.2, and §2.3.1), plus the explicit `outer` route to an enclosing class's inherited member:
+- [ ] **Step 1: Fixture for #9** (§5.7 and §2.3.1; the spec's own [Bra07b] discusses the same shape), plus the explicit `outer` route to an enclosing class's inherited member:
 
 ```
 Newspeak3
@@ -366,9 +368,9 @@ Expected output: `91`, then `inherited by the enclosing class`.
   (`an_enclosing_classs_inherited_member_is_not_lexically_visible`): the same
   `OuterBase`/`Enclosing` with `Nested`'s `public implicit = ( ^n )` sent from
   `main:`; exit 1, stderr `Uncaught Newspeak error: an object does not understand #n\n`.
-  Doc comment: the dyla paper, rule 4: "If one wishes to refer to an inherited
-  method of an enclosing class, an explicit outer send expresses this intent
-  unambiguously."
+  Doc comment: §5.7, "Only if this fails is the receiver's inheritance chain
+  followed" -- the receiver's, not the enclosing object's -- and §2.3.1,
+  "After that, no further lookup is done."
 - [ ] **Step 3: Fixture for #10.**
 
 ```

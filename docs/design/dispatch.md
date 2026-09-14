@@ -47,21 +47,21 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    declares the selector is `N`, at depth `k`, and the send is `outer N m`.
    Nothing a declaration merely **inherits** counts: §2.3.1, "lookup proceeds up
    the lexical scope chain ... and only if no lexically visible matching method
-   is found, do we proceed up the inheritance chain of self". So a name that no
-   enclosing declaration declares is `self m` (§5.7's "Otherwise"), and the
-   receiver's inheritance chain decides at run time, ending in
-   `doesNotUnderstand:` if nothing answers. This is the rule the dyla paper
-   argues for (`docs/references/dyla-final.pdf`, §3.2, rule 4): "an identifier
-   refers to the nearest lexically visible declaration, subject to overriding
-   by subclasses. If no lexically visible binding exists, we interpret it as a
-   self send" — and it follows that a member an *enclosing* class only
-   inherits is reached by an explicit `outer N m`, never implicitly: "If one
-   wishes to refer to an inherited method of an enclosing class, an explicit
-   outer send expresses this intent unambiguously." Primordial Soup does the
-   same at run time (`ImplicitReceiverSendMiss` asks each lexical level's own
-   methods through `HasMethod`). `k = 0` is what is colloquially a self send;
-   §5.8 defines `self m` as literally `outer C m` where `C` is the immediately
-   enclosing class.
+   is found, do we proceed up the inheritance chain of self . After that, no
+   further lookup is done." So a name that no enclosing declaration declares is
+   `self m` (§5.7's "Otherwise"), and the receiver's inheritance chain decides
+   at run time, ending in `doesNotUnderstand:` if nothing answers. §5.7's
+   commentary on figure 4 says the same: "First, the surrounding lexical scope
+   chain is traversed ... Only if this fails is the receiver's inheritance chain
+   followed". It is the *receiver's* chain, so a member an *enclosing* class only
+   inherits is never found implicitly; an explicit `outer N m` (§5.9) reaches it,
+   since §5.9 runs `lookupProtected` on the class of the enclosing object.
+   Primordial Soup does the same at run time (`ImplicitReceiverSendMiss` asks
+   each lexical level's own methods through `HasMethod`), and the paper the
+   specification cites for the rationale, [Bra07b]
+   (`docs/references/dyla-final.pdf`), argues for exactly this rule. `k = 0` is
+   what is colloquially a self send; §5.8 defines `self m` as literally
+   `outer C m` where `C` is the immediately enclosing class.
 
    Two names in one declaration that would define the same member — a method
    and a slot getter, a mutable slot's setter and a method `x:`, a method and a

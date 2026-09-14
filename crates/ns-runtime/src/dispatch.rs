@@ -106,6 +106,60 @@ enum Verdict {
     Stop,
 }
 
+/// The class declaration at lexical depth `depth` from `defining_class` --
+/// §5.9's `N`, "a class whose declaration D lexically encloses the outer
+/// send", at the depth the resolver fixed. Depth 0 is `defining_class`
+/// itself, the class that declares the running method; each further level
+/// is one step out along the declaration chain, the chain
+/// `kth_enclosing_object` walks. `None` where the chain is shorter than
+/// `depth`, and for a top-level activation (no `defining_class`).
+pub fn kth_lexical_class<'gc>(
+    heap: &Heap<'gc>,
+    defining_class: Option<ClassReference<'gc>>,
+    depth: u16,
+) -> Option<ClassReference<'gc>> {
+    let mut level = defining_class?;
+    for _ in 0..depth {
+        level = heap.class_declaring(level)?;
+    }
+    Some(level)
+}
+
+/// §5.9: "If N declares a private method f named s then the value of the
+/// send is the result of invoking f". Asks `lexical_class`'s *own* mixin
+/// only -- a private member of a subclass or a superclass of N is not N's
+/// -- and answers `NotFound` unless that mixin declares `selector` private.
+/// A private nested class is a private member on the same footing (§6: its
+/// accessor has "the same name and accessibility"). Primordial Soup's
+/// `LexicalSend` asks the same one table (`MethodAt` on N's application).
+pub fn private_member<'gc>(
+    heap: &Heap<'gc>,
+    lexical_class: ClassReference<'gc>,
+    selector: Symbol,
+) -> Lookup<'gc> {
+    let Some(application) = heap.class_application(lexical_class) else {
+        return Lookup::NotFound;
+    };
+    if let Some(method) = application.mixin.methods.get(&selector) {
+        return if method.access == ast::AccessModifier::Private {
+            Lookup::Method(method.clone(), lexical_class)
+        } else {
+            Lookup::NotFound
+        };
+    }
+    match application
+        .mixin
+        .nested
+        .iter()
+        .find(|nested| nested.name == selector)
+    {
+        Some(nested) if nested_access(nested) == ast::AccessModifier::Private => {
+            Lookup::NestedClass(nested.clone(), lexical_class)
+        }
+        _ => Lookup::NotFound,
+    }
+}
+
 /// §5.5, ordinary (explicit-receiver) sends: lookupPublic(n, C) is "m, if the
 /// mixin of C defines a method m with selector n and public access.
 /// Undefined, if the mixin of C defines a method m with selector n and

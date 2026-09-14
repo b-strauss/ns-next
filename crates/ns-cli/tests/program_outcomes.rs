@@ -689,3 +689,34 @@ fn a_super_send_does_not_reach_a_private_method() {
         "Uncaught Newspeak error: an object does not understand #p\n",
     );
 }
+
+/// `newspeak-spec.pdf` §5.7: no lexically enclosing declaration declares
+/// `p` -- `Base2` is `Child2`'s superclass, not an enclosing class -- so `^p`
+/// is `self p`, that is `outer Child2 p` (§5.8). §5.9: `Child2` declares no
+/// private `p`, and `lookupProtected` passes `Base2`'s private `p` over, so
+/// the send falls to `doesNotUnderstand:`.
+#[test]
+fn a_superclasss_private_method_is_not_lexically_visible() {
+    assert_outcome(
+        "inherited-private",
+        indoc! {"
+            Newspeak3
+            'T'
+            class InheritedPrivate usingPlatform: platform = Object new (
+            ) (
+                class Base2 = Object new () (
+                    private p = ( ^10 )
+                )
+                class Child2 = Base2 new () (
+                    public run = ( ^p )
+                )
+                public main: pl args: a = (
+                    Child2 new run
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #p\n",
+    );
+}

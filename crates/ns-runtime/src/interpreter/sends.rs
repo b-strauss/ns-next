@@ -2,8 +2,6 @@
 //! The VM's `SendLexical` and `SendSuper` call these; an ordinary send is
 //! `Interpreter::send`.
 
-use ns_syntax::ast;
-
 use crate::dispatch::{self, Lookup};
 use crate::heap::ActivationReference;
 use crate::types::*;
@@ -29,45 +27,16 @@ fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
     None
 }
 
-/// What an implicit-receiver send resolves to on one class, per
-/// `newspeak-spec.pdf` §5.9: a `private` declaration *at exactly this
-/// class* wins first, because a private member is never overridden and so
-/// there is no search; anything else goes through the ordinary
-/// `lookup_protected` walk.
-///
-/// A `private class N` is a private declaration on exactly the same footing
-/// (§6: the implicit accessor has the declaration's own accessibility), and
-/// has to be caught by the same first step: `lookup_protected` skips a
-/// private declaration transparently and keeps walking, so leaving the
-/// nested case out would make `private class N` unreachable from the class
-/// that declares it while `private n = (...)` is reachable.
-///
-/// One definition because `decide_lexical_send` asks it of two classes --
-/// a class object's metaclass and then the receiver's own class.
-fn lexical_lookup<'gc>(
-    heap: &crate::heap::Heap<'gc>,
-    class: ClassReference<'gc>,
-    selector: Symbol,
-) -> Lookup<'gc> {
-    match dispatch::lookup_defined_for(heap, class, selector) {
-        Lookup::Method(method, defining_class) if method.access == ast::AccessModifier::Private => {
-            Lookup::Method(method, defining_class)
-        }
-        Lookup::NestedClass(mixin, declaring_class)
-            if dispatch::nested_access(&mixin) == ast::AccessModifier::Private =>
-        {
-            Lookup::NestedClass(mixin, declaring_class)
-        }
-        _ => dispatch::lookup_protected(heap, class, selector),
-    }
-}
-
-/// `newspeak-spec.pdf` §5.7-§5.9: `enclosing` = the kth enclosing object of
-/// this activation's defining level (`dispatch::kth_enclosing_object`);
-/// dispatch privately (direct, non-virtual) if the target is `private` at depth
-/// `k`, otherwise virtually via `lookup_protected` on `enclosing`'s actual
-/// class -- or, when `enclosing` is a class object, on its metaclass first
-/// (§6.3).
+/// `newspeak-spec.pdf` §5.7-§5.9: an implicit receiver send whose declaring
+/// class N is at lexical depth `k` is `outer N m`. `enclosing` is the kth
+/// enclosing object of this activation's defining level
+/// (`dispatch::kth_enclosing_object`). §5.9: "If N declares a private method
+/// f named s then the value of the send is the result of invoking f ... on
+/// o" -- asked of N's own mixin alone (`dispatch::private_member`), since a
+/// private member is never overridden and there is nothing to search.
+/// "Otherwise, Let f = lookupProtected(s, R) where R is the class of o" --
+/// virtual, on `enclosing`'s actual class, and, when `enclosing` is a class
+/// object, on its metaclass first (§6.3).
 pub(crate) fn decide_lexical_send<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -122,11 +91,16 @@ pub(crate) fn decide_lexical_send<'gc>(
     // declaration stops the search: a metaclass chain carries no builtin
     // tag, so `Lookup::Native` can only come from the class-object chain
     // below and means the same thing either way.
-    let lookup = metaclass
-        .as_ref()
-        .map(|metaclass| lexical_lookup(&mutator.heap, *metaclass, selector))
-        .filter(|found| matches!(found, Lookup::Method(..) | Lookup::NestedClass(..)))
-        .unwrap_or_else(|| lexical_lookup(&mutator.heap, class, selector));
+    let private = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth)
+        .map(|lexical_class| dispatch::private_member(&mutator.heap, lexical_class, selector))
+        .filter(|found| !matches!(found, Lookup::NotFound));
+    let lookup = private.unwrap_or_else(|| {
+        metaclass
+            .as_ref()
+            .map(|metaclass| dispatch::lookup_protected(&mutator.heap, *metaclass, selector))
+            .filter(|found| matches!(found, Lookup::Method(..) | Lookup::NestedClass(..)))
+            .unwrap_or_else(|| dispatch::lookup_protected(&mutator.heap, class, selector))
+    });
     match lookup {
         Lookup::Method(method, defining_class) => Ok(Step::Method {
             receiver: enclosing,
