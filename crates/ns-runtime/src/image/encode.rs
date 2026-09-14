@@ -52,7 +52,7 @@ impl Writer {
         self.buffer.push(value);
     }
 
-    pub fn write_bool(&mut self, value: bool) {
+    pub fn write_boolean(&mut self, value: bool) {
         self.write_u8(u8::from(value));
     }
 
@@ -227,7 +227,7 @@ pub fn encode_root_class(
     }
     let superclass = heap.class_superclass(root_class);
     match superclass {
-        None => writer.write_bool(false),
+        None => writer.write_boolean(false),
         Some(superclass) => {
             let builtin = heap.class_builtin(superclass);
             let Some(kind) = builtin else {
@@ -238,7 +238,7 @@ pub fn encode_root_class(
                         .to_string(),
                 );
             };
-            writer.write_bool(true);
+            writer.write_boolean(true);
             writer.write_u8(builtin_class_tag(kind));
         }
     }
@@ -347,8 +347,8 @@ fn encode_code(
     ));
     for (statement, range) in &code.statement_program_counter {
         writer.write_u32(u32_field("statement index", *statement));
-        writer.write_u32(u32_field("statement pc", range.start));
-        writer.write_u32(u32_field("statement pc", range.end));
+        writer.write_u32(u32_field("statement program counter", range.start));
+        writer.write_u32(u32_field("statement program counter", range.end));
     }
     writer.write_u32(u32_field("call site count", code.call_sites.len()));
     for site in &code.call_sites {
@@ -546,8 +546,8 @@ fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols:
     match literal {
         Literal::Nil => writer.write_u8(LITERAL_NIL),
         Literal::Boolean(boolean) => {
-            writer.write_u8(LITERAL_BOOL);
-            writer.write_bool(*boolean);
+            writer.write_u8(LITERAL_BOOLEAN);
+            writer.write_boolean(*boolean);
         }
         Literal::SmallInteger(integer) => {
             writer.write_u8(LITERAL_SMALL_INTEGER);
@@ -849,10 +849,10 @@ fn encode_optional_class(
 ) {
     match class {
         Some(present_class) => {
-            writer.write_bool(true);
+            writer.write_boolean(true);
             encode_class_tag(writer, *present_class, context);
         }
-        None => writer.write_bool(false),
+        None => writer.write_boolean(false),
     }
 }
 
@@ -897,10 +897,10 @@ fn encode_frame_reference(
 ) {
     match frame {
         Some(present_frame) => {
-            writer.write_bool(true);
+            writer.write_boolean(true);
             writer.write_u32(table.frame_id(heap, *present_frame));
         }
-        None => writer.write_bool(false),
+        None => writer.write_boolean(false),
     }
 }
 
@@ -968,10 +968,10 @@ fn encode_class_record(
     // written the way every other object reference is -- one `Value`.
     match &data.enclosing {
         Some(enclosing) => {
-            writer.write_bool(true);
+            writer.write_boolean(true);
             encode_value(writer, &Value::Object(*enclosing), context);
         }
-        None => writer.write_bool(false),
+        None => writer.write_boolean(false),
     }
     encode_optional_class(writer, data.declaring_class.as_ref(), context);
     Ok(())
@@ -1025,7 +1025,7 @@ fn encode_frame(
     encode_value(writer, &snapshot.receiver, context);
     encode_values(writer, &snapshot.arguments, context);
     encode_values(writer, &snapshot.temporaries, context);
-    writer.write_u32(u32_field("frame pc", snapshot.program_counter));
+    writer.write_u32(u32_field("frame program counter", snapshot.program_counter));
     // An image's code table holds only compiled bodies, so a frame's
     // `program_counter` is always an instruction index and the record does not
     // say so.
@@ -1060,7 +1060,7 @@ fn encode_frame(
             encode_class_tag(writer, *class, context);
         }
     }
-    writer.write_bool(snapshot.uncontinuable);
+    writer.write_boolean(snapshot.uncontinuable);
 }
 
 /// The object table, the frame table, and the roots. Both counts come

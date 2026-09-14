@@ -33,9 +33,9 @@ fn build_methods(
 ) -> HashMap<Symbol, Rc<MixinMethod>> {
     body.methods
         .iter()
-        .map(|mutator| {
+        .map(|declaration| {
             let method =
-                MixinMethod::from_declaration(Rc::new(mutator.clone()), bindings, lowering);
+                MixinMethod::from_declaration(Rc::new(declaration.clone()), bindings, lowering);
             (method.selector, Rc::new(method))
         })
         .collect()
@@ -243,7 +243,7 @@ impl Mutator {
     /// factory selector: the class's mixin `factory` pattern if the class
     /// declared one (every user-defined class does -- `build_mixin` above
     /// always fills this in, defaulting to a bare `new` pattern when the
-    /// source class decl left it out), or a bare `new` selector for a
+    /// source class declaration left it out), or a bare `new` selector for a
     /// builtin (`factory` is always `None` there, per
     /// `build_builtin_classes`). Returns `None` for anything else --
     /// including a `new`-selector send to a *non*-class object, or a

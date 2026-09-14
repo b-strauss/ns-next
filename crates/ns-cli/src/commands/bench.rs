@@ -58,7 +58,7 @@ fn timed_send(
 /// `BenchmarkStatistics`. Bootstrapping, loading and compiling all happen
 /// before the loop -- once-per-process costs, excluded from the per-send timing
 /// for the same reason instantiation is.
-fn bench_entry(
+fn benchmark_entry(
     loaded: &LoadedSource,
     send: &str,
     iterations: u32,
@@ -118,7 +118,7 @@ fn bench_entry(
 }
 
 /// `ns-next bench`: see the `Bench` variant's doc comment for what is
-/// timed and why, and `bench_entry`/`timed_send` for how.
+/// timed and why, and `benchmark_entry`/`timed_send` for how.
 pub(crate) fn execute(file: &Path, send: &str, iterations: u32) -> ExitCode {
     if cfg!(debug_assertions) {
         eprintln!(
@@ -139,7 +139,7 @@ pub(crate) fn execute(file: &Path, send: &str, iterations: u32) -> ExitCode {
          bootstrapping, and compiling all happened once beforehand and are excluded. \
          {iterations} timed run(s), after one discarded warm-up run."
     );
-    match bench_entry(&loaded, send, iterations) {
+    match benchmark_entry(&loaded, send, iterations) {
         Ok(statistics) => println!(
             "median {:?} (min {:?}, max {:?}, n={})",
             statistics.median, statistics.min, statistics.max, statistics.iterations

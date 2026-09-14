@@ -1,7 +1,7 @@
 //! Recursive-descent + Pratt parser for Newspeak3.
 
-mod decl;
-mod expr;
+mod declaration;
+mod expression;
 
 use crate::ast::*;
 use crate::diagnostic::Diagnostic;
@@ -208,7 +208,7 @@ impl<'a> Parser<'a> {
     ///
     /// Milestone 1 has no AST type node, so — consistent with the
     /// `<T>`-as-`Literal::Pattern` stance in expression position
-    /// (`parser::expr::parse_pattern_literal`) — the annotation is parsed and
+    /// (`parser::expression::parse_pattern_literal`) — the annotation is parsed and
     /// dropped here. Balanced `<`/`[` pairs are consumed until the matching
     /// `>`; a `<` immediately followed by `:` is the `<:` bound operator, not a
     /// nesting open. The scan never runs past a declaration boundary
@@ -249,7 +249,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 // Safety net: a declaration boundary means the `<` never opened
-                // an annotation — bail rather than eat the decl. `.` is a legal
+                // an annotation — bail rather than eat the declaration. `.` is a legal
                 // tuple-type separator (`<{String. Namespace}>`) and `(` `)`
                 // wrap arrow-type groups (`<[:(E | X) :E | X def]>`), so those
                 // are not boundaries; a malformed `<...>` instead runs to

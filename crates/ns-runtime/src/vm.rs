@@ -75,7 +75,7 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
                 program_counter += 1;
                 debug_assert!(
                     program_counter < code.instructions.len(),
-                    "internal: pc ran past the end of a CompiledCode with no terminating return"
+                    "internal: program counter ran past the end of a CompiledCode with no terminating return"
                 );
             }
             Flow::Jump(target) => {

@@ -37,7 +37,7 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 fn integer_of(value: &Value) -> i64 {
     match value {
         Value::SmallInteger(integer) => *integer,
-        _ => panic!("expected a SmallInt"),
+        _ => panic!("expected a SmallInteger"),
     }
 }
 
@@ -223,7 +223,7 @@ fn field_at(heap: &ns_runtime::Heap, instance: &Value, index: usize) -> i64 {
     };
     match heap.instance_field(*object, index) {
         Some(Value::SmallInteger(integer)) => integer,
-        Some(_) => panic!("expected field {index} to hold a SmallInt"),
+        Some(_) => panic!("expected field {index} to hold a SmallInteger"),
         None => panic!("expected an Instance payload"),
     }
 }

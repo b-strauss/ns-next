@@ -95,7 +95,7 @@ fn block_step(mutator: &Mutator, argument: Value, then: Continuation) -> Step {
 }
 
 /// `and:`/`or:`'s rule, which the compiler's inlined form reproduces in
-/// bytecode (`compiler/lower.rs`, `emit_coerce_to_bool`): only exactly `true`
+/// bytecode (`compiler/lower.rs`, `emit_coerce_to_boolean`): only exactly `true`
 /// is true, and a non-Boolean is `false`.
 pub(crate) fn truthy(value: Value) -> bool {
     matches!(value, Value::Boolean(true))

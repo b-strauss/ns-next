@@ -2,7 +2,7 @@
 
 use super::Parser;
 use crate::ast::*;
-use crate::token::TokenKind as T;
+use crate::token::TokenKind;
 
 impl<'a> Parser<'a> {
     /// Optional `| temporaries |` then `Dot`-separated statements, where the
@@ -14,21 +14,23 @@ impl<'a> Parser<'a> {
         let mut statements = Vec::new();
         loop {
             match self.peek() {
-                T::RightBracket | T::RightParenthesis | T::EndOfInput => break,
-                T::Caret => {
+                TokenKind::RightBracket | TokenKind::RightParenthesis | TokenKind::EndOfInput => {
+                    break
+                }
+                TokenKind::Caret => {
                     self.bump(); // `^`
                     let expression = self.parse_expression();
                     statements.push(Statement::Return(expression));
-                    self.eat(T::Dot); // optional trailing dot
+                    self.eat(TokenKind::Dot); // optional trailing dot
                     break; // nothing after a return
                 }
-                T::Dot => {
+                TokenKind::Dot => {
                     self.bump(); // stray dot
                 }
                 _ => {
                     let expression = self.parse_expression();
                     statements.push(Statement::Expression(expression));
-                    if !self.eat(T::Dot) {
+                    if !self.eat(TokenKind::Dot) {
                         break;
                     }
                 }
@@ -57,11 +59,11 @@ impl<'a> Parser<'a> {
         // short-circuit it before the `parse_slot_declarations` handoff, which
         // would otherwise consume `||` and then scan the rest of the body
         // hunting a closing `||` that never comes.
-        if self.at(T::DoubleBar) {
+        if self.at(TokenKind::DoubleBar) {
             self.bump();
             return Vec::new();
         }
-        if !self.at(T::Bar) {
+        if !self.at(TokenKind::Bar) {
             return Vec::new();
         }
         self.parse_slot_declarations()
@@ -72,15 +74,15 @@ impl<'a> Parser<'a> {
 
     pub(crate) fn parse_access_modifier(&mut self) -> Option<AccessModifier> {
         match self.peek() {
-            T::Public => {
+            TokenKind::Public => {
                 self.bump();
                 Some(AccessModifier::Public)
             }
-            T::Protected => {
+            TokenKind::Protected => {
                 self.bump();
                 Some(AccessModifier::Protected)
             }
-            T::Private => {
+            TokenKind::Private => {
                 self.bump();
                 Some(AccessModifier::Private)
             }
@@ -98,8 +100,12 @@ impl<'a> Parser<'a> {
     fn at_binary_selector_pattern(&self) -> bool {
         matches!(
             self.peek(),
-            T::BinarySelector | T::Equals | T::LessThan | T::GreaterThan | T::Bar
-        ) && self.peek2() == T::Identifier
+            TokenKind::BinarySelector
+                | TokenKind::Equals
+                | TokenKind::LessThan
+                | TokenKind::GreaterThan
+                | TokenKind::Bar
+        ) && self.peek2() == TokenKind::Identifier
     }
 
     pub(crate) fn parse_message_pattern(&mut self) -> MessagePattern {
@@ -116,9 +122,9 @@ impl<'a> Parser<'a> {
             }
         } else {
             match self.peek() {
-                T::Keyword | T::SetterKeyword => {
+                TokenKind::Keyword | TokenKind::SetterKeyword => {
                     let mut parts = Vec::new();
-                    while self.at(T::Keyword) || self.at(T::SetterKeyword) {
+                    while self.at(TokenKind::Keyword) || self.at(TokenKind::SetterKeyword) {
                         let keyword = self.bump();
                         let key = Identifier {
                             name: self.text(keyword).trim_end_matches(':').to_string(),
@@ -151,7 +157,7 @@ impl<'a> Parser<'a> {
     /// = (...)`). Milestone 1 drops it. A bare `^` with no following `<` is left
     /// in place (it is then a syntax error the caller reports).
     fn skip_return_type_annotation(&mut self) {
-        if self.at(T::Caret) && self.peek2() == T::LessThan {
+        if self.at(TokenKind::Caret) && self.peek2() == TokenKind::LessThan {
             self.bump(); // `^`
             self.skip_type_annotation();
         }
@@ -161,11 +167,11 @@ impl<'a> Parser<'a> {
         let start = self.current().span;
         let access = self.parse_access_modifier();
         let pattern = self.parse_message_pattern();
-        self.expect(T::Equals);
-        self.expect(T::LeftParenthesis);
+        self.expect(TokenKind::Equals);
+        self.expect(TokenKind::LeftParenthesis);
         let body = self.parse_code_body();
         let end = self.current().span;
-        self.expect(T::RightParenthesis);
+        self.expect(TokenKind::RightParenthesis);
         MethodDeclaration {
             access,
             pattern,
@@ -175,18 +181,22 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_slot_declarations(&mut self) -> Vec<SlotDeclaration> {
-        let simultaneous = self.at(T::DoubleBar);
-        let close = if simultaneous { T::DoubleBar } else { T::Bar };
+        let simultaneous = self.at(TokenKind::DoubleBar);
+        let close = if simultaneous {
+            TokenKind::DoubleBar
+        } else {
+            TokenKind::Bar
+        };
         if !self.eat(close) {
             return Vec::new();
         }
         let mut slots = Vec::new();
-        while !self.at(close) && !self.at(T::EndOfInput) {
+        while !self.at(close) && !self.at(TokenKind::EndOfInput) {
             let start = self.current().span;
             let access = self.parse_access_modifier();
             // A slot / temporary may be named `class` (`| class |` locals in
-            // the mirror libraries); `class` lexes as `T::Class`.
-            if !self.at(T::Identifier) && !self.at(T::Class) {
+            // the mirror libraries); `class` lexes as `TokenKind::Class`.
+            if !self.at(TokenKind::Identifier) && !self.at(TokenKind::Class) {
                 // recovery: skip to next '.' or close
                 let token = self.bump();
                 self.push_error(token.span, "expected a slot name");
@@ -197,11 +207,11 @@ impl<'a> Parser<'a> {
             // `slotName <Type>` — the annotation is dropped in Milestone 1.
             self.skip_type_annotation();
             let (mutability, initializer) = match self.peek() {
-                T::Equals => {
+                TokenKind::Equals => {
                     self.bump();
                     (SlotMutability::Immutable, Some(self.parse_expression()))
                 }
-                T::ColonColonEquals => {
+                TokenKind::ColonColonEquals => {
                     self.bump();
                     (
                         SlotMutability::MutableInitialized,
@@ -211,7 +221,7 @@ impl<'a> Parser<'a> {
                 _ => (SlotMutability::MutableBare, None),
             };
             let end = self.current().span;
-            self.eat(T::Dot);
+            self.eat(TokenKind::Dot);
             slots.push(SlotDeclaration {
                 access,
                 name,
@@ -224,11 +234,11 @@ impl<'a> Parser<'a> {
         slots
     }
 
-    fn recover_to_dot(&mut self, close: T) {
-        while !self.at(T::Dot) && !self.at(close) && !self.at(T::EndOfInput) {
+    fn recover_to_dot(&mut self, close: TokenKind) {
+        while !self.at(TokenKind::Dot) && !self.at(close) && !self.at(TokenKind::EndOfInput) {
             self.bump();
         }
-        self.eat(T::Dot);
+        self.eat(TokenKind::Dot);
     }
 
     fn identifier_from_bump(&mut self) -> Identifier {
@@ -248,7 +258,7 @@ impl<'a> Parser<'a> {
     /// reported but parsing continues (recovery).
     pub(crate) fn parse_module(&mut self) -> Module {
         let start = self.current().span;
-        let language_id = if self.at(T::Identifier) {
+        let language_id = if self.at(TokenKind::Identifier) {
             let token = self.bump();
             self.text(token).to_string()
         } else {
@@ -262,7 +272,7 @@ impl<'a> Parser<'a> {
         // grammar makes the category string optional; we require it and emit a
         // diagnostic when it is absent. Every corpus module carries one;
         // revisit in Milestone 2.
-        let category = if self.at(T::String) {
+        let category = if self.at(TokenKind::String) {
             let token = self.bump();
             string_lexeme_body(self.text(token))
         } else {
@@ -271,7 +281,7 @@ impl<'a> Parser<'a> {
         };
         let root_class = self.parse_class_declaration();
         let end = self.current().span;
-        if !self.at(T::EndOfInput) {
+        if !self.at(TokenKind::EndOfInput) {
             self.push_error(
                 self.current().span,
                 "unexpected tokens after the top-level class",
@@ -310,44 +320,44 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_class_declaration(&mut self) -> ClassDeclaration {
         let start = self.current().span;
         let access = self.parse_access_modifier();
-        self.expect(T::Class);
+        self.expect(TokenKind::Class);
         let name = self.identifier();
         // `class List[E] ...` — generic type-parameter declaration
         // (`NewspeakGrammar.ns:465`); dropped in Milestone 1.
         self.skip_type_arguments();
-        let factory = if self.at(T::Equals) {
+        let factory = if self.at(TokenKind::Equals) {
             None
         } else {
             Some(self.parse_message_pattern())
         };
-        self.expect(T::Equals);
+        self.expect(TokenKind::Equals);
         // DEVIATION (grammar lines 49, 195, 214-221): mixin application
         // `class C = Super <: Mixin (...) (...)` (the `inverseMixinOperator`
         // `<:`, `mixinApplication` / `mixinAppSuffix`) is unimplemented for
         // Milestone 1 — no corpus file uses `<:` in a superclass clause.
         // `parse_superclass_clause` parses the receiver and its trailing
         // message sends only; a following `<:` is left for the caller to flag.
-        let superclass = if self.at(T::LeftParenthesis) {
+        let superclass = if self.at(TokenKind::LeftParenthesis) {
             None
         } else {
             Some(self.parse_superclass_clause())
         };
 
         // --- G1: classHeader body `( classComment? slotDecls? initExprs )` ---
-        self.expect(T::LeftParenthesis);
+        self.expect(TokenKind::LeftParenthesis);
         let class_comment = self.take_class_comment();
         let (header_slots, initializer_expressions, g1_span) = self.parse_header_body();
         let g1_end = self.current().span;
-        self.expect(T::RightParenthesis);
+        self.expect(TokenKind::RightParenthesis);
 
         // --- G2: sideDecl body `( ( classDecl | lazySlotDecl | methodDecl )* )` ---
         // Corpus always has G2; being lenient when it is absent keeps a
         // degenerate `class C = ()` parseable.
-        let (lazy_slots, methods, nested_classes, g2_end) = if self.at(T::LeftParenthesis) {
+        let (lazy_slots, methods, nested_classes, g2_end) = if self.at(TokenKind::LeftParenthesis) {
             self.bump(); // `(`
             let (lazy, methods, nested) = self.parse_side_body();
             let end = self.current().span;
-            self.expect(T::RightParenthesis);
+            self.expect(TokenKind::RightParenthesis);
             (lazy, methods, nested, end)
         } else {
             (Vec::new(), Vec::new(), Vec::new(), g1_end)
@@ -364,12 +374,12 @@ impl<'a> Parser<'a> {
         };
 
         // --- G3: classSideDecl body `: ( methodDecl* )` ---
-        let class_side = if self.eat(T::Colon) {
-            self.expect(T::LeftParenthesis);
+        let class_side = if self.eat(TokenKind::Colon) {
+            self.expect(TokenKind::LeftParenthesis);
             // A class-side comment is allowed but not retained.
             let _ = self.take_class_comment();
             let body = self.parse_class_side_body();
-            self.expect(T::RightParenthesis);
+            self.expect(TokenKind::RightParenthesis);
             Some(body)
         } else {
             None
@@ -414,7 +424,7 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_superclass_clause(&mut self) -> SuperclassClause {
         let start = self.current().span;
         let prefix = match self.peek() {
-            T::Identifier => match self.text(self.current()) {
+            TokenKind::Identifier => match self.text(self.current()) {
                 "self" => {
                     self.bump();
                     Some(SuperclassPrefix::SelfPrefix)
@@ -451,9 +461,9 @@ impl<'a> Parser<'a> {
     /// unary*, then binary*, then an optional keyword send — the grammar's
     /// `message`, seeded by an already-parsed receiver.
     fn parse_trailing_sends(&mut self, out: &mut Vec<MessageSend>) {
-        while (self.at(T::Identifier) || self.at(T::Class))
+        while (self.at(TokenKind::Identifier) || self.at(TokenKind::Class))
             && !self.is_reserved_identifier(self.current())
-            && self.peek2() != T::Assign
+            && self.peek2() != TokenKind::Assign
         {
             let selector_token = self.bump();
             out.push(MessageSend {
@@ -462,26 +472,28 @@ impl<'a> Parser<'a> {
                 span: selector_token.span,
             });
         }
-        while self.at(T::BinarySelector) {
+        while self.at(TokenKind::BinarySelector) {
             let operator = self.bump();
             let argument = self.parse_unary_message();
             out.push(MessageSend {
                 selector: Selector::Binary(self.text(operator).to_string()),
-                span: operator.span.merge(super::expr::expression_span(&argument)),
+                span: operator
+                    .span
+                    .merge(super::expression::expression_span(&argument)),
                 arguments: vec![argument],
             });
         }
-        if self.at(T::Keyword) {
+        if self.at(TokenKind::Keyword) {
             let mut selector = String::new();
             let mut arguments = Vec::new();
             let start = self.current().span;
             let mut end = start;
-            while self.at(T::Keyword) {
+            while self.at(TokenKind::Keyword) {
                 let keyword = self.bump();
                 selector.push_str(self.text(keyword).trim_end_matches(':'));
                 selector.push(':');
                 let argument = self.parse_binary_message();
-                end = super::expr::expression_span(&argument);
+                end = super::expression::expression_span(&argument);
                 arguments.push(argument);
             }
             out.push(MessageSend {
@@ -501,7 +513,7 @@ impl<'a> Parser<'a> {
     /// accepted here — they belong to G2.
     fn parse_header_body(&mut self) -> (Vec<SlotDeclaration>, Vec<Statement>, crate::span::Span) {
         let start = self.current().span;
-        let slots = if self.at(T::Bar) || self.at(T::DoubleBar) {
+        let slots = if self.at(TokenKind::Bar) || self.at(TokenKind::DoubleBar) {
             self.parse_slot_declarations()
         } else {
             Vec::new()
@@ -509,14 +521,14 @@ impl<'a> Parser<'a> {
         let mut initializer_expressions = Vec::new();
         loop {
             match self.peek() {
-                T::RightParenthesis | T::EndOfInput => break,
-                T::Dot => {
+                TokenKind::RightParenthesis | TokenKind::EndOfInput => break,
+                TokenKind::Dot => {
                     self.bump();
                 }
                 _ => {
                     let before = self.position;
                     let expression = self.parse_expression();
-                    self.eat(T::Dot);
+                    self.eat(TokenKind::Dot);
                     if self.position == before {
                         // `parse_expression` can return a recovery node without
                         // consuming a token (a stray `^ ; + = ]` etc). Force
@@ -550,17 +562,17 @@ impl<'a> Parser<'a> {
         let mut nested_classes = Vec::new();
         loop {
             match self.peek() {
-                T::RightParenthesis | T::EndOfInput => break,
+                TokenKind::RightParenthesis | TokenKind::EndOfInput => break,
                 _ => {}
             }
             let before = self.position;
             match self.peek() {
-                T::Dot => {
+                TokenKind::Dot => {
                     self.bump();
                 }
                 // A `| parameter ... = (...)` binary-operator method named `|`
                 // is valid here; only a genuine `|...|` slot section is not.
-                T::Bar | T::DoubleBar if !self.looks_like_method() => {
+                TokenKind::Bar | TokenKind::DoubleBar if !self.looks_like_method() => {
                     let token = self.bump();
                     self.push_error(
                         token.span,
@@ -616,12 +628,12 @@ impl<'a> Parser<'a> {
         let mut methods = Vec::new();
         loop {
             match self.peek() {
-                T::RightParenthesis | T::EndOfInput => break,
+                TokenKind::RightParenthesis | TokenKind::EndOfInput => break,
                 _ => {}
             }
             let before = self.position;
             match self.peek() {
-                T::Dot => {
+                TokenKind::Dot => {
                     self.bump();
                 }
                 _ if self.looks_like_method() => {
@@ -652,32 +664,42 @@ impl<'a> Parser<'a> {
     /// (a method literally named `class`, common in the mirror libraries) has
     /// `=` there, not an identifier, so it is NOT a nested class.
     fn at_nested_class(&self) -> bool {
-        if self.peek() == T::Class {
-            return self.peek2() == T::Identifier;
+        if self.peek() == TokenKind::Class {
+            return self.peek2() == TokenKind::Identifier;
         }
-        if matches!(self.peek(), T::Public | T::Protected | T::Private) && self.peek2() == T::Class
+        if matches!(
+            self.peek(),
+            TokenKind::Public | TokenKind::Protected | TokenKind::Private
+        ) && self.peek2() == TokenKind::Class
         {
             return self.tokens.get(self.position + 2).map(|token| token.kind)
-                == Some(T::Identifier);
+                == Some(TokenKind::Identifier);
         }
         false
     }
 
-    /// `lazy` lexes as an `Identifier` with text `"lazy"`. A lazy slot decl is
+    /// `lazy` lexes as an `Identifier` with text `"lazy"`. A lazy slot declaration is
     /// either `lazy accessModifier? slotName ...` (lazy-first) or
     /// `accessModifier lazy slotName ...` (modifier-first) —
     /// `NewspeakGrammar.ns:183-186`.
     fn at_lazy_slot(&self) -> bool {
-        if self.at(T::Identifier) && self.text(self.current()) == "lazy" {
+        if self.at(TokenKind::Identifier) && self.text(self.current()) == "lazy" {
             // Distinguish from a method literally named `lazy` (`lazy = (...)`).
             return matches!(
                 self.peek2(),
-                T::Public | T::Protected | T::Private | T::Identifier
+                TokenKind::Public
+                    | TokenKind::Protected
+                    | TokenKind::Private
+                    | TokenKind::Identifier
             );
         }
-        if matches!(self.peek(), T::Public | T::Protected | T::Private) {
+        if matches!(
+            self.peek(),
+            TokenKind::Public | TokenKind::Protected | TokenKind::Private
+        ) {
             if let Some(next_token) = self.tokens.get(self.position + 1) {
-                return next_token.kind == T::Identifier && self.text(*next_token) == "lazy";
+                return next_token.kind == TokenKind::Identifier
+                    && self.text(*next_token) == "lazy";
             }
         }
         false
@@ -689,27 +711,27 @@ impl<'a> Parser<'a> {
     /// orderings are accepted.
     fn parse_lazy_slot_declaration(&mut self) -> SlotDeclaration {
         let start = self.current().span;
-        let access = if self.at(T::Identifier) && self.text(self.current()) == "lazy" {
+        let access = if self.at(TokenKind::Identifier) && self.text(self.current()) == "lazy" {
             self.bump(); // `lazy`
             self.parse_access_modifier()
         } else {
             let modifier = self.parse_access_modifier();
-            if self.at(T::Identifier) && self.text(self.current()) == "lazy" {
+            if self.at(TokenKind::Identifier) && self.text(self.current()) == "lazy" {
                 self.bump(); // `lazy`
             }
             modifier
         };
         let name = self.identifier();
         self.skip_type_annotation();
-        let mutability = if self.eat(T::ColonColonEquals) {
+        let mutability = if self.eat(TokenKind::ColonColonEquals) {
             SlotMutability::MutableInitialized
         } else {
-            self.expect(T::Equals);
+            self.expect(TokenKind::Equals);
             SlotMutability::Immutable
         };
         let initializer = Some(self.parse_expression());
         let end = self.current().span;
-        self.eat(T::Dot);
+        self.eat(TokenKind::Dot);
         SlotDeclaration {
             access,
             name,
@@ -725,9 +747,9 @@ impl<'a> Parser<'a> {
         let checkpoint = self.checkpoint();
         self.parse_access_modifier();
         let _ = self.try_parse_message_pattern();
-        let is_method = self.at(T::Equals)
+        let is_method = self.at(TokenKind::Equals)
             && self.tokens.get(self.position + 1).map(|token| token.kind)
-                == Some(T::LeftParenthesis);
+                == Some(TokenKind::LeftParenthesis);
         self.restore(checkpoint);
         is_method
     }
@@ -743,10 +765,10 @@ impl<'a> Parser<'a> {
             Some(())
         } else {
             match self.peek() {
-                T::Keyword | T::SetterKeyword => {
-                    while self.at(T::Keyword) || self.at(T::SetterKeyword) {
+                TokenKind::Keyword | TokenKind::SetterKeyword => {
+                    while self.at(TokenKind::Keyword) || self.at(TokenKind::SetterKeyword) {
                         self.bump();
-                        if self.at(T::Identifier) {
+                        if self.at(TokenKind::Identifier) {
                             self.bump();
                         } else {
                             return None;
@@ -755,7 +777,7 @@ impl<'a> Parser<'a> {
                     }
                     Some(())
                 }
-                T::Identifier | T::Class => {
+                TokenKind::Identifier | TokenKind::Class => {
                     self.bump();
                     self.skip_type_arguments();
                     self.skip_type_annotation();
@@ -1416,7 +1438,7 @@ mod method_tests {
 
     #[test]
     fn initialized_local_slot_temporaries() {
-        // The `| x = expression. |` full slot-decl form: initializer is parsed
+        // The `| x = expression. |` full slot-declaration form: initializer is parsed
         // (body stays in sync) but only the name is retained in Milestone 1.
         let method = method("foo = ( | x = 5. y ::= bar baz. | ^ x )");
         assert_eq!(

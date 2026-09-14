@@ -1339,7 +1339,7 @@ impl Heap {
     // follow the marriage instead.
     //
     // Only the accessors a caller actually needs are added here;
-    // `frame_arg_count` and `frame_program_counter` have no caller yet, so they
+    // `frame_argument_count` and `frame_program_counter` have no caller yet, so they
     // are not here. Three have only test callers: `set_frame_program_counter`,
     // `frame_sender` and `frame_is_uncontinuable` read or write fields the
     // image format records per frame, and the image and interpreter tests build
@@ -1393,7 +1393,7 @@ impl Heap {
         self.check_frame_origin(frame);
         debug_assert!(
             self.frames[frame.index as usize].live.is_none(),
-            "a married frame's pc and registers live on the activation stack; \
+            "a married frame's program counter and registers live on the activation stack; \
              read or write them only once its activation has returned"
         );
         self.frames[frame.index as usize].frame.program_counter = program_counter;
@@ -1456,7 +1456,7 @@ impl Heap {
         self.check_frame_origin(frame);
         debug_assert!(
             self.frames[frame.index as usize].live.is_none(),
-            "a married frame's pc and registers live on the activation stack; \
+            "a married frame's program counter and registers live on the activation stack; \
              read or write them only once its activation has returned"
         );
         let stored_frame = &self.frames[frame.index as usize].frame;
@@ -1480,7 +1480,7 @@ impl Heap {
         self.check_frame_origin(frame);
         debug_assert!(
             self.frames[frame.index as usize].live.is_none(),
-            "a married frame's pc and registers live on the activation stack; \
+            "a married frame's program counter and registers live on the activation stack; \
              read or write them only once its activation has returned"
         );
         self.frames[frame.index as usize].frame.clone()

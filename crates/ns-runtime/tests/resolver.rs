@@ -114,7 +114,7 @@ fn bare_builtin_class_name_resolves_with_no_binding_at_its_span() {
         panic!("expected the assignment's value to be a `Send` (`OrderedCollection new`)");
     };
     let ns_syntax::ast::Expression::Identifier(receiver_id) = &send.receiver else {
-        panic!("expected the send's receiver to be a bare `Ident` (`OrderedCollection`)");
+        panic!("expected the send's receiver to be a bare `Identifier` (`OrderedCollection`)");
     };
     assert_eq!(receiver_id.name, "OrderedCollection");
     assert!(

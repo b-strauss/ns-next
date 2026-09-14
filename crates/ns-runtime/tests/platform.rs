@@ -27,7 +27,7 @@ fn platform_is_memoized_across_calls() {
             (Value::Object(first_object), Value::Object(second_object)) => {
                 assert!(first_object.same(second_object))
             }
-            _ => panic!("expected Value::Obj"),
+            _ => panic!("expected Value::Object"),
         },
     );
 }
@@ -57,7 +57,7 @@ fn platform_transcript_show_and_new_line_round_trip() {
             (Value::Object(after_show_object), Value::Object(transcript_object)) => {
                 assert!(after_show_object.same(transcript_object))
             }
-            _ => panic!("expected Value::Obj"),
+            _ => panic!("expected Value::Object"),
         },
     );
 
@@ -81,7 +81,7 @@ fn platform_class_accessors_return_the_matching_builtin_class() {
         match mutator.fetch(&got) {
             Value::Object(object) => assert!(object.same(expected)),
             other => panic!(
-                "expected Value::Obj, got {}",
+                "expected Value::Object, got {}",
                 mutator.heap().describe(&other)
             ),
         }

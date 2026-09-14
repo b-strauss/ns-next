@@ -44,7 +44,7 @@ pub const OPCODE_SEND_INLINABLE: u8 = 20;
 // Literals, carried by `OPCODE_LOAD_LITERAL` and nested inside `LITERAL_ARRAY`.
 // Next free number: 10.
 pub const LITERAL_NIL: u8 = 0;
-pub const LITERAL_BOOL: u8 = 1;
+pub const LITERAL_BOOLEAN: u8 = 1;
 pub const LITERAL_SMALL_INTEGER: u8 = 2;
 pub const LITERAL_FLOAT: u8 = 3;
 pub const LITERAL_STRING: u8 = 4;

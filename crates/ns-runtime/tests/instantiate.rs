@@ -68,7 +68,7 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
         Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root) {
             Value::SmallInteger(42) => {}
             other => panic!(
-                "expected Value::SmallInt(42), got {}",
+                "expected Value::SmallInteger(42), got {}",
                 mutator.heap().describe(&other)
             ),
         }),
@@ -172,7 +172,7 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
                  before the subclass's own slot initializer (b = a) read it"
             ),
             other => panic!(
-                "expected Value::SmallInt(10), got {}",
+                "expected Value::SmallInteger(10), got {}",
                 mutator.heap().describe(&other)
             ),
         }),
@@ -209,7 +209,7 @@ fn a_factory_parameter_is_visible_in_a_slot_initializer() {
         Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root) {
             Value::SmallInteger(99) => {}
             other => panic!(
-                "expected the slot to hold the factory argument (SmallInt(99)), got {}",
+                "expected the slot to hold the factory argument (SmallInteger(99)), got {}",
                 mutator.heap().describe(&other)
             ),
         }),
@@ -251,12 +251,12 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
             Value::Object(object) => match mutator.heap().str_value(*object) {
                 Some(string) => assert_eq!(string, "99"),
                 None => panic!(
-                    "expected ObjectData::Str(\"99\"), got {}",
+                    "expected ObjectData::String(\"99\"), got {}",
                     mutator.heap().describe(&result)
                 ),
             },
             other => panic!(
-                "expected Value::Obj(<String>), got {}",
+                "expected Value::Object(<String>), got {}",
                 mutator.heap().describe(other)
             ),
         }
@@ -295,7 +295,7 @@ fn a_factory_parameter_is_visible_in_an_initializer_expression() {
         Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root) {
             Value::SmallInteger(7) => {}
             other => panic!(
-                "expected SmallInt(7) assigned by the initExpr, got {}",
+                "expected SmallInteger(7) assigned by the initializer expression, got {}",
                 mutator.heap().describe(&other)
             ),
         }),

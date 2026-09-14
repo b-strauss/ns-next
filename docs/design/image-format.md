@@ -181,7 +181,7 @@ three hand-kept copies of one numbering is how a viewer starts quietly
 disagreeing with the loader. A sixth family is *retired*: a frame record once
 carried a byte naming the unit its `program_counter` counted in, and only instruction indices
 were ever representable, so the byte was removed. Its two numbers, 0 and 1
-(`PC_KIND_*`), stay assigned and pinned, so a unit field that ever returns cannot
+(`PROGRAM_COUNTER_KIND_*`), stay assigned and pinned, so a unit field that ever returns cannot
 give them a new meaning. One frame kind is retired the same way: `FRAME_CLOSURE`
 (1) carried a copy of the closure's record inline, from when the closure's data
 sat behind an `Rc` its object and every activation of it shared. That data now

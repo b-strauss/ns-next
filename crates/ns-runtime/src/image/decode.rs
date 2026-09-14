@@ -474,7 +474,7 @@ impl<'a> Reader<'a> {
         Ok(self.read_raw(1)?[0])
     }
 
-    pub fn read_bool(&mut self) -> Result<bool, DecodeError> {
+    pub fn read_boolean(&mut self) -> Result<bool, DecodeError> {
         match self.read_u8()? {
             0 => Ok(false),
             1 => Ok(true),
@@ -1429,7 +1429,7 @@ fn decode_literal(
     }
     Ok(match reader.read_u8()? {
         LITERAL_NIL => Literal::Nil,
-        LITERAL_BOOL => Literal::Boolean(reader.read_bool()?),
+        LITERAL_BOOLEAN => Literal::Boolean(reader.read_boolean()?),
         LITERAL_SMALL_INTEGER => Literal::SmallInteger(reader.read_i64()?),
         LITERAL_FLOAT => Literal::Float(reader.read_f64()?),
         LITERAL_STRING => Literal::String(reader.read_str()?),
@@ -1545,7 +1545,7 @@ fn decode_optional_class(
     context: &DecodeContext,
     tables: &Tables,
 ) -> Result<Option<ClassReference>, DecodeError> {
-    if reader.read_bool()? {
+    if reader.read_boolean()? {
         Ok(Some(decode_class_tag(reader, context, tables)?))
     } else {
         Ok(None)
@@ -1607,7 +1607,7 @@ fn decode_frame_reference(
     reader: &mut Reader,
     tables: &Tables,
 ) -> Result<Option<FrameReference>, DecodeError> {
-    if reader.read_bool()? {
+    if reader.read_boolean()? {
         Ok(Some(decode_frame_id(reader, tables)?))
     } else {
         Ok(None)
@@ -1712,7 +1712,7 @@ fn decode_frame(
             })
         }
     };
-    let uncontinuable = reader.read_bool()?;
+    let uncontinuable = reader.read_boolean()?;
     Ok(Frame {
         receiver,
         arguments,
@@ -1820,7 +1820,7 @@ pub fn build_root_class(
 /// two drift, and then the span `inspect` records would stop matching the
 /// real one.
 fn read_root_superclass_tag(reader: &mut Reader) -> Result<Option<BuiltinClass>, DecodeError> {
-    if reader.read_bool()? {
+    if reader.read_boolean()? {
         Ok(Some(read_builtin_class(reader)?))
     } else {
         Ok(None)
@@ -2227,7 +2227,7 @@ fn decode_class_record(
         .cloned()
         .ok_or(DecodeError::BadMixinId(id))?;
     let superclass = decode_optional_class(reader, context, tables)?;
-    let enclosing = if reader.read_bool()? {
+    let enclosing = if reader.read_boolean()? {
         match decode_value(reader, context, tables)? {
             Value::Object(object) => Some(object),
             _ => return Err(DecodeError::EnclosingNotAnObject),
@@ -2300,7 +2300,7 @@ fn frame_body(heap: &Heap, frame: FrameReference) -> Option<Rc<CompiledCode>> {
     match &heap.frame_kind(frame) {
         FrameKind::Method(method) => Some(method.code.clone()),
         FrameKind::Initializer(class) => {
-            frame_mixin(heap, *class).and_then(|mutator| mutator.initializer_code.clone())
+            frame_mixin(heap, *class).and_then(|mixin| mixin.initializer_code.clone())
         }
         // Each clause activation resolves against the field its own body
         // lives in. They share `Initializer`'s frame shape -- a class's code
@@ -2309,10 +2309,10 @@ fn frame_body(heap: &Heap, frame: FrameReference) -> Option<Rc<CompiledCode>> {
         // ran in it: a legitimate image refused, and a crafted one checked
         // against the wrong register file.
         FrameKind::SuperclassClause(class) => {
-            frame_mixin(heap, *class).and_then(|mutator| mutator.superclass_clause_code.clone())
+            frame_mixin(heap, *class).and_then(|mixin| mixin.superclass_clause_code.clone())
         }
         FrameKind::SuperclassMessage(class) => {
-            frame_mixin(heap, *class).and_then(|mutator| mutator.superclass_message_code.clone())
+            frame_mixin(heap, *class).and_then(|mixin| mixin.superclass_message_code.clone())
         }
         FrameKind::Closure(closure) => heap.closure_code(*closure),
         FrameKind::TopLevel => None,

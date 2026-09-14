@@ -76,7 +76,7 @@ fn array_at_returns_the_one_based_element() {
     interpreter.enter(|mutator| match mutator.fetch(&result) {
         Value::SmallInteger(2) => {}
         other => panic!(
-            "expected Value::SmallInt(2), got {}",
+            "expected Value::SmallInteger(2), got {}",
             mutator.heap().describe(&other)
         ),
     });
@@ -120,7 +120,7 @@ fn array_at_put_writes_and_returns_the_receiver() {
     interpreter.enter(|mutator| match mutator.fetch(&result) {
         Value::SmallInteger(99) => {}
         other => panic!(
-            "expected Value::SmallInt(99), got {}",
+            "expected Value::SmallInteger(99), got {}",
             mutator.heap().describe(&other)
         ),
     });
@@ -146,7 +146,7 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
     interpreter.enter(|mutator| match mutator.fetch(&result) {
         Value::SmallInteger(6) => {}
         other => panic!(
-            "expected Value::SmallInt(6), got {}",
+            "expected Value::SmallInteger(6), got {}",
             mutator.heap().describe(&other)
         ),
     });
@@ -175,7 +175,7 @@ fn ordered_collection_add_and_size_through_a_real_cascade() {
     interpreter.enter(|mutator| match mutator.fetch(&result) {
         Value::SmallInteger(2) => {}
         other => panic!(
-            "expected Value::SmallInt(2), got {}",
+            "expected Value::SmallInteger(2), got {}",
             mutator.heap().describe(&other)
         ),
     });
@@ -194,7 +194,7 @@ fn ordered_collection_add_returns_the_argument_not_the_receiver() {
     interpreter.enter(|mutator| match mutator.fetch(&result) {
         Value::SmallInteger(42) => {}
         other => panic!(
-            "expected Value::SmallInt(42) (the argument), got {}",
+            "expected Value::SmallInteger(42) (the argument), got {}",
             mutator.heap().describe(&other)
         ),
     });
@@ -342,7 +342,7 @@ fn block_value_invokes_a_zero_argument_closure() {
     interpreter.enter(|mutator| match mutator.fetch(&result) {
         Value::SmallInteger(42) => {}
         other => panic!(
-            "expected Value::SmallInt(42), got {}",
+            "expected Value::SmallInteger(42), got {}",
             mutator.heap().describe(&other)
         ),
     });
@@ -365,7 +365,7 @@ fn block_value_colon_passes_the_argument_positionally() {
     interpreter.enter(|mutator| match mutator.fetch(&result) {
         Value::SmallInteger(42) => {}
         other => panic!(
-            "expected Value::SmallInt(42), got {}",
+            "expected Value::SmallInteger(42), got {}",
             mutator.heap().describe(&other)
         ),
     });
@@ -388,7 +388,7 @@ fn block_argument_count_reports_the_declared_parameter_count() {
     interpreter.enter(|mutator| match mutator.fetch(&result) {
         Value::SmallInteger(2) => {}
         other => panic!(
-            "expected Value::SmallInt(2), got {}",
+            "expected Value::SmallInteger(2), got {}",
             mutator.heap().describe(&other)
         ),
     });

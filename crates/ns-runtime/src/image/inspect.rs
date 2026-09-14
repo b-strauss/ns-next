@@ -195,7 +195,7 @@ fn read_class_tag(reader: &mut decode::Reader) -> Result<String, decode::DecodeE
 }
 
 fn read_optional_class(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
-    if reader.read_bool()? {
+    if reader.read_boolean()? {
         read_class_tag(reader)
     } else {
         Ok("-".to_string())
@@ -203,7 +203,7 @@ fn read_optional_class(reader: &mut decode::Reader) -> Result<String, decode::De
 }
 
 fn read_frame_reference(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
-    Ok(if reader.read_bool()? {
+    Ok(if reader.read_boolean()? {
         format!("frame {}", reader.read_u32()?)
     } else {
         "-".to_string()
@@ -267,7 +267,7 @@ fn walk_graph(
             opcodes::OBJECT_CLASS => {
                 let mixin = reader.read_u32()?;
                 let superclass = read_optional_class(reader)?;
-                let enclosing = if reader.read_bool()? {
+                let enclosing = if reader.read_boolean()? {
                     read_value(reader)?
                 } else {
                     "-".to_string()
@@ -315,7 +315,7 @@ fn walk_graph(
                 })
             }
         };
-        let uncontinuable = reader.read_bool()?;
+        let uncontinuable = reader.read_boolean()?;
         frames.push(format!(
             "{kind}, receiver {receiver}, args [{}], temps [{}], pc {program_counter}, \
              sender {sender}, home {home}, current class {current_class}, \

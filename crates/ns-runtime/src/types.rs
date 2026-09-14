@@ -465,7 +465,7 @@ mod tests {
         let copy = original;
         match (original, copy) {
             (Value::Object(left), Value::Object(right)) => assert!(left.same(right)),
-            _ => panic!("expected Value::Obj"),
+            _ => panic!("expected Value::Object"),
         }
     }
 

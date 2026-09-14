@@ -771,9 +771,9 @@ impl<'a> Lowerer<'a> {
     /// `builtins::boolean::truthy`'s rule in bytecode: only exactly
     /// `Boolean(true)` is true; a non-`true` `Boolean` or a non-`Boolean` is
     /// false.
-    fn emit_coerce_to_bool(&mut self, source: u16) -> u16 {
+    fn emit_coerce_to_boolean(&mut self, source: u16) -> u16 {
         let destination = self.allocate_scratch();
-        let not_bool_jump = self.emit(Instruction::JumpIfNotBoolean {
+        let not_boolean_jump = self.emit(Instruction::JumpIfNotBoolean {
             register: source,
             target: 0,
         });
@@ -787,7 +787,7 @@ impl<'a> Lowerer<'a> {
         });
         let after_true_jump = self.emit(Instruction::Jump { target: 0 });
         let false_label = self.here();
-        self.patch_target(not_bool_jump, false_label);
+        self.patch_target(not_boolean_jump, false_label);
         self.patch_target(false_jump, false_label);
         self.emit(Instruction::LoadLiteral {
             destination,
@@ -833,7 +833,7 @@ impl<'a> Lowerer<'a> {
         on_fallback: impl FnOnce(&mut Self) -> u16,
     ) {
         let mark = self.next_scratch;
-        let not_bool_jump = self.emit(Instruction::JumpIfNotBoolean {
+        let not_boolean_jump = self.emit(Instruction::JumpIfNotBoolean {
             register: guard_register,
             target: 0,
         });
@@ -858,7 +858,7 @@ impl<'a> Lowerer<'a> {
         });
         let after_false_jump = self.emit(Instruction::Jump { target: 0 });
         let fallback_label = self.here();
-        self.patch_target(not_bool_jump, fallback_label);
+        self.patch_target(not_boolean_jump, fallback_label);
         self.next_scratch = mark;
         let fallback_result = on_fallback(self);
         self.emit(Instruction::Move {
@@ -915,7 +915,7 @@ impl<'a> Lowerer<'a> {
         let destination = self.allocate_scratch();
         let evaluate_and_coerce = |lowerer: &mut Self| {
             let block_register = lowerer.lower_inline_block_body(block, use_);
-            lowerer.emit_coerce_to_bool(block_register)
+            lowerer.emit_coerce_to_boolean(block_register)
         };
         let fallback = |lowerer: &mut Self| {
             lowerer.emit_ordinary_send_with_receiver(guard_register, &send.message)
@@ -954,7 +954,7 @@ impl<'a> Lowerer<'a> {
         let destination = self.emit_nil();
         let loop_start = self.here();
         let guard_register = self.lower_inline_block_body(condition, ValueUse::Read);
-        let not_bool_jump = self.emit(Instruction::JumpIfNotBoolean {
+        let not_boolean_jump = self.emit(Instruction::JumpIfNotBoolean {
             register: guard_register,
             target: 0,
         });
@@ -972,7 +972,7 @@ impl<'a> Lowerer<'a> {
         self.lower_inline_block_body(body, ValueUse::Discarded);
         self.emit(Instruction::Jump { target: loop_start });
         let fallback_label = self.here();
-        self.patch_target(not_bool_jump, fallback_label);
+        self.patch_target(not_boolean_jump, fallback_label);
         let fallback_result = self.emit_must_be_boolean(guard_register);
         self.emit(Instruction::Move {
             destination,
@@ -1617,7 +1617,10 @@ mod tests {
         let [copy] = setter_arguments(&code)[..] else {
             panic!("expected one setter send: {:?}", code.instructions);
         };
-        assert_ne!(copy, 0, "the setter can write `p` before `InitSlot` reads");
+        assert_ne!(
+            copy, 0,
+            "the setter can write `p` before `InitializeSlot` reads"
+        );
         assert_eq!(
             code.instructions,
             vec![

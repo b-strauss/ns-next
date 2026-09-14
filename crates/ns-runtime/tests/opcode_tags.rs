@@ -44,7 +44,7 @@ fn instruction_tags_are_fixed() {
 #[test]
 fn literal_tags_are_fixed() {
     assert_eq!(LITERAL_NIL, 0);
-    assert_eq!(LITERAL_BOOL, 1);
+    assert_eq!(LITERAL_BOOLEAN, 1);
     assert_eq!(LITERAL_SMALL_INTEGER, 2);
     assert_eq!(LITERAL_FLOAT, 3);
     assert_eq!(LITERAL_STRING, 4);
@@ -96,7 +96,7 @@ fn no_two_tags_share_a_number() {
 
     let literals = [
         LITERAL_NIL,
-        LITERAL_BOOL,
+        LITERAL_BOOLEAN,
         LITERAL_SMALL_INTEGER,
         LITERAL_FLOAT,
         LITERAL_STRING,

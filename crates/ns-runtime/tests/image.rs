@@ -114,7 +114,7 @@ fn integers_and_strings_are_little_endian_and_length_prefixed() {
     writer.write_u32(0x01020304);
     writer.write_i64(-1);
     writer.write_str("hi");
-    writer.write_bool(true);
+    writer.write_boolean(true);
     let bytes = writer.into_bytes();
     assert_eq!(&bytes[0..2], &[0x02, 0x01]);
     assert_eq!(&bytes[2..6], &[0x04, 0x03, 0x02, 0x01]);
@@ -126,7 +126,7 @@ fn integers_and_strings_are_little_endian_and_length_prefixed() {
     assert_eq!(reader.read_u32().unwrap(), 0x01020304);
     assert_eq!(reader.read_i64().unwrap(), -1);
     assert_eq!(reader.read_str().unwrap(), "hi");
-    assert!(reader.read_bool().unwrap());
+    assert!(reader.read_boolean().unwrap());
     assert_eq!(
         reader.read_u8(),
         Err(decode::DecodeError::UnexpectedEndOfFile)
@@ -234,11 +234,11 @@ fn an_invalid_scalar_tag_is_an_error_not_a_panic() {
 }
 
 #[test]
-fn an_invalid_bool_tag_is_an_error_not_a_panic() {
+fn an_invalid_boolean_tag_is_an_error_not_a_panic() {
     let bytes = vec![7u8];
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
-        reader.read_bool(),
+        reader.read_boolean(),
         Err(decode::DecodeError::InvalidTag {
             what: "bool",
             tag: 7
@@ -300,9 +300,9 @@ fn write_mixin_row(
     writer.write_u32(0); // span.start
     writer.write_u32(0); // span.end
     writer.write_u32(0); // no slots
-    writer.write_bool(false); // no factory
-    writer.write_bool(false); // no initExprs
-    writer.write_bool(false); // no superclass clause
+    writer.write_boolean(false); // no factory
+    writer.write_boolean(false); // no initExprs
+    writer.write_boolean(false); // no superclass clause
     writer.write_u32(methods.len() as u32);
     for (selector, code) in methods {
         writer.write_u32(*selector);
@@ -314,10 +314,10 @@ fn write_mixin_row(
     for id in nested {
         writer.write_u32(*id);
     }
-    writer.write_bool(false); // no class side
-    writer.write_bool(false); // no initializer
-    writer.write_bool(false); // no superclass clause body
-    writer.write_bool(false); // no superclass message body
+    writer.write_boolean(false); // no class side
+    writer.write_boolean(false); // no initializer
+    writer.write_boolean(false); // no superclass clause body
+    writer.write_boolean(false); // no superclass message body
 }
 
 /// A hand-crafted mixin table of exactly one leaf row.
@@ -1769,7 +1769,7 @@ fn a_frame_id_out_of_range_is_a_decode_error_not_a_panic() {
     writer.write_u32(0); // no arguments
     writer.write_u32(0); // no temporaries
     writer.write_u32(0); // program_counter
-    writer.write_bool(true); // has a sender...
+    writer.write_boolean(true); // has a sender...
     writer.write_u32(99); // ...whose id is out of range
     let bytes = writer.into_bytes();
     let error = GraphFixture::new().decode_error(&bytes);
@@ -1877,9 +1877,9 @@ fn one_class_object(mixin_id: u32, references: impl FnOnce(&mut encode::Writer))
 
 /// `superclass`, `enclosing` and `declaring_class` all absent.
 fn no_class_references(writer: &mut encode::Writer) {
-    writer.write_bool(false);
-    writer.write_bool(false);
-    writer.write_bool(false);
+    writer.write_boolean(false);
+    writer.write_boolean(false);
+    writer.write_boolean(false);
 }
 
 #[test]
@@ -1942,11 +1942,11 @@ fn a_class_records_mixin_id_out_of_range_is_a_decode_error_not_a_panic() {
 #[test]
 fn a_class_records_superclass_id_out_of_range_is_a_decode_error_not_a_panic() {
     let bytes = one_class_object(0, |writer| {
-        writer.write_bool(true);
+        writer.write_boolean(true);
         writer.write_u8(2); // class tag: object-table record
         writer.write_u32(9); // ... past the end of a one-object table
-        writer.write_bool(false);
-        writer.write_bool(false);
+        writer.write_boolean(false);
+        writer.write_boolean(false);
     });
     assert_eq!(
         GraphFixture::new().decode_error(&bytes),
@@ -1957,11 +1957,11 @@ fn a_class_records_superclass_id_out_of_range_is_a_decode_error_not_a_panic() {
 #[test]
 fn a_class_records_enclosing_id_out_of_range_is_a_decode_error_not_a_panic() {
     let bytes = one_class_object(0, |writer| {
-        writer.write_bool(false);
-        writer.write_bool(true);
+        writer.write_boolean(false);
+        writer.write_boolean(true);
         writer.write_u8(5); // value tag: object-table id
         writer.write_u32(9);
-        writer.write_bool(false);
+        writer.write_boolean(false);
     });
     assert_eq!(
         GraphFixture::new().decode_error(&bytes),
@@ -1972,11 +1972,11 @@ fn a_class_records_enclosing_id_out_of_range_is_a_decode_error_not_a_panic() {
 #[test]
 fn a_class_records_enclosing_scalar_is_a_decode_error_not_a_silent_nil() {
     let bytes = one_class_object(0, |writer| {
-        writer.write_bool(false);
-        writer.write_bool(true);
+        writer.write_boolean(false);
+        writer.write_boolean(true);
         writer.write_u8(3); // value tag: SmallInteger -- not an object at all
         writer.write_i64(1);
-        writer.write_bool(false);
+        writer.write_boolean(false);
     });
     assert_eq!(
         GraphFixture::new().decode_error(&bytes),
@@ -1987,9 +1987,9 @@ fn a_class_records_enclosing_scalar_is_a_decode_error_not_a_silent_nil() {
 #[test]
 fn a_class_records_declaring_class_id_out_of_range_is_a_decode_error_not_a_panic() {
     let bytes = one_class_object(0, |writer| {
-        writer.write_bool(false);
-        writer.write_bool(false);
-        writer.write_bool(true);
+        writer.write_boolean(false);
+        writer.write_boolean(false);
+        writer.write_boolean(true);
         writer.write_u8(2); // class tag: object-table record
         writer.write_u32(9);
     });
@@ -2007,11 +2007,11 @@ fn a_class_reference_naming_a_record_that_is_not_a_class_is_a_decode_error() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 2, 0);
     class_record(&mut writer, 0, |writer| {
-        writer.write_bool(true);
+        writer.write_boolean(true);
         writer.write_u8(2);
         writer.write_u32(1); // object 1, which is an array
-        writer.write_bool(false);
-        writer.write_bool(false);
+        writer.write_boolean(false);
+        writer.write_boolean(false);
     });
     writer.write_u8(0); // object 1's class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Array));
@@ -2035,11 +2035,11 @@ fn class_objects_inheriting_from_each_other_in_a_cycle_are_refused() {
     graph_counts(&mut writer, 2, 0);
     for other in [1u32, 0] {
         class_record(&mut writer, 0, move |writer| {
-            writer.write_bool(true);
+            writer.write_boolean(true);
             writer.write_u8(2);
             writer.write_u32(other);
-            writer.write_bool(false);
-            writer.write_bool(false);
+            writer.write_boolean(false);
+            writer.write_boolean(false);
         });
     }
     writer.write_u32(0); // no roots
@@ -2058,9 +2058,9 @@ fn one_frame_prefix() -> encode::Writer {
     writer.write_u32(0); // no arguments
     writer.write_u32(0); // no temporaries
     writer.write_u32(0); // program_counter
-    writer.write_bool(false); // no sender
-    writer.write_bool(false); // no home
-    writer.write_bool(false); // no current class
+    writer.write_boolean(false); // no sender
+    writer.write_boolean(false); // no home
+    writer.write_boolean(false); // no current class
     writer
 }
 
@@ -2070,7 +2070,7 @@ fn an_invalid_frame_kind_tag_is_a_decode_error_not_a_panic() {
     writer.write_u8(200);
     // Padded out to the shortest frame record the wire admits (see the
     // class-tag test), so the kind tag is what the decoder rejects.
-    writer.write_bool(false); // continuable
+    writer.write_boolean(false); // continuable
     let bytes = writer.into_bytes();
     assert_eq!(
         GraphFixture::new().decode_error(&bytes),
@@ -2098,11 +2098,11 @@ fn a_frame_record_in_the_old_layout_is_refused() {
     writer.write_u32(0); // no temporaries
     writer.write_u32(0); // program_counter
     writer.write_u8(1); // the retired program-counter-kind byte (bytecode)
-    writer.write_bool(false); // no sender
-    writer.write_bool(false); // no home
-    writer.write_bool(false); // no current class
+    writer.write_boolean(false); // no sender
+    writer.write_boolean(false); // no home
+    writer.write_boolean(false); // no current class
     writer.write_u8(2); // frame kind: TopLevel
-    writer.write_bool(false); // continuable
+    writer.write_boolean(false); // continuable
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     assert!(GraphFixture::new().decode(&bytes).is_err());
@@ -2147,7 +2147,7 @@ fn a_closure_frames_object_id_out_of_range_is_a_decode_error_not_a_panic() {
     let mut writer = one_frame_prefix();
     writer.write_u8(6); // frame kind: FRAME_CLOSURE_OBJECT...
     writer.write_u32(42); // ...naming an object past the empty object table
-    writer.write_bool(false); // continuable
+    writer.write_boolean(false); // continuable
     let bytes = writer.into_bytes();
     assert_eq!(
         GraphFixture::new().decode_error(&bytes),
@@ -2319,7 +2319,7 @@ fn retired_closure_frame_graph() -> Vec<u8> {
     // Padded past the shortest frame record the wire admits, so
     // `bounded_count` admits the announced frame and the kind tag itself is
     // what the reader rejects.
-    writer.write_bool(false);
+    writer.write_boolean(false);
     writer.write_u32(0);
     writer.into_bytes()
 }
@@ -2442,13 +2442,13 @@ fn a_closure_frame_naming_an_object_that_is_not_a_closure_is_refused() {
     writer.write_u32(0); // no arguments
     writer.write_u32(0); // no temporaries
     writer.write_u32(0); // program_counter
-    writer.write_bool(false); // no sender
-    writer.write_bool(true); // a home...
+    writer.write_boolean(false); // no sender
+    writer.write_boolean(true); // a home...
     writer.write_u32(0); // ...frame 0 itself
-    writer.write_bool(false); // no current class
+    writer.write_boolean(false); // no current class
     writer.write_u8(6); // frame kind: FRAME_CLOSURE_OBJECT...
     writer.write_u32(0); // ...naming object 0, the string
-    writer.write_bool(false); // continuable
+    writer.write_boolean(false); // continuable
     writer.write_u32(0); // no roots
     let error = GraphFixture::new().decode_error(&writer.into_bytes());
     assert_eq!(error, decode::DecodeError::NotAClosureReference);
@@ -2465,7 +2465,7 @@ fn a_top_level_frame_kind_decodes() {
     // decoder's tag-2 branch.
     let mut writer = one_frame_prefix();
     writer.write_u8(2); // frame kind: TopLevel
-    writer.write_bool(false); // continuable
+    writer.write_boolean(false); // continuable
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     let decoded = GraphFixture::new()
@@ -2513,11 +2513,11 @@ fn closure_object_with_parameter_count(parameters: &[&str]) -> Vec<u8> {
     writer.write_u32(0); // no arguments
     writer.write_u32(0); // no temporaries
     writer.write_u32(0); // program_counter
-    writer.write_bool(false); // no sender
-    writer.write_bool(false); // no home
-    writer.write_bool(false); // no current class
+    writer.write_boolean(false); // no sender
+    writer.write_boolean(false); // no home
+    writer.write_boolean(false); // no current class
     writer.write_u8(2); // frame kind: TopLevel
-    writer.write_bool(false); // continuable
+    writer.write_boolean(false); // continuable
     writer.write_u32(1); // one root...
     writer.write_u8(5);
     writer.write_u32(0); // ...the closure
@@ -3424,12 +3424,12 @@ fn foo_frame_at_program_counter(
             writer.write_u8(0); // each temporary: nil
         }
         writer.write_u32(program_counter);
-        writer.write_bool(false); // no sender
-        writer.write_bool(false); // no home
-        writer.write_bool(false); // no current class
+        writer.write_boolean(false); // no sender
+        writer.write_boolean(false); // no home
+        writer.write_boolean(false); // no current class
         writer.write_u8(0); // frame kind: Method
         writer.write_u32(0); // selector id 0 -- "foo", per `closure_world`'s fixture
-        writer.write_bool(false); // continuable
+        writer.write_boolean(false); // continuable
     }
 }
 
@@ -3485,11 +3485,11 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
             writer.write_u32(0); // no arguments
             writer.write_u32(0); // no temporaries
             writer.write_u32(0); // program_counter
-            writer.write_bool(false); // no sender
-            writer.write_bool(false); // no home
-            writer.write_bool(false); // no current class
+            writer.write_boolean(false); // no sender
+            writer.write_boolean(false); // no home
+            writer.write_boolean(false); // no current class
             writer.write_u8(2); // frame kind: TopLevel -- runs no code at all
-            writer.write_bool(false); // continuable
+            writer.write_boolean(false); // continuable
         }))
         .expect("decode");
     assert_eq!(
@@ -4121,7 +4121,7 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
     );
     match loaded.interpreter.fetch(&result) {
         Value::SmallInteger(9) => {}
-        _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
+        _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
     }
 }
 
@@ -4176,7 +4176,7 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
     );
     match loaded.interpreter.fetch(&result) {
         Value::SmallInteger(9) => {}
-        _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
+        _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
     }
 }
 
@@ -4317,7 +4317,7 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     let value = send_to(&mut loaded, &instance, "value");
     match loaded.interpreter.fetch(&value) {
         Value::SmallInteger(9) => {}
-        _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
+        _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
     }
 
     // ... and as the `.class` of one of its instances.
@@ -4347,7 +4347,7 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     let value = send_to(&mut loaded, &reloaded_instance, "value");
     match loaded.interpreter.fetch(&value) {
         Value::SmallInteger(9) => {}
-        _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
+        _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
     }
 }
 
@@ -4607,7 +4607,7 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
     );
     match loaded.interpreter.fetch(&result) {
         Value::SmallInteger(7) => {}
-        _ => panic!("expected SmallInt(7) -- the clause's own argument -- from Base's slot"),
+        _ => panic!("expected SmallInteger(7) -- the clause's own argument -- from Base's slot"),
     }
 }
 
@@ -4780,7 +4780,7 @@ fn the_superclass_clause_frame_kinds_decode() {
         writer.write_u8(tag);
         writer.write_u8(0); // class tag: builtin
         writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
-        writer.write_bool(false); // continuable
+        writer.write_boolean(false); // continuable
         writer.write_u32(0); // no roots
         let bytes = writer.into_bytes();
         let mut fixture = GraphFixture::new();
@@ -5161,12 +5161,12 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
     let base = root
         .nested
         .iter()
-        .find(|mutator| mutator.name == Symbol::intern("Base"))
+        .find(|nested| nested.name == Symbol::intern("Base"))
         .expect("Base is a nested declaration");
     let derived = root
         .nested
         .iter()
-        .find(|mutator| mutator.name == Symbol::intern("Derived"))
+        .find(|nested| nested.name == Symbol::intern("Derived"))
         .expect("Derived is a nested declaration");
     let base_factory = base.factory.expect("Base declares a factory");
     assert_eq!(base_factory.selector, Symbol::intern("withBase:"));
@@ -5410,14 +5410,14 @@ fn superclass_chain_graph(levels: u32) -> Vec<u8> {
     for level in 0..levels {
         class_record(&mut writer, 0, |writer| {
             if level + 1 < levels {
-                writer.write_bool(true);
+                writer.write_boolean(true);
                 writer.write_u8(2); // class tag: object-table record
                 writer.write_u32(level + 1);
             } else {
-                writer.write_bool(false);
+                writer.write_boolean(false);
             }
-            writer.write_bool(false); // no enclosing object
-            writer.write_bool(false); // no declaring class
+            writer.write_boolean(false); // no enclosing object
+            writer.write_boolean(false); // no declaring class
         });
     }
     writer.write_u32(1); // one root
@@ -5665,7 +5665,7 @@ fn a_source_free_image_still_reaches_its_nested_classes() {
     let value = send_to(&mut loaded, &instance, "value");
     match loaded.interpreter.fetch(&value) {
         Value::SmallInteger(9) => {}
-        _ => panic!("expected SmallInt(9) from Inner's `value`, got a different Value"),
+        _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
     }
 }
 
@@ -5717,7 +5717,7 @@ fn a_frame_program_counter_past_its_bodys_last_instruction_is_refused() {
         .decode(&closure_over_frame(foo_frame_at_program_counter(2, 99)))
         .expect("decode");
     let error = decode::verify_graph(&graph, &table, fixture.interpreter.heap_reference())
-        .expect_err("out-of-range pc");
+        .expect_err("out-of-range program counter");
     assert_eq!(
         error,
         decode::DecodeError::ProgramCounterOutOfRange {
@@ -6011,7 +6011,7 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
     let value = send_to(&mut loaded, &instance, "quixoticAccumulator");
     match loaded.interpreter.fetch(&value) {
         Value::SmallInteger(146) => {}
-        _ => panic!("expected SmallInt(146) from the loaded world, got a different Value"),
+        _ => panic!("expected SmallInteger(146) from the loaded world, got a different Value"),
     }
 }
 

@@ -36,7 +36,7 @@ pub(crate) fn malformed_integer_error(message: String) -> Signal {
 /// Evaluates an `ast::Literal::Integer`'s source text, which the lexer hands
 /// over verbatim.
 ///
-/// Two shapes reach here (`lexer.rs`'s `lex_number`, and `parser/expr.rs`'s
+/// Two shapes reach here (`lexer.rs`'s `lex_number`, and `parser/expression.rs`'s
 /// `parse_literal`, which classifies anything containing `r` as an `Integer`):
 /// a plain decimal literal (`42`, `-42`), and the Smalltalk/Newspeak radix
 /// literal `<radix>r<digits>` (`16rFF`, `2r1010`, `16r-1F`, `-16rFF`) --

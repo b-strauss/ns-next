@@ -1109,7 +1109,7 @@ impl Mutator {
             Value::Boolean(false) => BuiltinClass::False,
             Value::SmallInteger(_) => BuiltinClass::Integer,
             Value::Float(_) => BuiltinClass::Float,
-            Value::Object(_) => unreachable!("Value::Obj carries its own .class"),
+            Value::Object(_) => unreachable!("Value::Object carries its own .class"),
         };
         self.builtin_class(kind)
     }
@@ -1851,7 +1851,7 @@ mod tests {
             assert!(state.levels.is_empty(), "no levels");
             assert!(
                 matches!(state.phase, InstantiationPhase::Descending { .. }),
-                "a retired box's phase holds no ClassRef either"
+                "a retired box's phase holds no ClassReference either"
             );
         });
     }

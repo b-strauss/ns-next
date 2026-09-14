@@ -61,7 +61,7 @@ pub(crate) fn superclass_clause_expression(clause: &ast::SuperclassClause) -> as
 /// `last()` rather than a whole chain because the grammar admits exactly one
 /// message here (`NewspeakGrammar.ns`: `superclassClause = superclassPrefix
 /// opt , unaryMsg , message opt`, and `message` is a single keyword, binary
-/// or unary send). `parser::decl::parse_trailing_sends` is more permissive
+/// or unary send). `parser::declaration::parse_trailing_sends` is more permissive
 /// than that -- it loops `unary* binary* keyword?` -- but a clause it accepts
 /// with more than one message already fails earlier, when `ec` (the receiver
 /// alone, above) turns out not to be a class object.

@@ -22,7 +22,7 @@ pub(crate) fn execute(
     };
     let (mut interpreter, class) = source::bootstrap(&loaded, lowering);
     let instance = match entry::instantiate_root(&mut interpreter, &class) {
-        Ok(value) => value,
+        Ok(instance) => instance,
         Err(code) => return code,
     };
     let platform = interpreter.platform();

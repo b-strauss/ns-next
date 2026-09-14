@@ -46,7 +46,7 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 fn integer_of(value: &Value) -> i64 {
     match value {
         Value::SmallInteger(integer) => *integer,
-        _ => panic!("expected a SmallInt"),
+        _ => panic!("expected a SmallInteger"),
     }
 }
 
@@ -55,7 +55,7 @@ fn string_of(heap: &Heap, value: &Value) -> String {
         panic!("expected a string object")
     };
     heap.str_value(*object)
-        .unwrap_or_else(|| panic!("expected ObjectData::Str"))
+        .unwrap_or_else(|| panic!("expected ObjectData::String"))
 }
 
 fn module(body: &str) -> String {

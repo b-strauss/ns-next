@@ -40,7 +40,7 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
         let fetched = mutator.fetch(&receiver);
         let Value::Object(object) = &fetched else {
             panic!(
-                "expected Value::Obj, got {}",
+                "expected Value::Object, got {}",
                 mutator.heap().describe(&fetched)
             );
         };
@@ -74,7 +74,7 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
     interpreter.enter(|mutator| match mutator.fetch(&size_result) {
         Value::SmallInteger(1) => {}
         other => panic!(
-            "expected Value::SmallInt(1), got {}",
+            "expected Value::SmallInteger(1), got {}",
             mutator.heap().describe(&other)
         ),
     });
@@ -171,7 +171,7 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
                 sent.map_or_else(|description| description, |integer| integer.to_string());
             let instantiated_description =
                 instantiated.map_or_else(|description| description, |integer| integer.to_string());
-            panic!("expected two equal Value::SmallInt, got {sent_description} and {instantiated_description}")
+            panic!("expected two equal Value::SmallInteger, got {sent_description} and {instantiated_description}")
         }
     }
 }

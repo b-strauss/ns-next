@@ -35,8 +35,8 @@ fn as_string(heap: &Heap, value: &Value) -> String {
     match value {
         Value::Object(object) => heap
             .str_value(*object)
-            .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
-        other => panic!("expected Value::Obj, got {}", heap.describe(other)),
+            .unwrap_or_else(|| panic!("expected ObjectData::String, got {}", heap.describe(value))),
+        other => panic!("expected Value::Object, got {}", heap.describe(other)),
     }
 }
 
@@ -55,7 +55,7 @@ fn integer_addition_via_direct_send_evaluates_correctly() {
     interpreter.enter(|mutator| match mutator.fetch(&sum) {
         Value::SmallInteger(7) => {}
         other => panic!(
-            "expected Value::SmallInt(7), got {}",
+            "expected Value::SmallInteger(7), got {}",
             mutator.heap().describe(&other)
         ),
     });
@@ -109,7 +109,7 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
         interpreter.enter(|mutator| match mutator.fetch(&result) {
             Value::SmallInteger(1) => {}
             other => panic!(
-                "{body}: expected Value::SmallInt(1), got {}",
+                "{body}: expected Value::SmallInteger(1), got {}",
                 mutator.heap().describe(&other)
             ),
         });
@@ -140,7 +140,7 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
         interpreter.enter(|mutator| match mutator.fetch(&result) {
             Value::SmallInteger(5) => {}
             other => panic!(
-                "{body}: expected Value::SmallInt(5), got {}",
+                "{body}: expected Value::SmallInteger(5), got {}",
                 mutator.heap().describe(&other)
             ),
         });
@@ -343,7 +343,7 @@ fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
     interpreter.enter(|mutator| match mutator.fetch(&result) {
         Value::Boolean(false) => {}
         other => panic!(
-            "expected Value::Bool(false), got {}",
+            "expected Value::Boolean(false), got {}",
             mutator.heap().describe(&other)
         ),
     });
@@ -421,7 +421,7 @@ fn a_radix_integer_literal_evaluates() {
     interpreter.enter(|mutator| match mutator.fetch(&result) {
         Value::SmallInteger(31) => {}
         other => panic!(
-            "expected Value::SmallInt(31), got {}",
+            "expected Value::SmallInteger(31), got {}",
             mutator.heap().describe(&other)
         ),
     });

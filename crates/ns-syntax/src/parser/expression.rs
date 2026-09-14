@@ -1,6 +1,6 @@
 use super::Parser;
 use crate::ast::*;
-use crate::token::TokenKind as T;
+use crate::token::TokenKind;
 
 impl<'a> Parser<'a> {
     /// Recursion-depth-guarded entry to `primary`. Deeply nested input
@@ -31,9 +31,11 @@ impl<'a> Parser<'a> {
     pub(super) fn skip_to_structural(&mut self) {
         loop {
             match self.peek() {
-                T::RightParenthesis | T::RightBracket | T::RightBrace | T::Dot | T::EndOfInput => {
-                    break
-                }
+                TokenKind::RightParenthesis
+                | TokenKind::RightBracket
+                | TokenKind::RightBrace
+                | TokenKind::Dot
+                | TokenKind::EndOfInput => break,
                 _ => {
                     self.bump();
                 }
@@ -43,18 +45,19 @@ impl<'a> Parser<'a> {
 
     fn parse_primary_inner(&mut self) -> Expression {
         match self.peek() {
-            T::LeftParenthesis => {
+            TokenKind::LeftParenthesis => {
                 self.bump();
                 let expression = self.parse_expression();
-                self.expect(T::RightParenthesis);
+                self.expect(TokenKind::RightParenthesis);
                 expression
             }
-            T::LeftBracket => self.parse_block(),
-            T::LeftBrace => self.parse_dynamic_array(),
-            T::Number | T::String | T::Symbol | T::CharacterConstant => {
-                Expression::Literal(self.parse_literal())
-            }
-            T::Identifier => {
+            TokenKind::LeftBracket => self.parse_block(),
+            TokenKind::LeftBrace => self.parse_dynamic_array(),
+            TokenKind::Number
+            | TokenKind::String
+            | TokenKind::Symbol
+            | TokenKind::CharacterConstant => Expression::Literal(self.parse_literal()),
+            TokenKind::Identifier => {
                 let token = self.current();
                 match self.text(token) {
                     "nil" => {
@@ -78,14 +81,14 @@ impl<'a> Parser<'a> {
                     _ => Expression::Identifier(self.identifier()),
                 }
             }
-            // `class` lexes as the reserved `T::Class` token, but outside a
+            // `class` lexes as the reserved `TokenKind::Class` token, but outside a
             // class-declaration prefix it is the pseudo-variable naming the
             // receiver's class (`self class`, `class onContext: it`). Grammar:
             // `primary = slotName | ...` (`NewspeakGrammar.ns:123`); the real
             // parser's `id` admits `class` in expression position.
-            T::Class => Expression::Identifier(self.identifier()),
-            T::LessThan => Expression::Literal(self.parse_pattern_literal()),
-            T::Pound if self.peek2() == T::LeftParenthesis => {
+            TokenKind::Class => Expression::Identifier(self.identifier()),
+            TokenKind::LessThan => Expression::Literal(self.parse_pattern_literal()),
+            TokenKind::Pound if self.peek2() == TokenKind::LeftParenthesis => {
                 Expression::Literal(self.parse_literal_array())
             }
             _ => {
@@ -103,7 +106,7 @@ impl<'a> Parser<'a> {
         let token = self.bump();
         let raw = self.text(token).to_string();
         match token.kind {
-            T::Number => {
+            TokenKind::Number => {
                 let is_radix = raw.contains('r');
                 let looks_float = !is_radix && (raw.contains('.') || raw.contains('e'));
                 if looks_float {
@@ -118,15 +121,15 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            T::String => Literal::String {
+            TokenKind::String => Literal::String {
                 value: unescape_string(&raw),
                 span: token.span,
             },
-            T::Symbol => Literal::Symbol {
+            TokenKind::Symbol => Literal::Symbol {
                 value: symbol_body(&raw),
                 span: token.span,
             },
-            T::CharacterConstant => {
+            TokenKind::CharacterConstant => {
                 let inner = super::lexeme_body(&raw);
                 Literal::Character {
                     value: inner.chars().next().unwrap_or('\u{0}'),
@@ -141,10 +144,10 @@ impl<'a> Parser<'a> {
     fn parse_pattern_literal(&mut self) -> Literal {
         let start = self.bump(); // `<`
         let mut end = start;
-        while !self.at(T::GreaterThan) && !self.at(T::EndOfInput) {
+        while !self.at(TokenKind::GreaterThan) && !self.at(TokenKind::EndOfInput) {
             end = self.bump();
         }
-        if let Some(greater_than) = self.expect(T::GreaterThan) {
+        if let Some(greater_than) = self.expect(TokenKind::GreaterThan) {
             end = greater_than;
         }
         let span = start.span.merge(end.span);
@@ -155,11 +158,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_block(&mut self) -> Expression {
-        let left_bracket = self.expect(T::LeftBracket).unwrap_or(self.current());
+        let left_bracket = self
+            .expect(TokenKind::LeftBracket)
+            .unwrap_or(self.current());
         let mut parameters = Vec::new();
-        while self.at(T::Colon) {
+        while self.at(TokenKind::Colon) {
             self.bump();
-            if self.at(T::Identifier) {
+            if self.at(TokenKind::Identifier) {
                 parameters.push(self.identifier());
                 // `[:x <T> :y <T> | ...]` — block params carry the same
                 // declaration-position `<Type>` annotations as method params.
@@ -167,10 +172,12 @@ impl<'a> Parser<'a> {
             }
         }
         if !parameters.is_empty() {
-            self.expect(T::Bar);
+            self.expect(TokenKind::Bar);
         }
         let body = self.parse_code_body();
-        let right_bracket = self.expect(T::RightBracket).unwrap_or(self.current());
+        let right_bracket = self
+            .expect(TokenKind::RightBracket)
+            .unwrap_or(self.current());
         let span = left_bracket.span.merge(right_bracket.span);
         Expression::Block(Box::new(BlockExpression {
             parameters,
@@ -182,13 +189,13 @@ impl<'a> Parser<'a> {
     fn parse_dynamic_array(&mut self) -> Expression {
         let left_brace = self.bump(); // {
         let mut elements = Vec::new();
-        while !self.at(T::RightBrace) && !self.at(T::EndOfInput) {
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::EndOfInput) {
             elements.push(self.parse_expression());
-            if !self.eat(T::Dot) {
+            if !self.eat(TokenKind::Dot) {
                 break;
             }
         }
-        let right_brace = self.expect(T::RightBrace).unwrap_or(self.current());
+        let right_brace = self.expect(TokenKind::RightBrace).unwrap_or(self.current());
         Expression::DynamicArray {
             elements,
             span: left_brace.span.merge(right_brace.span),
@@ -197,12 +204,14 @@ impl<'a> Parser<'a> {
 
     fn parse_literal_array(&mut self) -> Literal {
         let pound = self.bump(); // #
-        self.expect(T::LeftParenthesis);
+        self.expect(TokenKind::LeftParenthesis);
         let mut elements = Vec::new();
-        while !self.at(T::RightParenthesis) && !self.at(T::EndOfInput) {
+        while !self.at(TokenKind::RightParenthesis) && !self.at(TokenKind::EndOfInput) {
             elements.push(self.parse_array_element());
         }
-        let right_parenthesis = self.expect(T::RightParenthesis).unwrap_or(self.current());
+        let right_parenthesis = self
+            .expect(TokenKind::RightParenthesis)
+            .unwrap_or(self.current());
         Literal::Array {
             elements,
             span: pound.span.merge(right_parenthesis.span),
@@ -228,23 +237,25 @@ impl<'a> Parser<'a> {
 
     fn parse_array_element_inner(&mut self) -> Literal {
         match self.peek() {
-            T::LeftParenthesis => {
+            TokenKind::LeftParenthesis => {
                 let left_parenthesis = self.bump();
                 let mut inner = Vec::new();
-                while !self.at(T::RightParenthesis) && !self.at(T::EndOfInput) {
+                while !self.at(TokenKind::RightParenthesis) && !self.at(TokenKind::EndOfInput) {
                     inner.push(self.parse_array_element());
                 }
-                let right_parenthesis = self.expect(T::RightParenthesis).unwrap_or(self.current());
+                let right_parenthesis = self
+                    .expect(TokenKind::RightParenthesis)
+                    .unwrap_or(self.current());
                 Literal::Array {
                     elements: inner,
                     span: left_parenthesis.span.merge(right_parenthesis.span),
                 }
             }
-            T::Pound => {
+            TokenKind::Pound => {
                 self.bump();
                 self.parse_array_element()
             }
-            T::Identifier => {
+            TokenKind::Identifier => {
                 let id = self.bump();
                 // bare word inside a literal array is a symbol
                 Literal::Symbol {
@@ -252,7 +263,10 @@ impl<'a> Parser<'a> {
                     span: id.span,
                 }
             }
-            T::Number | T::String | T::Symbol | T::CharacterConstant => self.parse_literal(),
+            TokenKind::Number
+            | TokenKind::String
+            | TokenKind::Symbol
+            | TokenKind::CharacterConstant => self.parse_literal(),
             _ => {
                 let token = self.bump();
                 self.diagnostics.push(crate::diagnostic::Diagnostic::error(
@@ -268,7 +282,7 @@ impl<'a> Parser<'a> {
 impl<'a> Parser<'a> {
     pub(crate) fn parse_expression(&mut self) -> Expression {
         // assignment: Identifier ':=' expression
-        if self.at(T::Identifier) && self.peek2() == T::Assign {
+        if self.at(TokenKind::Identifier) && self.peek2() == TokenKind::Assign {
             let target = self.identifier();
             self.bump(); // :=
             let value = self.parse_expression();
@@ -288,7 +302,7 @@ impl<'a> Parser<'a> {
         // NOTE: the lexer emits `x::` as a single `SetterKeyword` token whose text
         // is `x::` (not `Identifier` followed by `SetterKeyword`), so the name is
         // split off the lexeme here rather than read as a separate token.
-        if self.at(T::SetterKeyword) {
+        if self.at(TokenKind::SetterKeyword) {
             let keyword = self.bump();
             let name = self.text(keyword).trim_end_matches(':');
             let target = Identifier {
@@ -312,7 +326,7 @@ impl<'a> Parser<'a> {
 
     fn parse_cascade(&mut self) -> Expression {
         let first_full = self.parse_keyword_message();
-        if !self.at(T::Semicolon) {
+        if !self.at(TokenKind::Semicolon) {
             return first_full;
         }
         // `first_full` must be a Send; its receiver is the cascade receiver.
@@ -330,12 +344,12 @@ impl<'a> Parser<'a> {
             span: first_span,
         } = *boxed;
         let mut rest = Vec::new();
-        while self.eat(T::Semicolon) {
+        while self.eat(TokenKind::Semicolon) {
             rest.push(self.parse_one_message_send());
         }
         let last = rest
             .last()
-            .map(|mutator| mutator.span)
+            .map(|message| message.span)
             .unwrap_or(first_span);
         Expression::Cascade(Box::new(Cascade {
             span: expression_span(&receiver).merge(last),
@@ -350,7 +364,7 @@ impl<'a> Parser<'a> {
         // a keyword message with no explicit receiver (`foo: x bar: y`) is an
         // implicit send to `self`. Milestone 1 models the receiver as the
         // identifier `self` (zero-width span at the selector start).
-        let mut receiver = if self.at(T::Keyword) {
+        let mut receiver = if self.at(TokenKind::Keyword) {
             let selector_start = self.current().span.start;
             Expression::Identifier(Identifier {
                 name: "self".to_string(),
@@ -359,12 +373,12 @@ impl<'a> Parser<'a> {
         } else {
             self.parse_binary_message()
         };
-        if self.at(T::Keyword) || self.at(T::SetterKeyword) {
+        if self.at(TokenKind::Keyword) || self.at(TokenKind::SetterKeyword) {
             let start = expression_span(&receiver);
             let mut selector = String::new();
             let mut arguments = Vec::new();
             let mut end = start;
-            while self.at(T::Keyword) || self.at(T::SetterKeyword) {
+            while self.at(TokenKind::Keyword) || self.at(TokenKind::SetterKeyword) {
                 let keyword = self.bump();
                 let keyword_text = self.text(keyword);
                 // SetterKeyword lexeme is `foo::`; normalize to `foo:`
@@ -400,7 +414,7 @@ impl<'a> Parser<'a> {
         // so the ambiguity only bites where a left operand already exists. `|`
         // / `||` double as slot/temp-section delimiters, so accept them as a
         // binary operator only when a primary can actually follow. A
-        // section-closing `|` / `||` is followed by `RightParenthesis` / a decl
+        // section-closing `|` / `||` is followed by `RightParenthesis` / a declaration
         // keyword / `EndOfInput` / another `|` — none of which start a primary
         // — so a dot-less final slot initializer no longer eats its closing
         // delimiter and cascades into the following declaration. `= < >` and
@@ -408,8 +422,12 @@ impl<'a> Parser<'a> {
         // cannot reach here with a left operand present).
         while matches!(
             self.peek(),
-            T::BinarySelector | T::Equals | T::LessThan | T::GreaterThan
-        ) || (matches!(self.peek(), T::Bar | T::DoubleBar) && starts_primary(self.peek2()))
+            TokenKind::BinarySelector
+                | TokenKind::Equals
+                | TokenKind::LessThan
+                | TokenKind::GreaterThan
+        ) || (matches!(self.peek(), TokenKind::Bar | TokenKind::DoubleBar)
+            && starts_primary(self.peek2()))
         {
             let operator = self.bump();
             let argument = self.parse_unary_message();
@@ -441,9 +459,9 @@ impl<'a> Parser<'a> {
                 self.bump(); // `<-`
                 self.bump(); // `:`
             }
-            if !((self.at(T::Identifier) || self.at(T::Class))
+            if !((self.at(TokenKind::Identifier) || self.at(TokenKind::Class))
                 && !self.is_reserved_identifier(self.current())
-                && self.peek2() != T::Assign)
+                && self.peek2() != TokenKind::Assign)
             {
                 break;
             }
@@ -468,11 +486,11 @@ impl<'a> Parser<'a> {
     fn parse_one_message_send(&mut self) -> MessageSend {
         let start = self.current().span;
         match self.peek() {
-            T::Keyword | T::SetterKeyword => {
+            TokenKind::Keyword | TokenKind::SetterKeyword => {
                 let mut selector = String::new();
                 let mut arguments = Vec::new();
                 let mut end = start;
-                while self.at(T::Keyword) || self.at(T::SetterKeyword) {
+                while self.at(TokenKind::Keyword) || self.at(TokenKind::SetterKeyword) {
                     let keyword = self.bump();
                     selector.push_str(self.text(keyword).trim_end_matches(':'));
                     selector.push(':');
@@ -486,7 +504,7 @@ impl<'a> Parser<'a> {
                     span: start.merge(end),
                 }
             }
-            T::BinarySelector => {
+            TokenKind::BinarySelector => {
                 let operator = self.bump();
                 let argument = self.parse_unary_message();
                 MessageSend {
@@ -495,7 +513,7 @@ impl<'a> Parser<'a> {
                     arguments: vec![argument],
                 }
             }
-            T::Class => {
+            TokenKind::Class => {
                 let selector_token = self.bump();
                 MessageSend {
                     selector: Selector::Unary(self.text(selector_token).to_string()),
@@ -504,7 +522,7 @@ impl<'a> Parser<'a> {
                 }
             }
             _ => {
-                let selector_token = self.expect(T::Identifier).unwrap_or(self.current());
+                let selector_token = self.expect(TokenKind::Identifier).unwrap_or(self.current());
                 MessageSend {
                     selector: Selector::Unary(self.text(selector_token).to_string()),
                     arguments: Vec::new(),
@@ -521,7 +539,9 @@ impl<'a> Parser<'a> {
     /// The eventual-send operator `<-:` (`NewspeakGrammar.ns:50`), which the
     /// lexer emits as `BinarySelector("<-")` followed by `Colon`.
     pub(super) fn at_eventual_send_operator(&self) -> bool {
-        self.at(T::BinarySelector) && self.text(self.current()) == "<-" && self.peek2() == T::Colon
+        self.at(TokenKind::BinarySelector)
+            && self.text(self.current()) == "<-"
+            && self.peek2() == TokenKind::Colon
     }
 }
 
@@ -529,20 +549,20 @@ impl<'a> Parser<'a> {
 /// plus the parser's `nil`/`true`/`false`, `class` pseudo-variable and `<...>`
 /// pattern-literal extensions). Used to disambiguate `|` / `||` as a binary
 /// operator from a slot/temp-section delimiter.
-fn starts_primary(kind: T) -> bool {
+fn starts_primary(kind: TokenKind) -> bool {
     matches!(
         kind,
-        T::Identifier
-            | T::Class
-            | T::Number
-            | T::String
-            | T::Symbol
-            | T::CharacterConstant
-            | T::LeftParenthesis
-            | T::LeftBracket
-            | T::LeftBrace
-            | T::Pound
-            | T::LessThan
+        TokenKind::Identifier
+            | TokenKind::Class
+            | TokenKind::Number
+            | TokenKind::String
+            | TokenKind::Symbol
+            | TokenKind::CharacterConstant
+            | TokenKind::LeftParenthesis
+            | TokenKind::LeftBracket
+            | TokenKind::LeftBrace
+            | TokenKind::Pound
+            | TokenKind::LessThan
     )
 }
 

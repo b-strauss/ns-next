@@ -309,7 +309,7 @@ fn run_corpus_malformed_whitelist_fails_with_error() {
 }
 
 #[test]
-fn bench_reports_the_entry_sends_median() {
+fn benchmark_reports_the_entry_sends_median() {
     let out = ns_next()
         .arg("bench")
         .arg(repository_root().join("tests-fixtures/while_loop.ns"))
@@ -331,7 +331,7 @@ fn bench_reports_the_entry_sends_median() {
 /// (the median computation indexes `timings[timings.len() / 2]`, which is
 /// only safe because `iterations >= 1` is enforced up front).
 #[test]
-fn bench_rejects_zero_iterations() {
+fn benchmark_rejects_zero_iterations() {
     let out = ns_next()
         .arg("bench")
         .arg(repository_root().join("tests-fixtures/while_loop.ns"))

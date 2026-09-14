@@ -40,7 +40,7 @@ fn resolve_mixin_path(
             current
                 .nested
                 .iter()
-                .find(|mutator| mutator.name.as_str() == segment)
+                .find(|nested| nested.name.as_str() == segment)
                 .cloned()
                 .ok_or_else(|| format!("`{}` has no nested class `{segment}`", current.name))?
         };

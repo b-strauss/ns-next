@@ -41,7 +41,7 @@ use super::symbols;
 /// `crates/ns-syntax/src/parser/mod.rs`, which is private to that crate, so
 /// the number has to be restated rather than imported).
 ///
-/// It counts *nested* classes only: `parser/decl.rs` calls `Parser::enter`
+/// It counts *nested* classes only: `parser/declaration.rs` calls `Parser::enter`
 /// where a class body starts a nested class declaration, and nowhere for the
 /// module's root class.
 const PARSER_MAX_NESTED_CLASS_DEPTH: usize = 128;
@@ -226,20 +226,20 @@ pub fn encode(
         }
         match &mixin.factory {
             Some(factory) => {
-                writer.write_bool(true);
+                writer.write_boolean(true);
                 writer.write_u32(symbols.intern(factory.selector.as_str()));
                 writer.write_u16(u16_arity("factory", factory.argument_count));
             }
-            None => writer.write_bool(false),
+            None => writer.write_boolean(false),
         }
-        writer.write_bool(mixin.has_initializer_expressions);
+        writer.write_boolean(mixin.has_initializer_expressions);
         match &mixin.superclass {
             Some(clause) => {
-                writer.write_bool(true);
+                writer.write_boolean(true);
                 writer.write_u32(symbols.intern(clause.selector.as_str()));
-                writer.write_bool(clause.has_arguments);
+                writer.write_boolean(clause.has_arguments);
             }
-            None => writer.write_bool(false),
+            None => writer.write_boolean(false),
         }
         writer.write_u32(u32_field("mixin's method count", row.methods.len()));
         for method in &row.methods {
@@ -298,10 +298,10 @@ fn u16_arity(what: &str, count: usize) -> u16 {
 fn write_optional_id(writer: &mut Writer, id: Option<u32>) {
     match id {
         Some(id) => {
-            writer.write_bool(true);
+            writer.write_boolean(true);
             writer.write_u32(id);
         }
-        None => writer.write_bool(false),
+        None => writer.write_boolean(false),
     }
 }
 
@@ -415,7 +415,7 @@ fn read_row(
     for _ in 0..slot_count {
         slots.push(read_symbol(reader, symbols)?);
     }
-    let factory = if reader.read_bool()? {
+    let factory = if reader.read_boolean()? {
         Some(Factory {
             selector: read_symbol(reader, symbols)?,
             argument_count: reader.read_u16()? as usize,
@@ -423,11 +423,11 @@ fn read_row(
     } else {
         None
     };
-    let has_initializer_expressions = reader.read_bool()?;
-    let superclass = if reader.read_bool()? {
+    let has_initializer_expressions = reader.read_boolean()?;
+    let superclass = if reader.read_boolean()? {
         Some(SuperclassClause {
             selector: read_symbol(reader, symbols)?,
-            has_arguments: reader.read_bool()?,
+            has_arguments: reader.read_boolean()?,
         })
     } else {
         None
@@ -503,7 +503,7 @@ fn read_optional<T>(
     reader: &mut Reader,
     read: impl FnOnce(&mut Reader) -> Result<T, DecodeError>,
 ) -> Result<Option<T>, DecodeError> {
-    if reader.read_bool()? {
+    if reader.read_boolean()? {
         Ok(Some(read(reader)?))
     } else {
         Ok(None)
@@ -653,7 +653,7 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
     Decoded {
         mixins: built
             .into_iter()
-            .map(|mutator| mutator.expect("every row was built"))
+            .map(|mixin| mixin.expect("every row was built"))
             .collect(),
         code: code
             .into_iter()

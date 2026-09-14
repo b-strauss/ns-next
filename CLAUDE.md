@@ -252,8 +252,8 @@ appears both there and under `corpus/`, and why neither copy may be deleted.
   `Or` are words; Rust keywords and names the workspace does not declare stay
   as Rust, std and other crates spell them (`str`, `len()`, `fmt`, `cfg`,
   `Rc`, `map_err`, `Err`, `args()` on a `Command`); and names bound to a file
-  or an interface keep that name (module files such as `vm`, `expr` and
-  `decl`, the `disasm` command, grammar groups `g1`/`g2`). Clippy's
+  or an interface keep that name (the module file `vm`, the `disasm` command
+  and its module, grammar groups `g1`/`g2`). Clippy's
   `min_ident_chars` (`clippy.toml`, threshold 2 -- it is inclusive) refuses
   the one- and two-character names; code samples in plans follow the same
   rule, since implementers copy them.

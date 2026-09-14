@@ -43,8 +43,8 @@ fn string_contents(heap: &Heap, value: &Value) -> String {
     match value {
         Value::Object(object) => heap
             .str_value(*object)
-            .unwrap_or_else(|| panic!("expected ObjectData::Str")),
-        _ => panic!("expected Value::Obj"),
+            .unwrap_or_else(|| panic!("expected ObjectData::String")),
+        _ => panic!("expected Value::Object"),
     }
 }
 
@@ -182,7 +182,7 @@ fn a_nested_class_can_be_instantiated_through_its_accessor() {
     );
     let value = interpreter.enter(|mutator| match mutator.fetch(&value) {
         Value::SmallInteger(value) => value,
-        _ => panic!("expected a SmallInt from `Inner new value`"),
+        _ => panic!("expected a SmallInteger from `Inner new value`"),
     });
     assert_eq!(value, 42);
 }
@@ -247,7 +247,7 @@ fn a_nested_class_defaults_to_protected_accessibility() {
     );
     let value = interpreter.enter(|mutator| match mutator.fetch(&value) {
         Value::SmallInteger(value) => value,
-        _ => panic!("expected a SmallInt from `Hidden new value`"),
+        _ => panic!("expected a SmallInteger from `Hidden new value`"),
     });
     assert_eq!(value, 7);
     // From outside, as an ordinary send: not reachable.
@@ -332,7 +332,7 @@ fn an_inherited_nested_declaration_is_reached_through_the_chain() {
     );
     let tag = interpreter.enter(|mutator| match mutator.fetch(&tag) {
         Value::SmallInteger(tag) => tag,
-        _ => panic!("expected a SmallInt from `N new tag`"),
+        _ => panic!("expected a SmallInteger from `N new tag`"),
     });
     assert_eq!(tag, 11);
 }
