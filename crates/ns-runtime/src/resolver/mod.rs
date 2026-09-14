@@ -40,10 +40,17 @@ pub fn resolve(
     }
 }
 
-/// Own + statically-inherited member names, per class declaration identity
-/// (keyed by the class's own name, which assumes no module declares two
-/// same-named classes at different nesting depths that would collide
-/// within one compile; revisit with a real `ClassId` if that ever bites).
+/// Each class declaration's *own* declared members
+/// (`classes::own_member_names`), keyed by the class's own name, which
+/// assumes no module declares two same-named classes at different nesting
+/// depths that would collide within one compile; revisit with a real
+/// `ClassId` if that ever bites.
+///
+/// Nothing inherited goes in: `newspeak-spec.pdf` §5.7 looks for the
+/// innermost lexically enclosing construct in which a member "is
+/// declared", and §2.3.1 proceeds "up the inheritance chain of self" only
+/// once no lexically visible declaration matches -- which is dispatch's job
+/// at run time, over the real class chain.
 fn build_member_sets(root: &ast::ClassDeclaration) -> HashMap<Symbol, HashSet<Symbol>> {
     let mut sets = HashMap::new();
     collect_member_sets(root, &mut sets);
@@ -54,25 +61,8 @@ fn collect_member_sets(
     declaration: &ast::ClassDeclaration,
     sets: &mut HashMap<Symbol, HashSet<Symbol>>,
 ) {
-    let own = classes::own_member_names(declaration);
-    let superclass_name = declaration
-        .superclass
-        .as_ref()
-        .map(|clause| Symbol::intern(&clause.receiver.name))
-        .unwrap_or(Symbol::OBJECT);
-    // Inherit the superclass's member set if we've already computed it
-    // (nested classes are declared textually after their enclosing class,
-    // and Object/builtins are the fixed base case -- their own instance
-    // side selectors are added by the bootstrap, not resolved
-    // here). Missing/builtin superclasses contribute an empty set here;
-    // that's fine because `depth_search` only needs *this* module's own
-    // lexically declared names to pick a depth.
-    let mut own_plus_inherited = own;
-    if let Some(inherited) = sets.get(&superclass_name) {
-        own_plus_inherited.extend(inherited.iter().copied());
-    }
     let name = Symbol::intern(&declaration.name.name);
-    sets.insert(name, own_plus_inherited);
+    sets.insert(name, classes::own_member_names(declaration));
     for nested in &declaration.instance_side.nested_classes {
         collect_member_sets(nested, sets);
     }
@@ -387,11 +377,12 @@ impl Resolver {
 
     /// The `id` in `id:: e` (`Expression::Assign { target, .. }`) resolves
     /// exactly like an implicit-receiver keyword send to `id:` -- see
-    /// `docs/design/dispatch.md`, "Setter sends". Locals win first (a local
-    /// temporary/parameter can be reassigned directly); otherwise it is a
-    /// `LexicalSend` at the depth found for the plain slot name (the
-    /// setter and getter share one declared name -- see
-    /// `classes::member_name_of_pattern`).
+    /// `docs/design/dispatch.md`, "Setter sends", and `newspeak-spec.pdf`
+    /// §5.4.3, which makes `id:: e` the send of `id:`. Locals win first (a
+    /// local temporary/parameter can be reassigned directly); otherwise it is
+    /// a `LexicalSend` at the depth of the innermost declaration of the
+    /// setter `id:` itself (§5.7) -- a mutable slot `id`, or a method `id:`.
+    /// An immutable slot declares no setter (§6.3.2), so it is passed by.
     fn resolve_setter_target(
         &mut self,
         target: &ast::Identifier,
@@ -403,7 +394,8 @@ impl Resolver {
             self.bindings.insert(target.span, binding);
             return;
         }
-        let depth = sends::depth_search(chain, name);
+        let setter = Symbol::intern(&format!("{}:", target.name));
+        let depth = sends::depth_search(chain, setter);
         self.bindings
             .insert(target.span, Binding::LexicalSend { depth });
     }
@@ -461,6 +453,20 @@ impl Resolver {
                         // the base case that lets the hierarchy bottom out
                         // at a core-library class.
                     }
+                    // §6.1 evaluates the clause "as if it occurred inside an
+                    // instance method of E", the enclosing class, where a
+                    // name no enclosing declaration declares is an implicit
+                    // receiver send "equivalent to a self send" (§5.7) --
+                    // a nested class the enclosing class only inherits is
+                    // found that way, at run time.
+                    None if !enclosing_chain.is_empty() => {
+                        self.bindings
+                            .insert(clause.receiver.span, Binding::LexicalSend { depth: 0 });
+                    }
+                    // At the top level there is no enclosing object to send
+                    // to: §3.8, "a top level expression is not evaluated in
+                    // the context of an enclosing object; this precludes
+                    // implicit receiver sends".
                     None => self.errors.push(ResolveError {
                         span: clause.receiver.span,
                         message: format!(
@@ -485,15 +491,13 @@ fn pattern_parameter_names(pattern: &ast::MessagePattern) -> Vec<Symbol> {
     }
 }
 
+/// The member an implicit-receiver send names: `newspeak-spec.pdf` §5.7's
+/// "Let s be the selector of the message", the whole selector -- `at:put:`
+/// for a keyword send, never its first keyword.
 fn member_name_of_message(message: &ast::MessageSend) -> Symbol {
     match &message.selector {
-        ast::Selector::Unary(name) => Symbol::intern(name),
-        ast::Selector::Binary(name) => Symbol::intern(name),
-        ast::Selector::Keyword(full) => {
-            // `full` is the whole selector ("at:put:"); §5.7 looks a
-            // keyword send up under its first keyword ("at").
-            let first = full.split(':').next().unwrap_or(full.as_str());
-            Symbol::intern(first)
+        ast::Selector::Unary(name) | ast::Selector::Binary(name) | ast::Selector::Keyword(name) => {
+            Symbol::intern(name)
         }
     }
 }

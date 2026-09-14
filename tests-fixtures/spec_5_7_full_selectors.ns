@@ -1,0 +1,27 @@
+Newspeak3
+'Test'
+class Spec57FullSelectors usingPlatform: p = Object new (| t = p transcript. |) (
+    (* newspeak-spec.pdf 5.7 looks for "a method, slot or class named s", s
+       being "the selector of the message" -- the whole selector. Outer's
+       foo:bar: declares no member foo:, and its at:put: declares no member
+       at. Neither selector is declared by any lexically enclosing
+       declaration, so both sends are "equivalent to a self send", and Base,
+       Inner's superclass, answers them. *)
+    class Base = Object new () (
+        public foo: x = ( ^x + 100 )
+        public at = ( ^'unary at of Base' )
+    )
+    class Outer = Object new () (
+        public foo: x bar: y = ( ^0 )
+        public at: index put: value = ( ^'at:put: of Outer' )
+        class Inner = Base new () (
+            public keyword = ( ^foo: 1 )
+            public unary = ( ^at )
+        )
+        public test = ( ^Inner new )
+    )
+    public main: platform args: args = (
+        t show: Outer new test keyword printString; newLine.
+        t show: Outer new test unary; newLine.
+    )
+) : ()

@@ -720,3 +720,37 @@ fn a_superclasss_private_method_is_not_lexically_visible() {
         "Uncaught Newspeak error: an object does not understand #p\n",
     );
 }
+
+/// `newspeak-spec.pdf` §5.7: no lexically enclosing declaration declares `n`
+/// -- `Enclosing` only inherits it from `OuterBase` -- so `^n` is "equivalent
+/// to a self send", and on figure 4, "Only if this fails is the receiver's
+/// inheritance chain followed": the receiver's, `Nested`'s, which has no
+/// `n`. §2.3.1: "After that, no further lookup is done."
+#[test]
+fn an_enclosing_classs_inherited_member_is_not_lexically_visible() {
+    assert_outcome(
+        "enclosing-inherited",
+        indoc! {"
+            Newspeak3
+            'T'
+            class EnclosingInherited usingPlatform: platform = Object new (
+            ) (
+                class OuterBase = Object new () (
+                    public n = ( ^1 )
+                )
+                class Enclosing = OuterBase new () (
+                    class Nested = Object new () (
+                        public implicit = ( ^n )
+                    )
+                    public test = ( ^Nested new implicit )
+                )
+                public main: pl args: a = (
+                    Enclosing new test
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #n\n",
+    );
+}
