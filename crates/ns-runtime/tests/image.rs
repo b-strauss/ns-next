@@ -269,7 +269,7 @@ fn load(source: &str) -> (Interpreter, Root) {
 /// which take one. Fetched where it is used: a run may move it. Takes
 /// `&Mutator` and is called from inside an entry, since every caller already
 /// holds one by the time it needs a `ClassReference`.
-fn class_reference(mutator: &Mutator, root: &Root) -> ClassReference {
+fn class_reference<'gc>(mutator: &Mutator<'gc>, root: &Root) -> ClassReference<'gc> {
     match mutator.fetch(root) {
         Value::Object(class) => class,
         _ => panic!("expected a class object"),
@@ -476,7 +476,11 @@ fn every_instruction_once() -> CompiledCode {
 
 /// The compiled code of `class`'s method `selector` -- the body the method
 /// `Interpreter::push_step` activates carries.
-fn method_code(heap: &Heap, class: ClassReference, selector: &str) -> Rc<CompiledCode> {
+fn method_code<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+    selector: &str,
+) -> Rc<CompiledCode> {
     let application = heap.class_application(class).expect("not a class");
     application.mixin.methods[&Symbol::intern(selector)]
         .code
@@ -487,7 +491,7 @@ fn method_code(heap: &Heap, class: ClassReference, selector: &str) -> Rc<Compile
 /// mixin table numbers its rows. `image::load` indexes the *decoded* table
 /// here; a test that encodes and decodes against one live class can use
 /// that class's own tree, which is the same walk.
-fn mixin_preorder(heap: &Heap, class: ClassReference) -> Vec<Rc<Mixin>> {
+fn mixin_preorder<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Vec<Rc<Mixin>> {
     let mut order = Vec::new();
     ns_runtime::mixin::preorder(&root_mixin_of(heap, class), &mut order);
     order
@@ -495,7 +499,7 @@ fn mixin_preorder(heap: &Heap, class: ClassReference) -> Vec<Rc<Mixin>> {
 
 /// `class`'s own mixin as a value a test can edit. The clone is shallow: its
 /// methods, nested declarations and class side are the same `Rc`s.
-fn mixin_of(heap: &Heap, class: ClassReference) -> Mixin {
+fn mixin_of<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Mixin {
     (*heap.class_application(class).expect("a class object").mixin).clone()
 }
 
@@ -505,7 +509,7 @@ fn mixin_of(heap: &Heap, class: ClassReference) -> Mixin {
 /// test puts a doctored body in front of the encoder. Takes `&mut Mutator`
 /// and is called from inside an entry, alongside the rest of the doctoring
 /// its callers do.
-fn install_mixin(mutator: &mut Mutator, class: ClassReference, mixin: Mixin) {
+fn install_mixin<'gc>(mutator: &mut Mutator<'gc>, class: ClassReference<'gc>, mixin: Mixin) {
     let super_application = mutator
         .heap()
         .class_application(class)
@@ -549,9 +553,9 @@ fn with_nested(mut mixin: Mixin, name: &str, edit: impl FnOnce(Mixin) -> Mixin) 
 /// Encodes a class's code table and mixin table into fresh bytes and
 /// decodes both back. The two travel together everywhere: the mixin table
 /// is what says which compiled body belongs to which declaration.
-fn round_trip_code_table(
-    heap: &Heap,
-    class: ClassReference,
+fn round_trip_code_table<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
 ) -> (decode::DecodedCodeTable, mixins::Decoded, encode::CodeIds) {
     let mut writer = encode::Writer::new();
     let mut symbols = symbols::Builder::new();
@@ -1321,9 +1325,9 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 /// graph section names a class object's declaration by row id, so encoding
 /// one needs exactly the map `image::snapshot` builds. Called from inside an
 /// entry, alongside the rest of the encoding its callers do.
-fn mixin_ids_for(
-    class: ClassReference,
-    mutator: &Mutator,
+fn mixin_ids_for<'gc>(
+    class: ClassReference<'gc>,
+    mutator: &Mutator<'gc>,
     symbols: &mut symbols::Builder,
     ids: &encode::CodeIds,
 ) -> HashMap<usize, u32> {
@@ -1397,7 +1401,7 @@ const EMPTY: &str = indoc! {"
     ) : ()
 "};
 
-fn object(value: &Value) -> &ns_runtime::ObjectReference {
+fn object<'a, 'gc>(value: &'a Value<'gc>) -> &'a ns_runtime::ObjectReference<'gc> {
     let Value::Object(handle) = value else {
         panic!("expected an object")
     };
@@ -1755,7 +1759,10 @@ impl GraphFixture {
     fn decode<R>(
         &mut self,
         bytes: &[u8],
-        inspect: impl FnOnce(&Heap, Result<decode::DecodedGraph, decode::DecodeError>) -> R,
+        inspect: impl for<'gc> FnOnce(
+            &Heap<'gc>,
+            Result<decode::DecodedGraph<'gc>, decode::DecodeError>,
+        ) -> R,
     ) -> R {
         let class = &self.class;
         let platform = &self.platform;
@@ -1785,7 +1792,7 @@ impl GraphFixture {
         &mut self,
         bytes: &[u8],
         what: &str,
-        inspect: impl FnOnce(&Heap, &decode::DecodedGraph) -> R,
+        inspect: impl for<'gc> FnOnce(&Heap<'gc>, &decode::DecodedGraph<'gc>) -> R,
     ) -> R {
         self.decode(bytes, |heap, decoded| match decoded {
             Ok(graph) => inspect(heap, &graph),
@@ -4133,12 +4140,12 @@ const NESTED_MODULE: &str = indoc! {"
 /// (not yet implemented) nested-class accessor will eventually do for
 /// `Inner`. Built by hand because there is no other way yet to reach a
 /// nested mixin's own class object.
-fn apply_and_wrap(
-    mutator: &mut Mutator,
-    class_of_class: ClassReference,
+fn apply_and_wrap<'gc>(
+    mutator: &mut Mutator<'gc>,
+    class_of_class: ClassReference<'gc>,
     mixin: &Rc<Mixin>,
     superclass: Option<&Rc<MixinApplication>>,
-) -> ClassReference {
+) -> ClassReference<'gc> {
     let application = mutator.apply_mixin(mixin, superclass);
     mutator.heap_mut().allocate_object(
         class_of_class,
@@ -4153,7 +4160,7 @@ fn apply_and_wrap(
     )
 }
 
-fn root_mixin_of(heap: &Heap, class: ClassReference) -> Rc<Mixin> {
+fn root_mixin_of<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Rc<Mixin> {
     heap.class_application(class)
         .expect("not a class")
         .mixin
@@ -4370,15 +4377,18 @@ fn snapshot_world(
 
 /// The `MixinApplication` behind a class object -- the behaviour half two
 /// class objects built from one mixin and one superclass must *share*.
-fn application_of(heap: &ns_runtime::Heap, class: ClassReference) -> Rc<MixinApplication> {
+fn application_of<'gc>(
+    heap: &ns_runtime::Heap<'gc>,
+    class: ClassReference<'gc>,
+) -> Rc<MixinApplication> {
     heap.class_application(class).expect("a class object")
 }
 
-fn class_name(heap: &ns_runtime::Heap, class: ClassReference) -> String {
+fn class_name<'gc>(heap: &ns_runtime::Heap<'gc>, class: ClassReference<'gc>) -> String {
     application_of(heap, class).mixin.name.as_str().to_string()
 }
 
-fn class_of(heap: &Heap, value: &Value) -> ClassReference {
+fn class_of<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> ClassReference<'gc> {
     heap.class_of_object(*object(value))
 }
 
@@ -4390,7 +4400,11 @@ fn class_of(heap: &Heap, value: &Value) -> ClassReference {
 /// *declaration* off the class chain, and the declaration is what indexes
 /// the slot map -- a subclass's `class N` and the inherited one it shadows
 /// have different slots.
-fn cached_nested_class(heap: &ns_runtime::Heap, enclosing: &Value, name: &str) -> Value {
+fn cached_nested_class<'gc>(
+    heap: &ns_runtime::Heap<'gc>,
+    enclosing: &Value<'gc>,
+    name: &str,
+) -> Value<'gc> {
     let class = class_of(heap, enclosing);
     let ns_runtime::dispatch::Lookup::NestedClass(nested, _) =
         ns_runtime::dispatch::lookup_defined_for(heap, class, Symbol::intern(name))
@@ -4699,7 +4713,7 @@ fn outer_still_resolves_through_a_declaration_chain_that_came_from_an_image() {
 }
 
 /// The text of a decoded `String` object. Never `{:?}`s the `Value`.
-fn string_contents(heap: &Heap, value: &Value) -> String {
+fn string_contents<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
     heap.str_value(*object(value))
         .expect("expected a string object")
 }
@@ -5531,7 +5545,7 @@ const DEEP: u32 = 200_000;
 /// test below asserts this before it does anything else: a fixture that
 /// silently decoded to a chain of one would pass every "did not blow the
 /// stack" assertion without ever having tested anything.
-fn superclass_depth(heap: &Heap, head: &Value) -> u32 {
+fn superclass_depth<'gc>(heap: &Heap<'gc>, head: &Value<'gc>) -> u32 {
     let mut depth = 0;
     let mut level = match head {
         Value::Object(class) => Some(*class),
@@ -5545,7 +5559,7 @@ fn superclass_depth(heap: &Heap, head: &Value) -> u32 {
 }
 
 /// The same count down an instance chain's first field.
-fn instance_chain_depth(heap: &Heap, head: &Value) -> u32 {
+fn instance_chain_depth<'gc>(heap: &Heap<'gc>, head: &Value<'gc>) -> u32 {
     let mut depth = 0;
     let mut level = match head {
         Value::Object(object) => Some(*object),

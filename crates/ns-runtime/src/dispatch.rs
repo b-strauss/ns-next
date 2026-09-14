@@ -11,8 +11,8 @@ use crate::mixin::{Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
 use crate::Symbol;
 
-pub enum Lookup {
-    Method(Rc<MixinMethod>, ClassReference),
+pub enum Lookup<'gc> {
+    Method(Rc<MixinMethod>, ClassReference<'gc>),
     /// A nested class declaration, reached through the implicit accessor
     /// `newspeak-spec.pdf` §6 says every such declaration defines in its
     /// enclosing class. The `ClassReference` is the class object of the level
@@ -20,7 +20,7 @@ pub enum Lookup {
     /// reports, so a caller can treat both arms uniformly; the nested class
     /// object itself does not exist until `interpreter::nested::nested_class`
     /// materializes it for a particular receiver.
-    NestedClass(Rc<Mixin>, ClassReference),
+    NestedClass(Rc<Mixin>, ClassReference<'gc>),
     Native(BuiltinClass),
     NotFound,
 }
@@ -64,12 +64,12 @@ pub fn nested_access(mixin: &Mixin) -> ast::AccessModifier {
 /// declaration encloses, and a `None` `defining_class`, a top-level
 /// activation. Both have a lexical chain of exactly one level, so no
 /// positive depth is resolvable in either.
-pub fn kth_enclosing_object(
-    heap: &Heap,
-    self_value: &Value,
-    defining_class: Option<&ClassReference>,
+pub fn kth_enclosing_object<'gc>(
+    heap: &Heap<'gc>,
+    self_value: &Value<'gc>,
+    defining_class: Option<&ClassReference<'gc>>,
     depth: u16,
-) -> Value {
+) -> Value<'gc> {
     if depth == 0 {
         return *self_value;
     }
@@ -97,7 +97,11 @@ pub fn kth_enclosing_object(
 /// §5.5: ordinary (explicit-receiver) sends. A `protected`/`private`
 /// declaration shadows an inherited `public` one -- the search stops at
 /// the first declaration found, matching or not.
-pub fn lookup_public(heap: &Heap, class: ClassReference, selector: Symbol) -> Lookup {
+pub fn lookup_public<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+    selector: Symbol,
+) -> Lookup<'gc> {
     walk(
         heap,
         class,
@@ -110,7 +114,11 @@ pub fn lookup_public(heap: &Heap, class: ClassReference, selector: Symbol) -> Lo
 /// §5.9 (non-`private` half of a `LexicalSend`): matches `public` or
 /// `protected`; a `private` declaration is transparently skipped, the walk
 /// continues past it.
-pub fn lookup_protected(heap: &Heap, class: ClassReference, selector: Symbol) -> Lookup {
+pub fn lookup_protected<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+    selector: Symbol,
+) -> Lookup<'gc> {
     walk(
         heap,
         class,
@@ -123,7 +131,11 @@ pub fn lookup_protected(heap: &Heap, class: ClassReference, selector: Symbol) ->
 /// The plain, access-blind "defined for" walk (§3.5): used by `super`
 /// sends (§5.10) and by `doesNotUnderstand:` resolution, which is exempt
 /// from every access check (§5.5).
-pub fn lookup_defined_for(heap: &Heap, class: ClassReference, selector: Symbol) -> Lookup {
+pub fn lookup_defined_for<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+    selector: Symbol,
+) -> Lookup<'gc> {
     walk(heap, class, selector, |_| true, false)
 }
 
@@ -132,13 +144,13 @@ pub fn lookup_defined_for(heap: &Heap, class: ClassReference, selector: Symbol) 
 /// it, stop searching (return `NotFound`) instead of continuing up.
 /// `lookupProtected`/`lookup_defined_for` never hard-stop: a declaration
 /// that doesn't match the predicate is transparently skipped.
-fn walk(
-    heap: &Heap,
-    class: ClassReference,
+fn walk<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
     selector: Symbol,
     accept: impl Fn(ast::AccessModifier) -> bool,
     hard_stop_on_mismatch: bool,
-) -> Lookup {
+) -> Lookup<'gc> {
     let mut level = level_of(heap, class);
     while let Some((level_class, application)) = level {
         // `level_of` established `level_class` names a class only for the first
@@ -199,7 +211,10 @@ fn walk(
 /// code, the class object supplies the identity `Frame.current_class` needs
 /// for `super` and `outer`. Returns `None` for a non-class object, which is
 /// what ends a walk that was handed one.
-fn level_of(heap: &Heap, class: ClassReference) -> Option<(ClassReference, Rc<MixinApplication>)> {
+fn level_of<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+) -> Option<(ClassReference<'gc>, Rc<MixinApplication>)> {
     heap.class_application(class)
         .map(|application| (class, application))
 }
@@ -210,10 +225,10 @@ fn level_of(heap: &Heap, class: ClassReference) -> Option<(ClassReference, Rc<Mi
 /// length; requiring both halves here means a hierarchy that somehow lost
 /// one of them ends the search instead of reporting a `Lookup::Method`
 /// whose class object comes from a different level than its code.
-fn next_level(
-    superclass: Option<ClassReference>,
+fn next_level<'gc>(
+    superclass: Option<ClassReference<'gc>>,
     application: &Rc<MixinApplication>,
-) -> Option<(ClassReference, Rc<MixinApplication>)> {
+) -> Option<(ClassReference<'gc>, Rc<MixinApplication>)> {
     let superclass = superclass?;
     let super_application = application.superclass.clone()?;
     Some((superclass, super_application))
@@ -226,7 +241,11 @@ fn next_level(
 /// access-controlled the way a method send is, which is a known gap. Used
 /// by `sends::decide_lexical_send` before falling through to
 /// `lookup_defined_for`/`lookup_protected`.
-pub fn lookup_slot(heap: &Heap, class: ClassReference, name: Symbol) -> Option<usize> {
+pub fn lookup_slot<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+    name: Symbol,
+) -> Option<usize> {
     heap.class_application(class)?
         .slot_index
         .get(&name)
@@ -250,17 +269,17 @@ mod tests {
     /// non-panicking placeholder is sufficient; a self-referential one
     /// is the simplest to build. The construction itself lives in
     /// `Heap::allocate_self_referential_class`.
-    fn dummy_class(heap: &mut Heap) -> ClassReference {
+    fn dummy_class<'gc>(heap: &mut Heap<'gc>) -> ClassReference<'gc> {
         heap.allocate_self_referential_class(ObjectData::Instance(vec![]))
     }
 
-    fn class_with_method(
-        heap: &mut Heap,
+    fn class_with_method<'gc>(
+        heap: &mut Heap<'gc>,
         name: &str,
         selector: &str,
         access: Option<ast::AccessModifier>,
-        superclass: Option<ClassReference>,
-    ) -> ClassReference {
+        superclass: Option<ClassReference<'gc>>,
+    ) -> ClassReference<'gc> {
         // Build a minimal MethodDeclaration via ns_syntax::parse of a throwaway
         // module and pull the method out of it -- avoids hand-constructing
         // deeply nested AST literals here.
@@ -320,66 +339,72 @@ mod tests {
 
     #[test]
     fn lookup_public_finds_a_public_method() {
-        let mut heap = Heap::new();
-        let class = class_with_method(
-            &mut heap,
-            "X",
-            "foo",
-            Some(ast::AccessModifier::Public),
-            None,
-        );
-        assert!(matches!(
-            lookup_public(&heap, class, Symbol::intern("foo")),
-            Lookup::Method(..)
-        ));
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let class = class_with_method(
+                &mut mutator.heap,
+                "X",
+                "foo",
+                Some(ast::AccessModifier::Public),
+                None,
+            );
+            assert!(matches!(
+                lookup_public(&mutator.heap, class, Symbol::intern("foo")),
+                Lookup::Method(..)
+            ));
+        });
     }
 
     #[test]
     fn lookup_public_hard_stops_on_a_protected_declaration() {
-        let mut heap = Heap::new();
-        let base = class_with_method(
-            &mut heap,
-            "Base",
-            "foo",
-            Some(ast::AccessModifier::Public),
-            None,
-        );
-        let derived = class_with_method(
-            &mut heap,
-            "Derived",
-            "foo",
-            Some(ast::AccessModifier::Protected),
-            Some(base),
-        );
-        assert!(matches!(
-            lookup_public(&heap, derived, Symbol::intern("foo")),
-            Lookup::NotFound
-        ));
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let base = class_with_method(
+                &mut mutator.heap,
+                "Base",
+                "foo",
+                Some(ast::AccessModifier::Public),
+                None,
+            );
+            let derived = class_with_method(
+                &mut mutator.heap,
+                "Derived",
+                "foo",
+                Some(ast::AccessModifier::Protected),
+                Some(base),
+            );
+            assert!(matches!(
+                lookup_public(&mutator.heap, derived, Symbol::intern("foo")),
+                Lookup::NotFound
+            ));
+        });
     }
 
     #[test]
     fn lookup_protected_skips_a_private_declaration_transparently() {
-        let mut heap = Heap::new();
-        let base = class_with_method(
-            &mut heap,
-            "Base",
-            "foo",
-            Some(ast::AccessModifier::Public),
-            None,
-        );
-        let derived = class_with_method(
-            &mut heap,
-            "Derived",
-            "foo",
-            Some(ast::AccessModifier::Private),
-            Some(base),
-        );
-        // lookup_protected on Derived's own `foo` (private) must not match,
-        // but must continue to Base's public `foo`.
-        assert!(matches!(
-            lookup_protected(&heap, derived, Symbol::intern("foo")),
-            Lookup::Method(..)
-        ));
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let base = class_with_method(
+                &mut mutator.heap,
+                "Base",
+                "foo",
+                Some(ast::AccessModifier::Public),
+                None,
+            );
+            let derived = class_with_method(
+                &mut mutator.heap,
+                "Derived",
+                "foo",
+                Some(ast::AccessModifier::Private),
+                Some(base),
+            );
+            // lookup_protected on Derived's own `foo` (private) must not match,
+            // but must continue to Base's public `foo`.
+            assert!(matches!(
+                lookup_protected(&mutator.heap, derived, Symbol::intern("foo")),
+                Lookup::Method(..)
+            ));
+        });
     }
 
     #[test]

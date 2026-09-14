@@ -22,7 +22,7 @@ fn string(interpreter: &mut Interpreter, text: &str) -> Root {
     })
 }
 
-fn as_string(heap: &Heap, value: &Value) -> String {
+fn as_string<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
     match value {
         Value::Object(object) => heap
             .str_value(*object)

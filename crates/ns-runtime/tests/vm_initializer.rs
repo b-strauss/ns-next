@@ -34,7 +34,7 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-fn integer_of(value: &Value) -> i64 {
+fn integer_of<'gc>(value: &Value<'gc>) -> i64 {
     match value {
         Value::SmallInteger(integer) => *integer,
         _ => panic!("expected a SmallInteger"),
@@ -43,7 +43,7 @@ fn integer_of(value: &Value) -> i64 {
 
 /// Instantiates with `factory_arguments`, sends `getter`, returns the
 /// `SmallInteger` it answers.
-fn instantiate_and_get(source: &str, factory_arguments: Vec<Value>, getter: &str) -> i64 {
+fn instantiate_and_get(source: &str, factory_arguments: Vec<Value<'static>>, getter: &str) -> i64 {
     let (mut interpreter, class) = load(source);
     let factory_arguments: Vec<Root> = factory_arguments
         .into_iter()
@@ -217,7 +217,7 @@ fn make_class(
 /// The `SmallInteger` held at `instance`'s field `index` -- `Value` has no
 /// `PartialEq`, so this reads through the one variant the test needs
 /// instead of comparing `Value`s directly.
-fn field_at(heap: &ns_runtime::Heap, instance: &Value, index: usize) -> i64 {
+fn field_at<'gc>(heap: &ns_runtime::Heap<'gc>, instance: &Value<'gc>, index: usize) -> i64 {
     let Value::Object(object) = instance else {
         panic!("expected an instance")
     };

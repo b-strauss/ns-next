@@ -39,7 +39,7 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 /// (`ObjectReference(#42)`, not the string's contents), so a class-side send's
 /// result is compared through this rather than `assert_eq!` on the `Value`
 /// itself.
-fn string_contents(heap: &Heap, value: &Value) -> String {
+fn string_contents<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
     match value {
         Value::Object(object) => heap
             .str_value(*object)
@@ -556,9 +556,9 @@ fn nested_class_object(interpreter: &mut Interpreter, enclosing: &Root, name: &s
     class
 }
 
-fn application_of(
-    heap: &ns_runtime::Heap,
-    class: ns_runtime::ClassReference,
+fn application_of<'gc>(
+    heap: &ns_runtime::Heap<'gc>,
+    class: ns_runtime::ClassReference<'gc>,
 ) -> Rc<ns_runtime::MixinApplication> {
     heap.class_application(class).expect("a class object")
 }

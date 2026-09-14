@@ -121,10 +121,10 @@ impl Interpreter {
     }
 }
 
-impl Mutator {
+impl<'gc> Mutator<'gc> {
     /// `load_module`'s work, inside its entry: the root class, built and
     /// compiled, for `load_module` to root.
-    pub(crate) fn load_root_class(&mut self, resolved: &ResolvedModule) -> ClassReference {
+    pub(crate) fn load_root_class(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let declaration = &resolved.module.root_class;
         let mixin = self.build_mixin(declaration, &resolved.bindings);
         let superclass = self.resolve_superclass_receiver(declaration);
@@ -268,10 +268,10 @@ impl Mutator {
     /// which would otherwise allocate a second, discarded instance per level.
     pub(super) fn try_factory_send(
         &mut self,
-        receiver: &Value,
+        receiver: &Value<'gc>,
         selector: Symbol,
-        arguments: &[Value],
-    ) -> Option<Result<Step, Signal>> {
+        arguments: &[Value<'gc>],
+    ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
         let Value::Object(object) = receiver else {
             return None;
         };
@@ -305,7 +305,7 @@ impl Mutator {
     fn resolve_superclass_receiver(
         &mut self,
         declaration: &ast::ClassDeclaration,
-    ) -> Option<ClassReference> {
+    ) -> Option<ClassReference<'gc>> {
         let Some(clause) = &declaration.superclass else {
             return Some(self.builtin_class(BuiltinClass::Object));
         };
@@ -339,9 +339,9 @@ impl Mutator {
     /// continuation).
     pub(crate) fn decide_instantiation(
         &mut self,
-        class: ClassReference,
-        factory_arguments: Vec<Value>,
-    ) -> Result<Step, Signal> {
+        class: ClassReference<'gc>,
+        factory_arguments: Vec<Value<'gc>>,
+    ) -> Result<Step<'gc>, Signal<'gc>> {
         // Step 1: one instance, every slot nil. The application already
         // knows the whole layout, inherited slots included -- summing the
         // chain here again would be a second answer to the same question.
@@ -358,7 +358,7 @@ impl Mutator {
     /// The box a new walk of `instance`'s instantiation runs in: a spare one
     /// if a finished walk left one, so that neither the box nor its list of
     /// levels is allocated again.
-    fn walk_state(&mut self, instance: Value) -> Box<Instantiation> {
+    fn walk_state(&mut self, instance: Value<'gc>) -> Box<Instantiation<'gc>> {
         match self.spare_walks.pop() {
             Some(mut state) => {
                 state.instance = instance;
@@ -380,7 +380,7 @@ impl Mutator {
     /// the list of levels with the superclass chain, whose length is an
     /// image's to choose; neither peak should stay allocated for the rest of
     /// the run.
-    fn retire_walk(&mut self, mut state: Box<Instantiation>) {
+    fn retire_walk(&mut self, mut state: Box<Instantiation<'gc>>) {
         if self.spare_walks.len() < SPARE_WALKS {
             state.levels.clear();
             state.levels.shrink_to(SPARE_LEVELS);
@@ -403,9 +403,9 @@ impl Mutator {
     /// another body.
     pub(crate) fn advance_instantiation(
         &mut self,
-        state: Box<Instantiation>,
-        value: Value,
-    ) -> Result<Step, Signal> {
+        state: Box<Instantiation<'gc>>,
+        value: Value<'gc>,
+    ) -> Result<Step<'gc>, Signal<'gc>> {
         match state.phase {
             InstantiationPhase::Climbing { level, superclass } => {
                 let super_arguments = argument_list(&self.heap, level, value)?;
@@ -429,10 +429,10 @@ impl Mutator {
     /// iteratively"). At the top of the chain, the downward walk begins.
     fn climb_levels(
         &mut self,
-        mut state: Box<Instantiation>,
-        mut level: ClassReference,
-        mut arguments: Vec<Value>,
-    ) -> Result<Step, Signal> {
+        mut state: Box<Instantiation<'gc>>,
+        mut level: ClassReference<'gc>,
+        mut arguments: Vec<Value<'gc>>,
+    ) -> Result<Step<'gc>, Signal<'gc>> {
         loop {
             self.check_factory_arity(level, &arguments)?;
             let Some(superclass) = self.heap.class_superclass(level) else {
@@ -478,9 +478,9 @@ impl Mutator {
     /// nothing below it has code. Past the last level, the instance (step 6).
     fn descend_levels(
         &mut self,
-        mut state: Box<Instantiation>,
+        mut state: Box<Instantiation<'gc>>,
         next: usize,
-    ) -> Result<Step, Signal> {
+    ) -> Result<Step<'gc>, Signal<'gc>> {
         let instance = state.instance;
         let Some(index) = initializing_level_below(&self.heap, &state.levels, next) else {
             self.retire_walk(state);
@@ -523,7 +523,7 @@ impl Mutator {
     /// activation runs with.
     pub(super) fn initializer_body(
         &self,
-        level: ClassReference,
+        level: ClassReference<'gc>,
     ) -> (Rc<crate::bytecode::CompiledCode>, usize) {
         let application = self
             .heap
@@ -545,9 +545,9 @@ impl Mutator {
     /// level's activation is pushed or any slot initializer / initExpr runs.
     fn check_factory_arity(
         &self,
-        class: ClassReference,
-        factory_arguments: &[Value],
-    ) -> Result<(), Signal> {
+        class: ClassReference<'gc>,
+        factory_arguments: &[Value<'gc>],
+    ) -> Result<(), Signal<'gc>> {
         // A slot initializer or
         // initExpr may reference a factory parameter as `Binding::Local(i)`,
         // resolved against this class's *declared* factory pattern -- but
@@ -603,9 +603,9 @@ impl Mutator {
     /// effects.
     fn clause_message_body(
         &self,
-        class: ClassReference,
-        superclass: ClassReference,
-    ) -> Result<Option<Rc<crate::bytecode::CompiledCode>>, Signal> {
+        class: ClassReference<'gc>,
+        superclass: ClassReference<'gc>,
+    ) -> Result<Option<Rc<crate::bytecode::CompiledCode>>, Signal<'gc>> {
         // One lookup of the application for both questions below: the clause
         // this class was declared with, and the mixin its compiled message
         // body lives on.
@@ -649,7 +649,10 @@ impl Mutator {
 /// incoming send *is* the factory message) and `clause_message_body`
 /// (which decides whether a superclass clause names it) -- `newspeak-spec.pdf`
 /// §6.1 makes those the same question asked from two sides.
-pub(crate) fn primary_factory_selector(heap: &Heap, class: ClassReference) -> Option<Symbol> {
+pub(crate) fn primary_factory_selector<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+) -> Option<Symbol> {
     heap.class_application(class)
         .map(|application| match &application.mixin.factory {
             Some(factory) => factory.selector,
@@ -657,7 +660,7 @@ pub(crate) fn primary_factory_selector(heap: &Heap, class: ClassReference) -> Op
         })
 }
 
-fn class_name(heap: &Heap, class: ClassReference) -> Symbol {
+fn class_name<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Symbol {
     heap.class_application(class)
         .map_or(Symbol::AN_OBJECT, |application| application.mixin.name)
 }
@@ -665,13 +668,13 @@ fn class_name(heap: &Heap, class: ClassReference) -> Symbol {
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if the message
 /// determined by the inheritance clause is not the primary factory message
 /// of C."
-fn not_the_primary_factory_error(
-    heap: &Heap,
-    class: ClassReference,
-    superclass: ClassReference,
+fn not_the_primary_factory_error<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+    superclass: ClassReference<'gc>,
     selector: Symbol,
     expected: Option<Symbol>,
-) -> Signal {
+) -> Signal<'gc> {
     let subclass_name = class_name(heap, class);
     let superclass_name = class_name(heap, superclass);
     let expected = match expected {
@@ -698,7 +701,11 @@ fn not_the_primary_factory_error(
 /// body that produced this value can come off the wire, where
 /// `image::decode::verify_mixins` reconciles its kind and arity but nothing
 /// constrains what it returns. An image is untrusted input.
-fn argument_list(heap: &Heap, class: ClassReference, value: Value) -> Result<Vec<Value>, Signal> {
+fn argument_list<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+    value: Value<'gc>,
+) -> Result<Vec<Value<'gc>>, Signal<'gc>> {
     if let Value::Object(object) = &value {
         if let Some(items) = heap.array_elements(*object) {
             return Ok(items);
@@ -775,16 +782,19 @@ pub(crate) fn pattern_parameter_count(pattern: &ast::MessagePattern) -> usize {
 /// every `BuiltinClass` and for a non-class object. Delegates to
 /// `mixin_needs_initializer_code`, the one definition of "needs initializer
 /// code" a class-level and a mixin-level caller both share.
-pub(crate) fn class_has_initializer_code(heap: &Heap, class: ClassReference) -> bool {
+pub(crate) fn class_has_initializer_code<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+) -> bool {
     heap.class_application(class)
         .is_some_and(|application| mixin_needs_initializer_code(&application.mixin))
 }
 
 /// The nearest level to the top of the chain below `below` that has
 /// initializer code: the next one the downward walk runs.
-fn initializing_level_below(
-    heap: &Heap,
-    levels: &[(ClassReference, Vec<Value>)],
+fn initializing_level_below<'gc>(
+    heap: &Heap<'gc>,
+    levels: &[(ClassReference<'gc>, Vec<Value<'gc>>)],
     below: usize,
 ) -> Option<usize> {
     levels[..below]

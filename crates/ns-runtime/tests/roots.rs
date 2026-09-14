@@ -126,7 +126,9 @@ fn roots_a_host_has_dropped_are_swept() {
 fn fetching_a_root_through_another_interpreter_panics() {
     let (_interpreter, class) = load(COUNTER);
     let (mut other, _other_class) = load(COUNTER);
-    let _ = other.enter(|mutator| mutator.fetch(&class));
+    other.enter(|mutator| {
+        let _ = mutator.fetch(&class);
+    });
 }
 
 /// Gated like its only caller: a move exists only in a debug build.
@@ -220,23 +222,4 @@ fn a_world_reached_from_roots_survives_moves() {
         let cell = mutator.heap().array_at(built, 0).expect("the cell");
         assert_eq!(mutator.heap().describe(&cell), "an instance of Cell");
     });
-}
-
-/// A value a host fetched and kept past a move names nothing any more: the
-/// debug build refuses the read rather than answer for whatever object took
-/// its slot.
-///
-/// Converted literally per the 2c plan rather than following the "nothing
-/// that holds a handle leaves an entry" rule: this test's whole point is the
-/// mistake of keeping a fetched value past a move. Task 4's brand makes this
-/// a compile error, and replaces this test with a `compile_fail` doctest.
-#[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "stale handle")]
-fn a_value_kept_past_a_move_is_refused() {
-    let (mut interpreter, class) = load(COUNTER);
-    let counter = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let kept = interpreter.enter(|mutator| mutator.fetch(&counter));
-    interpreter.move_now();
-    let _ = interpreter.enter(|mutator| mutator.heap().describe(&kept));
 }

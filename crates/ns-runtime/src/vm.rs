@@ -117,8 +117,8 @@ fn poll(interpreter: &mut Interpreter) {
 
 /// One instruction of `code`, running in `activation`.
 #[inline(always)]
-fn execute(
-    mutator: &mut Mutator,
+fn execute<'gc>(
+    mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     code: &CompiledCode,
     program_counter: usize,
@@ -353,15 +353,15 @@ fn execute(
 /// `inlinable` says whether the instruction was a `SendInlinable`, which
 /// `push_step` hands to the depth count along with the sender, `activation`.
 #[allow(clippy::too_many_arguments)]
-fn send(
-    mutator: &mut Mutator,
+fn send<'gc>(
+    mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     program_counter: usize,
     argument_registers: &[u16],
     destination: u16,
     floor: usize,
     inlinable: bool,
-    decide: impl FnOnce(&mut Mutator, &[Value]) -> Result<Step, Signal>,
+    decide: impl FnOnce(&mut Mutator<'gc>, &[Value<'gc>]) -> Result<Step<'gc>, Signal<'gc>>,
 ) -> Flow {
     let mut arguments = mutator.take_argument_buffer();
     arguments.extend(
@@ -399,10 +399,10 @@ fn send(
 /// place. `Mutator::resume` applies the continuation and
 /// `Mutator::push_continuation` pushes what it decided, depth count included;
 /// the loop only forwards the popped entry's flag.
-fn finish(
-    mutator: &mut Mutator,
+fn finish<'gc>(
+    mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
-    value: Value,
+    value: Value<'gc>,
     floor: usize,
 ) -> Flow {
     let popped = mutator.heap.pop_activation(activation);
@@ -445,7 +445,11 @@ fn finish(
 
 /// Writes a callee's value into the send `caller` is stopped at, and resumes
 /// `caller` after it.
-fn resume_caller(mutator: &mut Mutator, caller: ActivationReference, value: Value) -> Flow {
+fn resume_caller<'gc>(
+    mutator: &mut Mutator<'gc>,
+    caller: ActivationReference,
+    value: Value<'gc>,
+) -> Flow {
     let code = mutator.heap.activation_code(caller);
     let program_counter = mutator.heap.activation_program_counter(caller);
     write_local(
@@ -476,7 +480,7 @@ fn resume_caller(mutator: &mut Mutator, caller: ActivationReference, value: Valu
 /// have been popped can be asked (`Heap::activation_is_live`). Every
 /// activation it pops hands its continuation to `Mutator::abandon`, which
 /// undoes what a continuation that will now never run had begun.
-fn unwind(mutator: &mut Mutator, signal: Signal, floor: usize) -> Flow {
+fn unwind<'gc>(mutator: &mut Mutator<'gc>, signal: Signal<'gc>, floor: usize) -> Flow {
     if let Signal::Return(target, value) = &signal {
         let (target, value) = (*target, *value);
         if mutator.heap.activation_is_live(target)
@@ -522,11 +526,11 @@ fn send_destination(instruction: &Instruction) -> u16 {
 /// `MalformedInteger` and `UnresolvedIdentifier`. Both raise through
 /// `literals.rs`'s own constructors rather than rebuilding the error here:
 /// error text lives in `interpreter/`, never in the VM.
-fn make_value(
-    mutator: &mut Mutator,
+fn make_value<'gc>(
+    mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     literal: &Literal,
-) -> EvaluationResult {
+) -> EvaluationResult<'gc> {
     Ok(match literal {
         Literal::Nil => Value::Nil,
         Literal::Boolean(boolean) => Value::Boolean(*boolean),

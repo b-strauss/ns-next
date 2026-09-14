@@ -14,7 +14,7 @@ use super::Signal;
 /// `docs/design/dispatch.md`, "Binding variants").
 ///
 /// Raised by `vm::make_value` for `bytecode::Literal::UnresolvedIdentifier`.
-pub(crate) fn unresolved_identifier_error(name: &str, receiver: Value) -> Signal {
+pub(crate) fn unresolved_identifier_error<'gc>(name: &str, receiver: Value<'gc>) -> Signal<'gc> {
     Signal::Error(NewspeakError {
         selector: Symbol::intern(name),
         receiver,
@@ -25,7 +25,7 @@ pub(crate) fn unresolved_identifier_error(name: &str, receiver: Value) -> Signal
 /// The error a lexer-accepted integer literal that `parse_integer_literal`
 /// rejects raises when it is *evaluated*. Raised by `vm::make_value` for
 /// `bytecode::Literal::MalformedInteger`.
-pub(crate) fn malformed_integer_error(message: String) -> Signal {
+pub(crate) fn malformed_integer_error<'gc>(message: String) -> Signal<'gc> {
     Signal::Error(NewspeakError {
         selector: Symbol::PARSE,
         receiver: Value::Nil,

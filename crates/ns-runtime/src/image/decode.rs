@@ -586,7 +586,7 @@ pub fn decode_source_origin(reader: &mut Reader) -> Result<SourceOrigin, DecodeE
     }
 }
 
-pub fn decode_scalar_value(reader: &mut Reader) -> Result<Value, DecodeError> {
+pub fn decode_scalar_value<'gc>(reader: &mut Reader) -> Result<Value<'gc>, DecodeError> {
     match reader.read_u8()? {
         0 => Ok(Value::Nil),
         1 => Ok(Value::Boolean(false)),
@@ -1474,11 +1474,11 @@ fn decode_literal(
 /// `Mutator::apply_mixin`, and that shared cache is the whole mechanism
 /// by which two enclosing instances get back the one application they had
 /// before the snapshot.
-pub struct DecodeContext<'a> {
-    pub mutator: &'a mut Mutator,
-    pub root_class: &'a ClassReference,
+pub struct DecodeContext<'a, 'gc> {
+    pub mutator: &'a mut Mutator<'gc>,
+    pub root_class: &'a ClassReference<'gc>,
     pub codes: &'a [Rc<CompiledCode>],
-    pub platform: Value,
+    pub platform: Value<'gc>,
     /// The decoded mixin table's rows, indexed by row id -- the same
     /// `Rc<Mixin>`s that carry the image's compiled bodies and that
     /// `verify_mixins` reconciled, so a class object built around one of
@@ -1489,19 +1489,19 @@ pub struct DecodeContext<'a> {
     pub mixins: &'a [Rc<crate::mixin::Mixin>],
 }
 
-pub struct DecodedGraph {
-    pub roots: Vec<Value>,
+pub struct DecodedGraph<'gc> {
+    pub roots: Vec<Value<'gc>>,
     /// The largest identity hash of any decoded object -- `load` advances
     /// the interpreter's identity-hash counter past it.
     pub max_identity_hash: u32,
     /// The two decoded tables themselves, in image order. The roots reach
     /// most of them, but `verify_graph` must see *every* record -- a frame
     /// no root reaches can still be some closure's captured frame.
-    pub objects: Vec<ObjectReference>,
-    pub frames: Vec<FrameReference>,
+    pub objects: Vec<ObjectReference<'gc>>,
+    pub frames: Vec<FrameReference<'gc>>,
 }
 
-impl DecodedGraph {
+impl<'gc> DecodedGraph<'gc> {
     /// What a stateless binary carries in place of a graph section: nothing.
     /// `load` skips `verify_graph` on this value rather than calling it --
     /// an empty frame list would make `verify_graph` a no-op anyway, but
@@ -1517,9 +1517,9 @@ impl DecodedGraph {
 }
 
 /// The two placeholder-allocated tables, indexed by the ids in the stream.
-pub struct Tables<'a> {
-    pub objects: &'a [ObjectReference],
-    pub frames: &'a [FrameReference],
+pub struct Tables<'a, 'gc> {
+    pub objects: &'a [ObjectReference<'gc>],
+    pub frames: &'a [FrameReference<'gc>],
 }
 
 /// The inverse of `encode::encode_class_tag`. Tag 2's object may still be a
@@ -1527,11 +1527,11 @@ pub struct Tables<'a> {
 /// record is read -- so this resolves identity only; that the record really
 /// was a class record is `check_class_references`'s job, once every record
 /// has been read.
-pub fn decode_class_tag(
+pub fn decode_class_tag<'gc>(
     reader: &mut Reader,
-    context: &DecodeContext,
-    tables: &Tables,
-) -> Result<ClassReference, DecodeError> {
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<ClassReference<'gc>, DecodeError> {
     match reader.read_u8()? {
         CLASS_BUILTIN => Ok(context.mutator.builtin_class(read_builtin_class(reader)?)),
         CLASS_USER_ROOT => Ok(*context.root_class),
@@ -1540,11 +1540,11 @@ pub fn decode_class_tag(
     }
 }
 
-fn decode_optional_class(
+fn decode_optional_class<'gc>(
     reader: &mut Reader,
-    context: &DecodeContext,
-    tables: &Tables,
-) -> Result<Option<ClassReference>, DecodeError> {
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<Option<ClassReference<'gc>>, DecodeError> {
     if reader.read_boolean()? {
         Ok(Some(decode_class_tag(reader, context, tables)?))
     } else {
@@ -1552,11 +1552,11 @@ fn decode_optional_class(
     }
 }
 
-fn decode_value(
+fn decode_value<'gc>(
     reader: &mut Reader,
-    context: &DecodeContext,
-    tables: &Tables,
-) -> Result<Value, DecodeError> {
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<Value<'gc>, DecodeError> {
     match reader.read_u8()? {
         VALUE_NIL => Ok(Value::Nil),
         VALUE_FALSE => Ok(Value::Boolean(false)),
@@ -1570,11 +1570,11 @@ fn decode_value(
     }
 }
 
-fn decode_values(
+fn decode_values<'gc>(
     reader: &mut Reader,
-    context: &DecodeContext,
-    tables: &Tables,
-) -> Result<Vec<Value>, DecodeError> {
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<Vec<Value<'gc>>, DecodeError> {
     let count = reader.read_u32()? as usize;
     let mut values = reserve_for(count, reader);
     for _ in 0..count {
@@ -1585,7 +1585,10 @@ fn decode_values(
 
 /// An object id off the wire, resolved against the placeholders the first
 /// pass allocated: in range, or `BadObjectId` before anything indexes by it.
-fn decode_object_id(reader: &mut Reader, tables: &Tables) -> Result<ObjectReference, DecodeError> {
+fn decode_object_id<'gc>(
+    reader: &mut Reader,
+    tables: &Tables<'_, 'gc>,
+) -> Result<ObjectReference<'gc>, DecodeError> {
     let id = reader.read_u32()?;
     tables
         .objects
@@ -1594,7 +1597,10 @@ fn decode_object_id(reader: &mut Reader, tables: &Tables) -> Result<ObjectRefere
         .ok_or(DecodeError::BadObjectId(id))
 }
 
-fn decode_frame_id(reader: &mut Reader, tables: &Tables) -> Result<FrameReference, DecodeError> {
+fn decode_frame_id<'gc>(
+    reader: &mut Reader,
+    tables: &Tables<'_, 'gc>,
+) -> Result<FrameReference<'gc>, DecodeError> {
     let id = reader.read_u32()?;
     tables
         .frames
@@ -1603,10 +1609,10 @@ fn decode_frame_id(reader: &mut Reader, tables: &Tables) -> Result<FrameReferenc
         .ok_or(DecodeError::BadFrameId(id))
 }
 
-fn decode_frame_reference(
+fn decode_frame_reference<'gc>(
     reader: &mut Reader,
-    tables: &Tables,
-) -> Result<Option<FrameReference>, DecodeError> {
+    tables: &Tables<'_, 'gc>,
+) -> Result<Option<FrameReference<'gc>>, DecodeError> {
     if reader.read_boolean()? {
         Ok(Some(decode_frame_id(reader, tables)?))
     } else {
@@ -1614,12 +1620,12 @@ fn decode_frame_reference(
     }
 }
 
-fn decode_closure_record(
+fn decode_closure_record<'gc>(
     reader: &mut Reader,
-    context: &DecodeContext,
-    tables: &Tables,
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
     symbols: &symbols::Table,
-) -> Result<ClosureData, DecodeError> {
+) -> Result<ClosureData<'gc>, DecodeError> {
     let count = reader.read_u16()? as usize;
     let mut parameters = reserve_for(count, reader);
     for _ in 0..count {
@@ -1663,9 +1669,9 @@ fn decode_closure_record(
 /// selector or bind the frame to a same-named method of a different class.
 /// `None` -- a `TopLevel` activation -- has no class to ask, so the root
 /// class stands in, as it did for every frame before nesting.
-fn method_declaration(
-    context: &DecodeContext,
-    current_class: Option<&ClassReference>,
+fn method_declaration<'gc>(
+    context: &DecodeContext<'_, 'gc>,
+    current_class: Option<&ClassReference<'gc>>,
     selector: Symbol,
 ) -> Result<Rc<crate::mixin::MixinMethod>, DecodeError> {
     let class = current_class.unwrap_or(context.root_class);
@@ -1677,12 +1683,12 @@ fn method_declaration(
     found.ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
 }
 
-fn decode_frame(
+fn decode_frame<'gc>(
     reader: &mut Reader,
-    context: &DecodeContext,
-    tables: &Tables,
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
     symbols: &symbols::Table,
-) -> Result<Frame, DecodeError> {
+) -> Result<Frame<'gc>, DecodeError> {
     let receiver = decode_value(reader, context, tables)?;
     let arguments = decode_values(reader, context, tables)?;
     let temporaries = decode_values(reader, context, tables)?;
@@ -1732,7 +1738,7 @@ fn decode_frame(
 
 /// A safe, fully initialized stand-in, overwritten in place by
 /// `decode_graph_section`'s second pass before anything can observe it.
-fn placeholder_frame() -> Frame {
+fn placeholder_frame<'gc>() -> Frame<'gc> {
     Frame {
         receiver: Value::Nil,
         arguments: Vec::new(),
@@ -1799,11 +1805,11 @@ pub(crate) fn bounded_count(
 /// `decode_root_superclass`, because `load_module` resolves it by *name*
 /// from the declaration and a decoded mixin has no declaration to read a
 /// name from.
-pub fn build_root_class(
-    mutator: &mut Mutator,
+pub fn build_root_class<'gc>(
+    mutator: &mut Mutator<'gc>,
     mixins: &mixins::Decoded,
-    superclass: Option<ClassReference>,
-) -> Result<ClassReference, DecodeError> {
+    superclass: Option<ClassReference<'gc>>,
+) -> Result<ClassReference<'gc>, DecodeError> {
     let root_mixin = mixins.root().cloned().ok_or(DecodeError::NotAClass)?;
     let super_application = superclass
         .as_ref()
@@ -1830,10 +1836,10 @@ fn read_root_superclass_tag(reader: &mut Reader) -> Result<Option<BuiltinClass>,
 /// The root-class section: the class the module's root class inherits from,
 /// as an optional builtin tag. The inverse of `encode::encode_root_class`,
 /// which explains why the format admits only a builtin here.
-pub fn decode_root_superclass(
+pub fn decode_root_superclass<'gc>(
     reader: &mut Reader,
-    mutator: &Mutator,
-) -> Result<Option<ClassReference>, DecodeError> {
+    mutator: &Mutator<'gc>,
+) -> Result<Option<ClassReference<'gc>>, DecodeError> {
     Ok(read_root_superclass_tag(reader)?.map(|tag| mutator.builtin_class(tag)))
 }
 
@@ -1874,9 +1880,9 @@ struct PendingClass {
 /// resolved by an earlier walk) over an explicit stack, then applies back
 /// down it. A chain that closes on itself is `SuperclassCycle` rather than
 /// a loop that never ends.
-fn rebuild_applications(
-    context: &mut DecodeContext,
-    objects: &[ObjectReference],
+fn rebuild_applications<'gc>(
+    context: &mut DecodeContext<'_, 'gc>,
+    objects: &[ObjectReference<'gc>],
     pending: Vec<PendingClass>,
 ) -> Result<(), DecodeError> {
     // Class-object arena index -> position in `pending`, for the "is my
@@ -1962,7 +1968,11 @@ fn rebuild_applications(
 /// this answering `false` for a non-class object on its own terms rather
 /// than through that indirect argument, so it stays honest if either
 /// check's meaning shifts later.
-fn is_prebuilt_class(heap: &Heap, class: ClassReference, root_class: ClassReference) -> bool {
+fn is_prebuilt_class<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+    root_class: ClassReference<'gc>,
+) -> bool {
     heap.is_class(class) && (heap.class_builtin(class).is_some() || class.same(root_class))
 }
 
@@ -1993,11 +2003,11 @@ fn is_prebuilt_class(heap: &Heap, class: ClassReference, root_class: ClassRefere
 /// reference, whether that record was a closure is only knowable once every
 /// record has been read. Everything that reaches a closure activation's
 /// body or captured frames reads through that object.
-fn check_class_references(
-    heap: &Heap,
-    objects: &[ObjectReference],
-    frames: &[FrameReference],
-    root_class: ClassReference,
+fn check_class_references<'gc>(
+    heap: &Heap<'gc>,
+    objects: &[ObjectReference<'gc>],
+    frames: &[FrameReference<'gc>],
+    root_class: ClassReference<'gc>,
 ) -> Result<(), DecodeError> {
     for object in objects {
         let class = heap.class_of_object(*object);
@@ -2057,11 +2067,11 @@ fn check_class_references(
 /// no part of this decoder recurses on a depth the image controls. The one
 /// depth-bounded structure in the format, `Literal::Array`, lives in the
 /// code table (`decode_literal`'s `MAX_LITERAL_DEPTH`).
-pub fn decode_graph_section(
+pub fn decode_graph_section<'gc>(
     reader: &mut Reader,
-    context: &mut DecodeContext,
+    context: &mut DecodeContext<'_, 'gc>,
     symbols: &symbols::Table,
-) -> Result<DecodedGraph, DecodeError> {
+) -> Result<DecodedGraph<'gc>, DecodeError> {
     let object_count = bounded_count(reader.read_u32()? as usize, MIN_OBJECT_RECORD_BYTES, reader)?;
     let frame_count = bounded_count(reader.read_u32()? as usize, MIN_FRAME_RECORD_BYTES, reader)?;
     let placeholder_class = context.mutator.builtin_class(BuiltinClass::Object);
@@ -2160,10 +2170,10 @@ pub fn decode_graph_section(
 /// answers the largest one, which `load` advances the counter past together
 /// with the graph's own maximum. A 0, a repeated object and `u32::MAX` are
 /// refused, each for the reason its `DecodeError` gives.
-pub fn decode_tag_named_hashes(
+pub fn decode_tag_named_hashes<'gc>(
     reader: &mut Reader,
-    mutator: &mut Mutator,
-    root_class: ClassReference,
+    mutator: &mut Mutator<'gc>,
+    root_class: ClassReference<'gc>,
 ) -> Result<u32, DecodeError> {
     let count = bounded_count(
         reader.read_u32()? as usize,
@@ -2214,12 +2224,12 @@ pub fn decode_tag_named_hashes(
 /// before this pass started), so a forward reference and a cycle are both
 /// ordinary; what cannot be settled yet is whether each really is a class
 /// record, which `check_class_references` establishes afterwards.
-fn decode_class_record(
+fn decode_class_record<'gc>(
     reader: &mut Reader,
-    context: &DecodeContext,
-    tables: &Tables,
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
     placeholder_application: &Rc<crate::mixin::MixinApplication>,
-) -> Result<(crate::types::ClassData, Rc<crate::mixin::Mixin>), DecodeError> {
+) -> Result<(crate::types::ClassData<'gc>, Rc<crate::mixin::Mixin>), DecodeError> {
     let id = reader.read_u32()?;
     let mixin = context
         .mixins
@@ -2285,14 +2295,14 @@ fn decode_class_record(
 /// entered -- nothing re-activates a decoded frame, and no closure may be
 /// captured by one (`verify_closure` refuses that) -- so there is nothing to
 /// reconcile.
-fn frame_body(heap: &Heap, frame: FrameReference) -> Option<Rc<CompiledCode>> {
+fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<CompiledCode>> {
     /// The mixin whose code a class-carrying frame kind names. `None` only
     /// if the decoded value is not a class object -- `decode_class_tag`
     /// never produces one, but returning `None` keeps a future change to it
     /// from turning an untrusted image into a panic here.
-    fn frame_mixin(
-        heap: &Heap,
-        class: crate::types::ClassReference,
+    fn frame_mixin<'gc>(
+        heap: &Heap<'gc>,
+        class: crate::types::ClassReference<'gc>,
     ) -> Option<Rc<crate::mixin::Mixin>> {
         heap.class_application(class)
             .map(|application| application.mixin.clone())
@@ -2338,10 +2348,10 @@ fn frame_body(heap: &Heap, frame: FrameReference) -> Option<Rc<CompiledCode>> {
 ///    two together, and `verify_code_table`'s outer-local bound -- which
 ///    walks the *static* `MakeClosure` nesting -- is only a bound on the
 ///    real `frame_at_depth` walk because of this.
-pub fn verify_graph(
-    graph: &DecodedGraph,
+pub fn verify_graph<'gc>(
+    graph: &DecodedGraph<'gc>,
     table: &DecodedCodeTable,
-    heap: &Heap,
+    heap: &Heap<'gc>,
 ) -> Result<(), DecodeError> {
     // Recomputed rather than threaded through from `verify_code_table`:
     // one more linear pass over the code table at load time, in exchange
@@ -2386,12 +2396,12 @@ pub fn verify_graph(
     Ok(())
 }
 
-fn verify_closure(
-    closure: &ClosureData,
+fn verify_closure<'gc>(
+    closure: &ClosureData<'gc>,
     table: &DecodedCodeTable,
     parents: &[Option<usize>],
     index_of: &HashMap<usize, usize>,
-    heap: &Heap,
+    heap: &Heap<'gc>,
 ) -> Result<(), DecodeError> {
     let code = &closure.code;
     if code.kind != CodeKind::Block {

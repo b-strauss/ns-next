@@ -4,12 +4,12 @@
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
-pub(crate) fn dispatch(
-    mutator: &mut Mutator,
-    receiver: Value,
+pub(crate) fn dispatch<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match selector.as_str() {
         "class" => Some(Ok(Value::Object(mutator.class_of(&receiver)))),
         "==" => Some(Ok(Value::Boolean(identical(&receiver, &arguments[0])))),
@@ -42,7 +42,7 @@ pub(crate) fn dispatch(
     }
 }
 
-fn identical(first: &Value, second: &Value) -> bool {
+fn identical<'gc>(first: &Value<'gc>, second: &Value<'gc>) -> bool {
     match (first, second) {
         (Value::Nil, Value::Nil) => true,
         (Value::Boolean(left), Value::Boolean(right)) => left == right,
@@ -53,7 +53,7 @@ fn identical(first: &Value, second: &Value) -> bool {
     }
 }
 
-fn identity_hash_of(heap: &mut Heap, value: &Value) -> u32 {
+fn identity_hash_of<'gc>(heap: &mut Heap<'gc>, value: &Value<'gc>) -> u32 {
     match value {
         Value::Object(object) => heap.ensure_identity_hash(*object),
         _ => 0, // primitives are values and get no distinct identity
@@ -61,15 +61,15 @@ fn identity_hash_of(heap: &mut Heap, value: &Value) -> u32 {
     }
 }
 
-fn describe(_value: &Value, _m: &Mutator) -> String {
+fn describe<'gc>(_value: &Value<'gc>, _m: &Mutator<'gc>) -> String {
     // The default `doesNotUnderstand:` message names the receiver by kind
     // only. `Heap::describe` is the value-aware description.
     "an object".to_string()
 }
 
-fn extract_does_not_understand_selector(
-    heap: &Heap,
-    message_mirror_shaped_array: &Value,
+fn extract_does_not_understand_selector<'gc>(
+    heap: &Heap<'gc>,
+    message_mirror_shaped_array: &Value<'gc>,
 ) -> Symbol {
     // Matches `Mutator::decide_does_not_understand`'s `{selector. arguments}`
     // array shape.

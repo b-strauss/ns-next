@@ -18,12 +18,12 @@ use crate::{Mutator, Symbol};
 /// namespace with a two-field one (see
 /// `Mutator::new_collections_namespace`). None ever holds real slot
 /// data; the field count is purely a tag.
-pub fn dispatch(
-    mutator: &mut Mutator,
-    receiver: Value,
+pub fn dispatch<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let Value::Object(object) = &receiver else {
         return None;
     };
@@ -78,10 +78,10 @@ pub fn dispatch(
 /// onto `OrderedCollection`, which is not a dictionary and not a set)
 /// would be a collections library of its own, which is deliberately not
 /// built. Modules needing them stay off the whitelist.
-fn dispatch_collections(
-    mutator: &mut Mutator,
+fn dispatch_collections<'gc>(
+    mutator: &mut Mutator<'gc>,
     selector: Symbol,
-) -> Option<Result<Value, NewspeakError>> {
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match selector.as_str() {
         "List" => Some(Ok(Value::Object(
             mutator.builtin_class(BuiltinClass::OrderedCollection),
@@ -90,12 +90,12 @@ fn dispatch_collections(
     }
 }
 
-fn dispatch_stream(
-    mutator: &mut Mutator,
-    receiver: Value,
+fn dispatch_stream<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match selector.as_str() {
         "show:" => {
             if let Some(Value::Object(string)) = arguments.first() {

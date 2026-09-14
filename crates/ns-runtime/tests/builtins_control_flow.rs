@@ -43,14 +43,14 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-fn integer_of(value: &Value) -> i64 {
+fn integer_of<'gc>(value: &Value<'gc>) -> i64 {
     match value {
         Value::SmallInteger(integer) => *integer,
         _ => panic!("expected a SmallInteger"),
     }
 }
 
-fn string_of(heap: &Heap, value: &Value) -> String {
+fn string_of<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
     let Value::Object(object) = value else {
         panic!("expected a string object")
     };

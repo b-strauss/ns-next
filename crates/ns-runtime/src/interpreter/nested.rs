@@ -110,18 +110,18 @@ pub(crate) fn superclass_clause_message_arguments_expression(
 /// must start its lookup at the declaring class's superclass, not at the
 /// receiver's dynamic class's superclass -- which for an inherited
 /// declaration is one or more levels too deep.
-pub(crate) fn nested_class(
-    mutator: &mut Mutator,
-    receiver: &Value,
+pub(crate) fn nested_class<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: &Value<'gc>,
     nested: &Rc<Mixin>,
-    declaring_class: ClassReference,
-) -> Result<Step, Signal> {
+    declaring_class: ClassReference<'gc>,
+) -> Result<Step<'gc>, Signal<'gc>> {
     let Some((receiver_object, index, cached)) = cache_slot(mutator, receiver, nested) else {
         return Err(no_cache_slot_error(receiver, nested.name));
     };
     // Step 1: the receiver's own cache. `Nil` is "not yet" -- `instantiate`
     // fills every slot, hidden ones included, with `Nil`, and a materialized
-    // class object is never `Nil` -- and `CREATION_IN_PROGRESS` is "underway,
+    // class object is never `Nil` -- and `creation_in_progress()` is "underway,
     // further down the stack", so the slot answers both questions and no
     // side table is needed.
     match cached {
@@ -171,11 +171,11 @@ pub(super) fn superclass_clause_code(nested: &Mixin) -> Rc<crate::bytecode::Comp
 /// `Mutator::resume` calls this when the clause's activation returns, and
 /// `nested_class` directly for a declaration with no clause. By value, not
 /// boxed: only the continuation needs the box.
-pub(crate) fn after_clause(
-    mutator: &mut Mutator,
-    creation: NestedClassCreation,
-    superclass: Value,
-) -> Result<Step, Signal> {
+pub(crate) fn after_clause<'gc>(
+    mutator: &mut Mutator<'gc>,
+    creation: NestedClassCreation<'gc>,
+    superclass: Value<'gc>,
+) -> Result<Step<'gc>, Signal<'gc>> {
     let NestedClassCreation {
         enclosing,
         index,
@@ -232,11 +232,11 @@ pub(crate) fn after_clause(
 /// The declaration itself, not its name: `MixinApplication::nested_slot` is
 /// keyed by declaration identity so that a subclass's `class N` and the
 /// inherited `class N` it shadows cache into different slots.
-fn cache_slot(
-    mutator: &Mutator,
-    receiver: &Value,
+fn cache_slot<'gc>(
+    mutator: &Mutator<'gc>,
+    receiver: &Value<'gc>,
     nested: &Rc<Mixin>,
-) -> Option<(ObjectReference, usize, Value)> {
+) -> Option<(ObjectReference<'gc>, usize, Value<'gc>)> {
     let class = mutator.class_of(receiver);
     let index = mutator
         .heap
@@ -277,19 +277,25 @@ fn cache_slot(
 /// in a hidden slot itself gets a cyclic-definition error on access, the
 /// same kind of wrong-but-safe answer as any other non-class value it puts
 /// there, which the accessor answers as the class.
-const CREATION_IN_PROGRESS: Value = Value::Boolean(false);
+fn creation_in_progress<'gc>() -> Value<'gc> {
+    Value::Boolean(false)
+}
 
-fn is_creation_in_progress(value: Value) -> bool {
+fn is_creation_in_progress<'gc>(value: Value<'gc>) -> bool {
     matches!(value, Value::Boolean(false))
 }
 
 /// The clause activation of a creation has just been pushed: mark its class
 /// as being created, in slot `index` of `enclosing`, where it will be cached.
 /// Only a slot `nested_class` found `Nil` gets here.
-pub(super) fn begin_creation(mutator: &mut Mutator, enclosing: ObjectReference, index: usize) {
+pub(super) fn begin_creation<'gc>(
+    mutator: &mut Mutator<'gc>,
+    enclosing: ObjectReference<'gc>,
+    index: usize,
+) {
     mutator
         .heap
-        .set_instance_field(enclosing, index, CREATION_IN_PROGRESS);
+        .set_instance_field(enclosing, index, creation_in_progress());
     #[cfg(debug_assertions)]
     {
         mutator.creations_in_progress += 1;
@@ -305,7 +311,7 @@ pub(super) fn begin_creation(mutator: &mut Mutator, enclosing: ObjectReference, 
 /// `InitializeSlot`'s field index, so an image's clause body can overwrite the
 /// slot; that value is left as the image wrote it, and is why this is not an
 /// assertion, which such an image would turn into a panic.
-pub(super) fn end_creation(mutator: &mut Mutator, creation: &NestedClassCreation) {
+pub(super) fn end_creation<'gc>(mutator: &mut Mutator<'gc>, creation: &NestedClassCreation<'gc>) {
     if mutator
         .heap
         .instance_field(creation.enclosing, creation.index)
@@ -324,7 +330,7 @@ pub(super) fn end_creation(mutator: &mut Mutator, creation: &NestedClassCreation
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if ec does not evaluate
 /// to a class object C." A program error, raised through the ordinary
 /// `NewspeakError` channel.
-fn not_a_class_error(name: Symbol, value: Value) -> Signal {
+fn not_a_class_error<'gc>(name: Symbol, value: Value<'gc>) -> Signal<'gc> {
     Signal::Error(NewspeakError {
         selector: name,
         receiver: value,
@@ -345,9 +351,9 @@ fn not_a_class_error(name: Symbol, value: Value) -> Signal {
 /// This is a cycle in class *creation*, not general user recursion: the
 /// creation of one class object for one receiver happens exactly once, so a
 /// second entry for the same (receiver, declaration) is unconditionally a
-/// cycle. The cache slot detects it, holding `CREATION_IN_PROGRESS` while the
+/// cycle. The cache slot detects it, holding `creation_in_progress()` while the
 /// first entry's clause runs.
-fn cyclic_definition_error(receiver: &Value, name: Symbol) -> Signal {
+fn cyclic_definition_error<'gc>(receiver: &Value<'gc>, name: Symbol) -> Signal<'gc> {
     Signal::Error(NewspeakError {
         selector: name,
         receiver: *receiver,
@@ -365,7 +371,7 @@ fn cyclic_definition_error(receiver: &Value, name: Symbol) -> Signal {
 /// ordinary slot declared on such a class unwritable. Refusing here is what
 /// keeps §6's "subsequent calls on r always return the same class object"
 /// from silently becoming "a fresh class object every call".
-fn no_cache_slot_error(receiver: &Value, name: Symbol) -> Signal {
+fn no_cache_slot_error<'gc>(receiver: &Value<'gc>, name: Symbol) -> Signal<'gc> {
     Signal::Error(NewspeakError {
         selector: name,
         receiver: *receiver,

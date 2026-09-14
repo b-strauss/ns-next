@@ -32,6 +32,14 @@ fn next_heap_id() -> u32 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
+/// The brand every movable handle carries (`docs/design/memory.md`, "The
+/// brand"). Invariant in `'gc` -- a `fn(&'gc ()) -> &'gc ()` is
+/// contravariant in its argument and covariant in its result -- so the
+/// compiler can neither shorten nor extend it, and a handle minted in one
+/// entry has a type no other entry can name. Zero-sized: a release handle
+/// is still exactly its 32-bit index.
+type Brand<'gc> = std::marker::PhantomData<fn(&'gc ()) -> &'gc ()>;
+
 /// An opaque handle to an object: an index into `Heap.objects`. The inner
 /// index is private to this module, and only `heap.rs` reaches it -- that
 /// privacy is what made replacing `Rc<RefCell<Object>>` with this a change
@@ -42,7 +50,7 @@ fn next_heap_id() -> u32 {
 /// arena never reuses a slot -- there is no collector yet -- so two live
 /// objects never share an index.
 #[derive(Clone, Copy)]
-pub struct ObjectReference {
+pub struct ObjectReference<'gc> {
     index: u32,
     /// The heap that allocated this handle. Debug builds only: it exists to
     /// turn reading a handle through the wrong heap -- which answers a
@@ -58,9 +66,10 @@ pub struct ObjectReference {
     /// the roots before a collector exists: the stress mode").
     #[cfg(debug_assertions)]
     epoch: u32,
+    brand: Brand<'gc>,
 }
 
-impl ObjectReference {
+impl<'gc> ObjectReference<'gc> {
     /// Object identity. Replaces `Rc::ptr_eq` at every call site, so that
     /// identity has one spelling that survives the store changing under it.
     ///
@@ -70,7 +79,7 @@ impl ObjectReference {
     /// two unrelated objects that happen to share an index would be reported
     /// identical. `check_object_origin` covers every read; this covers the
     /// one operation that reads nothing.
-    pub fn same(self, other: ObjectReference) -> bool {
+    pub fn same(self, other: ObjectReference<'gc>) -> bool {
         #[cfg(debug_assertions)]
         debug_assert_eq!(
             self.origin, other.origin,
@@ -93,7 +102,7 @@ impl ObjectReference {
 /// so the recursion hazard is gone by construction. It still renders Rust
 /// internals, which is why `CLAUDE.md`'s "Never `{:?}` a `Value`" rule
 /// stands: `Heap::describe` is what a Newspeak-facing message needs.
-impl std::fmt::Debug for ObjectReference {
+impl std::fmt::Debug for ObjectReference<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ObjectReference(#{})", self.index)
     }
@@ -102,7 +111,7 @@ impl std::fmt::Debug for ObjectReference {
 /// A class is an `ObjectReference` whose `data` is `ObjectData::Class(_)`. Not
 /// enforced by the type system: `ClassReference` is an alias, not a distinct
 /// handle type.
-pub type ClassReference = ObjectReference;
+pub type ClassReference<'gc> = ObjectReference<'gc>;
 
 /// An opaque handle to a *reified* activation: an index into `Heap.frames`.
 /// The inner index is private to this module. See `docs/design/memory.md`,
@@ -117,7 +126,7 @@ pub type ClassReference = ObjectReference;
 /// arena never reuses a slot -- there is no collector yet -- so two frames
 /// never share an index.
 #[derive(Clone, Copy)]
-pub struct FrameReference {
+pub struct FrameReference<'gc> {
     index: u32,
     /// The heap that allocated this handle. Debug builds only: it exists to
     /// turn reading a handle through the wrong heap -- which answers a
@@ -133,14 +142,15 @@ pub struct FrameReference {
     /// the roots before a collector exists: the stress mode").
     #[cfg(debug_assertions)]
     epoch: u32,
+    brand: Brand<'gc>,
 }
 
-impl FrameReference {
+impl<'gc> FrameReference<'gc> {
     /// Frame identity. Guarded like an accessor: see `ObjectReference::same`.
     /// `Signal::Return` names its target by `ActivationReference`, not by
     /// frame, so nothing in the runtime compares frames: the callers are the
     /// image round-trip tests (`tests/image.rs`) and this module's unit tests.
-    pub fn same(self, other: FrameReference) -> bool {
+    pub fn same(self, other: FrameReference<'gc>) -> bool {
         #[cfg(debug_assertions)]
         debug_assert_eq!(
             self.origin, other.origin,
@@ -162,7 +172,7 @@ impl FrameReference {
 /// guarantee to lean on (a closure's `home` can itself be captured); an
 /// index has nothing to descend into at all, so the hazard is gone by
 /// construction rather than by discipline, and printing one cannot panic.
-impl std::fmt::Debug for FrameReference {
+impl std::fmt::Debug for FrameReference<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "FrameReference(#{})", self.index)
     }
@@ -223,18 +233,18 @@ impl std::fmt::Debug for ActivationReference {
 
 /// Everything a new activation is apart from its registers, which
 /// `Heap::push_activation` takes separately.
-pub struct ActivationHeader {
-    pub receiver: Value,
+pub struct ActivationHeader<'gc> {
+    pub receiver: Value<'gc>,
     /// `None` only for `FrameKind::TopLevel` (`newspeak-spec.pdf` §3.6).
-    pub current_class: Option<ClassReference>,
-    pub kind: FrameKind,
+    pub current_class: Option<ClassReference<'gc>>,
+    pub kind: FrameKind<'gc>,
     /// See `Frame::slot_base`.
     pub slot_base: usize,
     /// The body the activation runs. The run loop reads it back to resume a
     /// caller once the activation above it returns.
     pub code: std::rc::Rc<crate::bytecode::CompiledCode>,
     /// What the run loop does with the activation's value when it returns.
-    pub then: Continuation,
+    pub then: Continuation<'gc>,
     /// Whether the activation counts against the depth limit -- every one
     /// does, except a block a control-flow native activates for a
     /// `SendInlinable` (`Mutator::push_step`).
@@ -242,9 +252,9 @@ pub struct ActivationHeader {
 }
 
 /// What popping an activation hands back to the run loop.
-pub struct Popped {
+pub struct Popped<'gc> {
     /// The popped activation's continuation.
-    pub then: Continuation,
+    pub then: Continuation<'gc>,
     /// Whether the popped activation counted against the depth limit: the
     /// next block of a native loop may be exempt only if this one was.
     pub counted: bool,
@@ -261,14 +271,36 @@ pub struct Popped {
 /// a `Value`.
 #[derive(Clone)]
 pub struct Root {
-    slot: std::rc::Rc<std::cell::Cell<Value>>,
+    slot: std::rc::Rc<std::cell::Cell<Value<'static>>>,
+}
+
+/// The one conversion of a brand (`docs/design/memory.md`, "The brand"): a
+/// host root's slot is shared with a host outside every entry, so it holds
+/// `Value<'static>`, and `stash` and `fetch` pass a value through here on
+/// the way in and out. Private to this module, and there is no public
+/// counterpart: code outside `heap.rs` cannot change a handle's brand.
+fn rebrand<'from, 'to>(value: Value<'from>) -> Value<'to> {
+    match value {
+        Value::Nil => Value::Nil,
+        Value::Boolean(boolean) => Value::Boolean(boolean),
+        Value::SmallInteger(integer) => Value::SmallInteger(integer),
+        Value::Float(float) => Value::Float(float),
+        Value::Object(object) => Value::Object(ObjectReference {
+            index: object.index,
+            #[cfg(debug_assertions)]
+            origin: object.origin,
+            #[cfg(debug_assertions)]
+            epoch: object.epoch,
+            brand: std::marker::PhantomData,
+        }),
+    }
 }
 
 /// The host roots. Swept of slots nothing else holds at every move, and
 /// whenever it has doubled since the last sweep, so it stays proportional to
 /// the roots a host still holds even in a build where nothing moves.
 struct HostRoots {
-    slots: Vec<std::rc::Rc<std::cell::Cell<Value>>>,
+    slots: Vec<std::rc::Rc<std::cell::Cell<Value<'static>>>>,
     sweep_at: usize,
 }
 
@@ -289,21 +321,21 @@ impl HostRoots {
 /// One live activation. Its registers are `values[base..]` up to the next
 /// entry's `base` (or the end of `values`, for the top entry): the
 /// arguments first, then the temporaries.
-struct StackEntry {
-    receiver: Value,
-    current_class: Option<ClassReference>,
-    kind: FrameKind,
+struct StackEntry<'gc> {
+    receiver: Value<'gc>,
+    current_class: Option<ClassReference<'gc>>,
+    kind: FrameKind<'gc>,
     base: u32,
     argument_count: u32,
     program_counter: usize,
     slot_base: usize,
     code: std::rc::Rc<crate::bytecode::CompiledCode>,
-    then: Continuation,
+    then: Continuation<'gc>,
     /// See `ActivationHeader::counted`.
     counted: bool,
     /// The frame `Heap::reify` created for this activation, married to it
     /// until the entry is popped.
-    reified: Option<FrameReference>,
+    reified: Option<FrameReference<'gc>>,
     #[cfg(debug_assertions)]
     generation: u32,
 }
@@ -312,9 +344,9 @@ struct StackEntry {
 /// across pops, so once they have grown to the program's depth a push
 /// allocates nothing.
 #[derive(Default)]
-struct ActivationStack {
-    values: Vec<Value>,
-    entries: Vec<StackEntry>,
+struct ActivationStack<'gc> {
+    values: Vec<Value<'gc>>,
+    entries: Vec<StackEntry<'gc>>,
     /// How many of `entries` count against the depth limit. Kept as a
     /// running total, since the limit is checked on every push.
     counted: usize,
@@ -325,12 +357,12 @@ struct ActivationStack {
 /// A reified activation and, while that activation is still running, the
 /// stack entry it is married to. While `live` is set, the frame's own
 /// `arguments`/`temporaries` are empty and its registers are the entry's.
-struct FrameSlot {
-    frame: Frame,
+struct FrameSlot<'gc> {
+    frame: Frame<'gc>,
     live: Option<u32>,
 }
 
-pub struct Heap {
+pub struct Heap<'gc> {
     /// The next identity hash to hand out. Hashes are assigned lazily, the
     /// first time `ensure_identity_hash` is asked for one, and never derived
     /// from an address or an arena index, so identity survives both a moving
@@ -342,14 +374,14 @@ pub struct Heap {
     /// decoder rebuilt. Nothing is ever removed: reclaiming a slot needs a
     /// collector. An activation that is never reified never reaches this
     /// arena at all.
-    frames: Vec<FrameSlot>,
+    frames: Vec<FrameSlot<'gc>>,
     /// Every live activation. A stack entry is popped when its activation
     /// returns, so -- unlike `frames` and `objects` -- this is bounded by
     /// the deepest the program has been, not by everything it has run.
-    stack: ActivationStack,
+    stack: ActivationStack<'gc>,
     /// Every object, addressed by an `ObjectReference`'s index. Nothing is ever
     /// removed, for the same reason as `frames`.
-    objects: Vec<Object>,
+    objects: Vec<Object<'gc>>,
     /// Every `Root` a host holds. A `RefCell` so that `stash` and `fetch`
     /// take `&self`, which lets a host stash an argument inside the call that
     /// sends it.
@@ -384,7 +416,7 @@ pub struct Heap {
 /// a `Heap` today, so this is latent, but a derive would have turned a
 /// future `{:?}` on a `Heap` -- or on anything that embeds one -- into an
 /// unbounded print of every activation's and every object's data.
-impl std::fmt::Debug for Heap {
+impl std::fmt::Debug for Heap<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // `try_borrow`, not `borrow`: a `{:?}` written into a panic message
         // while `stash` holds the table would otherwise panic inside the
@@ -401,15 +433,6 @@ impl std::fmt::Debug for Heap {
             .field("objects.len()", &self.objects.len())
             .field("host roots", host_roots)
             .finish()
-    }
-}
-
-// `Default` is kept only so clippy's `new_without_default` stays quiet; see
-// `Heap::new`'s doc comment below for why building one on the spot is not
-// generally safe.
-impl Default for Heap {
-    fn default() -> Self {
-        Heap::new()
     }
 }
 
@@ -462,7 +485,7 @@ pub(crate) struct Forwarder {
 
 #[cfg(debug_assertions)]
 impl crate::trace::Tracer for Forwarder {
-    fn object(&mut self, handle: &mut ObjectReference) {
+    fn object(&mut self, handle: &mut ObjectReference<'_>) {
         assert_eq!(
             handle.origin, self.heap_id,
             "a handle from another heap is stored in this one"
@@ -476,7 +499,7 @@ impl crate::trace::Tracer for Forwarder {
         handle.epoch = self.to_epoch;
     }
 
-    fn frame(&mut self, handle: &mut FrameReference) {
+    fn frame(&mut self, handle: &mut FrameReference<'_>) {
         assert_eq!(
             handle.origin, self.heap_id,
             "a handle from another heap is stored in this one"
@@ -492,7 +515,7 @@ impl crate::trace::Tracer for Forwarder {
 }
 
 #[cfg(debug_assertions)]
-impl crate::trace::Trace for StackEntry {
+impl crate::trace::Trace for StackEntry<'_> {
     fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
         let StackEntry {
             receiver,
@@ -520,7 +543,7 @@ impl crate::trace::Trace for StackEntry {
     }
 }
 
-impl Heap {
+impl<'gc> Heap<'gc> {
     /// A `Heap` built on the spot -- rather than the one `Interpreter` owns --
     /// is an empty arena: every object and frame accessor indexes directly into
     /// `self.objects`/`self.frames`, so an `ObjectReference` or
@@ -536,7 +559,10 @@ impl Heap {
     /// `ns-cli`'s `disasm` reads through the interpreter that built its class
     /// object, instead of building one on the spot, and why running the test
     /// suite in debug is what catches the mistake if it recurs.
-    pub fn new() -> Heap {
+    ///
+    /// Private to the heap module: `World` builds the one heap an interpreter
+    /// has, and only this module's own tests build a bare one.
+    fn new() -> Heap<'gc> {
         Heap {
             next_identity_hash: 1,
             frames: Vec::new(),
@@ -587,7 +613,11 @@ impl Heap {
     /// Allocates `data` under `class`. It carries no identity hash until
     /// something asks for one (`ensure_identity_hash`), so allocating draws
     /// nothing from the counter.
-    pub fn allocate_object(&mut self, class: ClassReference, data: ObjectData) -> ObjectReference {
+    pub fn allocate_object(
+        &mut self,
+        class: ClassReference<'gc>,
+        data: ObjectData<'gc>,
+    ) -> ObjectReference<'gc> {
         self.push_object(Object {
             class,
             identity_hash: 0,
@@ -604,7 +634,10 @@ impl Heap {
     ///
     /// Like every object, it carries no identity hash until one is asked
     /// for.
-    pub fn allocate_self_referential_class(&mut self, data: ObjectData) -> ObjectReference {
+    pub fn allocate_self_referential_class(
+        &mut self,
+        data: ObjectData<'gc>,
+    ) -> ObjectReference<'gc> {
         let index = self.next_object_index();
         let handle = self.object_handle(index);
         self.objects.push(Object {
@@ -624,7 +657,7 @@ impl Heap {
     /// by design (`docs/design/memory.md`), so a heap holding more than
     /// `u32::MAX` objects cannot be addressed at all, and failing loudly at
     /// the allocation beats handing out an index that wrapped.
-    fn push_object(&mut self, object: Object) -> ObjectReference {
+    fn push_object(&mut self, object: Object<'gc>) -> ObjectReference<'gc> {
         let index = self.next_object_index();
         self.objects.push(object);
         self.object_handle(index)
@@ -638,23 +671,25 @@ impl Heap {
     /// appears once rather than at every allocation. A struct-expression field
     /// may carry a `cfg` attribute, which is what makes the release build see a
     /// plain 4-byte handle.
-    fn object_handle(&self, index: u32) -> ObjectReference {
+    fn object_handle(&self, index: u32) -> ObjectReference<'gc> {
         ObjectReference {
             index,
             #[cfg(debug_assertions)]
             origin: self.heap_id,
             #[cfg(debug_assertions)]
             epoch: self.epoch,
+            brand: std::marker::PhantomData,
         }
     }
 
-    fn frame_handle(&self, index: u32) -> FrameReference {
+    fn frame_handle(&self, index: u32) -> FrameReference<'gc> {
         FrameReference {
             index,
             #[cfg(debug_assertions)]
             origin: self.heap_id,
             #[cfg(debug_assertions)]
             epoch: self.epoch,
+            brand: std::marker::PhantomData,
         }
     }
 
@@ -683,7 +718,7 @@ impl Heap {
     /// checked in `replace_frame`: the decoder fills a placeholder through
     /// that path with fields read off the wire, and nothing reactivates a
     /// decoded frame, so it need not satisfy this.
-    pub fn allocate_frame(&mut self, frame: Frame) -> FrameReference {
+    pub fn allocate_frame(&mut self, frame: Frame<'gc>) -> FrameReference<'gc> {
         debug_assert_eq!(
             frame.home.is_some(),
             matches!(frame.kind, FrameKind::Closure(_)),
@@ -711,7 +746,7 @@ impl Heap {
     /// got built -- usually a `Heap::new()` standing in for one that is out
     /// of scope.
     #[inline]
-    fn check_object_origin(&self, object: ObjectReference) {
+    fn check_object_origin(&self, object: ObjectReference<'gc>) {
         #[cfg(debug_assertions)]
         assert_eq!(
             object.origin, self.heap_id,
@@ -729,7 +764,7 @@ impl Heap {
     }
 
     #[inline]
-    fn check_frame_origin(&self, frame: FrameReference) {
+    fn check_frame_origin(&self, frame: FrameReference<'gc>) {
         #[cfg(debug_assertions)]
         assert_eq!(
             frame.origin, self.heap_id,
@@ -809,7 +844,7 @@ impl Heap {
     /// The identity hash stored on `object`, 0 if nothing has asked for one
     /// yet. A read never assigns one: the image encoder writes exactly what is
     /// stored, so snapshotting a world does not change it.
-    pub fn identity_hash(&self, object: ObjectReference) -> u32 {
+    pub fn identity_hash(&self, object: ObjectReference<'gc>) -> u32 {
         self.check_object_origin(object);
         self.objects[object.index as usize].identity_hash
     }
@@ -821,7 +856,7 @@ impl Heap {
     /// unobservable: the reference lowering allocates closures the optimized
     /// one does not, and closure conversion and a JIT's escape analysis will
     /// add and remove allocations the same way (`docs/design/object-model.md`).
-    pub fn ensure_identity_hash(&mut self, object: ObjectReference) -> u32 {
+    pub fn ensure_identity_hash(&mut self, object: ObjectReference<'gc>) -> u32 {
         self.check_object_origin(object);
         let stored = self.objects[object.index as usize].identity_hash;
         if stored != 0 {
@@ -852,7 +887,7 @@ impl Heap {
     /// widening it to carry a heap tag, say -- has to check their callers
     /// even though the field itself is private. They all treat the result as
     /// an opaque key, which is what keeps that a check rather than a rewrite.
-    pub(crate) fn object_identity_key(&self, object: ObjectReference) -> usize {
+    pub(crate) fn object_identity_key(&self, object: ObjectReference<'gc>) -> usize {
         self.check_object_origin(object);
         object.index as usize
     }
@@ -872,17 +907,17 @@ impl Heap {
     /// rest on: it can leave two live objects sharing a hash, and every
     /// identity-keyed collection and `become:`'s stability guarantee then
     /// silently breaks, with nothing anywhere raising an error to say so.
-    pub fn set_identity_hash(&mut self, object: ObjectReference, hash: u32) {
+    pub fn set_identity_hash(&mut self, object: ObjectReference<'gc>, hash: u32) {
         self.check_object_origin(object);
         self.objects[object.index as usize].identity_hash = hash;
     }
 
-    pub fn class_of_object(&self, object: ObjectReference) -> ClassReference {
+    pub fn class_of_object(&self, object: ObjectReference<'gc>) -> ClassReference<'gc> {
         self.check_object_origin(object);
         self.objects[object.index as usize].class
     }
 
-    pub fn is_class(&self, object: ObjectReference) -> bool {
+    pub fn is_class(&self, object: ObjectReference<'gc>) -> bool {
         self.check_object_origin(object);
         matches!(
             self.objects[object.index as usize].data,
@@ -890,7 +925,7 @@ impl Heap {
         )
     }
 
-    pub fn array_length(&self, object: ObjectReference) -> Option<usize> {
+    pub fn array_length(&self, object: ObjectReference<'gc>) -> Option<usize> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
             ObjectData::Array(items) => Some(items.len()),
@@ -904,7 +939,7 @@ impl Heap {
     /// namespace apart by field count rather than a builtin variant of
     /// their own (see `platform.rs`'s module doc), so the dispatcher needs
     /// the count itself, not any one field's value.
-    pub fn instance_field_count(&self, object: ObjectReference) -> Option<usize> {
+    pub fn instance_field_count(&self, object: ObjectReference<'gc>) -> Option<usize> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
             ObjectData::Instance(fields) => Some(fields.len()),
@@ -912,7 +947,7 @@ impl Heap {
         }
     }
 
-    pub fn array_elements(&self, object: ObjectReference) -> Option<Vec<Value>> {
+    pub fn array_elements(&self, object: ObjectReference<'gc>) -> Option<Vec<Value<'gc>>> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
             ObjectData::Array(items) => Some(items.clone()),
@@ -920,7 +955,7 @@ impl Heap {
         }
     }
 
-    pub fn array_at(&self, object: ObjectReference, index: usize) -> Option<Value> {
+    pub fn array_at(&self, object: ObjectReference<'gc>, index: usize) -> Option<Value<'gc>> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
             ObjectData::Array(items) => items.get(index).copied(),
@@ -932,7 +967,12 @@ impl Heap {
     /// out-of-range index is a caller's concern -- the natives that reach
     /// here have already produced their own Newspeak error for it -- so
     /// this reports rather than panics.
-    pub fn array_set(&mut self, object: ObjectReference, index: usize, value: Value) -> bool {
+    pub fn array_set(
+        &mut self,
+        object: ObjectReference<'gc>,
+        index: usize,
+        value: Value<'gc>,
+    ) -> bool {
         self.check_object_origin(object);
         if let ObjectData::Array(items) = &mut self.objects[object.index as usize].data {
             if index < items.len() {
@@ -943,7 +983,7 @@ impl Heap {
         false
     }
 
-    pub fn array_push(&mut self, object: ObjectReference, value: Value) -> bool {
+    pub fn array_push(&mut self, object: ObjectReference<'gc>, value: Value<'gc>) -> bool {
         self.check_object_origin(object);
         if let ObjectData::Array(items) = &mut self.objects[object.index as usize].data {
             items.push(value);
@@ -955,7 +995,7 @@ impl Heap {
     /// The instance field at `index`, or `None` when `object`'s payload is not
     /// `ObjectData::Instance` or `index` is out of range -- the same
     /// total-rather-than-panicking shape as the array accessors above.
-    pub fn instance_field(&self, object: ObjectReference, index: usize) -> Option<Value> {
+    pub fn instance_field(&self, object: ObjectReference<'gc>, index: usize) -> Option<Value<'gc>> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
             ObjectData::Instance(fields) => fields.get(index).copied(),
@@ -966,9 +1006,9 @@ impl Heap {
     /// Answers whether the write happened, mirroring `array_set`.
     pub fn set_instance_field(
         &mut self,
-        object: ObjectReference,
+        object: ObjectReference<'gc>,
         index: usize,
-        value: Value,
+        value: Value<'gc>,
     ) -> bool {
         self.check_object_origin(object);
         if let ObjectData::Instance(fields) = &mut self.objects[object.index as usize].data {
@@ -980,7 +1020,7 @@ impl Heap {
         false
     }
 
-    pub fn str_value(&self, object: ObjectReference) -> Option<String> {
+    pub fn str_value(&self, object: ObjectReference<'gc>) -> Option<String> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
             ObjectData::String(string) => Some(string.clone()),
@@ -988,7 +1028,7 @@ impl Heap {
         }
     }
 
-    pub fn symbol_value(&self, object: ObjectReference) -> Option<Symbol> {
+    pub fn symbol_value(&self, object: ObjectReference<'gc>) -> Option<Symbol> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
             ObjectData::Symbol(symbol) => Some(*symbol),
@@ -1000,7 +1040,7 @@ impl Heap {
     /// closure. Private, like every borrow of the arena: the accessors
     /// below each copy one thing out of it, so that none of their callers
     /// holds a borrow of the heap.
-    fn closure(&self, object: ObjectReference) -> Option<&ClosureData> {
+    fn closure(&self, object: ObjectReference<'gc>) -> Option<&ClosureData<'gc>> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
             ObjectData::Closure(closure) => Some(closure),
@@ -1010,13 +1050,13 @@ impl Heap {
 
     /// Whether `object` is a closure -- what a control-flow native asks of a
     /// value before activating it as a block.
-    pub fn is_closure(&self, object: ObjectReference) -> bool {
+    pub fn is_closure(&self, object: ObjectReference<'gc>) -> bool {
         self.closure(object).is_some()
     }
 
     /// How many parameters closure `object` declares, or `None` when `object`
     /// is not a closure.
-    pub fn closure_parameter_count(&self, object: ObjectReference) -> Option<usize> {
+    pub fn closure_parameter_count(&self, object: ObjectReference<'gc>) -> Option<usize> {
         self.closure(object).map(|closure| closure.parameters.len())
     }
 
@@ -1025,7 +1065,7 @@ impl Heap {
     /// it.
     pub fn closure_code(
         &self,
-        object: ObjectReference,
+        object: ObjectReference<'gc>,
     ) -> Option<std::rc::Rc<crate::bytecode::CompiledCode>> {
         self.closure(object).map(|closure| closure.code.clone())
     }
@@ -1036,11 +1076,11 @@ impl Heap {
     /// is not a closure.
     pub(crate) fn closure_activation(
         &self,
-        object: ObjectReference,
+        object: ObjectReference<'gc>,
     ) -> Option<(
         std::rc::Rc<crate::bytecode::CompiledCode>,
         usize,
-        FrameReference,
+        FrameReference<'gc>,
     )> {
         self.closure(object).map(|closure| {
             (
@@ -1056,7 +1096,7 @@ impl Heap {
     /// it. For the image verifier and for tests; the encoder reads a closure
     /// through `object_snapshot`, and the run loop reads what it needs
     /// through the narrower accessors above.
-    pub fn closure_data(&self, object: ObjectReference) -> Option<ClosureData> {
+    pub fn closure_data(&self, object: ObjectReference<'gc>) -> Option<ClosureData<'gc>> {
         self.closure(object).cloned()
     }
 
@@ -1066,7 +1106,10 @@ impl Heap {
     /// a closure (`NotAClosureReference`), but answering `None` rather than
     /// panicking keeps a future change there from turning an untrusted image
     /// into a panic here.
-    fn closure_frames(&self, object: ObjectReference) -> Option<(FrameReference, FrameReference)> {
+    fn closure_frames(
+        &self,
+        object: ObjectReference<'gc>,
+    ) -> Option<(FrameReference<'gc>, FrameReference<'gc>)> {
         self.closure(object)
             .map(|closure| (closure.captured_frame, closure.home))
     }
@@ -1080,7 +1123,7 @@ impl Heap {
     /// it clones `data` in full, which is a real cost for a large `Array`
     /// or `Instance`, acceptable here because the encoder visits every
     /// object exactly once regardless.
-    pub fn object_snapshot(&self, object: ObjectReference) -> Object {
+    pub fn object_snapshot(&self, object: ObjectReference<'gc>) -> Object<'gc> {
         self.check_object_origin(object);
         self.objects[object.index as usize].clone()
     }
@@ -1096,7 +1139,7 @@ impl Heap {
     /// that object's already-verified invariants with unverified ones: no
     /// error, and no way for verification to notice, because verification
     /// has already finished.
-    pub fn replace_object(&mut self, object: ObjectReference, filled: Object) {
+    pub fn replace_object(&mut self, object: ObjectReference<'gc>, filled: Object<'gc>) {
         self.check_object_origin(object);
         self.objects[object.index as usize] = filled;
     }
@@ -1109,7 +1152,7 @@ impl Heap {
     /// caller of this is building the message of a `NewspeakError`, which
     /// reaches stderr, and that message needs to name what the value *is*
     /// -- "the String \"foo\"", not its Rust representation.
-    pub fn describe(&self, value: &Value) -> String {
+    pub fn describe(&self, value: &Value<'gc>) -> String {
         match value {
             Value::Nil => "nil".to_string(),
             Value::Boolean(boolean) => boolean.to_string(),
@@ -1147,7 +1190,7 @@ impl Heap {
 
     /// The `Option` form every one of these error constructors needs, so the
     /// `map_or` is not written out three times.
-    pub fn describe_argument(&self, got: Option<&Value>) -> String {
+    pub fn describe_argument(&self, got: Option<&Value<'gc>>) -> String {
         match got {
             Some(value) => self.describe(value),
             None => "no argument".to_string(),
@@ -1160,11 +1203,11 @@ impl Heap {
     /// the loop must be a `Root`: a run may move every object
     /// (`docs/design/memory.md`, "Where a collection can happen"), and only
     /// what the collector traces is rewritten.
-    pub fn stash(&self, value: Value) -> Root {
+    pub fn stash(&self, value: Value<'gc>) -> Root {
         if let Value::Object(object) = value {
             self.check_object_origin(object);
         }
-        let slot = std::rc::Rc::new(std::cell::Cell::new(value));
+        let slot = std::rc::Rc::new(std::cell::Cell::new(rebrand(value)));
         let mut roots = self.host_roots.borrow_mut();
         if roots.slots.len() >= roots.sweep_at {
             roots.sweep();
@@ -1175,8 +1218,8 @@ impl Heap {
 
     /// What `root` holds now. The answer is good until the next run of the
     /// loop, which may move it; read the root again after one.
-    pub fn fetch(&self, root: &Root) -> Value {
-        let value = root.slot.get();
+    pub fn fetch(&self, root: &Root) -> Value<'gc> {
+        let value = rebrand(root.slot.get());
         if let Value::Object(object) = value {
             self.check_object_origin(object);
         }
@@ -1200,7 +1243,7 @@ impl Heap {
     /// re-derive the borrow-and-match itself.
     pub fn class_application(
         &self,
-        class: ClassReference,
+        class: ClassReference<'gc>,
     ) -> Option<std::rc::Rc<crate::mixin::MixinApplication>> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
@@ -1209,7 +1252,7 @@ impl Heap {
         }
     }
 
-    pub fn class_enclosing(&self, class: ClassReference) -> Option<ObjectReference> {
+    pub fn class_enclosing(&self, class: ClassReference<'gc>) -> Option<ObjectReference<'gc>> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.enclosing,
@@ -1217,7 +1260,7 @@ impl Heap {
         }
     }
 
-    pub fn class_declaring(&self, class: ClassReference) -> Option<ClassReference> {
+    pub fn class_declaring(&self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.declaring_class,
@@ -1225,7 +1268,7 @@ impl Heap {
         }
     }
 
-    pub fn class_superclass(&self, class: ClassReference) -> Option<ClassReference> {
+    pub fn class_superclass(&self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.superclass,
@@ -1233,7 +1276,7 @@ impl Heap {
         }
     }
 
-    pub fn class_builtin(&self, class: ClassReference) -> Option<BuiltinClass> {
+    pub fn class_builtin(&self, class: ClassReference<'gc>) -> Option<BuiltinClass> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.builtin,
@@ -1246,8 +1289,8 @@ impl Heap {
     /// stepped onto one through `next_level`'s unverified class-object chain.
     pub fn class_lookup_step(
         &self,
-        class: ClassReference,
-    ) -> Option<(Option<BuiltinClass>, Option<ClassReference>)> {
+        class: ClassReference<'gc>,
+    ) -> Option<(Option<BuiltinClass>, Option<ClassReference<'gc>>)> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => Some((data.builtin, data.superclass)),
@@ -1255,7 +1298,7 @@ impl Heap {
         }
     }
 
-    pub fn class_metaclass(&self, class: ClassReference) -> Option<ClassReference> {
+    pub fn class_metaclass(&self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
             ObjectData::Class(data) => data.metaclass,
@@ -1274,8 +1317,8 @@ impl Heap {
     /// turns a `false` into an `unreachable!` rather than swallowing it.
     pub fn set_class_metaclass(
         &mut self,
-        class: ClassReference,
-        metaclass: ClassReference,
+        class: ClassReference<'gc>,
+        metaclass: ClassReference<'gc>,
     ) -> bool {
         self.check_object_origin(class);
         if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
@@ -1296,8 +1339,8 @@ impl Heap {
     /// happen by hand on the class-object chain `super`/`instantiate` walk.
     pub fn set_class_superclass(
         &mut self,
-        class: ClassReference,
-        superclass: ClassReference,
+        class: ClassReference<'gc>,
+        superclass: ClassReference<'gc>,
     ) -> bool {
         self.check_object_origin(class);
         if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
@@ -1317,7 +1360,7 @@ impl Heap {
     /// live class (`install_mixin` in `tests/image.rs`).
     pub fn set_class_application(
         &mut self,
-        class: ClassReference,
+        class: ClassReference<'gc>,
         application: std::rc::Rc<crate::mixin::MixinApplication>,
     ) -> bool {
         self.check_object_origin(class);
@@ -1351,19 +1394,19 @@ impl Heap {
     /// `FrameReference` as a `HashMap` key rather than a comparison --
     /// `image::encode::GraphTable`'s frame-id map is the only caller. On
     /// `Heap`, and guarded, for the reason `object_identity_key` gives.
-    pub(crate) fn frame_identity_key(&self, frame: FrameReference) -> usize {
+    pub(crate) fn frame_identity_key(&self, frame: FrameReference<'gc>) -> usize {
         self.check_frame_origin(frame);
         frame.index as usize
     }
 
     /// A reified frame's receiver. Fixed when the frame is created, so it
     /// needs no redirect while the frame is married.
-    pub fn frame_receiver(&self, frame: FrameReference) -> Value {
+    pub fn frame_receiver(&self, frame: FrameReference<'gc>) -> Value<'gc> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.receiver
     }
 
-    pub fn frame_current_class(&self, frame: FrameReference) -> Option<ClassReference> {
+    pub fn frame_current_class(&self, frame: FrameReference<'gc>) -> Option<ClassReference<'gc>> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.current_class
     }
@@ -1373,7 +1416,7 @@ impl Heap {
     /// edit-and-continue has to reify and divorce a running activation first
     /// (`docs/design/execution.md`, "How this meets the liveness
     /// requirements").
-    pub fn frame_grow_temporaries(&mut self, frame: FrameReference, needed: usize) {
+    pub fn frame_grow_temporaries(&mut self, frame: FrameReference<'gc>, needed: usize) {
         self.check_frame_origin(frame);
         debug_assert!(
             self.frames[frame.index as usize].live.is_none(),
@@ -1389,7 +1432,11 @@ impl Heap {
     /// synthetic paused `program_counter` before a snapshot. The runtime stores
     /// a running activation's `program_counter` on its stack entry
     /// (`set_activation_program_counter`), and the divorce copies it here.
-    pub fn set_frame_program_counter(&mut self, frame: FrameReference, program_counter: usize) {
+    pub fn set_frame_program_counter(
+        &mut self,
+        frame: FrameReference<'gc>,
+        program_counter: usize,
+    ) {
         self.check_frame_origin(frame);
         debug_assert!(
             self.frames[frame.index as usize].live.is_none(),
@@ -1399,7 +1446,7 @@ impl Heap {
         self.frames[frame.index as usize].frame.program_counter = program_counter;
     }
 
-    pub fn frame_home(&self, frame: FrameReference) -> Option<FrameReference> {
+    pub fn frame_home(&self, frame: FrameReference<'gc>) -> Option<FrameReference<'gc>> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.home
     }
@@ -1409,14 +1456,14 @@ impl Heap {
     /// a returned activation has none -- so it can be set only on a frame the
     /// image decoder rebuilt from a record that carries one. Test and format
     /// level: only tests read it.
-    pub fn frame_sender(&self, frame: FrameReference) -> Option<FrameReference> {
+    pub fn frame_sender(&self, frame: FrameReference<'gc>) -> Option<FrameReference<'gc>> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.sender
     }
 
     /// The frame a closure activation captured, or `None` for any other
     /// kind. `locals::frame_at_depth` walks this.
-    pub fn frame_captured(&self, frame: FrameReference) -> Option<FrameReference> {
+    pub fn frame_captured(&self, frame: FrameReference<'gc>) -> Option<FrameReference<'gc>> {
         self.check_frame_origin(frame);
         match &self.frames[frame.index as usize].frame.kind {
             FrameKind::Closure(closure) => {
@@ -1431,7 +1478,7 @@ impl Heap {
     /// it answers whatever the file said. It is not liveness --
     /// `raise_return` treats every decoded frame as dead, because it
     /// decides by `frame_activation`, and a decoded frame is never married.
-    pub fn frame_is_uncontinuable(&self, frame: FrameReference) -> bool {
+    pub fn frame_is_uncontinuable(&self, frame: FrameReference<'gc>) -> bool {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.uncontinuable
     }
@@ -1443,7 +1490,7 @@ impl Heap {
     /// `SuperclassClause`/`SuperclassMessage` a frame carries a class for
     /// (`frame_body`), and once to check that a class-carrying kind's class
     /// is itself a class reference (`check_class_references`).
-    pub fn frame_kind(&self, frame: FrameReference) -> FrameKind {
+    pub fn frame_kind(&self, frame: FrameReference<'gc>) -> FrameKind<'gc> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame.kind.clone()
     }
@@ -1452,7 +1499,7 @@ impl Heap {
     /// versus `temporaries`, read together through one slice index rather than
     /// three. `image::decode::verify_graph` checks all three against the shape
     /// of the compiled body it reconciles every decoded frame against.
-    pub fn frame_register_shape(&self, frame: FrameReference) -> (usize, usize, usize) {
+    pub fn frame_register_shape(&self, frame: FrameReference<'gc>) -> (usize, usize, usize) {
         self.check_frame_origin(frame);
         debug_assert!(
             self.frames[frame.index as usize].live.is_none(),
@@ -1476,7 +1523,7 @@ impl Heap {
     /// Only for a dead frame, which is also the encoder's precondition: it
     /// only ever runs between sends, when nothing is live, and
     /// `image::snapshot` refuses to start otherwise.
-    pub fn frame_snapshot(&self, frame: FrameReference) -> Frame {
+    pub fn frame_snapshot(&self, frame: FrameReference<'gc>) -> Frame<'gc> {
         self.check_frame_origin(frame);
         debug_assert!(
             self.frames[frame.index as usize].live.is_none(),
@@ -1495,7 +1542,7 @@ impl Heap {
     /// replaces that frame's already-verified `program_counter`/register-file
     /// shape with an unverified one: no error, and no way for `verify_graph` to
     /// notice, because it has already finished.
-    pub fn replace_frame(&mut self, frame: FrameReference, filled: Frame) {
+    pub fn replace_frame(&mut self, frame: FrameReference<'gc>, filled: Frame<'gc>) {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize].frame = filled;
     }
@@ -1512,8 +1559,8 @@ impl Heap {
     /// `temporary_count` nils.
     pub fn push_activation(
         &mut self,
-        header: ActivationHeader,
-        arguments: &[Value],
+        header: ActivationHeader<'gc>,
+        arguments: &[Value<'gc>],
         temporary_count: usize,
     ) -> ActivationReference {
         let base = u32::try_from(self.stack.values.len())
@@ -1554,7 +1601,7 @@ impl Heap {
     /// uncontinuable, and with no sender, as a returned Smalltalk context
     /// has none. Answers the activation's continuation, which the run loop
     /// applies to its value.
-    pub fn pop_activation(&mut self, activation: ActivationReference) -> Popped {
+    pub fn pop_activation(&mut self, activation: ActivationReference) -> Popped<'gc> {
         self.check_activation(activation);
         debug_assert_eq!(
             activation.index as usize + 1,
@@ -1588,7 +1635,7 @@ impl Heap {
 
     /// The arena frame for a live activation, created married to it on the
     /// first call and answered again on every later one.
-    pub fn reify(&mut self, activation: ActivationReference) -> FrameReference {
+    pub fn reify(&mut self, activation: ActivationReference) -> FrameReference<'gc> {
         self.check_activation(activation);
         let entry_index = activation.index as usize;
         if let Some(frame) = self.stack.entries[entry_index].reified {
@@ -1629,12 +1676,15 @@ impl Heap {
     }
 
     /// The frame `activation` was reified into, if a block has captured it.
-    pub fn activation_reified(&self, activation: ActivationReference) -> Option<FrameReference> {
+    pub fn activation_reified(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
         self.stack.entries[activation.index as usize].reified
     }
 
-    pub fn activation_local(&self, activation: ActivationReference, index: u16) -> Value {
+    pub fn activation_local(&self, activation: ActivationReference, index: u16) -> Value<'gc> {
         self.check_activation(activation);
         self.stack.values[self.register_slot(activation.index, index)]
     }
@@ -1643,14 +1693,14 @@ impl Heap {
         &mut self,
         activation: ActivationReference,
         index: u16,
-        value: Value,
+        value: Value<'gc>,
     ) {
         self.check_activation(activation);
         let slot = self.register_slot(activation.index, index);
         self.stack.values[slot] = value;
     }
 
-    pub fn activation_receiver(&self, activation: ActivationReference) -> Value {
+    pub fn activation_receiver(&self, activation: ActivationReference) -> Value<'gc> {
         self.check_activation(activation);
         self.stack.entries[activation.index as usize].receiver
     }
@@ -1663,7 +1713,7 @@ impl Heap {
     pub fn activation_receiver_and_current_class(
         &self,
         activation: ActivationReference,
-    ) -> (Value, Option<ClassReference>) {
+    ) -> (Value<'gc>, Option<ClassReference<'gc>>) {
         self.check_activation(activation);
         let entry = &self.stack.entries[activation.index as usize];
         (entry.receiver, entry.current_class)
@@ -1672,7 +1722,7 @@ impl Heap {
     pub fn activation_current_class(
         &self,
         activation: ActivationReference,
-    ) -> Option<ClassReference> {
+    ) -> Option<ClassReference<'gc>> {
         self.check_activation(activation);
         self.stack.entries[activation.index as usize].current_class
     }
@@ -1694,7 +1744,7 @@ impl Heap {
 
     /// A closure activation's return target -- its closure's `home` -- and
     /// `None` for every other kind, which is its own return target.
-    pub fn activation_home(&self, activation: ActivationReference) -> Option<FrameReference> {
+    pub fn activation_home(&self, activation: ActivationReference) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
         match &self.stack.entries[activation.index as usize].kind {
             FrameKind::Closure(closure) => self.closure_frames(*closure).map(|(_, home)| home),
@@ -1704,7 +1754,10 @@ impl Heap {
 
     /// The frame a closure activation's closure captured, or `None` for any
     /// other kind. The first hop of `locals::frame_at_depth`.
-    pub fn activation_captured(&self, activation: ActivationReference) -> Option<FrameReference> {
+    pub fn activation_captured(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<FrameReference<'gc>> {
         self.check_activation(activation);
         match &self.stack.entries[activation.index as usize].kind {
             FrameKind::Closure(closure) => {
@@ -1783,7 +1836,7 @@ impl Heap {
     }
 
     /// What `activation` was activated for.
-    pub fn activation_kind(&self, activation: ActivationReference) -> FrameKind {
+    pub fn activation_kind(&self, activation: ActivationReference) -> FrameKind<'gc> {
         self.check_activation(activation);
         self.stack.entries[activation.index as usize].kind.clone()
     }
@@ -1792,7 +1845,7 @@ impl Heap {
     /// activation runs, the frame's own copy after it has returned. This is
     /// the path a block takes to its method's variables, and the only
     /// register access that branches.
-    pub fn frame_local(&self, frame: FrameReference, index: u16) -> Value {
+    pub fn frame_local(&self, frame: FrameReference<'gc>, index: u16) -> Value<'gc> {
         self.check_frame_origin(frame);
         let slot = &self.frames[frame.index as usize];
         match slot.live {
@@ -1809,7 +1862,7 @@ impl Heap {
         }
     }
 
-    pub fn frame_set_local(&mut self, frame: FrameReference, index: u16, value: Value) {
+    pub fn frame_set_local(&mut self, frame: FrameReference<'gc>, index: u16, value: Value<'gc>) {
         self.check_frame_origin(frame);
         // Copied out first, so neither arm below holds a borrow of `frames`
         // while it writes.
@@ -1836,7 +1889,7 @@ impl Heap {
     /// activation has returned -- and for every frame the image decoder
     /// built, since none of those ever ran here. `raise_return` uses it to
     /// tell a live home from a dead one.
-    pub fn frame_activation(&self, frame: FrameReference) -> Option<ActivationReference> {
+    pub fn frame_activation(&self, frame: FrameReference<'gc>) -> Option<ActivationReference> {
         self.check_frame_origin(frame);
         self.frames[frame.index as usize]
             .live
@@ -1894,7 +1947,7 @@ impl Heap {
     /// handle: at a safepoint of the run loop, or between runs.
     #[cfg(debug_assertions)]
     #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them stale"]
-    pub(crate) fn move_everything(&mut self) -> Forwarder {
+    fn move_everything(&mut self) -> Forwarder {
         use crate::trace::{Trace, Tracer};
         let from_epoch = self.epoch;
         let to_epoch = from_epoch.wrapping_add(1);
@@ -1944,7 +1997,7 @@ mod tests {
     /// its only caller -- the origin guard it feeds does not exist in a release
     /// build, so neither does the test, so neither may this.
     #[cfg(debug_assertions)]
-    fn bare_frame() -> Frame {
+    fn bare_frame<'gc>() -> Frame<'gc> {
         Frame {
             receiver: Value::Nil,
             arguments: Vec::new(),
@@ -2110,7 +2163,7 @@ mod tests {
         assert!(heap.class_of_object(class).same(class));
     }
 
-    fn top_level_frame() -> Frame {
+    fn top_level_frame<'gc>() -> Frame<'gc> {
         Frame {
             receiver: Value::Nil,
             arguments: vec![],
@@ -2131,11 +2184,11 @@ mod tests {
     /// frame built from all-zero or otherwise equal fields cannot catch the
     /// tuple's positions being silently transposed -- exactly the
     /// silent-wrong-output risk this conversion carries.
-    fn shaped_frame(
+    fn shaped_frame<'gc>(
         program_counter: usize,
         argument_count: usize,
         temporary_count: usize,
-    ) -> Frame {
+    ) -> Frame<'gc> {
         Frame {
             arguments: vec![Value::Nil; argument_count],
             temporaries: vec![Value::Nil; temporary_count],
@@ -2198,7 +2251,7 @@ mod tests {
     /// name off it. Mirrors `types.rs`'s own `dummy_class` test helper,
     /// duplicated rather than shared because that one is private to
     /// `types.rs`'s test module.
-    fn named_class(heap: &mut Heap, name: &str) -> ClassReference {
+    fn named_class<'gc>(heap: &mut Heap<'gc>, name: &str) -> ClassReference<'gc> {
         let application = std::rc::Rc::new(crate::mixin::MixinApplication {
             mixin: std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
@@ -2248,7 +2301,7 @@ mod tests {
 
     /// The header every activation-stack test below pushes: nothing in it is
     /// read back except where a test sets it on purpose.
-    fn header() -> ActivationHeader {
+    fn header<'gc>() -> ActivationHeader<'gc> {
         ActivationHeader {
             receiver: Value::Nil,
             current_class: None,
@@ -2612,7 +2665,7 @@ mod tests {
     /// dropped here on purpose. A handle a test keeps across the move is
     /// left stale, which is what the stale-handle tests below rely on.
     #[cfg(debug_assertions)]
-    fn move_bare_heap(heap: &mut Heap) {
+    fn move_bare_heap<'gc>(heap: &mut Heap<'gc>) {
         let _ = heap.move_everything();
     }
 

@@ -36,12 +36,12 @@ use crate::{Heap, Mutator, Symbol};
 /// A mixed-type numeric operation (see this module's known-gap note). Kept
 /// distinct from the overflow error below so the message never claims an
 /// overflow that did not happen.
-fn type_mismatch(
-    heap: &Heap,
-    receiver: &Value,
+fn type_mismatch<'gc>(
+    heap: &Heap<'gc>,
+    receiver: &Value<'gc>,
     selector: Symbol,
-    got: Option<&Value>,
-) -> NewspeakError {
+    got: Option<&Value<'gc>>,
+) -> NewspeakError<'gc> {
     NewspeakError {
         selector,
         receiver: *receiver,
@@ -53,12 +53,12 @@ fn type_mismatch(
     }
 }
 
-pub(crate) fn dispatch_integer(
-    mutator: &mut Mutator,
-    receiver: Value,
+pub(crate) fn dispatch_integer<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let Value::SmallInteger(receiver_integer) = receiver else {
         return None;
     };
@@ -141,12 +141,12 @@ pub(crate) fn dispatch_integer(
     }
 }
 
-pub(crate) fn dispatch_float(
-    mutator: &mut Mutator,
-    receiver: Value,
+pub(crate) fn dispatch_float<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let Value::Float(receiver_float) = receiver else {
         return None;
     };

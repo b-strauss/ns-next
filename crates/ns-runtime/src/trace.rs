@@ -16,9 +16,9 @@ use crate::heap::{FrameReference, ObjectReference};
 use crate::types::*;
 
 pub(crate) trait Tracer {
-    fn object(&mut self, handle: &mut ObjectReference);
-    fn frame(&mut self, handle: &mut FrameReference);
-    fn value(&mut self, value: &mut Value) {
+    fn object(&mut self, handle: &mut ObjectReference<'_>);
+    fn frame(&mut self, handle: &mut FrameReference<'_>);
+    fn value(&mut self, value: &mut Value<'_>) {
         match value {
             Value::Object(handle) => self.object(handle),
             Value::Nil | Value::Boolean(_) | Value::SmallInteger(_) | Value::Float(_) => {}
@@ -30,19 +30,19 @@ pub(crate) trait Trace {
     fn trace<T: Tracer>(&mut self, tracer: &mut T);
 }
 
-fn trace_values<T: Tracer>(values: &mut [Value], tracer: &mut T) {
+fn trace_values<T: Tracer>(values: &mut [Value<'_>], tracer: &mut T) {
     for value in values {
         tracer.value(value);
     }
 }
 
-fn trace_optional_object<T: Tracer>(handle: &mut Option<ObjectReference>, tracer: &mut T) {
+fn trace_optional_object<T: Tracer>(handle: &mut Option<ObjectReference<'_>>, tracer: &mut T) {
     if let Some(handle) = handle {
         tracer.object(handle);
     }
 }
 
-impl Trace for Object {
+impl Trace for Object<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let Object {
             class,
@@ -54,7 +54,7 @@ impl Trace for Object {
     }
 }
 
-impl Trace for ObjectData {
+impl Trace for ObjectData<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
             ObjectData::Instance(values) | ObjectData::Array(values) => {
@@ -67,7 +67,7 @@ impl Trace for ObjectData {
     }
 }
 
-impl Trace for ClosureData {
+impl Trace for ClosureData<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let ClosureData {
             parameters: _,
@@ -80,7 +80,7 @@ impl Trace for ClosureData {
     }
 }
 
-impl Trace for ClassData {
+impl Trace for ClassData<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         // `application` holds no handle: a mixin application is behaviour,
         // shared by every class object built from it.
@@ -99,7 +99,7 @@ impl Trace for ClassData {
     }
 }
 
-impl Trace for Frame {
+impl Trace for Frame<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let Frame {
             receiver,
@@ -127,7 +127,7 @@ impl Trace for Frame {
     }
 }
 
-impl Trace for FrameKind {
+impl Trace for FrameKind<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
             FrameKind::Method(_) | FrameKind::TopLevel => {}
@@ -139,7 +139,7 @@ impl Trace for FrameKind {
     }
 }
 
-impl Trace for Continuation {
+impl Trace for Continuation<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
             Continuation::Deliver | Continuation::Truthy => {}
@@ -153,7 +153,7 @@ impl Trace for Continuation {
     }
 }
 
-impl Trace for WhileLoop {
+impl Trace for WhileLoop<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let WhileLoop {
             condition,
@@ -165,7 +165,7 @@ impl Trace for WhileLoop {
     }
 }
 
-impl Trace for DoLoop {
+impl Trace for DoLoop<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let DoLoop {
             receiver,
@@ -179,7 +179,7 @@ impl Trace for DoLoop {
     }
 }
 
-impl Trace for NestedClassCreation {
+impl Trace for NestedClassCreation<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let NestedClassCreation {
             enclosing,
@@ -192,7 +192,7 @@ impl Trace for NestedClassCreation {
     }
 }
 
-impl Trace for Instantiation {
+impl Trace for Instantiation<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let Instantiation {
             instance,
@@ -208,7 +208,7 @@ impl Trace for Instantiation {
     }
 }
 
-impl Trace for InstantiationPhase {
+impl Trace for InstantiationPhase<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
             InstantiationPhase::Climbing { level, superclass } => {

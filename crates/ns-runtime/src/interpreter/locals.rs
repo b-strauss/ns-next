@@ -4,24 +4,28 @@
 use crate::heap::{ActivationReference, Heap};
 use crate::types::*;
 
-pub(crate) fn read_local(heap: &Heap, activation: ActivationReference, index: u16) -> Value {
+pub(crate) fn read_local<'gc>(
+    heap: &Heap<'gc>,
+    activation: ActivationReference,
+    index: u16,
+) -> Value<'gc> {
     heap.activation_local(activation, index)
 }
 
-pub(crate) fn write_local(
-    heap: &mut Heap,
+pub(crate) fn write_local<'gc>(
+    heap: &mut Heap<'gc>,
     activation: ActivationReference,
     index: u16,
-    value: Value,
+    value: Value<'gc>,
 ) {
     heap.activation_set_local(activation, index, value);
 }
 
 /// Where a `Binding::OuterLocal` lives: in the running activation itself,
 /// or in a frame some closure captured.
-enum OuterFrame {
+enum OuterFrame<'gc> {
     Own(ActivationReference),
-    Captured(FrameReference),
+    Captured(FrameReference<'gc>),
 }
 
 /// The activation `depth` hops out along the `captured_frame` chain. The
@@ -31,7 +35,11 @@ enum OuterFrame {
 /// running off the chain -- `image::decode::enclosing_body` is the static
 /// counterpart and relies on exactly this, for an image whose `depth` it
 /// verified against the lexical nesting rather than the chain.
-fn frame_at_depth(heap: &Heap, activation: ActivationReference, depth: u16) -> OuterFrame {
+fn frame_at_depth<'gc>(
+    heap: &Heap<'gc>,
+    activation: ActivationReference,
+    depth: u16,
+) -> OuterFrame<'gc> {
     if depth == 0 {
         return OuterFrame::Own(activation);
     }
@@ -45,12 +53,12 @@ fn frame_at_depth(heap: &Heap, activation: ActivationReference, depth: u16) -> O
 }
 
 /// The VM's `LoadOuterLocal`.
-pub(crate) fn read_outer_local(
-    heap: &Heap,
+pub(crate) fn read_outer_local<'gc>(
+    heap: &Heap<'gc>,
     activation: ActivationReference,
     depth: u16,
     index: u16,
-) -> Value {
+) -> Value<'gc> {
     match frame_at_depth(heap, activation, depth) {
         OuterFrame::Own(own) => heap.activation_local(own, index),
         OuterFrame::Captured(frame) => heap.frame_local(frame, index),
@@ -58,12 +66,12 @@ pub(crate) fn read_outer_local(
 }
 
 /// The VM's `StoreOuterLocal`.
-pub(crate) fn write_outer_local(
-    heap: &mut Heap,
+pub(crate) fn write_outer_local<'gc>(
+    heap: &mut Heap<'gc>,
     activation: ActivationReference,
     depth: u16,
     index: u16,
-    value: Value,
+    value: Value<'gc>,
 ) {
     match frame_at_depth(heap, activation, depth) {
         OuterFrame::Own(own) => heap.activation_set_local(own, index, value),
@@ -75,7 +83,10 @@ pub(crate) fn write_outer_local(
 /// passes its own closure's `home` on; any other activation -- method,
 /// initializer, superclass clause or message -- is its own return target, so it
 /// is reified and is its own home. The VM's `MakeClosure` calls it.
-pub(crate) fn home_of(heap: &mut Heap, activation: ActivationReference) -> FrameReference {
+pub(crate) fn home_of<'gc>(
+    heap: &mut Heap<'gc>,
+    activation: ActivationReference,
+) -> FrameReference<'gc> {
     match heap.activation_home(activation) {
         Some(home) => home,
         None => heap.reify(activation),
@@ -87,7 +98,12 @@ pub(crate) fn home_of(heap: &mut Heap, activation: ActivationReference) -> Frame
 /// object, or is an object with some other `ObjectData` shape, or `index` is
 /// out of range. `vm::execute`'s `Instruction::InitializeSlot` arm writes a
 /// slot initializer's value through it.
-pub(crate) fn store_instance_field(heap: &mut Heap, instance: &Value, index: usize, value: Value) {
+pub(crate) fn store_instance_field<'gc>(
+    heap: &mut Heap<'gc>,
+    instance: &Value<'gc>,
+    index: usize,
+    value: Value<'gc>,
+) {
     if let Value::Object(object) = instance {
         heap.set_instance_field(*object, index, value);
     }

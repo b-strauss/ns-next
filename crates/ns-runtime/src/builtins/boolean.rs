@@ -8,12 +8,12 @@ use crate::types::*;
 use crate::Mutator;
 use crate::Symbol;
 
-pub(crate) fn dispatch(
-    mutator: &mut Mutator,
-    receiver: Value,
+pub(crate) fn dispatch<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Step, Signal>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let Value::Boolean(boolean) = receiver else {
         return None;
     };
@@ -71,7 +71,11 @@ pub(crate) fn dispatch(
 /// `argument` activated as a block with no arguments, its value handed to
 /// `then` -- or, when `argument` is not a block, `argument` itself taken as the
 /// value, the reference library's `ifTrue: aValue` convention.
-fn block_step(mutator: &Mutator, argument: Value, then: Continuation) -> Step {
+fn block_step<'gc>(
+    mutator: &Mutator<'gc>,
+    argument: Value<'gc>,
+    then: Continuation<'gc>,
+) -> Step<'gc> {
     if let Value::Object(object) = argument {
         if mutator.heap().is_closure(object) {
             return Step::Block {
@@ -97,6 +101,6 @@ fn block_step(mutator: &Mutator, argument: Value, then: Continuation) -> Step {
 /// `and:`/`or:`'s rule, which the compiler's inlined form reproduces in
 /// bytecode (`compiler/lower.rs`, `emit_coerce_to_boolean`): only exactly `true`
 /// is true, and a non-Boolean is `false`.
-pub(crate) fn truthy(value: Value) -> bool {
+pub(crate) fn truthy<'gc>(value: Value<'gc>) -> bool {
     matches!(value, Value::Boolean(true))
 }

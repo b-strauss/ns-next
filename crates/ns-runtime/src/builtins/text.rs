@@ -15,7 +15,7 @@ use crate::{Heap, Mutator, Symbol};
 /// object (covers both `String` and `Character` arguments, since they share a
 /// payload representation). `None` for anything else, including `Symbol` (a
 /// distinct payload) and non-`Object` values.
-fn argument_string(heap: &Heap, argument: Option<&Value>) -> Option<String> {
+fn argument_string<'gc>(heap: &Heap<'gc>, argument: Option<&Value<'gc>>) -> Option<String> {
     match argument {
         Some(Value::Object(object)) => heap.str_value(*object),
         _ => None,
@@ -40,12 +40,12 @@ fn quote_string(text: &str) -> String {
     out
 }
 
-pub(crate) fn dispatch_string(
-    mutator: &mut Mutator,
-    receiver: Value,
+pub(crate) fn dispatch_string<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let Value::Object(object) = &receiver else {
         return None;
     };
@@ -74,12 +74,12 @@ pub(crate) fn dispatch_string(
     }
 }
 
-pub(crate) fn dispatch_symbol(
-    mutator: &mut Mutator,
-    receiver: Value,
+pub(crate) fn dispatch_symbol<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let Value::Object(object) = &receiver else {
         return None;
     };
@@ -101,12 +101,12 @@ pub(crate) fn dispatch_symbol(
     }
 }
 
-pub(crate) fn dispatch_character(
-    mutator: &mut Mutator,
-    receiver: Value,
+pub(crate) fn dispatch_character<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let Value::Object(object) = &receiver else {
         return None;
     };

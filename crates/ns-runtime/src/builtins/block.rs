@@ -6,12 +6,12 @@ use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
-pub(crate) fn dispatch(
-    mutator: &mut Mutator,
-    receiver: Value,
+pub(crate) fn dispatch<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Step, Signal>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let Value::Object(closure) = receiver else {
         return None;
     };
@@ -46,7 +46,7 @@ pub(crate) fn dispatch(
 // body replace each other on the activation stack: each one's continuation
 // says what runs next.
 
-fn condition_step(state: Box<WhileLoop>) -> Step {
+fn condition_step<'gc>(state: Box<WhileLoop<'gc>>) -> Step<'gc> {
     Step::Block {
         closure: state.condition,
         arguments: StepArguments::ControlFlow,
@@ -55,11 +55,11 @@ fn condition_step(state: Box<WhileLoop>) -> Step {
 }
 
 /// The condition returned `value`.
-pub(crate) fn after_condition(
-    mutator: &mut Mutator,
-    state: Box<WhileLoop>,
-    value: Value,
-) -> Result<Step, Signal> {
+pub(crate) fn after_condition<'gc>(
+    mutator: &mut Mutator<'gc>,
+    state: Box<WhileLoop<'gc>>,
+    value: Value<'gc>,
+) -> Result<Step<'gc>, Signal<'gc>> {
     match value {
         Value::Boolean(boolean) if boolean == state.expect => Ok(body_step(mutator, state)),
         Value::Boolean(_) => Ok(Step::Value(Value::Nil)),
@@ -68,13 +68,13 @@ pub(crate) fn after_condition(
 }
 
 /// The body returned: run the condition again.
-pub(crate) fn after_body(state: Box<WhileLoop>) -> Step {
+pub(crate) fn after_body<'gc>(state: Box<WhileLoop<'gc>>) -> Step<'gc> {
     condition_step(state)
 }
 
 /// The body, activated -- or, when it is not a block, taken as its own value,
 /// so the condition runs again straight away.
-fn body_step(mutator: &Mutator, state: Box<WhileLoop>) -> Step {
+fn body_step<'gc>(mutator: &Mutator<'gc>, state: Box<WhileLoop<'gc>>) -> Step<'gc> {
     if let Value::Object(body) = state.body {
         if mutator.heap().is_closure(body) {
             return Step::Block {

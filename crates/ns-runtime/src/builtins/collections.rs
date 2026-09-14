@@ -15,7 +15,12 @@ use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
-fn out_of_range(receiver: &Value, selector: Symbol, index: i64, length: usize) -> NewspeakError {
+fn out_of_range<'gc>(
+    receiver: &Value<'gc>,
+    selector: Symbol,
+    index: i64,
+    length: usize,
+) -> NewspeakError<'gc> {
     NewspeakError {
         selector,
         receiver: *receiver,
@@ -25,12 +30,12 @@ fn out_of_range(receiver: &Value, selector: Symbol, index: i64, length: usize) -
     }
 }
 
-fn not_an_integer(
-    heap: &Heap,
-    receiver: &Value,
+fn not_an_integer<'gc>(
+    heap: &Heap<'gc>,
+    receiver: &Value<'gc>,
     selector: Symbol,
-    got: Option<&Value>,
-) -> NewspeakError {
+    got: Option<&Value<'gc>>,
+) -> NewspeakError<'gc> {
     NewspeakError {
         selector,
         receiver: *receiver,
@@ -49,12 +54,12 @@ fn not_an_integer(
 /// `dispatch_array`/`dispatch_ordered_collection` itself). `do:` is not a
 /// leaf and is not here: it activates a block, so it answers a step
 /// (`do_step`).
-fn dispatch_common(
-    mutator: &mut Mutator,
-    receiver: Value,
+fn dispatch_common<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let Value::Object(object) = &receiver else {
         return None;
     };
@@ -86,12 +91,12 @@ fn dispatch_common(
 /// `at:put:`, falling through to `dispatch_common` -- `dispatch_array`'s leaf
 /// half, kept apart from its `do:` arm so the two compose in `dispatch_array`
 /// without either copying the other's shape.
-fn array_leaf(
-    mutator: &mut Mutator,
-    receiver: Value,
+fn array_leaf<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     if selector.as_str() == "at:put:" {
         let Value::Object(object) = &receiver else {
             return None;
@@ -120,12 +125,12 @@ fn array_leaf(
 
 /// `add:`, falling through to `dispatch_common` -- `dispatch_ordered_collection`'s
 /// leaf half, kept apart from its `do:` arm for the same reason `array_leaf` is.
-fn ordered_collection_leaf(
-    mutator: &mut Mutator,
-    receiver: Value,
+fn ordered_collection_leaf<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     if selector.as_str() == "add:" {
         let Value::Object(object) = &receiver else {
             return None;
@@ -143,19 +148,21 @@ fn ordered_collection_leaf(
 /// Lifts a leaf's result into the step it is -- the shared tail of
 /// `dispatch_array` and `dispatch_ordered_collection` once each has ruled
 /// `do:` out, so neither copies the wrapping itself.
-fn leaf_step(result: Option<Result<Value, NewspeakError>>) -> Option<Result<Step, Signal>> {
+fn leaf_step<'gc>(
+    result: Option<Result<Value<'gc>, NewspeakError<'gc>>>,
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     Some(result?.map(Step::Value).map_err(Signal::Error))
 }
 
 /// `Array`'s native methods, `do:` included: checks `do:` first and answers
 /// `do_step`'s block-activation step for it, `array_leaf`'s plain value or
 /// error (through `leaf_step`) for everything else.
-pub(crate) fn dispatch_array(
-    mutator: &mut Mutator,
-    receiver: Value,
+pub(crate) fn dispatch_array<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Step, Signal>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     if selector.as_str() == "do:" {
         return do_step(mutator, receiver, selector, arguments);
     }
@@ -164,12 +171,12 @@ pub(crate) fn dispatch_array(
 
 /// `OrderedCollection`'s native methods, `do:` included -- same split as
 /// `dispatch_array`.
-pub(crate) fn dispatch_ordered_collection(
-    mutator: &mut Mutator,
-    receiver: Value,
+pub(crate) fn dispatch_ordered_collection<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Step, Signal>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     if selector.as_str() == "do:" {
         return do_step(mutator, receiver, selector, arguments);
     }
@@ -184,12 +191,12 @@ pub(crate) fn dispatch_ordered_collection(
 /// on Newspeak code (`docs/design/execution.md`, "No re-entry from Rust").
 /// `None` when `receiver` has no `ObjectData::Array` payload, so the send
 /// falls through to `doesNotUnderstand:` as every other selector here does.
-fn do_step(
-    mutator: &Mutator,
-    receiver: Value,
+fn do_step<'gc>(
+    mutator: &Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Step, Signal>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let Value::Object(object) = &receiver else {
         return None;
     };
@@ -225,7 +232,7 @@ fn do_step(
 /// The block returned for one element. Its value is dropped, as `do:` always
 /// dropped it, and the next element's activation takes its place on the
 /// stack.
-pub(crate) fn after_element(state: Box<DoLoop>) -> Step {
+pub(crate) fn after_element<'gc>(state: Box<DoLoop<'gc>>) -> Step<'gc> {
     element_step(state)
 }
 
@@ -233,7 +240,7 @@ pub(crate) fn after_element(state: Box<DoLoop>) -> Step {
 /// once there is none. Each activation is counted, like any block a `value`
 /// send activates: its arguments are `StepArguments::Owned`, never the
 /// `ControlFlow` mark.
-fn element_step(mut state: Box<DoLoop>) -> Step {
+fn element_step<'gc>(mut state: Box<DoLoop<'gc>>) -> Step<'gc> {
     let Some(&item) = state.items.get(state.next) else {
         return Step::Value(state.receiver);
     };

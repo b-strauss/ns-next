@@ -102,7 +102,7 @@ pub struct Row {
 /// (which needs them to write the table). Recomputing it is one walk of the
 /// tree and one `HashMap`; sharing a cached copy between the two would trade
 /// that for a lifetime that has to thread through `snapshot`.
-pub fn plan(heap: &Heap, root_class: ClassReference) -> Result<Vec<Row>, String> {
+pub fn plan<'gc>(heap: &Heap<'gc>, root_class: ClassReference<'gc>) -> Result<Vec<Row>, String> {
     let root_mixin = heap
         .class_application(root_class)
         .map(|application| application.mixin.clone());
@@ -205,10 +205,10 @@ pub(crate) type MixinIds = HashMap<usize, u32>;
 
 /// Writes the mixin table and returns the `mixin_key` -> row id map the
 /// object graph addresses a class object's mixin by.
-pub fn encode(
+pub fn encode<'gc>(
     writer: &mut Writer,
-    heap: &Heap,
-    root_class: ClassReference,
+    heap: &Heap<'gc>,
+    root_class: ClassReference<'gc>,
     symbols: &mut symbols::Builder,
     codes: &CodeIds,
 ) -> Result<MixinIds, String> {

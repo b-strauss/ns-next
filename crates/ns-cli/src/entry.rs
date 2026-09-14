@@ -37,10 +37,10 @@ fn report_signal(signal: ns_runtime::HostSignal) -> ExitCode {
 
 /// The class object a module's root-class `Root` holds: `load_module` and
 /// `image::load` only ever root a class object there.
-pub(crate) fn class_reference(
-    mutator: &ns_runtime::Mutator,
+pub(crate) fn class_reference<'gc>(
+    mutator: &ns_runtime::Mutator<'gc>,
     class: &ns_runtime::Root,
-) -> ns_runtime::ClassReference {
+) -> ns_runtime::ClassReference<'gc> {
     match mutator.fetch(class) {
         ns_runtime::Value::Object(class) => class,
         _ => unreachable!("internal: a module's root class is a class object"),
@@ -63,9 +63,9 @@ pub(crate) fn class_reference(
 /// multi-parameter factory, so anything that isn't the two shapes below is
 /// refused here, before a guessed argument could reach `instantiate` and
 /// fail for a reason this message never mentions.
-pub(crate) fn factory_arguments_for(
-    heap: &ns_runtime::Heap,
-    class: ns_runtime::ClassReference,
+pub(crate) fn factory_arguments_for<'gc>(
+    heap: &ns_runtime::Heap<'gc>,
+    class: ns_runtime::ClassReference<'gc>,
     platform: &ns_runtime::Root,
 ) -> Result<Vec<ns_runtime::Root>, String> {
     let factory = heap
@@ -103,7 +103,7 @@ pub(crate) fn factory_arguments_for(
 /// stateless binary, from `image::load`'s rebuilt root class -- so the
 /// fallback is unreachable in practice and exists only to keep this a total
 /// function.
-fn class_name(heap: &ns_runtime::Heap, class: ns_runtime::ClassReference) -> String {
+fn class_name<'gc>(heap: &ns_runtime::Heap<'gc>, class: ns_runtime::ClassReference<'gc>) -> String {
     heap.class_application(class)
         .map(|application| application.mixin.name.to_string())
         .unwrap_or_else(|| "<non-class>".to_string())

@@ -21,34 +21,34 @@ use crate::Symbol;
 pub use crate::heap::{ClassReference, FrameReference, ObjectReference};
 
 #[derive(Debug, Clone, Copy)]
-pub enum Value {
+pub enum Value<'gc> {
     Nil,
     Boolean(bool),
     SmallInteger(i64),
     Float(f64),
-    Object(ObjectReference),
+    Object(ObjectReference<'gc>),
 }
 
 #[derive(Debug, Clone)]
-pub struct Object {
-    pub class: ClassReference,
+pub struct Object<'gc> {
+    pub class: ClassReference<'gc>,
     /// 0 until something asks for it; then drawn from a monotonic counter
     /// (`Heap::ensure_identity_hash`), so allocation order stays
     /// unobservable. Never derived from the arena index, which a moving
     /// collector or `become:` would change (liveness spec's stable-identity
     /// constraint).
     pub identity_hash: u32,
-    pub data: ObjectData,
+    pub data: ObjectData<'gc>,
 }
 
 #[derive(Debug, Clone)]
-pub enum ObjectData {
-    Instance(Vec<Value>),
+pub enum ObjectData<'gc> {
+    Instance(Vec<Value<'gc>>),
     String(String),
     Symbol(Symbol),
-    Array(Vec<Value>),
-    Closure(ClosureData),
-    Class(ClassData),
+    Array(Vec<Value<'gc>>),
+    Closure(ClosureData<'gc>),
+    Class(ClassData<'gc>),
 }
 
 /// A class object is *identity*; everything a class object can *do* lives
@@ -57,14 +57,14 @@ pub enum ObjectData {
 /// what lets an inline cache stay monomorphic across enclosing instances
 /// once nested classes give a mixin one class object per enclosing object.
 #[derive(Debug, Clone)]
-pub struct ClassData {
+pub struct ClassData<'gc> {
     /// Behaviour: code, layout and the superclass chain. Shared with every
     /// other class object built from the same mixin and superclass.
     pub application: Rc<crate::mixin::MixinApplication>,
     /// `newspeak-spec.pdf` §6: the enclosing object is the nested class's
     /// only state, which is why a class object cannot be shared between
     /// instances of its enclosing class.
-    pub enclosing: Option<ObjectReference>,
+    pub enclosing: Option<ObjectReference<'gc>>,
     /// The class object of the level whose declaration *lexically contains*
     /// this class's declaration -- `Lookup::NestedClass`'s `ClassReference`,
     /// the level `interpreter::nested` evaluated the declaration at. `None` for
@@ -79,10 +79,10 @@ pub struct ClassData {
     /// just reached, and that is this field, not the reached object's own
     /// class -- those differ exactly when the declaration is inherited
     /// across a nesting boundary. See `dispatch::kth_enclosing_object`.
-    pub declaring_class: Option<ClassReference>,
+    pub declaring_class: Option<ClassReference<'gc>>,
     /// The per-instance class-object chain, parallel to the application
     /// chain. `outer` and `super` need it; lookup does not.
-    pub superclass: Option<ClassReference>,
+    pub superclass: Option<ClassReference<'gc>>,
     /// `None` for a user-defined class. `Some(kind)` marks one of the
     /// core-library classes `builtins/` implements natively -- the same
     /// `BuiltinClass` `dispatch::Lookup::Native` carries once lookup
@@ -99,7 +99,7 @@ pub struct ClassData {
     /// every class object until its first class-side send, permanently for
     /// one whose mixin declares no class side at all -- §6.3's "no
     /// metaclass" case costs nothing.
-    pub metaclass: Option<ClassReference>,
+    pub metaclass: Option<ClassReference<'gc>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -152,14 +152,14 @@ impl BuiltinClass {
 /// else that needs a closure -- an activation's `FrameKind`, a native
 /// loop's state, a decided `Step` -- names the closure object instead.
 #[derive(Debug, Clone)]
-pub struct ClosureData {
+pub struct ClosureData<'gc> {
     pub parameters: Rc<Vec<Symbol>>,
     pub code: Rc<crate::bytecode::CompiledCode>,
     /// The activation the closure was created in, reified.
-    pub captured_frame: FrameReference,
+    pub captured_frame: FrameReference<'gc>,
     /// The lexically enclosing *method* (or initializer) activation, which a
     /// `^` in the block returns from.
-    pub home: FrameReference,
+    pub home: FrameReference<'gc>,
 }
 
 // ---------- Resolver output ----------
@@ -199,12 +199,12 @@ pub enum SourceOrigin {
 // ---------- Activation records ----------
 
 #[derive(Debug, Clone)]
-pub enum FrameKind {
+pub enum FrameKind<'gc> {
     Method(Rc<crate::mixin::MixinMethod>),
     /// An activation of the closure object named. Its body and the frames
     /// it captured are read through the object (`Heap::closure_activation`,
     /// `Heap::activation_captured`).
-    Closure(ObjectReference),
+    Closure(ObjectReference<'gc>),
     /// A top-of-chain activation with no method or class of its own.
     /// Nothing that runs a program builds one (an instance initializer is
     /// `Initializer`); kept for the image format's frame table and a future
@@ -214,7 +214,7 @@ pub enum FrameKind {
     /// running `class`'s slot initializers and `initExprs` -- names the code
     /// it executes so a bytecode `program_counter` is interpretable through the
     /// initializer cache.
-    Initializer(ClassReference),
+    Initializer(ClassReference<'gc>),
     /// A superclass clause's receiver expression (`newspeak-spec.pdf`
     /// §6.1's `ec`) running on the enclosing object, on behalf of the class
     /// that *declares* the clause.
@@ -225,13 +225,13 @@ pub enum FrameKind {
     /// `Mixin::superclass_clause_code`, and verifying it against the
     /// class's instance initializer would reconcile a frame against a body
     /// that never ran in it.
-    SuperclassClause(ClassReference),
+    SuperclassClause(ClassReference<'gc>),
     /// The arguments of a superclass clause's deferred factory message,
     /// evaluated on the instance being initialized and with `class`'s own
     /// factory arguments (§6.2). Its body comes from
     /// `Mixin::superclass_message_code`; see `SuperclassClause` above
     /// for why that makes it a kind of its own.
-    SuperclassMessage(ClassReference),
+    SuperclassMessage(ClassReference<'gc>),
 }
 
 /// What the run loop does with an activation's value when it returns
@@ -240,29 +240,29 @@ pub enum FrameKind {
 /// finishes its work once the block it activated has returned, with no Rust
 /// frame waiting for it.
 #[derive(Debug, Clone)]
-pub enum Continuation {
+pub enum Continuation<'gc> {
     /// Hand the value to the send that made the activation.
     Deliver,
     /// `and:` and `or:`: hand on whether the value is exactly `true`
     /// (`builtins::boolean::truthy`).
     Truthy,
     /// A native `whileTrue:`/`whileFalse:` loop's condition returned.
-    WhileCondition(Box<WhileLoop>),
+    WhileCondition(Box<WhileLoop<'gc>>),
     /// Its body returned.
-    WhileBody(Box<WhileLoop>),
+    WhileBody(Box<WhileLoop<'gc>>),
     /// A native `do:` loop's block returned for one element: activate it for
     /// the next, or answer the receiver
     /// (`builtins::collections::after_element`).
-    DoElement(Box<DoLoop>),
+    DoElement(Box<DoLoop<'gc>>),
     /// The superclass clause the nested-class accessor evaluated returned the
     /// superclass: build, cache and answer the class
     /// (`interpreter::nested::after_clause`).
-    NestedClass(Box<NestedClassCreation>),
+    NestedClass(Box<NestedClassCreation<'gc>>),
     /// A body an instantiation ran returned -- a clause message's arguments,
     /// or the initializer of a level with another below it still to run:
     /// carry the walk on (`Mutator::advance_instantiation`). The last
     /// initializer's activation delivers instead (`descend_levels` says why).
-    Instantiate(Box<Instantiation>),
+    Instantiate(Box<Instantiation<'gc>>),
 }
 
 /// A native `whileTrue:`/`whileFalse:` loop in progress: its condition, its
@@ -271,10 +271,10 @@ pub enum Continuation {
 ///
 /// Boxed in its continuation, and owned by exactly one stack entry.
 #[derive(Debug, Clone)]
-pub struct WhileLoop {
+pub struct WhileLoop<'gc> {
     /// The condition's closure object.
-    pub(crate) condition: ObjectReference,
-    pub(crate) body: Value,
+    pub(crate) condition: ObjectReference<'gc>,
+    pub(crate) body: Value<'gc>,
     pub(crate) expect: bool,
 }
 
@@ -286,10 +286,10 @@ pub struct WhileLoop {
 ///
 /// Boxed in its continuation, and owned by exactly one stack entry.
 #[derive(Debug, Clone)]
-pub struct DoLoop {
-    pub(crate) receiver: Value,
-    pub(crate) block: ObjectReference,
-    pub(crate) items: Vec<Value>,
+pub struct DoLoop<'gc> {
+    pub(crate) receiver: Value<'gc>,
+    pub(crate) block: ObjectReference<'gc>,
+    pub(crate) items: Vec<Value<'gc>>,
     pub(crate) next: usize,
 }
 
@@ -299,17 +299,17 @@ pub struct DoLoop {
 ///
 /// Boxed in its continuation, and owned by exactly one stack entry.
 #[derive(Debug, Clone)]
-pub struct NestedClassCreation {
+pub struct NestedClassCreation<'gc> {
     /// The enclosing object `r` of `newspeak-spec.pdf` §6, which caches the
     /// class.
-    pub(crate) enclosing: ObjectReference,
+    pub(crate) enclosing: ObjectReference<'gc>,
     /// The absolute index of the hidden slot of `enclosing` the class is
     /// cached in.
     pub(crate) index: usize,
     /// The declaration.
     pub(crate) nested: Rc<crate::mixin::Mixin>,
     /// The class object of the level that declares it.
-    pub(crate) declaring_class: ClassReference,
+    pub(crate) declaring_class: ClassReference<'gc>,
 }
 
 /// An instantiation in progress (`newspeak-spec.pdf` §6.2, and the six steps
@@ -322,23 +322,23 @@ pub struct NestedClassCreation {
 /// after it, the box is in that body's continuation, owned by exactly one
 /// stack entry.
 #[derive(Debug, Clone)]
-pub struct Instantiation {
-    pub(crate) instance: Value,
+pub struct Instantiation<'gc> {
+    pub(crate) instance: Value<'gc>,
     /// Nearest level first: the class instantiated, then its superclass, and
     /// so on up, as the upward walk reaches them.
-    pub(crate) levels: Vec<(ClassReference, Vec<Value>)>,
-    pub(crate) phase: InstantiationPhase,
+    pub(crate) levels: Vec<(ClassReference<'gc>, Vec<Value<'gc>>)>,
+    pub(crate) phase: InstantiationPhase<'gc>,
 }
 
 /// Which way an instantiation's walk is going.
 #[derive(Debug, Clone, Copy)]
-pub enum InstantiationPhase {
+pub enum InstantiationPhase<'gc> {
     /// Upward. A body running for this instantiation is the clause message
     /// of `level`, the last in `levels`, and its value is the factory
     /// arguments of `superclass`, `level`'s superclass.
     Climbing {
-        level: ClassReference,
-        superclass: ClassReference,
+        level: ClassReference<'gc>,
+        superclass: ClassReference<'gc>,
     },
     /// Downward. A body running for this instantiation is the initializer of
     /// `levels[index]`, and a level below it has code still to run.
@@ -351,26 +351,26 @@ pub enum InstantiationPhase {
 /// the frame is married to its stack entry and its registers live there.
 /// See `docs/design/execution.md`, "Activations".
 #[derive(Debug, Clone)]
-pub struct Frame {
-    pub receiver: Value,
-    pub arguments: Vec<Value>,
+pub struct Frame<'gc> {
+    pub receiver: Value<'gc>,
+    pub arguments: Vec<Value<'gc>>,
     /// Indexable by resolver slot index, growable (liveness spec's
     /// reified-activation constraint).
-    pub temporaries: Vec<Value>,
+    pub temporaries: Vec<Value<'gc>>,
     /// How far this activation has progressed: an instruction index into
     /// the `CompiledCode` it runs.
     pub program_counter: usize,
     /// `None` for every frame the runtime reifies: a live activation's
     /// sender is the stack entry below it, and a returned activation has
     /// none. Kept for the image format, which records one per frame.
-    pub sender: Option<FrameReference>,
+    pub sender: Option<FrameReference<'gc>>,
     /// Set only for `FrameKind::Closure` -- the enclosing method or
     /// initializer activation.
-    pub home: Option<FrameReference>,
+    pub home: Option<FrameReference<'gc>>,
     /// `None` only for `FrameKind::TopLevel` (`newspeak-spec.pdf` §3.6: a
     /// top-level activation's current class is `nil`).
-    pub current_class: Option<ClassReference>,
-    pub kind: FrameKind,
+    pub current_class: Option<ClassReference<'gc>>,
+    pub kind: FrameKind<'gc>,
     /// Set once this frame's activation has returned (`Heap::pop_activation`
     /// divorces it). A `^` whose home is such a frame is a `cannotReturn`
     /// error (`newspeak-spec.pdf` §3.6, §7.2). `raise_return` decides by
@@ -406,9 +406,9 @@ pub struct ResolveError {
 /// primitive failure such as integer overflow). Distinct from a Rust
 /// `panic!`, which signals an `ns-runtime` bug, not a bad Newspeak program.
 #[derive(Debug, Clone)]
-pub struct NewspeakError {
+pub struct NewspeakError<'gc> {
     pub selector: Symbol,
-    pub receiver: Value,
+    pub receiver: Value<'gc>,
     pub message: String,
 }
 
@@ -417,8 +417,9 @@ mod tests {
     use super::*;
 
     /// A root application with no code, no slots and no superclass. Built
-    /// directly rather than through `Mutator::apply_mixin` so this
-    /// module's tests stay free of the interpreter.
+    /// directly rather than through `Mutator::apply_mixin`, so that the
+    /// tests below read only the objects they build themselves; they run in
+    /// an interpreter's entry because only `World` builds a heap.
     fn empty_application(name: &str) -> Rc<crate::mixin::MixinApplication> {
         Rc::new(crate::mixin::MixinApplication {
             mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
@@ -438,7 +439,7 @@ mod tests {
     /// itself lives in `Heap::allocate_self_referential_class`, which is
     /// ordinary safe Rust under the arena: the slot's index is known before
     /// the slot is filled.
-    fn dummy_class(heap: &mut crate::Heap) -> ClassReference {
+    fn dummy_class<'gc>(heap: &mut crate::Heap<'gc>) -> ClassReference<'gc> {
         heap.allocate_self_referential_class(ObjectData::Class(ClassData {
             application: empty_application("Object"),
             enclosing: None,
@@ -451,22 +452,28 @@ mod tests {
 
     #[test]
     fn class_data_is_reachable_through_object_data() {
-        let mut heap = crate::Heap::new();
-        let class = dummy_class(&mut heap);
-        assert!(heap.is_class(class));
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let class = dummy_class(&mut mutator.heap);
+            assert!(mutator.heap.is_class(class));
+        });
     }
 
     #[test]
     fn value_clone_shares_object_identity() {
-        let mut heap = crate::Heap::new();
-        let class = dummy_class(&mut heap);
-        let instance = heap.allocate_object(class, ObjectData::Instance(vec![]));
-        let original = Value::Object(instance);
-        let copy = original;
-        match (original, copy) {
-            (Value::Object(left), Value::Object(right)) => assert!(left.same(right)),
-            _ => panic!("expected Value::Object"),
-        }
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let class = dummy_class(&mut mutator.heap);
+            let instance = mutator
+                .heap
+                .allocate_object(class, ObjectData::Instance(vec![]));
+            let original = Value::Object(instance);
+            let copy = original;
+            match (original, copy) {
+                (Value::Object(left), Value::Object(right)) => assert!(left.same(right)),
+                _ => panic!("expected Value::Object"),
+            }
+        });
     }
 
     #[test]

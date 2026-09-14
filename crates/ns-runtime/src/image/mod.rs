@@ -60,7 +60,10 @@ struct Describing {
 /// the way. Shared by `snapshot` and `build`: both need the same two tables,
 /// and both need them encoded before the (still-open) symbol table can be
 /// written, since it is the table's *contents* that fill it.
-fn encode_describing(root_class: ClassReference, heap: &Heap) -> Result<Describing, String> {
+fn encode_describing<'gc>(
+    root_class: ClassReference<'gc>,
+    heap: &Heap<'gc>,
+) -> Result<Describing, String> {
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
     let ids = encode::encode_code_table(&mut code, heap, root_class, &mut symbols)?;
@@ -80,14 +83,14 @@ fn encode_describing(root_class: ClassReference, heap: &Heap) -> Result<Describi
 
 /// Writes header through root class. Everything after that is the caller's:
 /// the entry field, and for an image the graph.
-fn write_describing(
+fn write_describing<'gc>(
     writer: &mut encode::Writer,
     source: Option<&str>,
     origin: &SourceOrigin,
     flags: u8,
     describing: Describing,
-    root_class: ClassReference,
-    heap: &Heap,
+    root_class: ClassReference<'gc>,
+    heap: &Heap<'gc>,
 ) -> Result<(), String> {
     encode::write_header(
         writer,
@@ -124,13 +127,13 @@ fn write_describing(
 /// on `LoadedImage::source` and does nothing else with it. The graph closes
 /// with the hashes of the objects it names by tag
 /// (`encode::encode_tag_named_hashes`).
-pub fn snapshot(
-    mutator: &Mutator,
+pub fn snapshot<'gc>(
+    mutator: &Mutator<'gc>,
     source: Option<&str>,
     origin: &SourceOrigin,
-    root_class: ClassReference,
-    platform: &Value,
-    roots: &[Value],
+    root_class: ClassReference<'gc>,
+    platform: &Value<'gc>,
+    roots: &[Value<'gc>],
 ) -> Result<Vec<u8>, String> {
     let heap = &mutator.heap;
     // A frame married to a running activation keeps its registers and
@@ -180,11 +183,11 @@ pub fn snapshot(
 /// the whole point of this artifact -- the primary factory and every
 /// initializer run on load instead, against the loading world's own freshly
 /// bootstrapped platform, so the file has never held a capability.
-pub fn build(
-    heap: &Heap,
+pub fn build<'gc>(
+    heap: &Heap<'gc>,
     source: Option<&str>,
     origin: &SourceOrigin,
-    root_class: ClassReference,
+    root_class: ClassReference<'gc>,
     entry: Symbol,
 ) -> Result<Vec<u8>, String> {
     let mut describing = encode_describing(root_class, heap)?;

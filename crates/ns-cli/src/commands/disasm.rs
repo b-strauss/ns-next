@@ -62,9 +62,9 @@ fn looks_like_an_artifact(bytes: &[u8]) -> bool {
 /// there is none. Shared by both of `execute`'s branches so each can
 /// read it from its own `class` while that class's interpreter is still
 /// alive, rather than through a `Heap` built after the fact.
-fn root_mixin_of(
-    heap: &ns_runtime::Heap,
-    class: ns_runtime::ClassReference,
+fn root_mixin_of<'gc>(
+    heap: &ns_runtime::Heap<'gc>,
+    class: ns_runtime::ClassReference<'gc>,
 ) -> Result<Rc<ns_runtime::Mixin>, String> {
     heap.class_application(class)
         .map(|application| application.mixin.clone())

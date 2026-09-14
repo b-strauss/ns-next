@@ -44,7 +44,11 @@ fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
 ///
 /// One definition because `decide_lexical_send` asks it of two classes --
 /// a class object's metaclass and then the receiver's own class.
-fn lexical_lookup(heap: &crate::heap::Heap, class: ClassReference, selector: Symbol) -> Lookup {
+fn lexical_lookup<'gc>(
+    heap: &crate::heap::Heap<'gc>,
+    class: ClassReference<'gc>,
+    selector: Symbol,
+) -> Lookup<'gc> {
     match dispatch::lookup_defined_for(heap, class, selector) {
         Lookup::Method(method, defining_class) if method.access == ast::AccessModifier::Private => {
             Lookup::Method(method, defining_class)
@@ -64,13 +68,13 @@ fn lexical_lookup(heap: &crate::heap::Heap, class: ClassReference, selector: Sym
 /// `k`, otherwise virtually via `lookup_protected` on `enclosing`'s actual
 /// class -- or, when `enclosing` is a class object, on its metaclass first
 /// (§6.3).
-pub(crate) fn decide_lexical_send(
-    mutator: &mut Mutator,
+pub(crate) fn decide_lexical_send<'gc>(
+    mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     depth: u16,
     selector: Symbol,
-    arguments: &[Value],
-) -> Result<Step, Signal> {
+    arguments: &[Value<'gc>],
+) -> Result<Step<'gc>, Signal<'gc>> {
     // The lexical depth counts levels out from the class that *defines* this
     // method, so the walk needs this activation's `current_class`, not the
     // receiver's own class -- see `dispatch::kth_enclosing_object`.
@@ -148,12 +152,12 @@ pub(crate) fn decide_lexical_send(
 /// new activation's `current_class` is `definingClass(selector, superclass)`
 /// -- the activation's `defining_class` argument (from `lookup_defined_for`)
 /// already carries that.
-pub(crate) fn decide_super_send(
-    mutator: &mut Mutator,
+pub(crate) fn decide_super_send<'gc>(
+    mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     selector: Symbol,
-    arguments: &[Value],
-) -> Result<Step, Signal> {
+    arguments: &[Value<'gc>],
+) -> Result<Step<'gc>, Signal<'gc>> {
     let Some(current_class) = mutator.heap.activation_current_class(activation) else {
         return Err(Signal::Error(NewspeakError {
             selector,

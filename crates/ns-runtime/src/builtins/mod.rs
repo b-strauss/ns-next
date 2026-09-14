@@ -26,13 +26,13 @@ use crate::{platform, Mutator, Symbol};
 /// `leaf_step`) for every other selector. Every other native here stays a
 /// plain leaf: it keeps a `Result<Value, NewspeakError>` signature, wrapped
 /// into the step it is right here, by `wrap_error`.
-pub(crate) fn dispatch_native(
-    mutator: &mut Mutator,
+pub(crate) fn dispatch_native<'gc>(
+    mutator: &mut Mutator<'gc>,
     kind: BuiltinClass,
-    receiver: Value,
+    receiver: Value<'gc>,
     selector: Symbol,
-    arguments: &[Value],
-) -> Option<Result<Step, Signal>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     match kind {
         BuiltinClass::Object => {
             object_class::dispatch(mutator, receiver, selector, arguments).map(wrap_error)
@@ -68,6 +68,8 @@ pub(crate) fn dispatch_native(
 }
 
 /// Lifts a leaf native's result into the step it is.
-fn wrap_error(result: Result<Value, NewspeakError>) -> Result<Step, Signal> {
+fn wrap_error<'gc>(
+    result: Result<Value<'gc>, NewspeakError<'gc>>,
+) -> Result<Step<'gc>, Signal<'gc>> {
     result.map(Step::Value).map_err(Signal::Error)
 }

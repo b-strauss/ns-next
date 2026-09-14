@@ -17,7 +17,7 @@ use crate::interpreter::Mutator;
 use crate::types::Value;
 
 pub(crate) struct World {
-    mutator: Mutator,
+    mutator: Mutator<'static>,
 }
 
 impl World {
@@ -41,12 +41,28 @@ impl World {
         world
     }
 
-    /// Lends the step state out for `body`, one step's worth. The run loop
-    /// makes one entry per instruction and a host one per read, so this must
-    /// inline away.
+    /// Lends the step state out for `body` as a `Mutator<'gc>`, where `'gc` is
+    /// a lifetime only `body` can name -- gc-arena's `Arena::mutate`. The run
+    /// loop makes one entry per instruction and a host one per read, so this
+    /// must inline away.
+    #[allow(unsafe_code)] // the crate's one cast; see the SAFETY comment
     #[inline(always)]
-    pub(crate) fn enter<R>(&mut self, body: impl FnOnce(&mut Mutator) -> R) -> R {
-        body(&mut self.mutator)
+    pub(crate) fn enter<R>(&mut self, body: impl for<'gc> FnOnce(&mut Mutator<'gc>) -> R) -> R {
+        let at_rest: *mut Mutator<'static> = &mut self.mutator;
+        // SAFETY: `Mutator<'static>` and `Mutator<'gc>` differ only in a
+        // lifetime parameter, so they have one layout, and the pointer comes
+        // from a unique borrow of `self.mutator` that lasts as long as the
+        // reference made from it. `'gc` appears in `Mutator`'s fields only
+        // through the `PhantomData` brand of `ObjectReference` and
+        // `FrameReference`, which are indices -- no field of any branded type
+        // holds a reference with lifetime `'gc` (`CLAUDE.md` makes that an
+        // invariant) -- so no reference can outlive its referent through the
+        // cast. What `body` stores is stored as `Mutator<'static>` again once
+        // `body` returns, where nothing can read it but another entry, which
+        // brands it anew; and `body`'s answer cannot name `'gc`, because `R`
+        // is chosen outside the `for<'gc>`.
+        let mutator = unsafe { &mut *at_rest.cast::<Mutator<'_>>() };
+        body(mutator)
     }
 
     /// How many activations are live; `Interpreter::run_from_host` checks a
@@ -65,7 +81,7 @@ impl World {
     }
 
     /// Roots an immediate a host built itself (`Interpreter::stash`).
-    pub(crate) fn stash(&self, value: Value) -> Root {
+    pub(crate) fn stash(&self, value: Value<'static>) -> Root {
         self.mutator.heap.stash(value)
     }
 

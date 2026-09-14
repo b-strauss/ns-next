@@ -36,7 +36,7 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-fn small_integer(value: Value) -> i64 {
+fn small_integer<'gc>(value: Value<'gc>) -> i64 {
     match value {
         Value::SmallInteger(integer) => integer,
         _ => panic!("expected a SmallInteger"),

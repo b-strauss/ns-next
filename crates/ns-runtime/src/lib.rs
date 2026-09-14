@@ -1,4 +1,7 @@
 #![warn(clippy::all)]
+// The brand's one cast (`heap/world.rs`, `World::enter`) is the crate's only
+// unsafe code; a second needs an argument as careful as that one's.
+#![deny(unsafe_code)]
 
 //! Name resolution, object model, bytecode compiler and VM for the
 //! Newspeak3 language, including nested classes, mixin

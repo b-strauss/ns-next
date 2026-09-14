@@ -126,7 +126,7 @@ fn load(source: &str) -> (Interpreter, Root, ns_runtime::ResolvedModule) {
 
 /// The object `root` holds, for the heap accessors that take one. Every
 /// caller is already inside an entry.
-fn object(mutator: &Mutator, root: &Root) -> ns_runtime::ObjectReference {
+fn object<'gc>(mutator: &Mutator<'gc>, root: &Root) -> ns_runtime::ObjectReference<'gc> {
     match mutator.fetch(root) {
         Value::Object(object) => object,
         _ => panic!("expected an object"),

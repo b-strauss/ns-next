@@ -42,9 +42,9 @@ use crate::source;
 /// accept a selector absent from that table, silently breaking the guarantee
 /// above instead of refusing the build. No test catches that today: every
 /// fixture here inherits directly from `Object`.
-fn root_class_answers(
-    heap: &ns_runtime::Heap,
-    class: ns_runtime::ClassReference,
+fn root_class_answers<'gc>(
+    heap: &ns_runtime::Heap<'gc>,
+    class: ns_runtime::ClassReference<'gc>,
     selector: &str,
 ) -> bool {
     let symbol = ns_runtime::Symbol::intern(selector);

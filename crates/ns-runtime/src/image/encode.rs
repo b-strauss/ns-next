@@ -125,7 +125,7 @@ pub fn encode_source_origin(writer: &mut Writer, origin: &SourceOrigin) {
 /// Encodes the four non-`Object` `Value` variants (tags 0-4); returns `false`
 /// for `Value::Object`, which `encode_value` (the object-graph encoder)
 /// handles.
-pub fn encode_scalar_value(writer: &mut Writer, value: &Value) -> bool {
+pub fn encode_scalar_value<'gc>(writer: &mut Writer, value: &Value<'gc>) -> bool {
     match value {
         Value::Nil => writer.write_u8(VALUE_NIL),
         Value::Boolean(false) => writer.write_u8(VALUE_FALSE),
@@ -217,10 +217,10 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
 /// is refused here rather than written wrongly; extending
 /// `resolve_superclass_receiver` is what would make it representable, and
 /// that extension is where this format would grow with it.
-pub fn encode_root_class(
+pub fn encode_root_class<'gc>(
     writer: &mut Writer,
-    heap: &Heap,
-    root_class: ClassReference,
+    heap: &Heap<'gc>,
+    root_class: ClassReference<'gc>,
 ) -> Result<(), String> {
     if !heap.is_class(root_class) {
         return Err("image encoding's root object is not a class".to_string());
@@ -273,10 +273,10 @@ pub fn encode_entry(writer: &mut Writer, entry: Option<u32>) {
 /// Collected in `mixin::preorder` order -- the same order the mixin table's
 /// rows are written in -- so the same module always encodes to the same
 /// bytes.
-pub fn encode_code_table(
+pub fn encode_code_table<'gc>(
     writer: &mut Writer,
-    heap: &Heap,
-    root_class: ClassReference,
+    heap: &Heap<'gc>,
+    root_class: ClassReference<'gc>,
     symbols: &mut symbols::Builder,
 ) -> Result<CodeIds, String> {
     let mut order: Vec<Rc<CompiledCode>> = Vec::new();
@@ -592,22 +592,24 @@ fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols:
 // "Sections").
 // ---------------------------------------------------------------------------
 
-fn is_same_object(first: &Value, second: &Value) -> bool {
+fn is_same_object<'gc>(first: &Value<'gc>, second: &Value<'gc>) -> bool {
     matches!((first, second), (Value::Object(left), Value::Object(right)) if left.same(*right))
 }
 
 /// One entry of `GraphTable::build`'s explicit work stack: the traversal
 /// alternates between values and frames, so both live on the same stack.
-enum Pending {
-    Value(Value),
-    Frame(FrameReference),
+enum Pending<'gc> {
+    Value(Value<'gc>),
+    Frame(FrameReference<'gc>),
 }
 
 /// A class object's three graph references, in the order its record
 /// writes them: the superclass, the enclosing object, the declaring class.
 /// Traversal and encoding share one definition so the two cannot drift into
 /// a reference that is written but never given an id.
-fn class_references(data: &ClassData) -> impl Iterator<Item = ObjectReference> + '_ {
+fn class_references<'a, 'gc>(
+    data: &'a ClassData<'gc>,
+) -> impl Iterator<Item = ObjectReference<'gc>> + 'a {
     data.superclass
         .iter()
         .chain(data.enclosing.iter())
@@ -622,7 +624,11 @@ fn class_references(data: &ClassData) -> impl Iterator<Item = ObjectReference> +
 /// the graph says so, so neither is a record. Every other class object is.
 /// The mirror of `decode::is_prebuilt_class`, including its explicit,
 /// today-redundant `is_class` guard -- see that function's doc comment.
-fn is_class_tag(heap: &Heap, object: ObjectReference, root_class: ClassReference) -> bool {
+fn is_class_tag<'gc>(
+    heap: &Heap<'gc>,
+    object: ObjectReference<'gc>,
+    root_class: ClassReference<'gc>,
+) -> bool {
     heap.is_class(object) && (heap.class_builtin(object).is_some() || object.same(root_class))
 }
 
@@ -631,14 +637,14 @@ fn is_class_tag(heap: &Heap, object: ObjectReference, root_class: ClassReference
 /// every `Frame` reachable from the roots, in discovery order. A builtin
 /// class, the root class and the `platform` singleton are never entered:
 /// each is named by a tag of its own.
-pub struct GraphTable {
-    objects: Vec<ObjectReference>,
+pub struct GraphTable<'gc> {
+    objects: Vec<ObjectReference<'gc>>,
     object_ids: HashMap<usize, u32>,
-    frames: Vec<FrameReference>,
+    frames: Vec<FrameReference<'gc>>,
     frame_ids: HashMap<usize, u32>,
 }
 
-impl GraphTable {
+impl<'gc> GraphTable<'gc> {
     /// Pre-order depth-first from the roots, over an *explicit* stack
     /// rather than the Rust call stack. A live heap's object graph is as
     /// deep as the program that built it -- a Newspeak program can chain a
@@ -648,11 +654,11 @@ impl GraphTable {
     /// produce (children pushed in reverse so they pop in order), which is
     /// what makes the encoding canonical.
     pub fn build(
-        heap: &Heap,
-        roots: &[Value],
-        platform: &Value,
-        root_class: ClassReference,
-    ) -> GraphTable {
+        heap: &Heap<'gc>,
+        roots: &[Value<'gc>],
+        platform: &Value<'gc>,
+        root_class: ClassReference<'gc>,
+    ) -> GraphTable<'gc> {
         let mut table = GraphTable {
             objects: Vec::new(),
             object_ids: HashMap::new(),
@@ -677,11 +683,11 @@ impl GraphTable {
 
     fn visit_value(
         &mut self,
-        heap: &Heap,
-        value: &Value,
-        platform: &Value,
-        root_class: ClassReference,
-        stack: &mut Vec<Pending>,
+        heap: &Heap<'gc>,
+        value: &Value<'gc>,
+        platform: &Value<'gc>,
+        root_class: ClassReference<'gc>,
+        stack: &mut Vec<Pending<'gc>>,
     ) {
         let Value::Object(object) = value else { return };
         if is_same_object(value, platform) || is_class_tag(heap, *object, root_class) {
@@ -725,7 +731,12 @@ impl GraphTable {
         stack[before..].reverse();
     }
 
-    fn visit_frame(&mut self, heap: &Heap, frame: FrameReference, stack: &mut Vec<Pending>) {
+    fn visit_frame(
+        &mut self,
+        heap: &Heap<'gc>,
+        frame: FrameReference<'gc>,
+        stack: &mut Vec<Pending<'gc>>,
+    ) {
         let key = heap.frame_identity_key(frame);
         if self.frame_ids.contains_key(&key) {
             return;
@@ -773,25 +784,25 @@ impl GraphTable {
         stack[before..].reverse();
     }
 
-    pub fn object_id(&self, heap: &Heap, object: ObjectReference) -> u32 {
+    pub fn object_id(&self, heap: &Heap<'gc>, object: ObjectReference<'gc>) -> u32 {
         *self
             .object_ids
             .get(&heap.object_identity_key(object))
             .expect("object was visited by build()")
     }
 
-    pub fn frame_id(&self, heap: &Heap, frame: FrameReference) -> u32 {
+    pub fn frame_id(&self, heap: &Heap<'gc>, frame: FrameReference<'gc>) -> u32 {
         *self
             .frame_ids
             .get(&heap.frame_identity_key(frame))
             .expect("frame was visited by build()")
     }
 
-    pub fn objects(&self) -> &[ObjectReference] {
+    pub fn objects(&self) -> &[ObjectReference<'gc>] {
         &self.objects
     }
 
-    pub fn frames(&self) -> &[FrameReference] {
+    pub fn frames(&self) -> &[FrameReference<'gc>] {
         &self.frames
     }
 }
@@ -801,15 +812,15 @@ impl GraphTable {
 /// (each named by a tag of its own rather than by an id), the code table's
 /// ids, and the mixin table's row ids -- which is how a class object's
 /// record names the declaration it applies.
-pub struct EncodeContext<'a> {
-    pub table: &'a GraphTable,
+pub struct EncodeContext<'a, 'gc> {
+    pub table: &'a GraphTable<'gc>,
     pub code_ids: &'a CodeIds,
-    pub platform: &'a Value,
-    pub root_class: &'a ClassReference,
+    pub platform: &'a Value<'gc>,
+    pub root_class: &'a ClassReference<'gc>,
     /// `mixin::mixin_key` -> mixin-table row id, as `mixins::encode`
     /// assigned them.
     pub mixin_ids: &'a HashMap<usize, u32>,
-    pub heap: &'a Heap,
+    pub heap: &'a Heap<'gc>,
 }
 
 /// `Builtin(kind)` (0 + kind tag), `UserRoot` (1), or `Record` (2 + object
@@ -824,7 +835,11 @@ pub struct EncodeContext<'a> {
 /// enclosing instance's hidden cache slot and the `.class` of every
 /// instance of it, and there is one per enclosing instance, so no tag that
 /// names a class only by its position in the source could tell them apart.
-fn encode_class_tag(writer: &mut Writer, class: ClassReference, context: &EncodeContext) {
+fn encode_class_tag<'gc>(
+    writer: &mut Writer,
+    class: ClassReference<'gc>,
+    context: &EncodeContext<'_, 'gc>,
+) {
     if !context.heap.is_class(class) {
         panic!("internal: a class reference does not point at a class object");
     }
@@ -842,10 +857,10 @@ fn encode_class_tag(writer: &mut Writer, class: ClassReference, context: &Encode
     }
 }
 
-fn encode_optional_class(
+fn encode_optional_class<'gc>(
     writer: &mut Writer,
-    class: Option<&ClassReference>,
-    context: &EncodeContext,
+    class: Option<&ClassReference<'gc>>,
+    context: &EncodeContext<'_, 'gc>,
 ) {
     match class {
         Some(present_class) => {
@@ -862,7 +877,7 @@ fn encode_optional_class(
 /// A class object always goes through tag 6, even the ones tag 6 then
 /// resolves to an object-table id: one rule per kind of referent is what
 /// keeps the encoding canonical.
-fn encode_value(writer: &mut Writer, value: &Value, context: &EncodeContext) {
+fn encode_value<'gc>(writer: &mut Writer, value: &Value<'gc>, context: &EncodeContext<'_, 'gc>) {
     if encode_scalar_value(writer, value) {
         return;
     }
@@ -882,18 +897,22 @@ fn encode_value(writer: &mut Writer, value: &Value, context: &EncodeContext) {
     writer.write_u32(context.table.object_id(context.heap, *object));
 }
 
-fn encode_values(writer: &mut Writer, values: &[Value], context: &EncodeContext) {
+fn encode_values<'gc>(
+    writer: &mut Writer,
+    values: &[Value<'gc>],
+    context: &EncodeContext<'_, 'gc>,
+) {
     writer.write_u32(u32_field("value list length", values.len()));
     for value in values {
         encode_value(writer, value, context);
     }
 }
 
-fn encode_frame_reference(
+fn encode_frame_reference<'gc>(
     writer: &mut Writer,
-    heap: &Heap,
-    frame: Option<&FrameReference>,
-    table: &GraphTable,
+    heap: &Heap<'gc>,
+    frame: Option<&FrameReference<'gc>>,
+    table: &GraphTable<'gc>,
 ) {
     match frame {
         Some(present_frame) => {
@@ -905,10 +924,10 @@ fn encode_frame_reference(
 }
 
 /// `parameters`, `code_id`, `captured_frame` id, `home` id.
-fn encode_closure_record(
+fn encode_closure_record<'gc>(
     writer: &mut Writer,
-    closure: &ClosureData,
-    context: &EncodeContext,
+    closure: &ClosureData<'gc>,
+    context: &EncodeContext<'_, 'gc>,
     symbols: &mut symbols::Builder,
 ) {
     writer.write_u16(u16_field(
@@ -945,10 +964,10 @@ fn encode_closure_record(
 /// mixin-table row, so this function's own id lookup below refuses such a
 /// world -- the residual case where a snapshot is still an error rather
 /// than an image.
-fn encode_class_record(
+fn encode_class_record<'gc>(
     writer: &mut Writer,
-    data: &ClassData,
-    context: &EncodeContext,
+    data: &ClassData<'gc>,
+    context: &EncodeContext<'_, 'gc>,
 ) -> Result<(), String> {
     let mixin = &data.application.mixin;
     let id = context
@@ -977,10 +996,10 @@ fn encode_class_record(
     Ok(())
 }
 
-fn encode_object(
+fn encode_object<'gc>(
     writer: &mut Writer,
-    object: ObjectReference,
-    context: &EncodeContext,
+    object: ObjectReference<'gc>,
+    context: &EncodeContext<'_, 'gc>,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let record = context.heap.object_snapshot(object);
@@ -1015,10 +1034,10 @@ fn encode_object(
     Ok(())
 }
 
-fn encode_frame(
+fn encode_frame<'gc>(
     writer: &mut Writer,
-    frame: FrameReference,
-    context: &EncodeContext,
+    frame: FrameReference<'gc>,
+    context: &EncodeContext<'_, 'gc>,
     symbols: &mut symbols::Builder,
 ) {
     let snapshot = context.heap.frame_snapshot(frame);
@@ -1067,13 +1086,13 @@ fn encode_frame(
 /// first so the decoder can placeholder-allocate both tables before
 /// filling either (objects and frames reference each other freely).
 #[allow(clippy::too_many_arguments)]
-pub fn encode_graph_section(
+pub fn encode_graph_section<'gc>(
     writer: &mut Writer,
-    heap: &Heap,
-    roots: &[Value],
-    platform: &Value,
+    heap: &Heap<'gc>,
+    roots: &[Value<'gc>],
+    platform: &Value<'gc>,
     code_ids: &CodeIds,
-    root_class: ClassReference,
+    root_class: ClassReference<'gc>,
     mixin_ids: &HashMap<usize, u32>,
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
@@ -1109,11 +1128,11 @@ pub fn encode_graph_section(
 ///
 /// Every builtin is considered, not only those the graph reaches: a program
 /// can keep `Integer hash` in a slot without keeping `Integer`.
-pub fn encode_tag_named_hashes(
+pub fn encode_tag_named_hashes<'gc>(
     writer: &mut Writer,
-    mutator: &Mutator,
-    root_class: ClassReference,
-    platform: &Value,
+    mutator: &Mutator<'gc>,
+    root_class: ClassReference<'gc>,
+    platform: &Value<'gc>,
 ) {
     let heap = &mutator.heap;
     let mut entries: Vec<(u8, Option<u8>, u32)> = Vec::new();

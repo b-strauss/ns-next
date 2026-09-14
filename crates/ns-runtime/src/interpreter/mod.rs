@@ -20,12 +20,12 @@ use crate::heap::{ActivationHeader, ActivationReference, Heap, Root};
 use crate::types::*;
 use crate::Symbol;
 
-pub(crate) enum Signal {
-    Return(ActivationReference, Value),
-    Error(NewspeakError),
+pub(crate) enum Signal<'gc> {
+    Return(ActivationReference, Value<'gc>),
+    Error(NewspeakError<'gc>),
 }
 
-pub(crate) type EvaluationResult = Result<Value, Signal>;
+pub(crate) type EvaluationResult<'gc> = Result<Value<'gc>, Signal<'gc>>;
 
 /// How a host's send or instantiation ended (`Interpreter::send`,
 /// `Interpreter::instantiate`): its value, rooted, or the signal that ended
@@ -74,25 +74,25 @@ pub const MAX_ACTIVATION_DEPTH: usize = 100_000;
 /// `doesNotUnderstand:`, the natives, the nested-class accessor -- and running
 /// what was decided is the VM's, which is how `vm.rs` stays free of dispatch
 /// logic once sends stop recursing.
-pub(crate) enum Step {
+pub(crate) enum Step<'gc> {
     /// The send's value is already known: a native leaf, a slot accessor, a
     /// nested class, a finished instantiation.
-    Value(Value),
+    Value(Value<'gc>),
     /// Activate `method` on `receiver`; `defining_class` becomes the
     /// activation's current class (§3.6).
     Method {
-        receiver: Value,
+        receiver: Value<'gc>,
         method: Rc<crate::mixin::MixinMethod>,
-        defining_class: ClassReference,
-        arguments: StepArguments,
+        defining_class: ClassReference<'gc>,
+        arguments: StepArguments<'gc>,
     },
     /// Activate the closure object `closure`, and do `then` with its value.
     /// A builtin control-flow native's block is marked by its `arguments`,
     /// `StepArguments::ControlFlow`.
     Block {
-        closure: ObjectReference,
-        arguments: StepArguments,
-        then: Continuation,
+        closure: ObjectReference<'gc>,
+        arguments: StepArguments<'gc>,
+        then: Continuation<'gc>,
     },
     /// Activate `level`'s instance initializer on `receiver`, and deliver its
     /// value: an instantiation's last initializer, whose value is the
@@ -111,37 +111,37 @@ pub(crate) enum Step {
     /// different niche, the effect `StepArguments::ControlFlow`'s comment
     /// describes.
     Initializer {
-        receiver: Value,
-        level: ClassReference,
-        arguments: Vec<Value>,
+        receiver: Value<'gc>,
+        level: ClassReference<'gc>,
+        arguments: Vec<Value<'gc>>,
     },
     /// Activate `level`'s instance initializer on the instance `then` is
     /// initializing, and carry the walk on below it when it returns: an
     /// initializer with a level below it that still has code.
     InitializerThen {
-        level: ClassReference,
-        arguments: Vec<Value>,
-        then: Box<Instantiation>,
+        level: ClassReference<'gc>,
+        arguments: Vec<Value<'gc>>,
+        then: Box<Instantiation<'gc>>,
     },
     /// Activate `code`, the arguments of `level`'s superclass clause message,
     /// on the instance `then` is initializing and with `level`'s factory
     /// arguments (§6.2); its value is the superclass's arguments, with which
     /// `then` carries the walk on.
     ClauseMessage {
-        level: ClassReference,
+        level: ClassReference<'gc>,
         code: Rc<crate::bytecode::CompiledCode>,
-        arguments: Vec<Value>,
-        then: Box<Instantiation>,
+        arguments: Vec<Value<'gc>>,
+        then: Box<Instantiation<'gc>>,
     },
     /// Activate the superclass clause of the nested class `creation`
     /// describes, on its enclosing object and as part of the class that
     /// declares it; its value is the superclass, from which the class is
     /// built, cached and answered (`nested::after_clause`).
-    SuperclassClause(Box<NestedClassCreation>),
+    SuperclassClause(Box<NestedClassCreation<'gc>>),
 }
 
 /// Where an activation's arguments come from.
-pub(crate) enum StepArguments {
+pub(crate) enum StepArguments<'gc> {
     /// The send's own arguments.
     Send,
     /// None, for the block a builtin control-flow native activates --
@@ -160,11 +160,11 @@ pub(crate) enum StepArguments {
     /// neither type grew.
     ControlFlow,
     /// Arguments the decision built: `doesNotUnderstand:`'s message.
-    Owned(Vec<Value>),
+    Owned(Vec<Value<'gc>>),
 }
 
-impl StepArguments {
-    pub(crate) fn slice<'a>(&'a self, send: &'a [Value]) -> &'a [Value] {
+impl<'gc> StepArguments<'gc> {
+    pub(crate) fn slice<'a>(&'a self, send: &'a [Value<'gc>]) -> &'a [Value<'gc>] {
         match self {
             StepArguments::Send => send,
             StepArguments::ControlFlow => &[],
@@ -181,14 +181,14 @@ impl StepArguments {
 /// answers the `Interpreter`, so no step can run the loop, reach its
 /// safepoint, or start a host's send (`docs/design/memory.md`, "The
 /// brand").
-pub struct Mutator {
-    pub(crate) heap: Heap,
+pub struct Mutator<'gc> {
+    pub(crate) heap: Heap<'gc>,
     /// Every builtin class object, indexed by `BuiltinClass as usize`.
     /// Indexed rather than hashed because `class_of` asks for one on every
     /// send to a primitive receiver. Empty only while `bootstrap` is
     /// building it; nothing can reach a `Mutator` in that state.
-    pub(crate) builtin_classes: Vec<ClassReference>,
-    pub(crate) platform_singleton: Option<Value>,
+    pub(crate) builtin_classes: Vec<ClassReference<'gc>>,
+    pub(crate) platform_singleton: Option<Value<'gc>>,
     /// (mixin identity, superclass application identity) -> behaviour.
     /// Keyed on the superclass's *application*, never on a superclass class
     /// object: a nested superclass has one class object per enclosing
@@ -217,7 +217,7 @@ pub struct Mutator {
     /// measured 3-13% slower on instantiation benchmarks. They hold no
     /// handle, so a collector has nothing to trace in them.
     #[allow(clippy::vec_box)] // the boxes are what is reused, not only their contents
-    pub(crate) spare_walks: Vec<Box<Instantiation>>,
+    pub(crate) spare_walks: Vec<Box<Instantiation<'gc>>>,
     /// The lowering every module this interpreter loads is compiled with
     /// (`docs/design/compiler.md`, "The reference lowering"). Fixed at
     /// construction, so one interpreter never mixes the two.
@@ -228,7 +228,7 @@ pub struct Mutator {
     /// it reads the arguments. Empty between instructions: it is cleared
     /// when it is given back, so it holds no handle a move would have to
     /// find.
-    pub(crate) argument_buffer: Vec<Value>,
+    pub(crate) argument_buffer: Vec<Value<'gc>>,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -275,18 +275,98 @@ impl Interpreter {
     }
 
     /// Runs `body` with the interpreter's step state: its heap, its builtin
-    /// classes, and every method a step uses. What `body` answers is what
-    /// this answers. `body` runs no Newspeak code; a host runs code with
-    /// `send` and `instantiate`, outside every entry.
+    /// classes, and every method a step uses. What `body` answers is what this
+    /// answers. `body` runs no Newspeak code; a host runs code with `send` and
+    /// `instantiate`, outside every entry.
+    ///
+    /// Every handle `body` reaches carries the lifetime `'gc`, which `body` is
+    /// generic over and `R` cannot name, so no handle leaves an entry: a run
+    /// may move every object, and a handle kept across one would name
+    /// whatever took its slot (`docs/design/memory.md`, "The brand"). A host
+    /// keeps a value across a run as a `Root`, and reads it in the next
+    /// entry:
+    ///
+    /// ```
+    /// use ns_runtime::{Interpreter, Symbol, Value};
+    /// let mut interpreter = Interpreter::bootstrap();
+    /// let root = interpreter.enter(|mutator| {
+    ///     let array = mutator.new_array(vec![Value::SmallInteger(1)]);
+    ///     mutator.stash(Value::Object(array))
+    /// });
+    /// let _ = interpreter.send(&root, Symbol::intern("size"), &[]);
+    /// let length = interpreter.enter(|mutator| match mutator.fetch(&root) {
+    ///     Value::Object(array) => mutator.heap().array_length(array),
+    ///     _ => None,
+    /// });
+    /// assert_eq!(length, Some(1));
+    /// ```
+    ///
+    /// Keeping the handle itself instead does not compile:
+    ///
+    /// ```compile_fail
+    /// use ns_runtime::{Interpreter, Value};
+    /// let mut interpreter = Interpreter::bootstrap();
+    /// let array = interpreter.enter(|mutator| mutator.new_array(vec![Value::SmallInteger(1)]));
+    /// ```
+    ///
+    /// Nor does storing one where a host keeps its own state; a host's
+    /// field holds a `Root`:
+    ///
+    /// ```
+    /// use ns_runtime::{Interpreter, Root, Value};
+    /// struct Host { kept: Option<Root> }
+    /// let mut interpreter = Interpreter::bootstrap();
+    /// let mut host = Host { kept: None };
+    /// interpreter.enter(|mutator| {
+    ///     let array = mutator.new_array(vec![]);
+    ///     host.kept = Some(mutator.stash(Value::Object(array)));
+    /// });
+    /// assert!(host.kept.is_some());
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use ns_runtime::{Interpreter, Value};
+    /// struct Host<'a> { kept: Option<Value<'a>> }
+    /// let mut interpreter = Interpreter::bootstrap();
+    /// let mut host = Host { kept: None };
+    /// interpreter.enter(|mutator| {
+    ///     let array = mutator.new_array(vec![]);
+    ///     host.kept = Some(Value::Object(array));
+    /// });
+    /// ```
+    ///
+    /// And a step cannot run the loop: the interpreter is borrowed by the
+    /// entry for as long as `body` runs, and `Mutator` offers no way back to
+    /// it, so a native, which is handed only a `Mutator`, cannot re-enter
+    /// the loop either. A host runs code between entries:
+    ///
+    /// ```
+    /// use ns_runtime::{Interpreter, Symbol, Value};
+    /// let mut interpreter = Interpreter::bootstrap();
+    /// let three = interpreter.stash(Value::SmallInteger(3));
+    /// let printed = interpreter.send(&three, Symbol::intern("printString"), &[]);
+    /// assert!(printed.is_ok());
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use ns_runtime::{Interpreter, Symbol, Value};
+    /// let mut interpreter = Interpreter::bootstrap();
+    /// let three = interpreter.stash(Value::SmallInteger(3));
+    /// interpreter.enter(|_mutator| {
+    ///     let _ = interpreter.send(&three, Symbol::intern("printString"), &[]);
+    /// });
+    /// ```
     #[inline(always)]
-    pub fn enter<R>(&mut self, body: impl FnOnce(&mut Mutator) -> R) -> R {
+    pub fn enter<R>(&mut self, body: impl for<'gc> FnOnce(&mut Mutator<'gc>) -> R) -> R {
         self.world.enter(body)
     }
 
     /// Roots an immediate -- `nil`, a Boolean, a `SmallInteger`, a `Float`
     /// -- a host built itself, outside any entry. An object is rooted with
-    /// `Mutator::stash`, inside the entry that reached it.
-    pub fn stash(&self, value: Value) -> Root {
+    /// `Mutator::stash`, inside the entry that reached it. A host can build
+    /// an immediate but never hold an object handle outside an entry, so a
+    /// `Value<'static>` holds none.
+    pub fn stash(&self, value: Value<'static>) -> Root {
         self.world.stash(value)
     }
 
@@ -363,8 +443,8 @@ impl Interpreter {
     }
 }
 
-impl Mutator {
-    pub fn builtin_class(&self, kind: BuiltinClass) -> ClassReference {
+impl<'gc> Mutator<'gc> {
+    pub fn builtin_class(&self, kind: BuiltinClass) -> ClassReference<'gc> {
         self.builtin_classes[kind as usize]
     }
 
@@ -389,23 +469,23 @@ impl Mutator {
     }
 
     /// The heap, for reading, inside an entry.
-    pub fn heap(&self) -> &Heap {
+    pub fn heap(&self) -> &Heap<'gc> {
         &self.heap
     }
 
     /// The heap, for writing, inside an entry.
-    pub fn heap_mut(&mut self) -> &mut Heap {
+    pub fn heap_mut(&mut self) -> &mut Heap<'gc> {
         &mut self.heap
     }
 
     /// What `root` holds now. Good until this entry ends: the next run may
     /// move it, so read the root again in the next entry.
-    pub fn fetch(&self, root: &Root) -> Value {
+    pub fn fetch(&self, root: &Root) -> Value<'gc> {
         self.heap.fetch(root)
     }
 
     /// Roots `value`, so that a host can hold it past this entry.
-    pub fn stash(&self, value: Value) -> Root {
+    pub fn stash(&self, value: Value<'gc>) -> Root {
         self.heap.stash(value)
     }
 
@@ -416,8 +496,8 @@ impl Mutator {
     /// for the host.
     pub(crate) fn start(
         &mut self,
-        decided: Result<Step, Signal>,
-        send_arguments: &[Value],
+        decided: Result<Step<'gc>, Signal<'gc>>,
+        send_arguments: &[Value<'gc>],
     ) -> HostStart {
         match decided {
             Ok(Step::Value(value)) => HostStart::Finished(self.to_host(Ok(value))),
@@ -431,7 +511,7 @@ impl Mutator {
 
     /// A run's outcome as the host receives it. Nothing runs between the
     /// run's last safepoint and here, so every value in `result` is current.
-    pub(crate) fn to_host(&self, result: EvaluationResult) -> HostResult {
+    pub(crate) fn to_host(&self, result: EvaluationResult<'gc>) -> HostResult {
         match result {
             Ok(value) => Ok(self.stash(value)),
             Err(Signal::Error(error)) => Err(HostSignal::Error(HostError {
@@ -460,10 +540,10 @@ impl Mutator {
     /// factory message (`climb_levels` never decides a send).
     pub(crate) fn decide_send(
         &mut self,
-        receiver: Value,
+        receiver: Value<'gc>,
         selector: Symbol,
-        arguments: &[Value],
-    ) -> Result<Step, Signal> {
+        arguments: &[Value<'gc>],
+    ) -> Result<Step<'gc>, Signal<'gc>> {
         if let Some(result) = self.try_factory_send(&receiver, selector, arguments) {
             return result;
         }
@@ -546,10 +626,10 @@ impl Mutator {
     fn dispatch_native_inheriting_object(
         &mut self,
         kind: BuiltinClass,
-        receiver: &Value,
+        receiver: &Value<'gc>,
         selector: Symbol,
-        arguments: &[Value],
-    ) -> Option<Result<Step, Signal>> {
+        arguments: &[Value<'gc>],
+    ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
         if let Some(result) =
             crate::builtins::dispatch_native(self, kind, *receiver, selector, arguments)
         {
@@ -564,10 +644,10 @@ impl Mutator {
     fn decide_native_or_does_not_understand(
         &mut self,
         kind: BuiltinClass,
-        receiver: Value,
+        receiver: Value<'gc>,
         selector: Symbol,
-        arguments: &[Value],
-    ) -> Result<Step, Signal> {
+        arguments: &[Value<'gc>],
+    ) -> Result<Step<'gc>, Signal<'gc>> {
         match self.dispatch_native_inheriting_object(kind, &receiver, selector, arguments) {
             Some(result) => result,
             None => self.decide_does_not_understand(receiver, selector, arguments),
@@ -587,10 +667,10 @@ impl Mutator {
     /// method override -- would never actually run.
     fn decide_does_not_understand(
         &mut self,
-        receiver: Value,
+        receiver: Value<'gc>,
         selector: Symbol,
-        arguments: &[Value],
-    ) -> Result<Step, Signal> {
+        arguments: &[Value<'gc>],
+    ) -> Result<Step<'gc>, Signal<'gc>> {
         let class = self.class_of(&receiver);
         let does_not_understand_selector = Symbol::DOES_NOT_UNDERSTAND;
         // A minimal message-mirror-shaped value: an Array `{selector.
@@ -649,14 +729,14 @@ impl Mutator {
         }
     }
 
-    pub(crate) fn take_argument_buffer(&mut self) -> Vec<Value> {
+    pub(crate) fn take_argument_buffer(&mut self) -> Vec<Value<'gc>> {
         std::mem::take(&mut self.argument_buffer)
     }
 
     /// Cleared here rather than when it is taken, so that between two
     /// instructions -- at every safepoint -- the buffer holds no value, and
     /// so no handle a move would have to find.
-    pub(crate) fn return_argument_buffer(&mut self, mut buffer: Vec<Value>) {
+    pub(crate) fn return_argument_buffer(&mut self, mut buffer: Vec<Value<'gc>>) {
         buffer.clear();
         self.argument_buffer = buffer;
     }
@@ -666,10 +746,10 @@ impl Mutator {
     /// here, so the count and the check cannot be skipped by a new site.
     pub(crate) fn push(
         &mut self,
-        header: ActivationHeader,
-        arguments: &[Value],
+        header: ActivationHeader<'gc>,
+        arguments: &[Value<'gc>],
         temporaries: usize,
-    ) -> Result<ActivationReference, Signal> {
+    ) -> Result<ActivationReference, Signal<'gc>> {
         if header.counted && self.heap.counted_depth() >= MAX_ACTIVATION_DEPTH {
             return Err(recursion_too_deep(&header));
         }
@@ -683,11 +763,11 @@ impl Mutator {
     /// the depth count's one exemption asks about.
     pub(crate) fn push_step(
         &mut self,
-        step: Step,
-        send_arguments: &[Value],
+        step: Step<'gc>,
+        send_arguments: &[Value<'gc>],
         sender: Option<ActivationReference>,
         inlinable: bool,
-    ) -> Result<ActivationReference, Signal> {
+    ) -> Result<ActivationReference, Signal<'gc>> {
         match step {
             Step::Value(_) => unreachable!("internal: a value needs no activation"),
             Step::Method {
@@ -735,7 +815,7 @@ impl Mutator {
                 // recursing uncounted (`docs/design/compiler.md`, "How the
                 // limit counts"). Asked in this order so that an ordinary
                 // `value` never reads the sender's entry.
-                let created_by_sender = |heap: &Heap| {
+                let created_by_sender = |heap: &Heap<'gc>| {
                     sender
                         .and_then(|sender| heap.activation_reified(sender))
                         .is_some_and(|frame| frame.same(captured_frame))
@@ -830,11 +910,11 @@ impl Mutator {
     /// happens once it returns differs.
     fn push_initializer(
         &mut self,
-        receiver: Value,
-        level: ClassReference,
-        arguments: &[Value],
-        then: Continuation,
-    ) -> Result<ActivationReference, Signal> {
+        receiver: Value<'gc>,
+        level: ClassReference<'gc>,
+        arguments: &[Value<'gc>],
+        then: Continuation<'gc>,
+    ) -> Result<ActivationReference, Signal<'gc>> {
         let (code, slot_base) = self.initializer_body(level);
         let temporaries = (code.register_count - code.argument_count) as usize;
         self.push(
@@ -860,7 +940,11 @@ impl Mutator {
     /// one's place -- a native loop's next block, or the method a
     /// non-Boolean condition's `mustBeBoolean` finds -- which the loop hands
     /// to `push_continuation`.
-    pub(crate) fn resume(&mut self, then: Continuation, value: Value) -> Result<Step, Signal> {
+    pub(crate) fn resume(
+        &mut self,
+        then: Continuation<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Step<'gc>, Signal<'gc>> {
         match then {
             Continuation::Deliver => Ok(Step::Value(value)),
             Continuation::Truthy => Ok(Step::Value(Value::Boolean(
@@ -886,7 +970,7 @@ impl Mutator {
     /// calls for every activation it pops. Only a nested class's creation has
     /// begun anything -- its cache slot is marked as in progress -- so only it
     /// has anything to undo; every other continuation is simply dropped.
-    pub(crate) fn abandon(&mut self, then: Continuation) {
+    pub(crate) fn abandon(&mut self, then: Continuation<'gc>) {
         if let Continuation::NestedClass(creation) = then {
             nested::end_creation(self, &creation);
         }
@@ -909,9 +993,9 @@ impl Mutator {
     /// loop.
     pub(crate) fn push_continuation(
         &mut self,
-        step: Step,
+        step: Step<'gc>,
         replaced_counted: bool,
-    ) -> Result<ActivationReference, Signal> {
+    ) -> Result<ActivationReference, Signal<'gc>> {
         let sender = self.heap.top_activation();
         // A continuation's step never refers to a send's arguments
         // (`StepArguments::Send` is only answered by a decision about a send,
@@ -938,7 +1022,11 @@ impl Mutator {
     /// to a live stack entry exactly until the activation returns, and a
     /// frame the image decoder built never is. A dead home is §7.2's
     /// `cannotReturn`. Every other activation's `^` returns from itself.
-    pub(crate) fn raise_return(&mut self, activation: ActivationReference, value: Value) -> Signal {
+    pub(crate) fn raise_return(
+        &mut self,
+        activation: ActivationReference,
+        value: Value<'gc>,
+    ) -> Signal<'gc> {
         let target = match self.heap.activation_home(activation) {
             None => activation,
             Some(home) => match self.heap.frame_activation(home) {
@@ -957,7 +1045,7 @@ impl Mutator {
         Signal::Return(target, value)
     }
 
-    pub fn class_of(&self, value: &Value) -> ClassReference {
+    pub fn class_of(&self, value: &Value<'gc>) -> ClassReference<'gc> {
         match value {
             Value::Object(object) => self.heap.class_of_object(*object),
             // Nil/Boolean/SmallInteger/Float classes are wired up by the
@@ -1011,7 +1099,7 @@ impl Mutator {
     /// decoded graph whose superclass links form a cycle, and no other
     /// construction site can build one (a superclass is fixed before the
     /// class object that inherits it exists).
-    pub fn metaclass_of(&mut self, class: ClassReference) -> Option<ClassReference> {
+    pub fn metaclass_of(&mut self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
         // Walk out to the first level that already answers -- a cached
         // metaclass, a non-class object, or the end of the chain -- pushing
         // each level that still has to be built. `chain` is nearest-first,
@@ -1085,7 +1173,7 @@ impl Mutator {
         super_metaclass
     }
 
-    fn builtin_class_for_primitive(&self, value: &Value) -> ClassReference {
+    fn builtin_class_for_primitive(&self, value: &Value<'gc>) -> ClassReference<'gc> {
         let kind = match value {
             Value::Nil => BuiltinClass::Nil,
             Value::Boolean(true) => BuiltinClass::True,
@@ -1097,26 +1185,30 @@ impl Mutator {
         self.builtin_class(kind)
     }
 
-    fn new_instance_object(&mut self, class: ClassReference, data: ObjectData) -> ObjectReference {
+    fn new_instance_object(
+        &mut self,
+        class: ClassReference<'gc>,
+        data: ObjectData<'gc>,
+    ) -> ObjectReference<'gc> {
         self.heap.allocate_object(class, data)
     }
 
-    pub fn new_array(&mut self, elements: Vec<Value>) -> ObjectReference {
+    pub fn new_array(&mut self, elements: Vec<Value<'gc>>) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Array);
         self.new_instance_object(class, ObjectData::Array(elements))
     }
 
-    pub fn new_string(&mut self, string: String) -> ObjectReference {
+    pub fn new_string(&mut self, string: String) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::String);
         self.new_instance_object(class, ObjectData::String(string))
     }
 
-    pub fn new_symbol(&mut self, symbol: Symbol) -> Value {
+    pub fn new_symbol(&mut self, symbol: Symbol) -> Value<'gc> {
         let class = self.builtin_class(BuiltinClass::Symbol);
         Value::Object(self.new_instance_object(class, ObjectData::Symbol(symbol)))
     }
 
-    pub fn new_character(&mut self, character: char) -> ObjectReference {
+    pub fn new_character(&mut self, character: char) -> ObjectReference<'gc> {
         // There is no dedicated Character payload variant on
         // ObjectData -- represent a character as a one-`char` Rust String
         // wrapped the same way String literals are (String), consistent with
@@ -1129,7 +1221,7 @@ impl Mutator {
         self.new_instance_object(class, ObjectData::String(character.to_string()))
     }
 
-    pub fn new_closure(&mut self, closure: ClosureData) -> ObjectReference {
+    pub fn new_closure(&mut self, closure: ClosureData<'gc>) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Block);
         self.new_instance_object(class, ObjectData::Closure(closure))
     }
@@ -1137,7 +1229,7 @@ impl Mutator {
     /// The `platform` object (`docs/design/core-library.md`):
     /// memoized on first call, so every reference within one interpreter
     /// sees the same object identity.
-    pub(crate) fn platform_value(&mut self) -> Value {
+    pub(crate) fn platform_value(&mut self) -> Value<'gc> {
         if let Some(platform) = &self.platform_singleton {
             return *platform;
         }
@@ -1154,7 +1246,7 @@ impl Mutator {
     /// (a zero-field `Instance`). `pub(crate)`, not `pub`: only
     /// `crate::platform::dispatch` (`platform transcript`) ever needs to
     /// mint one.
-    pub(crate) fn new_stream_object(&mut self) -> ObjectReference {
+    pub(crate) fn new_stream_object(&mut self) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Platform);
         self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil]))
     }
@@ -1165,7 +1257,7 @@ impl Mutator {
     /// transcript stream. Like `new_stream_object`, it is allocated fresh
     /// per send: the namespace is stateless, so identity across sends
     /// carries no meaning that any caller could observe.
-    pub(crate) fn new_collections_namespace(&mut self) -> ObjectReference {
+    pub(crate) fn new_collections_namespace(&mut self) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Platform);
         self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil, Value::Nil]))
     }
@@ -1186,10 +1278,10 @@ impl Mutator {
     pub(crate) fn new_class_object(
         &mut self,
         application: Rc<crate::mixin::MixinApplication>,
-        enclosing: Option<ObjectReference>,
-        declaring_class: Option<ClassReference>,
-        superclass: Option<ClassReference>,
-    ) -> ClassReference {
+        enclosing: Option<ObjectReference<'gc>>,
+        declaring_class: Option<ClassReference<'gc>>,
+        superclass: Option<ClassReference<'gc>>,
+    ) -> ClassReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Object);
         self.heap.allocate_object(
             class,
@@ -1308,11 +1400,11 @@ impl Mutator {
 /// callers are host-initiated sends -- `ns-next run --send`, `snapshot
 /// --send`, `load --send`, and any future embedder driving
 /// `Interpreter::send` directly.
-fn check_method_arity(
+fn check_method_arity<'gc>(
     method: &crate::mixin::MixinMethod,
-    receiver: Value,
+    receiver: Value<'gc>,
     given: usize,
-) -> Result<(), Signal> {
+) -> Result<(), Signal<'gc>> {
     if given == method.argument_count {
         return Ok(());
     }
@@ -1330,12 +1422,12 @@ fn check_method_arity(
 /// before it can reach a register: the window is laid out from the arguments
 /// actually given, so too few would address registers past its end -- a panic
 /// -- and too many would silently shift every temporary.
-fn check_block_arity(
-    heap: &Heap,
+fn check_block_arity<'gc>(
+    heap: &Heap<'gc>,
     parameter_count: usize,
-    captured_frame: FrameReference,
+    captured_frame: FrameReference<'gc>,
     given: usize,
-) -> Result<(), Signal> {
+) -> Result<(), Signal<'gc>> {
     if given == parameter_count {
         return Ok(());
     }
@@ -1354,7 +1446,7 @@ fn check_block_arity(
 /// nothing more.
 #[cold]
 #[inline(never)]
-fn recursion_too_deep(header: &ActivationHeader) -> Signal {
+fn recursion_too_deep<'gc>(header: &ActivationHeader<'gc>) -> Signal<'gc> {
     let selector = match &header.kind {
         FrameKind::Method(method) => method.selector,
         FrameKind::Closure(_) => Symbol::VALUE,
@@ -1380,7 +1472,7 @@ fn recursion_too_deep(header: &ActivationHeader) -> Signal {
 /// actually inheriting from a `Boolean` superclass node, since they do not
 /// yet. Fix this only if a corpus module or fixture test needs real
 /// `Boolean`/`True`/`False` inheritance to observe correct behavior.
-fn build_builtin_classes(mutator: &mut Mutator) -> Vec<ClassReference> {
+fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<'gc>> {
     // NOTE: deliberately *not* `use BuiltinClass::*;` here --
     // `BuiltinClass::Object` and `crate::types::Object`
     // (the object-model struct, brought into scope by `use crate::types::*;`
@@ -1441,10 +1533,10 @@ fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
 /// lets `Object.class` stay non-optional. The construction itself lives in
 /// `Heap::allocate_self_referential_class`; under the arena it is ordinary
 /// safe Rust, because the slot's index is known before the slot is filled.
-fn build_self_referential_object_class(
-    heap: &mut Heap,
+fn build_self_referential_object_class<'gc>(
+    heap: &mut Heap<'gc>,
     application: Rc<crate::mixin::MixinApplication>,
-) -> ClassReference {
+) -> ClassReference<'gc> {
     heap.allocate_self_referential_class(ObjectData::Class(ClassData {
         application,
         enclosing: None,
@@ -1758,9 +1850,10 @@ mod tests {
             1,
             "one walk ran at a time"
         );
-        // The address holds no handle, so it may leave the entry that took it.
-        let spare: *const Instantiation =
-            interpreter.enter(|mutator| &*mutator.spare_walks[0] as *const Instantiation);
+        // Only the box's address leaves the entry that took it, untyped: a
+        // pointer to an `Instantiation` would name the entry's brand.
+        let spare: *const () =
+            interpreter.enter(|mutator| std::ptr::from_ref(&*mutator.spare_walks[0]).cast::<()>());
         assert!(
             interpreter.enter(|mutator| mutator.spare_walks.iter().all(|state| matches!(
                 state.instance,
@@ -1773,7 +1866,10 @@ mod tests {
         expect_ok(interpreter.instantiate(&class_r, &[]), "R new again");
         assert_eq!(interpreter.enter(|mutator| mutator.spare_walks.len()), 1);
         assert!(
-            interpreter.enter(|mutator| std::ptr::eq(spare, &*mutator.spare_walks[0])),
+            interpreter.enter(|mutator| std::ptr::eq(
+                spare,
+                std::ptr::from_ref(&*mutator.spare_walks[0]).cast::<()>()
+            )),
             "the second walk ran in the first one's box"
         );
     }

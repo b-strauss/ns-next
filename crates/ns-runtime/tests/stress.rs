@@ -104,37 +104,3 @@ fn every_continuation_survives_a_move_at_every_safepoint() {
         "{safepoints} safepoints but {moves} moves: the heap outgrew the stress budget"
     );
 }
-
-/// The mistake the stress mode exists to catch, made on purpose: a host
-/// keeping a plain value across a run. The run itself succeeds -- the
-/// stale value is the host's, not the runtime's -- and it is the host's
-/// read afterwards that is refused.
-///
-/// `kept` leaves its entry on purpose -- that is the mistake; Task 4's brand
-/// makes it a compile error and deletes this test.
-#[test]
-fn a_value_a_host_keeps_across_a_run_is_refused_under_stress() {
-    let (mut interpreter, class) = load(EVERY_CONTINUATION);
-    interpreter.set_stress_moves(true);
-    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let kept = interpreter.enter(|mutator| mutator.fetch(&instance));
-    expect_ok(
-        interpreter.send(&instance, Symbol::intern("run"), &[]),
-        "run",
-    );
-    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        interpreter.enter(|mutator| mutator.heap().describe(&kept))
-    }));
-    let Err(payload) = read else {
-        panic!("a value kept across a run was read as if it were current")
-    };
-    let message = payload
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| payload.downcast_ref::<&str>().copied())
-        .expect("a panic with a message");
-    assert!(
-        message.contains("stale handle"),
-        "the read panicked, but not as a stale handle: {message}"
-    );
-}
