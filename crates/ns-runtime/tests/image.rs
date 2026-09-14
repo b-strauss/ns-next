@@ -13,7 +13,7 @@ use ns_runtime::image::{decode, encode, mixins, symbols};
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
     BuiltinClass, ClassData, ClassReference, FrameKind, Heap, HostResult, HostSignal, Interpreter,
-    Mixin, MixinApplication, ObjectData, Root, SourceOrigin, Symbol, Value,
+    Mixin, MixinApplication, Mutator, ObjectData, Root, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
@@ -168,10 +168,12 @@ fn encoding_an_object_value_is_refused_not_scalarized() {
     // `false` and write nothing, leaving `encode_value`, the object-graph
     // encoder, in charge.
     let mut interpreter = ns_runtime::Interpreter::bootstrap();
-    let object = Value::Object(interpreter.new_string("hi".to_string()));
-    let mut writer = encode::Writer::new();
-    assert!(!encode::encode_scalar_value(&mut writer, &object));
-    assert_eq!(writer.into_bytes().len(), 0);
+    interpreter.enter(|mutator| {
+        let object = Value::Object(mutator.new_string("hi".to_string()));
+        let mut writer = encode::Writer::new();
+        assert!(!encode::encode_scalar_value(&mut writer, &object));
+        assert_eq!(writer.into_bytes().len(), 0);
+    });
 }
 
 #[test]
@@ -264,9 +266,11 @@ fn load(source: &str) -> (Interpreter, Root) {
 }
 
 /// The class object `root` holds, for the heap accessors and the encoder,
-/// which take one. Fetched where it is used: a run may move it.
-fn class_reference(interpreter: &Interpreter, root: &Root) -> ClassReference {
-    match interpreter.fetch(root) {
+/// which take one. Fetched where it is used: a run may move it. Takes
+/// `&Mutator` and is called from inside an entry, since every caller already
+/// holds one by the time it needs a `ClassReference`.
+fn class_reference(mutator: &Mutator, root: &Root) -> ClassReference {
+    match mutator.fetch(root) {
         Value::Object(class) => class,
         _ => panic!("expected a class object"),
     }
@@ -498,19 +502,19 @@ fn mixin_of(heap: &Heap, class: ClassReference) -> Mixin {
 /// Replaces `class`'s mixin with `mixin`, applied to the same superclass
 /// application. A mixin is shared and immutable, so this is the shape an edit
 /// to a live class takes -- and, now that code lives on the declaration, how a
-/// test puts a doctored body in front of the encoder.
-fn install_mixin(interpreter: &mut Interpreter, class: ClassReference, mixin: Mixin) {
-    let super_application = interpreter
-        .heap_reference()
+/// test puts a doctored body in front of the encoder. Takes `&mut Mutator`
+/// and is called from inside an entry, alongside the rest of the doctoring
+/// its callers do.
+fn install_mixin(mutator: &mut Mutator, class: ClassReference, mixin: Mixin) {
+    let super_application = mutator
+        .heap()
         .class_application(class)
         .expect("a class object")
         .superclass
         .clone();
-    let application = interpreter.apply_mixin(&Rc::new(mixin), super_application.as_ref());
+    let application = mutator.apply_mixin(&Rc::new(mixin), super_application.as_ref());
     assert!(
-        interpreter
-            .heap_mut()
-            .set_class_application(class, application),
+        mutator.heap_mut().set_class_application(class, application),
         "a class object"
     );
 }
@@ -576,63 +580,67 @@ fn every_instruction_variant_round_trips() {
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
-    let class = class_reference(&interpreter, &class);
-    let synthetic = Rc::new(every_instruction_once());
-    let doctored = Mixin {
-        initializer_code: Some(synthetic.clone()),
-        ..mixin_of(interpreter.heap_reference(), class)
-    };
-    install_mixin(&mut interpreter, class, doctored);
-    let (table, decoded_mixins, ids) = round_trip_code_table(interpreter.heap_reference(), class);
-    let root = &decoded_mixins.code[0];
-    let decoded = &table.codes[root.initializer.expect("initializer id") as usize];
-    assert_eq!(**decoded, *synthetic);
-    assert_eq!(
-        ids.id_of(&synthetic),
-        root.initializer.expect("initializer id")
-    );
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let synthetic = Rc::new(every_instruction_once());
+        let doctored = Mixin {
+            initializer_code: Some(synthetic.clone()),
+            ..mixin_of(mutator.heap(), class)
+        };
+        install_mixin(mutator, class, doctored);
+        let (table, decoded_mixins, ids) = round_trip_code_table(mutator.heap(), class);
+        let root = &decoded_mixins.code[0];
+        let decoded = &table.codes[root.initializer.expect("initializer id") as usize];
+        assert_eq!(**decoded, *synthetic);
+        assert_eq!(
+            ids.id_of(&synthetic),
+            root.initializer.expect("initializer id")
+        );
+    });
 }
 
 #[test]
 fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents() {
-    let (interpreter, class) = load(RICH);
-    let class = class_reference(&interpreter, &class);
-    let (table, decoded_mixins, _ids) = round_trip_code_table(interpreter.heap_reference(), class);
-    let root = &decoded_mixins.code[0];
-    assert_eq!(root.methods.len(), 3);
-    assert_eq!(
-        root.methods
-            .iter()
-            .map(|(selector, _)| selector.as_str())
-            .collect::<Vec<_>>(),
-        vec!["arr", "find:in:", "loop"],
-        "root list is sorted by selector"
-    );
-    for (selector, id) in &root.methods {
-        let decoded = &table.codes[*id as usize];
-        let original = method_code(interpreter.heap_reference(), class, selector.as_str());
-        assert_eq!(**decoded, *original, "{selector}");
-        for instruction in &decoded.instructions {
-            if let Instruction::MakeClosure { code, .. } = instruction {
-                let child_id = table
-                    .codes
-                    .iter()
-                    .position(|candidate| Rc::ptr_eq(candidate, code))
-                    .expect("a MakeClosure's block body is in the table");
-                assert!(
-                    child_id < *id as usize,
-                    "a block's code precedes its parent's"
-                );
+    let (mut interpreter, class) = load(RICH);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let (table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let root = &decoded_mixins.code[0];
+        assert_eq!(root.methods.len(), 3);
+        assert_eq!(
+            root.methods
+                .iter()
+                .map(|(selector, _)| selector.as_str())
+                .collect::<Vec<_>>(),
+            vec!["arr", "find:in:", "loop"],
+            "root list is sorted by selector"
+        );
+        for (selector, id) in &root.methods {
+            let decoded = &table.codes[*id as usize];
+            let original = method_code(mutator.heap(), class, selector.as_str());
+            assert_eq!(**decoded, *original, "{selector}");
+            for instruction in &decoded.instructions {
+                if let Instruction::MakeClosure { code, .. } = instruction {
+                    let child_id = table
+                        .codes
+                        .iter()
+                        .position(|candidate| Rc::ptr_eq(candidate, code))
+                        .expect("a MakeClosure's block body is in the table");
+                    assert!(
+                        child_id < *id as usize,
+                        "a block's code precedes its parent's"
+                    );
+                }
             }
         }
-    }
-    let initializer = &table.codes[root.initializer.expect("initializer id") as usize];
-    assert_eq!(
-        **initializer,
-        *mixin_of(interpreter.heap_reference(), class)
-            .initializer_code
-            .expect("an initializer")
-    );
+        let initializer = &table.codes[root.initializer.expect("initializer id") as usize];
+        assert_eq!(
+            **initializer,
+            *mixin_of(mutator.heap(), class)
+                .initializer_code
+                .expect("an initializer")
+        );
+    });
 }
 
 /// A mixin decoded from an image carries the bodies its own row named, with
@@ -640,19 +648,21 @@ fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents()
 /// body the live method had, and so does its initializer.
 #[test]
 fn a_decoded_mixin_carries_the_bodies_its_row_names() {
-    let (interpreter, class) = load(RICH);
-    let class = class_reference(&interpreter, &class);
-    let (_table, decoded_mixins, _ids) = round_trip_code_table(interpreter.heap_reference(), class);
-    let root = decoded_mixins.root().expect("a root row");
-    assert_eq!(root.methods.len(), 3);
-    for (selector, method) in &root.methods {
-        assert_eq!(
-            *method.code,
-            *method_code(interpreter.heap_reference(), class, selector.as_str()),
-            "{selector}"
-        );
-    }
-    assert!(root.initializer_code.is_some());
+    let (mut interpreter, class) = load(RICH);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let root = decoded_mixins.root().expect("a root row");
+        assert_eq!(root.methods.len(), 3);
+        for (selector, method) in &root.methods {
+            assert_eq!(
+                *method.code,
+                *method_code(mutator.heap(), class, selector.as_str()),
+                "{selector}"
+            );
+        }
+        assert!(root.initializer_code.is_some());
+    });
 }
 
 #[test]
@@ -819,19 +829,15 @@ fn an_invalid_builtin_class_tag_is_a_decode_error_not_a_panic() {
 
 #[test]
 fn a_truncated_code_table_is_a_decode_error_not_a_panic() {
-    let (interpreter, class) = load(RICH);
-    let class = class_reference(&interpreter, &class);
-    let mut writer = encode::Writer::new();
-    let mut symbols = symbols::Builder::new();
-    encode::encode_code_table(
-        &mut writer,
-        interpreter.heap_reference(),
-        class,
-        &mut symbols,
-    )
-    .expect("encode code table");
-    let table = symbols.build();
-    let bytes = writer.into_bytes();
+    let (mut interpreter, class) = load(RICH);
+    let (table, bytes) = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let mut writer = encode::Writer::new();
+        let mut symbols = symbols::Builder::new();
+        encode::encode_code_table(&mut writer, mutator.heap(), class, &mut symbols)
+            .expect("encode code table");
+        (symbols.build(), writer.into_bytes())
+    });
     for cut in [1usize, bytes.len() / 3, bytes.len() / 2, bytes.len() - 1] {
         let mut reader = decode::Reader::new(&bytes[..cut]);
         assert!(
@@ -1084,14 +1090,16 @@ fn a_deeply_nested_block_chain_is_a_decode_error_not_a_stack_overflow() {
 fn a_mixin_table_with_no_root_row_is_a_decode_error() {
     let mut interpreter = Interpreter::bootstrap();
     let empty = mixins::Decoded::empty();
-    match decode::build_root_class(&mut interpreter, &empty, None) {
-        Err(decode::DecodeError::NotAClass) => assert_eq!(
-            decode::DecodeError::NotAClass.to_string(),
-            "the image's mixin table describes no root class"
-        ),
-        Err(error) => panic!("expected NotAClass, got a different error: {error}"),
-        Ok(_) => panic!("expected NotAClass, got Ok"),
-    }
+    interpreter.enter(
+        |mutator| match decode::build_root_class(mutator, &empty, None) {
+            Err(decode::DecodeError::NotAClass) => assert_eq!(
+                decode::DecodeError::NotAClass.to_string(),
+                "the image's mixin table describes no root class"
+            ),
+            Err(error) => panic!("expected NotAClass, got a different error: {error}"),
+            Ok(_) => panic!("expected NotAClass, got Ok"),
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1163,23 +1171,25 @@ fn the_deepest_literal_array_the_parser_accepts_survives_a_round_trip() {
         "the parser accepts deeper nesting than 64 levels ({levels}), which is why \
          MAX_LITERAL_DEPTH cannot be 64"
     );
-    let (interpreter, class) = load(&source_with_nested_literal_array(levels));
-    let class = class_reference(&interpreter, &class);
-    let original = method_code(interpreter.heap_reference(), class, "arr");
-    assert_eq!(
-        literal_array_depth(&original),
-        levels,
-        "the compiler lowered the whole nest"
-    );
-    let (table, decoded_mixins, _ids) = round_trip_code_table(interpreter.heap_reference(), class);
-    let (_, id) = decoded_mixins.code[0]
-        .methods
-        .iter()
-        .find(|(selector, _)| selector.as_str() == "arr")
-        .expect("arr is in the root list");
-    let decoded = &table.codes[*id as usize];
-    assert_eq!(**decoded, *original);
-    assert_eq!(literal_array_depth(decoded), levels);
+    let (mut interpreter, class) = load(&source_with_nested_literal_array(levels));
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let original = method_code(mutator.heap(), class, "arr");
+        assert_eq!(
+            literal_array_depth(&original),
+            levels,
+            "the compiler lowered the whole nest"
+        );
+        let (table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let (_, id) = decoded_mixins.code[0]
+            .methods
+            .iter()
+            .find(|(selector, _)| selector.as_str() == "arr")
+            .expect("arr is in the root list");
+        let decoded = &table.codes[*id as usize];
+        assert_eq!(**decoded, *original);
+        assert_eq!(literal_array_depth(decoded), levels);
+    });
 }
 
 /// A module whose one method nests `levels` blocks, each sending `value` to
@@ -1252,20 +1262,22 @@ fn the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs() {
         let class = interpreter.load_module(&resolved);
         // Nothing runs in this interpreter, so the class read from its root
         // stays current.
-        let class = class_reference(&interpreter, &class);
-        assert_eq!(
-            block_nesting(&method_code(interpreter.heap_reference(), class, "nest")),
-            levels,
-            "{lowering:?}: every source level is a block in the code table"
-        );
-        let bytes = image::build(
-            interpreter.heap_reference(),
-            None,
-            &Origin::File(PathBuf::from("t.ns")),
-            class,
-            Symbol::intern("nest"),
-        )
-        .expect("build");
+        let bytes = interpreter.enter(|mutator| {
+            let class = class_reference(mutator, &class);
+            assert_eq!(
+                block_nesting(&method_code(mutator.heap(), class, "nest")),
+                levels,
+                "{lowering:?}: every source level is a block in the code table"
+            );
+            image::build(
+                mutator.heap(),
+                None,
+                &Origin::File(PathBuf::from("t.ns")),
+                class,
+                Symbol::intern("nest"),
+            )
+            .expect("build")
+        });
         let mut loaded = match image::load(&bytes) {
             Ok(loaded) => loaded,
             Err(error) => panic!("{lowering:?}: {levels} nested blocks must load: {error}"),
@@ -1281,7 +1293,9 @@ fn the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs() {
             "nest",
         );
         assert!(
-            matches!(loaded.interpreter.fetch(&answer), Value::Nil),
+            loaded
+                .interpreter
+                .enter(|mutator| matches!(mutator.fetch(&answer), Value::Nil)),
             "{lowering:?}: `[] value` is nil"
         );
     }
@@ -1305,84 +1319,79 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 
 /// The mixin table's row ids, without keeping the table's own bytes: a
 /// graph section names a class object's declaration by row id, so encoding
-/// one needs exactly the map `image::snapshot` builds.
+/// one needs exactly the map `image::snapshot` builds. Called from inside an
+/// entry, alongside the rest of the encoding its callers do.
 fn mixin_ids_for(
     class: ClassReference,
-    interpreter: &Interpreter,
+    mutator: &Mutator,
     symbols: &mut symbols::Builder,
     ids: &encode::CodeIds,
 ) -> HashMap<usize, u32> {
     let mut scratch = encode::Writer::new();
-    mixins::encode(
-        &mut scratch,
-        interpreter.heap_reference(),
-        class,
-        symbols,
-        ids,
-    )
-    .expect("mixin table")
+    mixins::encode(&mut scratch, mutator.heap(), class, symbols, ids).expect("mixin table")
 }
 
 /// Loads `source`, lets `make_roots` build the roots, encodes code table +
 /// graph section, decodes both with the same `Reader`, and returns
-/// (interpreter, class, original roots, decoded roots, max identity hash).
-///
-/// `make_roots` may run code, so the class and the roots stay rooted across
-/// it and are read out after it, for the encoder and the decoder, which run
-/// nothing -- so what this answers is current until the caller's next run.
+/// (interpreter, class root, original roots, decoded roots, max identity
+/// hash) -- every handle rooted, since none of them may outlive the entry
+/// that produced it. `make_roots` may run code, so the class and the roots
+/// are only read again, inside a fresh entry, once it has returned.
 fn round_trip_graph(
     source: &str,
     make_roots: impl FnOnce(&mut Interpreter, &Root) -> Vec<Root>,
-) -> (Interpreter, ClassReference, Vec<Value>, Vec<Value>, u32) {
+) -> (Interpreter, Root, Vec<Root>, Vec<Root>, u32) {
     let (mut interpreter, class) = load(source);
     let roots = make_roots(&mut interpreter, &class);
     let platform = interpreter.platform();
-    let class = class_reference(&interpreter, &class);
-    let roots: Vec<Value> = roots.iter().map(|root| interpreter.fetch(root)).collect();
-    let platform = interpreter.fetch(&platform);
-    let mut symbols = symbols::Builder::new();
-    let mut writer = encode::Writer::new();
-    let ids = encode::encode_code_table(
-        &mut writer,
-        interpreter.heap_reference(),
-        class,
-        &mut symbols,
-    )
-    .expect("encode code table");
-    let mixin_ids = mixin_ids_for(class, &interpreter, &mut symbols, &ids);
-    encode::encode_graph_section(
-        &mut writer,
-        interpreter.heap_reference(),
-        &roots,
-        &platform,
-        &ids,
-        class,
-        &mixin_ids,
-        &mut symbols,
-    )
-    .expect("encode graph");
-    let bytes = writer.into_bytes();
-    let symbol_table = symbols.build();
-    let mut reader = decode::Reader::new(&bytes);
-    let code_table = decode::decode_code_table(&mut reader, &symbol_table).expect("code table");
-    let mixin_order = mixin_preorder(interpreter.heap_reference(), class);
-    let decoded = {
-        let mut context = decode::DecodeContext {
-            mutator: &mut interpreter,
-            root_class: &class,
-            codes: &code_table.codes,
-            platform,
-            mixins: &mixin_order,
+    let (decoded_roots, max_identity_hash) = interpreter.enter(|mutator| {
+        let class_reference_value = class_reference(mutator, &class);
+        let root_values: Vec<Value> = roots.iter().map(|root| mutator.fetch(root)).collect();
+        let platform_value = mutator.fetch(&platform);
+        let mut symbols = symbols::Builder::new();
+        let mut writer = encode::Writer::new();
+        let ids = encode::encode_code_table(
+            &mut writer,
+            mutator.heap(),
+            class_reference_value,
+            &mut symbols,
+        )
+        .expect("encode code table");
+        let mixin_ids = mixin_ids_for(class_reference_value, mutator, &mut symbols, &ids);
+        encode::encode_graph_section(
+            &mut writer,
+            mutator.heap(),
+            &root_values,
+            &platform_value,
+            &ids,
+            class_reference_value,
+            &mixin_ids,
+            &mut symbols,
+        )
+        .expect("encode graph");
+        let bytes = writer.into_bytes();
+        let symbol_table = symbols.build();
+        let mut reader = decode::Reader::new(&bytes);
+        let code_table = decode::decode_code_table(&mut reader, &symbol_table).expect("code table");
+        let mixin_order = mixin_preorder(mutator.heap(), class_reference_value);
+        let decoded = {
+            let mut context = decode::DecodeContext {
+                mutator,
+                root_class: &class_reference_value,
+                codes: &code_table.codes,
+                platform: platform_value,
+                mixins: &mixin_order,
+            };
+            decode::decode_graph_section(&mut reader, &mut context, &symbol_table).expect("graph")
         };
-        decode::decode_graph_section(&mut reader, &mut context, &symbol_table).expect("graph")
-    };
-    (
-        interpreter,
-        class,
-        roots,
-        decoded.roots,
-        decoded.max_identity_hash,
-    )
+        let decoded_roots: Vec<Root> = decoded
+            .roots
+            .iter()
+            .map(|value| mutator.stash(*value))
+            .collect();
+        (decoded_roots, decoded.max_identity_hash)
+    });
+    (interpreter, class, roots, decoded_roots, max_identity_hash)
 }
 
 const EMPTY: &str = indoc! {"
@@ -1402,28 +1411,35 @@ fn object(value: &Value) -> &ns_runtime::ObjectReference {
 
 #[test]
 fn instances_and_arrays_round_trip_with_shared_identity_preserved() {
-    let (interpreter, _c, original, decoded, _max) = round_trip_graph(EMPTY, |interpreter, _| {
-        let shared = Value::Object(interpreter.new_string("shared".to_string()));
-        let array = interpreter.new_array(vec![shared, shared, Value::SmallInteger(7)]);
-        vec![interpreter.stash(Value::Object(array))]
+    let (mut interpreter, _class, original, decoded, _max) =
+        round_trip_graph(EMPTY, |interpreter, _| {
+            interpreter.enter(|mutator| {
+                let shared = Value::Object(mutator.new_string("shared".to_string()));
+                let array = mutator.new_array(vec![shared, shared, Value::SmallInteger(7)]);
+                vec![mutator.stash(Value::Object(array))]
+            })
+        });
+    interpreter.enter(|mutator| {
+        let original = mutator.fetch(&original[0]);
+        let decoded = mutator.fetch(&decoded[0]);
+        let heap = mutator.heap();
+        let elements = heap
+            .array_elements(*object(&decoded))
+            .expect("expected an array");
+        assert!(
+            object(&elements[0]).same(*object(&elements[1])),
+            "shared identity preserved"
+        );
+        assert!(
+            !object(&original).same(*object(&decoded)),
+            "the decoded array is a new object"
+        );
+        assert!(matches!(
+            heap.str_value(*object(&elements[0])).as_deref(),
+            Some("shared")
+        ));
+        assert!(matches!(elements[2], Value::SmallInteger(7)));
     });
-    let heap = interpreter.heap_reference();
-    let elements = heap
-        .array_elements(*object(&decoded[0]))
-        .expect("expected an array");
-    assert!(
-        object(&elements[0]).same(*object(&elements[1])),
-        "shared identity preserved"
-    );
-    assert!(
-        !object(&original[0]).same(*object(&decoded[0])),
-        "the decoded array is a new object"
-    );
-    assert!(matches!(
-        heap.str_value(*object(&elements[0])).as_deref(),
-        Some("shared")
-    ));
-    assert!(matches!(elements[2], Value::SmallInteger(7)));
 }
 
 #[test]
@@ -1432,46 +1448,64 @@ fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
     // root order, so the maximum is *not* the last one seen and
     // `assert_eq!` can tell a real fold from a stale field or a running
     // counter.
-    let (interpreter, _c, original, decoded, max) = round_trip_graph(EMPTY, |interpreter, _| {
-        let first = interpreter.new_string("x".to_string());
-        let second = interpreter.new_string("y".to_string());
-        // Requested in this order, so `second` holds the higher hash.
-        interpreter.heap_mut().ensure_identity_hash(first);
-        interpreter.heap_mut().ensure_identity_hash(second);
-        vec![
-            interpreter.stash(Value::Object(second)),
-            interpreter.stash(Value::Object(first)),
-        ]
+    let (mut interpreter, _class, original, decoded, max) =
+        round_trip_graph(EMPTY, |interpreter, _| {
+            interpreter.enter(|mutator| {
+                let first = mutator.new_string("x".to_string());
+                let second = mutator.new_string("y".to_string());
+                // Requested in this order, so `second` holds the higher hash.
+                mutator.heap_mut().ensure_identity_hash(first);
+                mutator.heap_mut().ensure_identity_hash(second);
+                vec![
+                    mutator.stash(Value::Object(second)),
+                    mutator.stash(Value::Object(first)),
+                ]
+            })
+        });
+    interpreter.enter(|mutator| {
+        let original_0 = mutator.fetch(&original[0]);
+        let original_1 = mutator.fetch(&original[1]);
+        let decoded_0 = mutator.fetch(&decoded[0]);
+        let decoded_1 = mutator.fetch(&decoded[1]);
+        let heap = mutator.heap();
+        let higher = heap.identity_hash(*object(&original_0));
+        let lower = heap.identity_hash(*object(&original_1));
+        assert!(higher > lower, "hashes are handed out in request order");
+        assert_eq!(heap.identity_hash(*object(&decoded_0)), higher);
+        assert_eq!(heap.identity_hash(*object(&decoded_1)), lower);
+        assert_eq!(max, higher);
     });
-    let heap = interpreter.heap_reference();
-    let higher = heap.identity_hash(*object(&original[0]));
-    let lower = heap.identity_hash(*object(&original[1]));
-    assert!(higher > lower, "hashes are handed out in request order");
-    assert_eq!(heap.identity_hash(*object(&decoded[0])), higher);
-    assert_eq!(heap.identity_hash(*object(&decoded[1])), lower);
-    assert_eq!(max, higher);
 }
 
 #[test]
 fn class_references_resolve_to_the_same_live_class_objects() {
-    let (interpreter, class, _o, decoded, _max) = round_trip_graph(EMPTY, |interpreter, class| {
-        vec![
-            interpreter.stash(Value::Object(
-                interpreter.builtin_class(BuiltinClass::Integer),
-            )),
-            class.clone(),
-        ]
+    let (mut interpreter, class, _original, decoded, _max) =
+        round_trip_graph(EMPTY, |interpreter, class| {
+            interpreter.enter(|mutator| {
+                let builtin = mutator.builtin_class(BuiltinClass::Integer);
+                vec![mutator.stash(Value::Object(builtin)), class.clone()]
+            })
+        });
+    interpreter.enter(|mutator| {
+        let decoded_0 = mutator.fetch(&decoded[0]);
+        let decoded_1 = mutator.fetch(&decoded[1]);
+        let builtin = mutator.builtin_class(BuiltinClass::Integer);
+        let class = class_reference(mutator, &class);
+        assert!(object(&decoded_0).same(builtin));
+        assert!(object(&decoded_1).same(class));
     });
-    assert!(object(&decoded[0]).same(interpreter.builtin_class(BuiltinClass::Integer)));
-    assert!(object(&decoded[1]).same(class));
 }
 
 #[test]
 fn the_platform_singleton_resolves_to_the_interpreters_own() {
-    let (mut interpreter, _c, _o, decoded, _max) =
+    let (mut interpreter, _class, _original, decoded, _max) =
         round_trip_graph(EMPTY, |interpreter, _| vec![interpreter.platform()]);
     let platform = interpreter.platform();
-    assert!(object(&decoded[0]).same(*object(&interpreter.fetch(&platform))));
+    interpreter.enter(|mutator| {
+        let decoded_0 = mutator.fetch(&decoded[0]);
+        let platform = mutator.fetch(&platform);
+        assert!(object(&decoded_0).same(*object(&platform)));
+    });
 }
 
 #[test]
@@ -1484,23 +1518,28 @@ fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
         ) (
         ) : ()
     "};
-    let (interpreter, class, _o, decoded, _max) = round_trip_graph(source, |interpreter, class| {
-        vec![expect_ok(
-            interpreter.instantiate(class, &[]),
-            "instantiate",
-        )]
+    let (mut interpreter, class, _original, decoded, _max) =
+        round_trip_graph(source, |interpreter, class| {
+            vec![expect_ok(
+                interpreter.instantiate(class, &[]),
+                "instantiate",
+            )]
+        });
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let decoded_0 = mutator.fetch(&decoded[0]);
+        let heap = mutator.heap();
+        let snapshot = heap.object_snapshot(*object(&decoded_0));
+        assert!(snapshot.class.same(class));
+        let ObjectData::Instance(fields) = &snapshot.data else {
+            panic!("expected an instance")
+        };
+        assert!(matches!(fields[0], Value::SmallInteger(1)));
+        assert!(matches!(
+            heap.str_value(*object(&fields[1])).as_deref(),
+            Some("two")
+        ));
     });
-    let heap = interpreter.heap_reference();
-    let snapshot = heap.object_snapshot(*object(&decoded[0]));
-    assert!(snapshot.class.same(class));
-    let ObjectData::Instance(fields) = &snapshot.data else {
-        panic!("expected an instance")
-    };
-    assert!(matches!(fields[0], Value::SmallInteger(1)));
-    assert!(matches!(
-        heap.str_value(*object(&fields[1])).as_deref(),
-        Some("two")
-    ));
 }
 
 #[test]
@@ -1514,7 +1553,7 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
           public outer = ( ^mk )
         ) : ()
     "};
-    let (interpreter, class, original, decoded, _max) =
+    let (mut interpreter, class, original, decoded, _max) =
         round_trip_graph(source, |interpreter, class| {
             let instance = expect_ok(interpreter.instantiate(class, &[]), "instantiate");
             let closure = expect_ok(
@@ -1523,76 +1562,81 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
             );
             // Synthetic "paused" state: edit the home frame's program counter
             // and grow its register file before snapshotting.
-            {
-                let closure_data = interpreter
-                    .heap_reference()
-                    .closure_data(*object(&interpreter.fetch(&closure)))
+            interpreter.enter(|mutator| {
+                let closure_value = mutator.fetch(&closure);
+                let closure_data = mutator
+                    .heap()
+                    .closure_data(*object(&closure_value))
                     .expect("expected a closure");
-                let (_, argument_count, temporary_count) = interpreter
-                    .heap_reference()
-                    .frame_register_shape(closure_data.home);
-                interpreter
+                let (_, argument_count, temporary_count) =
+                    mutator.heap().frame_register_shape(closure_data.home);
+                mutator
                     .heap_mut()
                     .frame_grow_temporaries(closure_data.home, temporary_count + 1);
-                interpreter.heap_mut().frame_set_local(
+                mutator.heap_mut().frame_set_local(
                     closure_data.home,
                     (argument_count + temporary_count) as u16,
                     Value::SmallInteger(9),
                 );
-                interpreter
+                mutator
                     .heap_mut()
                     .set_frame_program_counter(closure_data.home, 1);
-            }
+            });
             vec![closure]
         });
-    let heap = interpreter.heap_reference();
-    let original_code = {
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let original_0 = mutator.fetch(&original[0]);
+        let decoded_0 = mutator.fetch(&decoded[0]);
+        let heap = mutator.heap();
+        let original_code = {
+            let closure_data = heap
+                .closure_data(*object(&original_0))
+                .expect("expected a closure");
+            let code = &closure_data.code;
+            code.clone()
+        };
         let closure_data = heap
-            .closure_data(*object(&original[0]))
+            .closure_data(*object(&decoded_0))
             .expect("expected a closure");
         let code = &closure_data.code;
-        code.clone()
-    };
-    let closure_data = heap
-        .closure_data(*object(&decoded[0]))
-        .expect("expected a closure");
-    let code = &closure_data.code;
-    assert_eq!(**code, *original_code);
-    assert!(
-        closure_data.captured_frame.same(closure_data.home),
-        "captured_frame and home were the same frame"
-    );
-    let home = heap.frame_snapshot(closure_data.home);
-    assert_eq!(home.program_counter, 1);
-    assert!(matches!(
-        home.temporaries.last(),
-        Some(Value::SmallInteger(9))
-    ));
-    assert!(home.uncontinuable, "`mk` had returned");
-    let methods = heap
-        .class_application(class)
-        .expect("not a class")
-        .mixin
-        .methods
-        .clone();
-    let FrameKind::Method(declaration) = &home.kind else {
-        panic!("home is a method frame")
-    };
-    assert!(
-        Rc::ptr_eq(declaration, &methods[&Symbol::intern("mk")]),
-        "re-resolved against the class's method map"
-    );
-    assert!(heap.class_of_object(*object(&home.receiver)).same(class));
-    assert!(home
-        .current_class
-        .as_ref()
-        .expect("a method frame has a current class")
-        .same(class));
-    assert!(
-        home.sender.is_none(),
-        "a returned activation has no sender -- Smalltalk's rule, and what keeps \
-         a surviving block from retaining its method's whole call chain"
-    );
+        assert_eq!(**code, *original_code);
+        assert!(
+            closure_data.captured_frame.same(closure_data.home),
+            "captured_frame and home were the same frame"
+        );
+        let home = heap.frame_snapshot(closure_data.home);
+        assert_eq!(home.program_counter, 1);
+        assert!(matches!(
+            home.temporaries.last(),
+            Some(Value::SmallInteger(9))
+        ));
+        assert!(home.uncontinuable, "`mk` had returned");
+        let methods = heap
+            .class_application(class)
+            .expect("not a class")
+            .mixin
+            .methods
+            .clone();
+        let FrameKind::Method(declaration) = &home.kind else {
+            panic!("home is a method frame")
+        };
+        assert!(
+            Rc::ptr_eq(declaration, &methods[&Symbol::intern("mk")]),
+            "re-resolved against the class's method map"
+        );
+        assert!(heap.class_of_object(*object(&home.receiver)).same(class));
+        assert!(home
+            .current_class
+            .as_ref()
+            .expect("a method frame has a current class")
+            .same(class));
+        assert!(
+            home.sender.is_none(),
+            "a returned activation has no sender -- Smalltalk's rule, and what keeps \
+             a surviving block from retaining its method's whole call chain"
+        );
+    });
 }
 
 #[test]
@@ -1605,24 +1649,29 @@ fn a_closure_stored_in_a_slot_round_trips_with_an_initializer_home() {
         ) (
         ) : ()
     "};
-    let (interpreter, class, _o, decoded, _max) = round_trip_graph(source, |interpreter, class| {
-        vec![expect_ok(
-            interpreter.instantiate(class, &[]),
-            "instantiate",
-        )]
+    let (mut interpreter, class, _original, decoded, _max) =
+        round_trip_graph(source, |interpreter, class| {
+            vec![expect_ok(
+                interpreter.instantiate(class, &[]),
+                "instantiate",
+            )]
+        });
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let decoded_0 = mutator.fetch(&decoded[0]);
+        let heap = mutator.heap();
+        let held = heap
+            .instance_field(*object(&decoded_0), 0)
+            .expect("expected an instance");
+        let closure_data = heap
+            .closure_data(*object(&held))
+            .expect("slot holds a closure");
+        let home_kind = heap.frame_kind(closure_data.home);
+        let FrameKind::Initializer(home_class) = &home_kind else {
+            panic!("home is the initializer frame")
+        };
+        assert!(home_class.same(class));
     });
-    let heap = interpreter.heap_reference();
-    let held = heap
-        .instance_field(*object(&decoded[0]), 0)
-        .expect("expected an instance");
-    let closure_data = heap
-        .closure_data(*object(&held))
-        .expect("slot holds a closure");
-    let home_kind = heap.frame_kind(closure_data.home);
-    let FrameKind::Initializer(home_class) = &home_kind else {
-        panic!("home is the initializer frame")
-    };
-    assert!(home_class.same(class));
 }
 
 #[test]
@@ -1641,31 +1690,29 @@ fn the_graph_section_encoding_is_deterministic() {
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let platform = interpreter.platform();
         // Read out after the last run, for the encoder, which runs nothing.
-        let class = class_reference(&interpreter, &class);
-        let roots = vec![interpreter.fetch(&instance)];
-        let platform = interpreter.fetch(&platform);
-        let mut symbols = symbols::Builder::new();
-        let mut writer = encode::Writer::new();
-        let ids = encode::encode_code_table(
-            &mut writer,
-            interpreter.heap_reference(),
-            class,
-            &mut symbols,
-        )
-        .expect("encode code table");
-        let mixin_ids = mixin_ids_for(class, &interpreter, &mut symbols, &ids);
-        encode::encode_graph_section(
-            &mut writer,
-            interpreter.heap_reference(),
-            &roots,
-            &platform,
-            &ids,
-            class,
-            &mixin_ids,
-            &mut symbols,
-        )
-        .expect("encode graph");
-        encodings.push(writer.into_bytes());
+        let bytes = interpreter.enter(|mutator| {
+            let class = class_reference(mutator, &class);
+            let roots = vec![mutator.fetch(&instance)];
+            let platform = mutator.fetch(&platform);
+            let mut symbols = symbols::Builder::new();
+            let mut writer = encode::Writer::new();
+            let ids = encode::encode_code_table(&mut writer, mutator.heap(), class, &mut symbols)
+                .expect("encode code table");
+            let mixin_ids = mixin_ids_for(class, mutator, &mut symbols, &ids);
+            encode::encode_graph_section(
+                &mut writer,
+                mutator.heap(),
+                &roots,
+                &platform,
+                &ids,
+                class,
+                &mixin_ids,
+                &mut symbols,
+            )
+            .expect("encode graph");
+            writer.into_bytes()
+        });
+        encodings.push(bytes);
     }
     assert_eq!(encodings[0], encodings[1]);
 }
@@ -1689,12 +1736,16 @@ struct GraphFixture {
 impl GraphFixture {
     fn new() -> GraphFixture {
         // Nothing ever runs in a fixture's interpreter, so the class and the
-        // platform read out of their roots here stay current.
+        // platform read out of their roots here stay current for every entry
+        // a test or `decode` makes below.
         let (mut interpreter, class) = load(EMPTY);
-        let class = class_reference(&interpreter, &class);
         let platform = interpreter.platform();
-        let platform = interpreter.fetch(&platform);
-        let mixins = mixin_preorder(interpreter.heap_reference(), class);
+        let (class, platform, mixins) = interpreter.enter(|mutator| {
+            let class = class_reference(mutator, &class);
+            let platform = mutator.fetch(&platform);
+            let mixins = mixin_preorder(mutator.heap(), class);
+            (class, platform, mixins)
+        });
         GraphFixture {
             interpreter,
             class,
@@ -1708,14 +1759,21 @@ impl GraphFixture {
     /// `&mut self` because decoding a class record rebuilds its application
     /// through `Interpreter::apply_mixin`, which writes to the shared cache.
     fn decode(&mut self, bytes: &[u8]) -> Result<decode::DecodedGraph, decode::DecodeError> {
-        let mut context = decode::DecodeContext {
-            mutator: &mut self.interpreter,
-            root_class: &self.class,
-            codes: &self.codes,
-            platform: self.platform,
-            mixins: &self.mixins,
-        };
-        decode::decode_graph_section(&mut decode::Reader::new(bytes), &mut context, &self.symbols)
+        let class = self.class;
+        let platform = self.platform;
+        let codes = &self.codes;
+        let mixins = &self.mixins;
+        let symbols = &self.symbols;
+        self.interpreter.enter(|mutator| {
+            let mut context = decode::DecodeContext {
+                mutator,
+                root_class: &class,
+                codes,
+                platform,
+                mixins,
+            };
+            decode::decode_graph_section(&mut decode::Reader::new(bytes), &mut context, symbols)
+        })
     }
 
     /// The `DecodeError` a hand-crafted graph section must produce. Never
@@ -1890,15 +1948,16 @@ fn a_well_formed_class_record_decodes_into_a_live_class_object() {
     let graph = fixture
         .decode(&one_class_object(0, no_class_references))
         .expect("a class record naming row 0 of the mixin table");
-    let application = fixture
-        .interpreter
-        .heap_reference()
-        .class_application(graph.objects[0])
-        .expect("a class object");
-    assert!(
-        Rc::ptr_eq(&application.mixin, &fixture.mixins[0]),
-        "the record's mixin id names the decoded declaration tree, row by row"
-    );
+    fixture.interpreter.enter(|mutator| {
+        let application = mutator
+            .heap()
+            .class_application(graph.objects[0])
+            .expect("a class object");
+        assert!(
+            Rc::ptr_eq(&application.mixin, &fixture.mixins[0]),
+            "the record's mixin id names the decoded declaration tree, row by row"
+        );
+    });
 }
 
 #[test]
@@ -1914,21 +1973,21 @@ fn two_class_records_with_the_same_mixin_and_superclass_share_one_application() 
     let bytes = writer.into_bytes();
     let mut fixture = GraphFixture::new();
     let graph = fixture.decode(&bytes).expect("two class records");
-    let first_application = fixture
-        .interpreter
-        .heap_reference()
-        .class_application(graph.objects[0])
-        .expect("a class object");
-    let second_application = fixture
-        .interpreter
-        .heap_reference()
-        .class_application(graph.objects[1])
-        .expect("a class object");
-    assert!(!graph.objects[0].same(graph.objects[1]));
-    assert!(
-        Rc::ptr_eq(&first_application, &second_application),
-        "one rebuilt application, shared"
-    );
+    fixture.interpreter.enter(|mutator| {
+        let first_application = mutator
+            .heap()
+            .class_application(graph.objects[0])
+            .expect("a class object");
+        let second_application = mutator
+            .heap()
+            .class_application(graph.objects[1])
+            .expect("a class object");
+        assert!(!graph.objects[0].same(graph.objects[1]));
+        assert!(
+            Rc::ptr_eq(&first_application, &second_application),
+            "one rebuilt application, shared"
+        );
+    });
 }
 
 #[test]
@@ -2170,50 +2229,47 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
     let platform = interpreter.platform();
     // Read out after the last run, for the encoder and the decoder, which run
     // nothing.
-    let class = class_reference(&interpreter, &class);
-    let roots = vec![interpreter.fetch(&instance)];
-    let platform = interpreter.fetch(&platform);
-    let mut symbols = symbols::Builder::new();
-    let mut writer = encode::Writer::new();
-    let ids = encode::encode_code_table(
-        &mut writer,
-        interpreter.heap_reference(),
-        class,
-        &mut symbols,
-    )
-    .expect("encode code table");
-    let before = writer.into_bytes().len();
-    let mut writer = encode::Writer::new();
-    let mixin_ids = mixin_ids_for(class, &interpreter, &mut symbols, &ids);
-    encode::encode_graph_section(
-        &mut writer,
-        interpreter.heap_reference(),
-        &roots,
-        &platform,
-        &ids,
-        class,
-        &mixin_ids,
-        &mut symbols,
-    )
-    .expect("encode graph");
-    let graph = writer.into_bytes();
-    let symbol_table = symbols.build();
-    assert!(before > 0 && graph.len() > 8);
-    let mixin_order = mixin_preorder(interpreter.heap_reference(), class);
-    let mut context = decode::DecodeContext {
-        mutator: &mut interpreter,
-        root_class: &class,
-        codes: &[],
-        platform,
-        mixins: &mixin_order,
-    };
-    for cut in 1..graph.len() {
-        let mut reader = decode::Reader::new(&graph[..cut]);
-        // Every prefix is either a clean `DecodeError` or -- for a prefix
-        // that happens to be self-consistent -- a successful decode. What
-        // it must never be is a panic.
-        let _ = decode::decode_graph_section(&mut reader, &mut context, &symbol_table);
-    }
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let roots = vec![mutator.fetch(&instance)];
+        let platform = mutator.fetch(&platform);
+        let mut symbols = symbols::Builder::new();
+        let mut writer = encode::Writer::new();
+        let ids = encode::encode_code_table(&mut writer, mutator.heap(), class, &mut symbols)
+            .expect("encode code table");
+        let before = writer.into_bytes().len();
+        let mut writer = encode::Writer::new();
+        let mixin_ids = mixin_ids_for(class, mutator, &mut symbols, &ids);
+        encode::encode_graph_section(
+            &mut writer,
+            mutator.heap(),
+            &roots,
+            &platform,
+            &ids,
+            class,
+            &mixin_ids,
+            &mut symbols,
+        )
+        .expect("encode graph");
+        let graph = writer.into_bytes();
+        let symbol_table = symbols.build();
+        assert!(before > 0 && graph.len() > 8);
+        let mixin_order = mixin_preorder(mutator.heap(), class);
+        let mut context = decode::DecodeContext {
+            mutator,
+            root_class: &class,
+            codes: &[],
+            platform,
+            mixins: &mixin_order,
+        };
+        for cut in 1..graph.len() {
+            let mut reader = decode::Reader::new(&graph[..cut]);
+            // Every prefix is either a clean `DecodeError` or -- for a prefix
+            // that happens to be self-consistent -- a successful decode. What
+            // it must never be is a panic.
+            let _ = decode::decode_graph_section(&mut reader, &mut context, &symbol_table);
+        }
+    });
 }
 
 #[test]
@@ -2229,46 +2285,51 @@ fn a_closure_capturing_a_block_activation_round_trips() {
           public mk = ( ^[:x | [ x ] ] value: 5 )
         ) : ()
     "};
-    let (interpreter, class, _o, decoded, _max) = round_trip_graph(source, |interpreter, class| {
-        let instance = expect_ok(interpreter.instantiate(class, &[]), "instantiate");
-        vec![expect_ok(
-            interpreter.send(&instance, Symbol::intern("mk"), &[]),
-            "mk",
-        )]
+    let (mut interpreter, class, _original, decoded, _max) =
+        round_trip_graph(source, |interpreter, class| {
+            let instance = expect_ok(interpreter.instantiate(class, &[]), "instantiate");
+            vec![expect_ok(
+                interpreter.send(&instance, Symbol::intern("mk"), &[]),
+                "mk",
+            )]
+        });
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let decoded_0 = mutator.fetch(&decoded[0]);
+        let heap = mutator.heap();
+        let inner = heap
+            .closure_data(*object(&decoded_0))
+            .expect("expected the inner closure");
+        assert!(
+            !inner.captured_frame.same(inner.home),
+            "the inner closure was captured by the block activation, not by `mk`"
+        );
+        let captured = heap.frame_snapshot(inner.captured_frame);
+        let FrameKind::Closure(_) = &captured.kind else {
+            panic!("the captured frame is a block activation")
+        };
+        assert!(matches!(
+            captured.arguments.first(),
+            Some(Value::SmallInteger(5))
+        ));
+        assert!(
+            captured
+                .home
+                .as_ref()
+                .expect("a block activation has a home")
+                .same(inner.home),
+            "both closures share `mk`'s activation as their home"
+        );
+        let home_kind = heap.frame_kind(inner.home);
+        let FrameKind::Method(declaration) = &home_kind else {
+            panic!("the home is `mk`'s method frame")
+        };
+        let application = heap.class_application(class).expect("not a class");
+        assert!(Rc::ptr_eq(
+            declaration,
+            &application.mixin.methods[&Symbol::intern("mk")]
+        ));
     });
-    let heap = interpreter.heap_reference();
-    let inner = heap
-        .closure_data(*object(&decoded[0]))
-        .expect("expected the inner closure");
-    assert!(
-        !inner.captured_frame.same(inner.home),
-        "the inner closure was captured by the block activation, not by `mk`"
-    );
-    let captured = heap.frame_snapshot(inner.captured_frame);
-    let FrameKind::Closure(_) = &captured.kind else {
-        panic!("the captured frame is a block activation")
-    };
-    assert!(matches!(
-        captured.arguments.first(),
-        Some(Value::SmallInteger(5))
-    ));
-    assert!(
-        captured
-            .home
-            .as_ref()
-            .expect("a block activation has a home")
-            .same(inner.home),
-        "both closures share `mk`'s activation as their home"
-    );
-    let home_kind = heap.frame_kind(inner.home);
-    let FrameKind::Method(declaration) = &home_kind else {
-        panic!("the home is `mk`'s method frame")
-    };
-    let application = heap.class_application(class).expect("not a class");
-    assert!(Rc::ptr_eq(
-        declaration,
-        &application.mixin.methods[&Symbol::intern("mk")]
-    ));
 }
 
 /// A closure frame names the closure object it runs, rather than carrying a
@@ -2285,7 +2346,7 @@ fn a_closure_frame_names_the_closure_object_it_runs() {
           public mk = ( ^[:x | [ x ] ] value: 5 )
         ) : ()
     "};
-    let (interpreter, _class, _o, decoded, _max) =
+    let (mut interpreter, _class, _original, decoded, _max) =
         round_trip_graph(source, |interpreter, class| {
             let instance = expect_ok(interpreter.instantiate(class, &[]), "instantiate");
             vec![expect_ok(
@@ -2293,21 +2354,24 @@ fn a_closure_frame_names_the_closure_object_it_runs() {
                 "mk",
             )]
         });
-    let heap = interpreter.heap_reference();
-    let inner = heap
-        .closure_data(*object(&decoded[0]))
-        .expect("expected the inner closure");
-    let FrameKind::Closure(outer) = heap.frame_kind(inner.captured_frame) else {
-        panic!("the captured frame is a block activation")
-    };
-    let outer = heap
-        .closure_data(outer)
-        .expect("a closure frame names a closure object");
-    assert_eq!(outer.parameters.len(), 1, "the outer block takes `x`");
-    assert!(
-        outer.home.same(inner.home),
-        "both closures share `mk`'s activation as their home"
-    );
+    interpreter.enter(|mutator| {
+        let decoded_0 = mutator.fetch(&decoded[0]);
+        let heap = mutator.heap();
+        let inner = heap
+            .closure_data(*object(&decoded_0))
+            .expect("expected the inner closure");
+        let FrameKind::Closure(outer) = heap.frame_kind(inner.captured_frame) else {
+            panic!("the captured frame is a block activation")
+        };
+        let outer = heap
+            .closure_data(outer)
+            .expect("a closure frame names a closure object");
+        assert_eq!(outer.parameters.len(), 1, "the outer block takes `x`");
+        assert!(
+            outer.home.same(inner.home),
+            "both closures share `mk`'s activation as their home"
+        );
+    });
 }
 
 /// A one-frame graph section whose frame carries the retired closure frame
@@ -2347,15 +2411,19 @@ fn the_retired_closure_frame_tag_is_refused() {
 fn inspect_refuses_the_retired_closure_frame_tag() {
     let (mut interpreter, class) = load(TRIVIAL_MODULE);
     let platform = interpreter.platform();
-    let mut bytes = image::snapshot(
-        &interpreter,
-        None,
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[],
-    )
-    .expect("snapshot");
+    let mut bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[],
+        )
+        .expect("snapshot")
+    });
     let graph_start = image::inspect::inspect(&bytes)
         .expect("inspect")
         .sections
@@ -2392,15 +2460,20 @@ fn inspect_names_the_closure_object_a_closure_frame_runs() {
     let inner = expect_ok(interpreter.send(&instance, Symbol::intern("mk"), &[]), "mk");
     let platform = interpreter.platform();
     // Read out after the last run, for the encoder, which runs nothing.
-    let bytes = image::snapshot(
-        &interpreter,
-        None,
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&inner)],
-    )
-    .expect("snapshot");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let inner = mutator.fetch(&inner);
+        image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[inner],
+        )
+        .expect("snapshot")
+    });
     let report = image::inspect::inspect(&bytes).expect("inspect");
     let closure_frames: Vec<&String> = report
         .graph_frames
@@ -2535,12 +2608,13 @@ fn a_well_formed_closure_record_whose_arity_agrees_still_decodes() {
     let decoded = fixture
         .decode(&closure_object_with_parameter_count(&["x"]))
         .expect("arity agrees");
-    let closure_data = fixture
-        .interpreter
-        .heap_reference()
-        .closure_data(*object(&decoded.roots[0]))
-        .expect("expected a closure");
-    assert_eq!(*closure_data.parameters, vec![Symbol::intern("x")]);
+    fixture.interpreter.enter(|mutator| {
+        let closure_data = mutator
+            .heap()
+            .closure_data(*object(&decoded.roots[0]))
+            .expect("expected a closure");
+        assert_eq!(*closure_data.parameters, vec![Symbol::intern("x")]);
+    });
 }
 
 #[test]
@@ -2607,47 +2681,55 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         interpreter.send(&instance, Symbol::intern("bump"), &[]),
         "bump",
     );
-    let instance_object = *object(&interpreter.fetch(&instance));
-    let max_hash = interpreter.heap_mut().ensure_identity_hash(instance_object);
     let platform = interpreter.platform();
-    let bytes = image::snapshot(
-        &interpreter,
-        Some(source),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&instance)],
-    )
-    .expect("snapshot");
+    let (bytes, max_hash) = interpreter.enter(|mutator| {
+        let instance_object = *object(&mutator.fetch(&instance));
+        let max_hash = mutator.heap_mut().ensure_identity_hash(instance_object);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let instance_value = mutator.fetch(&instance);
+        let bytes = image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance_value],
+        )
+        .expect("snapshot");
+        (bytes, max_hash)
+    });
 
     let mut loaded = image::load(&bytes).expect("load");
-    let root_class = class_reference(&loaded.interpreter, &loaded.root_class);
-    assert!(
-        !root_mixin_of(loaded.interpreter.heap_reference(), root_class)
-            .methods
-            .is_empty(),
-        "the image's methods are rebuilt, each carrying its body"
-    );
-    assert!(loaded
-        .interpreter
-        .heap_reference()
-        .class_of_object(*object(&loaded.interpreter.fetch(&loaded.roots[0])))
-        .same(root_class));
+    loaded.interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &loaded.root_class);
+        assert!(
+            !root_mixin_of(mutator.heap(), root_class).methods.is_empty(),
+            "the image's methods are rebuilt, each carrying its body"
+        );
+        let root_0 = mutator.fetch(&loaded.roots[0]);
+        assert!(mutator
+            .heap()
+            .class_of_object(*object(&root_0))
+            .same(root_class));
+    });
     let bumped = expect_ok(
         loaded
             .interpreter
             .send(&loaded.roots[0], Symbol::intern("bump"), &[]),
         "bump",
     );
-    assert!(
-        matches!(loaded.interpreter.fetch(&bumped), Value::SmallInteger(2)),
-        "slot state survived: 1 before the snapshot, 2 after"
-    );
-    let fresh = loaded.interpreter.new_string("fresh".to_string());
-    assert!(
-        loaded.interpreter.heap_mut().ensure_identity_hash(fresh) > max_hash,
-        "no hash collision with loaded objects"
-    );
+    loaded.interpreter.enter(|mutator| {
+        assert!(
+            matches!(mutator.fetch(&bumped), Value::SmallInteger(2)),
+            "slot state survived: 1 before the snapshot, 2 after"
+        );
+        let fresh = mutator.new_string("fresh".to_string());
+        assert!(
+            mutator.heap_mut().ensure_identity_hash(fresh) > max_hash,
+            "no hash collision with loaded objects"
+        );
+    });
 }
 
 #[test]
@@ -2661,15 +2743,19 @@ fn bytes_after_the_last_section_are_refused_not_ignored() {
     "};
     let (mut interpreter, class) = load(source);
     let platform = interpreter.platform();
-    let mut bytes = image::snapshot(
-        &interpreter,
-        Some(source),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[],
-    )
-    .expect("snapshot");
+    let mut bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[],
+        )
+        .expect("snapshot")
+    });
     assert!(image::load(&bytes).is_ok(), "the fixture itself must load");
 
     bytes.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
@@ -2691,15 +2777,19 @@ fn load_refuses_a_version_mismatch() {
     "};
     let (mut interpreter, class) = load(source);
     let platform = interpreter.platform();
-    let mut bytes = image::snapshot(
-        &interpreter,
-        Some(source),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[],
-    )
-    .unwrap();
+    let mut bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[],
+        )
+        .unwrap()
+    });
     bytes[4..8].copy_from_slice(&9999u32.to_le_bytes());
     let error = load_error(&bytes);
     assert!(error.contains("version"), "{error}");
@@ -2755,15 +2845,20 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let platform = interpreter.platform();
-    let bytes = image::snapshot(
-        &interpreter,
-        Some(source),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&instance)],
-    )
-    .expect("snapshot");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let instance = mutator.fetch(&instance);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
     for cut in 0..bytes.len() {
         // Never `{:?}` the `Ok` side: `LoadedImage` has no `Debug` impl at
         // all (its `Interpreter` field has none either).
@@ -2814,10 +2909,12 @@ fn a_real_modules_decoded_code_table_verifies() {
     // The control for every rejection below: everything the compiler emits
     // for a module using blocks, non-local return, loops and literal arrays
     // passes the structural pass unchanged.
-    let (interpreter, class) = load(RICH);
-    let class = class_reference(&interpreter, &class);
-    let (table, _decoded_mixins, _ids) = round_trip_code_table(interpreter.heap_reference(), class);
-    decode::verify_code_table(&table).expect("compiler-emitted code is structurally sound");
+    let (mut interpreter, class) = load(RICH);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let (table, _decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        decode::verify_code_table(&table).expect("compiler-emitted code is structurally sound");
+    });
 }
 
 #[test]
@@ -3266,27 +3363,25 @@ fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_on_load() {
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
-    let class = class_reference(&interpreter, &class);
-    let body = CompiledCode {
-        argument_count: 2,
-        ..(*method_code(interpreter.heap_reference(), class, "foo:")).clone()
-    };
-    let doctored = with_method_code(
-        mixin_of(interpreter.heap_reference(), class),
-        "foo:",
-        Rc::new(body),
-    );
-    install_mixin(&mut interpreter, class, doctored);
-    let (_table, decoded_mixins, _ids) = round_trip_code_table(interpreter.heap_reference(), class);
-    let error = decode::verify_mixins(&decoded_mixins).expect_err("arity mismatch");
-    assert_eq!(
-        error,
-        decode::DecodeError::CodeArityMismatch {
-            what: "method `foo:`".to_string(),
-            parameters: 1,
-            argument_count: 2
-        }
-    );
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let body = CompiledCode {
+            argument_count: 2,
+            ..(*method_code(mutator.heap(), class, "foo:")).clone()
+        };
+        let doctored = with_method_code(mixin_of(mutator.heap(), class), "foo:", Rc::new(body));
+        install_mixin(mutator, class, doctored);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let error = decode::verify_mixins(&decoded_mixins).expect_err("arity mismatch");
+        assert_eq!(
+            error,
+            decode::DecodeError::CodeArityMismatch {
+                what: "method `foo:`".to_string(),
+                parameters: 1,
+                argument_count: 2
+            }
+        );
+    });
 }
 
 #[test]
@@ -3300,22 +3395,20 @@ fn a_method_root_naming_a_block_body_is_refused_on_load() {
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
-    let class = class_reference(&interpreter, &class);
-    let body = CompiledCode {
-        kind: CodeKind::Block,
-        ..(*method_code(interpreter.heap_reference(), class, "foo")).clone()
-    };
-    let doctored = with_method_code(
-        mixin_of(interpreter.heap_reference(), class),
-        "foo",
-        Rc::new(body),
-    );
-    install_mixin(&mut interpreter, class, doctored);
-    let (_table, decoded_mixins, _ids) = round_trip_code_table(interpreter.heap_reference(), class);
-    assert_eq!(
-        decode::verify_mixins(&decoded_mixins),
-        Err(decode::DecodeError::WrongCodeKind { expected: "method" })
-    );
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let body = CompiledCode {
+            kind: CodeKind::Block,
+            ..(*method_code(mutator.heap(), class, "foo")).clone()
+        };
+        let doctored = with_method_code(mixin_of(mutator.heap(), class), "foo", Rc::new(body));
+        install_mixin(mutator, class, doctored);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        assert_eq!(
+            decode::verify_mixins(&decoded_mixins),
+            Err(decode::DecodeError::WrongCodeKind { expected: "method" })
+        );
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -3340,9 +3433,7 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
     // Nothing ever runs in a fixture's interpreter, so the class and the
     // platform read out of their roots here stay current.
     let (mut interpreter, class) = load(ONE_METHOD);
-    let class = class_reference(&interpreter, &class);
     let platform = interpreter.platform();
-    let platform = interpreter.fetch(&platform);
     let block = code_with(
         CodeKind::Block,
         0,
@@ -3365,13 +3456,14 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
     let table = decode::DecodedCodeTable {
         codes: vec![block, parent.clone()],
     };
-    let doctored = with_method_code(
-        mixin_of(interpreter.heap_reference(), class),
-        "foo",
-        parent.clone(),
-    );
-    install_mixin(&mut interpreter, class, doctored);
-    let mixins = mixin_preorder(interpreter.heap_reference(), class);
+    let (class, platform, mixins) = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let doctored = with_method_code(mixin_of(mutator.heap(), class), "foo", parent.clone());
+        install_mixin(mutator, class, doctored);
+        let mixins = mixin_preorder(mutator.heap(), class);
+        (class, platform, mixins)
+    });
     let fixture = GraphFixture {
         codes: table.codes.clone(),
         interpreter,
@@ -3442,8 +3534,10 @@ fn a_closure_captured_by_its_lexical_parents_activation_verifies() {
     let graph = fixture
         .decode(&closure_over_frame(foo_frame(2)))
         .expect("decode");
-    decode::verify_graph(&graph, &table, fixture.interpreter.heap_reference())
-        .expect("the captured frame runs `foo`");
+    fixture.interpreter.enter(|mutator| {
+        decode::verify_graph(&graph, &table, mutator.heap())
+            .expect("the captured frame runs `foo`");
+    });
 }
 
 #[test]
@@ -3456,21 +3550,23 @@ fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
     let graph = fixture
         .decode(&closure_over_frame(foo_frame(1)))
         .expect("decode");
-    let error = decode::verify_graph(&graph, &table, fixture.interpreter.heap_reference())
-        .expect_err("undersized frame");
-    assert_eq!(
-        error,
-        decode::DecodeError::FrameRegisterFile {
-            arguments: 0,
-            locals: 1,
-            argument_count: 0,
-            register_count: 2
-        }
-    );
-    assert_eq!(
-        error.to_string(),
-        "a decoded frame holds 0 argument(s) and 1 local(s), but the code that runs in it takes 0 argument(s) in 2 register(s)"
-    );
+    fixture.interpreter.enter(|mutator| {
+        let error = decode::verify_graph(&graph, &table, mutator.heap())
+            .expect_err("undersized frame");
+        assert_eq!(
+            error,
+            decode::DecodeError::FrameRegisterFile {
+                arguments: 0,
+                locals: 1,
+                argument_count: 0,
+                register_count: 2
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "a decoded frame holds 0 argument(s) and 1 local(s), but the code that runs in it takes 0 argument(s) in 2 register(s)"
+        );
+    });
 }
 
 #[test]
@@ -3492,10 +3588,12 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
             writer.write_boolean(false); // continuable
         }))
         .expect("decode");
-    assert_eq!(
-        decode::verify_graph(&graph, &table, fixture.interpreter.heap_reference()),
-        Err(decode::DecodeError::CapturedFrameMismatch)
-    );
+    fixture.interpreter.enter(|mutator| {
+        assert_eq!(
+            decode::verify_graph(&graph, &table, mutator.heap()),
+            Err(decode::DecodeError::CapturedFrameMismatch)
+        );
+    });
 }
 
 #[test]
@@ -3518,15 +3616,20 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
         "keep",
     );
     let platform = interpreter.platform();
-    let bytes = image::snapshot(
-        &interpreter,
-        Some(source),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&instance)],
-    )
-    .expect("snapshot");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let instance = mutator.fetch(&instance);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
     let mut loaded = image::load(&bytes).expect("load");
     let held = expect_ok(
         loaded
@@ -3538,10 +3641,12 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
         loaded.interpreter.send(&held, Symbol::intern("value"), &[]),
         "value",
     );
-    assert!(
-        matches!(loaded.interpreter.fetch(&value), Value::SmallInteger(7)),
-        "the loaded closure reads its captured local"
-    );
+    loaded.interpreter.enter(|mutator| {
+        assert!(
+            matches!(mutator.fetch(&value), Value::SmallInteger(7)),
+            "the loaded closure reads its captured local"
+        );
+    });
 }
 
 #[test]
@@ -3568,44 +3673,52 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
         "keep",
     );
     let platform = interpreter.platform();
-    let bytes = image::snapshot(
-        &interpreter,
-        Some(source),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&instance)],
-    )
-    .expect("snapshot");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let instance = mutator.fetch(&instance);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
     let mut loaded = image::load(&bytes).expect("load");
-    let held = loaded
-        .interpreter
-        .heap_reference()
-        .instance_field(*object(&loaded.interpreter.fetch(&loaded.roots[0])), 0)
-        .expect("expected an instance");
-    // Kept across the `value` send below.
-    let held = loaded.interpreter.stash(held);
-    let captured = loaded
-        .interpreter
-        .heap_reference()
-        .closure_data(*object(&loaded.interpreter.fetch(&held)))
-        .expect("the slot holds the inner closure")
-        .captured_frame;
-    assert!(
-        matches!(
-            loaded.interpreter.heap_reference().frame_kind(captured),
-            FrameKind::Closure(_)
-        ),
-        "the inner closure was captured by the outer block's activation"
-    );
+    let held = loaded.interpreter.enter(|mutator| {
+        let root_0 = mutator.fetch(&loaded.roots[0]);
+        let held = mutator
+            .heap()
+            .instance_field(*object(&root_0), 0)
+            .expect("expected an instance");
+        // Kept across the `value` send below.
+        mutator.stash(held)
+    });
+    loaded.interpreter.enter(|mutator| {
+        let held_value = mutator.fetch(&held);
+        let captured = mutator
+            .heap()
+            .closure_data(*object(&held_value))
+            .expect("the slot holds the inner closure")
+            .captured_frame;
+        assert!(
+            matches!(mutator.heap().frame_kind(captured), FrameKind::Closure(_)),
+            "the inner closure was captured by the outer block's activation"
+        );
+    });
     let value = expect_ok(
         loaded.interpreter.send(&held, Symbol::intern("value"), &[]),
         "value",
     );
-    assert!(
-        matches!(loaded.interpreter.fetch(&value), Value::SmallInteger(5)),
-        "the loaded closure reads `x` two frames out"
-    );
+    loaded.interpreter.enter(|mutator| {
+        assert!(
+            matches!(mutator.fetch(&value), Value::SmallInteger(5)),
+            "the loaded closure reads `x` two frames out"
+        );
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -3634,29 +3747,29 @@ fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_on_load() 
     // and its code half the second, so an image whose initializer id is
     // cleared would make the *first* `X new` after a load abort the process.
     let (mut interpreter, class) = load(NEEDS_INITIALIZER);
-    let class = class_reference(&interpreter, &class);
-    assert!(
-        mixin_of(interpreter.heap_reference(), class)
-            .initializer_code
-            .is_some(),
-        "the fixture's class really does compile an initializer"
-    );
-    let doctored = Mixin {
-        initializer_code: None,
-        ..mixin_of(interpreter.heap_reference(), class)
-    };
-    install_mixin(&mut interpreter, class, doctored);
-    let (_table, decoded_mixins, _ids) = round_trip_code_table(interpreter.heap_reference(), class);
-    assert!(
-        decoded_mixins.code[0].initializer.is_none(),
-        "the doctored row names no initializer"
-    );
-    let error = decode::verify_mixins(&decoded_mixins).expect_err("no initializer");
-    assert_eq!(error, decode::DecodeError::MissingInitializer);
-    assert_eq!(
-        error.to_string(),
-        "a class in the image needs an instance initializer, which the image has no compiled code for"
-    );
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        assert!(
+            mixin_of(mutator.heap(), class).initializer_code.is_some(),
+            "the fixture's class really does compile an initializer"
+        );
+        let doctored = Mixin {
+            initializer_code: None,
+            ..mixin_of(mutator.heap(), class)
+        };
+        install_mixin(mutator, class, doctored);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        assert!(
+            decoded_mixins.code[0].initializer.is_none(),
+            "the doctored row names no initializer"
+        );
+        let error = decode::verify_mixins(&decoded_mixins).expect_err("no initializer");
+        assert_eq!(error, decode::DecodeError::MissingInitializer);
+        assert_eq!(
+            error.to_string(),
+            "a class in the image needs an instance initializer, which the image has no compiled code for"
+        );
+    });
 }
 
 #[test]
@@ -3672,24 +3785,28 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
     // into the very invariant this test crafts an image to violate.
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let platform = interpreter.platform();
-    let class = class_reference(&interpreter, &class);
-    // Only the initializer is dropped, so the refusal this asserts cannot be
-    // the superclass clause's.
-    let doctored = Mixin {
-        initializer_code: None,
-        ..mixin_of(interpreter.heap_reference(), class)
-    };
-    install_mixin(&mut interpreter, class, doctored);
     // Read out after the last run, for the encoder, which runs nothing.
-    let bytes = image::snapshot(
-        &interpreter,
-        Some(NEEDS_INITIALIZER),
-        &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&instance)],
-    )
-    .expect("snapshot");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        // Only the initializer is dropped, so the refusal this asserts
+        // cannot be the superclass clause's.
+        let doctored = Mixin {
+            initializer_code: None,
+            ..mixin_of(mutator.heap(), class)
+        };
+        install_mixin(mutator, class, doctored);
+        let platform = mutator.fetch(&platform);
+        let instance = mutator.fetch(&instance);
+        image::snapshot(
+            mutator,
+            Some(NEEDS_INITIALIZER),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
     let error = load_error(&bytes);
     assert!(
         error.contains("instance initializer"),
@@ -3738,38 +3855,43 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let instance_object = *object(&interpreter.fetch(&instance));
-    interpreter
-        .heap_mut()
-        .set_identity_hash(instance_object, u32::MAX - 1);
     let platform = interpreter.platform();
-    let bytes = image::snapshot(
-        &interpreter,
-        Some(source),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&instance)],
-    )
-    .expect("snapshot");
+    let bytes = interpreter.enter(|mutator| {
+        let instance_object = *object(&mutator.fetch(&instance));
+        mutator
+            .heap_mut()
+            .set_identity_hash(instance_object, u32::MAX - 1);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let instance = mutator.fetch(&instance);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
     let mut loaded = image::load(&bytes).expect("load");
-    assert_eq!(
-        loaded
-            .interpreter
-            .heap_reference()
-            .identity_hash(*object(&loaded.interpreter.fetch(&loaded.roots[0]))),
-        u32::MAX - 1,
-        "the image's hash is preserved, not clamped"
-    );
-    let first = loaded.interpreter.new_string("a".to_string());
-    let second = loaded.interpreter.new_string("b".to_string());
-    let heap = loaded.interpreter.heap_mut();
-    assert_eq!(heap.ensure_identity_hash(first), u32::MAX);
-    assert_eq!(
-        heap.ensure_identity_hash(second),
-        u32::MAX,
-        "an exhausted counter shares its last hash instead of overflowing"
-    );
+    loaded.interpreter.enter(|mutator| {
+        let root_0 = mutator.fetch(&loaded.roots[0]);
+        assert_eq!(
+            mutator.heap().identity_hash(*object(&root_0)),
+            u32::MAX - 1,
+            "the image's hash is preserved, not clamped"
+        );
+        let first = mutator.new_string("a".to_string());
+        let second = mutator.new_string("b".to_string());
+        let heap = mutator.heap_mut();
+        assert_eq!(heap.ensure_identity_hash(first), u32::MAX);
+        assert_eq!(
+            heap.ensure_identity_hash(second),
+            u32::MAX,
+            "an exhausted counter shares its last hash instead of overflowing"
+        );
+    });
 }
 
 /// An object nothing asked for its hash is written as 0 and decoded as 0 --
@@ -3787,42 +3909,49 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
     let (mut interpreter, class) = load(source);
     let hashed = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let unhashed = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let hashed_object = *object(&interpreter.fetch(&hashed));
-    let assigned = interpreter.heap_mut().ensure_identity_hash(hashed_object);
     let platform = interpreter.platform();
-    let bytes = image::snapshot(
-        &interpreter,
-        Some(source),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&hashed), interpreter.fetch(&unhashed)],
-    )
-    .expect("snapshot");
-    assert_eq!(
-        interpreter
-            .heap_reference()
-            .identity_hash(*object(&interpreter.fetch(&unhashed))),
-        0,
-        "snapshotting assigns no hash"
-    );
+    let (bytes, assigned) = interpreter.enter(|mutator| {
+        let hashed_object = *object(&mutator.fetch(&hashed));
+        let assigned = mutator.heap_mut().ensure_identity_hash(hashed_object);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let hashed_value = mutator.fetch(&hashed);
+        let unhashed_value = mutator.fetch(&unhashed);
+        let bytes = image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[hashed_value, unhashed_value],
+        )
+        .expect("snapshot");
+        assert_eq!(
+            mutator.heap().identity_hash(*object(&unhashed_value)),
+            0,
+            "snapshotting assigns no hash"
+        );
+        (bytes, assigned)
+    });
     let mut loaded = image::load(&bytes).expect("load");
-    let (kept, fresh) = (
-        *object(&loaded.interpreter.fetch(&loaded.roots[0])),
-        *object(&loaded.interpreter.fetch(&loaded.roots[1])),
-    );
-    let heap = loaded.interpreter.heap_mut();
-    assert_eq!(
-        heap.identity_hash(kept),
-        assigned,
-        "an assigned hash is preserved"
-    );
-    assert_eq!(
-        heap.identity_hash(fresh),
-        0,
-        "an unassigned hash stays unassigned"
-    );
-    assert!(heap.ensure_identity_hash(fresh) > assigned);
+    loaded.interpreter.enter(|mutator| {
+        let (kept, fresh) = (
+            *object(&mutator.fetch(&loaded.roots[0])),
+            *object(&mutator.fetch(&loaded.roots[1])),
+        );
+        let heap = mutator.heap_mut();
+        assert_eq!(
+            heap.identity_hash(kept),
+            assigned,
+            "an assigned hash is preserved"
+        );
+        assert_eq!(
+            heap.identity_hash(fresh),
+            0,
+            "an unassigned hash stays unassigned"
+        );
+        assert!(heap.ensure_identity_hash(fresh) > assigned);
+    });
 }
 
 /// A builtin class, the root class and `platform` are named by tag, not
@@ -3842,24 +3971,25 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
     // Nothing runs in either interpreter, so what is read out of a root
     // stays current.
     let (mut interpreter, class) = load(source);
-    let class = class_reference(&interpreter, &class);
     let platform = interpreter.platform();
-    let platform = interpreter.fetch(&platform);
-    let integer = interpreter.builtin_class(BuiltinClass::Integer);
-    let integer_hash = interpreter.heap_mut().ensure_identity_hash(integer);
-    let class_hash = interpreter.heap_mut().ensure_identity_hash(class);
-    let platform_hash = interpreter
-        .heap_mut()
-        .ensure_identity_hash(*object(&platform));
-    let bytes = image::snapshot(
-        &interpreter,
-        None,
-        &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &platform,
-        &[],
-    )
-    .expect("snapshot");
+    let (bytes, integer_hash, class_hash, platform_hash) = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let integer = mutator.builtin_class(BuiltinClass::Integer);
+        let integer_hash = mutator.heap_mut().ensure_identity_hash(integer);
+        let class_hash = mutator.heap_mut().ensure_identity_hash(class);
+        let platform_hash = mutator.heap_mut().ensure_identity_hash(*object(&platform));
+        let bytes = image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[],
+        )
+        .expect("snapshot");
+        (bytes, integer_hash, class_hash, platform_hash)
+    });
 
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert_eq!(
@@ -3874,32 +4004,36 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
 
     let mut loaded = image::load(&bytes).expect("load");
     let loaded_platform = loaded.interpreter.platform();
-    let loaded_platform = loaded.interpreter.fetch(&loaded_platform);
-    let loaded_class = class_reference(&loaded.interpreter, &loaded.root_class);
-    let loaded_integer = loaded.interpreter.builtin_class(BuiltinClass::Integer);
-    let loaded_string = loaded.interpreter.builtin_class(BuiltinClass::String);
-    let heap = loaded.interpreter.heap_mut();
-    assert_eq!(heap.identity_hash(loaded_integer), integer_hash);
-    assert_eq!(heap.identity_hash(loaded_class), class_hash);
-    assert_eq!(heap.identity_hash(*object(&loaded_platform)), platform_hash);
-    assert_eq!(
-        heap.identity_hash(loaded_string),
-        0,
-        "a builtin nothing asked for its hash stays unassigned"
-    );
-    let largest = integer_hash.max(class_hash).max(platform_hash);
-    assert!(
-        heap.ensure_identity_hash(loaded_string) > largest,
-        "the counter is advanced past the tag-named hashes too"
-    );
+    loaded.interpreter.enter(|mutator| {
+        let loaded_platform = mutator.fetch(&loaded_platform);
+        let loaded_class = class_reference(mutator, &loaded.root_class);
+        let loaded_integer = mutator.builtin_class(BuiltinClass::Integer);
+        let loaded_string = mutator.builtin_class(BuiltinClass::String);
+        let heap = mutator.heap_mut();
+        assert_eq!(heap.identity_hash(loaded_integer), integer_hash);
+        assert_eq!(heap.identity_hash(loaded_class), class_hash);
+        assert_eq!(heap.identity_hash(*object(&loaded_platform)), platform_hash);
+        assert_eq!(
+            heap.identity_hash(loaded_string),
+            0,
+            "a builtin nothing asked for its hash stays unassigned"
+        );
+        let largest = integer_hash.max(class_hash).max(platform_hash);
+        assert!(
+            heap.ensure_identity_hash(loaded_string) > largest,
+            "the counter is advanced past the tag-named hashes too"
+        );
+    });
 }
 
 /// The closing table alone, decoded against a freshly loaded world.
 fn decode_tag_named(bytes: &[u8]) -> Result<u32, decode::DecodeError> {
     let (mut interpreter, class) = load(EMPTY);
-    let class = class_reference(&interpreter, &class);
-    let mut reader = decode::Reader::new(bytes);
-    decode::decode_tag_named_hashes(&mut reader, &mut interpreter, class)
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let mut reader = decode::Reader::new(bytes);
+        decode::decode_tag_named_hashes(&mut reader, mutator, class)
+    })
 }
 
 #[test]
@@ -4001,13 +4135,13 @@ const NESTED_MODULE: &str = indoc! {"
 /// `Inner`. Built by hand because there is no other way yet to reach a
 /// nested mixin's own class object.
 fn apply_and_wrap(
-    interpreter: &mut Interpreter,
+    mutator: &mut Mutator,
     class_of_class: ClassReference,
     mixin: &Rc<Mixin>,
     superclass: Option<&Rc<MixinApplication>>,
 ) -> ClassReference {
-    let application = interpreter.apply_mixin(mixin, superclass);
-    interpreter.heap_mut().allocate_object(
+    let application = mutator.apply_mixin(mixin, superclass);
+    mutator.heap_mut().allocate_object(
         class_of_class,
         ObjectData::Class(ClassData {
             application,
@@ -4034,28 +4168,30 @@ fn a_snapshotted_nested_mixins_method_and_initializer_survive_a_load() {
     // narrow the tree loading compiled.
     // Checked here purely at the declaration level -- reaching the nested
     // method with an actual send is the next test.
-    let (interpreter, class) = load(NESTED_MODULE);
-    let class = class_reference(&interpreter, &class);
-    let (_table, decoded_mixins, _ids) = round_trip_code_table(interpreter.heap_reference(), class);
+    let (mut interpreter, class) = load(NESTED_MODULE);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
 
-    // The *decoded* nested mixin, not the live one: its bodies are the ones
-    // the mixin table attached, which is what a loaded world's class objects
-    // apply.
-    let inner_mixin = &decoded_mixins.root().expect("a root row").nested[0];
-    let value_method = inner_mixin
-        .methods
-        .get(&Symbol::intern("value"))
-        .expect("Inner declares `value`");
-    let live_inner = &root_mixin_of(interpreter.heap_reference(), class).nested[0];
-    assert_eq!(
-        *value_method.code,
-        *live_inner.methods[&Symbol::intern("value")].code,
-        "the nested mixin's own method must survive the round trip"
-    );
-    assert!(
-        inner_mixin.initializer_code.is_some(),
-        "the nested mixin's own initializer must survive the round trip"
-    );
+        // The *decoded* nested mixin, not the live one: its bodies are the
+        // ones the mixin table attached, which is what a loaded world's
+        // class objects apply.
+        let inner_mixin = &decoded_mixins.root().expect("a root row").nested[0];
+        let value_method = inner_mixin
+            .methods
+            .get(&Symbol::intern("value"))
+            .expect("Inner declares `value`");
+        let live_inner = &root_mixin_of(mutator.heap(), class).nested[0];
+        assert_eq!(
+            *value_method.code,
+            *live_inner.methods[&Symbol::intern("value")].code,
+            "the nested mixin's own method must survive the round trip"
+        );
+        assert!(
+            inner_mixin.initializer_code.is_some(),
+            "the nested mixin's own initializer must survive the round trip"
+        );
+    });
 }
 
 #[test]
@@ -4073,42 +4209,46 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
         interpreter.instantiate(&class, std::slice::from_ref(&platform)),
         "instantiate Outer",
     );
-    let bytes = image::snapshot(
-        &interpreter,
-        Some(NESTED_MODULE),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&outer)],
-    )
-    .expect("snapshot");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let outer = mutator.fetch(&outer);
+        image::snapshot(
+            mutator,
+            Some(NESTED_MODULE),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[outer],
+        )
+        .expect("snapshot")
+    });
 
     let mut loaded = image::load(&bytes).expect("load");
-    let root_mixin = root_mixin_of(
-        loaded.interpreter.heap_reference(),
-        class_reference(&loaded.interpreter, &loaded.root_class),
-    );
-    let inner_mixin = root_mixin.nested[0].clone();
+    let inner_class = loaded.interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &loaded.root_class);
+        let root_mixin = root_mixin_of(mutator.heap(), root_class);
+        let inner_mixin = root_mixin.nested[0].clone();
 
-    // Nothing materializes a nested class's own class object without the
-    // accessor, which does not exist yet, so this reproduces what it will
-    // eventually do: apply the decoded `Inner` mixin to `Object`, by hand,
-    // in the *loaded* interpreter -- proving the send below runs against
-    // code the decoded mixin actually carries, not code compiled fresh
-    // just now.
-    let object_class = loaded.interpreter.builtin_class(BuiltinClass::Object);
-    let object_application = loaded
-        .interpreter
-        .heap_reference()
-        .class_application(object_class)
-        .expect("Object is a class object");
-    let inner_class = apply_and_wrap(
-        &mut loaded.interpreter,
-        object_class,
-        &inner_mixin,
-        Some(&object_application),
-    );
-    let inner_class = loaded.interpreter.stash(Value::Object(inner_class));
+        // Nothing materializes a nested class's own class object without the
+        // accessor, which does not exist yet, so this reproduces what it will
+        // eventually do: apply the decoded `Inner` mixin to `Object`, by hand,
+        // in the *loaded* interpreter -- proving the send below runs against
+        // code the decoded mixin actually carries, not code compiled fresh
+        // just now.
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let object_application = mutator
+            .heap()
+            .class_application(object_class)
+            .expect("Object is a class object");
+        let inner_class = apply_and_wrap(
+            mutator,
+            object_class,
+            &inner_mixin,
+            Some(&object_application),
+        );
+        mutator.stash(Value::Object(inner_class))
+    });
     let inner_instance = expect_ok(
         loaded.interpreter.instantiate(&inner_class, &[]),
         "instantiate Inner",
@@ -4119,10 +4259,12 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
             .send(&inner_instance, Symbol::intern("value"), &[]),
         "send value",
     );
-    match loaded.interpreter.fetch(&result) {
-        Value::SmallInteger(9) => {}
-        _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
-    }
+    loaded
+        .interpreter
+        .enter(|mutator| match mutator.fetch(&result) {
+            Value::SmallInteger(9) => {}
+            _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
+        });
 }
 
 #[test]
@@ -4139,15 +4281,20 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
         interpreter.instantiate(&class, std::slice::from_ref(&platform)),
         "instantiate Outer",
     );
-    let bytes = image::snapshot(
-        &interpreter,
-        Some(NESTED_MODULE),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&outer)],
-    )
-    .expect("snapshot");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let outer = mutator.fetch(&outer);
+        image::snapshot(
+            mutator,
+            Some(NESTED_MODULE),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[outer],
+        )
+        .expect("snapshot")
+    });
 
     let mut loaded = image::load(&bytes).expect("load");
     let reloaded_outer = loaded
@@ -4161,9 +4308,11 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
             .send(&reloaded_outer, Symbol::intern("Inner"), &[]),
         "Inner",
     );
-    let Value::Object(_) = loaded.interpreter.fetch(&inner_class) else {
-        panic!("the accessor must yield a class object")
-    };
+    loaded.interpreter.enter(|mutator| {
+        let Value::Object(_) = mutator.fetch(&inner_class) else {
+            panic!("the accessor must yield a class object")
+        };
+    });
     let inner_instance = expect_ok(
         loaded.interpreter.instantiate(&inner_class, &[]),
         "instantiate Inner",
@@ -4174,10 +4323,12 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
             .send(&inner_instance, Symbol::intern("value"), &[]),
         "send value",
     );
-    match loaded.interpreter.fetch(&result) {
-        Value::SmallInteger(9) => {}
-        _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
-    }
+    loaded
+        .interpreter
+        .enter(|mutator| match mutator.fetch(&result) {
+            Value::SmallInteger(9) => {}
+            _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
+        });
 }
 
 /// A world built from `source` with one instance of its root class -- the
@@ -4194,24 +4345,28 @@ fn instantiated_world(source: &str) -> (Interpreter, Root, Root, Root) {
 }
 
 /// `image::snapshot` of a world a test keeps as roots, each read out right
-/// before the encoder, which runs nothing.
+/// before the encoder, which runs nothing, all inside one entry.
 fn snapshot_world(
-    interpreter: &Interpreter,
+    interpreter: &mut Interpreter,
     source: &str,
     class: &Root,
     platform: &Root,
     roots: &[Root],
 ) -> Vec<u8> {
-    let roots: Vec<Value> = roots.iter().map(|root| interpreter.fetch(root)).collect();
-    image::snapshot(
-        interpreter,
-        Some(source),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(interpreter, class),
-        &interpreter.fetch(platform),
-        &roots,
-    )
-    .expect("snapshot")
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, class);
+        let platform_value = mutator.fetch(platform);
+        let roots: Vec<Value> = roots.iter().map(|root| mutator.fetch(root)).collect();
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform_value,
+            &roots,
+        )
+        .expect("snapshot")
+    })
 }
 
 /// The `MixinApplication` behind a class object -- the behaviour half two
@@ -4261,10 +4416,13 @@ fn send_to(loaded: &mut image::LoadedImage, receiver: &Root, selector: &str) -> 
 /// The class object the accessor for `selector` yields on `receiver`.
 fn nested_class_of(loaded: &mut image::LoadedImage, receiver: &Root, selector: &str) -> Root {
     let class = send_to(loaded, receiver, selector);
-    match loaded.interpreter.fetch(&class) {
-        Value::Object(_) => class,
-        _ => panic!("the accessor for {selector} must yield a class object"),
-    }
+    loaded
+        .interpreter
+        .enter(|mutator| match mutator.fetch(&class) {
+            Value::Object(_) => {}
+            _ => panic!("the accessor for {selector} must yield a class object"),
+        });
+    class
 }
 
 #[test]
@@ -4280,9 +4438,11 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
         interpreter.send(&outer, Symbol::intern("Inner"), &[]),
         "Inner",
     );
-    let Value::Object(_) = interpreter.fetch(&inner_class) else {
-        panic!("the accessor must yield a class object")
-    };
+    interpreter.enter(|mutator| {
+        let Value::Object(_) = mutator.fetch(&inner_class) else {
+            panic!("the accessor must yield a class object")
+        };
+    });
     let inner_instance = expect_ok(
         interpreter.instantiate(&inner_class, &[]),
         "instantiate Inner",
@@ -4290,7 +4450,7 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
 
     // Reached as the cached value in Outer's hidden slot...
     let bytes = snapshot_world(
-        &interpreter,
+        &mut interpreter,
         NESTED_MODULE,
         &class,
         &platform,
@@ -4303,26 +4463,25 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
         .cloned()
         .expect("the snapshotted Outer");
     let reloaded_inner = nested_class_of(&mut loaded, &reloaded_outer, "Inner");
-    assert_eq!(
-        class_name(
-            loaded.interpreter.heap_reference(),
-            class_reference(&loaded.interpreter, &reloaded_inner)
-        ),
-        "Inner"
-    );
+    loaded.interpreter.enter(|mutator| {
+        let reloaded_inner = class_reference(mutator, &reloaded_inner);
+        assert_eq!(class_name(mutator.heap(), reloaded_inner), "Inner");
+    });
     let instance = expect_ok(
         loaded.interpreter.instantiate(&reloaded_inner, &[]),
         "instantiate Inner",
     );
     let value = send_to(&mut loaded, &instance, "value");
-    match loaded.interpreter.fetch(&value) {
-        Value::SmallInteger(9) => {}
-        _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
-    }
+    loaded
+        .interpreter
+        .enter(|mutator| match mutator.fetch(&value) {
+            Value::SmallInteger(9) => {}
+            _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
+        });
 
     // ... and as the `.class` of one of its instances.
     let bytes = snapshot_world(
-        &interpreter,
+        &mut interpreter,
         NESTED_MODULE,
         &class,
         &platform,
@@ -4334,21 +4493,18 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
         .first()
         .cloned()
         .expect("the snapshotted Inner instance");
-    assert_eq!(
-        class_name(
-            loaded.interpreter.heap_reference(),
-            class_of(
-                loaded.interpreter.heap_reference(),
-                &loaded.interpreter.fetch(&reloaded_instance)
-            )
-        ),
-        "Inner"
-    );
+    loaded.interpreter.enter(|mutator| {
+        let reloaded_instance_value = mutator.fetch(&reloaded_instance);
+        let reloaded_class = class_of(mutator.heap(), &reloaded_instance_value);
+        assert_eq!(class_name(mutator.heap(), reloaded_class), "Inner");
+    });
     let value = send_to(&mut loaded, &reloaded_instance, "value");
-    match loaded.interpreter.fetch(&value) {
-        Value::SmallInteger(9) => {}
-        _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
-    }
+    loaded
+        .interpreter
+        .enter(|mutator| match mutator.fetch(&value) {
+            Value::SmallInteger(9) => {}
+            _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
+        });
 }
 
 #[test]
@@ -4363,7 +4519,7 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
         "Inner",
     );
     let bytes = snapshot_world(
-        &interpreter,
+        &mut interpreter,
         NESTED_MODULE,
         &class,
         &platform,
@@ -4377,16 +4533,18 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
         .expect("the snapshotted Outer");
     let inner = nested_class_of(&mut loaded, &reloaded_outer, "Inner");
     // Both read out after the accessor ran, which may have moved them.
-    let root_class = class_reference(&loaded.interpreter, &loaded.root_class);
-    let inner = class_reference(&loaded.interpreter, &inner);
-    assert_ne!(
-        class_name(loaded.interpreter.heap_reference(), inner),
-        class_name(loaded.interpreter.heap_reference(), root_class)
-    );
-    assert!(
-        !inner.same(root_class),
-        "the nested class must not decode as the module's root class"
-    );
+    loaded.interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &loaded.root_class);
+        let inner = class_reference(mutator, &inner);
+        assert_ne!(
+            class_name(mutator.heap(), inner),
+            class_name(mutator.heap(), root_class)
+        );
+        assert!(
+            !inner.same(root_class),
+            "the nested class must not decode as the module's root class"
+        );
+    });
 }
 
 #[test]
@@ -4408,30 +4566,33 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
             interpreter.send(outer, Symbol::intern("Inner"), &[]),
             "Inner",
         );
-        match interpreter.fetch(&class) {
-            Value::Object(_) => class,
+        interpreter.enter(|mutator| match mutator.fetch(&class) {
+            Value::Object(_) => {}
             _ => panic!("the accessor must yield a class object"),
-        }
+        });
+        class
     };
     let before_a = inner_of(&mut interpreter, &first);
     let before_b = inner_of(&mut interpreter, &second);
     // Both read out after the last accessor ran.
-    let before_a = class_reference(&interpreter, &before_a);
-    let before_b = class_reference(&interpreter, &before_b);
-    assert!(
-        !before_a.same(before_b),
-        "one class object per enclosing instance, before the snapshot"
-    );
-    assert!(
-        Rc::ptr_eq(
-            &application_of(interpreter.heap_reference(), before_a),
-            &application_of(interpreter.heap_reference(), before_b)
-        ),
-        "one shared application, before the snapshot"
-    );
+    interpreter.enter(|mutator| {
+        let before_a = class_reference(mutator, &before_a);
+        let before_b = class_reference(mutator, &before_b);
+        assert!(
+            !before_a.same(before_b),
+            "one class object per enclosing instance, before the snapshot"
+        );
+        assert!(
+            Rc::ptr_eq(
+                &application_of(mutator.heap(), before_a),
+                &application_of(mutator.heap(), before_b)
+            ),
+            "one shared application, before the snapshot"
+        );
+    });
 
     let bytes = snapshot_world(
-        &interpreter,
+        &mut interpreter,
         NESTED_MODULE,
         &class,
         &platform,
@@ -4442,40 +4603,40 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
     let first_inner = nested_class_of(&mut loaded, &outers[0], "Inner");
     let second_inner = nested_class_of(&mut loaded, &outers[1], "Inner");
     // Everything below is read out after the last accessor ran.
-    let first_inner = class_reference(&loaded.interpreter, &first_inner);
-    let second_inner = class_reference(&loaded.interpreter, &second_inner);
-    let outers: Vec<Value> = outers
-        .iter()
-        .map(|outer| loaded.interpreter.fetch(outer))
-        .collect();
-    // The accessor answers out of the hidden cache slot, so `first_inner` and
-    // `second_inner` are the *decoded* class objects and not two freshly
-    // materialized ones. Pinned rather than assumed: a load that dropped the
-    // cached slots would still satisfy every assertion below.
-    assert!(
-        first_inner.same(*object(&cached_nested_class(
-            loaded.interpreter.heap_reference(),
-            &outers[0],
-            "Inner"
-        ))),
-        "the accessor answered out of the decoded cache slot"
-    );
-    assert!(
-        second_inner.same(*object(&cached_nested_class(
-            loaded.interpreter.heap_reference(),
-            &outers[1],
-            "Inner"
-        ))),
-        "the accessor answered out of the decoded cache slot"
-    );
-    assert!(!first_inner.same(second_inner), "distinct class objects");
-    assert!(
-        Rc::ptr_eq(
-            &application_of(loaded.interpreter.heap_reference(), first_inner),
-            &application_of(loaded.interpreter.heap_reference(), second_inner)
-        ),
-        "one shared application"
-    );
+    loaded.interpreter.enter(|mutator| {
+        let first_inner = class_reference(mutator, &first_inner);
+        let second_inner = class_reference(mutator, &second_inner);
+        let outer_values: Vec<Value> = outers.iter().map(|outer| mutator.fetch(outer)).collect();
+        // The accessor answers out of the hidden cache slot, so `first_inner`
+        // and `second_inner` are the *decoded* class objects and not two
+        // freshly materialized ones. Pinned rather than assumed: a load that
+        // dropped the cached slots would still satisfy every assertion
+        // below.
+        assert!(
+            first_inner.same(*object(&cached_nested_class(
+                mutator.heap(),
+                &outer_values[0],
+                "Inner"
+            ))),
+            "the accessor answered out of the decoded cache slot"
+        );
+        assert!(
+            second_inner.same(*object(&cached_nested_class(
+                mutator.heap(),
+                &outer_values[1],
+                "Inner"
+            ))),
+            "the accessor answered out of the decoded cache slot"
+        );
+        assert!(!first_inner.same(second_inner), "distinct class objects");
+        assert!(
+            Rc::ptr_eq(
+                &application_of(mutator.heap(), first_inner),
+                &application_of(mutator.heap(), second_inner)
+            ),
+            "one shared application"
+        );
+    });
 }
 
 /// `dispatch::kth_enclosing_object` steps `ClassData::declaring_class`, not
@@ -4511,7 +4672,7 @@ fn outer_still_resolves_through_a_declaration_chain_that_came_from_an_image() {
         "makeDeep",
     );
     let bytes = snapshot_world(
-        &interpreter,
+        &mut interpreter,
         DEEP_OUTER_MODULE,
         &class,
         &platform,
@@ -4522,25 +4683,20 @@ fn outer_still_resolves_through_a_declaration_chain_that_came_from_an_image() {
     // `Deep`'s declaring class is `Base`, not `Derived` -- the two differ
     // exactly because `Derived` inherits the declaration across a nesting
     // boundary, which is the case a dynamic-chain walk gets wrong.
-    assert_eq!(
-        class_name(
-            loaded.interpreter.heap_reference(),
-            class_of(
-                loaded.interpreter.heap_reference(),
-                &loaded.interpreter.fetch(&reloaded_deep)
-            )
-        ),
-        "Deep",
-        "the reloaded instance keeps its own nested class"
-    );
+    loaded.interpreter.enter(|mutator| {
+        let reloaded_deep_value = mutator.fetch(&reloaded_deep);
+        let reloaded_class = class_of(mutator.heap(), &reloaded_deep_value);
+        assert_eq!(
+            class_name(mutator.heap(), reloaded_class),
+            "Deep",
+            "the reloaded instance keeps its own nested class"
+        );
+    });
     let described = send_to(&mut loaded, &reloaded_deep, "describe");
-    assert_eq!(
-        string_contents(
-            loaded.interpreter.heap_reference(),
-            &loaded.interpreter.fetch(&described)
-        ),
-        "top"
-    );
+    loaded.interpreter.enter(|mutator| {
+        let described = mutator.fetch(&described);
+        assert_eq!(string_contents(mutator.heap(), &described), "top");
+    });
 }
 
 /// The text of a decoded `String` object. Never `{:?}`s the `Value`.
@@ -4574,15 +4730,20 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
         interpreter.instantiate(&class, std::slice::from_ref(&platform)),
         "instantiate Args",
     );
-    let bytes = image::snapshot(
-        &interpreter,
-        Some(NESTED_SUPERCLASS_ARGUMENTS),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&outer)],
-    )
-    .expect("snapshot");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let outer = mutator.fetch(&outer);
+        image::snapshot(
+            mutator,
+            Some(NESTED_SUPERCLASS_ARGUMENTS),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[outer],
+        )
+        .expect("snapshot")
+    });
 
     let mut loaded = image::load(&bytes).expect("load");
     let reloaded = loaded.roots.first().cloned().expect("the snapshotted Args");
@@ -4592,9 +4753,11 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
             .send(&reloaded, Symbol::intern("Derived"), &[]),
         "Derived",
     );
-    let Value::Object(_) = loaded.interpreter.fetch(&derived) else {
-        panic!("the accessor must yield a class object")
-    };
+    loaded.interpreter.enter(|mutator| {
+        let Value::Object(_) = mutator.fetch(&derived) else {
+            panic!("the accessor must yield a class object")
+        };
+    });
     let instance = expect_ok(
         loaded.interpreter.instantiate(&derived, &[]),
         "instantiate Derived",
@@ -4605,10 +4768,14 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
             .send(&instance, Symbol::intern("value"), &[]),
         "send value",
     );
-    match loaded.interpreter.fetch(&result) {
-        Value::SmallInteger(7) => {}
-        _ => panic!("expected SmallInteger(7) -- the clause's own argument -- from Base's slot"),
-    }
+    loaded
+        .interpreter
+        .enter(|mutator| match mutator.fetch(&result) {
+            Value::SmallInteger(7) => {}
+            _ => {
+                panic!("expected SmallInteger(7) -- the clause's own argument -- from Base's slot")
+            }
+        });
 }
 
 /// The other direction, the same shape as the initializer's and the
@@ -4618,33 +4785,31 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
 #[test]
 fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_refused() {
     let (mut interpreter, class) = load(NESTED_SUPERCLASS_ARGUMENTS);
-    let class = class_reference(&interpreter, &class);
-    let derived = mixin_of(interpreter.heap_reference(), class)
-        .nested
-        .iter()
-        .find(|nested| nested.name.as_str() == "Derived")
-        .cloned()
-        .expect("Args declares Derived");
-    assert!(
-        derived.superclass_message_code.is_some(),
-        "Derived's clause really does compile a message body"
-    );
-    let doctored = with_nested(
-        mixin_of(interpreter.heap_reference(), class),
-        "Derived",
-        |nested| Mixin {
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let derived = mixin_of(mutator.heap(), class)
+            .nested
+            .iter()
+            .find(|nested| nested.name.as_str() == "Derived")
+            .cloned()
+            .expect("Args declares Derived");
+        assert!(
+            derived.superclass_message_code.is_some(),
+            "Derived's clause really does compile a message body"
+        );
+        let doctored = with_nested(mixin_of(mutator.heap(), class), "Derived", |nested| Mixin {
             superclass_message_code: None,
             ..nested
-        },
-    );
-    install_mixin(&mut interpreter, class, doctored);
-    let (_table, decoded_mixins, _ids) = round_trip_code_table(interpreter.heap_reference(), class);
-    let error = decode::verify_mixins(&decoded_mixins).expect_err("no message body");
-    assert_eq!(error, decode::DecodeError::MissingSuperclassMessage);
-    assert_eq!(
-        error.to_string(),
-        "the image's superclass clause passes factory arguments it has no compiled code for"
-    );
+        });
+        install_mixin(mutator, class, doctored);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let error = decode::verify_mixins(&decoded_mixins).expect_err("no message body");
+        assert_eq!(error, decode::DecodeError::MissingSuperclassMessage);
+        assert_eq!(
+            error.to_string(),
+            "the image's superclass clause passes factory arguments it has no compiled code for"
+        );
+    });
 }
 
 /// The clause's *receiver* side of the same shape: a mixin-table row that
@@ -4655,33 +4820,31 @@ fn an_image_with_no_superclass_clause_message_for_a_clause_that_needs_one_is_ref
 #[test]
 fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
     let (mut interpreter, class) = load(NESTED_SUPERCLASS_ARGUMENTS);
-    let class = class_reference(&interpreter, &class);
-    let derived = mixin_of(interpreter.heap_reference(), class)
-        .nested
-        .iter()
-        .find(|nested| nested.name.as_str() == "Derived")
-        .cloned()
-        .expect("Args declares Derived");
-    assert!(
-        derived.superclass_clause_code.is_some(),
-        "Derived's clause really does compile a clause body"
-    );
-    let doctored = with_nested(
-        mixin_of(interpreter.heap_reference(), class),
-        "Derived",
-        |nested| Mixin {
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let derived = mixin_of(mutator.heap(), class)
+            .nested
+            .iter()
+            .find(|nested| nested.name.as_str() == "Derived")
+            .cloned()
+            .expect("Args declares Derived");
+        assert!(
+            derived.superclass_clause_code.is_some(),
+            "Derived's clause really does compile a clause body"
+        );
+        let doctored = with_nested(mixin_of(mutator.heap(), class), "Derived", |nested| Mixin {
             superclass_clause_code: None,
             ..nested
-        },
-    );
-    install_mixin(&mut interpreter, class, doctored);
-    let (_table, decoded_mixins, _ids) = round_trip_code_table(interpreter.heap_reference(), class);
-    let error = decode::verify_mixins(&decoded_mixins).expect_err("no clause body");
-    assert_eq!(error, decode::DecodeError::MissingSuperclassClause);
-    assert_eq!(
-        error.to_string(),
-        "the image declares a superclass clause it has no compiled code for"
-    );
+        });
+        install_mixin(mutator, class, doctored);
+        let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
+        let error = decode::verify_mixins(&decoded_mixins).expect_err("no clause body");
+        assert_eq!(error, decode::DecodeError::MissingSuperclassClause);
+        assert_eq!(
+            error.to_string(),
+            "the image declares a superclass clause it has no compiled code for"
+        );
+    });
 }
 
 /// An image is untrusted input, and `verify_mixins` reconciles a
@@ -4692,28 +4855,27 @@ fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
 #[test]
 fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_panic() {
     let (mut interpreter, class) = load(NESTED_SUPERCLASS_ARGUMENTS);
-    let class = class_reference(&interpreter, &class);
-    // The one thing an image can present that the load-time checks let
-    // through: right kind, right arity, wrong value.
-    let doctored = Rc::new(CompiledCode {
-        kind: CodeKind::SuperclassMessage,
-        instructions: vec![
-            Instruction::LoadLiteral {
-                destination: 0,
-                literal: Literal::SmallInteger(1),
-            },
-            Instruction::Return { register: 0 },
-        ],
-        argument_count: 0,
-        register_count: 1,
-        statement_program_counter: vec![(0, 0..2)],
-        call_sites: vec![],
-        source: Span::new(0, 0),
-    });
-    let doctored = with_nested(
-        mixin_of(interpreter.heap_reference(), class),
-        "Derived",
-        |nested| {
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        // The one thing an image can present that the load-time checks let
+        // through: right kind, right arity, wrong value.
+        let doctored = Rc::new(CompiledCode {
+            kind: CodeKind::SuperclassMessage,
+            instructions: vec![
+                Instruction::LoadLiteral {
+                    destination: 0,
+                    literal: Literal::SmallInteger(1),
+                },
+                Instruction::Return { register: 0 },
+            ],
+            argument_count: 0,
+            register_count: 1,
+            statement_program_counter: vec![(0, 0..2)],
+            call_sites: vec![],
+            source: Span::new(0, 0),
+        });
+        let doctored = with_nested(mixin_of(mutator.heap(), class), "Derived", |nested| {
             assert!(
                 nested.superclass_message_code.is_some(),
                 "Derived's clause compiles a message body"
@@ -4722,21 +4884,21 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
                 superclass_message_code: Some(doctored),
                 ..nested
             }
-        },
-    );
-    install_mixin(&mut interpreter, class, doctored);
-    // An image is the only way such a body reaches an interpreter, so the
-    // tampered mixin travels through one.
-    let platform = interpreter.platform();
-    let bytes = image::snapshot(
-        &interpreter,
-        None,
-        &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &interpreter.fetch(&platform),
-        &[],
-    )
-    .expect("snapshot");
+        });
+        install_mixin(mutator, class, doctored);
+        // An image is the only way such a body reaches an interpreter, so
+        // the tampered mixin travels through one.
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[],
+        )
+        .expect("snapshot")
+    });
     let mut loaded = image::load(&bytes).expect("load");
     let platform = loaded.interpreter.platform();
     let outer = expect_ok(
@@ -4751,9 +4913,11 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
             .send(&outer, Symbol::intern("Derived"), &[]),
         "Derived",
     );
-    let Value::Object(_) = loaded.interpreter.fetch(&derived) else {
-        panic!("the accessor must yield a class object")
-    };
+    loaded.interpreter.enter(|mutator| {
+        let Value::Object(_) = mutator.fetch(&derived) else {
+            panic!("the accessor must yield a class object")
+        };
+    });
     match loaded.interpreter.instantiate(&derived, &[]) {
         Err(HostSignal::Error(error)) => assert!(
             error
@@ -4786,13 +4950,15 @@ fn the_superclass_clause_frame_kinds_decode() {
         let mut fixture = GraphFixture::new();
         let decoded = fixture.decode(&bytes).expect("a superclass clause frame");
         let frame = decoded.frames.first().expect("the one frame");
-        let kind = fixture.interpreter.heap_reference().frame_kind(*frame);
-        let matched = match &kind {
-            FrameKind::SuperclassClause(_) => expect_clause,
-            FrameKind::SuperclassMessage(_) => !expect_clause,
-            _ => false,
-        };
-        assert!(matched, "frame kind tag {tag} decoded to the wrong kind");
+        fixture.interpreter.enter(|mutator| {
+            let kind = mutator.heap().frame_kind(*frame);
+            let matched = match &kind {
+                FrameKind::SuperclassClause(_) => expect_clause,
+                FrameKind::SuperclassMessage(_) => !expect_clause,
+                _ => false,
+            };
+            assert!(matched, "frame kind tag {tag} decoded to the wrong kind");
+        });
     }
 }
 
@@ -4815,15 +4981,19 @@ const TRIVIAL_MODULE: &str = indoc! {"
 fn snapshot_of(source: &str) -> Vec<u8> {
     let (mut interpreter, class) = load(source);
     let platform = interpreter.platform();
-    image::snapshot(
-        &interpreter,
-        Some(source),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[],
-    )
-    .expect("snapshot")
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[],
+        )
+        .expect("snapshot")
+    })
 }
 
 /// The number of times `needle` occurs in `haystack`, overlapping matches
@@ -4953,10 +5123,9 @@ fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywh
         loaded.interpreter.send(&instance, Symbol::intern("a"), &[]),
         "a",
     );
-    assert!(matches!(
-        loaded.interpreter.fetch(&result),
-        Value::SmallInteger(42)
-    ));
+    loaded.interpreter.enter(|mutator| {
+        assert!(matches!(mutator.fetch(&result), Value::SmallInteger(42)));
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -5146,15 +5315,20 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
         interpreter.instantiate(&class, std::slice::from_ref(&platform)),
         "instantiate Args",
     );
-    let bytes = image::snapshot(
-        &interpreter,
-        Some(NESTED_SUPERCLASS_ARGUMENTS),
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&outer)],
-    )
-    .expect("snapshot");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let outer = mutator.fetch(&outer);
+        image::snapshot(
+            mutator,
+            Some(NESTED_SUPERCLASS_ARGUMENTS),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[outer],
+        )
+        .expect("snapshot")
+    });
 
     let decoded = mixin_table_of(&bytes);
     let root = decoded.root().expect("a root row").clone();
@@ -5190,9 +5364,11 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
             .send(&reloaded, Symbol::intern("Derived"), &[]),
         "Derived",
     );
-    let Value::Object(_) = loaded.interpreter.fetch(&derived_class) else {
-        panic!("the accessor must yield a class object")
-    };
+    loaded.interpreter.enter(|mutator| {
+        let Value::Object(_) = mutator.fetch(&derived_class) else {
+            panic!("the accessor must yield a class object")
+        };
+    });
     let instance = expect_ok(
         loaded.interpreter.instantiate(&derived_class, &[]),
         "instantiate Derived",
@@ -5203,10 +5379,9 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
             .send(&instance, Symbol::intern("value"), &[]),
         "value",
     );
-    assert!(matches!(
-        loaded.interpreter.fetch(&result),
-        Value::SmallInteger(7)
-    ));
+    loaded.interpreter.enter(|mutator| {
+        assert!(matches!(mutator.fetch(&result), Value::SmallInteger(7)));
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -5309,30 +5484,34 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
     // Two levels past the deepest module the parser will produce, so the
     // refusal cannot be blamed on an off-by-one at the boundary.
     let mixin = deep_mixin_chain(deepest_parseable_nesting() + 4);
-    let application = interpreter.apply_mixin(&mixin, None);
-    let object_class = interpreter.builtin_class(BuiltinClass::Object);
-    let class: ClassReference = interpreter.heap_mut().allocate_object(
-        object_class,
-        ObjectData::Class(ClassData {
-            application,
-            enclosing: None,
-            declaring_class: None,
-            superclass: None,
-            builtin: None,
-            metaclass: None,
-        }),
-    );
     let platform = interpreter.platform();
-    let Err(error) = image::snapshot(
-        &interpreter,
-        Some(TRIVIAL_MODULE),
-        &Origin::File(PathBuf::from("t.ns")),
-        class,
-        &interpreter.fetch(&platform),
-        &[],
-    ) else {
-        panic!("a class tree past the ceiling must not encode");
-    };
+    let error = interpreter.enter(|mutator| {
+        let application = mutator.apply_mixin(&mixin, None);
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let class: ClassReference = mutator.heap_mut().allocate_object(
+            object_class,
+            ObjectData::Class(ClassData {
+                application,
+                enclosing: None,
+                declaring_class: None,
+                superclass: None,
+                builtin: None,
+                metaclass: None,
+            }),
+        );
+        let platform = mutator.fetch(&platform);
+        let Err(error) = image::snapshot(
+            mutator,
+            Some(TRIVIAL_MODULE),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[],
+        ) else {
+            panic!("a class tree past the ceiling must not encode");
+        };
+        error
+    });
     assert!(
         error.contains("nested") && error.contains("130"),
         "the refusal must name the ceiling it enforces, got: {error}"
@@ -5463,13 +5642,10 @@ fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
     let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
     let mut loaded = image::load(&bytes).expect("load");
     let head = loaded.roots[0].clone();
-    assert_eq!(
-        superclass_depth(
-            loaded.interpreter.heap_reference(),
-            &loaded.interpreter.fetch(&head)
-        ),
-        DEEP
-    );
+    loaded.interpreter.enter(|mutator| {
+        let head_value = mutator.fetch(&head);
+        assert_eq!(superclass_depth(mutator.heap(), &head_value), DEEP);
+    });
     // Nothing on the chain declares the selector, so the send ends in an
     // ordinary Newspeak error. That it ends at all is the point.
     let answered = loaded
@@ -5490,22 +5666,21 @@ fn instantiating_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack
     let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
     let mut loaded = image::load(&bytes).expect("load");
     let head = loaded.roots[0].clone();
-    assert_eq!(
-        superclass_depth(
-            loaded.interpreter.heap_reference(),
-            &loaded.interpreter.fetch(&head)
-        ),
-        DEEP
-    );
-    let Value::Object(_) = loaded.interpreter.fetch(&head) else {
-        panic!("the root is a class object");
-    };
+    loaded.interpreter.enter(|mutator| {
+        let head_value = mutator.fetch(&head);
+        assert_eq!(superclass_depth(mutator.heap(), &head_value), DEEP);
+        let Value::Object(_) = head_value else {
+            panic!("the root is a class object");
+        };
+    });
     let instance = expect_ok(loaded.interpreter.instantiate(&head, &[]), "instantiate");
-    assert!(
-        matches!(loaded.interpreter.fetch(&instance), Value::Object(_)),
-        "an instance of the head class"
-    );
-    assert_eq!(loaded.interpreter.heap_reference().activation_depth(), 0);
+    loaded.interpreter.enter(|mutator| {
+        assert!(
+            matches!(mutator.fetch(&instance), Value::Object(_)),
+            "an instance of the head class"
+        );
+        assert_eq!(mutator.heap().activation_depth(), 0);
+    });
 }
 
 #[test]
@@ -5516,28 +5691,22 @@ fn dropping_a_loaded_world_whose_root_heads_a_long_class_chain_does_not_blow_the
     // `rebuild_applications` built alongside it -- so the cascade fires
     // here, at the end of the test, with no send of any kind.
     let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
-    let loaded = image::load(&bytes).expect("load");
-    assert_eq!(
-        superclass_depth(
-            loaded.interpreter.heap_reference(),
-            &loaded.interpreter.fetch(&loaded.roots[0])
-        ),
-        DEEP
-    );
+    let mut loaded = image::load(&bytes).expect("load");
+    loaded.interpreter.enter(|mutator| {
+        let root_0 = mutator.fetch(&loaded.roots[0]);
+        assert_eq!(superclass_depth(mutator.heap(), &root_0), DEEP);
+    });
     drop(loaded);
 }
 
 #[test]
 fn dropping_a_loaded_world_whose_root_heads_a_long_instance_chain_does_not_blow_the_stack() {
     let bytes = image_with_graph_section(&instance_chain_graph(DEEP));
-    let loaded = image::load(&bytes).expect("load");
-    assert_eq!(
-        instance_chain_depth(
-            loaded.interpreter.heap_reference(),
-            &loaded.interpreter.fetch(&loaded.roots[0])
-        ),
-        DEEP
-    );
+    let mut loaded = image::load(&bytes).expect("load");
+    loaded.interpreter.enter(|mutator| {
+        let root_0 = mutator.fetch(&loaded.roots[0]);
+        assert_eq!(instance_chain_depth(mutator.heap(), &root_0), DEEP);
+    });
     drop(loaded);
 }
 
@@ -5611,16 +5780,20 @@ fn snapshot_module(module_source: &str, source: Option<&str>, extra_send: Option
         ));
     }
     // Read out after the last run, for the encoder, which runs nothing.
-    let roots: Vec<Value> = roots.iter().map(|root| interpreter.fetch(root)).collect();
-    image::snapshot(
-        &interpreter,
-        source,
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &roots,
-    )
-    .expect("snapshot")
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let roots: Vec<Value> = roots.iter().map(|root| mutator.fetch(root)).collect();
+        let platform = mutator.fetch(&platform);
+        image::snapshot(
+            mutator,
+            source,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &roots,
+        )
+        .expect("snapshot")
+    })
 }
 
 #[test]
@@ -5643,10 +5816,12 @@ fn a_source_free_image_still_runs() {
             .send(&instance, Symbol::intern("answer"), &[]),
         "answer",
     );
-    assert!(
-        matches!(loaded.interpreter.fetch(&result), Value::SmallInteger(42)),
-        "the entry send must run through the decoded code table"
-    );
+    loaded.interpreter.enter(|mutator| {
+        assert!(
+            matches!(mutator.fetch(&result), Value::SmallInteger(42)),
+            "the entry send must run through the decoded code table"
+        );
+    });
 }
 
 /// The whole world, not just one send: a nested class reached through its
@@ -5663,10 +5838,12 @@ fn a_source_free_image_still_reaches_its_nested_classes() {
         "instantiate Inner",
     );
     let value = send_to(&mut loaded, &instance, "value");
-    match loaded.interpreter.fetch(&value) {
-        Value::SmallInteger(9) => {}
-        _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
-    }
+    loaded
+        .interpreter
+        .enter(|mutator| match mutator.fetch(&value) {
+            Value::SmallInteger(9) => {}
+            _ => panic!("expected SmallInteger(9) from Inner's `value`, got a different Value"),
+        });
 }
 
 #[test]
@@ -5687,10 +5864,9 @@ fn the_debug_variant_still_carries_source() {
             .send(&instance, Symbol::intern("answer"), &[]),
         "answer",
     );
-    assert!(matches!(
-        loaded.interpreter.fetch(&result),
-        Value::SmallInteger(42)
-    ));
+    loaded.interpreter.enter(|mutator| {
+        assert!(matches!(mutator.fetch(&result), Value::SmallInteger(42)));
+    });
 }
 
 /// The two variants differ only in the source blob: everything a world
@@ -5716,15 +5892,17 @@ fn a_frame_program_counter_past_its_bodys_last_instruction_is_refused() {
     let graph = fixture
         .decode(&closure_over_frame(foo_frame_at_program_counter(2, 99)))
         .expect("decode");
-    let error = decode::verify_graph(&graph, &table, fixture.interpreter.heap_reference())
-        .expect_err("out-of-range program counter");
-    assert_eq!(
-        error,
-        decode::DecodeError::ProgramCounterOutOfRange {
-            program_counter: 99,
-            instructions: 2
-        }
-    );
+    fixture.interpreter.enter(|mutator| {
+        let error = decode::verify_graph(&graph, &table, mutator.heap())
+            .expect_err("out-of-range program counter");
+        assert_eq!(
+            error,
+            decode::DecodeError::ProgramCounterOutOfRange {
+                program_counter: 99,
+                instructions: 2
+            }
+        );
+    });
 }
 
 /// `load` never calls the parser, so source that could not possibly parse
@@ -5753,33 +5931,38 @@ fn the_debug_variants_source_is_never_parsed() {
 fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
     let (mut interpreter, class) = load(TRIVIAL_MODULE);
     let platform = interpreter.platform();
-    let running = interpreter.heap_mut().push_activation(
-        ns_runtime::ActivationHeader {
-            receiver: Value::Nil,
-            current_class: None,
-            kind: FrameKind::TopLevel,
-            slot_base: 0,
-            code: code_with(
-                CodeKind::Method,
-                0,
-                1,
-                vec![Instruction::Return { register: 0 }],
-            ),
-            then: ns_runtime::Continuation::Deliver,
-            counted: true,
-        },
-        &[],
-        0,
-    );
-    let result = image::snapshot(
-        &interpreter,
-        None,
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[],
-    );
-    interpreter.heap_mut().pop_activation(running);
+    let result = interpreter.enter(|mutator| {
+        let running = mutator.heap_mut().push_activation(
+            ns_runtime::ActivationHeader {
+                receiver: Value::Nil,
+                current_class: None,
+                kind: FrameKind::TopLevel,
+                slot_base: 0,
+                code: code_with(
+                    CodeKind::Method,
+                    0,
+                    1,
+                    vec![Instruction::Return { register: 0 }],
+                ),
+                then: ns_runtime::Continuation::Deliver,
+                counted: true,
+            },
+            &[],
+            0,
+        );
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let result = image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[],
+        );
+        mutator.heap_mut().pop_activation(running);
+        result
+    });
     let Err(error) = result else {
         panic!("a snapshot with an activation still running must be refused")
     };
@@ -5793,59 +5976,62 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
 /// the frame record from rotting unnoticed.
 #[test]
 fn a_frames_sender_survives_a_round_trip() {
-    let (interpreter, _class, _o, decoded, _max) =
+    let (mut interpreter, _class, _original, decoded, _max) =
         round_trip_graph(TRIVIAL_MODULE, |interpreter, class| {
             // Nothing runs in here, so the class read out of its root stays
             // current.
-            let class = class_reference(interpreter, class);
-            let foo = method_code(interpreter.heap_reference(), class, "foo");
-            let frame_running = |receiver: i64, sender| ns_runtime::Frame {
-                receiver: Value::SmallInteger(receiver),
-                arguments: vec![],
-                temporaries: vec![Value::Nil; foo.register_count as usize],
-                program_counter: 0,
-                sender,
-                home: None,
-                current_class: Some(class),
-                kind: FrameKind::TopLevel,
-                uncontinuable: true,
-                slot_base: 0,
-            };
-            let sender = interpreter
-                .heap_mut()
-                .allocate_frame(frame_running(7, None));
-            let frame = interpreter
-                .heap_mut()
-                .allocate_frame(frame_running(8, Some(sender)));
-            let block_class = interpreter.builtin_class(BuiltinClass::Block);
-            let closure = interpreter.heap_mut().allocate_object(
-                block_class,
-                ObjectData::Closure(ns_runtime::ClosureData {
-                    parameters: std::rc::Rc::new(vec![]),
-                    code: foo.clone(),
-                    captured_frame: frame,
-                    home: frame,
-                }),
-            );
-            vec![interpreter.stash(Value::Object(closure))]
+            interpreter.enter(|mutator| {
+                let class = class_reference(mutator, class);
+                let foo = method_code(mutator.heap(), class, "foo");
+                let frame_running = |receiver: i64, sender| ns_runtime::Frame {
+                    receiver: Value::SmallInteger(receiver),
+                    arguments: vec![],
+                    temporaries: vec![Value::Nil; foo.register_count as usize],
+                    program_counter: 0,
+                    sender,
+                    home: None,
+                    current_class: Some(class),
+                    kind: FrameKind::TopLevel,
+                    uncontinuable: true,
+                    slot_base: 0,
+                };
+                let sender = mutator.heap_mut().allocate_frame(frame_running(7, None));
+                let frame = mutator
+                    .heap_mut()
+                    .allocate_frame(frame_running(8, Some(sender)));
+                let block_class = mutator.builtin_class(BuiltinClass::Block);
+                let closure = mutator.heap_mut().allocate_object(
+                    block_class,
+                    ObjectData::Closure(ns_runtime::ClosureData {
+                        parameters: std::rc::Rc::new(vec![]),
+                        code: foo.clone(),
+                        captured_frame: frame,
+                        home: frame,
+                    }),
+                );
+                vec![mutator.stash(Value::Object(closure))]
+            })
         });
-    let heap = interpreter.heap_reference();
-    let closure_data = heap
-        .closure_data(*object(&decoded[0]))
-        .expect("expected a closure");
-    assert!(matches!(
-        heap.frame_receiver(closure_data.home),
-        Value::SmallInteger(8)
-    ));
-    let sender = heap
-        .frame_sender(closure_data.home)
-        .expect("the decoded frame keeps its sender");
-    assert!(!sender.same(closure_data.home));
-    assert!(matches!(
-        heap.frame_receiver(sender),
-        Value::SmallInteger(7)
-    ));
-    assert!(heap.frame_sender(sender).is_none());
+    interpreter.enter(|mutator| {
+        let decoded_0 = mutator.fetch(&decoded[0]);
+        let heap = mutator.heap();
+        let closure_data = heap
+            .closure_data(*object(&decoded_0))
+            .expect("expected a closure");
+        assert!(matches!(
+            heap.frame_receiver(closure_data.home),
+            Value::SmallInteger(8)
+        ));
+        let sender = heap
+            .frame_sender(closure_data.home)
+            .expect("the decoded frame keeps its sender");
+        assert!(!sender.same(closure_data.home));
+        assert!(matches!(
+            heap.frame_receiver(sender),
+            Value::SmallInteger(7)
+        ));
+        assert!(heap.frame_sender(sender).is_none());
+    });
 }
 
 /// A decoded frame never ran in the loading world, so it is never married and
@@ -5870,45 +6056,46 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
     let closure = expect_ok(interpreter.send(&instance, Symbol::intern("mk"), &[]), "mk");
     // `mk` has returned, so its frame is divorced and marked uncontinuable.
     // Clear the flag, as a hand-edited file could.
-    let home = interpreter
-        .heap_reference()
-        .closure_data(*object(&interpreter.fetch(&closure)))
-        .expect("expected a closure")
-        .home;
-    let mut forged = interpreter.heap_reference().frame_snapshot(home);
-    assert!(forged.uncontinuable, "`mk` had returned");
-    forged.uncontinuable = false;
-    interpreter.heap_mut().replace_frame(home, forged);
-    let bytes = image::snapshot(
-        &interpreter,
-        None,
-        &Origin::File(PathBuf::from("t.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&instance), interpreter.fetch(&closure)],
-    )
-    .expect("snapshot");
+    let bytes = interpreter.enter(|mutator| {
+        let home = mutator
+            .heap()
+            .closure_data(*object(&mutator.fetch(&closure)))
+            .expect("expected a closure")
+            .home;
+        let mut forged = mutator.heap().frame_snapshot(home);
+        assert!(forged.uncontinuable, "`mk` had returned");
+        forged.uncontinuable = false;
+        mutator.heap_mut().replace_frame(home, forged);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let instance = mutator.fetch(&instance);
+        let closure = mutator.fetch(&closure);
+        image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance, closure],
+        )
+        .expect("snapshot")
+    });
 
     let mut loaded = image::load(&bytes).expect("load");
     let decoded = loaded.roots[1].clone();
-    let decoded_home = loaded
-        .interpreter
-        .heap_reference()
-        .closure_data(*object(&loaded.interpreter.fetch(&decoded)))
-        .expect("expected a closure")
-        .home;
-    assert!(
-        !loaded
-            .interpreter
-            .heap_reference()
-            .frame_is_uncontinuable(decoded_home),
-        "the flag the file carried must survive decoding, or this tests nothing"
-    );
-    assert!(loaded
-        .interpreter
-        .heap_reference()
-        .frame_activation(decoded_home)
-        .is_none());
+    loaded.interpreter.enter(|mutator| {
+        let decoded_value = mutator.fetch(&decoded);
+        let decoded_home = mutator
+            .heap()
+            .closure_data(*object(&decoded_value))
+            .expect("expected a closure")
+            .home;
+        assert!(
+            !mutator.heap().frame_is_uncontinuable(decoded_home),
+            "the flag the file carried must survive decoding, or this tests nothing"
+        );
+        assert!(mutator.heap().frame_activation(decoded_home).is_none());
+    });
     match loaded
         .interpreter
         .send(&decoded, Symbol::intern("value"), &[])
@@ -6009,10 +6196,12 @@ fn no_line_of_the_source_survives_in_a_source_free_image() {
     let mut loaded = image::load(&bytes).expect("load");
     let instance = loaded.roots.first().cloned().expect("the root instance");
     let value = send_to(&mut loaded, &instance, "quixoticAccumulator");
-    match loaded.interpreter.fetch(&value) {
-        Value::SmallInteger(146) => {}
-        _ => panic!("expected SmallInteger(146) from the loaded world, got a different Value"),
-    }
+    loaded
+        .interpreter
+        .enter(|mutator| match mutator.fetch(&value) {
+            Value::SmallInteger(146) => {}
+            _ => panic!("expected SmallInteger(146) from the loaded world, got a different Value"),
+        });
 }
 
 // ---------------------------------------------------------------------------
@@ -6072,15 +6261,20 @@ fn snapshot_of_without_source(source: &str) -> Vec<u8> {
         "instantiate",
     );
     // Read out after the run, for the encoder, which runs nothing.
-    image::snapshot(
-        &interpreter,
-        None,
-        &Origin::File(PathBuf::from("golden.ns")),
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[interpreter.fetch(&instance)],
-    )
-    .expect("snapshot")
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let instance = mutator.fetch(&instance);
+        image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("golden.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    })
 }
 
 #[test]
@@ -6190,27 +6384,24 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
     // artifact shape, then compare through the inspector rather than by raw
     // offset: a raw offset says two files differ, a section says which one.
     let (mut interpreter, class) = load(ENTRY_SOURCE);
-    let class = class_reference(&interpreter, &class);
     let platform = interpreter.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let binary = image::build(
-        interpreter.heap_reference(),
-        None,
-        &origin,
-        class,
-        Symbol::intern("main:args:"),
-    )
-    .expect("build");
-    let image = image::snapshot(
-        &interpreter,
-        None,
-        &origin,
-        class,
-        &interpreter.fetch(&platform),
-        &[],
-    )
-    .expect("snapshot");
+    let (binary, image) = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let binary = image::build(
+            mutator.heap(),
+            None,
+            &origin,
+            class,
+            Symbol::intern("main:args:"),
+        )
+        .expect("build");
+        let platform = mutator.fetch(&platform);
+        let image =
+            image::snapshot(mutator, None, &origin, class, &platform, &[]).expect("snapshot");
+        (binary, image)
+    });
 
     let binary_report = image::inspect::inspect(&binary).expect("inspect binary");
     let image_report = image::inspect::inspect(&image).expect("inspect image");
@@ -6267,18 +6458,20 @@ fn a_built_binary_and_a_snapshot_of_the_same_source_agree_up_to_the_root_class()
 /// `build` later to chase an identity this format never promised here.
 #[test]
 fn build_accepts_an_entry_selector_the_module_never_declares() {
-    let (interpreter, class) = load(TRIVIAL_MODULE);
-    let class = class_reference(&interpreter, &class);
+    let (mut interpreter, class) = load(TRIVIAL_MODULE);
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let binary = image::build(
-        interpreter.heap_reference(),
-        None,
-        &origin,
-        class,
-        Symbol::intern("neverDeclared"),
-    )
-    .expect("build does not itself validate the entry selector against the module");
+    let binary = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        image::build(
+            mutator.heap(),
+            None,
+            &origin,
+            class,
+            Symbol::intern("neverDeclared"),
+        )
+        .expect("build does not itself validate the entry selector against the module")
+    });
 
     let report = image::inspect::inspect(&binary).expect("inspect");
     assert!(report.stateless);
@@ -6291,35 +6484,35 @@ fn build_accepts_an_entry_selector_the_module_never_declares() {
 /// graph section to read a starting point out of.
 #[test]
 fn a_binary_loads_with_no_roots_and_its_entry() {
-    let (interpreter, class) = load(ENTRY_SOURCE);
-    let class = class_reference(&interpreter, &class);
+    let (mut interpreter, class) = load(ENTRY_SOURCE);
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let binary = image::build(
-        interpreter.heap_reference(),
-        None,
-        &origin,
-        class,
-        Symbol::intern("main:args:"),
-    )
-    .expect("build");
+    let binary = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        image::build(
+            mutator.heap(),
+            None,
+            &origin,
+            class,
+            Symbol::intern("main:args:"),
+        )
+        .expect("build")
+    });
 
-    let loaded = image::load(&binary).expect("load a binary");
+    let mut loaded = image::load(&binary).expect("load a binary");
     assert!(loaded.stateless);
     assert!(loaded.roots.is_empty(), "a binary carries no instance");
     assert_eq!(
         loaded.entry.map(|selector| selector.to_string()).as_deref(),
         Some("main:args:")
     );
-    assert!(
-        !root_mixin_of(
-            loaded.interpreter.heap_reference(),
-            class_reference(&loaded.interpreter, &loaded.root_class)
-        )
-        .methods
-        .is_empty(),
-        "the binary's methods must be rebuilt, each carrying its body"
-    );
+    loaded.interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &loaded.root_class);
+        assert!(
+            !root_mixin_of(mutator.heap(), root_class).methods.is_empty(),
+            "the binary's methods must be rebuilt, each carrying its body"
+        );
+    });
 }
 
 /// `image::snapshot` is a library API: a caller can hand it an empty
@@ -6337,15 +6530,11 @@ fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
     let platform = interpreter.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let image = image::snapshot(
-        &interpreter,
-        None,
-        &origin,
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[],
-    )
-    .expect("snapshot");
+    let image = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(mutator, None, &origin, class, &platform, &[]).expect("snapshot")
+    });
 
     let loaded = image::load(&image).expect("load a stateful image with no roots");
     assert!(
@@ -6365,18 +6554,20 @@ fn a_stateful_snapshot_with_empty_roots_still_loads_as_stateful() {
 /// refuses it up front instead.
 #[test]
 fn a_stateless_artifact_without_an_entry_is_refused() {
-    let (interpreter, class) = load(ENTRY_SOURCE);
-    let class = class_reference(&interpreter, &class);
+    let (mut interpreter, class) = load(ENTRY_SOURCE);
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let mut bytes = image::build(
-        interpreter.heap_reference(),
-        None,
-        &origin,
-        class,
-        Symbol::intern("main:args:"),
-    )
-    .expect("build");
+    let mut bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        image::build(
+            mutator.heap(),
+            None,
+            &origin,
+            class,
+            Symbol::intern("main:args:"),
+        )
+        .expect("build")
+    });
 
     // The entry field is the last thing in a binary, so truncating at its
     // section start and writing a bare `0` (absent) byte in its place turns
@@ -6409,18 +6600,20 @@ fn a_stateless_artifact_without_an_entry_is_refused() {
 /// existing model for the image shape.
 #[test]
 fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
-    let (interpreter, class) = load(ENTRY_SOURCE);
-    let class = class_reference(&interpreter, &class);
+    let (mut interpreter, class) = load(ENTRY_SOURCE);
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let binary = image::build(
-        interpreter.heap_reference(),
-        None,
-        &origin,
-        class,
-        Symbol::intern("main:args:"),
-    )
-    .expect("build");
+    let binary = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        image::build(
+            mutator.heap(),
+            None,
+            &origin,
+            class,
+            Symbol::intern("main:args:"),
+        )
+        .expect("build")
+    });
 
     for cut in 0..binary.len() {
         // `is_err()`, not a message check, is deliberate here and only here:
@@ -6454,27 +6647,24 @@ fn every_truncation_of_a_binary_is_reported_rather_than_panicking() {
 #[test]
 fn a_binary_with_a_graph_appended_is_refused() {
     let (mut interpreter, class) = load(ENTRY_SOURCE);
-    let class = class_reference(&interpreter, &class);
     let platform = interpreter.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let binary = image::build(
-        interpreter.heap_reference(),
-        None,
-        &origin,
-        class,
-        Symbol::intern("main:args:"),
-    )
-    .expect("build");
-    let image_bytes = image::snapshot(
-        &interpreter,
-        None,
-        &origin,
-        class,
-        &interpreter.fetch(&platform),
-        &[],
-    )
-    .expect("snapshot");
+    let (binary, image_bytes) = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let binary = image::build(
+            mutator.heap(),
+            None,
+            &origin,
+            class,
+            Symbol::intern("main:args:"),
+        )
+        .expect("build");
+        let platform = mutator.fetch(&platform);
+        let image_bytes =
+            image::snapshot(mutator, None, &origin, class, &platform, &[]).expect("snapshot");
+        (binary, image_bytes)
+    });
     // The append below only exercises anything if the image actually
     // extends past where the binary ends -- a snapshot's graph section
     // guarantees that here, but assert it so a future change to either
@@ -6520,15 +6710,11 @@ fn a_relabelled_snapshot_is_refused_for_missing_entry() {
     let platform = interpreter.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
-    let mut bytes = image::snapshot(
-        &interpreter,
-        None,
-        &origin,
-        class_reference(&interpreter, &class),
-        &interpreter.fetch(&platform),
-        &[],
-    )
-    .expect("snapshot");
+    let mut bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        image::snapshot(mutator, None, &origin, class, &platform, &[]).expect("snapshot")
+    });
 
     // Locate the flag byte from the header layout instead of hard-coding an
     // offset, so a header change fails this assertion loudly rather than
@@ -6579,21 +6765,18 @@ fn the_graph_walk_consumes_the_section_exactly() {
         let origin = Origin::File(PathBuf::from("t.ns"));
         let instance = interpreter.instantiate(&class, std::slice::from_ref(&platform));
         // Read out after the run, for the encoder, which runs nothing.
-        let roots: Vec<_> = match instance {
-            Ok(root) => vec![interpreter.fetch(&root)],
-            // A module whose factory takes no platform argument still gives a
-            // graph worth walking -- just without an instance in it.
-            Err(_) => Vec::new(),
-        };
-        let image = image::snapshot(
-            &interpreter,
-            None,
-            &origin,
-            class_reference(&interpreter, &class),
-            &interpreter.fetch(&platform),
-            &roots,
-        )
-        .expect("snapshot");
+        let image = interpreter.enter(|mutator| {
+            let roots: Vec<Value> = match &instance {
+                Ok(root) => vec![mutator.fetch(root)],
+                // A module whose factory takes no platform argument still
+                // gives a graph worth walking -- just without an instance in
+                // it.
+                Err(_) => Vec::new(),
+            };
+            let class = class_reference(mutator, &class);
+            let platform = mutator.fetch(&platform);
+            image::snapshot(mutator, None, &origin, class, &platform, &roots).expect("snapshot")
+        });
 
         let report = image::inspect::inspect(&image).expect("inspect the image");
         let graph = report

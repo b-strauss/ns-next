@@ -283,28 +283,11 @@ impl Interpreter {
         self.world.enter(body)
     }
 
-    /// The heap, for reading. Public so integration tests can exercise the
-    /// seam directly; the field itself stays `pub(crate)` so no caller
-    /// outside the crate can hold one across a call back into the
-    /// interpreter.
-    pub fn heap_reference(&self) -> &Heap {
-        &self.heap
-    }
-
-    pub fn heap_mut(&mut self) -> &mut Heap {
-        &mut self.heap
-    }
-
     /// Roots an immediate -- `nil`, a Boolean, a `SmallInteger`, a `Float`
     /// -- a host built itself, outside any entry. An object is rooted with
     /// `Mutator::stash`, inside the entry that reached it.
     pub fn stash(&self, value: Value) -> Root {
         self.world.stash(value)
-    }
-
-    /// `Heap::fetch`, for a host.
-    pub fn fetch(&self, root: &Root) -> Value {
-        self.heap.fetch(root)
     }
 
     /// Whether the run loop's next safepoint must take its slow path.
@@ -1470,22 +1453,6 @@ fn build_self_referential_object_class(
         builtin: Some(BuiltinClass::Object),
         metaclass: None,
     }))
-}
-
-/// Transitional, for Tasks 1-3 of the 2c plan: lets a host or test that
-/// still reads through the interpreter compile until it reads through
-/// `enter`. Task 3 removes it, with `heap_reference`, `heap_mut` and `fetch`.
-impl std::ops::Deref for Interpreter {
-    type Target = Mutator;
-    fn deref(&self) -> &Mutator {
-        self.world.mutator()
-    }
-}
-
-impl std::ops::DerefMut for Interpreter {
-    fn deref_mut(&mut self) -> &mut Mutator {
-        self.world.mutator_mut()
-    }
 }
 
 #[cfg(test)]

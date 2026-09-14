@@ -128,14 +128,4 @@ impl World {
             "internal: a spare instantiation box holds a handle"
         );
     }
-
-    /// Transitional, for the `Deref` Task 3 of the 2c plan removes.
-    pub(crate) fn mutator(&self) -> &Mutator {
-        &self.mutator
-    }
-
-    /// Transitional, for the `DerefMut` Task 3 of the 2c plan removes.
-    pub(crate) fn mutator_mut(&mut self) -> &mut Mutator {
-        &mut self.mutator
-    }
 }
