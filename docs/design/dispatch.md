@@ -24,7 +24,7 @@ already emitted; see [compiler.md](compiler.md).
 
 ## Resolution
 
-Input a `Module`, output a `ResolvedModule` — the same tree with each `Ident`
+Input a `Module`, output a `ResolvedModule` — the same tree with each `Identifier`
 annotated with a `Binding`, plus per-scope slot layout metadata.
 
 Newspeak's algorithm is two-phase, not a single linear scope walk:
@@ -70,7 +70,7 @@ evaluated at a particular time rather than a distinct binding kind.
 `SuperSend` (`resolver::resolve_superclass_clause`), but the lowerer treats a
 `SuperSend`-bound *identifier* like an unbound one: it falls to the
 bare-builtin-name fallback (`LoadBuiltinClass`), and for any other name to the
-deferred `UnresolvedIdent`. So the form works only when `Foo` names a builtin
+deferred `UnresolvedIdentifier`. So the form works only when `Foo` names a builtin
 class, and then answers that builtin rather than the result of sending `Foo`
 with lookup starting above the declaring class, as §6.1 requires; any other
 `Foo` raises an "unresolved identifier" error when the accessor first runs the
@@ -93,12 +93,12 @@ primitive.
 The parser normalizes several forms, and the resolver keys off those shapes:
 
 - **A bare unary implicit send** (`foo` with no message following) parses as a
-  plain `Expr::Ident`, not wrapped in a `Send`. Per §5.4.3 a bare identifier used
-  as a primary *is* an implicit-receiver unary send, so every standalone `Ident`
+  plain `Expression::Identifier`, not wrapped in a `Send`. Per §5.4.3 a bare identifier used
+  as a primary *is* an implicit-receiver unary send, so every standalone `Identifier`
   gets the full Local → OuterLocal → §5.7 resolution, unless it is literally
   `self` or `super`.
 - **An implicit-receiver keyword send** has its receiver synthesized by the
-  parser as `Ident{"self"}` with a **zero-width span** at the selector's start.
+  parser as `Identifier{"self"}` with a **zero-width span** at the selector's start.
   That is the discriminator: a zero-width span means a true implicit send and the
   depth search runs; a real span means a genuine explicit `self` send, where §5.8
   fixes the depth at 0 with no search. Binary sends are never implicit, so no

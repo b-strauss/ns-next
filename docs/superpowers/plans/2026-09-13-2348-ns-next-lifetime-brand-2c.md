@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Every movable handle — `ObjRef`, `ClassRef`, `FrameRef`, and so
+**Goal:** Every movable handle — `ObjectReference`, `ClassReference`, `FrameReference`, and so
 `Value` and every type that holds one — carries an invariant lifetime `'gc`
 obtainable only inside `Interpreter::enter`. Holding a handle across a
 safepoint, a native re-entering the run loop, and a host storing a handle
@@ -59,7 +59,7 @@ repository's invariants:
    someone argues for it.
 2. **The cast is sound because the brand is phantom.** A handle is a `u32`
    index; `'gc` appears in `Mutator`'s field types only through the
-   `PhantomData` in `ObjRef` and `FrameRef`. No field of any branded type may
+   `PhantomData` in `ObjectReference` and `FrameReference`. No field of any branded type may
    ever hold a real reference with lifetime `'gc` — that is the cast's
    safety condition, stated at the cast and in `CLAUDE.md` (Task 5).
 3. **There is no public `unbind`.** Two private functions in `heap.rs`
@@ -78,14 +78,14 @@ repository's invariants:
    `&mut self`.
 6. **Each instruction the loop executes is one `enter`**, as memory.md
    designs it. `vm::run` holds between instructions only the running
-   `ActivationRef`, its `Rc<CompiledCode>` and its `pc`, none branded. A run
+   `ActivationReference`, its `Rc<CompiledCode>` and its `program_counter`, none branded. A run
    ends inside its last entry, as a `HostResult`: `vm::run` answers roots,
    never a branded value.
 7. **The host API.** `Interpreter::enter` is public. `send`, `instantiate`,
    `load_module` and `platform` take and answer roots as before.
    `Interpreter::stash(&self, Value<'static>)` stays, for immediates: a host
-   can build `Value::SmallInt(3)` but can never hold an object handle outside
-   an entry, so a `Value<'static>` it stashes holds none. `heap_ref()`,
+   can build `Value::SmallInteger(3)` but can never hold an object handle outside
+   an entry, so a `Value<'static>` it stashes holds none. `heap_reference()`,
    `heap_mut()` and `Interpreter::fetch` go. `Mutator` offers `heap()`,
    `heap_mut()`, `fetch` and `stash`, and every method that was `pub` on
    `Interpreter` and belongs to a step (`builtin_class`, `class_of`,
@@ -95,7 +95,7 @@ repository's invariants:
    `&Mutator<'gc>` and branded values, `image::build` a `&Heap<'gc>`;
    `image::load` decodes inside one entry of the interpreter it bootstraps
    and roots what it answers before the entry ends.
-9. **`ActivationRef` stays unbranded**, as memory.md says: nothing moves a
+9. **`ActivationReference` stays unbranded**, as memory.md says: nothing moves a
    stack entry, and its generation covers an index reused after a pop.
 10. **Two stages.** Tasks 1–3 move the code into its final shape with no
     lifetime, with a transitional `Deref` from `Interpreter` to `Mutator`
@@ -156,7 +156,7 @@ Deliberately **not** in this plan:
 - **Every `Trace` impl keeps naming every field and matching every variant**
   (no `..`, no `_` arm).
 - **Never `{:?}` a `Value`; never `.unwrap()`/`.expect()`/`{:?}` an
-  `EvalResult` or a `HostResult`.** Tests unwrap through a local
+  `EvaluationResult` or a `HostResult`.** Tests unwrap through a local
   `expect_ok`.
 - **Object, frame and activation access goes through `heap.rs`.**
 - **A Newspeak module written inline in a test is an `indoc! {"…"}`**, lines
@@ -332,10 +332,10 @@ $sources = "tests-fixtures\bench_loop.ns", "tests-fixtures\bench_send.ns",
            "target\bench-2b\bench_new.ns", "target\bench-2b\bench_new2.ns",
            "target\bench-2b\bench_newarg.ns"
 foreach ($round in 1..5) {
-  foreach ($src in $sources) {
+  foreach ($source in $sources) {
     foreach ($name in $bins.Keys) {
-      "$round $name $src"
-      & $bins[$name] bench $src --iterations 30   # prints median, min, max
+      "$round $name $source"
+      & $bins[$name] bench $source --iterations 30   # prints median, min, max
     }
   }
 }
@@ -362,11 +362,14 @@ task's report; Task 5 carries the whole-step table into the documents.
 Tasks 2–4 apply these to every host and test. They are written once here so
 that the three tasks convert alike.
 
+Names are written out (CLAUDE.md, "Conventions"): the closure parameter of an
+entry is `mutator`.
+
 **The rule.** Nothing that holds a handle leaves an `enter` closure. A closure
 answers brand-free data — `bool`, a number, a `String`, a `Symbol`, an
 `Option`/`Vec` of those, a `Root` or a `Vec<Root>` — and a value that must
-outlive the closure leaves it as a `Root` (`m.stash(v)`) and comes back in
-the next one (`m.fetch(&root)`). Task 4 makes the compiler enforce it; Tasks
+outlive the closure leaves it as a `Root` (`mutator.stash(value)`) and comes back in
+the next one (`mutator.fetch(&root)`). Task 4 makes the compiler enforce it; Tasks
 2 and 3 follow it by hand, so that Task 4 finds nothing in the tests to fix.
 
 **Patterns.** Each "before" is today's code, each "after" the converted form.
@@ -375,12 +378,12 @@ the next one (`m.fetch(&root)`). Task 4 makes the compiler enforce it; Tasks
 
 ```rust
 // before
-let Value::Obj(built) = interp.fetch(&built) else { panic!("an array") };
-assert_eq!(interp.heap_ref().array_len(built), Some(2));
+let Value::Object(built) = interpreter.fetch(&built) else { panic!("an array") };
+assert_eq!(interpreter.heap_reference().array_length(built), Some(2));
 // after
-interp.enter(|m| {
-    let Value::Obj(built) = m.fetch(&built) else { panic!("an array") };
-    assert_eq!(m.heap().array_len(built), Some(2));
+interpreter.enter(|mutator| {
+    let Value::Object(built) = mutator.fetch(&built) else { panic!("an array") };
+    assert_eq!(mutator.heap().array_length(built), Some(2));
 });
 ```
 
@@ -388,9 +391,9 @@ interp.enter(|m| {
 
 ```rust
 // before
-assert!(matches!(interp.fetch(&n), Value::SmallInt(5)));
+assert!(matches!(interpreter.fetch(&total), Value::SmallInteger(5)));
 // after
-assert!(interp.enter(|m| matches!(m.fetch(&n), Value::SmallInt(5))));
+assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&total), Value::SmallInteger(5))));
 ```
 
 (c) A test that builds objects and reads them back with no run in between
@@ -398,16 +401,16 @@ puts the whole body in one entry:
 
 ```rust
 // before
-let mut interp = Interpreter::bootstrap();
-let obj = interp.new_array(vec![Value::SmallInt(1), Value::SmallInt(2)]);
-assert_eq!(interp.heap_ref().array_len(obj), Some(2));
-assert!(interp.heap_mut().array_set(obj, 0, Value::SmallInt(9)));
+let mut interpreter = Interpreter::bootstrap();
+let object = interpreter.new_array(vec![Value::SmallInteger(1), Value::SmallInteger(2)]);
+assert_eq!(interpreter.heap_reference().array_length(object), Some(2));
+assert!(interpreter.heap_mut().array_set(object, 0, Value::SmallInteger(9)));
 // after
-let mut interp = Interpreter::bootstrap();
-interp.enter(|m| {
-    let obj = m.new_array(vec![Value::SmallInt(1), Value::SmallInt(2)]);
-    assert_eq!(m.heap().array_len(obj), Some(2));
-    assert!(m.heap_mut().array_set(obj, 0, Value::SmallInt(9)));
+let mut interpreter = Interpreter::bootstrap();
+interpreter.enter(|mutator| {
+    let object = mutator.new_array(vec![Value::SmallInteger(1), Value::SmallInteger(2)]);
+    assert_eq!(mutator.heap().array_length(object), Some(2));
+    assert!(mutator.heap_mut().array_set(object, 0, Value::SmallInteger(9)));
 });
 ```
 
@@ -416,14 +419,14 @@ after it:
 
 ```rust
 // before
-let class = interp.fetch(&class_root);
-let result = expect_ok(interp.send(&instance, sel, &[]), "send");
-assert!(interp.heap_ref().is_class(class_of(class)));
+let class = interpreter.fetch(&class_root);
+let result = expect_ok(interpreter.send(&instance, selector, &[]), "send");
+assert!(interpreter.heap_reference().is_class(class_of(class)));
 // after
-let result = expect_ok(interp.send(&instance, sel, &[]), "send");
-interp.enter(|m| {
-    let class = m.fetch(&class_root);
-    assert!(m.heap().is_class(class_of(class)));
+let result = expect_ok(interpreter.send(&instance, selector, &[]), "send");
+interpreter.enter(|mutator| {
+    let class = mutator.fetch(&class_root);
+    assert!(mutator.heap().is_class(class_of(class)));
 });
 ```
 
@@ -431,32 +434,32 @@ interp.enter(|m| {
 an argument list inline:
 
 ```rust
-interp.send(&counter, bump, &[interp.stash(Value::SmallInt(2))])  // unchanged
+interpreter.send(&counter, bump, &[interpreter.stash(Value::SmallInteger(2))])  // unchanged
 ```
 
-(f) A helper that read through `interp.heap_ref()` or `interp.fetch` takes
+(f) A helper that read through `interpreter.heap_reference()` or `interpreter.fetch` takes
 `&mut Interpreter` and enters, or — when all its callers are already inside
 an entry — takes `&Mutator` (`&Heap` for a pure read) and is called from
 there:
 
 ```rust
 // before
-fn expect_error(interp: &Interpreter, result: HostResult, what: &str) -> HostError {
+fn expect_error(interpreter: &Interpreter, result: HostResult, what: &str) -> HostError {
     match result {
-        Err(HostSignal::Error(e)) => e,
+        Err(HostSignal::Error(error)) => error,
         Ok(root) => panic!(
             "{what}: expected a Newspeak error, got {}",
-            interp.heap_ref().describe(&interp.fetch(&root))
+            interpreter.heap_reference().describe(&interpreter.fetch(&root))
         ),
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
     }
 }
 // after
-fn expect_error(interp: &mut Interpreter, result: HostResult, what: &str) -> HostError {
+fn expect_error(interpreter: &mut Interpreter, result: HostResult, what: &str) -> HostError {
     match result {
-        Err(HostSignal::Error(e)) => e,
+        Err(HostSignal::Error(error)) => error,
         Ok(root) => {
-            let got = interp.enter(|m| m.heap().describe(&m.fetch(&root)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&root)));
             panic!("{what}: expected a Newspeak error, got {got}")
         }
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
@@ -464,15 +467,15 @@ fn expect_error(interp: &mut Interpreter, result: HostResult, what: &str) -> Hos
 }
 ```
 
-(g) A method that moved from `Interpreter` to `Mutator` is called on `m`
-inside an entry: `interp.decide_send(...)` becomes
-`interp.enter(|m| match m.decide_send(...) { ... })`, with the assertions on
+(g) A method that moved from `Interpreter` to `Mutator` is called on `mutator`
+inside an entry: `interpreter.decide_send(...)` becomes
+`interpreter.enter(|mutator| match mutator.decide_send(...) { ... })`, with the assertions on
 the answer inside the closure, since a `Step` holds handles.
 
 **In the runtime's own code** (Tasks 1 and 4), a function that took
-`interp: &mut Interpreter` or `interp: &Interpreter` and does a step's work
-takes `m: &mut Mutator` or `m: &Mutator` instead, and its body says `m.`
-where it said `interp.`. A method in an `impl Interpreter` block that does a
+`interpreter: &mut Interpreter` or `interpreter: &Interpreter` and does a step's work
+takes `mutator: &mut Mutator` or `mutator: &Mutator` instead, and its body says `mutator.`
+where it said `interpreter.`. A method in an `impl Interpreter` block that does a
 step's work moves, body unchanged, into an `impl Mutator` block in the same
 file — `self.heap`, `self.applications` and the rest keep their names,
 because they are `Mutator`'s fields now.
@@ -1356,7 +1359,7 @@ Claude-Session: https://claude.ai/code/session_01D1Dip7oZ7mL5jZG3SU4Woj"
 **Files:**
 - Modify: `crates/ns-runtime/tests/image.rs`
 - Modify: `crates/ns-runtime/src/interpreter/mod.rs` (remove the `Deref`,
-  `DerefMut`, `heap_ref`, `heap_mut`, `fetch`)
+  `DerefMut`, `heap_reference`, `heap_mut`, `fetch`)
 - Modify: `crates/ns-runtime/src/heap/world.rs` (remove `mutator`,
   `mutator_mut`)
 - Modify: any file the removal shows still depends on them
@@ -1373,13 +1376,13 @@ each converts:
 
 - A test that loads, instantiates, sends, then snapshots: the snapshot call
   moves into one entry that fetches the class, the platform and the roots
-  and calls `image::snapshot(m, …)`; the bytes leave the entry.
-- A test that builds frames or objects by hand (`alloc_frame`,
-  `alloc_object`, `push_activation`, `set_frame_pc`, `replace_frame`) and
+  and calls `image::snapshot(mutator, …)`; the bytes leave the entry.
+- A test that builds frames or objects by hand (`allocate_frame`,
+  `allocate_object`, `push_activation`, `set_frame_program_counter`, `replace_frame`) and
   then encodes or inspects them: the whole construction and the encoding
   share one entry, since nothing runs between them.
 - A round-trip check after `image::load`: every read of the loaded world
-  happens inside `loaded.interp.enter(…)`, the roots fetched there.
+  happens inside `loaded.interpreter.enter(…)`, the roots fetched there.
 - A helper that takes `&Interpreter` or `&Heap` and is called from outside
   any entry: it takes `&Mutator` or `&Heap` and is called from inside one,
   or takes `&mut Interpreter` and enters itself — whichever keeps its
@@ -1393,21 +1396,21 @@ PASSES, with the same count as before the task.
 - [ ] **Step 2: Remove the transitional API**
 
 Delete from `interpreter/mod.rs` the `impl Deref for Interpreter`, the
-`impl DerefMut for Interpreter`, and `Interpreter::heap_ref`, `heap_mut`
+`impl DerefMut for Interpreter`, and `Interpreter::heap_reference`, `heap_mut`
 and `fetch`; delete `World::mutator` and `World::mutator_mut`.
 
 Run: `cargo build --workspace --all-targets`
 Expected: builds. Any error is a caller that still reached the `Mutator`
 through the interpreter: convert it by the rules — in the runtime, an
-`interp.x` in host code becomes `self.enter(|m| m.x)` or moves into an
+`interpreter.accessor()` in host code becomes `self.enter(|mutator| mutator.accessor())` or moves into an
 existing entry.
 
 - [ ] **Step 3: Check that the old paths are gone**
 
-Run: `rg -n "heap_ref|fn heap_mut|fn fetch|fn mutator|impl std::ops::Deref" crates`
+Run: `rg -n "heap_reference|fn heap_mut|fn fetch|fn mutator|impl std::ops::Deref" crates`
 Expected: exactly three hits — `fn heap_mut` and `fn fetch` in
 `interpreter/mod.rs`'s `impl Mutator`, and `fn fetch` in `heap.rs`'s
-`impl Heap`. Nothing on `Interpreter`, nothing on `World`, no `heap_ref`
+`impl Heap`. Nothing on `Interpreter`, nothing on `World`, no `heap_reference`
 anywhere.
 
 - [ ] **Step 4: Run every gate**
@@ -1420,7 +1423,7 @@ Expected: all green, the reports exactly as stated.
 ```bash
 git add -A crates
 git commit -m "refactor: only Interpreter::enter reaches the step state" -m "tests/image.rs reads through enter like every other host, and the
-transitional Deref, heap_ref, heap_mut and Interpreter::fetch go. A host
+transitional Deref, heap_reference, heap_mut and Interpreter::fetch go. A host
 keeps a value across a run only as a Root and reads it inside an entry.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
@@ -1450,17 +1453,17 @@ else: no function's behaviour, no test's assertion.
 
 **Interfaces:**
 - Consumes: the final host API of Task 3.
-- Produces: `ObjRef<'gc>`, `ClassRef<'gc>`, `FrameRef<'gc>`, `Value<'gc>`,
+- Produces: `ObjectReference<'gc>`, `ClassReference<'gc>`, `FrameReference<'gc>`, `Value<'gc>`,
   `Object<'gc>`, `ObjectData<'gc>`, `ClosureData<'gc>`, `ClassData<'gc>`,
   `FrameKind<'gc>`, `Continuation<'gc>`, `WhileLoop<'gc>`, `DoLoop<'gc>`,
   `NestedClassCreation<'gc>`, `Instantiation<'gc>`,
   `InstantiationPhase<'gc>`, `Frame<'gc>`, `NewspeakError<'gc>`,
   `Heap<'gc>`, `ActivationHeader<'gc>`, `Popped<'gc>`, `Mutator<'gc>`,
-  `Signal<'gc>`, `EvalResult<'gc>`, `Step<'gc>`, `StepArgs<'gc>`,
+  `Signal<'gc>`, `EvaluationResult<'gc>`, `Step<'gc>`, `StepArguments<'gc>`,
   `Lookup<'gc>`, and every private type the compiler names;
-  `pub fn Interpreter::enter<R>(&mut self, f: impl for<'gc> FnOnce(&mut
+  `pub fn Interpreter::enter<R>(&mut self, body: impl for<'gc> FnOnce(&mut
   Mutator<'gc>) -> R) -> R`; `pub fn Interpreter::stash(&self, value:
-  Value<'static>) -> Root`. Unbranded: `ActivationRef`, `Root`,
+  Value<'static>) -> Root`. Unbranded: `ActivationReference`, `Root`,
   `HostResult`, `HostSignal`, `HostError`, `HostStart`, `LoadedImage`,
   `CompiledCode`, `Mixin`, `MixinApplication`, `MixinMethod`, `Symbol`.
 
@@ -1471,17 +1474,17 @@ plain blocks run today. Of the three `compile_fail` blocks, only the first
 fails the way a red test should — it compiles today, since nothing is
 branded yet. The second fails to compile today for the wrong reason
 (`Value` takes no lifetime argument yet), and the third, the re-entry,
-already fails for the right one (the double borrow of `interp`), because
+already fails for the right one (the double borrow of `interpreter`), because
 Task 1 made it so. That is why Step 8 checks each block's actual error once
 the brand is in.
 
 ```rust
-    /// Runs `f` with the interpreter's step state: its heap, its builtin
-    /// classes, and every method a step uses. What `f` answers is what this
-    /// answers. `f` runs no Newspeak code; a host runs code with `send` and
+    /// Runs `body` with the interpreter's step state: its heap, its builtin
+    /// classes, and every method a step uses. What `body` answers is what this
+    /// answers. `body` runs no Newspeak code; a host runs code with `send` and
     /// `instantiate`, outside every entry.
     ///
-    /// Every handle `f` reaches carries the lifetime `'gc`, which `f` is
+    /// Every handle `body` reaches carries the lifetime `'gc`, which `body` is
     /// generic over and `R` cannot name, so no handle leaves an entry: a run
     /// may move every object, and a handle kept across one would name
     /// whatever took its slot (`docs/design/memory.md`, "The brand"). A host
@@ -1490,25 +1493,25 @@ the brand is in.
     ///
     /// ```
     /// use ns_runtime::{Interpreter, Symbol, Value};
-    /// let mut interp = Interpreter::bootstrap();
-    /// let root = interp.enter(|m| {
-    ///     let array = m.new_array(vec![Value::SmallInt(1)]);
-    ///     m.stash(Value::Obj(array))
+    /// let mut interpreter = Interpreter::bootstrap();
+    /// let root = interpreter.enter(|mutator| {
+    ///     let array = mutator.new_array(vec![Value::SmallInteger(1)]);
+    ///     mutator.stash(Value::Object(array))
     /// });
-    /// let _ = interp.send(&root, Symbol::intern("size"), &[]);
-    /// let len = interp.enter(|m| match m.fetch(&root) {
-    ///     Value::Obj(array) => m.heap().array_len(array),
+    /// let _ = interpreter.send(&root, Symbol::intern("size"), &[]);
+    /// let length = interpreter.enter(|mutator| match mutator.fetch(&root) {
+    ///     Value::Object(array) => mutator.heap().array_length(array),
     ///     _ => None,
     /// });
-    /// assert_eq!(len, Some(1));
+    /// assert_eq!(length, Some(1));
     /// ```
     ///
     /// Keeping the handle itself instead does not compile:
     ///
     /// ```compile_fail
     /// use ns_runtime::{Interpreter, Value};
-    /// let mut interp = Interpreter::bootstrap();
-    /// let array = interp.enter(|m| m.new_array(vec![Value::SmallInt(1)]));
+    /// let mut interpreter = Interpreter::bootstrap();
+    /// let array = interpreter.enter(|mutator| mutator.new_array(vec![Value::SmallInteger(1)]));
     /// ```
     ///
     /// Nor does storing one where a host keeps its own state; a host's
@@ -1517,11 +1520,11 @@ the brand is in.
     /// ```
     /// use ns_runtime::{Interpreter, Root, Value};
     /// struct Host { kept: Option<Root> }
-    /// let mut interp = Interpreter::bootstrap();
+    /// let mut interpreter = Interpreter::bootstrap();
     /// let mut host = Host { kept: None };
-    /// interp.enter(|m| {
-    ///     let array = m.new_array(vec![]);
-    ///     host.kept = Some(m.stash(Value::Obj(array)));
+    /// interpreter.enter(|mutator| {
+    ///     let array = mutator.new_array(vec![]);
+    ///     host.kept = Some(mutator.stash(Value::Object(array)));
     /// });
     /// assert!(host.kept.is_some());
     /// ```
@@ -1529,33 +1532,33 @@ the brand is in.
     /// ```compile_fail
     /// use ns_runtime::{Interpreter, Value};
     /// struct Host<'a> { kept: Option<Value<'a>> }
-    /// let mut interp = Interpreter::bootstrap();
+    /// let mut interpreter = Interpreter::bootstrap();
     /// let mut host = Host { kept: None };
-    /// interp.enter(|m| {
-    ///     let array = m.new_array(vec![]);
-    ///     host.kept = Some(Value::Obj(array));
+    /// interpreter.enter(|mutator| {
+    ///     let array = mutator.new_array(vec![]);
+    ///     host.kept = Some(Value::Object(array));
     /// });
     /// ```
     ///
     /// And a step cannot run the loop: the interpreter is borrowed by the
-    /// entry for as long as `f` runs, and `Mutator` offers no way back to
+    /// entry for as long as `body` runs, and `Mutator` offers no way back to
     /// it, so a native, which is handed only a `Mutator`, cannot re-enter
     /// the loop either. A host runs code between entries:
     ///
     /// ```
     /// use ns_runtime::{Interpreter, Symbol, Value};
-    /// let mut interp = Interpreter::bootstrap();
-    /// let three = interp.stash(Value::SmallInt(3));
-    /// let printed = interp.send(&three, Symbol::intern("printString"), &[]);
+    /// let mut interpreter = Interpreter::bootstrap();
+    /// let three = interpreter.stash(Value::SmallInteger(3));
+    /// let printed = interpreter.send(&three, Symbol::intern("printString"), &[]);
     /// assert!(printed.is_ok());
     /// ```
     ///
     /// ```compile_fail
     /// use ns_runtime::{Interpreter, Symbol, Value};
-    /// let mut interp = Interpreter::bootstrap();
-    /// let three = interp.stash(Value::SmallInt(3));
-    /// interp.enter(|_m| {
-    ///     let _ = interp.send(&three, Symbol::intern("printString"), &[]);
+    /// let mut interpreter = Interpreter::bootstrap();
+    /// let three = interpreter.stash(Value::SmallInteger(3));
+    /// interpreter.enter(|_mutator| {
+    ///     let _ = interpreter.send(&three, Symbol::intern("printString"), &[]);
     /// });
     /// ```
 ```
@@ -1567,7 +1570,7 @@ pass (the second for the wrong reason, as said above).
 
 - [ ] **Step 2: Brand the handles in `heap.rs`**
 
-Above `ObjRef`:
+Above `ObjectReference`:
 
 ```rust
 /// The brand every movable handle carries (`docs/design/memory.md`, "The
@@ -1579,20 +1582,20 @@ Above `ObjRef`:
 type Brand<'gc> = std::marker::PhantomData<fn(&'gc ()) -> &'gc ()>;
 ```
 
-`ObjRef` and `FrameRef` each gain the field `brand: Brand<'gc>` (last, after
-the two debug fields) and the parameter: `pub struct ObjRef<'gc>`, `pub
-struct FrameRef<'gc>`, `pub type ClassRef<'gc> = ObjRef<'gc>;`, `impl<'gc>
-ObjRef<'gc> { pub fn same(self, other: ObjRef<'gc>) -> bool … }`, `impl
-std::fmt::Debug for ObjRef<'_>`, and the same for `FrameRef`. The two
+`ObjectReference` and `FrameReference` each gain the field `brand: Brand<'gc>` (last, after
+the two debug fields) and the parameter: `pub struct ObjectReference<'gc>`, `pub
+struct FrameReference<'gc>`, `pub type ClassReference<'gc> = ObjectReference<'gc>;`, `impl<'gc>
+ObjectReference<'gc> { pub fn same(self, other: ObjectReference<'gc>) -> bool … }`, `impl
+std::fmt::Debug for ObjectReference<'_>`, and the same for `FrameReference`. The two
 constructors `object_handle` and `frame_handle` set `brand:
 std::marker::PhantomData`.
 
 Every stored type takes the parameter: `ActivationHeader<'gc>`,
 `Popped<'gc>`, `StackEntry<'gc>`, `ActivationStack<'gc>`, `FrameSlot<'gc>`,
 `pub struct Heap<'gc>`, and `impl<'gc> Heap<'gc> { … }` for every accessor —
-each `Value`, `ObjRef`, `ClassRef`, `FrameRef`, `Frame`, `FrameKind`,
+each `Value`, `ObjectReference`, `ClassReference`, `FrameReference`, `Frame`, `FrameKind`,
 `Object`, `ObjectData`, `ClosureData`, `ActivationHeader` or `Popped` in a
-signature becomes its `<'gc>` form. `ActivationRef`, `Root`, `HostRoots`
+signature becomes its `<'gc>` form. `ActivationReference`, `Root`, `HostRoots`
 and `Rotation` take none.
 
 The root table holds the at-rest form, because a host holds its slots from
@@ -1607,18 +1610,18 @@ in the crate:
 /// `Value<'static>`, and `stash` and `fetch` pass a value through here on
 /// the way in and out. Private to this module, and there is no public
 /// counterpart: code outside `heap.rs` cannot change a handle's brand.
-fn rebrand<'a, 'b>(value: Value<'a>) -> Value<'b> {
+fn rebrand<'from, 'to>(value: Value<'from>) -> Value<'to> {
     match value {
         Value::Nil => Value::Nil,
-        Value::Bool(b) => Value::Bool(b),
-        Value::SmallInt(n) => Value::SmallInt(n),
-        Value::Float(f) => Value::Float(f),
-        Value::Obj(obj) => Value::Obj(ObjRef {
-            index: obj.index,
+        Value::Boolean(boolean) => Value::Boolean(boolean),
+        Value::SmallInteger(integer) => Value::SmallInteger(integer),
+        Value::Float(float) => Value::Float(float),
+        Value::Object(object) => Value::Object(ObjectReference {
+            index: object.index,
             #[cfg(debug_assertions)]
-            origin: obj.origin,
+            origin: object.origin,
             #[cfg(debug_assertions)]
-            epoch: obj.epoch,
+            epoch: object.epoch,
             brand: std::marker::PhantomData,
         }),
     }
@@ -1642,22 +1645,22 @@ names it through the answer.
 #[derive(Debug, Clone, Copy)]
 pub enum Value<'gc> {
     Nil,
-    Bool(bool),
-    SmallInt(i64),
+    Boolean(bool),
+    SmallInteger(i64),
     Float(f64),
-    Obj(ObjRef<'gc>),
+    Object(ObjectReference<'gc>),
 }
 ```
 
-and likewise `Object<'gc>` (`class: ClassRef<'gc>`, `data:
+and likewise `Object<'gc>` (`class: ClassReference<'gc>`, `data:
 ObjectData<'gc>`), `ObjectData<'gc>` (`Instance(Vec<Value<'gc>>)`,
 `Array(Vec<Value<'gc>>)`, `Closure(ClosureData<'gc>)`,
 `Class(ClassData<'gc>)`), `ClassData<'gc>` (its four handle fields),
 `ClosureData<'gc>` (`captured_frame`, `home`), `FrameKind<'gc>`
-(`Closure(ObjRef<'gc>)`, the three `ClassRef<'gc>` variants),
+(`Closure(ObjectReference<'gc>)`, the three `ClassReference<'gc>` variants),
 `Continuation<'gc>` (its four boxed variants), `WhileLoop<'gc>`,
 `DoLoop<'gc>`, `NestedClassCreation<'gc>`, `Instantiation<'gc>`
-(`levels: Vec<(ClassRef<'gc>, Vec<Value<'gc>>)>`),
+(`levels: Vec<(ClassReference<'gc>, Vec<Value<'gc>>)>`),
 `InstantiationPhase<'gc>`, `Frame<'gc>` and `NewspeakError<'gc>`. Every
 doc comment stays. `BuiltinClass`, `Binding`, `ResolvedModule`,
 `SourceOrigin` and `ResolveError` take none.
@@ -1666,12 +1669,12 @@ doc comment stays. `BuiltinClass`, `Binding`, `ResolvedModule`,
 
 ```rust
 pub(crate) trait Tracer {
-    fn object(&mut self, handle: &mut ObjRef<'_>);
-    fn frame(&mut self, handle: &mut FrameRef<'_>);
+    fn object(&mut self, handle: &mut ObjectReference<'_>);
+    fn frame(&mut self, handle: &mut FrameReference<'_>);
     fn value(&mut self, value: &mut Value<'_>) {
         match value {
-            Value::Obj(handle) => self.object(handle),
-            Value::Nil | Value::Bool(_) | Value::SmallInt(_) | Value::Float(_) => {}
+            Value::Object(handle) => self.object(handle),
+            Value::Nil | Value::Boolean(_) | Value::SmallInteger(_) | Value::Float(_) => {}
         }
     }
 }
@@ -1679,7 +1682,7 @@ pub(crate) trait Tracer {
 
 Every `impl Trace for X` becomes `impl Trace for X<'_>`, with its body
 unchanged; the two helpers take `&mut [Value<'_>]` and `&mut
-Option<ObjRef<'_>>`. `Forwarder`'s `impl Tracer` in `heap.rs` takes the same
+Option<ObjectReference<'_>>`. `Forwarder`'s `impl Tracer` in `heap.rs` takes the same
 signatures and is otherwise unchanged; so is `impl Trace for StackEntry<'_>`.
 
 - [ ] **Step 5: The one cast, in `World::enter`**
@@ -1697,28 +1700,28 @@ In `heap/world.rs`: `mutator: Mutator<'static>`; `World::new` is unchanged
 other); `stash(&self, value: Value<'static>) -> Root`; and `enter` becomes:
 
 ```rust
-    /// Lends the step state out for `f` as a `Mutator<'gc>`, where `'gc` is
-    /// a lifetime only `f` can name -- gc-arena's `Arena::mutate`. The run
+    /// Lends the step state out for `body` as a `Mutator<'gc>`, where `'gc` is
+    /// a lifetime only `body` can name -- gc-arena's `Arena::mutate`. The run
     /// loop makes one entry per instruction and a host one per read, so this
     /// must inline away.
     #[allow(unsafe_code)] // the crate's one cast; see the SAFETY comment
     #[inline(always)]
-    pub(crate) fn enter<R>(&mut self, f: impl for<'gc> FnOnce(&mut Mutator<'gc>) -> R) -> R {
+    pub(crate) fn enter<R>(&mut self, body: impl for<'gc> FnOnce(&mut Mutator<'gc>) -> R) -> R {
         let at_rest: *mut Mutator<'static> = &mut self.mutator;
         // SAFETY: `Mutator<'static>` and `Mutator<'gc>` differ only in a
         // lifetime parameter, so they have one layout, and the pointer comes
         // from a unique borrow of `self.mutator` that lasts as long as the
         // reference made from it. `'gc` appears in `Mutator`'s fields only
-        // through the `PhantomData` brand of `ObjRef` and `FrameRef`, which
+        // through the `PhantomData` brand of `ObjectReference` and `FrameReference`, which
         // are indices -- no field of any branded type holds a reference with
         // lifetime `'gc` (`CLAUDE.md` makes that an invariant) -- so no
-        // reference can outlive its referent through the cast. What `f`
-        // stores is stored as `Mutator<'static>` again once `f` returns,
+        // reference can outlive its referent through the cast. What `body`
+        // stores is stored as `Mutator<'static>` again once `body` returns,
         // where nothing can read it but another entry, which brands it
-        // anew; and `f`'s answer cannot name `'gc`, because `R` is chosen
+        // anew; and `body`'s answer cannot name `'gc`, because `R` is chosen
         // outside the `for<'gc>`.
         let mutator = unsafe { &mut *at_rest.cast::<Mutator<'_>>() };
-        f(mutator)
+        body(mutator)
     }
 ```
 
@@ -1732,28 +1735,28 @@ accessors are unchanged.
 - [ ] **Step 6: Brand the interpreter, the VM, the natives and the codec**
 
 `interpreter/mod.rs`: `pub struct Mutator<'gc>` with `heap: Heap<'gc>`,
-`builtin_classes: Vec<ClassRef<'gc>>`, `platform_singleton:
+`builtin_classes: Vec<ClassReference<'gc>>`, `platform_singleton:
 Option<Value<'gc>>`, `spare_walks: Vec<Box<Instantiation<'gc>>>`,
-`arg_buffer: Vec<Value<'gc>>` and the rest unchanged; `pub(crate) enum
-Signal<'gc> { Return(ActivationRef, Value<'gc>), Error(NewspeakError<'gc>)
-}`; `pub(crate) type EvalResult<'gc> = Result<Value<'gc>, Signal<'gc>>;`;
-`Step<'gc>`, `StepArgs<'gc>` (`slice<'a>(&'a self, send: &'a [Value<'gc>])
+`argument_buffer: Vec<Value<'gc>>` and the rest unchanged; `pub(crate) enum
+Signal<'gc> { Return(ActivationReference, Value<'gc>), Error(NewspeakError<'gc>)
+}`; `pub(crate) type EvaluationResult<'gc> = Result<Value<'gc>, Signal<'gc>>;`;
+`Step<'gc>`, `StepArguments<'gc>` (`slice<'a>(&'a self, send: &'a [Value<'gc>])
 -> &'a [Value<'gc>]`); every `impl Mutator` block becomes `impl<'gc>
 Mutator<'gc>`; `Mutator::heap(&self) -> &Heap<'gc>`, `heap_mut(&mut self)
 -> &mut Heap<'gc>`, `fetch(&self, root: &Root) -> Value<'gc>`,
 `stash(&self, value: Value<'gc>) -> Root`; `Interpreter::enter<R>(&mut
-self, f: impl for<'gc> FnOnce(&mut Mutator<'gc>) -> R) -> R`;
+self, body: impl for<'gc> FnOnce(&mut Mutator<'gc>) -> R) -> R`;
 `Interpreter::stash(&self, value: Value<'static>) -> Root`, whose doc
 comment adds: "A host can build an immediate but never hold an object
 handle outside an entry, so a `Value<'static>` holds none."
 
 Every free function that takes a branded type or a `Mutator` gets a `<'gc>`
-parameter and names it in each branded type — `fn f<'gc>(m: &mut
-Mutator<'gc>, receiver: Value<'gc>, args: &[Value<'gc>]) -> Option<Result<Step<'gc>,
+parameter and names it in each branded type — `fn native<'gc>(mutator: &mut
+Mutator<'gc>, receiver: Value<'gc>, arguments: &[Value<'gc>]) -> Option<Result<Step<'gc>,
 Signal<'gc>>>` — and `&Heap` becomes `&Heap<'gc>`. Never write `Value<'_>`
 beside a `Mutator<'gc>`: an elided lifetime is a fresh one, and invariance
 refuses to unify it with `'gc`. The compiler lists every site; the files are
-`vm.rs` (`Flow` stays unbranded — it carries an `ActivationRef`, an
+`vm.rs` (`Flow` stays unbranded — it carries an `ActivationReference`, an
 `Rc<CompiledCode>` and a `HostResult`), `dispatch.rs` (`Lookup<'gc>`),
 `platform.rs`, `builtins/*.rs`, `interpreter/{instantiate, nested, sends,
 locals, literals, safepoint}.rs` (`locals::OuterFrame<'gc>`), and
@@ -1767,7 +1770,7 @@ Two things the compiler reports that are not a missing `<'gc>`:
   will not let stand for a `Value<'gc>`. Make it a function with the same
   doc comment: `fn creation_in_progress<'gc>() -> Value<'gc> {
   Value::Bool(false) }`. Search for the others: `rg -n "const [A-Z_]+:
-  (Value|ObjRef|FrameRef|ClassRef)" crates/ns-runtime/src`.
+  (Value|ObjectReference|FrameReference|ClassReference)" crates/ns-runtime/src`.
 - A value that leaves an entry. In the runtime there should be none after
   Task 1 (a run's answer is rooted in its last entry); if one appears, it is
   a mistake the brand exists to catch — root it inside the entry, never widen
@@ -1775,7 +1778,7 @@ Two things the compiler reports that are not a missing `<'gc>`:
 
 `dispatch.rs`'s and `types.rs`'s unit tests built heaps with `Heap::new()`,
 which is private now: each builds `crate::Interpreter::bootstrap()` and runs
-its body in `interp.enter(|m| { … })`, passing `&mut m.heap` where its
+its body in `interpreter.enter(|mutator| { … })`, passing `&mut mutator.heap` where its
 helper took `&mut Heap` (the helpers take `&mut Heap<'gc>`).
 `crate::Interpreter::bootstrap()` already holds the builtin classes a
 fresh heap lacked; a test that counted on an empty heap asserts on the
@@ -1802,7 +1805,7 @@ it as a scratch binary (`cargo new` under the scratchpad, depending on
 `ns-runtime` by path) and check that the error is a lifetime or borrow
 error on the line the prose names — "borrowed data escapes outside of
 closure", "lifetime may not live long enough", or, for the re-entry,
-"closure requires unique access to `interp`" / "cannot borrow `interp` as
+"closure requires unique access to `interpreter`" / "cannot borrow `interpreter` as
 mutable more than once" — not a type or name error. If a block fails for
 any other reason, fix the block.
 
@@ -1826,7 +1829,7 @@ what the tracer knows and the brand what Rust holds; both must hold.
 
 ```bash
 git add -A crates
-git commit -m "feat: brand every movable handle with the lifetime of its entry" -m "ObjRef, ClassRef, FrameRef, Value and every type that holds one carry
+git commit -m "feat: brand every movable handle with the lifetime of its entry" -m "ObjectReference, ClassReference, FrameReference, Value and every type that holds one carry
 an invariant 'gc, obtainable only inside Interpreter::enter, which lends
 the step state out as a Mutator<'gc> by one cast -- the crate's only
 unsafe code, under #![deny(unsafe_code)]. Holding a handle across a run,
@@ -1866,7 +1869,7 @@ per-instruction `enter` level); report any group entirely above.
   the private `rebrand` for host roots and the absence of a public
   `unbind`, `Heap::new` and `Heap::move_everything` private to the heap
   module, one entry per instruction, the three `compile_fail` doctests
-  (name where they are), `ActivationRef` unbranded, and that the stress mode
+  (name where they are), `ActivationReference` unbranded, and that the stress mode
   keeps running (the brand covers what Rust holds, the stress mode what the
   tracer knows). Replace "heap.rs stays free of `unsafe`" and the paragraph
   about a fallback cast with what was decided and why (decision 1), citing
@@ -1913,8 +1916,8 @@ per-instruction `enter` level); report any group entirely above.
 - "A handle means nothing against a `Heap` that did not mint it":
   `Heap::new()` is private to the heap module now, so "never build a
   `Heap::new()`" becomes a statement that nothing outside it can; the
-  `disasm` sentence says it reads "through `interp.enter`" instead of
-  "through `interp.heap_ref()`".
+  `disasm` sentence already says it reads through `interpreter.enter` (the
+  naming interlude brought it up to date).
 - "A handle also means nothing across a move": a host keeps a value across
   a run only as a `Root`, and the compiler enforces it — a handle is branded
   with the entry that minted it (`Interpreter::enter`); the stress mode still
@@ -1951,7 +1954,7 @@ per-instruction `enter` level); report any group entirely above.
 
 - [ ] **Step 7: Check the documents against the code**
 
-Run: `rg -n "heap_ref|heap_mut\(\)|Interpreter::fetch|Planned: the brand|heap.rs stays free of|2c, planned|lifetime brand \(2c\)" docs/design docs/PROGRESS.md CLAUDE.md`
+Run: `rg -n "heap_reference|heap_mut\(\)|Interpreter::fetch|Planned: the brand|heap.rs stays free of|2c, planned|lifetime brand \(2c\)" docs/design docs/PROGRESS.md CLAUDE.md`
 Expected: no hit outside a sentence that describes the past on purpose
 (plans under `docs/superpowers/plans/` are execution records and are left as
 written).

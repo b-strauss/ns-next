@@ -37,7 +37,7 @@ break the moment an object moved or an identity was swapped.
 `Rc<RefCell<_>>`.** One `Heap` owns `objects: Vec<Object>`, the activation
 stack every running activation lives on, and `frames` — the arena of *reified*
 activations, the ones a block captured or the image decoder rebuilt. An
-`ObjRef` or a `FrameRef` is a 32-bit index into an arena, an `ActivationRef`
+`ObjectReference` or a `FrameReference` is a 32-bit index into an arena, an `ActivationReference`
 into the stack. The representation is described below, and the stack in
 [execution.md](execution.md), "Activations". Nothing reclaims an arena slot: a
 cycle is no longer the special case that leaks, because everything in an arena
@@ -56,10 +56,10 @@ solves this problem in Rust, where the borrow checker is available as an
 enforcement mechanism and a C++ engine's conventions are not.
 
 ```rust
-Value  = Nil | Bool(bool) | SmallInt(i64) | Float(f64) | Obj(ObjRef)   // Copy
-ObjRef        { index: u32 }   // private to heap.rs; 4 bytes in a release build
-FrameRef      { index: u32 }   // likewise; ClassRef is an alias for ObjRef
-ActivationRef { index: u32 }   // likewise, into the activation stack
+Value  = Nil | Boolean(bool) | SmallInteger(i64) | Float(f64) | Object(ObjectReference)   // Copy
+ObjectReference        { index: u32 }   // private to heap.rs; 4 bytes in a release build
+FrameReference      { index: u32 }   // likewise; ClassReference is an alias for ObjectReference
+ActivationReference { index: u32 }   // likewise, into the activation stack
 
 Heap { objects: Vec<Object>, frames: Vec<FrameSlot>, stack: ActivationStack,
        next_identity_hash: u32 }
@@ -78,7 +78,7 @@ entry for its reified frame, and two vectors when its divorce copies the
 registers out. [execution.md](execution.md), "What the activation stack moved",
 has the figures.
 
-`ObjRef`, `FrameRef`, `ActivationRef` and `Value` are `Copy`. A handle has no
+`ObjectReference`, `FrameReference`, `ActivationReference` and `Value` are `Copy`. A handle has no
 destructor and nothing to clone, which is why `Value` could become `Copy` at all,
 and it is what makes an arena entry cheap to hand around.
 
@@ -113,9 +113,9 @@ names a different, perfectly valid object, so the read answers the wrong thing
 rather than failing. A `debug_assertions`-only guard makes that explicit rather
 than conventional: each `Heap` carries a distinct id, each handle records the id
 of the heap that minted it, and every accessor that takes a handle asserts the two
-match — 69 sites in `heap.rs`, 16 of them through an `ActivationRef`, whose check
+match — 69 sites in `heap.rs`, 16 of them through an `ActivationReference`, whose check
 also compares a generation, because a stack index is reused as soon as its entry
-is popped. An `ObjRef` or a `FrameRef` also carries the heap's move epoch, which
+is popped. An `ObjectReference` or a `FrameReference` also carries the heap's move epoch, which
 the same check compares ("Checking the roots before a collector exists: the
 stress mode" below). In a release build neither the fields nor the checks
 exist, and a handle is exactly its 32-bit index.
@@ -195,8 +195,8 @@ arena is the evidence that this works: **no call site outside `heap.rs` and
 
 What the seam hides is the store behind a handle, not the handle types. Those
 are part of every signature on purpose: a function that means *the running
-activation* takes an `ActivationRef`, and anything that stores one takes a
-`FrameRef`, which is what makes storing a stack handle a compile error
+activation* takes an `ActivationReference`, and anything that stores one takes a
+`FrameReference`, which is what makes storing a stack handle a compile error
 ([execution.md](execution.md), "Representation"). Changing a handle type is
 therefore a change to its callers; changing what stands behind one is not.
 
@@ -205,8 +205,8 @@ sites already did — borrow, clone one field, drop the borrow — and it is
 what keeps a rooting discipline from being needed at every site that calls
 back into the interpreter while holding a reference.
 
-**The seam is compiler-enforced.** `ObjRef`, `FrameRef`, `ActivationRef` and the
-`ClassRef` alias are declared in `heap.rs` with a **private** inner field, so
+**The seam is compiler-enforced.** `ObjectReference`, `FrameReference`, `ActivationReference` and the
+`ClassReference` alias are declared in `heap.rs` with a **private** inner field, so
 reading a handle's index from anywhere else — any other module of `ns-runtime`
 included — fails to compile. There is no grep gate to remember and no
 visibility to widen: an accessor that is missing has to be added in `heap.rs`,
@@ -234,14 +234,14 @@ was; whether it still pays is a measurement nobody has taken.
 Carried deliberately rather than fixed. Recorded so that whoever reshapes this
 file next starts from a list rather than from rediscovery.
 
-- **The accessor names grew by accretion.** `class_of_obj` reads an *object*
+- **The accessor names grew by accretion.** `class_of_object` reads an *object*
   while `class_application` and its neighbours read a *class* — the same prefix
-  for opposite directions. `array_at`/`array_len` and
+  for opposite directions. `array_at`/`array_length` and
   `instance_field`/`instance_field_count` are parallel operations under
   divergent names. The activation side is uniform: an accessor through a
-  `FrameRef` is `frame_*` and one through an `ActivationRef` is
-  `activation_*`. The exceptions are verbs that put the noun second — `set_frame_pc`,
-  `set_activation_pc`, `replace_frame` — and the stack operations themselves,
+  `FrameReference` is `frame_*` and one through an `ActivationReference` is
+  `activation_*`. The exceptions are verbs that put the noun second — `set_frame_program_counter`,
+  `set_activation_program_counter`, `replace_frame` — and the stack operations themselves,
   `push_activation`, `pop_activation`, `top_activation` and `reify`.
 - **The `heap` parameter sits first in some signatures and last in others**,
   across `image/`, `compiler/` and `interpreter/`.
@@ -297,7 +297,7 @@ runs at the next safepoint of the run loop. `vm::run` polls one at every switch
 to another activation — a push, or a caller resumed — and at every backward
 jump, so every call and every loop iteration passes one, a loop that makes no
 send included; a forward jump does not poll. Between two instructions `run`
-holds the running `ActivationRef`, its `Rc<CompiledCode>` and its `pc`, and no
+holds the running `ActivationReference`, its `Rc<CompiledCode>` and its `program_counter`, and no
 handle the collector would move; every live value is in a register on the
 activation stack or in one of the places "What the collector traces" below
 lists. The interpreter's reusable argument buffer is empty there — a send
@@ -380,7 +380,7 @@ is only what the host keeps ("Host roots" below). The safepoint relies on it.
 What would change: holding a handle across a safepoint, and a native
 re-entering the run loop, would be compile errors rather than mistakes the
 stress mode finds at run time. Step 2c. Every handle a collector can move —
-`ObjRef`, `ClassRef`, `FrameRef`, and so `Value` and every type that contains
+`ObjectReference`, `ClassReference`, `FrameReference`, and so `Value` and every type that contains
 one (`ObjectData`, `ClassData`,
 `Frame`, `FrameKind`, `Continuation`, `Step`, `Signal`, `NewspeakError`) — will
 carry a lifetime `'gc`, invariant so that it can be neither shortened nor
@@ -392,7 +392,7 @@ allocation, the send decisions, the natives, the compiler, the image codec. It
 offers nothing that reaches a safepoint: `vm::run` and the safepoint exist only
 on `Interpreter`, outside every `enter`, and each instruction the loop executes
 is one `enter`. What the loop carries from one instruction to the next names
-no brand — the running `ActivationRef`, its code and its `pc` — and the value
+no brand — the running `ActivationReference`, its code and its `program_counter` — and the value
 a run ends with leaves it as a host `Root` (below). Two mistakes then fail to
 compile rather than corrupt the heap under collection pressure: holding a
 handle across a safepoint, and a native re-entering the run loop.
@@ -405,7 +405,7 @@ epochs only against each other, and two stale handles from the same old epoch
 pass it where a live handle against a stale one panics. Under the brand
 neither could have been held past the safepoint that moved them.
 
-`ActivationRef` stays unbranded: the collector moves no stack entry, and its
+`ActivationReference` stays unbranded: the collector moves no stack entry, and its
 generation check already covers an index reused after a pop.
 
 The heap stores the brand-erased form. Rebranding a handle copies its `u32`,
@@ -439,8 +439,8 @@ to the roots a host still holds in a release build too, where nothing moves.
 
 `Interpreter::stash` and `Interpreter::fetch` (`Heap::stash`/`fetch`) take
 `&self`, the table sitting behind a `RefCell`, so that a host can stash an
-argument inside the call that sends it — `interp.send(&r, sel,
-&[interp.stash(v)])` — as `DynamicRootSet::stash` allows. A value `fetch`
+argument inside the call that sends it — `interpreter.send(&receiver, selector,
+&[interpreter.stash(value)])` — as `DynamicRootSet::stash` allows. A value `fetch`
 answers is good until the next run, which may move it; a host reads the root
 again after one.
 
@@ -450,7 +450,7 @@ the root class and the image's roots as `Root`s. A send or an instantiation
 answers a `HostResult`, `Result<Root, HostSignal>`: its value rooted
 (`Interpreter::to_host`), a Newspeak error as a `HostError` whose receiver is a
 `Root`, or a `^` that reached the host as `HostSignal::Return`. `Signal` and
-`EvalResult` are crate-private, so no plain value leaves a run by any other
+`EvaluationResult` are crate-private, so no plain value leaves a run by any other
 way than `fetch`; and since a `Root` can hold any value, `instantiate` refuses
 one that holds no class object with a Newspeak error. `image::snapshot` and
 `image::build` take plain values, which a host fetches from its roots just
@@ -459,7 +459,7 @@ before the call: encoding runs no code, so nothing moves under it. `Root`,
 (`CLAUDE.md`). The CLI and every test hold what they keep across runs as roots,
 and the stress mode below checks that they do.
 
-What 2c still changes here: `heap_ref()` and `heap_mut()` remain, and a value
+What 2c still changes here: `heap_reference()` and `heap_mut()` remain, and a value
 `fetch` answers is a plain `Value` that a host could keep across a run by
 mistake, which only the stress mode would catch. 2c's `Interpreter::enter`
 replaces both — a host reads through `enter`, and nothing branded leaves it —
@@ -468,13 +468,13 @@ so that a root becomes the only way a host can hold a value.
 ### What the collector traces
 
 `trace.rs` enumerates it, type by type: a `Trace` impl hands every field that
-holds an `ObjRef`, a `ClassRef` or a `FrameRef` to a `Tracer`, one `&mut` at a
+holds an `ObjectReference`, a `ClassReference` or a `FrameReference` to a `Tracer`, one `&mut` at a
 time.
 
 - The bootstrap: `builtin_classes` and `platform_singleton`, which the
   interpreter forwards itself, after the heap (`Interpreter::move_everything`).
 - The activation stack: each entry's receiver, `current_class`, the
-  `ClassRef` or closure object its `FrameKind` names, the frame it is married
+  `ClassReference` or closure object its `FrameKind` names, the frame it is married
   to, and the state its continuation carries — a `WhileLoop`'s condition and
   body, a `DoLoop`'s receiver, block and elements, a `NestedClassCreation`'s
   enclosing object and declaring class, an `Instantiation`'s instance, levels
@@ -511,7 +511,7 @@ record, in a stack entry, in a continuation that one stack entry owns, or in an
 interpreter root — never behind a shared `Rc`, which the tracer could reach
 only through a shared reference. So a closure's two frame handles live in the
 closure object: `ClosureData` is stored inline in the object's payload,
-sharing only `params` and `code`, which hold no handle, through their own
+sharing only `parameters` and `code`, which hold no handle, through their own
 `Rc`s with the `MakeClosure` instruction that made it; and everything else
 that needs a closure — `FrameKind::Closure` on each of its activations,
 `WhileLoop.condition`, `DoLoop.block`, `Step::Block` — names the closure object,
@@ -532,15 +532,15 @@ which pins every program's outcome, runs under it unchanged.
 A move (`Heap::move_everything`, then `Interpreter::move_everything` for the
 interpreter's own roots) rotates each arena by a shift in `1..len` that varies
 with the epoch, so no slot keeps its index, and rewrites every traced handle: a
-compacting collection that treats everything as live. Every `ObjRef` and
-`FrameRef` carries, in a debug build and beside the origin it already carries,
+compacting collection that treats everything as live. Every `ObjectReference` and
+`FrameReference` carries, in a debug build and beside the origin it already carries,
 the heap's move epoch when it was minted or last forwarded, and every accessor
 compares the two, so a handle the tracer missed panics at its first read
 ("stale handle") instead of perhaps printing a wrong answer. The rotation
 checks the forwarding; the epoch checks the completeness. The `Forwarder`
 checks each handle it rewrites as well — its origin, and that its epoch is the
 one being moved from — because a foreign or stale handle stored in the heap is
-a mistake the move would otherwise make permanent. `ActivationRef` carries no
+a mistake the move would otherwise make permanent. `ActivationReference` carries no
 epoch: no stack entry moves, and its generation already covers an index reused
 after a pop. V8's `--stress-compaction`, SpiderMonkey's compacting GC zeal mode
 and HotSpot's `ScavengeALot` exist for the same reason. Here the stress mode
@@ -773,7 +773,7 @@ its variables. After it, a surviving block holds exactly what it captured.
   leaving it to convention. It exists because the failure it catches is silent:
   a handle from another heap is in range and names a valid object, so the read
   succeeds with the wrong answer. It costs nothing in a release build, where the
-  origin field does not exist. An `ActivationRef` adds a generation to the same
+  origin field does not exist. An `ActivationReference` adds a generation to the same
   guard, for the same reason: a stack index is reused once its entry is popped.
 - **Activations live on a stack, not in the arena**, so that what nothing
   captures is not retained. Only a reified frame reaches the arena, and it is
@@ -813,7 +813,7 @@ its variables. After it, a surviving block holds exactly what it captured.
   rewrites every value a host holds and releasing one needs no heap.
 - **A closure's payload is inline in the closure object**, not behind an `Rc`
   of its own, and everything else that needs a closure names the object: a
-  handle behind a shared `Rc` cannot be rewritten in place. Only `params` and
+  handle behind a shared `Rc` cannot be rewritten in place. Only `parameters` and
   `code`, which hold no handle, stay shared. It also made `bench_block.ns`
   about 4% faster, since `MakeClosure` no longer allocates an `Rc` and a popped
   block activation drops none.

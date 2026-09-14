@@ -12,7 +12,7 @@ the dispatch loop — is [execution.md](execution.md).
 
 ## The instruction set
 
-`Instr` is a plain Rust enum dispatched by `match`, not hand-packed bytes.
+`Instruction` is a plain Rust enum dispatched by `match`, not hand-packed bytes.
 "Architecture-neutral and versioned" is a property of the *image encoding* of
 compiled code — a tag byte and a fixed operand layout per instruction, with the
 tag numbers fixed for good; see [image-format.md](image-format.md) — not a
@@ -27,77 +27,77 @@ that lowering is mostly a transliteration rather than a translation.
 
 **Loads and moves**
 
-- `LoadLiteral { dst, literal }` — the literal is already lowered:
-  `Nil | Bool | SmallInt | Float | Str | Sym | Char | Array | MalformedInt |
-  UnresolvedIdent`, with integer and float text parsed at compile time rather
+- `LoadLiteral { destination, literal }` — the literal is already lowered:
+  `Nil | Boolean | SmallInteger | Float | String | Symbol | Character | Array |
+  MalformedInteger | UnresolvedIdentifier`, with integer and float text parsed at compile time rather
   than at each execution. The last two are the deferred cases; see "Compilation
   cannot fail".
-- `LoadSelf { dst }`.
-- `LoadBuiltinClass { dst, kind }` — serves the convention that a bare builtin
+- `LoadSelf { destination }`.
+- `LoadBuiltinClass { destination, kind }` — serves the convention that a bare builtin
   class name has no `Binding`: the compiler resolves the name to its builtin
   class at compile time.
-- `Move { dst, src }`.
-- `StoreLocal { src, slot }` — a `Binding::Local` **write**. A read needs no
+- `Move { destination, source }`.
+- `StoreLocal { source, slot }` — a `Binding::Local` **write**. A read needs no
   instruction at all: **the local's register *is* its value.** That is the fact
   the value-register invariant below depends on.
-- `LoadOuterLocal { dst, depth, index }` / `StoreOuterLocal { src, depth, index }`
+- `LoadOuterLocal { destination, depth, index }` / `StoreOuterLocal { source, depth, index }`
   — `Binding::OuterLocal`, walking the `captured_frame` chain exactly as
   `frame_at_depth` does.
 
 **Sends** — each carries a `call_site`; see "Call-site identity".
 
-- `SendPublic { selector, receiver_reg, arg_regs, dst, call_site }` — an ordinary
+- `SendPublic { selector, receiver_register, argument_registers, destination, call_site }` — an ordinary
   explicit-receiver send, resolved with `lookupPublic`.
-- `SendInlinable { selector, receiver_reg, arg_regs, dst, call_site }` — the
+- `SendInlinable { selector, receiver_register, argument_registers, destination, call_site }` — the
   same send, decided exactly as `SendPublic` is, marking one the optimized
   lowering would have inlined. Only the reference lowering emits it, and only
   the depth count reads the mark; see "How the limit counts".
-- `SendLexical { depth, selector, arg_regs, dst, call_site }` — `Binding::LexicalSend`.
+- `SendLexical { depth, selector, argument_registers, destination, call_site }` — `Binding::LexicalSend`.
   **No receiver register**: the receiver is `self` by construction, and the
   kth-enclosing object is computed at run time.
-- `SendSuper { selector, arg_regs, dst, call_site }` — receiver is `self`, lookup
+- `SendSuper { selector, argument_registers, destination, call_site }` — receiver is `self`, lookup
   starts at the current activation's `current_class`'s superclass.
 
 **Construction**
 
-- `MakeClosure { dst, params, code }` — `code` is the block body's own compiled
+- `MakeClosure { destination, parameters, code }` — `code` is the block body's own compiled
   `CompiledCode`, nested inside the enclosing code; nested block literals nest
   again. `captured_frame` and `home` are run-time values the VM supplies from its
   current frame, never operands.
-- `MakeArray { dst, elem_regs }`.
-- `InitSlot { src, own_index }` — writes one of `self`'s own instance slots.
+- `MakeArray { destination, element_registers }`.
+- `InitializeSlot { source, own_index }` — writes one of `self`'s own instance slots.
   Emitted **only** by initializer compilation, for a slot's own initializer
   expression. The one layout-dependent instruction in the set; see "One body
   per mixin".
 
 **Leaving a body**
 
-- `Return { reg }` — a `^` in a method or initializer body.
-- `ImplicitReturn { reg }` — a body that fell off its end: a method returns
+- `Return { register }` — a `^` in a method or initializer body.
+- `ImplicitReturn { register }` — a body that fell off its end: a method returns
   `self`, a block its last expression's value. The VM treats it exactly like
   `Return`; it is kept distinct so `disasm` output stays legible.
-- `NonLocalReturn { reg }` — a `^` inside a block body.
+- `NonLocalReturn { register }` — a `^` inside a block body.
 
 **Branches**
 
-- `Jump { target }`, `BranchIfFalse { reg, target }`, `BranchIfTrue { reg, target }`,
-  `JumpIfNotBoolean { reg, target }`.
+- `Jump { target }`, `BranchIfFalse { register, target }`, `BranchIfTrue { register, target }`,
+  `JumpIfNotBoolean { register, target }`.
 
 **Nothing but control-flow inlining emits a branch.** Every other construct in the
 language is a send, so a jump in the instruction stream is always the trace of an
 inlining decision. `JumpIfNotBoolean` is the inlining guard: for the unboxed
-`Value::Bool` representation, "is the receiver's class exactly `True`/`False`?" is
-precisely "is this register a `Bool` at all".
+`Value::Boolean` representation, "is the receiver's class exactly `True`/`False`?" is
+precisely "is this register a `Boolean` at all".
 
 ## Compiled code
 
 ```rust
 CompiledCode {
     kind: CodeKind,           // Method | Block | Initializer
-    instrs: Vec<Instr>,
-    num_args: u16,
-    num_registers: u16,       // args + named temps + scratch
-    statement_pc: Vec<(usize, Range<usize>)>,   // safepoints
+    instructions: Vec<Instruction>,
+    argument_count: u16,
+    register_count: u16,       // arguments + named temporaries + scratch
+    statement_program_counter: Vec<(usize, Range<usize>)>,   // safepoints
     call_sites: Vec<CallSite>,
     source: Span,
 }
@@ -105,7 +105,7 @@ CompiledCode {
 
 A method body, a block body and an instance initializer all compile to the same
 shape; `kind` tags which. An activation of it is pushed with
-`num_registers - num_args` temporaries.
+`register_count - argument_count` temporaries.
 
 A compiled body lives on the declaration it belongs to. A method's is on its
 `MixinMethod` (`code`); a mixin's instance initializer and its superclass clause's
@@ -113,7 +113,7 @@ two bodies are on the `Mixin` (`initializer_code`, `superclass_clause_code`,
 `superclass_message_code`) — the clause's because a nested class's superclass
 clause is code too, evaluated by the accessor once per enclosing instance, and
 its message's because §6.2 evaluates the message's arguments on every
-instantiation. While the tree is built from source, `MixinMethod::from_decl`
+instantiation. While the tree is built from source, `MixinMethod::from_declaration`
 compiles each method and `compile_mixin_bodies` a mixin's three bodies, before
 the mixin is wrapped in the `Rc` every application shares; `image::mixins::decode`
 attaches the bodies a row names from the image's code table. So a method without
@@ -129,7 +129,7 @@ stored on it, and shared by every application. §6.2: "they all share their code
 structural definition with the mixin." Storing it per class object would recompile
 the same body per enclosing instance, since a class object is per-instance.
 
-**`InitSlot`'s `own_index` is therefore mixin-relative.** An absolute field index
+**`InitializeSlot`'s `own_index` is therefore mixin-relative.** An absolute field index
 baked into shared code would be wrong the moment a second application inserts
 different inherited slots ahead of it. The VM resolves `own_index` against the
 executing activation's `slot_base` — the application's `own_slot_base` for that
@@ -146,21 +146,21 @@ them along with every other cache keyed to the class. See
 
 ## Registers
 
-Each activation carries `args ++ temps` as one unified register space addressed
+Each activation carries `arguments ++ temporaries` as one unified register space addressed
 by a single `u16`: on the activation stack it is one window of registers, and in
-a divorced `Frame` index `< num_args` is `args[index]`, index `>= num_args` is
-`temps[index - num_args]`. That is exactly the args-then-temps split the
+a divorced `Frame` index `< argument_count` is `arguments[index]`, index `>= argument_count` is
+`temporaries[index - argument_count]`. That is exactly the args-then-temps split the
 resolver's `Binding::Local` already used, so the compiler needs no separate
 renumbering, and a block's `OuterLocal` indices are untouched by the scratch
 registers a bytecode frame adds — scratch sits after the named locals.
 
 Registers above the named locals are compiler-allocated scratch from a bump
 allocator **reset to the first scratch index at the start of every statement**.
-Statements are the unit `pc` and safepoints already work at, so scratch never
+Statements are the unit `program_counter` and safepoints already work at, so scratch never
 needs to stay live across a statement boundary. There is no cross-statement
 liveness analysis, and reusing registers within one statement's expression tree is
 permitted but not done: Newspeak method bodies are not deeply nested in practice
-and `temps` is a plain growable `Vec`, so a few extra live entries per statement
+and `temporaries` is a plain growable `Vec`, so a few extra live entries per statement
 cost nothing measurable.
 
 **An inlined block's statements are not statements of the enclosing code for
@@ -186,9 +186,9 @@ through a closure that captured the frame. `^x := y`, with a setter that assigns
 value `y` had ([dispatch.md](dispatch.md), "Setter sends").
 
 The copy is skipped only where nothing reads the value at all, and every
-position says which it is rather than inferring it: `lower_expr_for` takes a
+position says which it is rather than inferring it: `lower_expression_for` takes a
 `ValueUse`, and is the one place that acts on it. An instruction reads the
-value of a `^`, of a slot initializer (`InitSlot`), of a block's last statement
+value of a `^`, of a slot initializer (`InitializeSlot`), of a block's last statement
 (its `ImplicitReturn`) and of an inlined block's last statement — a branch of
 `ifTrue:` and its relatives, the block of `and:`/`or:`, a loop condition — when
 the inlined form's own value is read; an inlined form in a discarded position
@@ -288,21 +288,21 @@ of an inlined loop body; `tests-fixtures/control_flow_fallback.ns` runs a user
 
 ## Safepoints and call-site identity
 
-`statement_pc` maps each statement index to its instruction range. This is the
+`statement_program_counter` maps each statement index to its instruction range. This is the
 safepoint abstract-state map the liveness design requires, and it has four
 consumers — debugger, JIT deopt, image snapshot, mirrors — so it is emitted from
 the start rather than added when the first of them is built.
 
 An inlined block's statements are part of the enclosing statement's range;
-`statement_pc` records only the code body's own statements. A debugger wanting
+`statement_program_counter` records only the code body's own statements. A debugger wanting
 finer stepping inside inlined blocks would extend the table.
 
 `CallSite` is one entry per send instruction, index-addressed: the id is the send
-instruction's own index into `instrs`, so it is stable and reconstructible with no
+instruction's own index into `instructions`, so it is stable and reconstructible with no
 separate counter to drift. Each send carries its call site by value and
 `call_sites` lists them in instruction order. **Nothing reads or writes them
 today** — they are inert, existing so that inline caches can start writing state
-into an already-present slot instead of changing `Instr`'s shape, which would be
+into an already-present slot instead of changing `Instruction`'s shape, which would be
 an image format break.
 
 ## Compilation cannot fail
@@ -315,12 +315,12 @@ A program-level error the language raises at evaluation time is therefore
 **deferred to execution**: it is reported when, and only if, execution reaches
 it, so a method that is never run never fails. Two literals carry that deferral:
 
-- `Literal::MalformedInt` — an integer the lexer accepted but the parser rejects,
+- `Literal::MalformedInteger` — an integer the lexer accepted but the parser rejects,
   such as one out of `i64` range or a fractional radix literal. The compiler
-  lowers it to `MalformedInt`; the VM re-runs `parse_int_literal` when the
+  lowers it to `MalformedInteger`; the VM re-runs `parse_integer_literal` when the
   instruction executes and raises its error text, and only if execution actually
   reaches it.
-- `Literal::UnresolvedIdent`.
+- `Literal::UnresolvedIdentifier`.
 
 ## Reading the output
 
@@ -363,7 +363,7 @@ their setter sends, the `^` rule per code kind, how a body ends, the
 initializer's shape, and closure compilation.
 
 What it cannot check is anything the two share: the instructions' semantics in
-the VM, dispatch, the natives, `InitSlot` addressing, and the definitions both
+the VM, dispatch, the natives, `InitializeSlot` addressing, and the definitions both
 take from `interpreter/`. Golden tests of exit status, stdout and stderr cover
 those. Nor can it catch a misreading of the specification both lowerings were
 written from; four of the six silent defects Milestone 3's review found were of
@@ -374,9 +374,9 @@ that kind, identically wrong under both engines.
 `compiler/reference.rs`, written from the AST and the resolver's bindings. It
 shares with `lower.rs` only what must have one definition or is purely
 mechanical: the bytecode types, `lower_literal` (with its deferred
-`MalformedInt`), `selector_of`, the parameter counting, the span helpers,
-`instantiate::builtin_kind_from_name`, and `nested::superclass_clause_expr` and
-`superclass_clause_message_args_expr` — the one definition of what a superclass
+`MalformedInteger`), `selector_of`, the parameter counting, the span helpers,
+`instantiate::builtin_kind_from_name`, and `nested::superclass_clause_expression` and
+`superclass_clause_message_arguments_expression` — the one definition of what a superclass
 clause evaluates.
 
 A flag inside `Lowerer` was the alternative, and was rejected on two counts. It
@@ -424,9 +424,9 @@ against code nothing had checked.
    superclass clause or its message. There is no "inside an inlined block"
    case. A body that falls off its end follows the rules of `finish_body`,
    written again rather than shared.
-9. An initializer is each own slot's initializer followed by `InitSlot`, then
+9. An initializer is each own slot's initializer followed by `InitializeSlot`, then
    the `initExprs`.
-10. `statement_pc`, `call_sites` and `num_registers` follow the same rules as in
+10. `statement_program_counter`, `call_sites` and `register_count` follow the same rules as in
     `lower.rs`.
 
 Its `finish` checks that shape in a debug build, which is what the test suite
@@ -438,9 +438,9 @@ changing under its consumer. The ceilings — at most `u16::MAX` temporaries,
 block parameters, named locals, registers and instructions in a body — are
 checked in every build (`Body::new` and its callers, `fresh`, `emit_send`),
 because an index that wrapped would be silently wrong code. A method's or a
-factory's parameter count comes from the shared `num_args_of` and
-`factory_num_args`, whose narrowing rests on the parser's bound instead. The
-optimized lowering is not yet as strict: `lower.rs`'s `alloc_scratch` adds
+factory's parameter count comes from the shared `argument_count_of` and
+`factory_argument_count`, whose narrowing rests on the parser's bound instead. The
+optimized lowering is not yet as strict: `lower.rs`'s `allocate_scratch` adds
 without a check, and `next_call_site` guards the call-site id with a
 `debug_assert!` only, so a body past either ceiling is silently wrong in a
 release build. Aligning it with `fresh` and `emit_send` is open.
@@ -458,7 +458,7 @@ which lowering produced that code, because nothing would read it.
 defaulting to optimized. `disasm` of one method under both is the first tool to
 reach for when the oracle fires. `bench` does not take it, since timing the
 oracle means nothing, and `load` and `inspect` decode rather than compile.
-The switch itself is `LoweringArg` in `crates/ns-cli/src/main.rs`, converted
+The switch itself is `LoweringArgument` in `crates/ns-cli/src/main.rs`, converted
 into `ns_runtime::Lowering` and passed to `source::bootstrap`, which every
 compiling command goes through; `disasm` takes it as an `Option` instead and
 refuses it for an artifact, which carries the code it was built with.
@@ -591,7 +591,7 @@ and its body arms, for an initializer level, a superclass clause or its
 message, record `counted: true`. The flag
 rides on the stack entry, and `Interpreter::push` refuses a counted push at the
 limit. A block is exempt when it carries
-`StepArgs::ControlFlow` — the arguments only the control-flow natives build —
+`StepArguments::ControlFlow` — the arguments only the control-flow natives build —
 the send that led to it was a `SendInlinable`, and its `captured_frame` is the
 sending activation's reified frame. The VM decides a `SendInlinable` exactly as
 it does a `SendPublic` and only hands `push_step` the fact that it was one. A
@@ -646,7 +646,7 @@ counter that is its only consumer — arrived with the
 The compiler itself no longer has such an entry point: it compiles onto a
 `Mixin` while the tree is built, and never sees a class object. The pattern
 remains in two places. `image::encode_code_table` and `image::mixins::plan` each
-take a `ClassRef` parameter, and each one's first move is to walk from it to the
+take a `ClassReference` parameter, and each one's first move is to walk from it to the
 `Mixin` that backs it — the code they encode lives on that mixin's tree and
 nowhere else. Reaching a class object's `mixin` is a read only `heap.rs` may
 perform, so each also needs a `&Heap` parameter purely to make that one hop.
@@ -654,15 +654,15 @@ Taking the root mixin directly instead would remove the need for a `Heap` there 
 there is nothing else on the class object either of them reads.
 
 `ns-cli`'s `disasm` (`crates/ns-cli/src/commands/disasm.rs`) has the identical
-shape but not the identical fix: it takes no `ClassRef` parameter to narrow,
+shape but not the identical fix: it takes no `ClassReference` parameter to narrow,
 since it builds a class object itself
 (from source, or from a loaded artifact) and reaches the mixin through its own
 `root_mixin_of` helper, needing a `Heap` for the same reason. It reads through
-`interp.heap_ref()` inside the lifetime of the interpreter that built the class
+`interpreter.enter` inside the lifetime of the interpreter that built the class
 object, because under the arena it must: a handle is an index meaningful only
 against its own heap, so a stand-in `Heap` reads the wrong object in a release
 build and trips the debug origin guard in a debug one. Its fix is not "take a
-`Mixin` instead of a `ClassRef`" but "stop building a class object at all" — a
+`Mixin` instead of a `ClassReference`" but "stop building a class object at all" — a
 different, and possibly larger, change.
 
 Recorded here as a follow-up rather than undertaken now, because narrowing the
@@ -670,7 +670,7 @@ signatures is a design change to the image module's interface, not a migration.
 
 ## Decisions
 
-- **`Instr` is a Rust enum, not packed bytes.** Revisit only on profiling
+- **`Instruction` is a Rust enum, not packed bytes.** Revisit only on profiling
   evidence.
 - **A local's read costs no instruction**, which makes its register live storage
   and makes the value-register invariant necessary.
@@ -679,7 +679,7 @@ signatures is a design change to the image module's interface, not a migration.
 - **`whileTrue:` with a non-Boolean condition sends `mustBeBoolean`** rather than
   falling back to a re-send, because a re-send would duplicate the condition's
   side effects and the inlined loop would diverge from the native one.
-- **Code lives on the mixin and `InitSlot` is mixin-relative**, because one mixin
+- **Code lives on the mixin and `InitializeSlot` is mixin-relative**, because one mixin
   backs many applications with different inherited layouts.
 - **Call-site slots are emitted inert from the start**, so wiring up inline caches
   is not a format break.

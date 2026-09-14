@@ -43,14 +43,14 @@ need something private there, widen it to `pub(crate)`.
 **Compiling an already-resolved module can never raise a `NewspeakError`.** Compilation
 is a total, deterministic lowering; a compiler-invariant violation is `panic!` /
 `debug_assert!`. A *program-level* error the language raises at evaluation time is
-deferred to execution instead (see `Literal::MalformedInt` and
-`Literal::UnresolvedIdent`), so a method that is never run never fails.
+deferred to execution instead (see `Literal::MalformedInteger` and
+`Literal::UnresolvedIdentifier`), so a method that is never run never fails.
 
 **An expression's value register must still hold that value when its consumer executes.**
 A named local's register is live storage. `lower_operand` copies it when anything lowered
 afterwards can write it. An assignment through a setter copies it too, even when the very
 next instruction reads the assignment's value: the setter send runs user code first, and
-that code can write the local through a closure. `lower_expr_for` skips that copy only
+that code can write the local through a closure. `lower_expression_for` skips that copy only
 where its caller states that nothing reads the value (`ValueUse::Discarded`). Getting this
 wrong is silent wrong output with exit status 0, not a crash.
 
@@ -81,7 +81,7 @@ with the same exposure as running the equivalent source. Recursion depth is boun
 by a counted limit of 100,000 activations -- an ordinary Newspeak error, not a
 native stack overflow, since nothing re-enters the run loop from Rust (see
 `docs/design/execution.md`, "The depth limit"). A mutated binary that decodes
-cleanly can still abort while executing -- a native indexing `args` it was not
+cleanly can still abort while executing -- a native indexing `arguments` it was not
 given, for one -- and that is not a decoder defect.
 
 **A wire tag is assigned once and never renumbered or reused.** Every instruction,
@@ -94,8 +94,8 @@ renumbering fails in the one way the untrusted-input guarantee does not cover: a
 artifact would decode into a *different, perfectly valid* program and run it, reporting
 nothing. Retiring numbers means those bytes hit an unknown tag and are refused.
 
-**A handle means nothing against a `Heap` that did not mint it.** An `ObjRef`, a
-`ClassRef`, a `FrameRef` and an `ActivationRef` are indices into one `Heap`'s arenas
+**A handle means nothing against a `Heap` that did not mint it.** An `ObjectReference`, a
+`ClassReference`, a `FrameReference` and an `ActivationReference` are indices into one `Heap`'s arenas
 and activation stack. Never build a `Heap::new()` to stand in for one that is out of
 scope, and never hold a handle across the death of the interpreter that allocated
 it: the index is in range in the other heap too, so the read answers a **different,
@@ -103,7 +103,7 @@ perfectly valid object** rather than failing. Reach the real `Heap` instead:
 `image::encode::encode_code_table` and `image::mixins::plan` take a `&Heap`
 parameter for exactly this reason, and `ns-cli`'s `disasm` command
 (`crates/ns-cli/src/commands/disasm.rs`) — which builds its own class object and
-so has no parameter to take — reads through `interp.heap_ref()` while that
+so has no parameter to take — reads through `interpreter.enter` while that
 interpreter is still alive, before it goes out of scope. A
 `debug_assertions`-only origin guard turns the mistake into a panic at the read,
 so a debug-build test run catches it; a release build does not, which is why
@@ -121,12 +121,12 @@ run and a handle the tracer (`trace.rs`) does not know about. Add a field that
 holds a handle to any runtime type, and its `Trace` impl stops compiling until
 it says what to do with it.
 
-**A running activation is an `ActivationRef`; only a `FrameRef` is ever
-stored.** An `ActivationRef` indexes the `Heap`'s activation stack and is
+**A running activation is an `ActivationReference`; only a `FrameReference` is ever
+stored.** An `ActivationReference` indexes the `Heap`'s activation stack and is
 valid only until its entry is popped -- the next activation at that depth
 reuses the index, so a handle kept past its pop reads a different, perfectly
 valid activation. `ClosureData`, `Frame` and every image record take a
-`FrameRef` (get one with `Heap::reify`), so storing an `ActivationRef` is a
+`FrameReference` (get one with `Heap::reify`), so storing an `ActivationReference` is a
 compile error; a `debug_assertions`-only generation check turns a stale
 read into a panic. The run loop pops every activation it runs, on every exit,
 error paths included (`vm::run`) -- `Interpreter::run_from_host`, the one way
@@ -136,14 +136,14 @@ live entry and divorced on pop, which copies its registers out, because a
 block reads its method's variables by reference
 (`docs/design/execution.md`, "Activations").
 
-**Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an `EvalResult`.**
-`ObjRef`, `FrameRef` and `ActivationRef` each carry a hand-written `Debug` that prints
-identity only, so `Debug` on a `Value::Obj` no longer recurses — but it still renders
-Rust internals such as `ObjRef(#42)`, which is useless in a Newspeak-facing message
+**Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an `EvaluationResult`.**
+`ObjectReference`, `FrameReference` and `ActivationReference` each carry a hand-written `Debug` that prints
+identity only, so `Debug` on a `Value::Object` no longer recurses — but it still renders
+Rust internals such as `ObjectReference(#42)`, which is useless in a Newspeak-facing message
 where `Heap::describe` answers "the String \"foo\"". `Signal` deliberately has no
-`Debug` impl of its own, which means `EvalResult` (`Result<Value, Signal>`) has none
+`Debug` impl of its own, which means `EvaluationResult` (`Result<Value, Signal>`) has none
 either: `Result::unwrap`/`expect` require `E: Debug`, so calling either — or writing
-`{:?}` on an `EvalResult` — is a compile error, not a lapse a reviewer has to catch by
+`{:?}` on an `EvaluationResult` — is a compile error, not a lapse a reviewer has to catch by
 hand. The same holds for a `HostResult` (`Result<Root, HostSignal>`), the result a
 host receives: `HostSignal`, `HostError` and `Root` have no `Debug`, so `unwrap` /
 `expect` on one does not compile either. Tests unwrap through a local `expect_ok`
@@ -157,7 +157,7 @@ object** — a nested superclass's class object is itself per-instance, so a cla
 key would never hit and every instance would mint its own application: wrong per §6.2,
 and every call site megamorphic since no two instances would ever share behaviour.
 
-**Compiled code lives on the mixin, and `Instr::InitSlot`'s `own_index` is
+**Compiled code lives on the mixin, and `Instruction::InitializeSlot`'s `own_index` is
 mixin-relative.** One mixin backs every application of it, so each body is
 compiled once, onto the mixin — a method's onto its `MixinMethod` — and
 shared by every application; an absolute field index baked into that shared
@@ -239,6 +239,24 @@ appears both there and under `corpus/`, and why neither copy may be deleted.
 - All code, identifiers, comments, doc comments, commit messages and developer
   documentation are in English.
 - Classic terminology: `blacklist`, `whitelist`, `sane` — not their newer replacements.
+- **Names are written out.** No identifier of one or two characters, and no
+  truncated word -- the whole word, in every kind of name the workspace
+  declares (locals, parameters, fields, functions, types, variants, constants)
+  and in every segment of a compound one: a `Mutator` is `mutator`, an index
+  `index`, an error `error`; `interpreter`, not `interp`; `program_counter`,
+  not `pc`; `arguments`, `parameters`, `temporaries`, `expression`,
+  `statement`, `declaration`, `identifier`, `instruction`, `initializer`,
+  `position`, `directory`; `argument_count`, not `num_args`;
+  `ObjectReference`, not `ObjRef`. The exceptions: type parameters and
+  lifetimes keep Rust's conventions (`T`, `'a`, `'gc`); `ok`, `id`, `And` and
+  `Or` are words; Rust keywords and names the workspace does not declare stay
+  as Rust, std and other crates spell them (`str`, `len()`, `fmt`, `cfg`,
+  `Rc`, `map_err`, `Err`, `args()` on a `Command`); and names bound to a file
+  or an interface keep that name (module files such as `vm`, `expr` and
+  `decl`, the `disasm` command, grammar groups `g1`/`g2`). Clippy's
+  `min_ident_chars` (`clippy.toml`, threshold 2 -- it is inclusive) refuses
+  the one- and two-character names; code samples in plans follow the same
+  rule, since implementers copy them.
 - Conventional commits (`feat:`, `fix:`, `perf:`, `test:`, `docs:`, `chore:`).
 - Design documents live in `docs/design/` and are living: update the document for
   the aspect that changed rather than adding a dated file that supersedes it.
@@ -252,8 +270,8 @@ appears both there and under `corpus/`, and why neither copy may be deleted.
 - Comments should explain the decision, not restate the mechanics. The reason a check
   exists — what it prevents — is the part a later reader cannot reconstruct.
 - **Object, frame and activation access goes through
-  `crates/ns-runtime/src/heap.rs`, not directly through a handle.** `ObjRef`,
-  `ClassRef`, `FrameRef` and `ActivationRef` are defined in `heap.rs` and their
+  `crates/ns-runtime/src/heap.rs`, not directly through a handle.** `ObjectReference`,
+  `ClassReference`, `FrameReference` and `ActivationReference` are defined in `heap.rs` and their
   inner index is private to that module, so the compiler refuses every read of
   one from anywhere else — there is no grep gate to remember and no way to
   widen a field to reach past an accessor. If an accessor you need is missing,

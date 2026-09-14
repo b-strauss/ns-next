@@ -56,9 +56,9 @@ crates/
 
 Inside `ns-runtime`, one file cuts across every other: `heap.rs`. It owns the
 object arena, the activation stack every running activation lives on, and the
-frame arena an activation reaches only when a block captures it. `ObjRef`,
-`ClassRef` and `FrameRef` are opaque 32-bit handles into the arenas, and
-`ActivationRef` into the stack; each one's inner index is private to that file,
+frame arena an activation reaches only when a block captures it. `ObjectReference`,
+`ClassReference` and `FrameReference` are opaque 32-bit handles into the arenas, and
+`ActivationReference` into the stack; each one's inner index is private to that file,
 so every read and write goes through a `Heap` accessor because the compiler
 refuses anything else. That seam exists so the store behind a handle can be
 replaced by changing one file rather than every caller; replacing
@@ -66,7 +66,7 @@ replaced by changing one file rather than every caller; replacing
 site outside `heap.rs` and `types.rs` changed for either the object or the
 frame conversion. The handle types are not hidden, on purpose: the two
 activation handles are distinct types in every signature — a closure, a frame
-and an image record take only a `FrameRef` — so storing an `ActivationRef` in
+and an image record take only a `FrameReference` — so storing an `ActivationReference` in
 anything that outlives its call is a compile error. Start
 at [memory.md](memory.md) for what the heap guarantees and what it does not —
 notably that nothing reclaims an arena slot yet — and at

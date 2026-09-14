@@ -15,7 +15,7 @@ which could not be cross-architecture. No native code, no JIT output, no raw
 pointers, no baked-in tagging or host endianness.
 
 **Canonical encodings.** Little-endian integers, IEEE-754 `binary64` for floats,
-UTF-8 for strings and symbols, `SmallInt` fixed at the `i64` range. Symbols are
+UTF-8 for strings and symbols, `SmallInteger` fixed at the `i64` range. Symbols are
 re-interned on load rather than assumed to keep their ids.
 
 **The bootstrap is the base image.** There is no pre-built base image file.
@@ -40,7 +40,7 @@ nest, which the decoder caps at the parser's own ceiling ("Verification"
 below); see [execution.md](execution.md), "The depth limit". A mutated
 binary that decodes cleanly can still abort while executing — a native that
 indexes an argument it was not given, for one: the control-flow natives read
-`args[0]` unchecked, and the decoder does not check a send's argument count
+`arguments[0]` unchecked, and the decoder does not check a send's argument count
 against its selector — and that is not a decoder defect.
 
 ## Two artifacts
@@ -155,15 +155,15 @@ noticed.
 |---|---|---|---|
 | 0 `LoadLiteral` | 5 `LoadOuterLocal` | 10 `MakeClosure` | 15 `NonLocalReturn` |
 | 1 `LoadSelf` | 6 `StoreOuterLocal` | 11 `MakeArray` | 16 `Jump` |
-| 2 `LoadBuiltinClass` | 7 `SendLexical` | 12 `InitSlot` | 17 `JumpIfNotBoolean` |
+| 2 `LoadBuiltinClass` | 7 `SendLexical` | 12 `InitializeSlot` | 17 `JumpIfNotBoolean` |
 | 3 `Move` | 8 `SendPublic` | 13 `Return` | 18 `BranchIfFalse` |
 | 4 `StoreLocal` | 9 `SendSuper` | 14 `ImplicitReturn` | 19 `BranchIfTrue` |
 
 | Literals | | |
 |---|---|---|
-| 0 `Nil` | 4 `Str` | 8 `MalformedInt` |
-| 1 `Bool` | 5 `Sym` | 9 `UnresolvedIdent` |
-| 2 `SmallInt` | 6 `Char` | |
+| 0 `Nil` | 4 `String` | 8 `MalformedInteger` |
+| 1 `Boolean` | 5 `Symbol` | 9 `UnresolvedIdentifier` |
+| 2 `SmallInteger` | 6 `Character` | |
 | 3 `Float` | 7 `Array` | |
 
 Both tables are declared once, in `image/opcodes.rs`, and used by the encoder and
@@ -179,7 +179,7 @@ hash table names (`HASHED_*`, below). They were bare literals in the encoder and
 again in the decoder until `inspect` became a third reader of those bytes — and
 three hand-kept copies of one numbering is how a viewer starts quietly
 disagreeing with the loader. A sixth family is *retired*: a frame record once
-carried a byte naming the unit its `pc` counted in, and only instruction indices
+carried a byte naming the unit its `program_counter` counted in, and only instruction indices
 were ever representable, so the byte was removed. Its two numbers, 0 and 1
 (`PC_KIND_*`), stay assigned and pinned, so a unit field that ever returns cannot
 give them a new meaning. One frame kind is retired the same way: `FRAME_CLOSURE`
@@ -210,7 +210,7 @@ closure encodes its parameters, its compiled body as a code id, and its captured
 frame and home as frame ids.
 
 **Frame table.** Every `Frame` reachable from the roots, with receiver, args,
-temps, `pc` — an instruction index into the frame's compiled body — `sender`,
+temps, `program_counter` — an instruction index into the frame's compiled body — `sender`,
 `home`, `current_class`, `kind` and `uncontinuable`. A closure frame's `kind`
 names the closure object it runs, by object id; that the id names a closure is
 checked once every record has been read (`NotAClosureReference`), as a class
@@ -303,7 +303,7 @@ so `inspect` can still display an artifact whose halves disagree; only `load`
 refuses it. A corrupt but version-matching image is an error there, never a
 panic in the VM later.
 
-**`Instr::InitSlot`'s `own_index` is not one of the counts these passes
+**`Instruction::InitializeSlot`'s `own_index` is not one of the counts these passes
 bound.** `verify_mixins` checks a body's kind and arity against its
 declaration, but nothing checks that a slot-store instruction's index falls
 within the mixin's own slot count. This is harmless at run time:
@@ -349,7 +349,7 @@ see `a_binary_with_a_graph_appended_is_refused` in `crates/ns-runtime/tests/imag
 
 `disasm` accepts an artifact as well as a `.ns` file: the same decoder that
 `load` uses rebuilds the mixin tree with each body attached to its declaration,
-and `disasm` formats a decoded body's `Instr`s exactly as it does a freshly
+and `disasm` formats a decoded body's `Instruction`s exactly as it does a freshly
 compiled one's. Like every load, it refuses an artifact `verify_mixins` finds
 inconsistent before printing anything.
 
@@ -374,7 +374,7 @@ materializes objects and resolves class tags against live builtins, so it needs
 an `Interpreter`; a viewer must not bootstrap one, any more than `javap`
 instantiates a class to print it. `inspect` therefore walks the same bytes and
 reports each record: an object's class tag, identity hash and slot values, a
-frame's receiver, arguments, temporaries, `pc` and kind, and the roots. That is
+frame's receiver, arguments, temporaries, `program_counter` and kind, and the roots. That is
 the half an image has and a binary does not, and nothing else showed it.
 
 Being a second reader over one layout is a drift risk, taken deliberately and
@@ -506,7 +506,7 @@ activation stack is its only copy, since sends do not recurse through the Rust
 call stack ([execution.md](execution.md), "The trampoline") and nothing
 re-enters the run loop from Rust ([execution.md](execution.md), "No re-entry
 from Rust"). What is missing is a yield path out of `vm::run`, a re-entry
-point that would continue a decoded frame at its `pc`, and an encoding for
+point that would continue a decoded frame at its `program_counter`, and an encoding for
 what each stack entry's `Continuation` carries in Rust: a native loop's
 `WhileLoop` or `DoLoop`, a nested class's `NestedClassCreation`, an
 instantiation's `Instantiation`. An image records none of them today, and a
@@ -515,13 +515,13 @@ of the loop, the class creation or the walk it belongs to.
 Suspending then means reifying and divorcing the whole stack, which is the same
 operation a debugger performs on the frames it touches — and the same operation upstream
 performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)
-before taking a snapshot. An activation's `pc` being stored only at sends,
+before taking a snapshot. An activation's `program_counter` being stored only at sends,
 `MakeClosure` and `NonLocalReturn` is *not* an obstacle: those are exactly the
 safepoints, and a suspension could only happen at a send boundary.
 
 Whoever builds this must first close a decoder gap that today is inert only
 because nothing reactivates a decoded frame. `decode::verify_graph` checks a
-frame's `pc` and register-file size against the compiled body it reconciles
+frame's `program_counter` and register-file size against the compiled body it reconciles
 each frame against, but it never cross-checks `home` against `kind`: a
 crafted image can pair a method-kind frame (`home` meaningful only for
 `FrameKind::Closure`) with a non-nil `home`. Nothing observes the
