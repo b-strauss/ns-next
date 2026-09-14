@@ -57,6 +57,10 @@ repository's invariants:
    crate gets `#![deny(unsafe_code)]`, and the cast carries the one
    `#[allow(unsafe_code)]`, so a second `unsafe` fails to compile until
    someone argues for it.
+
+   Revised during execution (Task 4 review, 2026-09-14): no cast is needed
+   — `body(&mut self.mutator)` gives the same guarantee in safe Rust, since
+   the closure is checked for every `'gc` — see Task 5.
 2. **The cast is sound because the brand is phantom.** A handle is a `u32`
    index; `'gc` appears in `Mutator`'s field types only through the
    `PhantomData` in `ObjectReference` and `FrameReference`. No field of any branded type may
@@ -1864,20 +1868,33 @@ per-instruction `enter` level); report any group entirely above.
 - "Planned: the brand, checked by the compiler rather than by convention"
   becomes "The brand, checked by the compiler rather than by convention",
   in the present tense, describing what exists: `Mutator<'gc>`, `World`
-  holding `Mutator<'static>` at rest in `heap/world.rs`, the one cast in
-  `World::enter` and why it is sound (decision 2), `#![deny(unsafe_code)]`,
-  the private `rebrand` for host roots and the absence of a public
-  `unbind`, `Heap::new` and `Heap::move_everything` private to the heap
-  module, one entry per instruction, the three `compile_fail` doctests
-  (name where they are), `ActivationReference` unbranded, and that the stress mode
-  keeps running (the brand covers what Rust holds, the stress mode what the
-  tracer knows). Replace "heap.rs stays free of `unsafe`" and the paragraph
-  about a fallback cast with what was decided and why (decision 1), citing
-  Nova's `Bindable` for `Box<T>` and gc-arena's `mutate`.
-- Add under the "Considered and rejected" sections: "Considered and
-  rejected: a safe conversion per payload", with decision 1's reason — the
-  boxed continuations reallocated at every push and pop, and the spare
-  walks' reuse lost — and that the user chose the cast on 2026-09-13.
+  holding `Mutator<'static>` at rest in `heap/world.rs`, `World::enter`
+  handing that `Mutator<'static>` to a `for<'gc>` closure with no cast and
+  no `unsafe` — the closure is type-checked for every `'gc`, so it can
+  neither assume `'gc = 'static` nor let a branded value out — and the
+  crate's `#![forbid(unsafe_code)]`, the private `rebrand` for host roots
+  and the absence of a public `unbind`, `Heap::new` and
+  `Heap::move_everything` private to the heap module, one entry per
+  instruction, the three `compile_fail` doctests (name where they are),
+  `ActivationReference` unbranded, and that the stress mode keeps running
+  (the brand covers what Rust holds, the stress mode what the tracer
+  knows). Replace "heap.rs stays free of `unsafe`" and the paragraph about
+  a fallback cast with what was decided and why: the safe per-payload
+  conversion was rejected for its cost (decision 1), the cast that was
+  chosen instead turned out unnecessary, and the reasons gc-arena's
+  `mutate` and Nova's `Bindable` for `Box<T>` need theirs (a `Rootable<'gc>`
+  type projection; rebranding a `Box<T>` payload) do not apply to a plain
+  lifetime parameter on `Mutator`.
+- Add under the "Considered and rejected" sections two entries.
+  "Considered and rejected: a safe conversion per payload", with decision
+  1's reason — the boxed continuations reallocated at every push and pop,
+  and the spare walks' reuse lost. "Considered and rejected: an audited
+  lifetime cast" — chosen with the user on 2026-09-13 in the per-payload
+  conversion's place, then found unnecessary in Task 4's review on
+  2026-09-14, because the higher-ranked closure alone gives the guarantee:
+  `body(&mut self.mutator)` compiles under `#![forbid(unsafe_code)]`, and a
+  closure that answers a handle still fails with "lifetime may not live
+  long enough", one that stores a handle in a host's field with E0521.
 - "Host roots": replace the paragraph "What 2c still changes here" with the
   state after it: a host reads through `enter`, `Interpreter::stash` takes
   a `Value<'static>` (immediates), and a root is the only way to hold a
@@ -1906,8 +1923,8 @@ per-instruction `enter` level); report any group entirely above.
   collector".
 - "Architecture", the paragraph on `heap.rs`: add that every movable handle
   carries the brand of the entry that minted it, obtainable only inside
-  `Interpreter::enter`, and that `heap/world.rs`'s `World::enter` is the
-  crate's one `unsafe`.
+  `Interpreter::enter`, which `heap/world.rs`'s `World::enter` gives in
+  safe Rust — the crate forbids `unsafe` code.
 
 - [ ] **Step 5: `CLAUDE.md`**
 
@@ -1922,14 +1939,14 @@ per-instruction `enter` level); report any group entirely above.
   a run only as a `Root`, and the compiler enforces it — a handle is branded
   with the entry that minted it (`Interpreter::enter`); the stress mode still
   catches a handle the tracer does not know about.
-- A new invariant, **"The brand has one cast, and a brand is phantom."**
-  `heap/world.rs`'s `World::enter` lends `Mutator<'static>` as
-  `Mutator<'gc>`; it is the crate's only `unsafe` (`#![deny(unsafe_code)]`).
-  Its soundness rests on `'gc` being phantom: never give a branded type a
-  field that holds a real reference with lifetime `'gc`, never add a public
-  way to change a handle's brand (`heap.rs`'s private `rebrand` is the only
-  conversion), and never give `Mutator` a way to reach the `Interpreter`,
-  which is what keeps a step from running the loop.
+- A new invariant, **"The brand is the compiler's, and needs no cast."**
+  `heap/world.rs`'s `World::enter` hands the at-rest `Mutator<'static>` to
+  a closure generic over `'gc`, in safe Rust; the crate forbids unsafe code
+  (`#![forbid(unsafe_code)]`) and the brand needs none. What keeps it
+  meaning something: never add a public way to change a handle's brand
+  (`heap.rs`'s private `rebrand` is the only conversion), and never give
+  `Mutator` a way to reach the `Interpreter`, which is what keeps a step
+  from running the loop.
 
 - [ ] **Step 6: `docs/PROGRESS.md`**
 
@@ -1972,10 +1989,11 @@ Expected: all green, the reports exactly as stated.
 
 ```bash
 git add docs CLAUDE.md
-git commit -m "docs: the lifetime brand is built" -m "memory.md describes the brand as it exists -- Mutator, World, the one
-cast and why it is sound -- and records the safe per-payload conversion
-as considered and rejected. execution.md measures the step, README.md and
-CLAUDE.md state the new invariant, and PROGRESS.md moves on to step 3.
+git commit -m "docs: the lifetime brand is built" -m "memory.md describes the brand as it exists -- Mutator, World, and an
+entry that needs no cast and no unsafe code -- and records the safe
+per-payload conversion and the audited cast as considered and rejected.
+execution.md measures the step, README.md and CLAUDE.md state the new
+invariant, and PROGRESS.md moves on to step 3.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01D1Dip7oZ7mL5jZG3SU4Woj"

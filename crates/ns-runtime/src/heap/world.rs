@@ -42,27 +42,17 @@ impl World {
     }
 
     /// Lends the step state out for `body` as a `Mutator<'gc>`, where `'gc` is
-    /// a lifetime only `body` can name -- gc-arena's `Arena::mutate`. The run
-    /// loop makes one entry per instruction and a host one per read, so this
-    /// must inline away.
-    #[allow(unsafe_code)] // the crate's one cast; see the SAFETY comment
+    /// a lifetime only `body` can name -- gc-arena's `Arena::mutate`, without
+    /// its cast. The state rests as `Mutator<'static>` and is handed over as
+    /// it is: the compiler checks `body` once for every `'gc`, so `body` can
+    /// never assume the brand is `'static`, and so can neither let a branded
+    /// value out (`R` is chosen outside the `for<'gc>`) nor keep one in a
+    /// host's field. That is the whole guarantee, and no conversion of the
+    /// state is needed for it. The run loop makes one entry per instruction
+    /// and a host one per read, so this must inline away.
     #[inline(always)]
     pub(crate) fn enter<R>(&mut self, body: impl for<'gc> FnOnce(&mut Mutator<'gc>) -> R) -> R {
-        let at_rest: *mut Mutator<'static> = &mut self.mutator;
-        // SAFETY: `Mutator<'static>` and `Mutator<'gc>` differ only in a
-        // lifetime parameter, so they have one layout, and the pointer comes
-        // from a unique borrow of `self.mutator` that lasts as long as the
-        // reference made from it. `'gc` appears in `Mutator`'s fields only
-        // through the `PhantomData` brand of `ObjectReference` and
-        // `FrameReference`, which are indices -- no field of any branded type
-        // holds a reference with lifetime `'gc` (`CLAUDE.md` makes that an
-        // invariant) -- so no reference can outlive its referent through the
-        // cast. What `body` stores is stored as `Mutator<'static>` again once
-        // `body` returns, where nothing can read it but another entry, which
-        // brands it anew; and `body`'s answer cannot name `'gc`, because `R`
-        // is chosen outside the `for<'gc>`.
-        let mutator = unsafe { &mut *at_rest.cast::<Mutator<'_>>() };
-        body(mutator)
+        body(&mut self.mutator)
     }
 
     /// How many activations are live; `Interpreter::run_from_host` checks a
