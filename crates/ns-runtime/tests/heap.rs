@@ -9,67 +9,73 @@ use ns_runtime::{HostResult, HostSignal, Root, Symbol};
 
 #[test]
 fn array_accessors_read_and_write_through_the_seam() {
-    let mut interp = Interpreter::bootstrap();
-    interp.enter(|m| {
-        let obj = m.new_array(vec![Value::SmallInt(1), Value::SmallInt(2)]);
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let object = mutator.new_array(vec![Value::SmallInteger(1), Value::SmallInteger(2)]);
 
-        assert_eq!(m.heap().array_len(obj), Some(2));
+        assert_eq!(mutator.heap().array_length(object), Some(2));
         assert!(matches!(
-            m.heap().array_at(obj, 0),
-            Some(Value::SmallInt(1))
+            mutator.heap().array_at(object, 0),
+            Some(Value::SmallInteger(1))
         ));
 
-        assert!(m.heap_mut().array_set(obj, 0, Value::SmallInt(9)));
+        assert!(mutator
+            .heap_mut()
+            .array_set(object, 0, Value::SmallInteger(9)));
         assert!(matches!(
-            m.heap().array_at(obj, 0),
-            Some(Value::SmallInt(9))
+            mutator.heap().array_at(object, 0),
+            Some(Value::SmallInteger(9))
         ));
 
-        assert!(m.heap_mut().array_push(obj, Value::SmallInt(3)));
-        assert_eq!(m.heap().array_len(obj), Some(3));
+        assert!(mutator
+            .heap_mut()
+            .array_push(object, Value::SmallInteger(3)));
+        assert_eq!(mutator.heap().array_length(object), Some(3));
     });
 }
 
 #[test]
 fn an_array_accessor_on_a_non_array_answers_none_rather_than_panicking() {
-    let mut interp = Interpreter::bootstrap();
-    interp.enter(|m| {
-        let obj = m.new_string("not an array".to_string());
-        assert_eq!(m.heap().array_len(obj), None);
-        assert!(m.heap().array_at(obj, 0).is_none());
-        assert!(!m.heap_mut().array_push(obj, Value::Nil));
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let object = mutator.new_string("not an array".to_string());
+        assert_eq!(mutator.heap().array_length(object), None);
+        assert!(mutator.heap().array_at(object, 0).is_none());
+        assert!(!mutator.heap_mut().array_push(object, Value::Nil));
     });
 }
 
 #[test]
 fn an_out_of_range_index_answers_none_or_false_rather_than_panicking() {
-    let mut interp = Interpreter::bootstrap();
-    interp.enter(|m| {
-        let obj = m.new_array(vec![Value::SmallInt(1), Value::SmallInt(2)]);
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let object = mutator.new_array(vec![Value::SmallInteger(1), Value::SmallInteger(2)]);
 
-        assert!(m.heap().array_at(obj, 99).is_none());
-        assert!(!m.heap_mut().array_set(obj, 99, Value::SmallInt(9)));
+        assert!(mutator.heap().array_at(object, 99).is_none());
+        assert!(!mutator
+            .heap_mut()
+            .array_set(object, 99, Value::SmallInteger(9)));
     });
 }
 
 #[test]
 fn string_and_symbol_accessors_answer_only_for_their_own_shape() {
-    let mut interp = Interpreter::bootstrap();
-    interp.enter(|m| {
-        let s = m.new_string("hello".to_string());
-        assert_eq!(m.heap().str_value(s), Some("hello".to_string()));
-        assert_eq!(m.heap().sym_value(s), None);
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let string = mutator.new_string("hello".to_string());
+        assert_eq!(mutator.heap().str_value(string), Some("hello".to_string()));
+        assert_eq!(mutator.heap().symbol_value(string), None);
     });
 }
 
 #[test]
 fn is_class_distinguishes_a_class_object_from_an_instance() {
-    let mut interp = Interpreter::bootstrap();
-    interp.enter(|m| {
-        let s = m.new_string("x".to_string());
-        let class = m.class_of(&Value::Obj(s));
-        assert!(!m.heap().is_class(s));
-        assert!(m.heap().is_class(class));
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let string = mutator.new_string("x".to_string());
+        let class = mutator.class_of(&Value::Object(string));
+        assert!(!mutator.heap().is_class(string));
+        assert!(mutator.heap().is_class(class));
     });
 }
 
@@ -80,24 +86,24 @@ fn is_class_distinguishes_a_class_object_from_an_instance() {
 /// identically to a user.
 #[test]
 fn describe_renders_a_distinct_non_empty_text_per_value_shape() {
-    let mut interp = Interpreter::bootstrap();
-    interp.enter(|m| {
-        let s = Value::Obj(m.new_string("hi".to_string()));
-        let arr = Value::Obj(m.new_array(vec![Value::SmallInt(1)]));
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let string_value = Value::Object(mutator.new_string("hi".to_string()));
+        let array_value = Value::Object(mutator.new_array(vec![Value::SmallInteger(1)]));
 
-        let nil = m.heap().describe(&Value::Nil);
-        let small_int = m.heap().describe(&Value::SmallInt(42));
-        let string = m.heap().describe(&s);
-        let array = m.heap().describe(&arr);
+        let nil = mutator.heap().describe(&Value::Nil);
+        let small_integer = mutator.heap().describe(&Value::SmallInteger(42));
+        let string = mutator.heap().describe(&string_value);
+        let array = mutator.heap().describe(&array_value);
 
-        let all = [&nil, &small_int, &string, &array];
+        let all = [&nil, &small_integer, &string, &array];
         for text in all {
             assert!(!text.is_empty(), "description must not be empty");
         }
-        for (i, a) in all.iter().enumerate() {
-            for (j, b) in all.iter().enumerate() {
-                if i != j {
-                    assert_ne!(a, b, "descriptions must be distinct per shape");
+        for (first_index, first) in all.iter().enumerate() {
+            for (second_index, second) in all.iter().enumerate() {
+                if first_index != second_index {
+                    assert_ne!(first, second, "descriptions must be distinct per shape");
                 }
             }
         }
@@ -105,64 +111,69 @@ fn describe_renders_a_distinct_non_empty_text_per_value_shape() {
 }
 
 #[test]
-fn describe_arg_none_names_the_absence_of_an_argument() {
-    let mut interp = Interpreter::bootstrap();
-    interp.enter(|m| {
-        let text = m.heap().describe_arg(None);
+fn describe_argument_none_names_the_absence_of_an_argument() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let text = mutator.heap().describe_argument(None);
         assert!(!text.is_empty());
         // Must not be confusable with a real value's description.
-        assert_ne!(text, m.heap().describe(&Value::Nil));
+        assert_ne!(text, mutator.heap().describe(&Value::Nil));
     });
 }
 
 #[test]
-fn describe_arg_some_matches_describe_of_the_same_value() {
-    let mut interp = Interpreter::bootstrap();
-    interp.enter(|m| {
-        let v = Value::SmallInt(7);
-        assert_eq!(m.heap().describe_arg(Some(&v)), m.heap().describe(&v));
+fn describe_argument_some_matches_describe_of_the_same_value() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let value = Value::SmallInteger(7);
+        assert_eq!(
+            mutator.heap().describe_argument(Some(&value)),
+            mutator.heap().describe(&value)
+        );
     });
 }
 
 #[test]
 fn class_accessors_answer_none_for_an_instance() {
-    let mut interp = Interpreter::bootstrap();
-    interp.enter(|m| {
-        let s = m.new_string("x".to_string());
-        assert!(m.heap().class_application(s).is_none());
-        assert!(m.heap().class_superclass(s).is_none());
-        assert!(m.heap().class_builtin(s).is_none());
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let string = mutator.new_string("x".to_string());
+        assert!(mutator.heap().class_application(string).is_none());
+        assert!(mutator.heap().class_superclass(string).is_none());
+        assert!(mutator.heap().class_builtin(string).is_none());
     });
 }
 
 #[test]
 fn a_builtin_class_reports_its_kind_through_the_seam() {
-    let mut interp = Interpreter::bootstrap();
-    interp.enter(|m| {
-        let s = m.new_string("x".to_string());
-        let class = m.class_of(&Value::Obj(s));
-        assert!(m.heap().class_builtin(class).is_some());
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let string = mutator.new_string("x".to_string());
+        let class = mutator.class_of(&Value::Object(string));
+        assert!(mutator.heap().class_builtin(class).is_some());
     });
 }
 
-fn load(src: &str) -> (Interpreter, Root) {
-    let module = ns_syntax::parse(src).expect("parse");
+fn load(source: &str) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
-        src.into(),
+        source.into(),
         ns_runtime::SourceOrigin::File("test.ns".into()),
     )
     .expect("resolve");
-    let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
-    (interp, class)
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
+    (interpreter, class)
 }
 
 fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
         Ok(root) => root,
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
-        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
+        Err(HostSignal::Error(error)) => {
+            panic!("{what}: unexpected Newspeak error: {}", error.message)
+        }
     }
 }
 
@@ -172,28 +183,28 @@ fn register_addressing_puts_arguments_before_temporaries() {
     // the argument/temporary boundary is exactly what the accessor
     // encodes, and a synthetic frame could encode it wrongly and then
     // agree with itself.
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class T usingPlatform: p = Object new () (
             public run: a = (| t | t := a. ^t)
         ) : ()
     "};
-    let (mut interp, class) = load(src);
+    let (mut interpreter, class) = load(source);
     // Computed ahead of the call: `send` takes `&mut Interpreter`, and so
     // does `platform()`, so the two cannot be nested in one expression.
-    let platform = interp.platform();
+    let platform = interpreter.platform();
     let instance = expect_ok(
-        interp.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
         "instantiate",
     );
     let result = expect_ok(
-        interp.send(
+        interpreter.send(
             &instance,
             Symbol::intern("run:"),
-            &[interp.stash(Value::SmallInt(41))],
+            &[interpreter.stash(Value::SmallInteger(41))],
         ),
         "run:",
     );
-    assert!(interp.enter(|m| matches!(m.fetch(&result), Value::SmallInt(41))));
+    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&result), Value::SmallInteger(41))));
 }

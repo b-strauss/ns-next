@@ -1,35 +1,36 @@
-//! The reference lowering: a second, deliberately naive `Expr`/`Stmt` ->
-//! `Instr` lowering, which exists to be compared against `lower.rs`. Nothing
-//! is inlined, every value gets a register nothing else writes, and every
-//! read of a local is copied. See `docs/design/compiler.md`, "The reference
-//! lowering" -- in particular why this module shares so little with
-//! `lower.rs`: whatever the two share, the comparison cannot check.
+//! The reference lowering: a second, deliberately naive
+//! `Expression`/`Statement` -> `Instruction` lowering, which exists to be
+//! compared against `lower.rs`. Nothing is inlined, every value gets a register
+//! nothing else writes, and every read of a local is copied. See
+//! `docs/design/compiler.md`, "The reference lowering" -- in particular why
+//! this module shares so little with `lower.rs`: whatever the two share, the
+//! comparison cannot check.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expr, Stmt};
+use ns_syntax::ast::{self, Expression, Statement};
 use ns_syntax::Span;
 
 use super::control_flow;
 use super::lower::{lower_literal, selector_of};
-use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instr, Literal as BcLiteral};
+use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, Literal as BytecodeLiteral};
 use crate::mixin::Mixin;
 use crate::types::Binding;
 use crate::Symbol;
 
 type Bindings = Rc<HashMap<Span, Binding>>;
 
-pub(crate) fn compile_method(method: &ast::MethodDecl, bindings: &Bindings) -> CompiledCode {
+pub(crate) fn compile_method(method: &ast::MethodDeclaration, bindings: &Bindings) -> CompiledCode {
     let mut body = Body::new(
         CodeKind::Method,
-        super::num_args_of(&method.pattern),
-        u16::try_from(method.body.temps.len())
+        super::argument_count_of(&method.pattern),
+        u16::try_from(method.body.temporaries.len())
             .expect("internal: more than u16::MAX temporaries in one method"),
         bindings,
     );
-    body.statements_and_end(&method.body.stmts);
+    body.statements_and_end(&method.body.statements);
     body.finish(method.span)
 }
 
@@ -39,61 +40,69 @@ pub(crate) fn compile_mixin_bodies(mixin: &mut Mixin, bindings: &Bindings) {
     mixin.superclass_message_code = superclass_message(mixin, bindings).map(Rc::new);
 }
 
-/// Each own slot's initializer followed by `InitSlot`, one statement apiece,
-/// then the `initExprs`, then `self`. `InitSlot`'s index is the slot's
-/// position among the mixin's own slots, never an absolute field index
+/// Each own slot's initializer followed by `InitializeSlot`, one statement
+/// apiece, then the `initExprs`, then `self`. `InitializeSlot`'s index is the
+/// slot's position among the mixin's own slots, never an absolute field index
 /// (`docs/design/compiler.md`, "One body per mixin").
 fn initializer(mixin: &Mixin, bindings: &Bindings) -> CompiledCode {
     let mut body = Body::new(
         CodeKind::Initializer,
-        super::factory_num_args(mixin),
+        super::factory_argument_count(mixin),
         0,
         bindings,
     );
-    let mut source: Option<Span> = None;
+    let mut source_span: Option<Span> = None;
     for (own_index, slot) in mixin.slots.iter().enumerate() {
-        let Some(decl) = &slot.decl else { continue };
-        let Some(init) = &decl.init else { continue };
-        let start = body.instrs.len();
-        let src = body.value(init);
-        body.emit(Instr::InitSlot {
-            src,
+        let Some(declaration) = &slot.declaration else {
+            continue;
+        };
+        let Some(initializer) = &declaration.initializer else {
+            continue;
+        };
+        let start = body.instructions.len();
+        let source = body.value(initializer);
+        body.emit(Instruction::InitializeSlot {
+            source,
             own_index: own_index as u32,
         });
         body.record_statement(start);
-        source = Some(super::merge_span(source, decl.span));
+        source_span = Some(super::merge_span(source_span, declaration.span));
     }
-    for stmt in &mixin.init_exprs {
-        source = Some(super::merge_span(source, super::stmt_span(stmt)));
+    for statement in &mixin.initializer_expressions {
+        source_span = Some(super::merge_span(
+            source_span,
+            super::statement_span(statement),
+        ));
     }
-    body.statements_and_end(&mixin.init_exprs);
-    body.finish(source.unwrap_or(Span::new(0, 0)))
+    body.statements_and_end(&mixin.initializer_expressions);
+    body.finish(source_span.unwrap_or(Span::new(0, 0)))
 }
 
 /// The superclass clause as a single `^ec`. The expression is
 /// `interpreter::nested`'s, the one definition of what a clause evaluates.
 fn superclass_clause(mixin: &Mixin, bindings: &Bindings) -> Option<CompiledCode> {
-    let clause = mixin.decl.as_ref()?.superclass.as_ref()?;
-    let stmts = [Stmt::Return(
-        crate::interpreter::nested::superclass_clause_expr(clause),
+    let clause = mixin.declaration.as_ref()?.superclass.as_ref()?;
+    let statements = [Statement::Return(
+        crate::interpreter::nested::superclass_clause_expression(clause),
     )];
     let mut body = Body::new(CodeKind::SuperclassClause, 0, 0, bindings);
-    body.statements_and_end(&stmts);
+    body.statements_and_end(&statements);
     Some(body.finish(clause.span))
 }
 
-/// The clause's message arguments as a single `^{arg. arg}`, run with the
-/// declaring class's own factory arguments.
+/// The clause's message arguments as a single `^{argument. argument}`, run with
+/// the declaring class's own factory arguments.
 fn superclass_message(mixin: &Mixin, bindings: &Bindings) -> Option<CompiledCode> {
-    let clause = mixin.decl.as_ref()?.superclass.as_ref()?;
-    let args = crate::interpreter::nested::superclass_clause_message_args_expr(clause)?;
+    let clause = mixin.declaration.as_ref()?.superclass.as_ref()?;
+    let arguments =
+        crate::interpreter::nested::superclass_clause_message_arguments_expression(clause)?;
     let mut body = Body::new(
         CodeKind::SuperclassMessage,
-        super::factory_num_args(mixin),
+        super::factory_argument_count(mixin),
         0,
         bindings,
     );
-    body.statements_and_end(&[Stmt::Return(args)]);
+    body.statements_and_end(&[Statement::Return(arguments)]);
     Some(body.finish(clause.span))
 }
 
@@ -102,31 +111,36 @@ fn superclass_message(mixin: &Mixin, bindings: &Bindings) -> Option<CompiledCode
 struct Body<'a> {
     bindings: &'a Bindings,
     kind: CodeKind,
-    num_args: u16,
+    argument_count: u16,
     /// The first register above the named locals. Every register from here
     /// on is written by exactly one instruction.
     first_scratch: u16,
     next_register: u16,
-    instrs: Vec<Instr>,
-    statement_pc: Vec<(usize, Range<usize>)>,
+    instructions: Vec<Instruction>,
+    statement_program_counter: Vec<(usize, Range<usize>)>,
     call_sites: Vec<CallSite>,
 }
 
 impl<'a> Body<'a> {
-    fn new(kind: CodeKind, num_args: u16, num_temps: u16, bindings: &'a Bindings) -> Self {
+    fn new(
+        kind: CodeKind,
+        argument_count: u16,
+        temporary_count: u16,
+        bindings: &'a Bindings,
+    ) -> Self {
         // Checked in every build, like `fresh`: a wrapped sum would place
         // scratch registers on top of the named locals.
-        let first_scratch = num_args
-            .checked_add(num_temps)
+        let first_scratch = argument_count
+            .checked_add(temporary_count)
             .expect("internal: more than u16::MAX named locals in one body");
         Body {
             bindings,
             kind,
-            num_args,
+            argument_count,
             first_scratch,
             next_register: first_scratch,
-            instrs: Vec::new(),
-            statement_pc: Vec::new(),
+            instructions: Vec::new(),
+            statement_program_counter: Vec::new(),
             call_sites: Vec::new(),
         }
     }
@@ -142,8 +156,8 @@ impl<'a> Body<'a> {
         register
     }
 
-    fn emit(&mut self, instr: Instr) {
-        self.instrs.push(instr);
+    fn emit(&mut self, instruction: Instruction) {
+        self.instructions.push(instruction);
     }
 
     fn binding(&self, span: Span) -> Option<Binding> {
@@ -151,38 +165,43 @@ impl<'a> Body<'a> {
     }
 
     fn record_statement(&mut self, start: usize) {
-        let index = self.statement_pc.len();
-        self.statement_pc.push((index, start..self.instrs.len()));
+        let index = self.statement_program_counter.len();
+        self.statement_program_counter
+            .push((index, start..self.instructions.len()));
     }
 
-    fn statements_and_end(&mut self, stmts: &[Stmt]) {
+    fn statements_and_end(&mut self, statements: &[Statement]) {
         let mut last_value = None;
-        for stmt in stmts {
-            last_value = self.statement(stmt);
+        for statement in statements {
+            last_value = self.statement(statement);
         }
-        self.end(matches!(stmts.last(), Some(Stmt::Return(_))), last_value);
+        self.end(
+            matches!(statements.last(), Some(Statement::Return(_))),
+            last_value,
+        );
     }
 
-    /// One of the body's own statements, recorded in `statement_pc`. Answers
-    /// the statement's value register, or `None` when it emitted a return.
-    fn statement(&mut self, stmt: &Stmt) -> Option<u16> {
-        let start = self.instrs.len();
-        let value = match stmt {
-            Stmt::Expr(expr) => Some(self.value(expr)),
-            Stmt::Return(expr) => {
-                let reg = self.value(expr);
+    /// One of the body's own statements, recorded in
+    /// `statement_program_counter`. Answers the statement's value register, or
+    /// `None` when it emitted a return.
+    fn statement(&mut self, statement: &Statement) -> Option<u16> {
+        let start = self.instructions.len();
+        let value = match statement {
+            Statement::Expression(expression) => Some(self.value(expression)),
+            Statement::Return(expression) => {
+                let register = self.value(expression);
                 match self.kind {
                     CodeKind::Method | CodeKind::SuperclassClause | CodeKind::SuperclassMessage => {
-                        self.emit(Instr::Return { reg });
+                        self.emit(Instruction::Return { register });
                         None
                     }
                     CodeKind::Block => {
-                        self.emit(Instr::NonLocalReturn { reg });
+                        self.emit(Instruction::NonLocalReturn { register });
                         None
                     }
                     // A top-level `^` in an initializer has no method to
                     // return from: it is evaluated and its value discarded.
-                    CodeKind::Initializer => Some(reg),
+                    CodeKind::Initializer => Some(register),
                 }
             }
         };
@@ -201,11 +220,11 @@ impl<'a> Body<'a> {
             CodeKind::Block | CodeKind::SuperclassClause | CodeKind::SuperclassMessage
                 if !ends_in_return =>
             {
-                let reg = match last_value {
-                    Some(reg) => reg,
-                    None => self.literal(BcLiteral::Nil),
+                let register = match last_value {
+                    Some(register) => register,
+                    None => self.literal(BytecodeLiteral::Nil),
                 };
-                self.emit(Instr::ImplicitReturn { reg });
+                self.emit(Instruction::ImplicitReturn { register });
             }
             CodeKind::Method
             | CodeKind::Block
@@ -215,65 +234,83 @@ impl<'a> Body<'a> {
     }
 
     fn return_self(&mut self) {
-        let reg = self.fresh();
-        self.emit(Instr::LoadSelf { dst: reg });
-        self.emit(Instr::ImplicitReturn { reg });
+        let register = self.fresh();
+        self.emit(Instruction::LoadSelf {
+            destination: register,
+        });
+        self.emit(Instruction::ImplicitReturn { register });
     }
 
-    fn literal(&mut self, literal: BcLiteral) -> u16 {
-        let dst = self.fresh();
-        self.emit(Instr::LoadLiteral { dst, literal });
-        dst
+    fn literal(&mut self, literal: BytecodeLiteral) -> u16 {
+        let destination = self.fresh();
+        self.emit(Instruction::LoadLiteral {
+            destination,
+            literal,
+        });
+        destination
     }
 
-    /// Lowers `expr` and answers the register holding its value -- always a
-    /// register this lowering wrote for it and will never write again.
-    fn value(&mut self, expr: &Expr) -> u16 {
-        match expr {
-            Expr::Literal(lit) => self.literal(lower_literal(lit)),
-            Expr::Ident(id) => self.read(id),
-            Expr::Assign { target, value, .. } => self.assign(target, value),
-            Expr::Send(send) => self.send(send),
-            Expr::Cascade(cascade) => self.cascade(cascade),
-            Expr::Block(block) => self.block(block),
-            Expr::DynamicArray { elements, .. } => {
-                let elem_regs = self.values(elements);
-                let dst = self.fresh();
-                self.emit(Instr::MakeArray { dst, elem_regs });
-                dst
+    /// Lowers `expression` and answers the register holding its value -- always
+    /// a register this lowering wrote for it and will never write again.
+    fn value(&mut self, expression: &Expression) -> u16 {
+        match expression {
+            Expression::Literal(literal) => self.literal(lower_literal(literal)),
+            Expression::Identifier(id) => self.read(id),
+            Expression::Assign { target, value, .. } => self.assign(target, value),
+            Expression::Send(send) => self.send(send),
+            Expression::Cascade(cascade) => self.cascade(cascade),
+            Expression::Block(block) => self.block(block),
+            Expression::DynamicArray { elements, .. } => {
+                let element_registers = self.values(elements);
+                let destination = self.fresh();
+                self.emit(Instruction::MakeArray {
+                    destination,
+                    element_registers,
+                });
+                destination
             }
         }
     }
 
     /// Left to right, each into a register of its own.
-    fn values(&mut self, exprs: &[Expr]) -> Vec<u16> {
-        exprs.iter().map(|e| self.value(e)).collect()
+    fn values(&mut self, expressions: &[Expression]) -> Vec<u16> {
+        expressions
+            .iter()
+            .map(|expression| self.value(expression))
+            .collect()
     }
 
-    fn read(&mut self, id: &ast::Ident) -> u16 {
+    fn read(&mut self, id: &ast::Identifier) -> u16 {
         if id.name == "self" {
-            let dst = self.fresh();
-            self.emit(Instr::LoadSelf { dst });
-            return dst;
+            let destination = self.fresh();
+            self.emit(Instruction::LoadSelf { destination });
+            return destination;
         }
         match self.binding(id.span) {
-            Some(Binding::Local(src)) => {
-                let dst = self.fresh();
-                self.emit(Instr::Move { dst, src });
-                dst
+            Some(Binding::Local(source)) => {
+                let destination = self.fresh();
+                self.emit(Instruction::Move {
+                    destination,
+                    source,
+                });
+                destination
             }
             Some(Binding::OuterLocal { depth, index }) => {
-                let dst = self.fresh();
-                self.emit(Instr::LoadOuterLocal { dst, depth, index });
-                dst
+                let destination = self.fresh();
+                self.emit(Instruction::LoadOuterLocal {
+                    destination,
+                    depth,
+                    index,
+                });
+                destination
             }
             Some(Binding::LexicalSend { depth }) => {
                 let selector = Symbol::intern(&id.name);
-                self.emit_send(|dst, call_site| Instr::SendLexical {
+                self.emit_send(|destination, call_site| Instruction::SendLexical {
                     depth,
                     selector,
-                    arg_regs: vec![],
-                    dst,
+                    argument_registers: vec![],
+                    destination,
                     call_site,
                 })
             }
@@ -283,35 +320,35 @@ impl<'a> Body<'a> {
             // is a `super`-prefixed superclass-clause receiver, which falls to
             // the same case.
             Some(Binding::SuperSend) | None => {
-                let dst = self.fresh();
+                let destination = self.fresh();
                 match crate::interpreter::instantiate::builtin_kind_from_name(&id.name) {
-                    Some(kind) => self.emit(Instr::LoadBuiltinClass { dst, kind }),
-                    None => self.emit(Instr::LoadLiteral {
-                        dst,
-                        literal: BcLiteral::UnresolvedIdent(id.name.clone()),
+                    Some(kind) => self.emit(Instruction::LoadBuiltinClass { destination, kind }),
+                    None => self.emit(Instruction::LoadLiteral {
+                        destination,
+                        literal: BytecodeLiteral::UnresolvedIdentifier(id.name.clone()),
                     }),
                 }
-                dst
+                destination
             }
         }
     }
 
     /// The assignment's value is the register its value was computed into,
     /// never the local it was stored in.
-    fn assign(&mut self, target: &ast::Ident, value: &Expr) -> u16 {
-        let v = self.value(value);
+    fn assign(&mut self, target: &ast::Identifier, value: &Expression) -> u16 {
+        let value_register = self.value(value);
         match self.binding(target.span) {
-            Some(Binding::Local(slot)) => self.emit(Instr::StoreLocal { src: v, slot }),
+            Some(Binding::Local(slot)) => self.emit(Instruction::StoreLocal { source: value_register, slot }),
             Some(Binding::OuterLocal { depth, index }) => {
-                self.emit(Instr::StoreOuterLocal { src: v, depth, index });
+                self.emit(Instruction::StoreOuterLocal { source: value_register, depth, index });
             }
             Some(Binding::LexicalSend { depth }) => {
                 let selector = Symbol::intern(&format!("{}:", target.name));
-                self.emit_send(|dst, call_site| Instr::SendLexical {
+                self.emit_send(|destination, call_site| Instruction::SendLexical {
                     depth,
                     selector,
-                    arg_regs: vec![v],
-                    dst,
+                    argument_registers: vec![value_register],
+                    destination,
                     call_site,
                 });
             }
@@ -320,28 +357,28 @@ impl<'a> Body<'a> {
                 target.name
             ),
         }
-        v
+        value_register
     }
 
     fn send(&mut self, send: &ast::Send) -> u16 {
         let selector = selector_of(&send.message);
         match self.binding(send.span) {
             Some(Binding::SuperSend) => {
-                let arg_regs = self.values(&send.message.args);
-                self.emit_send(|dst, call_site| Instr::SendSuper {
+                let argument_registers = self.values(&send.message.arguments);
+                self.emit_send(|destination, call_site| Instruction::SendSuper {
                     selector,
-                    arg_regs,
-                    dst,
+                    argument_registers,
+                    destination,
                     call_site,
                 })
             }
             Some(Binding::LexicalSend { depth }) => {
-                let arg_regs = self.values(&send.message.args);
-                self.emit_send(|dst, call_site| Instr::SendLexical {
+                let argument_registers = self.values(&send.message.arguments);
+                self.emit_send(|destination, call_site| Instruction::SendLexical {
                     depth,
                     selector,
-                    arg_regs,
-                    dst,
+                    argument_registers,
+                    destination,
                     call_site,
                 })
             }
@@ -349,98 +386,98 @@ impl<'a> Body<'a> {
             // marked `SendInlinable`, which only the depth count reads
             // (`docs/design/compiler.md`, "How the limit counts").
             Some(Binding::Local(_) | Binding::OuterLocal { .. }) | None => {
-                let receiver_reg = self.value(&send.receiver);
+                let receiver_register = self.value(&send.receiver);
                 if control_flow::recognize(send).is_some() {
-                    self.inlinable_send(receiver_reg, &send.message)
+                    self.inlinable_send(receiver_register, &send.message)
                 } else {
-                    self.public_send(receiver_reg, &send.message)
+                    self.public_send(receiver_register, &send.message)
                 }
             }
         }
     }
 
-    fn public_send(&mut self, receiver_reg: u16, message: &ast::MessageSend) -> u16 {
+    fn public_send(&mut self, receiver_register: u16, message: &ast::MessageSend) -> u16 {
         let selector = selector_of(message);
-        let arg_regs = self.values(&message.args);
-        self.emit_send(|dst, call_site| Instr::SendPublic {
+        let argument_registers = self.values(&message.arguments);
+        self.emit_send(|destination, call_site| Instruction::SendPublic {
             selector,
-            receiver_reg,
-            arg_regs,
-            dst,
+            receiver_register,
+            argument_registers,
+            destination,
             call_site,
         })
     }
 
-    fn inlinable_send(&mut self, receiver_reg: u16, message: &ast::MessageSend) -> u16 {
+    fn inlinable_send(&mut self, receiver_register: u16, message: &ast::MessageSend) -> u16 {
         let selector = selector_of(message);
-        let arg_regs = self.values(&message.args);
-        self.emit_send(|dst, call_site| Instr::SendInlinable {
+        let argument_registers = self.values(&message.arguments);
+        self.emit_send(|destination, call_site| Instruction::SendInlinable {
             selector,
-            receiver_reg,
-            arg_regs,
-            dst,
+            receiver_register,
+            argument_registers,
+            destination,
             call_site,
         })
     }
 
     fn cascade(&mut self, cascade: &ast::Cascade) -> u16 {
-        let receiver_reg = self.value(&cascade.receiver);
-        let mut result = self.public_send(receiver_reg, &cascade.first);
+        let receiver_register = self.value(&cascade.receiver);
+        let mut result = self.public_send(receiver_register, &cascade.first);
         for message in &cascade.rest {
-            result = self.public_send(receiver_reg, message);
+            result = self.public_send(receiver_register, message);
         }
         result
     }
 
-    fn block(&mut self, block: &ast::BlockExpr) -> u16 {
-        let params: Vec<Symbol> = block
-            .params
+    fn block(&mut self, block: &ast::BlockExpression) -> u16 {
+        let parameters: Vec<Symbol> = block
+            .parameters
             .iter()
-            .map(|p| Symbol::intern(&p.name))
+            .map(|parameter| Symbol::intern(&parameter.name))
             .collect();
         let mut inner = Body::new(
             CodeKind::Block,
-            u16::try_from(params.len())
+            u16::try_from(parameters.len())
                 .expect("internal: more than u16::MAX parameters in one block"),
-            u16::try_from(block.body.temps.len())
+            u16::try_from(block.body.temporaries.len())
                 .expect("internal: more than u16::MAX temporaries in one block"),
             self.bindings,
         );
-        inner.statements_and_end(&block.body.stmts);
+        inner.statements_and_end(&block.body.statements);
         let code = inner.finish(block.span);
-        let dst = self.fresh();
-        self.emit(Instr::MakeClosure {
-            dst,
-            params: Rc::new(params),
+        let destination = self.fresh();
+        self.emit(Instruction::MakeClosure {
+            destination,
+            parameters: Rc::new(parameters),
             code: Rc::new(code),
         });
-        dst
+        destination
     }
 
-    fn emit_send(&mut self, build: impl FnOnce(u16, CallSite) -> Instr) -> u16 {
-        let dst = self.fresh();
+    fn emit_send(&mut self, build: impl FnOnce(u16, CallSite) -> Instruction) -> u16 {
+        let destination = self.fresh();
         // A call site is its send's own instruction index. Checked in every
         // build for the same reason as `fresh`: a wrapped id would alias two
         // call sites silently.
         let call_site = CallSite {
-            call_site_id: u16::try_from(self.instrs.len())
+            call_site_id: u16::try_from(self.instructions.len())
                 .expect("internal: more than u16::MAX instructions in one body"),
         };
-        self.emit(build(dst, call_site));
+        self.emit(build(destination, call_site));
         self.call_sites.push(call_site);
-        dst
+        destination
     }
 
     fn finish(self, source: Span) -> CompiledCode {
         if cfg!(debug_assertions) {
-            check_shape(&self.instrs, self.first_scratch);
+            check_shape(&self.instructions, self.first_scratch);
         }
         CompiledCode {
             kind: self.kind,
-            instrs: self.instrs,
-            num_args: self.num_args,
-            num_registers: self.next_register,
-            statement_pc: self.statement_pc,
+            instructions: self.instructions,
+            argument_count: self.argument_count,
+            register_count: self.next_register,
+            statement_program_counter: self.statement_program_counter,
             call_sites: self.call_sites,
             source,
         }
@@ -457,114 +494,121 @@ impl<'a> Body<'a> {
 /// which is what keeps a value from changing under its consumer -- the
 /// property the optimized lowering has to earn with copies of its own
 /// ("The value-register invariant").
-fn check_shape(instrs: &[Instr], first_scratch: u16) {
+fn check_shape(instructions: &[Instruction], first_scratch: u16) {
     let mut written = HashSet::new();
-    for instr in instrs {
+    for instruction in instructions {
         assert!(
             !matches!(
-                instr,
-                Instr::Jump { .. }
-                    | Instr::JumpIfNotBoolean { .. }
-                    | Instr::BranchIfFalse { .. }
-                    | Instr::BranchIfTrue { .. }
+                instruction,
+                Instruction::Jump { .. }
+                    | Instruction::JumpIfNotBoolean { .. }
+                    | Instruction::BranchIfFalse { .. }
+                    | Instruction::BranchIfTrue { .. }
             ),
-            "internal: the reference lowering emitted a branch: {instr:?}"
+            "internal: the reference lowering emitted a branch: {instruction:?}"
         );
-        if let Some(dst) = destination(instr) {
+        if let Some(written_register) = destination(instruction) {
             assert!(
-                dst >= first_scratch,
-                "internal: the reference lowering wrote named local r{dst} other than by StoreLocal"
+                written_register >= first_scratch,
+                "internal: the reference lowering wrote named local r{written_register} other than by StoreLocal"
             );
             assert!(
-                written.insert(dst),
-                "internal: the reference lowering wrote r{dst} twice"
+                written.insert(written_register),
+                "internal: the reference lowering wrote r{written_register} twice"
             );
         }
-        if let Instr::StoreLocal { slot, .. } = instr {
+        if let Instruction::StoreLocal { slot, .. } = instruction {
             assert!(
                 *slot < first_scratch,
-                "internal: the reference lowering stored into scratch register r{slot}: {instr:?}"
+                "internal: the reference lowering stored into scratch register r{slot}: {instruction:?}"
             );
         }
-        for operand in operands(instr) {
-            match instr {
-                Instr::Move { .. } => assert!(
+        for operand in operands(instruction) {
+            match instruction {
+                Instruction::Move { .. } => assert!(
                     operand < first_scratch,
-                    "internal: the reference lowering copied scratch register r{operand}: {instr:?}"
+                    "internal: the reference lowering copied scratch register r{operand}: {instruction:?}"
                 ),
                 _ => assert!(
                     operand >= first_scratch,
-                    "internal: the reference lowering read named local r{operand} without copying it: {instr:?}"
+                    "internal: the reference lowering read named local r{operand} without copying it: {instruction:?}"
                 ),
             }
         }
     }
 }
 
-/// The registers of this body that `instr` reads. Exhaustive on purpose, like
-/// `destination`: a new instruction has to decide here what it reads. The
-/// `index` of an outer-local access names a register of another frame, so it
-/// is not one of them.
-fn operands(instr: &Instr) -> Vec<u16> {
-    match instr {
-        Instr::Move { src, .. }
-        | Instr::StoreLocal { src, .. }
-        | Instr::StoreOuterLocal { src, .. }
-        | Instr::InitSlot { src, .. } => vec![*src],
-        Instr::Return { reg }
-        | Instr::ImplicitReturn { reg }
-        | Instr::NonLocalReturn { reg }
-        | Instr::JumpIfNotBoolean { reg, .. }
-        | Instr::BranchIfFalse { reg, .. }
-        | Instr::BranchIfTrue { reg, .. } => vec![*reg],
-        Instr::SendPublic {
-            receiver_reg,
-            arg_regs,
+/// The registers of this body that `instruction` reads. Exhaustive on purpose,
+/// like `destination`: a new instruction has to decide here what it reads. The
+/// `index` of an outer-local access names a register of another frame, so it is
+/// not one of them.
+fn operands(instruction: &Instruction) -> Vec<u16> {
+    match instruction {
+        Instruction::Move { source, .. }
+        | Instruction::StoreLocal { source, .. }
+        | Instruction::StoreOuterLocal { source, .. }
+        | Instruction::InitializeSlot { source, .. } => vec![*source],
+        Instruction::Return { register }
+        | Instruction::ImplicitReturn { register }
+        | Instruction::NonLocalReturn { register }
+        | Instruction::JumpIfNotBoolean { register, .. }
+        | Instruction::BranchIfFalse { register, .. }
+        | Instruction::BranchIfTrue { register, .. } => vec![*register],
+        Instruction::SendPublic {
+            receiver_register,
+            argument_registers,
             ..
         }
-        | Instr::SendInlinable {
-            receiver_reg,
-            arg_regs,
+        | Instruction::SendInlinable {
+            receiver_register,
+            argument_registers,
             ..
-        } => std::iter::once(*receiver_reg)
-            .chain(arg_regs.iter().copied())
+        } => std::iter::once(*receiver_register)
+            .chain(argument_registers.iter().copied())
             .collect(),
-        Instr::SendLexical { arg_regs, .. } | Instr::SendSuper { arg_regs, .. } => arg_regs.clone(),
-        Instr::MakeArray { elem_regs, .. } => elem_regs.clone(),
-        Instr::LoadLiteral { .. }
-        | Instr::LoadSelf { .. }
-        | Instr::LoadBuiltinClass { .. }
-        | Instr::LoadOuterLocal { .. }
-        | Instr::MakeClosure { .. }
-        | Instr::Jump { .. } => vec![],
+        Instruction::SendLexical {
+            argument_registers, ..
+        }
+        | Instruction::SendSuper {
+            argument_registers, ..
+        } => argument_registers.clone(),
+        Instruction::MakeArray {
+            element_registers, ..
+        } => element_registers.clone(),
+        Instruction::LoadLiteral { .. }
+        | Instruction::LoadSelf { .. }
+        | Instruction::LoadBuiltinClass { .. }
+        | Instruction::LoadOuterLocal { .. }
+        | Instruction::MakeClosure { .. }
+        | Instruction::Jump { .. } => vec![],
     }
 }
 
-/// The register `instr` writes, if any. Exhaustive on purpose: a new
+/// The register `instruction` writes, if any. Exhaustive on purpose: a new
 /// instruction has to decide here whether it writes a register.
-fn destination(instr: &Instr) -> Option<u16> {
-    match instr {
-        Instr::LoadLiteral { dst, .. }
-        | Instr::LoadSelf { dst }
-        | Instr::LoadBuiltinClass { dst, .. }
-        | Instr::Move { dst, .. }
-        | Instr::LoadOuterLocal { dst, .. }
-        | Instr::SendLexical { dst, .. }
-        | Instr::SendPublic { dst, .. }
-        | Instr::SendInlinable { dst, .. }
-        | Instr::SendSuper { dst, .. }
-        | Instr::MakeClosure { dst, .. }
-        | Instr::MakeArray { dst, .. } => Some(*dst),
-        Instr::StoreLocal { .. }
-        | Instr::StoreOuterLocal { .. }
-        | Instr::InitSlot { .. }
-        | Instr::Return { .. }
-        | Instr::ImplicitReturn { .. }
-        | Instr::NonLocalReturn { .. }
-        | Instr::Jump { .. }
-        | Instr::JumpIfNotBoolean { .. }
-        | Instr::BranchIfFalse { .. }
-        | Instr::BranchIfTrue { .. } => None,
+fn destination(instruction: &Instruction) -> Option<u16> {
+    match instruction {
+        Instruction::LoadLiteral { destination, .. }
+        | Instruction::LoadSelf { destination }
+        | Instruction::LoadBuiltinClass { destination, .. }
+        | Instruction::Move { destination, .. }
+        | Instruction::LoadOuterLocal { destination, .. }
+        | Instruction::SendLexical { destination, .. }
+        | Instruction::SendPublic { destination, .. }
+        | Instruction::SendInlinable { destination, .. }
+        | Instruction::SendSuper { destination, .. }
+        | Instruction::MakeClosure { destination, .. }
+        | Instruction::MakeArray { destination, .. } => Some(*destination),
+        Instruction::StoreLocal { .. }
+        | Instruction::StoreOuterLocal { .. }
+        | Instruction::InitializeSlot { .. }
+        | Instruction::Return { .. }
+        | Instruction::ImplicitReturn { .. }
+        | Instruction::NonLocalReturn { .. }
+        | Instruction::Jump { .. }
+        | Instruction::JumpIfNotBoolean { .. }
+        | Instruction::BranchIfFalse { .. }
+        | Instruction::BranchIfTrue { .. } => None,
     }
 }
 
@@ -574,13 +618,13 @@ mod tests {
     use indoc::formatdoc;
     use std::path::PathBuf;
 
-    /// Compiles instance-side method `index` of `src` under the reference
+    /// Compiles instance-side method `index` of `source` under the reference
     /// lowering, against the bindings the resolver really produces.
-    fn compile(src: &str, index: usize) -> CompiledCode {
-        let module = ns_syntax::parse(src).expect("parse");
+    fn compile(source: &str, index: usize) -> CompiledCode {
+        let module = ns_syntax::parse(source).expect("parse");
         let resolved = crate::resolve(
             module,
-            Rc::from(src),
+            Rc::from(source),
             crate::SourceOrigin::File(PathBuf::from("t.ns")),
         )
         .expect("resolve");
@@ -590,39 +634,45 @@ mod tests {
         )
     }
 
-    fn method(decl: &str) -> String {
+    fn method(declaration: &str) -> String {
         formatdoc! {"
             Newspeak3
             'T'
             class X = Object new (
             ) (
-              {decl}
+              {declaration}
             ) : ()
         "}
     }
 
-    fn send(selector: &str, receiver_reg: u16, arg_regs: Vec<u16>, dst: u16, id: u16) -> Instr {
-        Instr::SendPublic {
+    fn send(
+        selector: &str,
+        receiver_register: u16,
+        argument_registers: Vec<u16>,
+        destination: u16,
+        id: u16,
+    ) -> Instruction {
+        Instruction::SendPublic {
             selector: Symbol::intern(selector),
-            receiver_reg,
-            arg_regs,
-            dst,
+            receiver_register,
+            argument_registers,
+            destination,
             call_site: CallSite { call_site_id: id },
         }
     }
 
     fn inlinable(
         selector: &str,
-        receiver_reg: u16,
-        arg_regs: Vec<u16>,
-        dst: u16,
+        receiver_register: u16,
+        argument_registers: Vec<u16>,
+        destination: u16,
         id: u16,
-    ) -> Instr {
-        Instr::SendInlinable {
+    ) -> Instruction {
+        Instruction::SendInlinable {
             selector: Symbol::intern(selector),
-            receiver_reg,
-            arg_regs,
-            dst,
+            receiver_register,
+            argument_registers,
+            destination,
             call_site: CallSite { call_site_id: id },
         }
     }
@@ -634,39 +684,39 @@ mod tests {
     fn a_send_the_optimized_lowering_inlines_is_a_send_inlinable() {
         let code = compile(&method("foo: x = ( ^x ifTrue: [1] )"), 0);
         assert!(
-            code.instrs
+            code.instructions
                 .iter()
-                .any(|i| matches!(i, Instr::SendInlinable { selector, .. } if selector.as_str() == "ifTrue:")),
+                .any(|instruction| matches!(instruction, Instruction::SendInlinable { selector, .. } if selector.as_str() == "ifTrue:")),
             "{code:?}"
         );
         assert!(!code
-            .instrs
+            .instructions
             .iter()
-            .any(|i| matches!(i, Instr::SendPublic { .. })));
+            .any(|instruction| matches!(instruction, Instruction::SendPublic { .. })));
     }
 
     #[test]
     fn a_send_the_optimized_lowering_does_not_inline_stays_a_send_public() {
         // A non-literal block argument, and a cascade message: neither is
         // offered to `recognize` in the optimized lowering.
-        for decl in [
+        for declaration in [
             "foo: x = ( ^x ifTrue: x )",
             "foo: x = ( ^x yourself; ifTrue: [1] )",
         ] {
-            let code = compile(&method(decl), 0);
+            let code = compile(&method(declaration), 0);
             assert!(
                 !code
-                    .instrs
+                    .instructions
                     .iter()
-                    .any(|i| matches!(i, Instr::SendInlinable { .. })),
-                "{decl}: {code:?}"
+                    .any(|instruction| matches!(instruction, Instruction::SendInlinable { .. })),
+                "{declaration}: {code:?}"
             );
         }
     }
 
     #[test]
     fn every_inlinable_selector_is_marked() {
-        for (decl, selector) in [
+        for (declaration, selector) in [
             (
                 "foo: x = ( ^x ifTrue: [1] ifFalse: [2] )",
                 "ifTrue:ifFalse:",
@@ -681,31 +731,31 @@ mod tests {
             ("foo: x = ( ^[x] whileTrue: [x] )", "whileTrue:"),
             ("foo: x = ( ^[x] whileFalse: [x] )", "whileFalse:"),
         ] {
-            let code = compile(&method(decl), 0);
+            let code = compile(&method(declaration), 0);
             assert!(
-                code.instrs.iter().any(
-                    |i| matches!(i, Instr::SendInlinable { selector: s, .. } if s.as_str() == selector)
+                code.instructions.iter().any(
+                    |instruction| matches!(instruction, Instruction::SendInlinable { selector: inlined_selector, .. } if inlined_selector.as_str() == selector)
                 ),
-                "{decl}: {code:?}"
+                "{declaration}: {code:?}"
             );
         }
     }
 
-    fn closure_code(instr: &Instr) -> &CompiledCode {
-        let Instr::MakeClosure { code, .. } = instr else {
-            panic!("expected a MakeClosure, got {instr:?}");
+    fn closure_code(instruction: &Instruction) -> &CompiledCode {
+        let Instruction::MakeClosure { code, .. } = instruction else {
+            panic!("expected a MakeClosure, got {instruction:?}");
         };
         code
     }
 
     fn no_branch(code: &CompiledCode) -> bool {
-        code.instrs.iter().all(|i| {
+        code.instructions.iter().all(|instruction| {
             !matches!(
-                i,
-                Instr::Jump { .. }
-                    | Instr::JumpIfNotBoolean { .. }
-                    | Instr::BranchIfFalse { .. }
-                    | Instr::BranchIfTrue { .. }
+                instruction,
+                Instruction::Jump { .. }
+                    | Instruction::JumpIfNotBoolean { .. }
+                    | Instruction::BranchIfFalse { .. }
+                    | Instruction::BranchIfTrue { .. }
             )
         })
     }
@@ -714,55 +764,73 @@ mod tests {
     fn reading_a_local_copies_it_into_a_fresh_register() {
         let code = compile(&method("foo: x = ( ^x )"), 0);
         assert_eq!(
-            code.instrs,
-            vec![Instr::Move { dst: 1, src: 0 }, Instr::Return { reg: 1 }]
+            code.instructions,
+            vec![
+                Instruction::Move {
+                    destination: 1,
+                    source: 0
+                },
+                Instruction::Return { register: 1 }
+            ]
         );
-        assert_eq!(code.num_registers, 2);
+        assert_eq!(code.register_count, 2);
     }
 
     #[test]
     fn no_register_is_reused_across_statements() {
         let code = compile(&method("foo = ( 1. 2 )"), 0);
         assert_eq!(
-            code.instrs,
+            code.instructions,
             vec![
-                Instr::LoadLiteral {
-                    dst: 0,
-                    literal: BcLiteral::SmallInt(1)
+                Instruction::LoadLiteral {
+                    destination: 0,
+                    literal: BytecodeLiteral::SmallInteger(1)
                 },
-                Instr::LoadLiteral {
-                    dst: 1,
-                    literal: BcLiteral::SmallInt(2)
+                Instruction::LoadLiteral {
+                    destination: 1,
+                    literal: BytecodeLiteral::SmallInteger(2)
                 },
-                Instr::LoadSelf { dst: 2 },
-                Instr::ImplicitReturn { reg: 2 },
+                Instruction::LoadSelf { destination: 2 },
+                Instruction::ImplicitReturn { register: 2 },
             ]
         );
-        assert_eq!(code.statement_pc, vec![(0, 0..1), (1, 1..2)]);
-        assert_eq!(code.num_registers, 3);
+        assert_eq!(code.statement_program_counter, vec![(0, 0..1), (1, 1..2)]);
+        assert_eq!(code.register_count, 3);
     }
 
     #[test]
     fn if_true_if_false_is_a_real_send_with_two_real_closures() {
         let code = compile(&method("foo: x = ( ^x ifTrue: [1] ifFalse: [2] )"), 0);
         assert!(no_branch(&code));
-        assert_eq!(code.instrs.len(), 5);
-        assert_eq!(code.instrs[0], Instr::Move { dst: 1, src: 0 });
-        assert!(matches!(code.instrs[1], Instr::MakeClosure { dst: 2, .. }));
-        assert!(matches!(code.instrs[2], Instr::MakeClosure { dst: 3, .. }));
+        assert_eq!(code.instructions.len(), 5);
         assert_eq!(
-            code.instrs[3],
+            code.instructions[0],
+            Instruction::Move {
+                destination: 1,
+                source: 0
+            }
+        );
+        assert!(matches!(
+            code.instructions[1],
+            Instruction::MakeClosure { destination: 2, .. }
+        ));
+        assert!(matches!(
+            code.instructions[2],
+            Instruction::MakeClosure { destination: 3, .. }
+        ));
+        assert_eq!(
+            code.instructions[3],
             inlinable("ifTrue:ifFalse:", 1, vec![2, 3], 4, 3)
         );
-        assert_eq!(code.instrs[4], Instr::Return { reg: 4 });
+        assert_eq!(code.instructions[4], Instruction::Return { register: 4 });
         assert_eq!(
-            closure_code(&code.instrs[1]).instrs,
+            closure_code(&code.instructions[1]).instructions,
             vec![
-                Instr::LoadLiteral {
-                    dst: 0,
-                    literal: BcLiteral::SmallInt(1)
+                Instruction::LoadLiteral {
+                    destination: 0,
+                    literal: BytecodeLiteral::SmallInteger(1)
                 },
-                Instr::ImplicitReturn { reg: 0 },
+                Instruction::ImplicitReturn { register: 0 },
             ]
         );
     }
@@ -775,54 +843,75 @@ mod tests {
         );
         assert!(no_branch(&code));
         assert_eq!(
-            code.instrs[0],
-            Instr::LoadLiteral {
-                dst: 1,
-                literal: BcLiteral::SmallInt(0)
+            code.instructions[0],
+            Instruction::LoadLiteral {
+                destination: 1,
+                literal: BytecodeLiteral::SmallInteger(0)
             }
         );
-        assert_eq!(code.instrs[1], Instr::StoreLocal { src: 1, slot: 0 });
-        assert!(matches!(code.instrs[2], Instr::MakeClosure { dst: 2, .. }));
-        assert!(matches!(code.instrs[3], Instr::MakeClosure { dst: 3, .. }));
-        assert_eq!(code.instrs[4], inlinable("whileTrue:", 2, vec![3], 4, 4));
-        assert_eq!(code.instrs[5], Instr::Move { dst: 5, src: 0 });
-        assert_eq!(code.instrs[6], Instr::Return { reg: 5 });
-        assert_eq!(code.statement_pc, vec![(0, 0..2), (1, 2..5), (2, 5..7)]);
         assert_eq!(
-            closure_code(&code.instrs[2]).instrs,
+            code.instructions[1],
+            Instruction::StoreLocal { source: 1, slot: 0 }
+        );
+        assert!(matches!(
+            code.instructions[2],
+            Instruction::MakeClosure { destination: 2, .. }
+        ));
+        assert!(matches!(
+            code.instructions[3],
+            Instruction::MakeClosure { destination: 3, .. }
+        ));
+        assert_eq!(
+            code.instructions[4],
+            inlinable("whileTrue:", 2, vec![3], 4, 4)
+        );
+        assert_eq!(
+            code.instructions[5],
+            Instruction::Move {
+                destination: 5,
+                source: 0
+            }
+        );
+        assert_eq!(code.instructions[6], Instruction::Return { register: 5 });
+        assert_eq!(
+            code.statement_program_counter,
+            vec![(0, 0..2), (1, 2..5), (2, 5..7)]
+        );
+        assert_eq!(
+            closure_code(&code.instructions[2]).instructions,
             vec![
-                Instr::LoadOuterLocal {
-                    dst: 0,
+                Instruction::LoadOuterLocal {
+                    destination: 0,
                     depth: 1,
                     index: 0
                 },
-                Instr::LoadLiteral {
-                    dst: 1,
-                    literal: BcLiteral::SmallInt(3)
+                Instruction::LoadLiteral {
+                    destination: 1,
+                    literal: BytecodeLiteral::SmallInteger(3)
                 },
                 send("<", 0, vec![1], 2, 2),
-                Instr::ImplicitReturn { reg: 2 },
+                Instruction::ImplicitReturn { register: 2 },
             ]
         );
         assert_eq!(
-            closure_code(&code.instrs[3]).instrs,
+            closure_code(&code.instructions[3]).instructions,
             vec![
-                Instr::LoadOuterLocal {
-                    dst: 0,
+                Instruction::LoadOuterLocal {
+                    destination: 0,
                     depth: 1,
                     index: 0
                 },
-                Instr::LoadLiteral {
-                    dst: 1,
-                    literal: BcLiteral::SmallInt(1)
+                Instruction::LoadLiteral {
+                    destination: 1,
+                    literal: BytecodeLiteral::SmallInteger(1)
                 },
                 send("+", 0, vec![1], 2, 2),
-                Instr::StoreOuterLocal {
-                    src: 2,
+                Instruction::StoreOuterLocal {
+                    source: 2,
                     depth: 1,
                     index: 0
                 },
-                Instr::ImplicitReturn { reg: 2 },
+                Instruction::ImplicitReturn { register: 2 },
             ]
         );
     }
@@ -830,16 +919,16 @@ mod tests {
     #[test]
     fn a_return_inside_a_block_the_optimized_lowering_inlines_is_a_non_local_return() {
         let code = compile(&method("foo: x = ( x ifTrue: [^1]. ^2 )"), 0);
-        let block = closure_code(&code.instrs[1]);
+        let block = closure_code(&code.instructions[1]);
         assert_eq!(block.kind, CodeKind::Block);
         assert_eq!(
-            block.instrs,
+            block.instructions,
             vec![
-                Instr::LoadLiteral {
-                    dst: 0,
-                    literal: BcLiteral::SmallInt(1)
+                Instruction::LoadLiteral {
+                    destination: 0,
+                    literal: BytecodeLiteral::SmallInteger(1)
                 },
-                Instr::NonLocalReturn { reg: 0 },
+                Instruction::NonLocalReturn { register: 0 },
             ]
         );
     }
@@ -848,14 +937,14 @@ mod tests {
     fn an_assignments_value_is_its_fresh_register_never_the_local() {
         let code = compile(&method("foo = ( | t | ^t := 3 )"), 0);
         assert_eq!(
-            code.instrs,
+            code.instructions,
             vec![
-                Instr::LoadLiteral {
-                    dst: 1,
-                    literal: BcLiteral::SmallInt(3)
+                Instruction::LoadLiteral {
+                    destination: 1,
+                    literal: BytecodeLiteral::SmallInteger(3)
                 },
-                Instr::StoreLocal { src: 1, slot: 0 },
-                Instr::Return { reg: 1 },
+                Instruction::StoreLocal { source: 1, slot: 0 },
+                Instruction::Return { register: 1 },
             ]
         );
     }
@@ -864,12 +953,15 @@ mod tests {
     fn a_cascade_evaluates_its_receiver_once_and_answers_the_last_send() {
         let code = compile(&method("foo: x = ( ^x foo; bar )"), 0);
         assert_eq!(
-            code.instrs,
+            code.instructions,
             vec![
-                Instr::Move { dst: 1, src: 0 },
+                Instruction::Move {
+                    destination: 1,
+                    source: 0
+                },
                 send("foo", 1, vec![], 2, 1),
                 send("bar", 1, vec![], 3, 2),
-                Instr::Return { reg: 3 },
+                Instruction::Return { register: 3 },
             ]
         );
     }
@@ -879,14 +971,20 @@ mod tests {
     #[test]
     #[should_panic(expected = "read named local r0 without copying it")]
     fn the_shape_check_refuses_a_named_local_read_other_than_by_move() {
-        check_shape(&[Instr::Return { reg: 0 }], 1);
+        check_shape(&[Instruction::Return { register: 0 }], 1);
     }
 
     #[test]
     #[should_panic(expected = "copied scratch register r1")]
     fn the_shape_check_refuses_a_move_out_of_a_scratch_register() {
         check_shape(
-            &[Instr::LoadSelf { dst: 1 }, Instr::Move { dst: 2, src: 1 }],
+            &[
+                Instruction::LoadSelf { destination: 1 },
+                Instruction::Move {
+                    destination: 2,
+                    source: 1,
+                },
+            ],
             1,
         );
     }
@@ -896,8 +994,8 @@ mod tests {
     fn the_shape_check_refuses_a_store_into_a_scratch_register() {
         check_shape(
             &[
-                Instr::LoadSelf { dst: 2 },
-                Instr::StoreLocal { src: 2, slot: 1 },
+                Instruction::LoadSelf { destination: 2 },
+                Instruction::StoreLocal { source: 2, slot: 1 },
             ],
             1,
         );
@@ -907,9 +1005,12 @@ mod tests {
     fn the_shape_check_accepts_a_copied_read_of_a_named_local() {
         check_shape(
             &[
-                Instr::Move { dst: 1, src: 0 },
-                Instr::StoreLocal { src: 1, slot: 0 },
-                Instr::Return { reg: 1 },
+                Instruction::Move {
+                    destination: 1,
+                    source: 0,
+                },
+                Instruction::StoreLocal { source: 1, slot: 0 },
+                Instruction::Return { register: 1 },
             ],
             1,
         );
@@ -919,13 +1020,13 @@ mod tests {
     fn an_empty_block_answers_nil() {
         let code = compile(&method("foo = ( ^[] )"), 0);
         assert_eq!(
-            closure_code(&code.instrs[0]).instrs,
+            closure_code(&code.instructions[0]).instructions,
             vec![
-                Instr::LoadLiteral {
-                    dst: 0,
-                    literal: BcLiteral::Nil
+                Instruction::LoadLiteral {
+                    destination: 0,
+                    literal: BytecodeLiteral::Nil
                 },
-                Instr::ImplicitReturn { reg: 0 },
+                Instruction::ImplicitReturn { register: 0 },
             ]
         );
     }

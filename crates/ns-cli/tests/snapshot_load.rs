@@ -2,34 +2,34 @@
 
 use indoc::indoc;
 mod common;
-use common::{fixture, ns_next, ScratchDir};
+use common::{fixture, ns_next, ScratchDirectory};
 use std::path::Path;
 
 #[test]
 fn a_snapshot_taken_after_the_entry_send_loads_and_reruns_it_identically() {
-    let dir = ScratchDir::new("arithmetic");
-    let img = dir.join("world.img");
-    let src = fixture("arithmetic.ns");
-    let (ok, out, err) = ns_next(&[
+    let directory = ScratchDirectory::new("arithmetic");
+    let image = directory.join("world.img");
+    let source = fixture("arithmetic.ns");
+    let (ok, out, error) = ns_next(&[
         "snapshot".as_ref(),
-        src.as_os_str(),
-        img.as_os_str(),
+        source.as_os_str(),
+        image.as_os_str(),
         "--send".as_ref(),
         "main:args:".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     assert!(
         out.starts_with("42\n"),
         "the entry send ran while snapshotting: {out}"
     );
-    assert!(img.exists());
-    let (ok, out, err) = ns_next(&[
+    assert!(image.exists());
+    let (ok, out, error) = ns_next(&[
         "load".as_ref(),
-        img.as_os_str(),
+        image.as_os_str(),
         "--send".as_ref(),
         "main:args:".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     assert_eq!(
         out, "42\n",
         "the loaded instance's slot still holds 6 * 7; nothing else is printed"
@@ -38,19 +38,19 @@ fn a_snapshot_taken_after_the_entry_send_loads_and_reruns_it_identically() {
 
 #[test]
 fn a_loaded_world_does_not_rerun_its_instance_initializer() {
-    let dir = ScratchDir::new("instance-init");
-    let img = dir.join("world.img");
-    let src = fixture("instance_init.ns");
-    let (ok, out, err) = ns_next(&["snapshot".as_ref(), src.as_os_str(), img.as_os_str()]);
-    assert!(ok, "{err}");
+    let directory = ScratchDirectory::new("instance-init");
+    let image = directory.join("world.img");
+    let source = fixture("instance_init.ns");
+    let (ok, out, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
+    assert!(ok, "{error}");
     assert!(out.starts_with("init ran\n"), "{out}");
-    let (ok, out, err) = ns_next(&[
+    let (ok, out, error) = ns_next(&[
         "load".as_ref(),
-        img.as_os_str(),
+        image.as_os_str(),
         "--send".as_ref(),
         "main:args:".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     assert_eq!(
         out, "hi 2\n",
         "slots (including the transcript stream object) survived; the initializer did not run again"
@@ -62,53 +62,53 @@ fn a_loaded_world_does_not_rerun_its_instance_initializer() {
 /// that is itself inherited across a nesting boundary. Loading one has to
 /// rebuild every class object's application and its `declaring_class`
 /// link, and `top` four
-/// times over is what says both came back right -- `mid` is the decoy a
+/// times over is what says both came back right -- `middle` is the decoy a
 /// walk down the receiver's dynamic chain would answer with.
 #[test]
 fn a_world_holding_nested_class_objects_snapshots_and_reruns_identically() {
-    let dir = ScratchDir::new("nested-outer-inherited");
-    let img = dir.join("world.img");
-    let src = fixture("nested_outer_inherited.ns");
+    let directory = ScratchDirectory::new("nested-outer-inherited");
+    let image = directory.join("world.img");
+    let source = fixture("nested_outer_inherited.ns");
     let expected = std::fs::read_to_string(fixture("nested_outer_inherited.expected"))
         .expect("read expected")
         .replace("\r\n", "\n");
-    let (ok, out, err) = ns_next(&[
+    let (ok, out, error) = ns_next(&[
         "snapshot".as_ref(),
-        src.as_os_str(),
-        img.as_os_str(),
+        source.as_os_str(),
+        image.as_os_str(),
         "--send".as_ref(),
         "main:args:".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     // `snapshot` adds its own "wrote <path>" line after the entry send's
     // output, which `load` does not.
     assert!(out.starts_with(&expected), "{out}");
-    let (ok, out, err) = ns_next(&[
+    let (ok, out, error) = ns_next(&[
         "load".as_ref(),
-        img.as_os_str(),
+        image.as_os_str(),
         "--send".as_ref(),
         "main:args:".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     assert_eq!(out, expected);
 }
 
 #[test]
 fn load_without_send_prints_a_summary_and_a_corrupt_image_is_reported() {
-    let dir = ScratchDir::new("summary");
-    let img = dir.join("world.img");
-    let src = fixture("hello.ns");
-    let (ok, _out, err) = ns_next(&["snapshot".as_ref(), src.as_os_str(), img.as_os_str()]);
-    assert!(ok, "{err}");
-    let (ok, out, _err) = ns_next(&["load".as_ref(), img.as_os_str()]);
+    let directory = ScratchDirectory::new("summary");
+    let image = directory.join("world.img");
+    let source = fixture("hello.ns");
+    let (ok, _out, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
+    assert!(ok, "{error}");
+    let (ok, out, _error) = ns_next(&["load".as_ref(), image.as_os_str()]);
     assert!(ok);
     assert!(out.contains("1 root value(s)"), "{out}");
-    let mut bytes = std::fs::read(&img).unwrap();
+    let mut bytes = std::fs::read(&image).unwrap();
     bytes[4..8].copy_from_slice(&9999u32.to_le_bytes());
-    std::fs::write(&img, bytes).unwrap();
-    let (ok, _out, err) = ns_next(&["load".as_ref(), img.as_os_str()]);
+    std::fs::write(&image, bytes).unwrap();
+    let (ok, _out, error) = ns_next(&["load".as_ref(), image.as_os_str()]);
     assert!(!ok);
-    assert!(err.contains("version"), "{err}");
+    assert!(error.contains("version"), "{error}");
 }
 
 /// One source, snapshotted and reloaded: everything `run` produces --
@@ -116,16 +116,16 @@ fn load_without_send_prints_a_summary_and_a_corrupt_image_is_reported() {
 /// produces while snapshotting plus what the entry send produces after a
 /// load. Returns the three `run` outputs so a caller can assert what the
 /// program itself did.
-fn assert_snapshot_load_matches_run(name: &str, src: &Path) -> (bool, String, String) {
-    let dir = ScratchDir::new(name);
-    let img = dir.join("world.img");
-    let (run_ok, run_out, run_err) = ns_next(&["run".as_ref(), src.as_os_str()]);
-    let (snapshot_ok, snapshot_out, snapshot_err) =
-        ns_next(&["snapshot".as_ref(), src.as_os_str(), img.as_os_str()]);
-    let (load_ok, load_out, load_err) = if snapshot_ok {
+fn assert_snapshot_load_matches_run(name: &str, source: &Path) -> (bool, String, String) {
+    let directory = ScratchDirectory::new(name);
+    let image = directory.join("world.img");
+    let (run_ok, run_out, run_error) = ns_next(&["run".as_ref(), source.as_os_str()]);
+    let (snapshot_ok, snapshot_out, snapshot_error) =
+        ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
+    let (load_ok, load_out, load_error) = if snapshot_ok {
         ns_next(&[
             "load".as_ref(),
-            img.as_os_str(),
+            image.as_os_str(),
             "--send".as_ref(),
             "main:args:".as_ref(),
         ])
@@ -139,7 +139,7 @@ fn assert_snapshot_load_matches_run(name: &str, src: &Path) -> (bool, String, St
     // not the program's output; everything before it is what the module
     // printed while being instantiated.
     let printed_while_snapshotting = snapshot_out
-        .strip_suffix(&format!("wrote {}\n", img.display()))
+        .strip_suffix(&format!("wrote {}\n", image.display()))
         .unwrap_or(&snapshot_out)
         .to_string();
     assert_eq!(
@@ -152,8 +152,8 @@ fn assert_snapshot_load_matches_run(name: &str, src: &Path) -> (bool, String, St
     // stdout would let the two diverge on exactly the messages
     // `program_outcomes.rs` pins byte for byte.
     assert_eq!(
-        format!("{snapshot_err}{load_err}"),
-        run_err,
+        format!("{snapshot_error}{load_error}"),
+        run_error,
         "{name}: snapshot-then-load must report exactly what `run` reports"
     );
     assert_eq!(
@@ -161,7 +161,7 @@ fn assert_snapshot_load_matches_run(name: &str, src: &Path) -> (bool, String, St
         run_ok,
         "{name}: snapshot-then-load must succeed exactly when `run` does"
     );
-    (run_ok, run_out, run_err)
+    (run_ok, run_out, run_error)
 }
 
 /// Every fixture, snapshotted and reloaded. That is the strongest property
@@ -170,16 +170,20 @@ fn assert_snapshot_load_matches_run(name: &str, src: &Path) -> (bool, String, St
 /// -- and it is asserted per fixture rather than argued.
 #[test]
 fn a_snapshot_and_a_load_reproduce_exactly_what_run_prints() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
     let mut checked = 0;
-    for entry in std::fs::read_dir(&dir).expect("read tests-fixtures") {
-        let src = entry.expect("dir entry").path();
-        if src.extension().and_then(|e| e.to_str()) != Some("ns") {
+    for entry in std::fs::read_dir(&directory).expect("read tests-fixtures") {
+        let source = entry.expect("dir entry").path();
+        if source.extension().and_then(|extension| extension.to_str()) != Some("ns") {
             continue;
         }
-        let name = src.file_stem().expect("stem").to_string_lossy().to_string();
-        let (ok, _out, err) = assert_snapshot_load_matches_run(&name, &src);
-        assert!(ok, "run {name} exited non-zero: {err}");
+        let name = source
+            .file_stem()
+            .expect("stem")
+            .to_string_lossy()
+            .to_string();
+        let (ok, _out, error) = assert_snapshot_load_matches_run(&name, &source);
+        assert!(ok, "run {name} exited non-zero: {error}");
         checked += 1;
     }
     assert!(checked >= 3, "expected at least three fixtures");
@@ -192,10 +196,10 @@ fn a_snapshot_and_a_load_reproduce_exactly_what_run_prints() {
 /// stays shared.
 #[test]
 fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
-    let dir = ScratchDir::new("raises");
-    let src = dir.join("raises.ns");
+    let directory = ScratchDirectory::new("raises");
+    let source = directory.join("raises.ns");
     std::fs::write(
-        &src,
+        &source,
         indoc! {"
             Newspeak3
             'T'
@@ -208,12 +212,12 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
         "},
     )
     .expect("write source");
-    let (ok, out, err) = assert_snapshot_load_matches_run("raises", &src);
+    let (ok, out, error) = assert_snapshot_load_matches_run("raises", &source);
     assert!(!ok, "the program raises, so `run` exits non-zero");
     assert_eq!(out, "", "it prints nothing before raising");
     assert!(
-        err.starts_with("Uncaught Newspeak error: "),
-        "the error text is what both paths must agree on: {err}"
+        error.starts_with("Uncaught Newspeak error: "),
+        "the error text is what both paths must agree on: {error}"
     );
 }
 
@@ -223,18 +227,18 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
 /// by one of the two verification passes.
 #[test]
 fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
-    let dir = ScratchDir::new("corruption");
-    let img = dir.join("world.img");
-    let src = fixture("blocks_and_return.ns");
-    let (ok, _out, err) = ns_next(&[
+    let directory = ScratchDirectory::new("corruption");
+    let image = directory.join("world.img");
+    let source = fixture("blocks_and_return.ns");
+    let (ok, _out, error) = ns_next(&[
         "snapshot".as_ref(),
-        src.as_os_str(),
-        img.as_os_str(),
+        source.as_os_str(),
+        image.as_os_str(),
         "--send".as_ref(),
         "main:args:".as_ref(),
     ]);
-    assert!(ok, "{err}");
-    let original = std::fs::read(&img).expect("read image");
+    assert!(ok, "{error}");
+    let original = std::fs::read(&image).expect("read image");
     // Past the 8-byte header (magic + version, both covered above), every
     // 7th byte, each flipped two ways: enough coverage to sweep every
     // section without turning one test into thousands of processes.
@@ -243,15 +247,15 @@ fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
         for delta in [1u8, 0x80] {
             let mut bytes = original.clone();
             bytes[offset] ^= delta;
-            std::fs::write(&img, &bytes).expect("write image");
-            let (ok, _out, err) = ns_next(&["load".as_ref(), img.as_os_str()]);
+            std::fs::write(&image, &bytes).expect("write image");
+            let (ok, _out, error) = ns_next(&["load".as_ref(), image.as_os_str()]);
             assert!(
-                !err.contains("panicked") && !err.contains("RUST_BACKTRACE"),
-                "byte {offset} ^ {delta:#x} panicked the loader: {err}"
+                !error.contains("panicked") && !error.contains("RUST_BACKTRACE"),
+                "byte {offset} ^ {delta:#x} panicked the loader: {error}"
             );
             assert!(
-                ok || err.starts_with("error: "),
-                "byte {offset} ^ {delta:#x} failed without an error message: {err}"
+                ok || error.starts_with("error: "),
+                "byte {offset} ^ {delta:#x} failed without an error message: {error}"
             );
             swept += 1;
             rejected += usize::from(!ok);
@@ -273,8 +277,8 @@ fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
 /// image can be exported back to `.ns` while no decompiler exists.
 #[test]
 fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
-    let src = fixture("arithmetic.ns");
-    let text = std::fs::read_to_string(&src).expect("read fixture");
+    let source = fixture("arithmetic.ns");
+    let text = std::fs::read_to_string(&source).expect("read fixture");
     // Every line carrying program text, not one hand-picked needle: a
     // partial leak (one method body, one initializer statement) has to fail
     // this too. Lines under 12 characters are structural punctuation --
@@ -287,14 +291,14 @@ fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
     let lines: Vec<&str> = text
         .lines()
         .map(str::trim)
-        .filter(|l| l.len() >= 12)
+        .filter(|line| line.len() >= 12)
         .collect();
     assert!(lines.len() >= 4, "the fixture must have text to look for");
 
-    let plain_dir = ScratchDir::new("source-free");
-    let plain = plain_dir.join("world.img");
-    let (ok, _out, err) = ns_next(&["snapshot".as_ref(), src.as_os_str(), plain.as_os_str()]);
-    assert!(ok, "{err}");
+    let plain_directory = ScratchDirectory::new("source-free");
+    let plain = plain_directory.join("world.img");
+    let (ok, _out, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), plain.as_os_str()]);
+    assert!(ok, "{error}");
     let plain_bytes = std::fs::read(&plain).expect("read image");
     for line in &lines {
         assert!(
@@ -303,32 +307,32 @@ fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
         );
     }
     // ...and it is still a world, not just a smaller file.
-    let (ok, out, err) = ns_next(&[
+    let (ok, out, error) = ns_next(&[
         "load".as_ref(),
         plain.as_os_str(),
         "--send".as_ref(),
         "main:args:".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     assert_eq!(out, "42\n");
     // A source-free image has nothing to print, and says so.
-    let (ok, _out, err) = ns_next(&[
+    let (ok, _out, error) = ns_next(&[
         "load".as_ref(),
         plain.as_os_str(),
         "--print-source".as_ref(),
     ]);
     assert!(!ok);
-    assert!(err.contains("carries no source"), "{err}");
+    assert!(error.contains("carries no source"), "{error}");
 
-    let debug_dir = ScratchDir::new("debug-source");
-    let debug = debug_dir.join("world.img");
-    let (ok, _out, err) = ns_next(&[
+    let debug_directory = ScratchDirectory::new("debug-source");
+    let debug = debug_directory.join("world.img");
+    let (ok, _out, error) = ns_next(&[
         "snapshot".as_ref(),
-        src.as_os_str(),
+        source.as_os_str(),
         debug.as_os_str(),
         "--debug-source".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     let debug_bytes = std::fs::read(&debug).expect("read image");
     // The control: the very lines missing above are all present here, so
     // the sweep cannot be passing because the needles were mangled.
@@ -342,32 +346,34 @@ fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
         debug_bytes.len() > plain_bytes.len(),
         "the debug variant is the bigger of the two"
     );
-    let (ok, out, err) = ns_next(&[
+    let (ok, out, error) = ns_next(&[
         "load".as_ref(),
         debug.as_os_str(),
         "--print-source".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     assert_eq!(
         out.replace("\r\n", "\n"),
         text.replace("\r\n", "\n"),
         "the debug variant round-trips the module's source verbatim"
     );
     // And the debug variant still runs, exactly as the plain one does.
-    let (ok, out, err) = ns_next(&[
+    let (ok, out, error) = ns_next(&[
         "load".as_ref(),
         debug.as_os_str(),
         "--send".as_ref(),
         "main:args:".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     assert_eq!(out, "42\n");
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty()
         && haystack.len() >= needle.len()
-        && haystack.windows(needle.len()).any(|w| w == needle)
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 const TAG_NAMED_HASHES: &str = indoc! {"
@@ -401,18 +407,18 @@ const TAG_NAMED_HASHES: &str = indoc! {"
 /// counter this exploits.
 #[test]
 fn a_hash_given_to_a_tag_named_object_survives_a_snapshot() {
-    let dir = ScratchDir::new("tag-named-hashes");
-    let img = dir.join("world.img");
-    let src = dir.join("tag_named_hashes.ns");
-    std::fs::write(&src, TAG_NAMED_HASHES).expect("write source");
-    let (ok, _, err) = ns_next(&["snapshot".as_ref(), src.as_os_str(), img.as_os_str()]);
-    assert!(ok, "{err}");
-    let (ok, out, err) = ns_next(&[
+    let directory = ScratchDirectory::new("tag-named-hashes");
+    let image = directory.join("world.img");
+    let source = directory.join("tag_named_hashes.ns");
+    std::fs::write(&source, TAG_NAMED_HASHES).expect("write source");
+    let (ok, _, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
+    assert!(ok, "{error}");
+    let (ok, out, error) = ns_next(&[
         "load".as_ref(),
-        img.as_os_str(),
+        image.as_os_str(),
         "--send".as_ref(),
         "check:".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     assert_eq!(out, "true\ntrue\ntrue\n");
 }

@@ -2,25 +2,25 @@
 //! (`docs/design/compiler.md`, "The reference lowering").
 
 mod common;
-use common::{fixture, ns_next, ScratchDir};
+use common::{fixture, ns_next, ScratchDirectory};
 
 /// Only control-flow inlining emits a branch, so a listing under the
 /// reference lowering has none, and the optimized one of the same loop does.
 #[test]
 fn the_reference_lowering_inlines_nothing() {
-    let src = fixture("while_loop.ns");
-    let (ok, optimized, err) =
-        ns_next(&["disasm".as_ref(), src.as_os_str(), "main:args:".as_ref()]);
-    assert!(ok, "{err}");
+    let source = fixture("while_loop.ns");
+    let (ok, optimized, error) =
+        ns_next(&["disasm".as_ref(), source.as_os_str(), "main:args:".as_ref()]);
+    assert!(ok, "{error}");
     assert!(optimized.contains("Jump"), "{optimized}");
-    let (ok, reference, err) = ns_next(&[
+    let (ok, reference, error) = ns_next(&[
         "disasm".as_ref(),
-        src.as_os_str(),
+        source.as_os_str(),
         "main:args:".as_ref(),
         "--lowering".as_ref(),
         "reference".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     assert!(!reference.contains("Jump"), "{reference}");
     assert!(!reference.contains("Branch"), "{reference}");
     assert!(reference.contains("#whileTrue:"), "{reference}");
@@ -28,13 +28,13 @@ fn the_reference_lowering_inlines_nothing() {
 
 #[test]
 fn a_fixture_runs_under_the_reference_lowering() {
-    let (ok, out, err) = ns_next(&[
+    let (ok, out, error) = ns_next(&[
         "run".as_ref(),
         fixture("while_loop.ns").as_os_str(),
         "--lowering".as_ref(),
         "reference".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     assert_eq!(
         out,
         std::fs::read_to_string(fixture("while_loop.expected"))
@@ -46,9 +46,9 @@ fn a_fixture_runs_under_the_reference_lowering() {
 /// Whether an artifact's code table holds a branch, which only control-flow
 /// inlining emits.
 fn has_branch(artifact: &std::path::Path) -> bool {
-    let (ok, listing, err) =
+    let (ok, listing, error) =
         ns_next(&["inspect".as_ref(), artifact.as_os_str(), "--full".as_ref()]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     listing.contains("Jump") || listing.contains("Branch")
 }
 
@@ -62,20 +62,20 @@ fn has_branch(artifact: &std::path::Path) -> bool {
 /// place a source is compiled.
 #[test]
 fn build_compiles_with_the_lowering_it_is_given() {
-    let dir = ScratchDir::new("lowering-build");
-    let src = fixture("while_loop.ns");
-    let optimized = dir.join("optimized.nsb");
-    let reference = dir.join("reference.nsb");
-    let (ok, _, err) = ns_next(&["build".as_ref(), src.as_os_str(), optimized.as_os_str()]);
-    assert!(ok, "{err}");
-    let (ok, _, err) = ns_next(&[
+    let directory = ScratchDirectory::new("lowering-build");
+    let source = fixture("while_loop.ns");
+    let optimized = directory.join("optimized.nsb");
+    let reference = directory.join("reference.nsb");
+    let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), optimized.as_os_str()]);
+    assert!(ok, "{error}");
+    let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        src.as_os_str(),
+        source.as_os_str(),
         reference.as_os_str(),
         "--lowering".as_ref(),
         "reference".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     assert!(has_branch(&optimized), "the optimized loop is inlined");
     assert!(
         !has_branch(&reference),
@@ -87,20 +87,24 @@ fn build_compiles_with_the_lowering_it_is_given() {
 /// does under the same lowering.
 #[test]
 fn snapshot_compiles_with_the_lowering_it_is_given() {
-    let dir = ScratchDir::new("lowering-snapshot");
-    let src = fixture("while_loop.ns");
-    let optimized = dir.join("optimized.img");
-    let reference = dir.join("reference.img");
-    let (ok, _, err) = ns_next(&["snapshot".as_ref(), src.as_os_str(), optimized.as_os_str()]);
-    assert!(ok, "{err}");
-    let (ok, _, err) = ns_next(&[
+    let directory = ScratchDirectory::new("lowering-snapshot");
+    let source = fixture("while_loop.ns");
+    let optimized = directory.join("optimized.img");
+    let reference = directory.join("reference.img");
+    let (ok, _, error) = ns_next(&[
         "snapshot".as_ref(),
-        src.as_os_str(),
+        source.as_os_str(),
+        optimized.as_os_str(),
+    ]);
+    assert!(ok, "{error}");
+    let (ok, _, error) = ns_next(&[
+        "snapshot".as_ref(),
+        source.as_os_str(),
         reference.as_os_str(),
         "--lowering".as_ref(),
         "reference".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
     assert!(has_branch(&optimized), "the optimized loop is inlined");
     assert!(
         !has_branch(&reference),
@@ -115,7 +119,7 @@ fn snapshot_compiles_with_the_lowering_it_is_given() {
     ]);
     let ran = ns_next(&[
         "run".as_ref(),
-        src.as_os_str(),
+        source.as_os_str(),
         "--lowering".as_ref(),
         "reference".as_ref(),
     ]);
@@ -127,15 +131,15 @@ fn snapshot_compiles_with_the_lowering_it_is_given() {
 /// lower it is a mistake, refused rather than silently ignored.
 #[test]
 fn disasm_refuses_a_lowering_for_an_artifact() {
-    let dir = ScratchDir::new("lowering-artifact");
-    let out = dir.join("app.nsb");
-    let (ok, _, err) = ns_next(&[
+    let directory = ScratchDirectory::new("lowering-artifact");
+    let out = directory.join("app.nsb");
+    let (ok, _, error) = ns_next(&[
         "build".as_ref(),
         fixture("while_loop.ns").as_os_str(),
         out.as_os_str(),
     ]);
-    assert!(ok, "{err}");
-    let (ok, _, err) = ns_next(&[
+    assert!(ok, "{error}");
+    let (ok, _, error) = ns_next(&[
         "disasm".as_ref(),
         out.as_os_str(),
         "main:args:".as_ref(),
@@ -143,5 +147,5 @@ fn disasm_refuses_a_lowering_for_an_artifact() {
         "optimized".as_ref(),
     ]);
     assert!(!ok);
-    assert!(err.contains("--lowering"), "{err}");
+    assert!(error.contains("--lowering"), "{error}");
 }

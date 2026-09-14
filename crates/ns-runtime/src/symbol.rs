@@ -72,10 +72,10 @@ impl Interner {
     }
 
     fn insert(&mut self, text: &'static str) -> Symbol {
-        let sym = Symbol(self.strings.len() as u32);
+        let symbol = Symbol(self.strings.len() as u32);
         self.strings.push(text);
-        self.lookup.insert(text, sym);
-        sym
+        self.lookup.insert(text, symbol);
+        symbol
     }
 }
 
@@ -84,12 +84,12 @@ thread_local! {
 }
 
 impl Symbol {
-    pub fn intern(s: &str) -> Symbol {
+    pub fn intern(text: &str) -> Symbol {
         INTERNER.with_borrow_mut(|interner| {
-            if let Some(&sym) = interner.lookup.get(s) {
-                return sym;
+            if let Some(&symbol) = interner.lookup.get(text) {
+                return symbol;
             }
-            interner.insert(Box::leak(s.to_string().into_boxed_str()))
+            interner.insert(Box::leak(text.to_string().into_boxed_str()))
         })
     }
 
@@ -116,28 +116,28 @@ mod tests {
 
     #[test]
     fn interning_the_same_string_twice_gives_the_same_symbol() {
-        let a = Symbol::intern("foo:");
-        let b = Symbol::intern("foo:");
-        assert_eq!(a, b);
+        let first = Symbol::intern("foo:");
+        let second = Symbol::intern("foo:");
+        assert_eq!(first, second);
     }
 
     #[test]
     fn different_strings_intern_to_different_symbols() {
-        let a = Symbol::intern("foo:");
-        let b = Symbol::intern("bar:");
-        assert_ne!(a, b);
+        let first = Symbol::intern("foo:");
+        let second = Symbol::intern("bar:");
+        assert_ne!(first, second);
     }
 
     #[test]
     fn as_str_round_trips() {
-        let s = Symbol::intern("printString");
-        assert_eq!(s.as_str(), "printString");
+        let symbol = Symbol::intern("printString");
+        assert_eq!(symbol.as_str(), "printString");
     }
 
     #[test]
     fn display_matches_as_str() {
-        let s = Symbol::intern("at:put:");
-        assert_eq!(format!("{s}"), "at:put:");
+        let symbol = Symbol::intern("at:put:");
+        assert_eq!(format!("{symbol}"), "at:put:");
     }
 
     /// Every well-known symbol is the one interning its text answers, on

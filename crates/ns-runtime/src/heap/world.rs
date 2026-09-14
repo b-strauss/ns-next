@@ -34,19 +34,19 @@ impl World {
                 creations_in_progress: 0,
                 spare_walks: Vec::new(),
                 lowering,
-                arg_buffer: Vec::new(),
+                argument_buffer: Vec::new(),
             },
         };
-        world.enter(|m| m.bootstrap_builtin_classes());
+        world.enter(|mutator| mutator.bootstrap_builtin_classes());
         world
     }
 
-    /// Lends the step state out for `f`, one step's worth. The run loop
+    /// Lends the step state out for `body`, one step's worth. The run loop
     /// makes one entry per instruction and a host one per read, so this must
     /// inline away.
     #[inline(always)]
-    pub(crate) fn enter<R>(&mut self, f: impl FnOnce(&mut Mutator) -> R) -> R {
-        f(&mut self.mutator)
+    pub(crate) fn enter<R>(&mut self, body: impl FnOnce(&mut Mutator) -> R) -> R {
+        body(&mut self.mutator)
     }
 
     /// How many activations are live; `Interpreter::run_from_host` checks a
@@ -70,8 +70,8 @@ impl World {
     }
 
     #[cfg(debug_assertions)]
-    pub(crate) fn set_safepoint_requested(&mut self, on: bool) {
-        self.mutator.heap.set_safepoint_requested(on);
+    pub(crate) fn set_safepoint_requested(&mut self, requested: bool) {
+        self.mutator.heap.set_safepoint_requested(requested);
     }
 
     #[cfg(debug_assertions)]
@@ -96,12 +96,12 @@ impl World {
     pub(crate) fn move_everything(&mut self) {
         use crate::trace::Tracer;
         self.check_quiescent_state();
-        let m = &mut self.mutator;
-        let mut forwarder = m.heap.move_everything();
-        for class in &mut m.builtin_classes {
+        let mutator = &mut self.mutator;
+        let mut forwarder = mutator.heap.move_everything();
+        for class in &mut mutator.builtin_classes {
             forwarder.object(class);
         }
-        if let Some(platform) = &mut m.platform_singleton {
+        if let Some(platform) = &mut mutator.platform_singleton {
             forwarder.value(platform);
         }
     }
@@ -114,13 +114,13 @@ impl World {
     #[cfg(debug_assertions)]
     fn check_quiescent_state(&self) {
         use crate::types::InstantiationPhase;
-        let m = &self.mutator;
+        let mutator = &self.mutator;
         assert!(
-            m.arg_buffer.is_empty(),
+            mutator.argument_buffer.is_empty(),
             "internal: the argument buffer holds values between instructions"
         );
         assert!(
-            m.spare_walks.iter().all(|walk| {
+            mutator.spare_walks.iter().all(|walk| {
                 matches!(walk.instance, Value::Nil)
                     && walk.levels.is_empty()
                     && matches!(walk.phase, InstantiationPhase::Descending { .. })

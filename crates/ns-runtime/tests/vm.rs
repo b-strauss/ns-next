@@ -8,17 +8,17 @@ use ns_runtime::{
     Heap, HostError, HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, Value,
 };
 
-fn load(src: &str) -> (Interpreter, Root) {
-    let module = ns_syntax::parse(src).expect("parse");
+fn load(source: &str) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
-        Rc::from(src),
+        Rc::from(source),
         SourceOrigin::File(PathBuf::from("t.ns")),
     )
     .expect("resolve");
-    let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
-    (interp, class)
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
+    (interpreter, class)
 }
 
 /// `HostSignal` carries no `Debug` impl, so `Result::expect` is unusable on
@@ -27,47 +27,54 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
         Ok(root) => root,
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
-        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
+        Err(HostSignal::Error(error)) => {
+            panic!("{what}: unexpected Newspeak error: {}", error.message)
+        }
     }
 }
 
-fn expect_error(interp: &mut Interpreter, result: HostResult, what: &str) -> HostError {
+fn expect_error(interpreter: &mut Interpreter, result: HostResult, what: &str) -> HostError {
     match result {
-        Err(HostSignal::Error(e)) => e,
+        Err(HostSignal::Error(error)) => error,
         Ok(root) => {
-            let got = interp.enter(|m| m.heap().describe(&m.fetch(&root)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&root)));
             panic!("{what}: expected a Newspeak error, got {got}")
         }
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
     }
 }
 
-fn new_instance(interp: &mut Interpreter, class: &Root) -> Root {
-    expect_ok(interp.instantiate(class, &[]), "instantiate")
+fn new_instance(interpreter: &mut Interpreter, class: &Root) -> Root {
+    expect_ok(interpreter.instantiate(class, &[]), "instantiate")
 }
 
-fn send(interp: &mut Interpreter, receiver: &Root, selector: &str, args: &[Root]) -> HostResult {
-    interp.send(receiver, Symbol::intern(selector), args)
+fn send(
+    interpreter: &mut Interpreter,
+    receiver: &Root,
+    selector: &str,
+    arguments: &[Root],
+) -> HostResult {
+    interpreter.send(receiver, Symbol::intern(selector), arguments)
 }
 
-fn string_of(heap: &Heap, v: &Value) -> String {
-    let Value::Obj(obj) = v else {
+fn string_of(heap: &Heap, value: &Value) -> String {
+    let Value::Object(object) = value else {
         panic!("expected a string object")
     };
-    heap.str_value(*obj)
+    heap.str_value(*object)
         .unwrap_or_else(|| panic!("expected ObjectData::Str"))
 }
 
-fn int_of(v: &Value) -> i64 {
-    match v {
-        Value::SmallInt(n) => *n,
+fn integer_of(value: &Value) -> i64 {
+    match value {
+        Value::SmallInteger(integer) => *integer,
         _ => panic!("expected a SmallInt"),
     }
 }
 
 #[test]
 fn a_user_method_runs_as_bytecode_and_returns_its_value() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -75,15 +82,18 @@ fn a_user_method_runs_as_bytecode_and_returns_its_value() {
           public answer = ( ^42 )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let result = expect_ok(send(&mut interp, &instance, "answer", &[]), "answer");
-    assert_eq!(interp.enter(|m| int_of(&m.fetch(&result))), 42);
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let result = expect_ok(send(&mut interpreter, &instance, "answer", &[]), "answer");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        42
+    );
 }
 
 #[test]
 fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -91,30 +101,36 @@ fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
           public makeBlock = ( ^[ :x | x + 1 ] )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let block = expect_ok(send(&mut interp, &instance, "makeBlock", &[]), "makeBlock");
-    interp.enter(|m| {
-        let Value::Obj(obj) = m.fetch(&block) else {
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let block = expect_ok(
+        send(&mut interpreter, &instance, "makeBlock", &[]),
+        "makeBlock",
+    );
+    interpreter.enter(|mutator| {
+        let Value::Object(object) = mutator.fetch(&block) else {
             panic!("expected a closure object")
         };
-        let closure = m
+        let closure = mutator
             .heap()
-            .closure_data(obj)
+            .closure_data(object)
             .unwrap_or_else(|| panic!("expected a closure"));
         assert_eq!(
-            closure.code.num_args, 1,
+            closure.code.argument_count, 1,
             "the closure carries the compiled body of `[ :x | x + 1 ]`"
         );
     });
-    let nine = interp.stash(Value::SmallInt(9));
-    let result = expect_ok(send(&mut interp, &block, "value:", &[nine]), "value:");
-    assert_eq!(interp.enter(|m| int_of(&m.fetch(&result))), 10);
+    let nine = interpreter.stash(Value::SmallInteger(9));
+    let result = expect_ok(send(&mut interpreter, &block, "value:", &[nine]), "value:");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        10
+    );
 }
 
 #[test]
-fn temps_implicit_self_sends_and_arithmetic_work() {
-    let src = indoc! {"
+fn temporaries_implicit_self_sends_and_arithmetic_work() {
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -123,15 +139,18 @@ fn temps_implicit_self_sends_and_arithmetic_work() {
           public foo = ( | t | t := helper. ^t + 2 )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let result = expect_ok(send(&mut interp, &instance, "foo", &[]), "foo");
-    assert_eq!(interp.enter(|m| int_of(&m.fetch(&result))), 42);
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let result = expect_ok(send(&mut interpreter, &instance, "foo", &[]), "foo");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        42
+    );
 }
 
 #[test]
 fn slots_read_and_write_through_lexical_sends() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -140,37 +159,41 @@ fn slots_read_and_write_through_lexical_sends() {
           public bump = ( n := n + 1. ^n )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    expect_ok(send(&mut interp, &instance, "bump", &[]), "bump");
-    let result = expect_ok(send(&mut interp, &instance, "bump", &[]), "bump");
-    assert_eq!(interp.enter(|m| int_of(&m.fetch(&result))), 3);
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    expect_ok(send(&mut interpreter, &instance, "bump", &[]), "bump");
+    let result = expect_ok(send(&mut interpreter, &instance, "bump", &[]), "bump");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        3
+    );
 }
 
 #[test]
 fn an_unknown_selector_produces_the_shared_does_not_understand_error() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
         ) (
         ) : ()
     "};
-    let (mut interp, _class) = load(src);
-    let three = interp.stash(Value::SmallInt(3));
-    let result = send(&mut interp, &three, "nonexistentSelector", &[]);
-    let err = expect_error(&mut interp, result, "dnu");
+    let (mut interpreter, _class) = load(source);
+    let three = interpreter.stash(Value::SmallInteger(3));
+    let result = send(&mut interpreter, &three, "nonexistentSelector", &[]);
+    let error = expect_error(&mut interpreter, result, "dnu");
     assert!(
-        err.message
+        error
+            .message
             .contains("does not understand #nonexistentSelector"),
         "{}",
-        err.message
+        error.message
     );
 }
 
 #[test]
 fn a_super_send_falls_through_to_objects_native_print_string() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -178,17 +201,20 @@ fn a_super_send_falls_through_to_objects_native_print_string() {
           public foo = ( ^super printString )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let result = expect_ok(send(&mut interp, &instance, "foo", &[]), "foo");
-    interp.enter(|m| {
-        assert_eq!(string_of(m.heap(), &m.fetch(&result)), "an Object");
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let result = expect_ok(send(&mut interpreter, &instance, "foo", &[]), "foo");
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            string_of(mutator.heap(), &mutator.fetch(&result)),
+            "an Object"
+        );
     });
 }
 
 #[test]
 fn cascades_and_builtin_instantiation_work() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -196,15 +222,18 @@ fn cascades_and_builtin_instantiation_work() {
           public foo = ( | c | c := OrderedCollection new. c add: 1; add: 2. ^c size )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let result = expect_ok(send(&mut interp, &instance, "foo", &[]), "foo");
-    assert_eq!(interp.enter(|m| int_of(&m.fetch(&result))), 2);
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let result = expect_ok(send(&mut interpreter, &instance, "foo", &[]), "foo");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        2
+    );
 }
 
 #[test]
 fn a_non_local_return_from_a_natively_invoked_block_unwinds_to_the_bytecode_frame() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -213,17 +242,20 @@ fn a_non_local_return_from_a_natively_invoked_block_unwinds_to_the_bytecode_fram
           public main = ( | c | c := OrderedCollection new. c add: 1; add: 2; add: 3. ^(self find: 2 in: c), (self find: 9 in: c) )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let result = expect_ok(send(&mut interp, &instance, "main", &[]), "main");
-    interp.enter(|m| {
-        assert_eq!(string_of(m.heap(), &m.fetch(&result)), "foundnot found");
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let result = expect_ok(send(&mut interpreter, &instance, "main", &[]), "main");
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            string_of(mutator.heap(), &mutator.fetch(&result)),
+            "foundnot found"
+        );
     });
 }
 
 #[test]
-fn a_block_writes_an_enclosing_temp_through_store_outer_local() {
-    let src = indoc! {"
+fn a_block_writes_an_enclosing_temporary_through_store_outer_local() {
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -231,15 +263,18 @@ fn a_block_writes_an_enclosing_temp_through_store_outer_local() {
           public sum = ( | n | n := 0. #(1 2 3) do: [:e | n := n + e]. ^n )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let result = expect_ok(send(&mut interp, &instance, "sum", &[]), "sum");
-    assert_eq!(interp.enter(|m| int_of(&m.fetch(&result))), 6);
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let result = expect_ok(send(&mut interpreter, &instance, "sum", &[]), "sum");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        6
+    );
 }
 
 #[test]
 fn empty_and_multi_statement_blocks_return_nil_and_the_last_value() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -248,17 +283,20 @@ fn empty_and_multi_statement_blocks_return_nil_and_the_last_value() {
           public last = ( ^[ 1. 2 ] value )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let empty = expect_ok(send(&mut interp, &instance, "empty", &[]), "empty");
-    assert!(interp.enter(|m| matches!(m.fetch(&empty), Value::Nil)));
-    let last = expect_ok(send(&mut interp, &instance, "last", &[]), "last");
-    assert_eq!(interp.enter(|m| int_of(&m.fetch(&last))), 2);
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let empty = expect_ok(send(&mut interpreter, &instance, "empty", &[]), "empty");
+    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&empty), Value::Nil)));
+    let last = expect_ok(send(&mut interpreter, &instance, "last", &[]), "last");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&last))),
+        2
+    );
 }
 
 #[test]
 fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -266,23 +304,26 @@ fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks()
           public foo: b = ( ^b ifTrue: ['yes'] ifFalse: ['no'] )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let yes = interp.stash(Value::Bool(true));
-    let yes = expect_ok(send(&mut interp, &instance, "foo:", &[yes]), "foo:");
-    interp.enter(|m| {
-        assert_eq!(string_of(m.heap(), &m.fetch(&yes)), "yes");
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let yes = interpreter.stash(Value::Boolean(true));
+    let yes = expect_ok(send(&mut interpreter, &instance, "foo:", &[yes]), "foo:");
+    interpreter.enter(|mutator| {
+        assert_eq!(string_of(mutator.heap(), &mutator.fetch(&yes)), "yes");
     });
-    let no = interp.stash(Value::Bool(false));
-    let no = expect_ok(send(&mut interp, &instance, "foo:", &[no]), "foo:");
-    interp.enter(|m| {
-        assert_eq!(string_of(m.heap(), &m.fetch(&no)), "no");
+    let false_argument = interpreter.stash(Value::Boolean(false));
+    let answer = expect_ok(
+        send(&mut interpreter, &instance, "foo:", &[false_argument]),
+        "foo:",
+    );
+    interpreter.enter(|mutator| {
+        assert_eq!(string_of(mutator.heap(), &mutator.fetch(&answer)), "no");
     });
 }
 
 #[test]
 fn a_block_invoked_after_its_home_returned_gets_cannot_return() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -291,16 +332,16 @@ fn a_block_invoked_after_its_home_returned_gets_cannot_return() {
           public run = ( ^mk value )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let result = send(&mut interp, &instance, "run", &[]);
-    let err = expect_error(&mut interp, result, "run");
-    assert!(err.message.contains("cannotReturn"), "{}", err.message);
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let result = send(&mut interpreter, &instance, "run", &[]);
+    let error = expect_error(&mut interpreter, result, "run");
+    assert!(error.message.contains("cannotReturn"), "{}", error.message);
 }
 
 #[test]
 fn a_malformed_integer_literal_raises_an_out_of_range_error_when_evaluated() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -308,17 +349,21 @@ fn a_malformed_integer_literal_raises_an_out_of_range_error_when_evaluated() {
           public foo = ( ^99999999999999999999 )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let result = send(&mut interp, &instance, "foo", &[]);
-    let err = expect_error(&mut interp, result, "foo");
-    assert!(err.message.contains("out of i64 range"), "{}", err.message);
-    assert_eq!(err.selector, Symbol::intern("parse"));
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let result = send(&mut interpreter, &instance, "foo", &[]);
+    let error = expect_error(&mut interpreter, result, "foo");
+    assert!(
+        error.message.contains("out of i64 range"),
+        "{}",
+        error.message
+    );
+    assert_eq!(error.selector, Symbol::intern("parse"));
 }
 
 #[test]
 fn a_dynamic_array_literal_evaluates_its_elements() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -326,19 +371,19 @@ fn a_dynamic_array_literal_evaluates_its_elements() {
           public foo = ( | a | a := {1. 2. 3}. ^a )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let result = expect_ok(send(&mut interp, &instance, "foo", &[]), "foo");
-    interp.enter(|m| {
-        let Value::Obj(obj) = m.fetch(&result) else {
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let result = expect_ok(send(&mut interpreter, &instance, "foo", &[]), "foo");
+    interpreter.enter(|mutator| {
+        let Value::Object(object) = mutator.fetch(&result) else {
             panic!("expected an array object")
         };
-        let elements = m
+        let elements = mutator
             .heap()
-            .array_elements(obj)
+            .array_elements(object)
             .unwrap_or_else(|| panic!("expected ObjectData::Array"));
         assert_eq!(
-            elements.iter().map(int_of).collect::<Vec<_>>(),
+            elements.iter().map(integer_of).collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
     });
@@ -346,7 +391,7 @@ fn a_dynamic_array_literal_evaluates_its_elements() {
 
 #[test]
 fn a_method_that_falls_off_its_end_implicitly_returns_self() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -354,12 +399,12 @@ fn a_method_that_falls_off_its_end_implicitly_returns_self() {
           public foo = ( 1 + 1 )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let result = expect_ok(send(&mut interp, &instance, "foo", &[]), "foo");
-    interp.enter(|m| {
-        let (result, instance) = (m.fetch(&result), m.fetch(&instance));
-        assert!(matches!((&result, &instance), (Value::Obj(a), Value::Obj(b)) if a.same(*b)));
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let result = expect_ok(send(&mut interpreter, &instance, "foo", &[]), "foo");
+    interpreter.enter(|mutator| {
+        let (result, instance) = (mutator.fetch(&result), mutator.fetch(&instance));
+        assert!(matches!((&result, &instance), (Value::Object(result_object), Value::Object(instance_object)) if result_object.same(*instance_object)));
     });
 }
 
@@ -368,7 +413,7 @@ fn a_method_that_falls_off_its_end_implicitly_returns_self() {
 /// loaded class whose code was never compiled.
 #[test]
 fn loading_a_module_installs_its_compiled_code() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -376,18 +421,21 @@ fn loading_a_module_installs_its_compiled_code() {
           public makeBlock = ( ^[ 1 ] )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = new_instance(&mut interp, &class);
-    let block = expect_ok(send(&mut interp, &instance, "makeBlock", &[]), "makeBlock");
-    interp.enter(|m| {
-        let Value::Obj(obj) = m.fetch(&block) else {
+    let (mut interpreter, class) = load(source);
+    let instance = new_instance(&mut interpreter, &class);
+    let block = expect_ok(
+        send(&mut interpreter, &instance, "makeBlock", &[]),
+        "makeBlock",
+    );
+    interpreter.enter(|mutator| {
+        let Value::Object(object) = mutator.fetch(&block) else {
             panic!("expected a closure object")
         };
-        let closure = m
+        let closure = mutator
             .heap()
-            .closure_data(obj)
+            .closure_data(object)
             .unwrap_or_else(|| panic!("expected ObjectData::Closure"));
-        assert_eq!(closure.code.num_args, 0);
+        assert_eq!(closure.code.argument_count, 0);
     });
 }
 
@@ -413,7 +461,7 @@ fn loading_a_second_module_keeps_the_first_modules_code() {
           public answer = ( ^2 )
         ) : ()
     "};
-    let (mut interp, a) = load(first);
+    let (mut interpreter, class_a) = load(first);
     let module = ns_syntax::parse(second).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -421,13 +469,25 @@ fn loading_a_second_module_keeps_the_first_modules_code() {
         SourceOrigin::File(PathBuf::from("b.ns")),
     )
     .expect("resolve");
-    let b = interp.load_module(&resolved);
-    let a_instance = new_instance(&mut interp, &a);
-    let b_instance = new_instance(&mut interp, &b);
-    let from_a = expect_ok(send(&mut interp, &a_instance, "answer", &[]), "A answer");
-    let from_b = expect_ok(send(&mut interp, &b_instance, "answer", &[]), "B answer");
-    assert_eq!(interp.enter(|m| int_of(&m.fetch(&from_a))), 1);
-    assert_eq!(interp.enter(|m| int_of(&m.fetch(&from_b))), 2);
+    let class_b = interpreter.load_module(&resolved);
+    let a_instance = new_instance(&mut interpreter, &class_a);
+    let b_instance = new_instance(&mut interpreter, &class_b);
+    let from_a = expect_ok(
+        send(&mut interpreter, &a_instance, "answer", &[]),
+        "A answer",
+    );
+    let from_b = expect_ok(
+        send(&mut interpreter, &b_instance, "answer", &[]),
+        "B answer",
+    );
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&from_a))),
+        1
+    );
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(&mutator.fetch(&from_b))),
+        2
+    );
 }
 
 /// The probe that exposed the frame-shift defect: a method with a declared
@@ -454,22 +514,22 @@ const ARITY_PROBE: &str = indoc! {"
 
 #[test]
 fn a_correctly_sent_method_reads_its_temporary_as_nil() {
-    let (mut interp, class) = load(ARITY_PROBE);
-    let instance = new_instance(&mut interp, &class);
-    let result = expect_ok(send(&mut interp, &instance, "probe", &[]), "probe");
-    interp.enter(|m| {
-        assert_eq!(string_of(m.heap(), &m.fetch(&result)), "nil-ok");
+    let (mut interpreter, class) = load(ARITY_PROBE);
+    let instance = new_instance(&mut interpreter, &class);
+    let result = expect_ok(send(&mut interpreter, &instance, "probe", &[]), "probe");
+    interpreter.enter(|mutator| {
+        assert_eq!(string_of(mutator.heap(), &mutator.fetch(&result)), "nil-ok");
     });
 }
 
 #[test]
 fn a_wrong_arity_send_is_refused() {
-    let (mut interp, class) = load(ARITY_PROBE);
-    let instance = new_instance(&mut interp, &class);
-    let platform = interp.platform();
-    let nil = interp.stash(Value::Nil);
-    let result = send(&mut interp, &instance, "probe", &[platform, nil]);
-    let error = expect_error(&mut interp, result, "probe with two surplus arguments");
+    let (mut interpreter, class) = load(ARITY_PROBE);
+    let instance = new_instance(&mut interpreter, &class);
+    let platform = interpreter.platform();
+    let nil = interpreter.stash(Value::Nil);
+    let result = send(&mut interpreter, &instance, "probe", &[platform, nil]);
+    let error = expect_error(&mut interpreter, result, "probe with two surplus arguments");
     assert_eq!(
         error.message,
         "wrong number of arguments: `probe` takes 0, got 2"

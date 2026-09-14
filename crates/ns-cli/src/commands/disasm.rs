@@ -40,7 +40,7 @@ fn resolve_mixin_path(
             current
                 .nested
                 .iter()
-                .find(|m| m.name.as_str() == segment)
+                .find(|mutator| mutator.name.as_str() == segment)
                 .cloned()
                 .ok_or_else(|| format!("`{}` has no nested class `{segment}`", current.name))?
         };
@@ -64,10 +64,10 @@ fn looks_like_an_artifact(bytes: &[u8]) -> bool {
 /// alive, rather than through a `Heap` built after the fact.
 fn root_mixin_of(
     heap: &ns_runtime::Heap,
-    class: ns_runtime::ClassRef,
+    class: ns_runtime::ClassReference,
 ) -> Result<Rc<ns_runtime::Mixin>, String> {
     heap.class_application(class)
-        .map(|app| app.mixin.clone())
+        .map(|application| application.mixin.clone())
         .ok_or_else(|| "internal: loaded module did not produce a class object".to_string())
 }
 
@@ -89,9 +89,9 @@ pub(crate) fn execute(
     lowering: Option<ns_runtime::Lowering>,
 ) -> ExitCode {
     let raw = match std::fs::read(file) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: reading {}: {e}", file.display());
+        Ok(raw) => raw,
+        Err(error) => {
+            eprintln!("error: reading {}: {error}", file.display());
             return ExitCode::FAILURE;
         }
     };
@@ -101,15 +101,15 @@ pub(crate) fn execute(
     // already carries compiled bodies, so loading it is a decode and nothing
     // is recompiled. Each arm reads
     // `root_mixin` out of its own `class` before that arm's interpreter (or
-    // `loaded.interp`) goes out of scope, rather than through a fresh
-    // `Heap` afterwards. A `ClassRef` is an index into the arena of the
+    // `loaded.interpreter`) goes out of scope, rather than through a fresh
+    // `Heap` afterwards. A `ClassReference` is an index into the arena of the
     // `Heap` that allocated it and means nothing against any other one, so
     // a `Heap` built after that interpreter is gone does not answer
     // `class`'s data: in a debug build the origin guard panics at the read,
     // and in a release build the index is in range and names whatever
     // object that heap put there -- a different, perfectly valid object,
     // disassembled without a word of complaint. Reads through
-    // `interp.enter` while that interpreter is still alive, before it goes
+    // `interpreter.enter` while that interpreter is still alive, before it goes
     // out of scope.
     let root_mixin = if looks_like_an_artifact(&raw) {
         if lowering.is_some() {
@@ -122,44 +122,52 @@ pub(crate) fn execute(
         match ns_runtime::image::load(&raw) {
             Ok(loaded) => {
                 let ns_runtime::image::LoadedImage {
-                    mut interp,
+                    mut interpreter,
                     root_class,
                     ..
                 } = loaded;
-                match interp
-                    .enter(|m| root_mixin_of(m.heap(), crate::entry::class_ref(m, &root_class)))
-                {
-                    Ok(m) => m,
-                    Err(msg) => {
-                        eprintln!("error: {msg}");
+                match interpreter.enter(|mutator| {
+                    root_mixin_of(
+                        mutator.heap(),
+                        crate::entry::class_reference(mutator, &root_class),
+                    )
+                }) {
+                    Ok(root_mixin) => root_mixin,
+                    Err(message) => {
+                        eprintln!("error: {message}");
                         return ExitCode::FAILURE;
                     }
                 }
             }
-            Err(e) => {
-                eprintln!("error: {}: {e}", file.display());
+            Err(error) => {
+                eprintln!("error: {}: {error}", file.display());
                 return ExitCode::FAILURE;
             }
         }
     } else {
         let loaded = match source::load_source(file) {
-            Ok(l) => l,
+            Ok(loaded) => loaded,
             Err(code) => return code,
         };
-        let (mut interp, class) =
+        let (mut interpreter, class) =
             source::bootstrap(&loaded, lowering.unwrap_or(ns_runtime::Lowering::Optimized));
-        match interp.enter(|m| root_mixin_of(m.heap(), crate::entry::class_ref(m, &class))) {
-            Ok(m) => m,
-            Err(msg) => {
-                eprintln!("error: {msg}");
+        match interpreter.enter(|mutator| {
+            root_mixin_of(
+                mutator.heap(),
+                crate::entry::class_reference(mutator, &class),
+            )
+        }) {
+            Ok(root_mixin) => root_mixin,
+            Err(message) => {
+                eprintln!("error: {message}");
                 return ExitCode::FAILURE;
             }
         }
     };
     let mixin = match resolve_mixin_path(&root_mixin, class_path) {
-        Ok(m) => m,
-        Err(msg) => {
-            eprintln!("error: {msg}");
+        Ok(mixin) => mixin,
+        Err(message) => {
+            eprintln!("error: {message}");
             return ExitCode::FAILURE;
         }
     };

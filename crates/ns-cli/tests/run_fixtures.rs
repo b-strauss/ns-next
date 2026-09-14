@@ -8,8 +8,8 @@ use std::process::Command;
 /// artifact, not a difference in program behavior. Comparing raw strings
 /// would make this test flaky across platforms/git configs; normalize
 /// both sides the same way instead.
-fn normalize_newlines(s: &str) -> String {
-    s.replace("\r\n", "\n")
+fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n")
 }
 
 /// Both lowerings: the optimized one every program runs under, and the
@@ -22,11 +22,11 @@ const LOWERINGS: [&str; 2] = ["optimized", "reference"];
 /// both lowerings.
 #[test]
 fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
     let mut checked = 0;
-    for entry in std::fs::read_dir(&dir).expect("read tests-fixtures") {
+    for entry in std::fs::read_dir(&directory).expect("read tests-fixtures") {
         let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("ns") {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("ns") {
             continue;
         }
         let expected_path = path.with_extension("expected");

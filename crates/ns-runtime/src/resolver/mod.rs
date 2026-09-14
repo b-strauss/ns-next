@@ -8,7 +8,7 @@ mod sends;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expr, Stmt};
+use ns_syntax::ast::{self, Expression, Statement};
 use ns_syntax::Span;
 
 use crate::types::{Binding, ResolveError, ResolvedModule, SourceOrigin};
@@ -22,21 +22,21 @@ pub fn resolve(
     source: Rc<str>,
     origin: SourceOrigin,
 ) -> Result<ResolvedModule, Vec<ResolveError>> {
-    let mut r = Resolver {
+    let mut resolver = Resolver {
         bindings: HashMap::new(),
         errors: Vec::new(),
     };
     let member_sets = build_member_sets(&module.root_class);
-    r.resolve_class(&module.root_class, &[], &member_sets);
-    if r.errors.is_empty() {
+    resolver.resolve_class(&module.root_class, &[], &member_sets);
+    if resolver.errors.is_empty() {
         Ok(ResolvedModule {
             module: Rc::new(module),
             source,
             origin,
-            bindings: Rc::new(r.bindings),
+            bindings: Rc::new(resolver.bindings),
         })
     } else {
-        Err(r.errors)
+        Err(resolver.errors)
     }
 }
 
@@ -44,15 +44,18 @@ pub fn resolve(
 /// (keyed by the class's own name, which assumes no module declares two
 /// same-named classes at different nesting depths that would collide
 /// within one compile; revisit with a real `ClassId` if that ever bites).
-fn build_member_sets(root: &ast::ClassDecl) -> HashMap<Symbol, HashSet<Symbol>> {
+fn build_member_sets(root: &ast::ClassDeclaration) -> HashMap<Symbol, HashSet<Symbol>> {
     let mut sets = HashMap::new();
     collect_member_sets(root, &mut sets);
     sets
 }
 
-fn collect_member_sets(decl: &ast::ClassDecl, sets: &mut HashMap<Symbol, HashSet<Symbol>>) {
-    let own = classes::own_member_names(decl);
-    let superclass_name = decl
+fn collect_member_sets(
+    declaration: &ast::ClassDeclaration,
+    sets: &mut HashMap<Symbol, HashSet<Symbol>>,
+) {
+    let own = classes::own_member_names(declaration);
+    let superclass_name = declaration
         .superclass
         .as_ref()
         .map(|clause| Symbol::intern(&clause.receiver.name))
@@ -68,12 +71,12 @@ fn collect_member_sets(decl: &ast::ClassDecl, sets: &mut HashMap<Symbol, HashSet
     if let Some(inherited) = sets.get(&superclass_name) {
         own_plus_inherited.extend(inherited.iter().copied());
     }
-    let name = Symbol::intern(&decl.name.name);
+    let name = Symbol::intern(&declaration.name.name);
     sets.insert(name, own_plus_inherited);
-    for nested in &decl.instance_side.nested_classes {
+    for nested in &declaration.instance_side.nested_classes {
         collect_member_sets(nested, sets);
     }
-    if let Some(class_side) = &decl.class_side {
+    if let Some(class_side) = &declaration.class_side {
         for nested in &class_side.nested_classes {
             collect_member_sets(nested, sets);
         }
@@ -90,9 +93,9 @@ fn class_chain_from<'a>(
     names
         .iter()
         .rev()
-        .map(|&n| EnclosingClass {
-            name: n,
-            members: member_sets.get(&n).unwrap_or_else(|| {
+        .map(|&name| EnclosingClass {
+            name,
+            members: member_sets.get(&name).unwrap_or_else(|| {
                 static EMPTY: std::sync::OnceLock<HashSet<Symbol>> = std::sync::OnceLock::new();
                 EMPTY.get_or_init(HashSet::new)
             }),
@@ -108,11 +111,11 @@ struct Resolver {
 impl Resolver {
     fn resolve_class(
         &mut self,
-        decl: &ast::ClassDecl,
+        declaration: &ast::ClassDeclaration,
         enclosing: &[Symbol],
         member_sets: &HashMap<Symbol, HashSet<Symbol>>,
     ) {
-        let name = Symbol::intern(&decl.name.name);
+        let name = Symbol::intern(&declaration.name.name);
         let mut chain: Vec<Symbol> = enclosing.to_vec();
         chain.push(name);
         // Innermost first for the chain we hand to `sends::depth_search`.
@@ -124,15 +127,15 @@ impl Resolver {
         // "Binding variants") -- so it is resolved against the
         // chain of classes *enclosing* this declaration, not against this
         // class's own not-yet-existing member set.
-        if let Some(clause) = &decl.superclass {
+        if let Some(clause) = &declaration.superclass {
             let enclosing_chain = class_chain_from(enclosing, member_sets);
             self.resolve_superclass_clause(clause, &enclosing_chain);
         }
 
-        for method in &decl.instance_side.methods {
+        for method in &declaration.instance_side.methods {
             self.resolve_method(method, &class_chain);
         }
-        if let Some(class_side) = &decl.class_side {
+        if let Some(class_side) = &declaration.class_side {
             for method in &class_side.methods {
                 self.resolve_method(method, &class_chain);
             }
@@ -146,28 +149,28 @@ impl Resolver {
         // `class M usingPlatform: platform = Object new (...)` is the
         // single most common real Newspeak module idiom and depends on it.
         //
-        // A class declaration with no explicit factory pattern
-        // (`class C = Super (...)`) contributes no parameters, matching
-        // `interpreter/instantiate.rs`'s `build_mixin`, which defaults such
-        // a class's mixin `factory` to a bare unary `new` pattern.
-        // Parameter order here is the same order `LocalScope::new` indexes
-        // by, which is the order `Interpreter::instantiate` fills
-        // `Frame.args` with its `factory_args` -- so `Binding::Local(i)`
-        // reads the right argument at runtime.
-        let factory_params: Vec<Symbol> = decl
+        // A class declaration with no explicit factory pattern (`class C =
+        // Super (...)`) contributes no parameters, matching
+        // `interpreter/instantiate.rs`'s `build_mixin`, which defaults such a
+        // class's mixin `factory` to a bare unary `new` pattern. Parameter
+        // order here is the same order `LocalScope::new` indexes by, which is
+        // the order `Interpreter::instantiate` fills `Frame.arguments` with its
+        // `factory_arguments` -- so `Binding::Local(i)` reads the right
+        // argument at runtime.
+        let factory_parameters: Vec<Symbol> = declaration
             .factory
             .as_ref()
-            .map(pattern_param_names)
+            .map(pattern_parameter_names)
             .unwrap_or_default();
         let mut scope = ScopeStack::new();
-        scope.push(LocalScope::new(&factory_params));
-        for slot in &decl.instance_side.slots {
-            if let Some(init) = &slot.init {
-                self.resolve_expr(init, &mut scope, &class_chain);
+        scope.push(LocalScope::new(&factory_parameters));
+        for slot in &declaration.instance_side.slots {
+            if let Some(initializer) = &slot.initializer {
+                self.resolve_expression(initializer, &mut scope, &class_chain);
             }
         }
-        for stmt in &decl.instance_side.init_exprs {
-            self.resolve_stmt(stmt, &mut scope, &class_chain);
+        for statement in &declaration.instance_side.initializer_expressions {
+            self.resolve_statement(statement, &mut scope, &class_chain);
         }
         // The superclass clause's *deferred message* arguments (`m + 1` in
         // `= Base withBase: m + 1`) run in that same activation:
@@ -178,86 +181,98 @@ impl Resolver {
         // separately, above, against the enclosing chain instead -- it is
         // evaluated once, when the declaration is evaluated, and never sees
         // a factory argument.
-        if let Some(clause) = &decl.superclass {
+        if let Some(clause) = &declaration.superclass {
             if let Some(message) = crate::interpreter::nested::superclass_clause_message(clause) {
-                for arg in &message.args {
-                    self.resolve_expr(arg, &mut scope, &class_chain);
+                for argument in &message.arguments {
+                    self.resolve_expression(argument, &mut scope, &class_chain);
                 }
             }
         }
 
-        for nested in &decl.instance_side.nested_classes {
+        for nested in &declaration.instance_side.nested_classes {
             self.resolve_class(nested, &chain, member_sets);
         }
-        if let Some(class_side) = &decl.class_side {
+        if let Some(class_side) = &declaration.class_side {
             for nested in &class_side.nested_classes {
                 self.resolve_class(nested, &chain, member_sets);
             }
         }
     }
 
-    fn resolve_method(&mut self, method: &ast::MethodDecl, class_chain: &[EnclosingClass]) {
-        let param_names: Vec<Symbol> = pattern_param_names(&method.pattern);
-        let temp_names: Vec<Symbol> = method
+    fn resolve_method(&mut self, method: &ast::MethodDeclaration, class_chain: &[EnclosingClass]) {
+        let parameter_names: Vec<Symbol> = pattern_parameter_names(&method.pattern);
+        let temporary_names: Vec<Symbol> = method
             .body
-            .temps
+            .temporaries
             .iter()
-            .map(|t| Symbol::intern(&t.name))
+            .map(|temporary| Symbol::intern(&temporary.name))
             .collect();
-        let mut all = param_names;
-        all.extend(temp_names);
+        let mut all = parameter_names;
+        all.extend(temporary_names);
         let mut scope = ScopeStack::new();
         scope.push(LocalScope::new(&all));
-        for stmt in &method.body.stmts {
-            self.resolve_stmt(stmt, &mut scope, class_chain);
+        for statement in &method.body.statements {
+            self.resolve_statement(statement, &mut scope, class_chain);
         }
     }
 
-    fn resolve_stmt(&mut self, stmt: &Stmt, scope: &mut ScopeStack, chain: &[EnclosingClass]) {
-        match stmt {
-            Stmt::Expr(e) | Stmt::Return(e) => self.resolve_expr(e, scope, chain),
+    fn resolve_statement(
+        &mut self,
+        statement: &Statement,
+        scope: &mut ScopeStack,
+        chain: &[EnclosingClass],
+    ) {
+        match statement {
+            Statement::Expression(expression) | Statement::Return(expression) => {
+                self.resolve_expression(expression, scope, chain)
+            }
         }
     }
 
-    fn resolve_expr(&mut self, expr: &Expr, scope: &mut ScopeStack, chain: &[EnclosingClass]) {
-        match expr {
-            Expr::Ident(id) => self.resolve_ident(id, scope, chain),
-            Expr::Literal(_) => {}
-            Expr::Send(send) => self.resolve_send(send, scope, chain),
-            Expr::Cascade(cascade) => {
-                self.resolve_expr(&cascade.receiver, scope, chain);
+    fn resolve_expression(
+        &mut self,
+        expression: &Expression,
+        scope: &mut ScopeStack,
+        chain: &[EnclosingClass],
+    ) {
+        match expression {
+            Expression::Identifier(id) => self.resolve_identifier(id, scope, chain),
+            Expression::Literal(_) => {}
+            Expression::Send(send) => self.resolve_send(send, scope, chain),
+            Expression::Cascade(cascade) => {
+                self.resolve_expression(&cascade.receiver, scope, chain);
                 self.resolve_message_send(&cascade.first, scope, chain);
-                for m in &cascade.rest {
-                    self.resolve_message_send(m, scope, chain);
+                for message in &cascade.rest {
+                    self.resolve_message_send(message, scope, chain);
                 }
             }
-            Expr::Assign { target, value, .. } => {
+            Expression::Assign { target, value, .. } => {
                 self.resolve_setter_target(target, scope, chain);
-                self.resolve_expr(value, scope, chain);
+                self.resolve_expression(value, scope, chain);
             }
-            Expr::Block(block) => {
-                let param_names: Vec<Symbol> = block
-                    .params
+            Expression::Block(block) => {
+                let parameter_names: Vec<Symbol> = block
+                    .parameters
                     .iter()
-                    .map(|p| Symbol::intern(&p.name))
+                    .map(|parameter| Symbol::intern(&parameter.name))
                     .collect();
-                let temp_names: Vec<Symbol> = block
+                let temporary_names: Vec<Symbol> = block
                     .body
-                    .temps
+                    .temporaries
                     .iter()
-                    .map(|t| Symbol::intern(&t.name))
+                    .map(|temporary| Symbol::intern(&temporary.name))
                     .collect();
-                let mut names = param_names;
-                names.extend(temp_names);
+                let mut names = parameter_names;
+                names.extend(temporary_names);
                 scope.push(LocalScope::new(&names));
-                for stmt in &block.body.stmts {
-                    self.resolve_stmt(stmt, scope, chain);
+                for statement in &block.body.statements {
+                    self.resolve_statement(statement, scope, chain);
                 }
                 scope.pop();
             }
-            Expr::DynamicArray { elements, .. } => {
-                for e in elements {
-                    self.resolve_expr(e, scope, chain);
+            Expression::DynamicArray { elements, .. } => {
+                for element in elements {
+                    self.resolve_expression(element, scope, chain);
                 }
             }
         }
@@ -269,12 +284,12 @@ impl Resolver {
         scope: &mut ScopeStack,
         chain: &[EnclosingClass],
     ) {
-        for arg in &message.args {
-            self.resolve_expr(arg, scope, chain);
+        for argument in &message.arguments {
+            self.resolve_expression(argument, scope, chain);
         }
     }
 
-    /// A bare `Expr::Ident` standing alone (not the receiver of an
+    /// A bare `Expression::Identifier` standing alone (not the receiver of an
     /// enclosing `Send`, since that case is handled in `resolve_send`
     /// below): try locals first, then the §5.7 depth search treating the
     /// name itself as a zero-arg implicit send. `self`/`super` alone (no
@@ -287,8 +302,13 @@ impl Resolver {
     /// behavior) is checked against `classes::is_builtin_class_name`
     /// *before* falling back to a self send. A builtin match records no
     /// `Binding` at all for this span -- the compiler resolves it against
-    /// the builtin table by name instead (`Instr::LoadBuiltinClass`).
-    fn resolve_ident(&mut self, id: &ast::Ident, scope: &mut ScopeStack, chain: &[EnclosingClass]) {
+    /// the builtin table by name instead (`Instruction::LoadBuiltinClass`).
+    fn resolve_identifier(
+        &mut self,
+        id: &ast::Identifier,
+        scope: &mut ScopeStack,
+        chain: &[EnclosingClass],
+    ) {
         if id.name == "self" || id.name == "super" {
             return;
         }
@@ -361,11 +381,11 @@ impl Resolver {
         // sub-expression on its own merits; the send itself needs no
         // binding (dispatch.rs's lookupPublic runs on the receiver's
         // actual runtime class).
-        self.resolve_expr(&send.receiver, scope, chain);
+        self.resolve_expression(&send.receiver, scope, chain);
         self.resolve_message_send(&send.message, scope, chain);
     }
 
-    /// The `id` in `id:: e` (`Expr::Assign { target, .. }`) resolves
+    /// The `id` in `id:: e` (`Expression::Assign { target, .. }`) resolves
     /// exactly like an implicit-receiver keyword send to `id:` -- see
     /// `docs/design/dispatch.md`, "Setter sends". Locals win first (a local
     /// temp/param can be reassigned directly); otherwise it is a
@@ -374,7 +394,7 @@ impl Resolver {
     /// `classes::member_name_of_pattern`).
     fn resolve_setter_target(
         &mut self,
-        target: &ast::Ident,
+        target: &ast::Identifier,
         scope: &mut ScopeStack,
         chain: &[EnclosingClass],
     ) {
@@ -454,13 +474,13 @@ impl Resolver {
     }
 }
 
-fn pattern_param_names(pattern: &ast::MessagePattern) -> Vec<Symbol> {
+fn pattern_parameter_names(pattern: &ast::MessagePattern) -> Vec<Symbol> {
     match pattern {
         ast::MessagePattern::Unary { .. } => vec![],
-        ast::MessagePattern::Binary { param, .. } => vec![Symbol::intern(&param.name)],
+        ast::MessagePattern::Binary { parameter, .. } => vec![Symbol::intern(&parameter.name)],
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(_, param)| Symbol::intern(&param.name))
+            .map(|(_, parameter)| Symbol::intern(&parameter.name))
             .collect(),
     }
 }

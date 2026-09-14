@@ -8,26 +8,26 @@ use crate::source;
 
 /// `ns-next run`: parse, resolve, bootstrap, load,
 /// instantiate the root class with whatever its declared primary factory
-/// takes, send the entry selector with whatever `entry_args` sizes for it,
+/// takes, send the entry selector with whatever `entry_arguments` sizes for it,
 /// report.
 pub(crate) fn execute(file: &Path, send: &str, lowering: ns_runtime::Lowering) -> ExitCode {
     let loaded = match source::load_source(file) {
-        Ok(l) => l,
+        Ok(loaded) => loaded,
         Err(code) => return code,
     };
-    let (mut interp, class) = source::bootstrap(&loaded, lowering);
-    let instance = match entry::instantiate_root(&mut interp, &class) {
-        Ok(v) => v,
+    let (mut interpreter, class) = source::bootstrap(&loaded, lowering);
+    let instance = match entry::instantiate_root(&mut interpreter, &class) {
+        Ok(value) => value,
         Err(code) => return code,
     };
-    let platform = interp.platform();
-    let args = match entry::entry_args(&interp, send, &platform) {
-        Ok(args) => args,
-        Err(msg) => {
-            eprintln!("error: {msg}");
+    let platform = interpreter.platform();
+    let arguments = match entry::entry_arguments(&interpreter, send, &platform) {
+        Ok(arguments) => arguments,
+        Err(message) => {
+            eprintln!("error: {message}");
             return ExitCode::FAILURE;
         }
     };
     let selector = ns_runtime::Symbol::intern(send);
-    entry::report_entry_send(interp.send(&instance, selector, &args))
+    entry::report_entry_send(interpreter.send(&instance, selector, &arguments))
 }

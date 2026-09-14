@@ -1,8 +1,8 @@
 //! What the collector traces (`docs/design/memory.md`, "What the collector
-//! traces"): every field of every runtime type that holds an `ObjRef`, a
-//! `ClassRef` or a `FrameRef`, handed to a `Tracer` one `&mut` at a time.
-//! Enumerating is this module's; rewriting is `heap.rs`'s `Forwarder`, since
-//! only `heap.rs` can mint a handle.
+//! traces"): every field of every runtime type that holds an `ObjectReference`,
+//! a `ClassReference` or a `FrameReference`, handed to a `Tracer` one `&mut` at
+//! a time. Enumerating is this module's; rewriting is `heap.rs`'s `Forwarder`,
+//! since only `heap.rs` can mint a handle.
 //!
 //! Every impl names every field and matches every variant, with no `..` and
 //! no `_`: a field or variant added later fails to compile here until
@@ -12,16 +12,16 @@
 //!
 //! Debug builds only, until the collector (step 5) needs it in every build.
 
-use crate::heap::{FrameRef, ObjRef};
+use crate::heap::{FrameReference, ObjectReference};
 use crate::types::*;
 
 pub(crate) trait Tracer {
-    fn object(&mut self, handle: &mut ObjRef);
-    fn frame(&mut self, handle: &mut FrameRef);
+    fn object(&mut self, handle: &mut ObjectReference);
+    fn frame(&mut self, handle: &mut FrameReference);
     fn value(&mut self, value: &mut Value) {
         match value {
-            Value::Obj(handle) => self.object(handle),
-            Value::Nil | Value::Bool(_) | Value::SmallInt(_) | Value::Float(_) => {}
+            Value::Object(handle) => self.object(handle),
+            Value::Nil | Value::Boolean(_) | Value::SmallInteger(_) | Value::Float(_) => {}
         }
     }
 }
@@ -36,7 +36,7 @@ fn trace_values<T: Tracer>(values: &mut [Value], tracer: &mut T) {
     }
 }
 
-fn trace_optional_object<T: Tracer>(handle: &mut Option<ObjRef>, tracer: &mut T) {
+fn trace_optional_object<T: Tracer>(handle: &mut Option<ObjectReference>, tracer: &mut T) {
     if let Some(handle) = handle {
         tracer.object(handle);
     }
@@ -60,7 +60,7 @@ impl Trace for ObjectData {
             ObjectData::Instance(values) | ObjectData::Array(values) => {
                 trace_values(values, tracer)
             }
-            ObjectData::Str(_) | ObjectData::Sym(_) => {}
+            ObjectData::String(_) | ObjectData::Symbol(_) => {}
             ObjectData::Closure(closure) => closure.trace(tracer),
             ObjectData::Class(class) => class.trace(tracer),
         }
@@ -70,7 +70,7 @@ impl Trace for ObjectData {
 impl Trace for ClosureData {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let ClosureData {
-            params: _,
+            parameters: _,
             code: _,
             captured_frame,
             home,
@@ -103,9 +103,9 @@ impl Trace for Frame {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let Frame {
             receiver,
-            args,
-            temps,
-            pc: _,
+            arguments,
+            temporaries,
+            program_counter: _,
             sender,
             home,
             current_class,
@@ -114,8 +114,8 @@ impl Trace for Frame {
             slot_base: _,
         } = self;
         tracer.value(receiver);
-        trace_values(args, tracer);
-        trace_values(temps, tracer);
+        trace_values(arguments, tracer);
+        trace_values(temporaries, tracer);
         if let Some(sender) = sender {
             tracer.frame(sender);
         }
@@ -200,9 +200,9 @@ impl Trace for Instantiation {
             phase,
         } = self;
         tracer.value(instance);
-        for (level, args) in levels {
+        for (level, arguments) in levels {
             tracer.object(level);
-            trace_values(args, tracer);
+            trace_values(arguments, tracer);
         }
         phase.trace(tracer);
     }

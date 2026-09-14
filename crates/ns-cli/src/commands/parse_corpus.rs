@@ -5,27 +5,30 @@ use std::process::ExitCode;
 
 use crate::source::collect_ns_files;
 
-pub(crate) fn execute(dir: &Path, blacklist: Option<&Path>) -> ExitCode {
-    let bl_path = blacklist
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dir.parent().unwrap_or(dir).join("blacklist.toml"));
-    let blacklist = match load_blacklist(&bl_path) {
-        Ok(bl) => bl,
-        Err(e) => {
-            eprintln!("error: blacklist {}: {e}", bl_path.display());
+pub(crate) fn execute(directory: &Path, blacklist: Option<&Path>) -> ExitCode {
+    let blacklist_path = blacklist.map(PathBuf::from).unwrap_or_else(|| {
+        directory
+            .parent()
+            .unwrap_or(directory)
+            .join("blacklist.toml")
+    });
+    let blacklist = match load_blacklist(&blacklist_path) {
+        Ok(blacklist) => blacklist,
+        Err(error) => {
+            eprintln!("error: blacklist {}: {error}", blacklist_path.display());
             return ExitCode::FAILURE;
         }
     };
 
     let mut files: Vec<PathBuf> = Vec::new();
-    collect_ns_files(dir, &mut files);
+    collect_ns_files(directory, &mut files);
     files.sort();
 
     let (mut parsed, mut unexpected_fail, mut expected_fail, mut stale) = (0, 0, 0, 0);
-    for f in &files {
-        let name = f.file_name().unwrap().to_string_lossy().to_string();
-        let src = std::fs::read_to_string(f).unwrap_or_default();
-        let ok = ns_syntax::parse(&src).is_ok();
+    for file in &files {
+        let name = file.file_name().unwrap().to_string_lossy().to_string();
+        let source = std::fs::read_to_string(file).unwrap_or_default();
+        let ok = ns_syntax::parse(&source).is_ok();
         let listed = blacklist.contains(&name);
         match (ok, listed) {
             (true, false) => parsed += 1,
@@ -60,7 +63,7 @@ pub(crate) fn execute(dir: &Path, blacklist: Option<&Path>) -> ExitCode {
 /// most likely a caller passing a bare directory with no companion file.
 fn load_blacklist(path: &Path) -> Result<std::collections::HashSet<String>, String> {
     #[derive(serde::Deserialize)]
-    struct Bl {
+    struct BlacklistFile {
         #[serde(default)]
         entry: Vec<Entry>,
     }
@@ -71,16 +74,20 @@ fn load_blacklist(path: &Path) -> Result<std::collections::HashSet<String>, Stri
         reason: String,
     }
     let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             eprintln!(
                 "note: no blacklist at {} (treating as empty)",
                 path.display()
             );
             return Ok(std::collections::HashSet::new());
         }
-        Err(e) => return Err(e.to_string()),
+        Err(error) => return Err(error.to_string()),
     };
-    let bl: Bl = toml::from_str(&text).map_err(|e| e.to_string())?;
-    Ok(bl.entry.into_iter().map(|e| e.file).collect())
+    let blacklist_file: BlacklistFile = toml::from_str(&text).map_err(|error| error.to_string())?;
+    Ok(blacklist_file
+        .entry
+        .into_iter()
+        .map(|entry| entry.file)
+        .collect())
 }

@@ -1,21 +1,21 @@
 //! `ns-next inspect` -- the structural listing of an artifact.
 
 mod common;
-use common::{fixture, ns_next, ScratchDir};
+use common::{fixture, ns_next, ScratchDirectory};
 
 #[test]
 fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
-    let dir = ScratchDir::new("arithmetic");
-    let img = dir.join("world.img");
-    let (ok, _, err) = ns_next(&[
+    let directory = ScratchDirectory::new("arithmetic");
+    let image = directory.join("world.img");
+    let (ok, _, error) = ns_next(&[
         "snapshot".as_ref(),
         fixture("arithmetic.ns").as_os_str(),
-        img.as_os_str(),
+        image.as_os_str(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
 
-    let (ok, out, err) = ns_next(&["inspect".as_ref(), img.as_os_str()]);
-    assert!(ok, "{err}");
+    let (ok, out, error) = ns_next(&["inspect".as_ref(), image.as_os_str()]);
+    assert!(ok, "{error}");
 
     assert!(out.contains("format version 1"), "{out}");
     assert!(out.contains("stateless: no"), "{out}");
@@ -39,31 +39,31 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
 
 #[test]
 fn inspect_reports_a_debug_variants_source_blob() {
-    let dir = ScratchDir::new("debug-source");
-    let img = dir.join("world.img");
-    let (ok, _, err) = ns_next(&[
+    let directory = ScratchDirectory::new("debug-source");
+    let image = directory.join("world.img");
+    let (ok, _, error) = ns_next(&[
         "snapshot".as_ref(),
         fixture("arithmetic.ns").as_os_str(),
-        img.as_os_str(),
+        image.as_os_str(),
         "--debug-source".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
 
-    let (ok, out, err) = ns_next(&["inspect".as_ref(), img.as_os_str()]);
-    assert!(ok, "{err}");
+    let (ok, out, error) = ns_next(&["inspect".as_ref(), image.as_os_str()]);
+    assert!(ok, "{error}");
     assert!(out.contains("source blob: present"), "{out}");
 }
 
 #[test]
 fn inspect_reports_a_corrupt_artifact_rather_than_panicking() {
-    let dir = ScratchDir::new("corrupt");
-    let bad = dir.join("bad.img");
+    let directory = ScratchDirectory::new("corrupt");
+    let bad = directory.join("bad.img");
     std::fs::write(&bad, b"NSIM\x01\x00\x00\x00").expect("write");
 
-    let (ok, _, err) = ns_next(&["inspect".as_ref(), bad.as_os_str()]);
+    let (ok, _, error) = ns_next(&["inspect".as_ref(), bad.as_os_str()]);
     assert!(!ok);
-    assert!(err.starts_with("error:"), "{err}");
-    assert!(!err.contains("panicked"), "{err}");
+    assert!(error.starts_with("error:"), "{error}");
+    assert!(!error.contains("panicked"), "{error}");
 }
 
 /// The section line says how many bodies a code table holds; it did not say
@@ -72,17 +72,17 @@ fn inspect_reports_a_corrupt_artifact_rather_than_panicking() {
 /// already maps selector to code id, so naming them costs no new decoding.
 #[test]
 fn inspect_names_every_body_in_the_code_table() {
-    let dir = ScratchDir::new("code-table");
-    let out = dir.join("app.nsb");
-    let (ok, _, err) = ns_next(&[
+    let directory = ScratchDirectory::new("code-table");
+    let out = directory.join("app.nsb");
+    let (ok, _, error) = ns_next(&[
         "build".as_ref(),
         fixture("arithmetic.ns").as_os_str(),
         out.as_os_str(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
 
-    let (ok, listing, err) = ns_next(&["inspect".as_ref(), out.as_os_str()]);
-    assert!(ok, "{err}");
+    let (ok, listing, error) = ns_next(&["inspect".as_ref(), out.as_os_str()]);
+    assert!(ok, "{error}");
 
     assert!(listing.contains("code table"), "{listing}");
     // arithmetic.ns declares one method and one slot initializer on a root
@@ -104,19 +104,19 @@ fn inspect_names_every_body_in_the_code_table() {
 /// to thousands of lines.
 #[test]
 fn inspect_full_renders_every_mixin_and_every_body() {
-    let dir = ScratchDir::new("full");
-    let out = dir.join("app.nsb");
-    let (ok, _, err) = ns_next(&[
+    let directory = ScratchDirectory::new("full");
+    let out = directory.join("app.nsb");
+    let (ok, _, error) = ns_next(&[
         "build".as_ref(),
         fixture("arithmetic.ns").as_os_str(),
         out.as_os_str(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
 
-    let (ok, brief, err) = ns_next(&["inspect".as_ref(), out.as_os_str()]);
-    assert!(ok, "{err}");
-    let (ok, full, err) = ns_next(&["inspect".as_ref(), out.as_os_str(), "--full".as_ref()]);
-    assert!(ok, "{err}");
+    let (ok, brief, error) = ns_next(&["inspect".as_ref(), out.as_os_str()]);
+    assert!(ok, "{error}");
+    let (ok, full, error) = ns_next(&["inspect".as_ref(), out.as_os_str(), "--full".as_ref()]);
+    assert!(ok, "{error}");
 
     // The default is unchanged by the flag's existence.
     assert!(brief.contains("code table"), "{brief}");

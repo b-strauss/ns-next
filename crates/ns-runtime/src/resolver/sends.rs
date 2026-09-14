@@ -2,7 +2,7 @@
 //! spec's "AST recognition" note) and runs the §5.7 depth search for
 //! implicit and bare-name sends.
 
-use ns_syntax::ast::{Expr, Selector};
+use ns_syntax::ast::{Expression, Selector};
 
 use crate::Symbol;
 
@@ -15,15 +15,15 @@ pub(super) struct EnclosingClass<'a> {
     pub members: &'a std::collections::HashSet<Symbol>,
 }
 
-/// Runs the §5.7 depth search: the smallest `k` (0 = innermost enclosing
+/// Runs the §5.7 depth search: the smallest `depth` (0 = innermost enclosing
 /// class) whose member set contains `selector`. Falls back to depth `0`
 /// (self send) if nothing matches anywhere, per the spec ("otherwise, the
 /// implicit receiver send is equivalent to a self send") -- runtime
 /// dispatch on that then naturally produces `doesNotUnderstand:`.
 pub(super) fn depth_search(chain: &[EnclosingClass], selector: Symbol) -> u16 {
-    for (k, class) in chain.iter().enumerate() {
+    for (depth, class) in chain.iter().enumerate() {
         if class.members.contains(&selector) {
-            return k as u16;
+            return depth as u16;
         }
     }
     0
@@ -40,7 +40,7 @@ pub(super) fn find_member_depth(chain: &[EnclosingClass], selector: Symbol) -> O
     chain
         .iter()
         .position(|class| class.members.contains(&selector))
-        .map(|k| k as u16)
+        .map(|depth| depth as u16)
 }
 
 /// Finds the exact depth of the lexically enclosing class named `name`, for
@@ -51,45 +51,45 @@ pub(super) fn depth_of_named_outer(chain: &[EnclosingClass], name: Symbol) -> Op
     chain
         .iter()
         .position(|class| class.name == name)
-        .map(|k| k as u16)
+        .map(|depth| depth as u16)
 }
 
 /// Recognizes whether `send.receiver` is the parser's implicit-keyword-send
-/// marker: `Ident { name: "self", span }` with a **zero-width** span
+/// marker: `Identifier { name: "self", span }` with a **zero-width** span
 /// (`span.start == span.end`), synthesized by
 /// `crates/ns-syntax/src/parser/expr.rs:339-344`. A real, non-zero-width
 /// `self` is a genuine explicit self send (§5.8, always depth 0, no
 /// search).
-pub(super) fn is_synthesized_implicit_receiver(receiver: &Expr) -> bool {
+pub(super) fn is_synthesized_implicit_receiver(receiver: &Expression) -> bool {
     matches!(
         receiver,
-        Expr::Ident(id) if id.name == "self" && id.span.start == id.span.end
+        Expression::Identifier(id) if id.name == "self" && id.span.start == id.span.end
     )
 }
 
-pub(super) fn is_explicit_self(receiver: &Expr) -> bool {
-    matches!(receiver, Expr::Ident(id) if id.name == "self" && id.span.start != id.span.end)
+pub(super) fn is_explicit_self(receiver: &Expression) -> bool {
+    matches!(receiver, Expression::Identifier(id) if id.name == "self" && id.span.start != id.span.end)
 }
 
-pub(super) fn is_explicit_super(receiver: &Expr) -> bool {
-    matches!(receiver, Expr::Ident(id) if id.name == "super")
+pub(super) fn is_explicit_super(receiver: &Expression) -> bool {
+    matches!(receiver, Expression::Identifier(id) if id.name == "super")
 }
 
 /// Recognizes the `outer N m` two-hop shape: `receiver` is itself a `Send`
-/// whose own receiver is `Ident("outer")` and whose message is a unary send
-/// to an uppercase-starting selector. Returns that selector's name if so.
+/// whose own receiver is `Identifier("outer")` and whose message is a unary
+/// send to an uppercase-starting selector. Returns that selector's name if so.
 /// The inner "send N to outer" step is never dispatched as a real message —
 /// callers that get `Some(name)` back must resolve `name`'s depth via
 /// `depth_of_named_outer` and use the *outer* `Send`'s own message/selector
 /// (`send.message`) as the actual send, discarding the inner shape.
-pub(super) fn outer_class_name(receiver: &Expr) -> Option<&str> {
-    let Expr::Send(inner) = receiver else {
+pub(super) fn outer_class_name(receiver: &Expression) -> Option<&str> {
+    let Expression::Send(inner) = receiver else {
         return None;
     };
-    let Expr::Ident(outer_ident) = &inner.receiver else {
+    let Expression::Identifier(outer_identifier) = &inner.receiver else {
         return None;
     };
-    if outer_ident.name != "outer" {
+    if outer_identifier.name != "outer" {
         return None;
     }
     match &inner.message.selector {

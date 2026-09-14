@@ -7,18 +7,18 @@ use ns_syntax::ast;
 
 pub(crate) enum InlineForm<'a> {
     /// `ifTrue:ifFalse:` and (arguments swapped) `ifFalse:ifTrue:`.
-    IfTrueIfFalse(&'a ast::BlockExpr, &'a ast::BlockExpr),
-    IfTrue(&'a ast::BlockExpr),
-    IfFalse(&'a ast::BlockExpr),
-    And(&'a ast::BlockExpr),
-    Or(&'a ast::BlockExpr),
+    IfTrueIfFalse(&'a ast::BlockExpression, &'a ast::BlockExpression),
+    IfTrue(&'a ast::BlockExpression),
+    IfFalse(&'a ast::BlockExpression),
+    And(&'a ast::BlockExpression),
+    Or(&'a ast::BlockExpression),
     WhileTrue {
-        cond: &'a ast::BlockExpr,
-        body: &'a ast::BlockExpr,
+        condition: &'a ast::BlockExpression,
+        body: &'a ast::BlockExpression,
     },
     WhileFalse {
-        cond: &'a ast::BlockExpr,
-        body: &'a ast::BlockExpr,
+        condition: &'a ast::BlockExpression,
+        body: &'a ast::BlockExpression,
     },
 }
 
@@ -27,9 +27,13 @@ pub(crate) enum InlineForm<'a> {
 /// activation (and fresh temps) per invocation, which a closure created
 /// inside a loop body could observe; a register cannot reproduce that, so
 /// such blocks keep their real-send semantics.
-fn as_inlinable_block(expr: &ast::Expr) -> Option<&ast::BlockExpr> {
-    match expr {
-        ast::Expr::Block(b) if b.params.is_empty() && b.body.temps.is_empty() => Some(b),
+fn as_inlinable_block(expression: &ast::Expression) -> Option<&ast::BlockExpression> {
+    match expression {
+        ast::Expression::Block(block)
+            if block.parameters.is_empty() && block.body.temporaries.is_empty() =>
+        {
+            Some(block)
+        }
         _ => None,
     }
 }
@@ -40,39 +44,39 @@ pub(crate) fn recognize(send: &ast::Send) -> Option<InlineForm<'_>> {
     let ast::Selector::Keyword(selector) = &send.message.selector else {
         return None;
     };
-    let args = &send.message.args;
-    // The resolver/parser guarantee `args.len()` matches the selector's own
-    // colon count; each arm below indexes `args` at a fixed position with
-    // the arity only implicit in the selector string it matched on. Name
+    let arguments = &send.message.arguments;
+    // The resolver/parser guarantee `arguments.len()` matches the selector's
+    // own colon count; each arm below indexes `arguments` at a fixed position
+    // with the arity only implicit in the selector string it matched on. Name
     // the invariant so a mismatch surfaces as this assertion, not a bare
     // slice-index panic.
     let expected_arity = selector.matches(':').count();
     debug_assert_eq!(
-        args.len(),
+        arguments.len(),
         expected_arity,
         "internal: keyword selector `{selector}` expects {expected_arity} argument(s), got {}",
-        args.len()
+        arguments.len()
     );
     match selector.as_str() {
         "ifTrue:ifFalse:" => Some(InlineForm::IfTrueIfFalse(
-            as_inlinable_block(&args[0])?,
-            as_inlinable_block(&args[1])?,
+            as_inlinable_block(&arguments[0])?,
+            as_inlinable_block(&arguments[1])?,
         )),
         "ifFalse:ifTrue:" => Some(InlineForm::IfTrueIfFalse(
-            as_inlinable_block(&args[1])?,
-            as_inlinable_block(&args[0])?,
+            as_inlinable_block(&arguments[1])?,
+            as_inlinable_block(&arguments[0])?,
         )),
-        "ifTrue:" => Some(InlineForm::IfTrue(as_inlinable_block(&args[0])?)),
-        "ifFalse:" => Some(InlineForm::IfFalse(as_inlinable_block(&args[0])?)),
-        "and:" => Some(InlineForm::And(as_inlinable_block(&args[0])?)),
-        "or:" => Some(InlineForm::Or(as_inlinable_block(&args[0])?)),
+        "ifTrue:" => Some(InlineForm::IfTrue(as_inlinable_block(&arguments[0])?)),
+        "ifFalse:" => Some(InlineForm::IfFalse(as_inlinable_block(&arguments[0])?)),
+        "and:" => Some(InlineForm::And(as_inlinable_block(&arguments[0])?)),
+        "or:" => Some(InlineForm::Or(as_inlinable_block(&arguments[0])?)),
         "whileTrue:" => Some(InlineForm::WhileTrue {
-            cond: as_inlinable_block(&send.receiver)?,
-            body: as_inlinable_block(&args[0])?,
+            condition: as_inlinable_block(&send.receiver)?,
+            body: as_inlinable_block(&arguments[0])?,
         }),
         "whileFalse:" => Some(InlineForm::WhileFalse {
-            cond: as_inlinable_block(&send.receiver)?,
-            body: as_inlinable_block(&args[0])?,
+            condition: as_inlinable_block(&send.receiver)?,
+            body: as_inlinable_block(&arguments[0])?,
         }),
         _ => None,
     }
@@ -83,18 +87,18 @@ mod tests {
     use super::*;
     use indoc::formatdoc;
 
-    fn parse_send(src: &str) -> ast::Send {
+    fn parse_send(source: &str) -> ast::Send {
         let full = formatdoc! {"
             Newspeak3
             'T'
             class X = Object new (
             ) (
-              foo = ( ^{src} )
+              foo = ( ^{source} )
             ) : ()
         "};
         let module = ns_syntax::parse(&full).expect("parse");
-        match &module.root_class.instance_side.methods[0].body.stmts[0] {
-            ast::Stmt::Return(ast::Expr::Send(send)) => (**send).clone(),
+        match &module.root_class.instance_side.methods[0].body.statements[0] {
+            ast::Statement::Return(ast::Expression::Send(send)) => (**send).clone(),
             other => panic!("expected a return-of-send statement, got {other:?}"),
         }
     }

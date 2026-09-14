@@ -27,32 +27,42 @@ use crate::{platform, Mutator, Symbol};
 /// plain leaf: it keeps a `Result<Value, NewspeakError>` signature, wrapped
 /// into the step it is right here, by `wrap_error`.
 pub(crate) fn dispatch_native(
-    m: &mut Mutator,
+    mutator: &mut Mutator,
     kind: BuiltinClass,
     receiver: Value,
     selector: Symbol,
-    args: &[Value],
+    arguments: &[Value],
 ) -> Option<Result<Step, Signal>> {
     match kind {
-        BuiltinClass::Object => object_class::dispatch(m, receiver, selector, args).map(wrap_error),
+        BuiltinClass::Object => {
+            object_class::dispatch(mutator, receiver, selector, arguments).map(wrap_error)
+        }
         BuiltinClass::Boolean | BuiltinClass::True | BuiltinClass::False => {
-            boolean::dispatch(m, receiver, selector, args)
+            boolean::dispatch(mutator, receiver, selector, arguments)
         }
         BuiltinClass::Integer => {
-            numbers::dispatch_integer(m, receiver, selector, args).map(wrap_error)
+            numbers::dispatch_integer(mutator, receiver, selector, arguments).map(wrap_error)
         }
-        BuiltinClass::Float => numbers::dispatch_float(m, receiver, selector, args).map(wrap_error),
-        BuiltinClass::Str => text::dispatch_string(m, receiver, selector, args).map(wrap_error),
-        BuiltinClass::Sym => text::dispatch_symbol(m, receiver, selector, args).map(wrap_error),
+        BuiltinClass::Float => {
+            numbers::dispatch_float(mutator, receiver, selector, arguments).map(wrap_error)
+        }
+        BuiltinClass::String => {
+            text::dispatch_string(mutator, receiver, selector, arguments).map(wrap_error)
+        }
+        BuiltinClass::Symbol => {
+            text::dispatch_symbol(mutator, receiver, selector, arguments).map(wrap_error)
+        }
         BuiltinClass::Character => {
-            text::dispatch_character(m, receiver, selector, args).map(wrap_error)
+            text::dispatch_character(mutator, receiver, selector, arguments).map(wrap_error)
         }
-        BuiltinClass::Array => collections::dispatch_array(m, receiver, selector, args),
+        BuiltinClass::Array => collections::dispatch_array(mutator, receiver, selector, arguments),
         BuiltinClass::OrderedCollection => {
-            collections::dispatch_ordered_collection(m, receiver, selector, args)
+            collections::dispatch_ordered_collection(mutator, receiver, selector, arguments)
         }
-        BuiltinClass::Block => block::dispatch(m, receiver, selector, args),
-        BuiltinClass::Platform => platform::dispatch(m, receiver, selector, args).map(wrap_error),
+        BuiltinClass::Block => block::dispatch(mutator, receiver, selector, arguments),
+        BuiltinClass::Platform => {
+            platform::dispatch(mutator, receiver, selector, arguments).map(wrap_error)
+        }
         _ => None,
     }
 }

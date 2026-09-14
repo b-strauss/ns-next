@@ -2,7 +2,7 @@
 //!
 //! `Character` has no dedicated `ObjectData` payload variant --
 //! `Mutator::new_character` represents a character as a one-`char`
-//! `ObjectData::Str`, tagged with the `BuiltinClass::Character` class so
+//! `ObjectData::String`, tagged with the `BuiltinClass::Character` class so
 //! dispatch still lands here (see that constructor's doc comment). This
 //! module's `dispatch_character` therefore extracts its payload exactly like
 //! `dispatch_string` does, just from a string that is always one `char`
@@ -11,13 +11,13 @@
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
-/// Extracts an owned `String` from `arg` if it is a `Str`-payload object
-/// (covers both `String` and `Character` arguments, since they share a
-/// payload representation). `None` for anything else, including `Symbol`
-/// (a distinct payload) and non-`Obj` values.
-fn arg_str(heap: &Heap, arg: Option<&Value>) -> Option<String> {
-    match arg {
-        Some(Value::Obj(obj)) => heap.str_value(*obj),
+/// Extracts an owned `String` from `argument` if it is a `String`-payload
+/// object (covers both `String` and `Character` arguments, since they share a
+/// payload representation). `None` for anything else, including `Symbol` (a
+/// distinct payload) and non-`Object` values.
+fn argument_string(heap: &Heap, argument: Option<&Value>) -> Option<String> {
+    match argument {
+        Some(Value::Object(object)) => heap.str_value(*object),
         _ => None,
     }
 }
@@ -25,15 +25,15 @@ fn arg_str(heap: &Heap, arg: Option<&Value>) -> Option<String> {
 /// Mirrors `ns_syntax::lexer`'s string-literal escaping (`lex_string`): a
 /// string literal is delimited by `'`, and an embedded `'` is written as two
 /// consecutive `'` characters (no other escapes exist for Newspeak strings).
-fn quote_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
+fn quote_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
     out.push('\'');
-    for c in s.chars() {
-        if c == '\'' {
+    for character in text.chars() {
+        if character == '\'' {
             out.push('\'');
             out.push('\'');
         } else {
-            out.push(c);
+            out.push(character);
         }
     }
     out.push('\'');
@@ -41,77 +41,85 @@ fn quote_string(s: &str) -> String {
 }
 
 pub(crate) fn dispatch_string(
-    m: &mut Mutator,
+    mutator: &mut Mutator,
     receiver: Value,
     selector: Symbol,
-    args: &[Value],
+    arguments: &[Value],
 ) -> Option<Result<Value, NewspeakError>> {
-    let Value::Obj(obj) = &receiver else {
+    let Value::Object(object) = &receiver else {
         return None;
     };
-    let s = m.heap.str_value(*obj)?;
+    let string = mutator.heap.str_value(*object)?;
     match selector.as_str() {
-        "size" => Some(Ok(Value::SmallInt(s.chars().count() as i64))),
-        "," => Some(match arg_str(&m.heap, args.first()) {
-            Some(other) => Ok(Value::Obj(m.new_string(format!("{s}{other}")))),
+        "size" => Some(Ok(Value::SmallInteger(string.chars().count() as i64))),
+        "," => Some(match argument_string(&mutator.heap, arguments.first()) {
+            Some(other) => Ok(Value::Object(
+                mutator.new_string(format!("{string}{other}")),
+            )),
             None => Err(NewspeakError {
                 selector,
                 receiver,
                 message: format!(
                     "String concatenation (,) requires a String argument, got {}",
-                    m.heap.describe_arg(args.first())
+                    mutator.heap.describe_argument(arguments.first())
                 ),
             }),
         }),
-        "=" => Some(Ok(Value::Bool(
-            arg_str(&m.heap, args.first()).as_deref() == Some(s.as_str()),
+        "=" => Some(Ok(Value::Boolean(
+            argument_string(&mutator.heap, arguments.first()).as_deref() == Some(string.as_str()),
         ))),
-        "asSymbol" => Some(Ok(m.new_symbol(Symbol::intern(&s)))),
-        "printString" => Some(Ok(Value::Obj(m.new_string(quote_string(&s))))),
+        "asSymbol" => Some(Ok(mutator.new_symbol(Symbol::intern(&string)))),
+        "printString" => Some(Ok(Value::Object(mutator.new_string(quote_string(&string))))),
         _ => None,
     }
 }
 
 pub(crate) fn dispatch_symbol(
-    m: &mut Mutator,
+    mutator: &mut Mutator,
     receiver: Value,
     selector: Symbol,
-    args: &[Value],
+    arguments: &[Value],
 ) -> Option<Result<Value, NewspeakError>> {
-    let Value::Obj(obj) = &receiver else {
+    let Value::Object(object) = &receiver else {
         return None;
     };
-    let sym = m.heap.sym_value(*obj)?;
+    let symbol = mutator.heap.symbol_value(*object)?;
     match selector.as_str() {
-        "asString" => Some(Ok(Value::Obj(m.new_string(sym.as_str().to_string())))),
-        "=" => Some(Ok(Value::Bool(match args.first() {
-            Some(Value::Obj(arg_obj)) => m.heap.sym_value(*arg_obj) == Some(sym),
+        "asString" => Some(Ok(Value::Object(
+            mutator.new_string(symbol.as_str().to_string()),
+        ))),
+        "=" => Some(Ok(Value::Boolean(match arguments.first() {
+            Some(Value::Object(argument_object)) => {
+                mutator.heap.symbol_value(*argument_object) == Some(symbol)
+            }
             _ => false,
         }))),
-        "printString" => Some(Ok(Value::Obj(m.new_string(format!("#{}", sym.as_str()))))),
+        "printString" => Some(Ok(Value::Object(
+            mutator.new_string(format!("#{}", symbol.as_str())),
+        ))),
         _ => None,
     }
 }
 
 pub(crate) fn dispatch_character(
-    m: &mut Mutator,
+    mutator: &mut Mutator,
     receiver: Value,
     selector: Symbol,
-    args: &[Value],
+    arguments: &[Value],
 ) -> Option<Result<Value, NewspeakError>> {
-    let Value::Obj(obj) = &receiver else {
+    let Value::Object(object) = &receiver else {
         return None;
     };
-    let s = m.heap.str_value(*obj)?;
+    let string = mutator.heap.str_value(*object)?;
     // Invariant from `Mutator::new_character`: this payload is always
     // exactly one `char`. Fall back to `'\0'` rather than panicking if that
     // invariant is ever violated -- never panic on a Newspeak-input path.
-    let c = s.chars().next().unwrap_or('\0');
+    let character = string.chars().next().unwrap_or('\0');
     match selector.as_str() {
-        "asInteger" => Some(Ok(Value::SmallInt(c as i64))),
-        "asString" => Some(Ok(Value::Obj(m.new_string(c.to_string())))),
-        "=" => Some(Ok(Value::Bool(
-            arg_str(&m.heap, args.first()).as_deref() == Some(s.as_str()),
+        "asInteger" => Some(Ok(Value::SmallInteger(character as i64))),
+        "asString" => Some(Ok(Value::Object(mutator.new_string(character.to_string())))),
+        "=" => Some(Ok(Value::Boolean(
+            argument_string(&mutator.heap, arguments.first()).as_deref() == Some(string.as_str()),
         ))),
         _ => None,
     }

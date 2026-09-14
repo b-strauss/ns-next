@@ -11,7 +11,7 @@
 //! and the image's source text, which is attacker-controlled input like
 //! every other byte in the file, is never handed to the parser. It is not
 //! even required to be present: `snapshot(None, ...)` writes an image with
-//! no source in it at all, and `snapshot(Some(src), ...)` writes the debug
+//! no source in it at all, and `snapshot(Some(source), ...)` writes the debug
 //! variant, whose source blob exists so a loaded world can be shown (and,
 //! once a decompiler exists, compared) as `.ns`.
 
@@ -23,7 +23,7 @@ pub mod opcodes;
 pub mod symbols;
 
 use crate::heap::{Heap, Root};
-use crate::types::{ClassRef, SourceOrigin, Value};
+use crate::types::{ClassReference, SourceOrigin, Value};
 use crate::{Interpreter, Mutator, Symbol};
 
 /// The sections that describe code and structure, encoded into their own
@@ -60,7 +60,7 @@ struct Describing {
 /// the way. Shared by `snapshot` and `build`: both need the same two tables,
 /// and both need them encoded before the (still-open) symbol table can be
 /// written, since it is the table's *contents* that fill it.
-fn encode_describing(root_class: ClassRef, heap: &Heap) -> Result<Describing, String> {
+fn encode_describing(root_class: ClassReference, heap: &Heap) -> Result<Describing, String> {
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
     let ids = encode::encode_code_table(&mut code, heap, root_class, &mut symbols)?;
@@ -81,16 +81,16 @@ fn encode_describing(root_class: ClassRef, heap: &Heap) -> Result<Describing, St
 /// Writes header through root class. Everything after that is the caller's:
 /// the entry field, and for an image the graph.
 fn write_describing(
-    w: &mut encode::Writer,
+    writer: &mut encode::Writer,
     source: Option<&str>,
     origin: &SourceOrigin,
     flags: u8,
-    d: Describing,
-    root_class: ClassRef,
+    describing: Describing,
+    root_class: ClassReference,
     heap: &Heap,
 ) -> Result<(), String> {
     encode::write_header(
-        w,
+        writer,
         flags
             | match source {
                 Some(_) => encode::FLAG_HAS_SOURCE,
@@ -98,18 +98,18 @@ fn write_describing(
             },
     );
     if let Some(source) = source {
-        w.write_str(source);
+        writer.write_str(source);
     }
-    encode::encode_source_origin(w, origin);
+    encode::encode_source_origin(writer, origin);
     // The symbol table is written here, ahead of the code and mixin tables it
     // fills, so a reader can decode it once before either asks it to resolve
-    // an id. Both callers are done with `d.mixin_ids` by this point --
+    // an id. Both callers are done with `describing.mixin_ids` by this point --
     // `snapshot` has already used it to encode the graph into its own buffer,
-    // `build` never needed it -- so consuming `d` here loses nothing.
-    d.symbols.write(w);
-    w.write_raw(&d.code.into_bytes());
-    w.write_raw(&d.mixins.into_bytes());
-    encode::encode_root_class(w, heap, root_class)?;
+    // `build` never needed it -- so consuming `describing` here loses nothing.
+    describing.symbols.write(writer);
+    writer.write_raw(&describing.code.into_bytes());
+    writer.write_raw(&describing.mixins.into_bytes());
+    encode::encode_root_class(writer, heap, root_class)?;
     Ok(())
 }
 
@@ -117,27 +117,27 @@ fn write_describing(
 /// the entry send's result) plus everything reachable from them, together
 /// with the module's provenance and compiled code.
 ///
-/// `source` is the debug variant's switch. `None` writes an image whose
-/// bytes contain no program text -- what a loaded world needs is the code
-/// table, the mixin table and the graph, and none of them quotes the
-/// source. `Some(src)` additionally stores `src` verbatim; `load` hands it
-/// back on `LoadedImage::source` and does nothing else with it. The graph
-/// closes with the hashes of the objects it names by tag
+/// `source` is the debug variant's switch. `None` writes an image whose bytes
+/// contain no program text -- what a loaded world needs is the code table, the
+/// mixin table and the graph, and none of them quotes the source.
+/// `Some(source)` additionally stores `source` verbatim; `load` hands it back
+/// on `LoadedImage::source` and does nothing else with it. The graph closes
+/// with the hashes of the objects it names by tag
 /// (`encode::encode_tag_named_hashes`).
 pub fn snapshot(
-    m: &Mutator,
+    mutator: &Mutator,
     source: Option<&str>,
     origin: &SourceOrigin,
-    root_class: ClassRef,
+    root_class: ClassReference,
     platform: &Value,
     roots: &[Value],
 ) -> Result<Vec<u8>, String> {
-    let heap = &m.heap;
-    // A frame married to a running activation keeps its registers and `pc`
-    // on the activation stack, and the format has no record for the stack,
-    // so encoding one would write a frame with empty registers and succeed.
-    // `Heap::frame_snapshot` debug-asserts against that per frame; this is
-    // the check a release build keeps.
+    let heap = &mutator.heap;
+    // A frame married to a running activation keeps its registers and
+    // `program_counter` on the activation stack, and the format has no record
+    // for the stack, so encoding one would write a frame with empty registers
+    // and succeed. `Heap::frame_snapshot` debug-asserts against that per frame;
+    // this is the check a release build keeps.
     if heap.activation_depth() != 0 {
         return Err(
             "image encoding cannot snapshot a world mid-execution: a snapshot is \
@@ -145,32 +145,32 @@ pub fn snapshot(
                 .to_string(),
         );
     }
-    let mut d = encode_describing(root_class, heap)?;
+    let mut describing = encode_describing(root_class, heap)?;
     // The graph section is encoded into its own buffer, against the same
     // `symbols` builder the describing sections used, before `write_describing`
-    // consumes `d` -- the graph needs the mixin table's row ids, and those
-    // exist only on `d.mixin_ids`.
+    // consumes `describing` -- the graph needs the mixin table's row ids, and
+    // those exist only on `describing.mixin_ids`.
     let mut graph_w = encode::Writer::new();
     encode::encode_graph_section(
         &mut graph_w,
         heap,
         roots,
         platform,
-        &d.ids,
+        &describing.ids,
         root_class,
-        &d.mixin_ids,
-        &mut d.symbols,
+        &describing.mixin_ids,
+        &mut describing.symbols,
     )?;
-    encode::encode_tag_named_hashes(&mut graph_w, m, root_class, platform);
-    let mut w = encode::Writer::new();
-    write_describing(&mut w, source, origin, 0, d, root_class, heap)?;
+    encode::encode_tag_named_hashes(&mut graph_w, mutator, root_class, platform);
+    let mut writer = encode::Writer::new();
+    write_describing(&mut writer, source, origin, 0, describing, root_class, heap)?;
     // `snapshot` never names an entry selector of its own -- a snapshotted
     // world is resumed by loading it and sending to `roots`, not by starting
     // it fresh -- but the field is written unconditionally so every artifact
     // this format can produce shares one layout from here on.
-    encode::encode_entry(&mut w, None);
-    w.write_raw(&graph_w.into_bytes());
-    Ok(w.into_bytes())
+    encode::encode_entry(&mut writer, None);
+    writer.write_raw(&graph_w.into_bytes());
+    Ok(writer.into_bytes())
 }
 
 /// Serializes a **stateless binary**: code and structure, no instance state,
@@ -184,32 +184,32 @@ pub fn build(
     heap: &Heap,
     source: Option<&str>,
     origin: &SourceOrigin,
-    root_class: ClassRef,
+    root_class: ClassReference,
     entry: Symbol,
 ) -> Result<Vec<u8>, String> {
-    let mut d = encode_describing(root_class, heap)?;
+    let mut describing = encode_describing(root_class, heap)?;
     // Interned before `write_describing` writes the table below: an id
     // assigned after the table is on the wire is an id the table does not
     // contain, which the decoder reports as an out-of-range symbol id.
-    let entry_id = d.symbols.intern(entry.as_str());
-    let mut w = encode::Writer::new();
+    let entry_id = describing.symbols.intern(entry.as_str());
+    let mut writer = encode::Writer::new();
     write_describing(
-        &mut w,
+        &mut writer,
         source,
         origin,
         encode::FLAG_STATELESS,
-        d,
+        describing,
         root_class,
         heap,
     )?;
-    encode::encode_entry(&mut w, Some(entry_id));
-    Ok(w.into_bytes())
+    encode::encode_entry(&mut writer, Some(entry_id));
+    Ok(writer.into_bytes())
 }
 
 pub struct LoadedImage {
     /// Bootstrapped. The image's code lives on the declarations its mixin
     /// table rebuilt.
-    pub interp: Interpreter,
+    pub interpreter: Interpreter,
     /// The module's root class, rooted for the host that will instantiate
     /// it or snapshot it again.
     pub root_class: Root,
@@ -256,29 +256,32 @@ pub struct LoadedImage {
 /// body off the decoded mixins that carry it. A corrupt but version-matching
 /// artifact is an `Err` here, never a panic in the VM later.
 pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
-    let mut r = decode::Reader::new(bytes);
-    let header = decode::read_header(&mut r).map_err(|e| e.to_string())?;
+    let mut reader = decode::Reader::new(bytes);
+    let header = decode::read_header(&mut reader).map_err(|error| error.to_string())?;
     let source = if header.has_source {
-        Some(r.read_str().map_err(|e| e.to_string())?)
+        Some(reader.read_str().map_err(|error| error.to_string())?)
     } else {
         None
     };
-    let origin = decode::decode_source_origin(&mut r).map_err(|e| e.to_string())?;
-    let mut interp = Interpreter::bootstrap();
-    let decoded = interp.enter(|m| -> Result<_, String> {
-        let symbols = symbols::decode(&mut r).map_err(|e| e.to_string())?;
-        let table = decode::decode_code_table(&mut r, &symbols).map_err(|e| e.to_string())?;
-        decode::verify_code_table(&table).map_err(|e| e.to_string())?;
-        let mixins = mixins::decode(&mut r, &symbols, &table.codes).map_err(|e| e.to_string())?;
-        decode::verify_mixins(&mixins).map_err(|e| e.to_string())?;
-        let root_superclass =
-            decode::decode_root_superclass(&mut r, m).map_err(|e| e.to_string())?;
-        let root_class =
-            decode::build_root_class(m, &mixins, root_superclass).map_err(|e| e.to_string())?;
+    let origin = decode::decode_source_origin(&mut reader).map_err(|error| error.to_string())?;
+    let mut interpreter = Interpreter::bootstrap();
+    let decoded = interpreter.enter(|mutator| -> Result<_, String> {
+        let symbols = symbols::decode(&mut reader).map_err(|error| error.to_string())?;
+        let table =
+            decode::decode_code_table(&mut reader, &symbols).map_err(|error| error.to_string())?;
+        decode::verify_code_table(&table).map_err(|error| error.to_string())?;
+        let mixins = mixins::decode(&mut reader, &symbols, &table.codes)
+            .map_err(|error| error.to_string())?;
+        decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;
+        let root_superclass = decode::decode_root_superclass(&mut reader, mutator)
+            .map_err(|error| error.to_string())?;
+        let root_class = decode::build_root_class(mutator, &mixins, root_superclass)
+            .map_err(|error| error.to_string())?;
         // `snapshot` always writes this field (as absent); a binary requires it
         // present, since it is the only place a binary records how to start
         // itself once instantiated.
-        let entry = decode::decode_entry(&mut r, &symbols).map_err(|e| e.to_string())?;
+        let entry =
+            decode::decode_entry(&mut reader, &symbols).map_err(|error| error.to_string())?;
         if header.stateless && entry.is_none() {
             // A binary that cannot say how it starts is not a deployment
             // artifact -- refusing here keeps the failure where the artifact is
@@ -286,7 +289,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             // something to send.
             return Err("a stateless artifact must record an entry selector".to_string());
         }
-        let platform = m.platform_value();
+        let platform = mutator.platform_value();
         // A binary carries no graph section at all -- `decode_graph_section`
         // would read the next artifact's bytes (there are none) as if they were
         // one. `DecodedGraph::empty()` is the graph a binary has: no roots, no
@@ -294,28 +297,30 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         let graph = if header.stateless {
             decode::DecodedGraph::empty()
         } else {
-            let mut ctx = decode::DecodeContext {
-                m,
+            let mut context = decode::DecodeContext {
+                mutator,
                 root_class: &root_class,
                 codes: &table.codes,
                 platform,
                 mixins: &mixins.mixins,
             };
-            decode::decode_graph_section(&mut r, &mut ctx, &symbols).map_err(|e| e.to_string())?
+            decode::decode_graph_section(&mut reader, &mut context, &symbols)
+                .map_err(|error| error.to_string())?
         };
         if !header.stateless {
-            let tag_named_max = decode::decode_tag_named_hashes(&mut r, m, root_class)
-                .map_err(|e| e.to_string())?;
-            decode::verify_graph(&graph, &table, &m.heap).map_err(|e| e.to_string())?;
-            m.advance_identity_hash_past(graph.max_identity_hash.max(tag_named_max));
+            let tag_named_max = decode::decode_tag_named_hashes(&mut reader, mutator, root_class)
+                .map_err(|error| error.to_string())?;
+            decode::verify_graph(&graph, &table, &mutator.heap)
+                .map_err(|error| error.to_string())?;
+            mutator.advance_identity_hash_past(graph.max_identity_hash.max(tag_named_max));
         }
         // A byte sequence past the last section is refused, not ignored: with
         // two artifact shapes sharing one format, an unchecked tail would let a
         // binary with a graph appended -- or a truncated, then padded, image --
         // load as something its author did not write.
-        if r.remaining() != 0 {
+        if reader.remaining() != 0 {
             return Err(decode::DecodeError::TrailingBytes {
-                count: r.remaining(),
+                count: reader.remaining(),
             }
             .to_string());
         }
@@ -323,13 +328,17 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         // check: nothing runs while an artifact decodes, so nothing moves under
         // the plain handles above, and a refused artifact answers nothing to
         // root (`docs/design/image-format.md`, "Two artifacts").
-        let root_class = m.stash(Value::Obj(root_class));
-        let roots = graph.roots.into_iter().map(|root| m.stash(root)).collect();
+        let root_class = mutator.stash(Value::Object(root_class));
+        let roots = graph
+            .roots
+            .into_iter()
+            .map(|root| mutator.stash(root))
+            .collect();
         Ok((root_class, roots, entry, header.stateless))
     })?;
     let (root_class, roots, entry, stateless) = decoded;
     Ok(LoadedImage {
-        interp,
+        interpreter,
         root_class,
         roots,
         origin,

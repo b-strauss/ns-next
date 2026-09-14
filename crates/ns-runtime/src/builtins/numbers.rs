@@ -48,119 +48,144 @@ fn type_mismatch(
         message: format!(
             "{selector} requires a numeric argument of the receiver's own type \
              (Milestone 1 has no Integer/Float coercion), got {}",
-            heap.describe_arg(got)
+            heap.describe_argument(got)
         ),
     }
 }
 
 pub(crate) fn dispatch_integer(
-    m: &mut Mutator,
+    mutator: &mut Mutator,
     receiver: Value,
     selector: Symbol,
-    args: &[Value],
+    arguments: &[Value],
 ) -> Option<Result<Value, NewspeakError>> {
-    let Value::SmallInt(n) = receiver else {
+    let Value::SmallInteger(receiver_integer) = receiver else {
         return None;
     };
-    let arg_int = || match args.first() {
-        Some(Value::SmallInt(m)) => Some(*m),
+    let argument_integer = || match arguments.first() {
+        Some(Value::SmallInteger(argument)) => Some(*argument),
         _ => None,
     };
-    let mismatch = |op: &str| type_mismatch(&m.heap, &receiver, Symbol::intern(op), args.first());
-    let overflow = |op: &str| NewspeakError {
-        selector: Symbol::intern(op),
-        receiver: Value::SmallInt(n),
+    let mismatch = |operator: &str| {
+        type_mismatch(
+            &mutator.heap,
+            &receiver,
+            Symbol::intern(operator),
+            arguments.first(),
+        )
+    };
+    let overflow = |operator: &str| NewspeakError {
+        selector: Symbol::intern(operator),
+        receiver: Value::SmallInteger(receiver_integer),
         message: format!(
-            "Integer overflow computing {n} {op} {}",
-            m.heap.describe_arg(args.first())
+            "Integer overflow computing {receiver_integer} {operator} {}",
+            mutator.heap.describe_argument(arguments.first())
         ),
     };
     // `+`/`-`/`*`: a non-Integer argument is a type mismatch; only a genuine
     // `checked_*` failure is an overflow.
-    let arith = |op: &str, f: fn(i64, i64) -> Option<i64>| match arg_int() {
-        None => Err(mismatch(op)),
-        Some(m) => f(n, m).map(Value::SmallInt).ok_or_else(|| overflow(op)),
-    };
+    let arithmetic =
+        |operator: &str, operation: fn(i64, i64) -> Option<i64>| match argument_integer() {
+            None => Err(mismatch(operator)),
+            Some(argument) => operation(receiver_integer, argument)
+                .map(Value::SmallInteger)
+                .ok_or_else(|| overflow(operator)),
+        };
     // Ordering comparisons: an argument of the wrong type is an error, not a
     // silent `false`.
-    let compare = |op: &str, f: fn(i64, i64) -> bool| match arg_int() {
-        None => Err(mismatch(op)),
-        Some(m) => Ok(Value::Bool(f(n, m))),
+    let compare = |operator: &str, operation: fn(i64, i64) -> bool| match argument_integer() {
+        None => Err(mismatch(operator)),
+        Some(argument) => Ok(Value::Boolean(operation(receiver_integer, argument))),
     };
     match selector.as_str() {
-        "+" => Some(arith("+", i64::checked_add)),
-        "-" => Some(arith("-", i64::checked_sub)),
-        "*" => Some(arith("*", i64::checked_mul)),
-        "//" => Some(match arg_int() {
+        "+" => Some(arithmetic("+", i64::checked_add)),
+        "-" => Some(arithmetic("-", i64::checked_sub)),
+        "*" => Some(arithmetic("*", i64::checked_mul)),
+        "//" => Some(match argument_integer() {
             None => Err(mismatch("//")),
             Some(0) => Err(NewspeakError {
                 selector: Symbol::intern("//"),
-                receiver: Value::SmallInt(n),
+                receiver: Value::SmallInteger(receiver_integer),
                 message: "division by zero".to_string(),
             }),
-            Some(m) => n
-                .checked_div_euclid(m)
-                .map(Value::SmallInt)
+            Some(divisor) => receiver_integer
+                .checked_div_euclid(divisor)
+                .map(Value::SmallInteger)
                 .ok_or_else(|| overflow("//")),
         }),
-        "<" => Some(compare("<", |a, b| a < b)),
-        ">" => Some(compare(">", |a, b| a > b)),
-        "<=" => Some(compare("<=", |a, b| a <= b)),
-        ">=" => Some(compare(">=", |a, b| a >= b)),
+        "<" => Some(compare("<", |left, right| left < right)),
+        ">" => Some(compare(">", |left, right| left > right)),
+        "<=" => Some(compare("<=", |left, right| left <= right)),
+        ">=" => Some(compare(">=", |left, right| left >= right)),
         // Deliberately *not* an error on a type mismatch -- see the
         // module-level note.
-        "=" => Some(Ok(Value::Bool(arg_int() == Some(n)))),
+        "=" => Some(Ok(Value::Boolean(
+            argument_integer() == Some(receiver_integer),
+        ))),
         "negated" => Some(
-            n.checked_neg()
-                .map(Value::SmallInt)
+            receiver_integer
+                .checked_neg()
+                .map(Value::SmallInteger)
                 .ok_or_else(|| overflow("negated")),
         ),
         "abs" => Some(
-            n.checked_abs()
-                .map(Value::SmallInt)
+            receiver_integer
+                .checked_abs()
+                .map(Value::SmallInteger)
                 .ok_or_else(|| overflow("abs")),
         ),
-        "printString" | "asString" => Some(Ok(Value::Obj(m.new_string(n.to_string())))),
+        "printString" | "asString" => Some(Ok(Value::Object(
+            mutator.new_string(receiver_integer.to_string()),
+        ))),
         _ => None,
     }
 }
 
 pub(crate) fn dispatch_float(
-    m: &mut Mutator,
+    mutator: &mut Mutator,
     receiver: Value,
     selector: Symbol,
-    args: &[Value],
+    arguments: &[Value],
 ) -> Option<Result<Value, NewspeakError>> {
-    let Value::Float(x) = receiver else {
+    let Value::Float(receiver_float) = receiver else {
         return None;
     };
     // An `Integer` argument widens losslessly; anything else is a type
     // mismatch, never a silent `NaN` result for arithmetic or a silent
     // `false` for comparisons.
-    let arg_float = || match args.first() {
-        Some(Value::Float(y)) => Some(*y),
-        Some(Value::SmallInt(y)) => Some(*y as f64),
+    let argument_float = || match arguments.first() {
+        Some(Value::Float(float)) => Some(*float),
+        Some(Value::SmallInteger(integer)) => Some(*integer as f64),
         _ => None,
     };
-    let mismatch = |op: &str| type_mismatch(&m.heap, &receiver, Symbol::intern(op), args.first());
-    let arith = |op: &str, f: fn(f64, f64) -> f64| match arg_float() {
-        None => Err(mismatch(op)),
-        Some(y) => Ok(Value::Float(f(x, y))),
+    let mismatch = |operator: &str| {
+        type_mismatch(
+            &mutator.heap,
+            &receiver,
+            Symbol::intern(operator),
+            arguments.first(),
+        )
     };
-    let compare = |op: &str, f: fn(f64, f64) -> bool| match arg_float() {
-        None => Err(mismatch(op)),
-        Some(y) => Ok(Value::Bool(f(x, y))),
+    let arithmetic = |operator: &str, operation: fn(f64, f64) -> f64| match argument_float() {
+        None => Err(mismatch(operator)),
+        Some(argument) => Ok(Value::Float(operation(receiver_float, argument))),
+    };
+    let compare = |operator: &str, operation: fn(f64, f64) -> bool| match argument_float() {
+        None => Err(mismatch(operator)),
+        Some(argument) => Ok(Value::Boolean(operation(receiver_float, argument))),
     };
     match selector.as_str() {
-        "+" => Some(arith("+", |a, b| a + b)),
-        "-" => Some(arith("-", |a, b| a - b)),
-        "*" => Some(arith("*", |a, b| a * b)),
-        "/" => Some(arith("/", |a, b| a / b)),
-        "<" => Some(compare("<", |a, b| a < b)),
-        ">" => Some(compare(">", |a, b| a > b)),
+        "+" => Some(arithmetic("+", |left, right| left + right)),
+        "-" => Some(arithmetic("-", |left, right| left - right)),
+        "*" => Some(arithmetic("*", |left, right| left * right)),
+        "/" => Some(arithmetic("/", |left, right| left / right)),
+        "<" => Some(compare("<", |left, right| left < right)),
+        ">" => Some(compare(">", |left, right| left > right)),
         // Same exception as `Integer`'s `=`: never an error.
-        "=" => Some(Ok(Value::Bool(arg_float() == Some(x)))),
-        "printString" | "asString" => Some(Ok(Value::Obj(m.new_string(x.to_string())))),
+        "=" => Some(Ok(Value::Boolean(argument_float() == Some(receiver_float)))),
+        "printString" | "asString" => Some(Ok(Value::Object(
+            mutator.new_string(receiver_float.to_string()),
+        ))),
         _ => None,
     }
 }

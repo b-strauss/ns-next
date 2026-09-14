@@ -1,10 +1,11 @@
 //! The run loop's safepoint (`Interpreter::safepoint`, which `vm::run`'s poll
 //! calls when the heap asks for it) and, in a debug build, the stress mode:
-//! a move of everything at the safepoints its schedule picks, with the
-//! interpreter's side of a move -- its own roots, forwarded after the heap's,
-//! and the state that must hold no handle when one happens
+//! a move of everything at the safepoints its schedule picks
 //! (`docs/design/memory.md`, "Checking the roots before a collector exists:
-//! the stress mode").
+//! the stress mode"). The step state's side of a move -- its own roots,
+//! forwarded after the heap's, and the state that must hold no handle when
+//! one happens -- is `World::move_everything` and
+//! `World::check_quiescent_state`, in `heap/world.rs`.
 
 use super::Interpreter;
 
@@ -76,9 +77,9 @@ impl StressMoves {
     /// Whether `NS_NEXT_STRESS_MOVES` asks for the stress mode: set, and
     /// neither empty nor `0`.
     pub(crate) fn from_env() -> Option<StressMoves> {
-        let on =
-            std::env::var_os("NS_NEXT_STRESS_MOVES").is_some_and(|v| !v.is_empty() && v != "0");
-        on.then(StressMoves::default)
+        let requested = std::env::var_os("NS_NEXT_STRESS_MOVES")
+            .is_some_and(|value| !value.is_empty() && value != "0");
+        requested.then(StressMoves::default)
     }
 }
 
@@ -93,9 +94,9 @@ impl Interpreter {
 
     /// Turns the stress mode on or off for this interpreter, whatever
     /// `NS_NEXT_STRESS_MOVES` says. For tests.
-    pub fn set_stress_moves(&mut self, on: bool) {
-        self.stress = on.then(StressMoves::default);
-        self.world.set_safepoint_requested(on);
+    pub fn set_stress_moves(&mut self, enabled: bool) {
+        self.stress = enabled.then(StressMoves::default);
+        self.world.set_safepoint_requested(enabled);
     }
 
     /// How many times this interpreter's heap has moved everything.

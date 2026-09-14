@@ -9,8 +9,8 @@ use std::process::ExitCode;
 pub(crate) fn report_entry_send(result: ns_runtime::HostResult) -> ExitCode {
     match result {
         Ok(_) => ExitCode::SUCCESS,
-        Err(ns_runtime::HostSignal::Error(e)) => {
-            eprintln!("Uncaught Newspeak error: {}", e.message);
+        Err(ns_runtime::HostSignal::Error(error)) => {
+            eprintln!("Uncaught Newspeak error: {}", error.message);
             ExitCode::FAILURE
         }
         Err(ns_runtime::HostSignal::Return) => {
@@ -22,10 +22,10 @@ pub(crate) fn report_entry_send(result: ns_runtime::HostResult) -> ExitCode {
 
 fn report_signal(signal: ns_runtime::HostSignal) -> ExitCode {
     match signal {
-        ns_runtime::HostSignal::Error(e) => {
+        ns_runtime::HostSignal::Error(error) => {
             eprintln!(
                 "Uncaught Newspeak error during instantiation: {}",
-                e.message
+                error.message
             );
         }
         ns_runtime::HostSignal::Return => {
@@ -37,15 +37,18 @@ fn report_signal(signal: ns_runtime::HostSignal) -> ExitCode {
 
 /// The class object a module's root-class `Root` holds: `load_module` and
 /// `image::load` only ever root a class object there.
-pub(crate) fn class_ref(m: &ns_runtime::Mutator, class: &ns_runtime::Root) -> ns_runtime::ClassRef {
-    match m.fetch(class) {
-        ns_runtime::Value::Obj(class) => class,
+pub(crate) fn class_reference(
+    mutator: &ns_runtime::Mutator,
+    class: &ns_runtime::Root,
+) -> ns_runtime::ClassReference {
+    match mutator.fetch(class) {
+        ns_runtime::Value::Object(class) => class,
         _ => unreachable!("internal: a module's root class is a class object"),
     }
 }
 
 /// The argument list `instantiate_root` (used by `run`, `snapshot` and
-/// `load`) and `bench` pass to `interp.instantiate`,
+/// `load`) and `bench` pass to `interpreter.instantiate`,
 /// built from the root class's own declared primary factory pattern
 /// (`Mixin::factory`) rather than assumed.
 ///
@@ -60,25 +63,26 @@ pub(crate) fn class_ref(m: &ns_runtime::Mutator, class: &ns_runtime::Root) -> ns
 /// multi-parameter factory, so anything that isn't the two shapes below is
 /// refused here, before a guessed argument could reach `instantiate` and
 /// fail for a reason this message never mentions.
-pub(crate) fn factory_args_for(
+pub(crate) fn factory_arguments_for(
     heap: &ns_runtime::Heap,
-    class: ns_runtime::ClassRef,
+    class: ns_runtime::ClassReference,
     platform: &ns_runtime::Root,
 ) -> Result<Vec<ns_runtime::Root>, String> {
     let factory = heap
         .class_application(class)
-        .and_then(|app| app.mixin.factory);
+        .and_then(|application| application.mixin.factory);
     match factory {
         // No declared factory (a builtin root, in principle) or a unary
         // one: a unary selector takes no arguments by definition, so there
         // is nothing to guess regardless of what the selector is spelled.
         None => Ok(vec![]),
-        Some(factory) if factory.num_args == 0 => Ok(vec![]),
+        Some(factory) if factory.argument_count == 0 => Ok(vec![]),
         // `usingPlatform:`'s one parameter (`newspeak-spec.pdf` §8.4's Core
         // Library factory convention) is the only keyword shape the CLI
         // knows what to fill in.
         Some(factory)
-            if factory.num_args == 1 && factory.selector == ns_runtime::Symbol::USING_PLATFORM =>
+            if factory.argument_count == 1
+                && factory.selector == ns_runtime::Symbol::USING_PLATFORM =>
         {
             Ok(vec![platform.clone()])
         }
@@ -88,20 +92,20 @@ pub(crate) fn factory_args_for(
              `usingPlatform:`",
             class_name(heap, class),
             factory.selector,
-            factory.num_args
+            factory.argument_count
         )),
     }
 }
 
-/// The mixin name behind a class object, for `factory_args_for`'s error
+/// The mixin name behind a class object, for `factory_arguments_for`'s error
 /// message. `class` is always `ObjectData::Class` at every call site -- it
 /// comes either from `bootstrap` or, when `load` starts a
 /// stateless binary, from `image::load`'s rebuilt root class -- so the
 /// fallback is unreachable in practice and exists only to keep this a total
 /// function.
-fn class_name(heap: &ns_runtime::Heap, class: ns_runtime::ClassRef) -> String {
+fn class_name(heap: &ns_runtime::Heap, class: ns_runtime::ClassReference) -> String {
     heap.class_application(class)
-        .map(|app| app.mixin.name.to_string())
+        .map(|application| application.mixin.name.to_string())
         .unwrap_or_else(|| "<non-class>".to_string())
 }
 
@@ -116,7 +120,7 @@ fn selector_arity(selector: &str) -> usize {
         return selector.matches(':').count();
     }
     match selector.chars().next() {
-        Some(c) if c.is_alphabetic() || c == '_' => 0,
+        Some(first) if first.is_alphabetic() || first == '_' => 0,
         // A binary selector, e.g. `--send +`. Empty selectors reach the
         // runtime and fail there as an ordinary unknown message.
         Some(_) => 1,
@@ -139,37 +143,42 @@ fn selector_arity(selector: &str) -> usize {
 /// takes the platform and `Nil` for the environment-args list -- there is
 /// still no command-line-argument passthrough into Newspeak. Beyond two
 /// the CLI has nothing to offer, and says so rather than padding.
-pub(crate) fn entry_args(
-    interp: &ns_runtime::Interpreter,
+pub(crate) fn entry_arguments(
+    interpreter: &ns_runtime::Interpreter,
     selector: &str,
     platform: &ns_runtime::Root,
 ) -> Result<Vec<ns_runtime::Root>, String> {
     match selector_arity(selector) {
         0 => Ok(vec![]),
         1 => Ok(vec![platform.clone()]),
-        2 => Ok(vec![platform.clone(), interp.stash(ns_runtime::Value::Nil)]),
-        n => Err(format!(
-            "cannot send `{selector}`: it takes {n} argument(s), and this CLI only knows how \
+        2 => Ok(vec![
+            platform.clone(),
+            interpreter.stash(ns_runtime::Value::Nil),
+        ]),
+        arity => Err(format!(
+            "cannot send `{selector}`: it takes {arity} argument(s), and this CLI only knows how \
              to supply the platform and a `nil` argument list"
         )),
     }
 }
 
-/// Instantiates the root `class` with the arguments `factory_args_for` builds
-/// for it, reporting a failure the way every command that starts a program
-/// does. `Err` carries the exit code to return.
+/// Instantiates the root `class` with the arguments `factory_arguments_for`
+/// builds for it, reporting a failure the way every command that starts a
+/// program does. `Err` carries the exit code to return.
 pub(crate) fn instantiate_root(
-    interp: &mut ns_runtime::Interpreter,
+    interpreter: &mut ns_runtime::Interpreter,
     class: &ns_runtime::Root,
 ) -> Result<ns_runtime::Root, ExitCode> {
-    let platform = interp.platform();
-    let factory_args = interp
-        .enter(|m| factory_args_for(m.heap(), class_ref(m, class), &platform))
-        .map_err(|msg| {
-            eprintln!("error: {msg}");
+    let platform = interpreter.platform();
+    let factory_arguments = interpreter
+        .enter(|mutator| {
+            factory_arguments_for(mutator.heap(), class_reference(mutator, class), &platform)
+        })
+        .map_err(|message| {
+            eprintln!("error: {message}");
             ExitCode::FAILURE
         })?;
-    interp
-        .instantiate(class, &factory_args)
+    interpreter
+        .instantiate(class, &factory_arguments)
         .map_err(report_signal)
 }

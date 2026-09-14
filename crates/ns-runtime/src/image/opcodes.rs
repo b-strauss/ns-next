@@ -19,43 +19,43 @@
 //! said.
 
 // Instructions. Next free number: 21.
-pub const OP_LOAD_LITERAL: u8 = 0;
-pub const OP_LOAD_SELF: u8 = 1;
-pub const OP_LOAD_BUILTIN_CLASS: u8 = 2;
-pub const OP_MOVE: u8 = 3;
-pub const OP_STORE_LOCAL: u8 = 4;
-pub const OP_LOAD_OUTER_LOCAL: u8 = 5;
-pub const OP_STORE_OUTER_LOCAL: u8 = 6;
-pub const OP_SEND_LEXICAL: u8 = 7;
-pub const OP_SEND_PUBLIC: u8 = 8;
-pub const OP_SEND_SUPER: u8 = 9;
-pub const OP_MAKE_CLOSURE: u8 = 10;
-pub const OP_MAKE_ARRAY: u8 = 11;
-pub const OP_INIT_SLOT: u8 = 12;
-pub const OP_RETURN: u8 = 13;
-pub const OP_IMPLICIT_RETURN: u8 = 14;
-pub const OP_NON_LOCAL_RETURN: u8 = 15;
-pub const OP_JUMP: u8 = 16;
-pub const OP_JUMP_IF_NOT_BOOLEAN: u8 = 17;
-pub const OP_BRANCH_IF_FALSE: u8 = 18;
-pub const OP_BRANCH_IF_TRUE: u8 = 19;
-pub const OP_SEND_INLINABLE: u8 = 20;
+pub const OPCODE_LOAD_LITERAL: u8 = 0;
+pub const OPCODE_LOAD_SELF: u8 = 1;
+pub const OPCODE_LOAD_BUILTIN_CLASS: u8 = 2;
+pub const OPCODE_MOVE: u8 = 3;
+pub const OPCODE_STORE_LOCAL: u8 = 4;
+pub const OPCODE_LOAD_OUTER_LOCAL: u8 = 5;
+pub const OPCODE_STORE_OUTER_LOCAL: u8 = 6;
+pub const OPCODE_SEND_LEXICAL: u8 = 7;
+pub const OPCODE_SEND_PUBLIC: u8 = 8;
+pub const OPCODE_SEND_SUPER: u8 = 9;
+pub const OPCODE_MAKE_CLOSURE: u8 = 10;
+pub const OPCODE_MAKE_ARRAY: u8 = 11;
+pub const OPCODE_INITIALIZE_SLOT: u8 = 12;
+pub const OPCODE_RETURN: u8 = 13;
+pub const OPCODE_IMPLICIT_RETURN: u8 = 14;
+pub const OPCODE_NON_LOCAL_RETURN: u8 = 15;
+pub const OPCODE_JUMP: u8 = 16;
+pub const OPCODE_JUMP_IF_NOT_BOOLEAN: u8 = 17;
+pub const OPCODE_BRANCH_IF_FALSE: u8 = 18;
+pub const OPCODE_BRANCH_IF_TRUE: u8 = 19;
+pub const OPCODE_SEND_INLINABLE: u8 = 20;
 
-// Literals, carried by `OP_LOAD_LITERAL` and nested inside `LIT_ARRAY`.
+// Literals, carried by `OPCODE_LOAD_LITERAL` and nested inside `LITERAL_ARRAY`.
 // Next free number: 10.
-pub const LIT_NIL: u8 = 0;
-pub const LIT_BOOL: u8 = 1;
-pub const LIT_SMALL_INT: u8 = 2;
-pub const LIT_FLOAT: u8 = 3;
-pub const LIT_STR: u8 = 4;
-pub const LIT_SYM: u8 = 5;
-pub const LIT_CHAR: u8 = 6;
-pub const LIT_ARRAY: u8 = 7;
+pub const LITERAL_NIL: u8 = 0;
+pub const LITERAL_BOOL: u8 = 1;
+pub const LITERAL_SMALL_INTEGER: u8 = 2;
+pub const LITERAL_FLOAT: u8 = 3;
+pub const LITERAL_STRING: u8 = 4;
+pub const LITERAL_SYMBOL: u8 = 5;
+pub const LITERAL_CHARACTER: u8 = 6;
+pub const LITERAL_ARRAY: u8 = 7;
 /// An integer the lexer accepted and the parser rejects. Carried as its
 /// original text because the error it raises is produced at execution time, by
-/// `interpreter::literals::malformed_int_error`.
-pub const LIT_MALFORMED_INT: u8 = 8;
-pub const LIT_UNRESOLVED_IDENT: u8 = 9;
+/// `interpreter::literals::malformed_integer_error`.
+pub const LITERAL_MALFORMED_INTEGER: u8 = 8;
+pub const LITERAL_UNRESOLVED_IDENTIFIER: u8 = 9;
 
 // ---------------------------------------------------------------------------
 // Graph-section tags. Same rule as above: assigned once, never renumbered.
@@ -70,32 +70,32 @@ pub const LIT_UNRESOLVED_IDENT: u8 = 9;
 
 /// How a `Value` is encoded. Scalars carry their payload inline; the last
 /// three name something outside the value itself.
-pub const VAL_NIL: u8 = 0;
-pub const VAL_FALSE: u8 = 1;
-pub const VAL_TRUE: u8 = 2;
-pub const VAL_SMALL_INT: u8 = 3;
-pub const VAL_FLOAT: u8 = 4;
+pub const VALUE_NIL: u8 = 0;
+pub const VALUE_FALSE: u8 = 1;
+pub const VALUE_TRUE: u8 = 2;
+pub const VALUE_SMALL_INTEGER: u8 = 3;
+pub const VALUE_FLOAT: u8 = 4;
 /// An index into the object table.
-pub const VAL_OBJECT_ID: u8 = 5;
+pub const VALUE_OBJECT_ID: u8 = 5;
 /// A class, named by a class tag rather than by object identity.
-pub const VAL_CLASS_TAG: u8 = 6;
+pub const VALUE_CLASS_TAG: u8 = 6;
 /// The `platform` singleton, resolved to the loading interpreter's own.
-pub const VAL_PLATFORM: u8 = 7;
+pub const VALUE_PLATFORM: u8 = 7;
 
 /// An object record's body, following its class tag and identity hash.
-pub const OBJ_INSTANCE: u8 = 0;
-pub const OBJ_STR: u8 = 1;
-pub const OBJ_SYM: u8 = 2;
-pub const OBJ_ARRAY: u8 = 3;
-pub const OBJ_CLOSURE: u8 = 4;
-pub const OBJ_CLASS: u8 = 5;
+pub const OBJECT_INSTANCE: u8 = 0;
+pub const OBJECT_STRING: u8 = 1;
+pub const OBJECT_SYMBOL: u8 = 2;
+pub const OBJECT_ARRAY: u8 = 3;
+pub const OBJECT_CLOSURE: u8 = 4;
+pub const OBJECT_CLASS: u8 = 5;
 
 /// How a class reference is named. A builtin and the module's root class are
 /// not in the graph at all -- the bootstrap and the mixin table produce them --
 /// so only the third case indexes the object table.
-pub const CLS_BUILTIN: u8 = 0;
-pub const CLS_USER_ROOT: u8 = 1;
-pub const CLS_RECORD: u8 = 2;
+pub const CLASS_BUILTIN: u8 = 0;
+pub const CLASS_USER_ROOT: u8 = 1;
+pub const CLASS_RECORD: u8 = 2;
 
 /// What a frame was activated for.
 pub const FRAME_METHOD: u8 = 0;
@@ -112,16 +112,17 @@ pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
 /// A closure activation: the object id of the closure object it runs.
 pub const FRAME_CLOSURE_OBJECT: u8 = 6;
 
-/// Retired. A frame record once said which unit its `pc` counted in -- a
-/// statement or an instruction -- and only bytecode was ever representable,
-/// so the byte was removed from the record. Both numbers stay assigned so
-/// that a pc-unit field, if one ever returns, cannot give them a new meaning.
-pub const PC_KIND_TREE_WALK: u8 = 0;
-pub const PC_KIND_BYTECODE: u8 = 1;
+/// Retired. A frame record once said which unit its `program_counter` counted
+/// in -- a statement or an instruction -- and only bytecode was ever
+/// representable, so the byte was removed from the record. Both numbers stay
+/// assigned so that a program-counter-unit field, if one ever returns, cannot
+/// give them a new meaning.
+pub const PROGRAM_COUNTER_KIND_TREE_WALK: u8 = 0;
+pub const PROGRAM_COUNTER_KIND_BYTECODE: u8 = 1;
 
 /// Which tag-named object an entry of the graph section's closing hash table
-/// names. The three are exactly the objects `CLS_BUILTIN`, `CLS_USER_ROOT`
-/// and `VAL_PLATFORM` name: none of them is a record, so without this table
+/// names. The three are exactly the objects `CLASS_BUILTIN`, `CLASS_USER_ROOT`
+/// and `VALUE_PLATFORM` name: none of them is a record, so without this table
 /// nothing in an image would carry a hash one of them was given
 /// (`docs/design/image-format.md`, "Identity hashes are preserved verbatim").
 /// A builtin-class entry is followed by its builtin class tag.

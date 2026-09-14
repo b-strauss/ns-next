@@ -15,8 +15,8 @@ pub(super) struct LocalScope {
 impl LocalScope {
     pub(super) fn new(names_in_order: &[Symbol]) -> LocalScope {
         let mut names = HashMap::new();
-        for (i, &name) in names_in_order.iter().enumerate() {
-            names.insert(name, i as u16);
+        for (index, &name) in names_in_order.iter().enumerate() {
+            names.insert(name, index as u16);
         }
         LocalScope { names }
     }

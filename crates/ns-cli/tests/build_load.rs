@@ -1,22 +1,22 @@
 //! `ns-next build` -- the stateless deployment binary.
 
 mod common;
-use common::{fixture, ns_next, ScratchDir};
+use common::{fixture, ns_next, ScratchDirectory};
 use std::path::Path;
 
 #[test]
 fn build_writes_a_stateless_binary_that_inspect_recognizes() {
-    let dir = ScratchDir::new("build");
-    let out = dir.join("app.nsb");
-    let (ok, _, err) = ns_next(&[
+    let directory = ScratchDirectory::new("build");
+    let out = directory.join("app.nsb");
+    let (ok, _, error) = ns_next(&[
         "build".as_ref(),
         fixture("arithmetic.ns").as_os_str(),
         out.as_os_str(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
 
-    let (ok, listing, err) = ns_next(&["inspect".as_ref(), out.as_os_str()]);
-    assert!(ok, "{err}");
+    let (ok, listing, error) = ns_next(&["inspect".as_ref(), out.as_os_str()]);
+    assert!(ok, "{error}");
     assert!(listing.contains("stateless: yes"), "{listing}");
     assert!(listing.contains("main:args:"), "{listing}");
     // The whole point of the artifact: no instance state travelled with it.
@@ -25,9 +25,9 @@ fn build_writes_a_stateless_binary_that_inspect_recognizes() {
 
 #[test]
 fn build_refuses_an_entry_the_root_class_does_not_have() {
-    let dir = ScratchDir::new("bad-entry");
-    let out = dir.join("app.nsb");
-    let (ok, _, err) = ns_next(&[
+    let directory = ScratchDirectory::new("bad-entry");
+    let out = directory.join("app.nsb");
+    let (ok, _, error) = ns_next(&[
         "build".as_ref(),
         fixture("arithmetic.ns").as_os_str(),
         out.as_os_str(),
@@ -35,15 +35,15 @@ fn build_refuses_an_entry_the_root_class_does_not_have() {
         "noSuchSelector".as_ref(),
     ]);
     assert!(!ok);
-    assert!(err.contains("noSuchSelector"), "{err}");
+    assert!(error.contains("noSuchSelector"), "{error}");
     assert!(!out.exists(), "a refused build must write no file");
 }
 
 #[test]
 fn build_refuses_an_entry_arity_the_cli_cannot_supply() {
-    let dir = ScratchDir::new("bad-arity");
-    let out = dir.join("app.nsb");
-    let (ok, _, err) = ns_next(&[
+    let directory = ScratchDirectory::new("bad-arity");
+    let out = directory.join("app.nsb");
+    let (ok, _, error) = ns_next(&[
         "build".as_ref(),
         fixture("arithmetic.ns").as_os_str(),
         out.as_os_str(),
@@ -51,48 +51,48 @@ fn build_refuses_an_entry_arity_the_cli_cannot_supply() {
         "a:b:c:".as_ref(),
     ]);
     assert!(!ok);
-    assert!(err.contains("argument"), "{err}");
+    assert!(error.contains("argument"), "{error}");
 }
 
 #[test]
 fn build_requires_an_entry_when_the_root_class_declares_no_main() {
     // TestActor.ns answers `return42` and declares no `main:args:`.
-    let dir = ScratchDir::new("no-main");
-    let out = dir.join("app.nsb");
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/modules/TestActor.ns");
-    let (ok, _, err) = ns_next(&["build".as_ref(), src.as_os_str(), out.as_os_str()]);
+    let directory = ScratchDirectory::new("no-main");
+    let out = directory.join("app.nsb");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/modules/TestActor.ns");
+    let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), out.as_os_str()]);
     assert!(!ok);
-    assert!(err.contains("--entry"), "{err}");
+    assert!(error.contains("--entry"), "{error}");
 }
 
 #[test]
 fn a_built_binary_runs_exactly_as_its_source_does() {
-    let dir = ScratchDir::new("equivalence");
-    let out = dir.join("app.nsb");
-    let src = fixture("arithmetic.ns");
+    let directory = ScratchDirectory::new("equivalence");
+    let out = directory.join("app.nsb");
+    let source = fixture("arithmetic.ns");
 
-    let (ok, _, err) = ns_next(&["build".as_ref(), src.as_os_str(), out.as_os_str()]);
-    assert!(ok, "{err}");
+    let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), out.as_os_str()]);
+    assert!(ok, "{error}");
 
-    let (run_ok, run_out, run_err) = ns_next(&["run".as_ref(), src.as_os_str()]);
-    let (load_ok, load_out, load_err) = ns_next(&["load".as_ref(), out.as_os_str()]);
+    let (run_ok, run_out, run_error) = ns_next(&["run".as_ref(), source.as_os_str()]);
+    let (load_ok, load_out, load_error) = ns_next(&["load".as_ref(), out.as_os_str()]);
 
     assert_eq!(load_ok, run_ok, "exit status differs");
     assert_eq!(load_out, run_out, "stdout differs");
-    assert_eq!(load_err, run_err, "stderr differs");
+    assert_eq!(load_error, run_error, "stderr differs");
 }
 
 #[test]
 fn loading_a_binary_runs_its_initializers_against_the_loading_platform() {
     // instance_init.ns writes through its initializer, so if the factory and
     // initializers did not run on load the entry send would see nil slots.
-    let dir = ScratchDir::new("init");
-    let out = dir.join("app.nsb");
-    let src = fixture("instance_init.ns");
-    let (ok, _, err) = ns_next(&["build".as_ref(), src.as_os_str(), out.as_os_str()]);
-    assert!(ok, "{err}");
+    let directory = ScratchDirectory::new("init");
+    let out = directory.join("app.nsb");
+    let source = fixture("instance_init.ns");
+    let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), out.as_os_str()]);
+    assert!(ok, "{error}");
 
-    let (run_ok, run_out, _) = ns_next(&["run".as_ref(), src.as_os_str()]);
+    let (run_ok, run_out, _) = ns_next(&["run".as_ref(), source.as_os_str()]);
     let (load_ok, load_out, _) = ns_next(&["load".as_ref(), out.as_os_str()]);
     assert_eq!((load_ok, load_out), (run_ok, run_out));
 }
@@ -107,18 +107,18 @@ fn loading_a_binary_runs_its_initializers_against_the_loading_platform() {
 #[test]
 fn every_fixture_runs_identically_from_source_and_from_a_binary() {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
-    let dir = ScratchDir::new("all-fixtures");
+    let directory = ScratchDirectory::new("all-fixtures");
     let mut checked = 0;
 
     for entry in std::fs::read_dir(&fixtures).expect("read tests-fixtures") {
         let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("ns") {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("ns") {
             continue;
         }
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
         for lowering in ["optimized", "reference"] {
-            let out = dir.join(&format!("{stem}.{lowering}.nsb"));
-            let (built, _, build_err) = ns_next(&[
+            let out = directory.join(&format!("{stem}.{lowering}.nsb"));
+            let (built, _, build_error) = ns_next(&[
                 "build".as_ref(),
                 path.as_os_str(),
                 out.as_os_str(),
@@ -131,24 +131,24 @@ fn every_fixture_runs_identically_from_source_and_from_a_binary() {
                 // Anything else is, so the reason is asserted rather than
                 // assumed.
                 assert!(
-                    build_err.contains("--entry"),
-                    "build failed for {} under the {lowering} lowering: {build_err}",
+                    build_error.contains("--entry"),
+                    "build failed for {} under the {lowering} lowering: {build_error}",
                     path.display()
                 );
                 continue;
             }
 
-            let (run_ok, run_out, run_err) = ns_next(&[
+            let (run_ok, run_out, run_error) = ns_next(&[
                 "run".as_ref(),
                 path.as_os_str(),
                 "--lowering".as_ref(),
                 lowering.as_ref(),
             ]);
-            let (load_ok, load_out, load_err) = ns_next(&["load".as_ref(), out.as_os_str()]);
+            let (load_ok, load_out, load_error) = ns_next(&["load".as_ref(), out.as_os_str()]);
             let what = format!("{} under the {lowering} lowering", path.display());
             assert_eq!(load_ok, run_ok, "exit status differs for {what}");
             assert_eq!(load_out, run_out, "stdout differs for {what}");
-            assert_eq!(load_err, run_err, "stderr differs for {what}");
+            assert_eq!(load_error, run_error, "stderr differs for {what}");
             checked += 1;
         }
     }
@@ -168,18 +168,18 @@ fn every_fixture_runs_identically_from_source_and_from_a_binary() {
 /// section writers honest.
 #[test]
 fn a_build_and_a_snapshot_agree_on_the_describing_sections() {
-    let dir = ScratchDir::new("prefix");
-    let src = fixture("arithmetic.ns");
-    let bin = dir.join("app.nsb");
-    let img = dir.join("world.img");
+    let directory = ScratchDirectory::new("prefix");
+    let source = fixture("arithmetic.ns");
+    let binary = directory.join("app.nsb");
+    let image = directory.join("world.img");
 
-    let (ok, _, err) = ns_next(&["build".as_ref(), src.as_os_str(), bin.as_os_str()]);
-    assert!(ok, "{err}");
-    let (ok, _, err) = ns_next(&["snapshot".as_ref(), src.as_os_str(), img.as_os_str()]);
-    assert!(ok, "{err}");
+    let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), binary.as_os_str()]);
+    assert!(ok, "{error}");
+    let (ok, _, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
+    assert!(ok, "{error}");
 
-    let bin_bytes = std::fs::read(&bin).expect("read binary");
-    let img_bytes = std::fs::read(&img).expect("read image");
+    let binary_bytes = std::fs::read(&binary).expect("read binary");
+    let image_bytes = std::fs::read(&image).expect("read image");
 
     // The window starts at `origin`, not at byte 0: the header's flag byte
     // legitimately differs (a build is stateless, a snapshot is not), so
@@ -190,27 +190,27 @@ fn a_build_and_a_snapshot_agree_on_the_describing_sections() {
         let start = report
             .sections
             .iter()
-            .find(|s| s.name == "origin")
+            .find(|section| section.name == "origin")
             .expect("origin section")
             .start;
         let end = report
             .sections
             .iter()
-            .find(|s| s.name == "root class")
+            .find(|section| section.name == "root class")
             .expect("root class section")
             .end;
         (start, end)
     };
-    let (bin_start, bin_end) = window(&bin_bytes);
-    let (img_start, img_end) = window(&img_bytes);
+    let (binary_start, binary_end) = window(&binary_bytes);
+    let (image_start, image_end) = window(&image_bytes);
     assert_eq!(
-        (bin_start, bin_end),
-        (img_start, img_end),
+        (binary_start, binary_end),
+        (image_start, image_end),
         "the describing sections start or end at different offsets"
     );
     assert_eq!(
-        &bin_bytes[bin_start..bin_end],
-        &img_bytes[img_start..img_end],
+        &binary_bytes[binary_start..binary_end],
+        &image_bytes[image_start..image_end],
         "describing bytes differ; run `ns-next inspect` on both to see which section"
     );
 }
@@ -222,22 +222,22 @@ fn load_send_overrides_the_recorded_entry() {
     // different outcomes: `return42` exits cleanly, `signalError` sends
     // `Error signal:` and fails. Using the same selector on both sides
     // would pass whether or not `--send` actually takes precedence.
-    let dir = ScratchDir::new("override");
-    let out = dir.join("app.nsb");
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/modules/TestActor.ns");
-    let (ok, _, err) = ns_next(&[
+    let directory = ScratchDirectory::new("override");
+    let out = directory.join("app.nsb");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/modules/TestActor.ns");
+    let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        src.as_os_str(),
+        source.as_os_str(),
         out.as_os_str(),
         "--entry".as_ref(),
         "return42".as_ref(),
     ]);
-    assert!(ok, "{err}");
+    assert!(ok, "{error}");
 
     // If `--send` did not override the recorded entry, this would silently
     // run `return42` instead and exit successfully with no error message --
     // so both the failing exit and the message are asserted, not just one.
-    let (ok, _, err) = ns_next(&[
+    let (ok, _, error) = ns_next(&[
         "load".as_ref(),
         out.as_os_str(),
         "--send".as_ref(),
@@ -248,7 +248,7 @@ fn load_send_overrides_the_recorded_entry() {
         "expected `--send signalError` to override the recorded `return42` entry"
     );
     assert!(
-        err.contains("Uncaught Newspeak error"),
-        "expected signalError's error to surface, got: {err}"
+        error.contains("Uncaught Newspeak error"),
+        "expected signalError's error to surface, got: {error}"
     );
 }

@@ -5,7 +5,7 @@
 //! Dispatch is virtual and by name, so a selector cannot live only in the
 //! AST -- the run-time lookup would never find it there. Every send
 //! instruction's selector, every method-dictionary key, every closure's
-//! parameter names and every `Sym` object's text are therefore written into
+//! parameter names and every `Symbol` object's text are therefore written into
 //! the image, and the same handful of selectors recur at very many call
 //! sites. Interning each occurrence individually at load time would cost
 //! one `Symbol::intern` per occurrence; a table at the head of the image,
@@ -36,23 +36,23 @@ impl Builder {
 
     /// Returns the string's id, assigning a fresh one the first time a
     /// given string is seen.
-    pub fn intern(&mut self, s: &str) -> u32 {
-        if let Some(&id) = self.ids.get(s) {
+    pub fn intern(&mut self, text: &str) -> u32 {
+        if let Some(&id) = self.ids.get(text) {
             return id;
         }
         let id = u32_field("symbol table id", self.strings.len());
-        self.strings.push(s.to_string());
-        self.ids.insert(s.to_string(), id);
+        self.strings.push(text.to_string());
+        self.ids.insert(text.to_string(), id);
         id
     }
 
     /// The count, then each string in the order `intern` assigned it an id
     /// -- the same order `decode` hands ids back out in, so an id written
     /// anywhere else during encoding still resolves after a round trip.
-    pub fn write(&self, w: &mut Writer) {
-        w.write_u32(u32_field("symbol table entry count", self.strings.len()));
-        for s in &self.strings {
-            w.write_str(s);
+    pub fn write(&self, writer: &mut Writer) {
+        writer.write_u32(u32_field("symbol table entry count", self.strings.len()));
+        for string in &self.strings {
+            writer.write_str(string);
         }
     }
 
@@ -62,7 +62,11 @@ impl Builder {
     /// `decode` would work too, but this skips the buffer.
     pub fn build(self) -> Table {
         Table {
-            symbols: self.strings.iter().map(|s| Symbol::intern(s)).collect(),
+            symbols: self
+                .strings
+                .iter()
+                .map(|string| Symbol::intern(string))
+                .collect(),
         }
     }
 }
@@ -104,11 +108,11 @@ impl Table {
 /// Reads the count then that many strings, bounding the count against the
 /// remaining input before allocating (`reserve_for`) so a crafted count
 /// cannot drive a large placeholder allocation before the first read fails.
-pub fn decode(r: &mut Reader) -> Result<Table, DecodeError> {
-    let count = r.read_u32()? as usize;
-    let mut symbols: Vec<Symbol> = reserve_for(count, r);
+pub fn decode(reader: &mut Reader) -> Result<Table, DecodeError> {
+    let count = reader.read_u32()? as usize;
+    let mut symbols: Vec<Symbol> = reserve_for(count, reader);
     for _ in 0..count {
-        symbols.push(Symbol::intern(&r.read_str()?));
+        symbols.push(Symbol::intern(&reader.read_str()?));
     }
     Ok(Table { symbols })
 }

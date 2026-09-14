@@ -11,17 +11,17 @@ use ns_runtime::{
     HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol, Value,
 };
 
-fn load(src: &str, lowering: Lowering) -> (Interpreter, Root) {
-    let module = ns_syntax::parse(src).expect("parse");
+fn load(source: &str, lowering: Lowering) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
-        Rc::from(src),
+        Rc::from(source),
         SourceOrigin::File(PathBuf::from("t.ns")),
     )
     .expect("resolve");
-    let mut interp = Interpreter::bootstrap_with(lowering);
-    let class = interp.load_module(&resolved);
-    (interp, class)
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&resolved);
+    (interpreter, class)
 }
 
 /// `HostSignal` carries no `Debug` impl, so `Result::expect` is unusable on
@@ -30,13 +30,15 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
         Ok(root) => root,
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
-        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
+        Err(HostSignal::Error(error)) => {
+            panic!("{what}: unexpected Newspeak error: {}", error.message)
+        }
     }
 }
 
-fn small_int(v: Value) -> i64 {
-    match v {
-        Value::SmallInt(n) => n,
+fn small_integer(value: Value) -> i64 {
+    match value {
+        Value::SmallInteger(integer) => integer,
         _ => panic!("expected a SmallInteger"),
     }
 }
@@ -58,23 +60,26 @@ const DEPTH: &str = indoc! {"
 /// native re-enters Newspeak here, since every control-flow send is inlined.
 #[test]
 fn a_deep_method_recursion_runs_on_the_activation_stack() {
-    let (mut interp, class) = load(DEPTH, Lowering::Optimized);
-    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    let (mut interpreter, class) = load(DEPTH, Lowering::Optimized);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     for selector in ["down:", "logic:", "loop:"] {
         let result = expect_ok(
-            interp.send(
+            interpreter.send(
                 &instance,
                 Symbol::intern(selector),
-                &[interp.stash(Value::SmallInt(50_000))],
+                &[interpreter.stash(Value::SmallInteger(50_000))],
             ),
             selector,
         );
         assert!(
-            interp.enter(|m| matches!(m.fetch(&result), Value::SmallInt(0) | Value::Bool(true))),
+            interpreter.enter(|mutator| matches!(
+                mutator.fetch(&result),
+                Value::SmallInteger(0) | Value::Boolean(true)
+            )),
             "{selector}"
         );
         assert_eq!(
-            interp.enter(|m| m.heap().activation_depth()),
+            interpreter.enter(|mutator| mutator.heap().activation_depth()),
             0,
             "{selector}: nothing left behind"
         );
@@ -85,7 +90,7 @@ fn a_deep_method_recursion_runs_on_the_activation_stack() {
 /// method it names and leaves nothing behind it on the stack.
 #[test]
 fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class R = Object new (
@@ -96,16 +101,19 @@ fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack() {
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
-        let result = expect_ok(interp.send(&instance, Symbol::intern("find"), &[]), "find");
+        let (mut interpreter, class) = load(source, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let result = expect_ok(
+            interpreter.send(&instance, Symbol::intern("find"), &[]),
+            "find",
+        );
         assert_eq!(
-            interp.enter(|m| small_int(m.fetch(&result))),
+            interpreter.enter(|mutator| small_integer(mutator.fetch(&result))),
             30,
             "{lowering:?}"
         );
         assert_eq!(
-            interp.enter(|m| m.heap().activation_depth()),
+            interpreter.enter(|mutator| mutator.heap().activation_depth()),
             0,
             "{lowering:?}"
         );
@@ -120,7 +128,7 @@ fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack() {
 /// nothing else should.
 #[test]
 fn a_return_into_a_running_initializer_escapes_the_run() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class E = Object new (
@@ -130,15 +138,17 @@ fn a_return_into_a_running_initializer_escapes_the_run() {
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
-        match interp.send(&instance, Symbol::intern("make"), &[]) {
+        let (mut interpreter, class) = load(source, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        match interpreter.send(&instance, Symbol::intern("make"), &[]) {
             Err(HostSignal::Return) => {}
             Ok(_) => panic!("{lowering:?}: the `^` must escape, not be answered"),
-            Err(HostSignal::Error(e)) => panic!("{lowering:?}: unexpected error: {}", e.message),
+            Err(HostSignal::Error(error)) => {
+                panic!("{lowering:?}: unexpected error: {}", error.message)
+            }
         }
         assert_eq!(
-            interp.enter(|m| m.heap().activation_depth()),
+            interpreter.enter(|mutator| mutator.heap().activation_depth()),
             0,
             "{lowering:?}"
         );
@@ -150,7 +160,7 @@ fn a_return_into_a_running_initializer_escapes_the_run() {
 /// initializer activations on the stack and nothing on the Rust stack.
 #[test]
 fn a_deep_recursion_through_instantiation_runs_on_the_activation_stack() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Tower = Object new (
@@ -164,24 +174,24 @@ fn a_deep_recursion_through_instantiation_runs_on_the_activation_stack() {
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let (mut interpreter, class) = load(source, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let height = expect_ok(
-            interp.send(
+            interpreter.send(
                 &instance,
                 Symbol::intern("build:"),
-                &[interp.stash(Value::SmallInt(20_000))],
+                &[interpreter.stash(Value::SmallInteger(20_000))],
             ),
             "build:",
         );
         assert_eq!(
-            interp.enter(|m| small_int(m.fetch(&height))),
+            interpreter.enter(|mutator| small_integer(mutator.fetch(&height))),
             20_000,
             "{lowering:?}"
         );
-        interp.enter(|m| {
-            assert_eq!(m.heap().activation_depth(), 0, "{lowering:?}");
-            assert_eq!(m.heap().counted_depth(), 0, "{lowering:?}");
+        interpreter.enter(|mutator| {
+            assert_eq!(mutator.heap().activation_depth(), 0, "{lowering:?}");
+            assert_eq!(mutator.heap().counted_depth(), 0, "{lowering:?}");
         });
     }
 }
@@ -205,24 +215,24 @@ const THROUGH_NATIVES: &str = indoc! {"
 #[test]
 fn a_deep_recursion_through_native_block_activations_runs_on_the_activation_stack() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(THROUGH_NATIVES, lowering);
-        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let (mut interpreter, class) = load(THROUGH_NATIVES, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         for selector in ["viaValue:", "viaIf:", "viaOr:", "viaWhile:"] {
             let result = expect_ok(
-                interp.send(
+                interpreter.send(
                     &instance,
                     Symbol::intern(selector),
-                    &[interp.stash(Value::SmallInt(40_000))],
+                    &[interpreter.stash(Value::SmallInteger(40_000))],
                 ),
                 selector,
             );
             assert_eq!(
-                interp.enter(|m| small_int(m.fetch(&result))),
+                interpreter.enter(|mutator| small_integer(mutator.fetch(&result))),
                 0,
                 "{selector} under {lowering:?}"
             );
             assert_eq!(
-                interp.enter(|m| m.heap().activation_depth()),
+                interpreter.enter(|mutator| mutator.heap().activation_depth()),
                 0,
                 "{selector} under {lowering:?}"
             );
@@ -234,7 +244,7 @@ const TOO_DEEP: &str = "stack overflow: recursion too deep";
 
 fn expect_too_deep(result: HostResult, what: &str) {
     match result {
-        Err(HostSignal::Error(e)) => assert_eq!(e.message, TOO_DEEP, "{what}"),
+        Err(HostSignal::Error(error)) => assert_eq!(error.message, TOO_DEEP, "{what}"),
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
         Ok(_) => panic!("{what}: ran past the depth limit"),
     }
@@ -251,44 +261,44 @@ fn expect_too_deep(result: HostResult, what: &str) {
 fn the_depth_limit_is_exact_and_counts_alike_under_both_lowerings() {
     assert_eq!(ns_runtime::interpreter::MAX_ACTIVATION_DEPTH, 100_000);
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(DEPTH, lowering);
-        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let (mut interpreter, class) = load(DEPTH, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         for selector in ["down:", "logic:", "loop:"] {
             let what = format!("{selector} under {lowering:?}");
             expect_ok(
-                interp.send(
+                interpreter.send(
                     &instance,
                     Symbol::intern(selector),
-                    &[interp.stash(Value::SmallInt(99_999))],
+                    &[interpreter.stash(Value::SmallInteger(99_999))],
                 ),
                 &what,
             );
             expect_too_deep(
-                interp.send(
+                interpreter.send(
                     &instance,
                     Symbol::intern(selector),
-                    &[interp.stash(Value::SmallInt(100_000))],
+                    &[interpreter.stash(Value::SmallInteger(100_000))],
                 ),
                 &what,
             );
-            interp.enter(|m| {
+            interpreter.enter(|mutator| {
                 assert_eq!(
-                    m.heap().activation_depth(),
+                    mutator.heap().activation_depth(),
                     0,
                     "{what}: nothing left behind"
                 );
                 assert_eq!(
-                    m.heap().counted_depth(),
+                    mutator.heap().counted_depth(),
                     0,
                     "{what}: the unwind uncounted every activation it popped"
                 );
             });
             // An overflow is an ordinary error: the interpreter goes on.
             expect_ok(
-                interp.send(
+                interpreter.send(
                     &instance,
                     Symbol::intern(selector),
-                    &[interp.stash(Value::SmallInt(10))],
+                    &[interpreter.stash(Value::SmallInteger(10))],
                 ),
                 &what,
             );
@@ -301,13 +311,13 @@ fn the_depth_limit_is_exact_and_counts_alike_under_both_lowerings() {
 #[test]
 fn a_recursion_through_block_values_is_bounded_too() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(THROUGH_NATIVES, lowering);
-        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let (mut interpreter, class) = load(THROUGH_NATIVES, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         expect_too_deep(
-            interp.send(
+            interpreter.send(
                 &instance,
                 Symbol::intern("viaValue:"),
-                &[interp.stash(Value::SmallInt(250_000))],
+                &[interpreter.stash(Value::SmallInteger(250_000))],
             ),
             &format!("viaValue: under {lowering:?}"),
         );
@@ -319,15 +329,15 @@ fn a_recursion_through_block_values_is_bounded_too() {
 fn code_table_of(bytes: &[u8]) -> Vec<Rc<ns_runtime::bytecode::CompiledCode>> {
     use ns_runtime::image;
     let report = image::inspect::inspect(bytes).expect("inspect");
-    let at = report
+    let symbols_start = report
         .sections
         .iter()
         .find(|section| section.name == "symbols")
         .expect("a symbol table")
         .start;
-    let mut r = image::decode::Reader::new(&bytes[at..]);
-    let symbols = image::symbols::decode(&mut r).expect("symbols");
-    image::decode::decode_code_table(&mut r, &symbols)
+    let mut reader = image::decode::Reader::new(&bytes[symbols_start..]);
+    let symbols = image::symbols::decode(&mut reader).expect("symbols");
+    image::decode::decode_code_table(&mut reader, &symbols)
         .expect("code table")
         .codes
 }
@@ -355,10 +365,10 @@ fn a_crafted_send_inlinable_cannot_recurse_uncounted() {
 }
 
 fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
-    use ns_runtime::bytecode::{CodeKind, Instr};
+    use ns_runtime::bytecode::{CodeKind, Instruction};
     use ns_runtime::image;
-    use ns_runtime::image::opcodes::{OP_SEND_INLINABLE, OP_SEND_PUBLIC};
-    let src = formatdoc! {"
+    use ns_runtime::image::opcodes::{OPCODE_SEND_INLINABLE, OPCODE_SEND_PUBLIC};
+    let source = formatdoc! {"
         Newspeak3
         'T'
         class Crafted = Object new (
@@ -369,17 +379,17 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
     // `n < 200000 ifTrue: b` is not a literal-block send, so even the
     // reference lowering compiles it to a `SendPublic`, which the mutation
     // below turns into a `SendInlinable` -- the two share one operand layout.
-    let (mut interp, class) = load(&src, Lowering::Reference);
+    let (mut interpreter, class) = load(&source, Lowering::Reference);
     // Nothing has run in this interpreter, so the class read from its root
     // is current, and building the artifact runs nothing either -- both
     // happen in one entry.
-    let mut bytes = interp
-        .enter(|m| {
-            let Value::Obj(class) = m.fetch(&class) else {
+    let mut bytes = interpreter
+        .enter(|mutator| {
+            let Value::Object(class) = mutator.fetch(&class) else {
                 panic!("{block}: load_module answers a class object")
             };
             image::build(
-                m.heap(),
+                mutator.heap(),
                 None,
                 &SourceOrigin::File(PathBuf::from("t.ns")),
                 class,
@@ -391,26 +401,30 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
     let id = report
         .symbols
         .iter()
-        .position(|s| s == "ifTrue:")
+        .position(|symbol| symbol == "ifTrue:")
         .expect("ifTrue: is interned") as u32;
-    let mut pattern = vec![OP_SEND_PUBLIC];
+    let mut pattern = vec![OPCODE_SEND_PUBLIC];
     pattern.extend_from_slice(&id.to_le_bytes());
-    let at: Vec<usize> = bytes
+    let offsets: Vec<usize> = bytes
         .windows(pattern.len())
         .enumerate()
-        .filter(|(_, w)| *w == pattern.as_slice())
-        .map(|(i, _)| i)
+        .filter(|(_, window)| *window == pattern.as_slice())
+        .map(|(offset, _)| offset)
         .collect();
-    assert_eq!(at.len(), 1, "{block}: exactly one `ifTrue:` send to mutate");
-    bytes[at[0]] = OP_SEND_INLINABLE;
+    assert_eq!(
+        offsets.len(),
+        1,
+        "{block}: exactly one `ifTrue:` send to mutate"
+    );
+    bytes[offsets[0]] = OPCODE_SEND_INLINABLE;
 
     // The mutation hit the instruction it meant to, in the body that recurses.
     let codes = code_table_of(&bytes);
     let sender = codes
         .iter()
         .find(|code| {
-            code.instrs.iter().any(|instr| {
-                matches!(instr, Instr::SendInlinable { selector, .. }
+            code.instructions.iter().any(|instruction| {
+                matches!(instruction, Instruction::SendInlinable { selector, .. }
                     if selector.as_str() == "ifTrue:")
             })
         })
@@ -418,25 +432,27 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
     assert_eq!(sender.kind, CodeKind::Block, "{block}: sent from the block");
     assert_eq!(
         sender
-            .instrs
+            .instructions
             .iter()
-            .any(|instr| matches!(instr, Instr::MakeClosure { .. })),
+            .any(|instruction| matches!(instruction, Instruction::MakeClosure { .. })),
         sender_reified,
         "{block}: whether the sending block reifies its own activation"
     );
 
     let mut loaded = image::load(&bytes).expect("the mutated artifact decodes");
     let instance = expect_ok(
-        loaded.interp.instantiate(&loaded.root_class, &[]),
+        loaded.interpreter.instantiate(&loaded.root_class, &[]),
         "instantiate",
     );
     expect_too_deep(
-        loaded.interp.send(&instance, Symbol::intern("main"), &[]),
+        loaded
+            .interpreter
+            .send(&instance, Symbol::intern("main"), &[]),
         &format!("the crafted recursion through {block}"),
     );
-    loaded.interp.enter(|m| {
-        assert_eq!(m.heap().activation_depth(), 0, "{block}");
-        assert_eq!(m.heap().counted_depth(), 0, "{block}");
+    loaded.interpreter.enter(|mutator| {
+        assert_eq!(mutator.heap().activation_depth(), 0, "{block}");
+        assert_eq!(mutator.heap().counted_depth(), 0, "{block}");
     });
 }
 
@@ -448,7 +464,7 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
 /// value and leave both depths where they were.
 #[test]
 fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Floor = Object new (
@@ -462,72 +478,78 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let (mut interpreter, class) = load(source, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         // Each send takes the interpreter mutably, so the literal receivers
         // and arguments are rooted before the first of them.
-        let [int_3, int_5, int_42, true_value, false_value] = [
-            Value::SmallInt(3),
-            Value::SmallInt(5),
-            Value::SmallInt(42),
-            Value::Bool(true),
-            Value::Bool(false),
+        let [integer_3, integer_5, integer_42, true_value, false_value] = [
+            Value::SmallInteger(3),
+            Value::SmallInteger(5),
+            Value::SmallInteger(42),
+            Value::Boolean(true),
+            Value::Boolean(false),
         ]
-        .map(|value| interp.stash(value));
+        .map(|value| interpreter.stash(value));
         // The arguments are borrowed, so one root can be passed several times.
-        let send = |interp: &mut Interpreter, receiver: &Root, selector: &str, args: &[&Root]| {
-            let args: Vec<Root> = args.iter().copied().cloned().collect();
-            at_the_floor(interp, lowering, receiver, selector, &args)
+        let send = |interpreter: &mut Interpreter,
+                    receiver: &Root,
+                    selector: &str,
+                    arguments: &[&Root]| {
+            let arguments: Vec<Root> = arguments.iter().copied().cloned().collect();
+            at_the_floor(interpreter, lowering, receiver, selector, &arguments)
         };
-        let below_three = expect_ok(send(&mut interp, &instance, "below:", &[&int_3]), "below:");
+        let below_three = expect_ok(
+            send(&mut interpreter, &instance, "below:", &[&integer_3]),
+            "below:",
+        );
         let at_least_five = expect_ok(
-            send(&mut interp, &instance, "atLeast:", &[&int_5]),
+            send(&mut interpreter, &instance, "atLeast:", &[&integer_5]),
             "atLeast:",
         );
-        let step = expect_ok(send(&mut interp, &instance, "step", &[]), "step");
+        let step = expect_ok(send(&mut interpreter, &instance, "step", &[]), "step");
         let three = expect_ok(
-            send(&mut interp, &instance, "constant:", &[&int_3]),
+            send(&mut interpreter, &instance, "constant:", &[&integer_3]),
             "constant:",
         );
         let yes = expect_ok(
-            send(&mut interp, &instance, "constant:", &[&true_value]),
+            send(&mut interpreter, &instance, "constant:", &[&true_value]),
             "constant:",
         );
         let answer = expect_ok(
-            send(&mut interp, &instance, "constant:", &[&int_42]),
+            send(&mut interpreter, &instance, "constant:", &[&integer_42]),
             "constant:",
         );
         let what = |selector: &str| format!("{selector} under {lowering:?}");
 
         // `WhileCondition` and `WhileBody`, each replacing the other.
         let value = expect_ok(
-            send(&mut interp, &below_three, "whileTrue:", &[&step]),
+            send(&mut interpreter, &below_three, "whileTrue:", &[&step]),
             &what("whileTrue:"),
         );
         assert!(
-            interp.enter(|m| matches!(m.fetch(&value), Value::Nil)),
+            interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::Nil)),
             "{}",
             what("whileTrue:")
         );
-        let count = expect_ok(send(&mut interp, &instance, "count", &[]), "count");
+        let count = expect_ok(send(&mut interpreter, &instance, "count", &[]), "count");
         assert_eq!(
-            interp.enter(|m| small_int(m.fetch(&count))),
+            interpreter.enter(|mutator| small_integer(mutator.fetch(&count))),
             3,
             "{}",
             what("whileTrue:")
         );
         let value = expect_ok(
-            send(&mut interp, &at_least_five, "whileFalse:", &[&step]),
+            send(&mut interpreter, &at_least_five, "whileFalse:", &[&step]),
             &what("whileFalse:"),
         );
         assert!(
-            interp.enter(|m| matches!(m.fetch(&value), Value::Nil)),
+            interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::Nil)),
             "{}",
             what("whileFalse:")
         );
-        let count = expect_ok(send(&mut interp, &instance, "count", &[]), "count");
+        let count = expect_ok(send(&mut interpreter, &instance, "count", &[]), "count");
         assert_eq!(
-            interp.enter(|m| small_int(m.fetch(&count))),
+            interpreter.enter(|mutator| small_integer(mutator.fetch(&count))),
             5,
             "{}",
             what("whileFalse:")
@@ -535,40 +557,40 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
 
         // `Truthy`: only exactly `true` is true.
         let value = expect_ok(
-            send(&mut interp, &true_value, "and:", &[&three]),
+            send(&mut interpreter, &true_value, "and:", &[&three]),
             &what("and:"),
         );
         assert!(
-            interp.enter(|m| matches!(m.fetch(&value), Value::Bool(false))),
+            interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::Boolean(false))),
             "{}",
             what("and:")
         );
         let value = expect_ok(
-            send(&mut interp, &true_value, "and:", &[&yes]),
+            send(&mut interpreter, &true_value, "and:", &[&yes]),
             &what("and:"),
         );
         assert!(
-            interp.enter(|m| matches!(m.fetch(&value), Value::Bool(true))),
+            interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::Boolean(true))),
             "{}",
             what("and:")
         );
         let value = expect_ok(
-            send(&mut interp, &false_value, "or:", &[&yes]),
+            send(&mut interpreter, &false_value, "or:", &[&yes]),
             &what("or:"),
         );
         assert!(
-            interp.enter(|m| matches!(m.fetch(&value), Value::Bool(true))),
+            interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::Boolean(true))),
             "{}",
             what("or:")
         );
 
         // `Deliver`, the continuation every other activation has too.
         let value = expect_ok(
-            send(&mut interp, &true_value, "ifTrue:", &[&answer]),
+            send(&mut interpreter, &true_value, "ifTrue:", &[&answer]),
             &what("ifTrue:"),
         );
         assert_eq!(
-            interp.enter(|m| small_int(m.fetch(&value))),
+            interpreter.enter(|mutator| small_integer(mutator.fetch(&value))),
             42,
             "{}",
             what("ifTrue:")
@@ -577,12 +599,12 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
         // A condition that answers a non-Boolean: the continuation decides a
         // `mustBeBoolean` send, which nothing here understands, and the error
         // leaves the floor as clean as a value does.
-        match send(&mut interp, &three, "whileTrue:", &[&step]) {
-            Err(HostSignal::Error(e)) => assert!(
-                e.message.contains("mustBeBoolean"),
+        match send(&mut interpreter, &three, "whileTrue:", &[&step]) {
+            Err(HostSignal::Error(error)) => assert!(
+                error.message.contains("mustBeBoolean"),
                 "{}: {}",
                 what("whileTrue:"),
-                e.message
+                error.message
             ),
             Err(HostSignal::Return) => panic!("{}: a non-local return escaped", what("whileTrue:")),
             Ok(_) => panic!("{}: a non-Boolean condition must fail", what("whileTrue:")),
@@ -597,7 +619,7 @@ fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run() {
 /// counts two activations, the method and the block.
 #[test]
 fn a_deep_recursion_through_do_runs_on_the_activation_stack() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class DoDeep = Object new (
@@ -606,24 +628,24 @@ fn a_deep_recursion_through_do_runs_on_the_activation_stack() {
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let (mut interpreter, class) = load(source, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let result = expect_ok(
-            interp.send(
+            interpreter.send(
                 &instance,
                 Symbol::intern("d:"),
-                &[interp.stash(Value::SmallInt(20_000))],
+                &[interpreter.stash(Value::SmallInteger(20_000))],
             ),
             "d:",
         );
         assert_eq!(
-            interp.enter(|m| small_int(m.fetch(&result))),
+            interpreter.enter(|mutator| small_integer(mutator.fetch(&result))),
             0,
             "{lowering:?}"
         );
-        interp.enter(|m| {
-            assert_eq!(m.heap().activation_depth(), 0, "{lowering:?}");
-            assert_eq!(m.heap().counted_depth(), 0, "{lowering:?}");
+        interpreter.enter(|mutator| {
+            assert_eq!(mutator.heap().activation_depth(), 0, "{lowering:?}");
+            assert_eq!(mutator.heap().counted_depth(), 0, "{lowering:?}");
         });
     }
 }
@@ -634,7 +656,7 @@ fn a_deep_recursion_through_do_runs_on_the_activation_stack() {
 /// progress (`Interpreter::run_from_host` debug-asserts that).
 #[test]
 fn a_recursion_through_the_nested_class_accessor_ends_at_the_activation_limit() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Chain = Object new (
@@ -650,15 +672,15 @@ fn a_recursion_through_the_nested_class_accessor_ends_at_the_activation_limit() 
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let (mut interpreter, class) = load(source, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         expect_too_deep(
-            interp.send(&instance, Symbol::intern("start"), &[]),
+            interpreter.send(&instance, Symbol::intern("start"), &[]),
             &format!("start under {lowering:?}"),
         );
-        interp.enter(|m| {
-            assert_eq!(m.heap().activation_depth(), 0, "{lowering:?}");
-            assert_eq!(m.heap().counted_depth(), 0, "{lowering:?}");
+        interpreter.enter(|mutator| {
+            assert_eq!(mutator.heap().activation_depth(), 0, "{lowering:?}");
+            assert_eq!(mutator.heap().counted_depth(), 0, "{lowering:?}");
         });
     }
 }
@@ -669,7 +691,7 @@ fn a_recursion_through_the_nested_class_accessor_ends_at_the_activation_limit() 
 /// the clause again rather than reporting the class as depending on itself.
 #[test]
 fn a_return_through_a_superclass_clause_abandons_its_creation() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Outer = Object new (
@@ -683,38 +705,38 @@ fn a_return_through_a_superclass_clause_abandons_its_creation() {
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(src, lowering);
-        let outer = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let (mut interpreter, class) = load(source, lowering);
+        let outer = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let escaped = expect_ok(
-            at_the_floor(&mut interp, lowering, &outer, "probe", &[]),
+            at_the_floor(&mut interpreter, lowering, &outer, "probe", &[]),
             "the first probe",
         );
         assert_eq!(
-            interp.enter(|m| small_int(m.fetch(&escaped))),
+            interpreter.enter(|mutator| small_integer(mutator.fetch(&escaped))),
             7,
             "{lowering:?}: the `^` lands on `probe`"
         );
         let inner = expect_ok(
-            at_the_floor(&mut interp, lowering, &outer, "probe", &[]),
+            at_the_floor(&mut interpreter, lowering, &outer, "probe", &[]),
             "the second probe",
         );
-        interp.enter(|m| {
-            let Value::Obj(inner_obj) = m.fetch(&inner) else {
+        interpreter.enter(|mutator| {
+            let Value::Object(inner_object) = mutator.fetch(&inner) else {
                 panic!("{lowering:?}: the second access answers a class object");
             };
-            assert!(m.heap().is_class(inner_obj), "{lowering:?}");
+            assert!(mutator.heap().is_class(inner_object), "{lowering:?}");
         });
         let again = expect_ok(
-            at_the_floor(&mut interp, lowering, &outer, "Inner", &[]),
+            at_the_floor(&mut interpreter, lowering, &outer, "Inner", &[]),
             "the cached class",
         );
         // Both class objects are read after the run that answered the second.
-        interp.enter(|m| {
-            let Value::Obj(inner) = m.fetch(&inner) else {
+        interpreter.enter(|mutator| {
+            let Value::Object(inner) = mutator.fetch(&inner) else {
                 panic!("{lowering:?}: the second access answers a class object");
             };
             assert!(
-                matches!(m.fetch(&again), Value::Obj(again) if again.same(inner)),
+                matches!(mutator.fetch(&again), Value::Object(again) if again.same(inner)),
                 "{lowering:?}: the class the second access built is the one cached"
             );
         });
@@ -729,7 +751,7 @@ fn a_return_through_a_superclass_clause_abandons_its_creation() {
 /// written in -- the clause receiver is a single name.
 #[test]
 fn a_return_in_a_clause_messages_block_hands_its_value_to_the_walk() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Outer = Object new (
@@ -748,14 +770,14 @@ fn a_return_in_a_clause_messages_block_hands_its_value_to_the_walk() {
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(src, lowering);
-        let outer = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let (mut interpreter, class) = load(source, lowering);
+        let outer = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let made = expect_ok(
-            at_the_floor(&mut interp, lowering, &outer, "make", &[]),
+            at_the_floor(&mut interpreter, lowering, &outer, "make", &[]),
             "make",
         );
         assert_eq!(
-            interp.enter(|m| small_int(m.fetch(&made))),
+            interpreter.enter(|mutator| small_integer(mutator.fetch(&made))),
             34,
             "{lowering:?}: Base got the returned argument list, and Cell's own slot ran too"
         );
@@ -769,7 +791,7 @@ fn a_return_in_a_clause_messages_block_hands_its_value_to_the_walk() {
 /// on either count, and the interpreter goes on.
 #[test]
 fn a_return_into_an_initializer_with_a_level_below_escapes_the_run() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class E = Object new (
@@ -781,19 +803,21 @@ fn a_return_into_an_initializer_with_a_level_below_escapes_the_run() {
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(src, lowering);
-        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
-        match at_the_floor(&mut interp, lowering, &instance, "make", &[]) {
+        let (mut interpreter, class) = load(source, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        match at_the_floor(&mut interpreter, lowering, &instance, "make", &[]) {
             Err(HostSignal::Return) => {}
             Ok(_) => panic!("{lowering:?}: the `^` must escape, not be answered"),
-            Err(HostSignal::Error(e)) => panic!("{lowering:?}: unexpected error: {}", e.message),
+            Err(HostSignal::Error(error)) => {
+                panic!("{lowering:?}: unexpected error: {}", error.message)
+            }
         }
         let fine = expect_ok(
-            at_the_floor(&mut interp, lowering, &instance, "fine", &[]),
+            at_the_floor(&mut interpreter, lowering, &instance, "fine", &[]),
             "fine",
         );
         assert_eq!(
-            interp.enter(|m| small_int(m.fetch(&fine))),
+            interpreter.enter(|mutator| small_integer(mutator.fetch(&fine))),
             42,
             "{lowering:?}"
         );
@@ -806,7 +830,7 @@ fn a_return_into_an_initializer_with_a_level_below_escapes_the_run() {
 /// leaves the run with the error.
 #[test]
 fn an_error_in_a_clause_message_mid_climb_unwinds_the_run() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Outer = Object new (
@@ -818,45 +842,49 @@ fn an_error_in_a_clause_message_mid_climb_unwinds_the_run() {
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(src, lowering);
-        let outer = expect_ok(interp.instantiate(&class, &[]), "instantiate");
-        match at_the_floor(&mut interp, lowering, &outer, "make", &[]) {
-            Err(HostSignal::Error(e)) => assert_eq!(
-                e.message, "an object does not understand #foo",
+        let (mut interpreter, class) = load(source, lowering);
+        let outer = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        match at_the_floor(&mut interpreter, lowering, &outer, "make", &[]) {
+            Err(HostSignal::Error(error)) => assert_eq!(
+                error.message, "an object does not understand #foo",
                 "{lowering:?}"
             ),
             Err(HostSignal::Return) => panic!("{lowering:?}: a non-local return escaped"),
             Ok(_) => panic!("{lowering:?}: `nil foo` must fail"),
         }
         let fine = expect_ok(
-            at_the_floor(&mut interp, lowering, &outer, "fine", &[]),
+            at_the_floor(&mut interpreter, lowering, &outer, "fine", &[]),
             "fine",
         );
         assert_eq!(
-            interp.enter(|m| small_int(m.fetch(&fine))),
+            interpreter.enter(|mutator| small_integer(mutator.fetch(&fine))),
             42,
             "{lowering:?}"
         );
     }
 }
 
-/// `receiver selector args`, sent from Rust: whatever it answers, it must
+/// `receiver selector arguments`, sent from Rust: whatever it answers, it must
 /// leave the activation stack empty and the counted depth 0.
 fn at_the_floor(
-    interp: &mut Interpreter,
+    interpreter: &mut Interpreter,
     lowering: Lowering,
     receiver: &Root,
     selector: &str,
-    args: &[Root],
+    arguments: &[Root],
 ) -> HostResult {
-    let result = interp.send(receiver, Symbol::intern(selector), args);
-    interp.enter(|m| {
+    let result = interpreter.send(receiver, Symbol::intern(selector), arguments);
+    interpreter.enter(|mutator| {
         assert_eq!(
-            m.heap().activation_depth(),
+            mutator.heap().activation_depth(),
             0,
             "{selector} under {lowering:?}"
         );
-        assert_eq!(m.heap().counted_depth(), 0, "{selector} under {lowering:?}");
+        assert_eq!(
+            mutator.heap().counted_depth(),
+            0,
+            "{selector} under {lowering:?}"
+        );
     });
     result
 }

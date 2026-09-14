@@ -9,17 +9,17 @@ use std::rc::Rc;
 
 use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, Value};
 
-fn load(src: &str) -> (Interpreter, Root) {
-    let module = ns_syntax::parse(src).expect("parse");
+fn load(source: &str) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
-        Rc::from(src),
+        Rc::from(source),
         SourceOrigin::File(PathBuf::from("t.ns")),
     )
     .expect("resolve");
-    let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
-    (interp, class)
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
+    (interpreter, class)
 }
 
 /// `HostSignal` carries no `Debug` impl, so `Result::expect` isn't usable on
@@ -28,19 +28,21 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
         Ok(root) => root,
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
-        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
+        Err(HostSignal::Error(error)) => {
+            panic!("{what}: unexpected Newspeak error: {}", error.message)
+        }
     }
 }
 
-/// Reads a `Value` known to be a `Str` object. `Value` has no `PartialEq`,
-/// and its `Debug` -- though not recursive -- prints only Rust
-/// internals (`ObjRef(#42)`, not the string's contents), so a class-side
-/// send's result is compared through this rather than `assert_eq!` on the
-/// `Value` itself.
+/// Reads a `Value` known to be a `String` object. `Value` has no `PartialEq`,
+/// and its `Debug` -- though not recursive -- prints only Rust internals
+/// (`ObjectReference(#42)`, not the string's contents), so a class-side send's
+/// result is compared through this rather than `assert_eq!` on the `Value`
+/// itself.
 fn string_contents(heap: &Heap, value: &Value) -> String {
     match value {
-        Value::Obj(obj) => heap
-            .str_value(*obj)
+        Value::Object(object) => heap
+            .str_value(*object)
             .unwrap_or_else(|| panic!("expected ObjectData::Str")),
         _ => panic!("expected Value::Obj"),
     }
@@ -50,11 +52,11 @@ fn expect_error(result: HostResult, what: &str) -> String {
     match result {
         Ok(_) => panic!("{what}: expected a Newspeak error"),
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
-        Err(HostSignal::Error(e)) => e.message,
+        Err(HostSignal::Error(error)) => error.message,
     }
 }
 
-const SRC: &str = indoc! {"
+const SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new () (
@@ -68,53 +70,64 @@ const SRC: &str = indoc! {"
 
 #[test]
 fn the_accessor_returns_the_same_class_object_every_time() {
-    let (mut interp, class) = load(SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let (mut interpreter, class) = load(SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
     let first = expect_ok(
-        interp.send(&outer, Symbol::intern("innerClass"), &[]),
+        interpreter.send(&outer, Symbol::intern("innerClass"), &[]),
         "first Inner",
     );
     let second = expect_ok(
-        interp.send(&outer, Symbol::intern("innerClass"), &[]),
+        interpreter.send(&outer, Symbol::intern("innerClass"), &[]),
         "second Inner",
     );
-    interp.enter(|m| {
-        let (Value::Obj(a), Value::Obj(b)) = (m.fetch(&first), m.fetch(&second)) else {
+    interpreter.enter(|mutator| {
+        let (Value::Object(first_object), Value::Object(second_object)) =
+            (mutator.fetch(&first), mutator.fetch(&second))
+        else {
             panic!("a nested class access must yield a class object");
         };
-        assert!(a.same(b), "spec 6: cached within r");
+        assert!(first_object.same(second_object), "spec 6: cached within r");
     });
 }
 
 #[test]
 fn two_enclosing_instances_get_distinct_nested_classes() {
-    let (mut interp, class) = load(SRC);
-    let platform = interp.platform();
+    let (mut interpreter, class) = load(SOURCE);
+    let platform = interpreter.platform();
     let one = expect_ok(
-        interp.instantiate(&class, std::slice::from_ref(&platform)),
+        interpreter.instantiate(&class, std::slice::from_ref(&platform)),
         "instantiate first Outer",
     );
     let two = expect_ok(
-        interp.instantiate(&class, &[platform]),
+        interpreter.instantiate(&class, &[platform]),
         "instantiate second Outer",
     );
-    let a = expect_ok(
-        interp.send(&one, Symbol::intern("innerClass"), &[]),
+    let first_inner = expect_ok(
+        interpreter.send(&one, Symbol::intern("innerClass"), &[]),
         "first",
     );
-    let b = expect_ok(
-        interp.send(&two, Symbol::intern("innerClass"), &[]),
+    let second_inner = expect_ok(
+        interpreter.send(&two, Symbol::intern("innerClass"), &[]),
         "second",
     );
-    interp.enter(|m| {
-        let (Value::Obj(a), Value::Obj(b)) = (m.fetch(&a), m.fetch(&b)) else {
+    interpreter.enter(|mutator| {
+        let (Value::Object(first_inner), Value::Object(second_inner)) =
+            (mutator.fetch(&first_inner), mutator.fetch(&second_inner))
+        else {
             panic!("class objects")
         };
-        assert!(!a.same(b), "spec 6: a distinct class per instance");
-        let (Some(a_application), Some(b_application)) =
-            (m.heap().class_application(a), m.heap().class_application(b))
-        else {
+        assert!(
+            !first_inner.same(second_inner),
+            "spec 6: a distinct class per instance"
+        );
+        let (Some(a_application), Some(b_application)) = (
+            mutator.heap().class_application(first_inner),
+            mutator.heap().class_application(second_inner),
+        ) else {
             panic!("class data")
         };
         assert!(
@@ -127,18 +140,23 @@ fn two_enclosing_instances_get_distinct_nested_classes() {
 
 #[test]
 fn the_nested_class_remembers_its_enclosing_object() {
-    let (mut interp, class) = load(SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let (mut interpreter, class) = load(SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
     let inner = expect_ok(
-        interp.send(&outer, Symbol::intern("innerClass"), &[]),
+        interpreter.send(&outer, Symbol::intern("innerClass"), &[]),
         "Inner",
     );
-    interp.enter(|m| {
-        let (Value::Obj(inner), Value::Obj(outer)) = (m.fetch(&inner), m.fetch(&outer)) else {
+    interpreter.enter(|mutator| {
+        let (Value::Object(inner), Value::Object(outer)) =
+            (mutator.fetch(&inner), mutator.fetch(&outer))
+        else {
             panic!("class object and instance")
         };
-        let enclosing = m
+        let enclosing = mutator
             .heap()
             .class_enclosing(inner)
             .expect("spec 6: a nested class's one piece of state is its enclosing object");
@@ -148,19 +166,22 @@ fn the_nested_class_remembers_its_enclosing_object() {
 
 #[test]
 fn a_nested_class_can_be_instantiated_through_its_accessor() {
-    let (mut interp, class) = load(SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let (mut interpreter, class) = load(SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
     let instance = expect_ok(
-        interp.send(&outer, Symbol::intern("makeInner"), &[]),
+        interpreter.send(&outer, Symbol::intern("makeInner"), &[]),
         "makeInner",
     );
     let value = expect_ok(
-        interp.send(&instance, Symbol::intern("value"), &[]),
+        interpreter.send(&instance, Symbol::intern("value"), &[]),
         "value",
     );
-    let value = interp.enter(|m| match m.fetch(&value) {
-        Value::SmallInt(value) => value,
+    let value = interpreter.enter(|mutator| match mutator.fetch(&value) {
+        Value::SmallInteger(value) => value,
         _ => panic!("expected a SmallInt from `Inner new value`"),
     });
     assert_eq!(value, 42);
@@ -169,7 +190,7 @@ fn a_nested_class_can_be_instantiated_through_its_accessor() {
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if ec does not evaluate
 /// to a class object C." A program error, not an interpreter invariant --
 /// a `NewspeakError`, never a panic.
-const NON_CLASS_SUPERCLASS_SRC: &str = indoc! {"
+const NON_CLASS_SUPERCLASS_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new (| notAClass = 7. |) (
@@ -180,11 +201,14 @@ const NON_CLASS_SUPERCLASS_SRC: &str = indoc! {"
 
 #[test]
 fn a_superclass_clause_that_is_not_a_class_is_a_program_error() {
-    let (mut interp, class) = load(NON_CLASS_SUPERCLASS_SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let (mut interpreter, class) = load(NON_CLASS_SUPERCLASS_SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
     let message = expect_error(
-        interp.send(&outer, Symbol::intern("innerClass"), &[]),
+        interpreter.send(&outer, Symbol::intern("innerClass"), &[]),
         "innerClass",
     );
     assert!(
@@ -197,7 +221,7 @@ fn a_superclass_clause_that_is_not_a_class_is_a_program_error() {
 /// default (no modifier) is `protected`, so an ordinary explicit-receiver
 /// send must not reach it -- and `lookupPublic`'s hard-stop rule means the
 /// search stops at the declaration rather than continuing up the chain.
-const PROTECTED_NESTED_SRC: &str = indoc! {"
+const PROTECTED_NESTED_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new () (
@@ -210,18 +234,27 @@ const PROTECTED_NESTED_SRC: &str = indoc! {"
 
 #[test]
 fn a_nested_class_defaults_to_protected_accessibility() {
-    let (mut interp, class) = load(PROTECTED_NESTED_SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let (mut interpreter, class) = load(PROTECTED_NESTED_SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
     // Lexically, from inside Outer: reachable, and it really is a class.
-    let value = expect_ok(interp.send(&outer, Symbol::intern("reach"), &[]), "reach");
-    let value = interp.enter(|m| match m.fetch(&value) {
-        Value::SmallInt(value) => value,
+    let value = expect_ok(
+        interpreter.send(&outer, Symbol::intern("reach"), &[]),
+        "reach",
+    );
+    let value = interpreter.enter(|mutator| match mutator.fetch(&value) {
+        Value::SmallInteger(value) => value,
         _ => panic!("expected a SmallInt from `Hidden new value`"),
     });
     assert_eq!(value, 7);
     // From outside, as an ordinary send: not reachable.
-    let message = expect_error(interp.send(&outer, Symbol::intern("Hidden"), &[]), "Hidden");
+    let message = expect_error(
+        interpreter.send(&outer, Symbol::intern("Hidden"), &[]),
+        "Hidden",
+    );
     assert!(
         message.contains("does not understand"),
         "unexpected message: {message}"
@@ -234,7 +267,7 @@ fn a_nested_class_defaults_to_protected_accessibility() {
 /// not the receiver's own (dynamic) class -- which is what the clause frame's
 /// `current_class` must be, since the clause is lexically part of `Base`'s
 /// declaration.
-const INHERITED_NESTED_SRC: &str = indoc! {"
+const INHERITED_NESTED_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class M usingPlatform: p = Object new () (
@@ -250,45 +283,55 @@ const INHERITED_NESTED_SRC: &str = indoc! {"
 
 #[test]
 fn an_inherited_nested_declaration_is_reached_through_the_chain() {
-    let (mut interp, class) = load(INHERITED_NESTED_SRC);
-    let platform = interp.platform();
-    let m = expect_ok(interp.instantiate(&class, &[platform]), "instantiate M");
+    let (mut interpreter, class) = load(INHERITED_NESTED_SOURCE);
+    let platform = interpreter.platform();
+    let m_instance = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate M",
+    );
     let derived = expect_ok(
-        interp.send(&m, Symbol::intern("makeDerived"), &[]),
+        interpreter.send(&m_instance, Symbol::intern("makeDerived"), &[]),
         "makeDerived",
     );
     // `N` is declared on Base, reached here through Derived's chain -- and
     // its hidden cache slot is the inherited entry in Derived's layout.
-    let n_class = expect_ok(interp.send(&derived, Symbol::intern("N"), &[]), "N");
-    interp.enter(|m| {
-        let (Value::Obj(n_class_obj), Value::Obj(derived_obj)) =
-            (m.fetch(&n_class), m.fetch(&derived))
+    let n_class = expect_ok(interpreter.send(&derived, Symbol::intern("N"), &[]), "N");
+    interpreter.enter(|mutator| {
+        let (Value::Object(n_class_object), Value::Object(derived_object)) =
+            (mutator.fetch(&n_class), mutator.fetch(&derived))
         else {
             panic!("class object and instance")
         };
-        let enclosing = m
+        let enclosing = mutator
             .heap()
-            .class_enclosing(n_class_obj)
+            .class_enclosing(n_class_object)
             .expect("an enclosing object");
         assert!(
-            enclosing.same(derived_obj),
+            enclosing.same(derived_object),
             "the enclosing object is the receiver, not the declaring level"
         );
     });
     // Still cached per receiver across the inherited path. Both class
     // objects are read after the run that answered the second.
-    let again = expect_ok(interp.send(&derived, Symbol::intern("N"), &[]), "N again");
-    interp.enter(|m| {
-        let (Value::Obj(n_class_obj), Value::Obj(again)) = (m.fetch(&n_class), m.fetch(&again))
+    let again = expect_ok(
+        interpreter.send(&derived, Symbol::intern("N"), &[]),
+        "N again",
+    );
+    interpreter.enter(|mutator| {
+        let (Value::Object(n_class_object), Value::Object(again)) =
+            (mutator.fetch(&n_class), mutator.fetch(&again))
         else {
             panic!("class object")
         };
-        assert!(n_class_obj.same(again), "spec 6: cached within r");
+        assert!(n_class_object.same(again), "spec 6: cached within r");
     });
-    let instance = expect_ok(interp.instantiate(&n_class, &[]), "instantiate N");
-    let tag = expect_ok(interp.send(&instance, Symbol::intern("tag"), &[]), "tag");
-    let tag = interp.enter(|m| match m.fetch(&tag) {
-        Value::SmallInt(tag) => tag,
+    let instance = expect_ok(interpreter.instantiate(&n_class, &[]), "instantiate N");
+    let tag = expect_ok(
+        interpreter.send(&instance, Symbol::intern("tag"), &[]),
+        "tag",
+    );
+    let tag = interpreter.enter(|mutator| match mutator.fetch(&tag) {
+        Value::SmallInteger(tag) => tag,
         _ => panic!("expected a SmallInt from `N new tag`"),
     });
     assert_eq!(tag, 11);
@@ -302,7 +345,7 @@ fn an_inherited_nested_declaration_is_reached_through_the_chain() {
 /// answers a class object without dispatching -- which is the outcome this
 /// pins. It is the regression guard for the day that form starts
 /// dispatching: by then the frame already carries the declaring class.
-const SUPER_PREFIXED_CLAUSE_SRC: &str = indoc! {"
+const SUPER_PREFIXED_CLAUSE_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new () (
@@ -313,18 +356,21 @@ const SUPER_PREFIXED_CLAUSE_SRC: &str = indoc! {"
 
 #[test]
 fn a_super_prefixed_clause_answers_a_class_object() {
-    let (mut interp, class) = load(SUPER_PREFIXED_CLAUSE_SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let (mut interpreter, class) = load(SUPER_PREFIXED_CLAUSE_SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
     let inner = expect_ok(
-        interp.send(&outer, Symbol::intern("innerClass"), &[]),
+        interpreter.send(&outer, Symbol::intern("innerClass"), &[]),
         "innerClass",
     );
-    interp.enter(|m| {
-        let Value::Obj(inner) = m.fetch(&inner) else {
+    interpreter.enter(|mutator| {
+        let Value::Object(inner) = mutator.fetch(&inner) else {
             panic!("the accessor must yield a class object")
         };
-        assert!(m.heap().is_class(inner));
+        assert!(mutator.heap().is_class(inner));
     });
 }
 
@@ -332,7 +378,7 @@ fn a_super_prefixed_clause_answers_a_class_object() {
 /// first access, so `Inner`'s clause re-enters `Inner`'s own accessor before
 /// the cache slot is filled -- unbounded recursion, and an abort rather than
 /// a diagnosable error, without the in-progress guard.
-const CYCLIC_SRC: &str = indoc! {"
+const CYCLIC_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new () (
@@ -343,11 +389,14 @@ const CYCLIC_SRC: &str = indoc! {"
 
 #[test]
 fn a_self_referential_nested_class_is_a_program_error() {
-    let (mut interp, class) = load(CYCLIC_SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let (mut interpreter, class) = load(CYCLIC_SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
     let message = expect_error(
-        interp.send(&outer, Symbol::intern("innerClass"), &[]),
+        interpreter.send(&outer, Symbol::intern("innerClass"), &[]),
         "innerClass",
     );
     assert_eq!(
@@ -358,7 +407,7 @@ fn a_self_referential_nested_class_is_a_program_error() {
     // The guard is scoped to the evaluation, not latched: a second access
     // must raise the same error rather than a different one (or succeed).
     let again = expect_error(
-        interp.send(&outer, Symbol::intern("innerClass"), &[]),
+        interpreter.send(&outer, Symbol::intern("innerClass"), &[]),
         "innerClass again",
     );
     assert_eq!(message, again);
@@ -373,7 +422,7 @@ fn a_self_referential_nested_class_is_a_program_error() {
 /// receiver does not dispatch yet (`a_super_prefixed_clause_answers_a_class_object`).
 #[test]
 fn a_nested_class_built_on_the_one_it_redeclares_is_not_a_cycle() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'Test'
         class Outer = Object new (
@@ -396,15 +445,21 @@ fn a_nested_class_built_on_the_one_it_redeclares_is_not_a_cycle() {
             public both = ( | i | i := Sub new Inner new. ^i tag, i own )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let outer = expect_ok(interp.instantiate(&class, &[]), "instantiate Outer");
-    let both = expect_ok(interp.send(&outer, Symbol::intern("both"), &[]), "both");
-    interp.enter(|m| {
-        assert_eq!(string_contents(m.heap(), &m.fetch(&both)), "basesub");
+    let (mut interpreter, class) = load(source);
+    let outer = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Outer");
+    let both = expect_ok(
+        interpreter.send(&outer, Symbol::intern("both"), &[]),
+        "both",
+    );
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            string_contents(mutator.heap(), &mutator.fetch(&both)),
+            "basesub"
+        );
     });
 }
 
-const CLASS_SIDE_SRC: &str = indoc! {"
+const CLASS_SIDE_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Widget new = Object new () (
@@ -417,14 +472,14 @@ const CLASS_SIDE_SRC: &str = indoc! {"
 /// the class object itself, through a lazily created metaclass.
 #[test]
 fn a_class_side_method_dispatches_on_the_class_object() {
-    let (mut interp, class) = load(CLASS_SIDE_SRC);
+    let (mut interpreter, class) = load(CLASS_SIDE_SOURCE);
     let described = expect_ok(
-        interp.send(&class, Symbol::intern("describe"), &[]),
+        interpreter.send(&class, Symbol::intern("describe"), &[]),
         "class-side send",
     );
-    interp.enter(|m| {
+    interpreter.enter(|mutator| {
         assert_eq!(
-            string_contents(m.heap(), &m.fetch(&described)),
+            string_contents(mutator.heap(), &mutator.fetch(&described)),
             "a widget class"
         );
     });
@@ -436,15 +491,15 @@ fn a_class_side_method_dispatches_on_the_class_object() {
 /// object than for any other receiver.
 #[test]
 fn a_class_with_no_class_side_still_reports_ordinary_does_not_understand() {
-    let (mut interp, class) = load(SRC);
+    let (mut interpreter, class) = load(SOURCE);
     let message = expect_error(
-        interp.send(&class, Symbol::intern("noSuchClassSideMethod"), &[]),
+        interpreter.send(&class, Symbol::intern("noSuchClassSideMethod"), &[]),
         "class-side miss",
     );
     assert!(message.contains("does not understand #noSuchClassSideMethod"));
 }
 
-const CLASS_SIDE_INHERITANCE_SRC: &str = indoc! {"
+const CLASS_SIDE_INHERITANCE_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new () (
@@ -468,30 +523,33 @@ const CLASS_SIDE_INHERITANCE_SRC: &str = indoc! {"
 /// must answer exactly what `Widget describe` does.
 #[test]
 fn a_subclass_with_no_class_side_inherits_the_superclasss_class_side_method() {
-    let (mut interp, class) = load(CLASS_SIDE_INHERITANCE_SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let (mut interpreter, class) = load(CLASS_SIDE_INHERITANCE_SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
     let special_widget = expect_ok(
-        interp.send(&outer, Symbol::intern("SpecialWidget"), &[]),
+        interpreter.send(&outer, Symbol::intern("SpecialWidget"), &[]),
         "SpecialWidget accessor",
     );
     let described = expect_ok(
-        interp.send(&special_widget, Symbol::intern("describe"), &[]),
+        interpreter.send(&special_widget, Symbol::intern("describe"), &[]),
         "inherited class-side send",
     );
-    interp.enter(|m| {
+    interpreter.enter(|mutator| {
         assert_eq!(
-            string_contents(m.heap(), &m.fetch(&described)),
+            string_contents(mutator.heap(), &mutator.fetch(&described)),
             "a widget class"
         );
     });
 }
 
 /// The class object a nested declaration's accessor answers for `enclosing`.
-fn nested_class_object(interp: &mut Interpreter, enclosing: &Root, name: &str) -> Root {
-    let class = expect_ok(interp.send(enclosing, Symbol::intern(name), &[]), name);
-    interp.enter(|m| {
-        let Value::Obj(_) = m.fetch(&class) else {
+fn nested_class_object(interpreter: &mut Interpreter, enclosing: &Root, name: &str) -> Root {
+    let class = expect_ok(interpreter.send(enclosing, Symbol::intern(name), &[]), name);
+    interpreter.enter(|mutator| {
+        let Value::Object(_) = mutator.fetch(&class) else {
             panic!("{name} answers a class object")
         };
     });
@@ -500,7 +558,7 @@ fn nested_class_object(interp: &mut Interpreter, enclosing: &Root, name: &str) -
 
 fn application_of(
     heap: &ns_runtime::Heap,
-    class: ns_runtime::ClassRef,
+    class: ns_runtime::ClassReference,
 ) -> Rc<ns_runtime::MixinApplication> {
     heap.class_application(class).expect("a class object")
 }
@@ -517,42 +575,50 @@ fn application_of(
 #[test]
 fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/class_side.ns");
-    let src = std::fs::read_to_string(&path).expect("read tests-fixtures/class_side.ns");
-    let (mut interp, class) = load(&src);
-    let platform = interp.platform();
+    let source = std::fs::read_to_string(&path).expect("read tests-fixtures/class_side.ns");
+    let (mut interpreter, class) = load(&source);
+    let platform = interpreter.platform();
     let one = expect_ok(
-        interp.instantiate(&class, std::slice::from_ref(&platform)),
+        interpreter.instantiate(&class, std::slice::from_ref(&platform)),
         "instantiate first ClassSide",
     );
     let two = expect_ok(
-        interp.instantiate(&class, &[platform]),
+        interpreter.instantiate(&class, &[platform]),
         "instantiate second ClassSide",
     );
-    let a = nested_class_object(&mut interp, &one, "SpecialWidget");
-    let b = nested_class_object(&mut interp, &two, "SpecialWidget");
+    let first_widget = nested_class_object(&mut interpreter, &one, "SpecialWidget");
+    let second_widget = nested_class_object(&mut interpreter, &two, "SpecialWidget");
     // Both are read after the last run; everything below -- reading the
     // class objects, building their metaclasses, and comparing applications
     // -- runs nothing, so it all happens in one entry.
-    interp.enter(|m| {
-        let (Value::Obj(a), Value::Obj(b)) = (m.fetch(&a), m.fetch(&b)) else {
+    interpreter.enter(|mutator| {
+        let (Value::Object(first_widget), Value::Object(second_widget)) =
+            (mutator.fetch(&first_widget), mutator.fetch(&second_widget))
+        else {
             panic!("SpecialWidget answers a class object")
         };
         assert!(
-            !a.same(b),
+            !first_widget.same(second_widget),
             "spec 6: one class object per enclosing instance"
         );
         assert!(
-            Rc::ptr_eq(&application_of(m.heap(), a), &application_of(m.heap(), b)),
+            Rc::ptr_eq(
+                &application_of(mutator.heap(), first_widget),
+                &application_of(mutator.heap(), second_widget)
+            ),
             "spec 6.2: both share one instance-side application"
         );
-        let ma = m
-            .metaclass_of(a)
+        let first_metaclass = mutator
+            .metaclass_of(first_widget)
             .expect("SpecialWidget inherits Widget's class side");
-        let mb = m
-            .metaclass_of(b)
+        let second_metaclass = mutator
+            .metaclass_of(second_widget)
             .expect("SpecialWidget inherits Widget's class side");
         assert!(
-            Rc::ptr_eq(&application_of(m.heap(), ma), &application_of(m.heap(), mb)),
+            Rc::ptr_eq(
+                &application_of(mutator.heap(), first_metaclass),
+                &application_of(mutator.heap(), second_metaclass)
+            ),
             "spec 6.2: an inherited class side must share one metaclass application too"
         );
     });
@@ -563,20 +629,23 @@ fn two_class_objects_sharing_an_application_share_their_inherited_class_side() {
 /// instance side.
 #[test]
 fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name() {
-    let (mut interp, class) = load(CLASS_SIDE_INHERITANCE_SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let (mut interpreter, class) = load(CLASS_SIDE_INHERITANCE_SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
     let overriding_widget = expect_ok(
-        interp.send(&outer, Symbol::intern("OverridingWidget"), &[]),
+        interpreter.send(&outer, Symbol::intern("OverridingWidget"), &[]),
         "OverridingWidget accessor",
     );
     let described = expect_ok(
-        interp.send(&overriding_widget, Symbol::intern("describe"), &[]),
+        interpreter.send(&overriding_widget, Symbol::intern("describe"), &[]),
         "overriding class-side send",
     );
-    interp.enter(|m| {
+    interpreter.enter(|mutator| {
         assert_eq!(
-            string_contents(m.heap(), &m.fetch(&described)),
+            string_contents(mutator.heap(), &mutator.fetch(&described)),
             "a special widget class"
         );
     });
@@ -589,7 +658,7 @@ fn a_class_sides_own_method_overrides_the_inherited_one_of_the_same_name() {
 /// itself), but its `super describe` lands in `Base`'s activation, and
 /// `Base`'s own `outer Outer label` must resolve from *that* activation.
 /// Mirrors `tests-fixtures/nested_super.ns` at the API level.
-const NESTED_SUPER_SRC: &str = indoc! {"
+const NESTED_SUPER_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new () (
@@ -606,13 +675,16 @@ const NESTED_SUPER_SRC: &str = indoc! {"
 
 #[test]
 fn super_and_outer_both_resolve_through_the_defining_level() {
-    let (mut interp, class) = load(NESTED_SUPER_SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
-    let described = expect_ok(interp.send(&outer, Symbol::intern("run"), &[]), "run");
-    interp.enter(|m| {
+    let (mut interpreter, class) = load(NESTED_SUPER_SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
+    let described = expect_ok(interpreter.send(&outer, Symbol::intern("run"), &[]), "run");
+    interpreter.enter(|mutator| {
         assert_eq!(
-            string_contents(m.heap(), &m.fetch(&described)),
+            string_contents(mutator.heap(), &mutator.fetch(&described)),
             "outer/derived"
         );
     });
@@ -628,7 +700,7 @@ fn super_and_outer_both_resolve_through_the_defining_level() {
 /// two-level chain (where the bug and the fix agree on the first hop) would
 /// pass either way. This guards the actual defect class the level-tracking
 /// machinery exists for.
-const SUPER_CHAIN_SRC: &str = indoc! {"
+const SUPER_CHAIN_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new () (
@@ -645,12 +717,18 @@ const SUPER_CHAIN_SRC: &str = indoc! {"
 
 #[test]
 fn a_super_chain_progresses_through_an_inherited_middle_level() {
-    let (mut interp, class) = load(SUPER_CHAIN_SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
-    let described = expect_ok(interp.send(&outer, Symbol::intern("run"), &[]), "run");
-    interp.enter(|m| {
-        assert_eq!(string_contents(m.heap(), &m.fetch(&described)), "grand/mid");
+    let (mut interpreter, class) = load(SUPER_CHAIN_SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
+    let described = expect_ok(interpreter.send(&outer, Symbol::intern("run"), &[]), "run");
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            string_contents(mutator.heap(), &mutator.fetch(&described)),
+            "grand/mid"
+        );
     });
 }
 
@@ -661,8 +739,8 @@ fn a_super_chain_progresses_through_an_inherited_middle_level() {
 /// `outer Outer label` is a lexical depth of 1 fixed inside `Base`, so it
 /// must reach the module instance and answer `'top'` on any receiver --
 /// resolving the depth from the receiver's own class instead reaches the
-/// `Mid` instance, whose decoy `label` answers `'mid'`.
-const OUTER_THROUGH_INHERITED_SRC: &str = indoc! {"
+/// `Mid` instance, whose decoy `label` answers `'middle'`.
+const OUTER_THROUGH_INHERITED_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new () (
@@ -680,12 +758,18 @@ const OUTER_THROUGH_INHERITED_SRC: &str = indoc! {"
 
 #[test]
 fn outer_in_an_inherited_method_resolves_from_the_defining_level() {
-    let (mut interp, class) = load(OUTER_THROUGH_INHERITED_SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
-    let described = expect_ok(interp.send(&outer, Symbol::intern("run"), &[]), "run");
-    interp.enter(|m| {
-        assert_eq!(string_contents(m.heap(), &m.fetch(&described)), "top");
+    let (mut interpreter, class) = load(OUTER_THROUGH_INHERITED_SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
+    let described = expect_ok(interpreter.send(&outer, Symbol::intern("run"), &[]), "run");
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            string_contents(mutator.heap(), &mutator.fetch(&described)),
+            "top"
+        );
     });
 }
 
@@ -695,7 +779,7 @@ fn outer_in_an_inherited_method_resolves_from_the_defining_level() {
 /// then leave the level that declares `Deep`, which is `Base`, not
 /// `Derived`'s own class. Stepping through the reached object's class
 /// instead lands on `Mid`'s instance and its decoy `label`.
-const DEEP_OUTER_THROUGH_INHERITED_SRC: &str = indoc! {"
+const DEEP_OUTER_THROUGH_INHERITED_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new () (
@@ -715,12 +799,18 @@ const DEEP_OUTER_THROUGH_INHERITED_SRC: &str = indoc! {"
 
 #[test]
 fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
-    let (mut interp, class) = load(DEEP_OUTER_THROUGH_INHERITED_SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
-    let described = expect_ok(interp.send(&outer, Symbol::intern("run"), &[]), "run");
-    interp.enter(|m| {
-        assert_eq!(string_contents(m.heap(), &m.fetch(&described)), "top");
+    let (mut interpreter, class) = load(DEEP_OUTER_THROUGH_INHERITED_SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
+    let described = expect_ok(interpreter.send(&outer, Symbol::intern("run"), &[]), "run");
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            string_contents(mutator.heap(), &mutator.fetch(&described)),
+            "top"
+        );
     });
 }
 
@@ -732,7 +822,7 @@ fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
 /// at depth 2 and can only be walked through the declaration chain.
 /// `Widget`'s decoy `label` is what a walk that stopped one level short
 /// would answer with.
-const CLASS_SIDE_OUTER_SRC: &str = indoc! {"
+const CLASS_SIDE_OUTER_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new () (
@@ -753,19 +843,31 @@ const CLASS_SIDE_OUTER_SRC: &str = indoc! {"
 
 #[test]
 fn outer_in_a_class_side_method_reaches_the_enclosing_object() {
-    let (mut interp, class) = load(CLASS_SIDE_OUTER_SRC);
-    let platform = interp.platform();
-    let outer = expect_ok(interp.instantiate(&class, &[platform]), "instantiate Outer");
+    let (mut interpreter, class) = load(CLASS_SIDE_OUTER_SOURCE);
+    let platform = interpreter.platform();
+    let outer = expect_ok(
+        interpreter.instantiate(&class, &[platform]),
+        "instantiate Outer",
+    );
     let shallow = expect_ok(
-        interp.send(&outer, Symbol::intern("shallow"), &[]),
+        interpreter.send(&outer, Symbol::intern("shallow"), &[]),
         "shallow",
     );
-    interp.enter(|m| {
-        assert_eq!(string_contents(m.heap(), &m.fetch(&shallow)), "top");
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            string_contents(mutator.heap(), &mutator.fetch(&shallow)),
+            "top"
+        );
     });
-    let deep = expect_ok(interp.send(&outer, Symbol::intern("deep"), &[]), "deep");
-    interp.enter(|m| {
-        assert_eq!(string_contents(m.heap(), &m.fetch(&deep)), "top");
+    let deep = expect_ok(
+        interpreter.send(&outer, Symbol::intern("deep"), &[]),
+        "deep",
+    );
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            string_contents(mutator.heap(), &mutator.fetch(&deep)),
+            "top"
+        );
     });
 }
 
@@ -774,7 +876,7 @@ fn outer_in_a_class_side_method_reaches_the_enclosing_object() {
 /// depending on itself.
 #[test]
 fn a_failed_superclass_clause_is_retried_rather_than_reported_as_a_cycle() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Outer = Object new (
@@ -786,25 +888,25 @@ fn a_failed_superclass_clause_is_retried_rather_than_reported_as_a_cycle() {
           pick = ( first ifTrue: [first := false. ^nil foo]. ^Object )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let outer = expect_ok(interp.instantiate(&class, &[]), "instantiate Outer");
-    match interp.send(&outer, Symbol::intern("Inner"), &[]) {
-        Err(HostSignal::Error(e)) => assert!(
-            !e.message.contains("cyclic"),
+    let (mut interpreter, class) = load(source);
+    let outer = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Outer");
+    match interpreter.send(&outer, Symbol::intern("Inner"), &[]) {
+        Err(HostSignal::Error(error)) => assert!(
+            !error.message.contains("cyclic"),
             "the first access fails in its clause: {}",
-            e.message
+            error.message
         ),
         Err(HostSignal::Return) => panic!("a non-local return escaped"),
         Ok(_) => panic!("the first access must fail"),
     }
     let inner = expect_ok(
-        interp.send(&outer, Symbol::intern("Inner"), &[]),
+        interpreter.send(&outer, Symbol::intern("Inner"), &[]),
         "the second access",
     );
-    interp.enter(|m| {
-        let Value::Obj(inner) = m.fetch(&inner) else {
+    interpreter.enter(|mutator| {
+        let Value::Object(inner) = mutator.fetch(&inner) else {
             panic!("a class object");
         };
-        assert!(m.heap().is_class(inner));
+        assert!(mutator.heap().is_class(inner));
     });
 }

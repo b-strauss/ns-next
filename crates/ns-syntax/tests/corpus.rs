@@ -13,26 +13,33 @@ struct Entry {
     reason: String,
 }
 
-fn corpus_dir() -> PathBuf {
+fn corpus_directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus")
 }
 
 #[test]
 fn every_corpus_file_parses_or_is_blacklisted() {
-    let corpus = corpus_dir();
-    let bl_text = std::fs::read_to_string(corpus.join("blacklist.toml")).unwrap();
-    let bl: Blacklist = toml::from_str(&bl_text).unwrap();
-    let blacklisted: HashSet<&str> = bl.entry.iter().map(|e| e.file.as_str()).collect();
+    let corpus = corpus_directory();
+    let blacklist_text = std::fs::read_to_string(corpus.join("blacklist.toml")).unwrap();
+    let blacklist: Blacklist = toml::from_str(&blacklist_text).unwrap();
+    let blacklisted: HashSet<&str> = blacklist
+        .entry
+        .iter()
+        .map(|entry| entry.file.as_str())
+        .collect();
     assert!(
-        bl.entry.iter().all(|e| !e.reason.trim().is_empty()),
+        blacklist
+            .entry
+            .iter()
+            .all(|entry| !entry.reason.trim().is_empty()),
         "blacklist entry missing a reason"
     );
 
     let mut modules: Vec<PathBuf> = std::fs::read_dir(corpus.join("modules"))
         .unwrap()
         .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "ns"))
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "ns"))
         .collect();
     modules.sort();
     assert!(modules.len() > 50, "corpus looks empty: {}", modules.len());
@@ -43,17 +50,17 @@ fn every_corpus_file_parses_or_is_blacklisted() {
 
     for path in &modules {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        let src = std::fs::read_to_string(path).unwrap();
-        match ns_syntax::parse(&src) {
+        let source = std::fs::read_to_string(path).unwrap();
+        match ns_syntax::parse(&source) {
             Ok(_) => {
                 parsed += 1;
                 if blacklisted.contains(name.as_str()) {
                     stale.push(name);
                 }
             }
-            Err(err) => {
+            Err(error) => {
                 if !blacklisted.contains(name.as_str()) {
-                    failures.push(format!("{name}: {:?}", err.first()));
+                    failures.push(format!("{name}: {:?}", error.first()));
                 }
             }
         }

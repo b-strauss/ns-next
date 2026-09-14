@@ -22,7 +22,10 @@ pub mod types;
 pub mod vm;
 
 pub use compiler::Lowering;
-pub use heap::{ActivationHeader, ActivationRef, ClassRef, FrameRef, Heap, ObjRef, Root};
+pub use heap::{
+    ActivationHeader, ActivationReference, ClassReference, FrameReference, Heap, ObjectReference,
+    Root,
+};
 pub use interpreter::{HostError, HostResult, HostSignal, Interpreter, Mutator};
 pub use mixin::{Mixin, MixinApplication};
 pub use resolver::resolve;

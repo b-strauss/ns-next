@@ -18,20 +18,20 @@ use crate::Symbol;
 /// can interpret one. They are re-exported here because this module is
 /// where the object model reads as a whole, and because `lib.rs`'s
 /// `pub use types::*` is how the rest of the workspace names them.
-pub use crate::heap::{ClassRef, FrameRef, ObjRef};
+pub use crate::heap::{ClassReference, FrameReference, ObjectReference};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Value {
     Nil,
-    Bool(bool),
-    SmallInt(i64),
+    Boolean(bool),
+    SmallInteger(i64),
     Float(f64),
-    Obj(ObjRef),
+    Object(ObjectReference),
 }
 
 #[derive(Debug, Clone)]
 pub struct Object {
-    pub class: ClassRef,
+    pub class: ClassReference,
     /// 0 until something asks for it; then drawn from a monotonic counter
     /// (`Heap::ensure_identity_hash`), so allocation order stays
     /// unobservable. Never derived from the arena index, which a moving
@@ -44,8 +44,8 @@ pub struct Object {
 #[derive(Debug, Clone)]
 pub enum ObjectData {
     Instance(Vec<Value>),
-    Str(String),
-    Sym(Symbol),
+    String(String),
+    Symbol(Symbol),
     Array(Vec<Value>),
     Closure(ClosureData),
     Class(ClassData),
@@ -64,14 +64,14 @@ pub struct ClassData {
     /// `newspeak-spec.pdf` §6: the enclosing object is the nested class's
     /// only state, which is why a class object cannot be shared between
     /// instances of its enclosing class.
-    pub enclosing: Option<ObjRef>,
+    pub enclosing: Option<ObjectReference>,
     /// The class object of the level whose declaration *lexically contains*
-    /// this class's declaration -- `Lookup::NestedClass`'s `ClassRef`, the
-    /// level `interpreter::nested` evaluated the declaration at. `None` for
+    /// this class's declaration -- `Lookup::NestedClass`'s `ClassReference`,
+    /// the level `interpreter::nested` evaluated the declaration at. `None` for
     /// a class that no declaration encloses: the module's root class, and a
-    /// builtin. A metaclass copies the class it belongs to (§6.3.1 puts a
-    /// class side in the same declaration as its instance side), so a
-    /// class-side `outer` walks the same chain.
+    /// builtin. A metaclass copies the class it belongs to (§6.3.1 puts a class
+    /// side in the same declaration as its instance side), so a class-side
+    /// `outer` walks the same chain.
     ///
     /// This is what makes the enclosing-object chain of §3.3 *lexical* the
     /// whole way up rather than only at its first step. `enclosing` alone
@@ -79,10 +79,10 @@ pub struct ClassData {
     /// just reached, and that is this field, not the reached object's own
     /// class -- those differ exactly when the declaration is inherited
     /// across a nesting boundary. See `dispatch::kth_enclosing_object`.
-    pub declaring_class: Option<ClassRef>,
+    pub declaring_class: Option<ClassReference>,
     /// The per-instance class-object chain, parallel to the application
     /// chain. `outer` and `super` need it; lookup does not.
-    pub superclass: Option<ClassRef>,
+    pub superclass: Option<ClassReference>,
     /// `None` for a user-defined class. `Some(kind)` marks one of the
     /// core-library classes `builtins/` implements natively -- the same
     /// `BuiltinClass` `dispatch::Lookup::Native` carries once lookup
@@ -99,7 +99,7 @@ pub struct ClassData {
     /// every class object until its first class-side send, permanently for
     /// one whose mixin declares no class side at all -- §6.3's "no
     /// metaclass" case costs nothing.
-    pub metaclass: Option<ClassRef>,
+    pub metaclass: Option<ClassReference>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -110,8 +110,8 @@ pub enum BuiltinClass {
     False,
     Integer,
     Float,
-    Str,
-    Sym,
+    String,
+    Symbol,
     Character,
     Array,
     OrderedCollection,
@@ -132,8 +132,8 @@ impl BuiltinClass {
         BuiltinClass::False,
         BuiltinClass::Integer,
         BuiltinClass::Float,
-        BuiltinClass::Str,
-        BuiltinClass::Sym,
+        BuiltinClass::String,
+        BuiltinClass::Symbol,
         BuiltinClass::Character,
         BuiltinClass::Array,
         BuiltinClass::OrderedCollection,
@@ -153,20 +153,20 @@ impl BuiltinClass {
 /// loop's state, a decided `Step` -- names the closure object instead.
 #[derive(Debug, Clone)]
 pub struct ClosureData {
-    pub params: Rc<Vec<Symbol>>,
+    pub parameters: Rc<Vec<Symbol>>,
     pub code: Rc<crate::bytecode::CompiledCode>,
     /// The activation the closure was created in, reified.
-    pub captured_frame: FrameRef,
+    pub captured_frame: FrameReference,
     /// The lexically enclosing *method* (or initializer) activation, which a
     /// `^` in the block returns from.
-    pub home: FrameRef,
+    pub home: FrameReference,
 }
 
 // ---------- Resolver output ----------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Binding {
-    /// Slot `index` in the current activation's `temps`/`args`.
+    /// Slot `index` in the current activation's `temporaries`/`arguments`.
     Local(u16),
     /// A captured method/block variable, `depth` activations out.
     OuterLocal { depth: u16, index: u16 },
@@ -184,7 +184,7 @@ pub struct ResolvedModule {
     pub module: Rc<ast::Module>,
     pub source: Rc<str>,
     pub origin: SourceOrigin,
-    /// Every `Ident` needing resolution, and every `Send`/`Assign` node
+    /// Every `Identifier` needing resolution, and every `Send`/`Assign` node
     /// recognized as a self/outer/super/implicit send, keyed by its own
     /// `Span`. See `docs/design/dispatch.md`, "Shapes the resolver must
     /// recognize", for the exact shapes this covers.
@@ -204,7 +204,7 @@ pub enum FrameKind {
     /// An activation of the closure object named. Its body and the frames
     /// it captured are read through the object (`Heap::closure_activation`,
     /// `Heap::activation_captured`).
-    Closure(ObjRef),
+    Closure(ObjectReference),
     /// A top-of-chain activation with no method or class of its own.
     /// Nothing that runs a program builds one (an instance initializer is
     /// `Initializer`); kept for the image format's frame table and a future
@@ -212,9 +212,9 @@ pub enum FrameKind {
     TopLevel,
     /// An instance-initializer activation (Class Instantiation step 2)
     /// running `class`'s slot initializers and `initExprs` -- names the code
-    /// it executes so a bytecode `pc` is interpretable through the
+    /// it executes so a bytecode `program_counter` is interpretable through the
     /// initializer cache.
-    Initializer(ClassRef),
+    Initializer(ClassReference),
     /// A superclass clause's receiver expression (`newspeak-spec.pdf`
     /// §6.1's `ec`) running on the enclosing object, on behalf of the class
     /// that *declares* the clause.
@@ -225,13 +225,13 @@ pub enum FrameKind {
     /// `Mixin::superclass_clause_code`, and verifying it against the
     /// class's instance initializer would reconcile a frame against a body
     /// that never ran in it.
-    SuperclassClause(ClassRef),
+    SuperclassClause(ClassReference),
     /// The arguments of a superclass clause's deferred factory message,
     /// evaluated on the instance being initialized and with `class`'s own
     /// factory arguments (§6.2). Its body comes from
     /// `Mixin::superclass_message_code`; see `SuperclassClause` above
     /// for why that makes it a kind of its own.
-    SuperclassMessage(ClassRef),
+    SuperclassMessage(ClassReference),
 }
 
 /// What the run loop does with an activation's value when it returns
@@ -273,7 +273,7 @@ pub enum Continuation {
 #[derive(Debug, Clone)]
 pub struct WhileLoop {
     /// The condition's closure object.
-    pub(crate) condition: ObjRef,
+    pub(crate) condition: ObjectReference,
     pub(crate) body: Value,
     pub(crate) expect: bool,
 }
@@ -288,7 +288,7 @@ pub struct WhileLoop {
 #[derive(Debug, Clone)]
 pub struct DoLoop {
     pub(crate) receiver: Value,
-    pub(crate) block: ObjRef,
+    pub(crate) block: ObjectReference,
     pub(crate) items: Vec<Value>,
     pub(crate) next: usize,
 }
@@ -302,14 +302,14 @@ pub struct DoLoop {
 pub struct NestedClassCreation {
     /// The enclosing object `r` of `newspeak-spec.pdf` §6, which caches the
     /// class.
-    pub(crate) enclosing: ObjRef,
+    pub(crate) enclosing: ObjectReference,
     /// The absolute index of the hidden slot of `enclosing` the class is
     /// cached in.
     pub(crate) index: usize,
     /// The declaration.
     pub(crate) nested: Rc<crate::mixin::Mixin>,
     /// The class object of the level that declares it.
-    pub(crate) declaring_class: ClassRef,
+    pub(crate) declaring_class: ClassReference,
 }
 
 /// An instantiation in progress (`newspeak-spec.pdf` §6.2, and the six steps
@@ -326,7 +326,7 @@ pub struct Instantiation {
     pub(crate) instance: Value,
     /// Nearest level first: the class instantiated, then its superclass, and
     /// so on up, as the upward walk reaches them.
-    pub(crate) levels: Vec<(ClassRef, Vec<Value>)>,
+    pub(crate) levels: Vec<(ClassReference, Vec<Value>)>,
     pub(crate) phase: InstantiationPhase,
 }
 
@@ -337,8 +337,8 @@ pub enum InstantiationPhase {
     /// of `level`, the last in `levels`, and its value is the factory
     /// arguments of `superclass`, `level`'s superclass.
     Climbing {
-        level: ClassRef,
-        superclass: ClassRef,
+        level: ClassReference,
+        superclass: ClassReference,
     },
     /// Downward. A body running for this instantiation is the initializer of
     /// `levels[index]`, and a level below it has code still to run.
@@ -353,23 +353,23 @@ pub enum InstantiationPhase {
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub receiver: Value,
-    pub args: Vec<Value>,
+    pub arguments: Vec<Value>,
     /// Indexable by resolver slot index, growable (liveness spec's
     /// reified-activation constraint).
-    pub temps: Vec<Value>,
+    pub temporaries: Vec<Value>,
     /// How far this activation has progressed: an instruction index into
     /// the `CompiledCode` it runs.
-    pub pc: usize,
+    pub program_counter: usize,
     /// `None` for every frame the runtime reifies: a live activation's
     /// sender is the stack entry below it, and a returned activation has
     /// none. Kept for the image format, which records one per frame.
-    pub sender: Option<FrameRef>,
+    pub sender: Option<FrameReference>,
     /// Set only for `FrameKind::Closure` -- the enclosing method or
     /// initializer activation.
-    pub home: Option<FrameRef>,
+    pub home: Option<FrameReference>,
     /// `None` only for `FrameKind::TopLevel` (`newspeak-spec.pdf` §3.6: a
     /// top-level activation's current class is `nil`).
-    pub current_class: Option<ClassRef>,
+    pub current_class: Option<ClassReference>,
     pub kind: FrameKind,
     /// Set once this frame's activation has returned (`Heap::pop_activation`
     /// divorces it). A `^` whose home is such a frame is a `cannotReturn`
@@ -378,9 +378,9 @@ pub struct Frame {
     /// construction whatever this flag says; the flag itself is what an image
     /// records.
     pub uncontinuable: bool,
-    /// The absolute field index a compiled `InitSlot`'s mixin-relative
+    /// The absolute field index a compiled `InitializeSlot`'s mixin-relative
     /// `own_index` is offset by -- `MixinApplication.own_slot_base` for the
-    /// class level the activation initializes. The value `InitSlot` reads
+    /// class level the activation initializes. The value `InitializeSlot` reads
     /// while the body runs is the live activation's own `slot_base`
     /// (`Heap::activation_slot_base`), one activation per initializing level
     /// of the superclass chain, pushed with the slot base
@@ -389,7 +389,7 @@ pub struct Frame {
     /// does not record it -- a decoded frame has 0, since nothing re-activates
     /// one. Set once, where the activation is pushed, and never changed.
     /// Irrelevant (left at 0) for every other kind: a method, block, clause,
-    /// or top-level body never contains `InitSlot`.
+    /// or top-level body never contains `InitializeSlot`.
     pub slot_base: usize,
 }
 
@@ -425,7 +425,7 @@ mod tests {
             superclass: None,
             slot_index: HashMap::new(),
             nested_slot: HashMap::new(),
-            num_slots: 0,
+            slot_count: 0,
             own_slot_base: 0,
         })
     }
@@ -435,11 +435,11 @@ mod tests {
     /// wires every builtin class's `.class` up properly; this helper only
     /// needs the type shapes to compile and hold together, and no test in
     /// this file ever reads through the self-reference. The construction
-    /// itself lives in `Heap::alloc_self_referential_class`, which is
+    /// itself lives in `Heap::allocate_self_referential_class`, which is
     /// ordinary safe Rust under the arena: the slot's index is known before
     /// the slot is filled.
-    fn dummy_class(heap: &mut crate::Heap) -> ClassRef {
-        heap.alloc_self_referential_class(ObjectData::Class(ClassData {
+    fn dummy_class(heap: &mut crate::Heap) -> ClassReference {
+        heap.allocate_self_referential_class(ObjectData::Class(ClassData {
             application: empty_application("Object"),
             enclosing: None,
             declaring_class: None,
@@ -460,11 +460,11 @@ mod tests {
     fn value_clone_shares_object_identity() {
         let mut heap = crate::Heap::new();
         let class = dummy_class(&mut heap);
-        let instance = heap.alloc_object(class, ObjectData::Instance(vec![]));
-        let a = Value::Obj(instance);
-        let b = a;
-        match (a, b) {
-            (Value::Obj(x), Value::Obj(y)) => assert!(x.same(y)),
+        let instance = heap.allocate_object(class, ObjectData::Instance(vec![]));
+        let original = Value::Object(instance);
+        let copy = original;
+        match (original, copy) {
+            (Value::Object(left), Value::Object(right)) => assert!(left.same(right)),
             _ => panic!("expected Value::Obj"),
         }
     }
@@ -473,9 +473,9 @@ mod tests {
     fn frame_kind_top_level_has_no_current_class() {
         let frame = Frame {
             receiver: Value::Nil,
-            args: vec![],
-            temps: vec![],
-            pc: 0,
+            arguments: vec![],
+            temporaries: vec![],
+            program_counter: 0,
             sender: None,
             home: None,
             current_class: None,
@@ -488,9 +488,9 @@ mod tests {
 
     #[test]
     fn binding_variants_are_copy_and_comparable() {
-        let a = Binding::LexicalSend { depth: 2 };
-        let b = a;
-        assert_eq!(a, b);
-        assert_ne!(a, Binding::SuperSend);
+        let original = Binding::LexicalSend { depth: 2 };
+        let copy = original;
+        assert_eq!(original, copy);
+        assert_ne!(original, Binding::SuperSend);
     }
 }

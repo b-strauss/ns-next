@@ -26,38 +26,42 @@ use crate::source;
 /// preserve (`docs/design/image-format.md`, "The consistency guarantee,
 /// stated precisely").
 ///
-/// Walking past the root level (`app = a.superclass.clone()`) is safe only
-/// because of an invariant this function relies on but does not check:
-/// every non-own mixin reachable from a root class's superclass chain today
-/// is a builtin's, and a builtin mixin is `Mixin::empty()` -- empty
-/// `methods`, empty `nested` -- since native methods dispatch through
-/// `builtins::dispatch_native`, never through `Mixin.methods`, and
-/// cross-module inheritance does not exist yet. So the ancestor branch can
-/// never actually return `true` today; the loop climbs `superclass` only to
-/// stay correct if a root class's chain ever grows past one level of
-/// `Mixin::empty()`. If ns-next later gains cross-module inheritance, or a
-/// core-library superclass written in Newspeak, an ancestor mixin could
-/// carry real `methods`/`nested` entries that `mixins::encode` never
-/// interns for *this* module's symbol table (it only walks the module's own
-/// declaration tree) -- and this check would then accept a selector absent
-/// from that table, silently breaking the guarantee above instead of
-/// refusing the build. No test catches that today: every fixture here
-/// inherits directly from `Object`.
+/// Walking past the root level (`application = a.superclass.clone()`) is safe
+/// only because of an invariant this function relies on but does not check:
+/// every non-own mixin reachable from a root class's superclass chain today is
+/// a builtin's, and a builtin mixin is `Mixin::empty()` -- empty `methods`,
+/// empty `nested` -- since native methods dispatch through
+/// `builtins::dispatch_native`, never through `Mixin.methods`, and cross-module
+/// inheritance does not exist yet. So the ancestor branch can never actually
+/// return `true` today; the loop climbs `superclass` only to stay correct if a
+/// root class's chain ever grows past one level of `Mixin::empty()`. If ns-next
+/// later gains cross-module inheritance, or a core-library superclass written
+/// in Newspeak, an ancestor mixin could carry real `methods`/`nested` entries
+/// that `mixins::encode` never interns for *this* module's symbol table (it
+/// only walks the module's own declaration tree) -- and this check would then
+/// accept a selector absent from that table, silently breaking the guarantee
+/// above instead of refusing the build. No test catches that today: every
+/// fixture here inherits directly from `Object`.
 fn root_class_answers(
     heap: &ns_runtime::Heap,
-    class: ns_runtime::ClassRef,
+    class: ns_runtime::ClassReference,
     selector: &str,
 ) -> bool {
-    let sym = ns_runtime::Symbol::intern(selector);
-    let mut app = heap.class_application(class);
-    while let Some(a) = app {
-        if a.mixin.methods.contains_key(&sym) {
+    let symbol = ns_runtime::Symbol::intern(selector);
+    let mut level = heap.class_application(class);
+    while let Some(application) = level {
+        if application.mixin.methods.contains_key(&symbol) {
             return true;
         }
-        if a.mixin.nested.iter().any(|n| n.name == sym) {
+        if application
+            .mixin
+            .nested
+            .iter()
+            .any(|nested| nested.name == symbol)
+        {
             return true;
         }
-        app = a.superclass.clone();
+        level = application.superclass.clone();
     }
     false
 }
@@ -72,15 +76,19 @@ pub(crate) fn execute(
     lowering: ns_runtime::Lowering,
 ) -> ExitCode {
     let loaded = match source::load_source(file) {
-        Ok(l) => l,
+        Ok(loaded) => loaded,
         Err(code) => return code,
     };
-    let (mut interp, class) = source::bootstrap(&loaded, lowering);
+    let (mut interpreter, class) = source::bootstrap(&loaded, lowering);
 
     let entry = match entry {
-        Some(e) => e.to_string(),
-        None if interp.enter(|m| {
-            root_class_answers(m.heap(), crate::entry::class_ref(m, &class), "main:args:")
+        Some(selector) => selector.to_string(),
+        None if interpreter.enter(|mutator| {
+            root_class_answers(
+                mutator.heap(),
+                crate::entry::class_reference(mutator, &class),
+                "main:args:",
+            )
         }) =>
         {
             "main:args:".to_string()
@@ -94,13 +102,18 @@ pub(crate) fn execute(
         }
     };
 
-    let platform = interp.platform();
-    if let Err(msg) = crate::entry::entry_args(&interp, &entry, &platform) {
-        eprintln!("error: cannot use `{entry}` as an entry point: {msg}");
+    let platform = interpreter.platform();
+    if let Err(message) = crate::entry::entry_arguments(&interpreter, &entry, &platform) {
+        eprintln!("error: cannot use `{entry}` as an entry point: {message}");
         return ExitCode::FAILURE;
     }
-    let answers_entry =
-        interp.enter(|m| root_class_answers(m.heap(), crate::entry::class_ref(m, &class), &entry));
+    let answers_entry = interpreter.enter(|mutator| {
+        root_class_answers(
+            mutator.heap(),
+            crate::entry::class_reference(mutator, &class),
+            &entry,
+        )
+    });
     if !answers_entry {
         eprintln!(
             "error: the root class of {} does not answer `{entry}`",
@@ -109,18 +122,18 @@ pub(crate) fn execute(
         return ExitCode::FAILURE;
     }
 
-    let bytes = match interp.enter(|m| {
+    let bytes = match interpreter.enter(|mutator| {
         ns_runtime::image::build(
-            m.heap(),
+            mutator.heap(),
             debug_source.then_some(loaded.source.as_str()),
             &loaded.origin,
-            crate::entry::class_ref(m, &class),
+            crate::entry::class_reference(mutator, &class),
             ns_runtime::Symbol::intern(&entry),
         )
     }) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: build failed: {e}");
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("error: build failed: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -129,8 +142,8 @@ pub(crate) fn execute(
             println!("wrote {}", out.display());
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("error: writing {}: {e}", out.display());
+        Err(error) => {
+            eprintln!("error: writing {}: {error}", out.display());
             ExitCode::FAILURE
         }
     }

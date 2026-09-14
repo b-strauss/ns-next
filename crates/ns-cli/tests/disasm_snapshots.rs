@@ -7,19 +7,19 @@
 
 use indoc::indoc;
 mod common;
-use common::ScratchDir;
+use common::ScratchDirectory;
 
 use std::path::Path;
 use std::process::Command;
 
-fn disasm(file: &str, args: &[&str]) -> String {
+fn disasm(file: &str, arguments: &[&str]) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests-fixtures")
         .join(file);
     let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
         .arg(&path)
-        .args(args)
+        .args(arguments)
         .output()
         .expect("run ns-next disasm");
     assert!(
@@ -106,8 +106,8 @@ fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
 /// `.expected` file by `run_fixtures.rs`.
 #[test]
 fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
-    let dir = ScratchDir::new("disasm-nested-path");
-    let path = dir.join("nested.ns");
+    let directory = ScratchDirectory::new("disasm-nested-path");
+    let path = directory.join("nested.ns");
     std::fs::write(
         &path,
         indoc! {"
@@ -173,25 +173,25 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
 /// these ever differ, the image's code table is not what the compiler emitted.
 #[test]
 fn disasm_of_an_image_matches_disasm_of_its_source() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/arithmetic.ns");
-    let dir = ScratchDir::new("disasm-img");
-    let img = dir.join("world.img");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/arithmetic.ns");
+    let directory = ScratchDirectory::new("disasm-img");
+    let image = directory.join("world.img");
 
-    let snap = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let snapshot = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("snapshot")
-        .arg(&src)
-        .arg(&img)
+        .arg(&source)
+        .arg(&image)
         .output()
         .expect("run ns-next snapshot");
     assert!(
-        snap.status.success(),
+        snapshot.status.success(),
         "{}",
-        String::from_utf8_lossy(&snap.stderr)
+        String::from_utf8_lossy(&snapshot.stderr)
     );
 
     let from_image = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
-        .arg(&img)
+        .arg(&image)
         .arg("main:args:")
         .output()
         .expect("run ns-next disasm on an image");
@@ -216,14 +216,14 @@ fn disasm_of_an_image_matches_disasm_of_its_source() {
 /// image form never exercises) could have passed the image test above.
 #[test]
 fn disasm_of_a_binary_matches_disasm_of_its_source() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/arithmetic.ns");
-    let dir = ScratchDir::new("disasm-bin");
-    let bin = dir.join("app.nsb");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/arithmetic.ns");
+    let directory = ScratchDirectory::new("disasm-bin");
+    let binary = directory.join("app.nsb");
 
     let build = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("build")
-        .arg(&src)
-        .arg(&bin)
+        .arg(&source)
+        .arg(&binary)
         .output()
         .expect("run ns-next build");
     assert!(
@@ -234,7 +234,7 @@ fn disasm_of_a_binary_matches_disasm_of_its_source() {
 
     let from_binary = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
-        .arg(&bin)
+        .arg(&binary)
         .arg("main:args:")
         .output()
         .expect("run ns-next disasm on a binary");
@@ -263,32 +263,39 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
     use ns_runtime::{Interpreter, Mixin, SourceOrigin, Symbol, Value};
     use std::rc::Rc;
 
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Bare usingPlatform: p = Object new () (
             public main: p args: a = ( ^0 )
         ) : ()
     "};
-    let module = ns_syntax::parse(src).expect("parse");
-    let resolved = ns_runtime::resolve(module, Rc::from(src), SourceOrigin::File("bare.ns".into()))
-        .expect("resolve");
-    let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        Rc::from(source),
+        SourceOrigin::File("bare.ns".into()),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
     // Nothing runs from here on, so the whole rewrite happens in one entry.
-    let bytes = interp.enter(|m| {
-        let Value::Obj(class) = m.fetch(&class) else {
+    let bytes = interpreter.enter(|mutator| {
+        let Value::Object(class) = mutator.fetch(&class) else {
             panic!("load_module answers a class object")
         };
-        let application = m.heap().class_application(class).expect("a class object");
+        let application = mutator
+            .heap()
+            .class_application(class)
+            .expect("a class object");
         let bare = Mixin {
             initializer_code: None,
             ..(*application.mixin).clone()
         };
-        let rewired = m.apply_mixin(&Rc::new(bare), application.superclass.as_ref());
-        assert!(m.heap_mut().set_class_application(class, rewired));
+        let rewired = mutator.apply_mixin(&Rc::new(bare), application.superclass.as_ref());
+        assert!(mutator.heap_mut().set_class_application(class, rewired));
         ns_runtime::image::build(
-            m.heap(),
+            mutator.heap(),
             None,
             &SourceOrigin::File("bare.ns".into()),
             class,
@@ -297,29 +304,29 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
         .expect("build")
     });
 
-    let dir = ScratchDir::new("disasm-no-init");
-    let bin = dir.join("bare.nsb");
-    std::fs::write(&bin, bytes).expect("write artifact");
+    let directory = ScratchDirectory::new("disasm-no-init");
+    let binary = directory.join("bare.nsb");
+    std::fs::write(&binary, bytes).expect("write artifact");
 
     let out = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
-        .arg(&bin)
+        .arg(&binary)
         .arg("--initializer")
         .output()
         .expect("run ns-next disasm");
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!err.contains("panicked"), "disasm panicked: {err}");
-    assert_eq!(out.status.code(), Some(1), "stderr: {err}");
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(!error.contains("panicked"), "disasm panicked: {error}");
+    assert_eq!(out.status.code(), Some(1), "stderr: {error}");
     assert!(
-        err.contains("error: `Bare` has no instance initializer"),
-        "unexpected stderr: {err}"
+        error.contains("error: `Bare` has no instance initializer"),
+        "unexpected stderr: {error}"
     );
 
     // The same artifact still disassembles a method: only the missing body
     // is refused.
     let method = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
-        .arg(&bin)
+        .arg(&binary)
         .arg("main:args:")
         .output()
         .expect("run ns-next disasm");
@@ -334,8 +341,8 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
 /// one clear failure, not a decoder backtrace.
 #[test]
 fn disasm_rejects_a_corrupt_artifact_with_a_message() {
-    let dir = ScratchDir::new("disasm-bad");
-    let bad = dir.join("truncated.img");
+    let directory = ScratchDirectory::new("disasm-bad");
+    let bad = directory.join("truncated.img");
     // Magic, so it is taken for an artifact, and then nothing.
     std::fs::write(&bad, b"NSIM").expect("write");
 
@@ -346,7 +353,7 @@ fn disasm_rejects_a_corrupt_artifact_with_a_message() {
         .output()
         .expect("run ns-next disasm");
     assert!(!out.status.success());
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.starts_with("error:"), "unexpected stderr: {err}");
-    assert!(!err.contains("panicked"), "decoder panicked: {err}");
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(error.starts_with("error:"), "unexpected stderr: {error}");
+    assert!(!error.contains("panicked"), "decoder panicked: {error}");
 }

@@ -13,29 +13,29 @@ mod source;
 #[command(name = "ns-next", version)]
 struct Cli {
     #[command(subcommand)]
-    command: Cmd,
+    command: Command,
 }
 
 /// Which lowering compiles a source (`docs/design/compiler.md`, "The
 /// reference lowering"): `optimized` is what every program runs under,
 /// `reference` the naive lowering it is checked against.
 #[derive(Clone, Copy, clap::ValueEnum)]
-enum LoweringArg {
+enum LoweringArgument {
     Optimized,
     Reference,
 }
 
-impl From<LoweringArg> for ns_runtime::Lowering {
-    fn from(arg: LoweringArg) -> Self {
-        match arg {
-            LoweringArg::Optimized => ns_runtime::Lowering::Optimized,
-            LoweringArg::Reference => ns_runtime::Lowering::Reference,
+impl From<LoweringArgument> for ns_runtime::Lowering {
+    fn from(argument: LoweringArgument) -> Self {
+        match argument {
+            LoweringArgument::Optimized => ns_runtime::Lowering::Optimized,
+            LoweringArgument::Reference => ns_runtime::Lowering::Reference,
         }
     }
 }
 
 #[derive(Subcommand)]
-enum Cmd {
+enum Command {
     /// Parse a single .ns file.
     Parse {
         file: PathBuf,
@@ -44,14 +44,14 @@ enum Cmd {
     },
     /// Parse every .ns file under a directory.
     ParseCorpus {
-        dir: PathBuf,
+        directory: PathBuf,
         #[arg(long)]
         blacklist: Option<PathBuf>,
     },
     /// Run every whitelisted .ns file under a directory, from source and as
     /// a built binary, and check each against its recorded expected output.
     RunCorpus {
-        dir: PathBuf,
+        directory: PathBuf,
         #[arg(long)]
         whitelist: Option<PathBuf>,
     },
@@ -66,8 +66,8 @@ enum Cmd {
         #[arg(long, default_value = "main:args:")]
         send: String,
         /// The lowering to compile the source with.
-        #[arg(long, value_enum, default_value_t = LoweringArg::Optimized)]
-        lowering: LoweringArg,
+        #[arg(long, value_enum, default_value_t = LoweringArgument::Optimized)]
+        lowering: LoweringArgument,
     },
     /// Run a file, then serialize the resulting (quiesced) world to an
     /// image file.
@@ -85,8 +85,8 @@ enum Cmd {
         #[arg(long)]
         debug_source: bool,
         /// The lowering to compile the source with.
-        #[arg(long, value_enum, default_value_t = LoweringArg::Optimized)]
-        lowering: LoweringArg,
+        #[arg(long, value_enum, default_value_t = LoweringArgument::Optimized)]
+        lowering: LoweringArgument,
     },
     /// Deserialize an artifact and start it. An image already holds its
     /// instance; a stateless binary is instantiated here and sent the entry
@@ -142,7 +142,7 @@ enum Cmd {
         /// The lowering to compile a .ns source with; optimized when absent.
         /// Refused for an artifact, which carries the code it was built with.
         #[arg(long, value_enum)]
-        lowering: Option<LoweringArg>,
+        lowering: Option<LoweringArgument>,
     },
     /// Print an artifact's structure: header flags, section offsets, the
     /// symbol table, the code table with every body named, the mixin table,
@@ -168,8 +168,8 @@ enum Cmd {
         #[arg(long)]
         debug_source: bool,
         /// The lowering to compile the source with.
-        #[arg(long, value_enum, default_value_t = LoweringArg::Optimized)]
-        lowering: LoweringArg,
+        #[arg(long, value_enum, default_value_t = LoweringArgument::Optimized)]
+        lowering: LoweringArgument,
     },
 }
 
@@ -198,21 +198,23 @@ fn main() -> ExitCode {
     worker.join().unwrap_or_else(|_| ExitCode::from(101))
 }
 
-fn execute(command: Cmd) -> ExitCode {
+fn execute(command: Command) -> ExitCode {
     match command {
-        Cmd::Parse { file, ast } => commands::parse::execute(&file, ast),
-        Cmd::ParseCorpus { dir, blacklist } => {
-            commands::parse_corpus::execute(&dir, blacklist.as_deref())
-        }
-        Cmd::RunCorpus { dir, whitelist } => {
-            commands::run_corpus::execute(&dir, whitelist.as_deref())
-        }
-        Cmd::Run {
+        Command::Parse { file, ast } => commands::parse::execute(&file, ast),
+        Command::ParseCorpus {
+            directory,
+            blacklist,
+        } => commands::parse_corpus::execute(&directory, blacklist.as_deref()),
+        Command::RunCorpus {
+            directory,
+            whitelist,
+        } => commands::run_corpus::execute(&directory, whitelist.as_deref()),
+        Command::Run {
             file,
             send,
             lowering,
         } => commands::run::execute(&file, &send, lowering.into()),
-        Cmd::Snapshot {
+        Command::Snapshot {
             file,
             out,
             send,
@@ -221,17 +223,17 @@ fn execute(command: Cmd) -> ExitCode {
         } => {
             commands::snapshot::execute(&file, &out, send.as_deref(), debug_source, lowering.into())
         }
-        Cmd::Load {
+        Command::Load {
             image,
             send,
             print_source,
         } => commands::load::execute(&image, send.as_deref(), print_source),
-        Cmd::Bench {
+        Command::Bench {
             file,
             send,
             iterations,
         } => commands::bench::execute(&file, &send, iterations),
-        Cmd::Disasm {
+        Command::Disasm {
             file,
             selector,
             initializer,
@@ -244,8 +246,8 @@ fn execute(command: Cmd) -> ExitCode {
             class.as_deref(),
             lowering.map(Into::into),
         ),
-        Cmd::Inspect { artifact, full } => commands::inspect::execute(&artifact, full),
-        Cmd::Build {
+        Command::Inspect { artifact, full } => commands::inspect::execute(&artifact, full),
+        Command::Build {
             file,
             out,
             entry,

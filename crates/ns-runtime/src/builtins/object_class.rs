@@ -5,33 +5,36 @@ use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
 pub(crate) fn dispatch(
-    m: &mut Mutator,
+    mutator: &mut Mutator,
     receiver: Value,
     selector: Symbol,
-    args: &[Value],
+    arguments: &[Value],
 ) -> Option<Result<Value, NewspeakError>> {
     match selector.as_str() {
-        "class" => Some(Ok(Value::Obj(m.class_of(&receiver)))),
-        "==" => Some(Ok(Value::Bool(identical(&receiver, &args[0])))),
-        "=" => Some(Ok(Value::Bool(identical(&receiver, &args[0])))), // Object's default: identity
-        "hash" => Some(Ok(Value::SmallInt(
-            identity_hash_of(&mut m.heap, &receiver) as i64,
+        "class" => Some(Ok(Value::Object(mutator.class_of(&receiver)))),
+        "==" => Some(Ok(Value::Boolean(identical(&receiver, &arguments[0])))),
+        "=" => Some(Ok(Value::Boolean(identical(&receiver, &arguments[0])))), // Object's default: identity
+        "hash" => Some(Ok(Value::SmallInteger(
+            identity_hash_of(&mut mutator.heap, &receiver) as i64,
         ))),
-        "printString" => Some(Ok(Value::Obj(m.new_string("an Object".to_string())))),
+        "printString" => Some(Ok(Value::Object(
+            mutator.new_string("an Object".to_string()),
+        ))),
         "doesNotUnderstand:" => {
             // Object's default doesNotUnderstand: (spec §5.5): must be
             // `protected`, always raises a MessageNotUnderstood-shaped
             // NewspeakError. There is no exception-class hierarchy yet;
             // this produces the NewspeakError value directly
             // rather than a catchable Newspeak object.
-            let msg_selector = extract_dnu_selector(&m.heap, &args[0]);
+            let message_selector =
+                extract_does_not_understand_selector(&mutator.heap, &arguments[0]);
             Some(Err(NewspeakError {
-                selector: msg_selector,
+                selector: message_selector,
                 receiver,
                 message: format!(
                     "{} does not understand #{}",
-                    describe(&receiver, m),
-                    msg_selector
+                    describe(&receiver, mutator),
+                    message_selector
                 ),
             }))
         }
@@ -39,20 +42,20 @@ pub(crate) fn dispatch(
     }
 }
 
-fn identical(a: &Value, b: &Value) -> bool {
-    match (a, b) {
+fn identical(first: &Value, second: &Value) -> bool {
+    match (first, second) {
         (Value::Nil, Value::Nil) => true,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::SmallInt(x), Value::SmallInt(y)) => x == y,
-        (Value::Float(x), Value::Float(y)) => x.to_bits() == y.to_bits(),
-        (Value::Obj(x), Value::Obj(y)) => x.same(*y),
+        (Value::Boolean(left), Value::Boolean(right)) => left == right,
+        (Value::SmallInteger(left), Value::SmallInteger(right)) => left == right,
+        (Value::Float(left), Value::Float(right)) => left.to_bits() == right.to_bits(),
+        (Value::Object(left), Value::Object(right)) => left.same(*right),
         _ => false,
     }
 }
 
 fn identity_hash_of(heap: &mut Heap, value: &Value) -> u32 {
     match value {
-        Value::Obj(obj) => heap.ensure_identity_hash(*obj),
+        Value::Object(object) => heap.ensure_identity_hash(*object),
         _ => 0, // primitives are values and get no distinct identity
                 // hash (revisit if a fixture needs one)
     }
@@ -64,13 +67,16 @@ fn describe(_value: &Value, _m: &Mutator) -> String {
     "an object".to_string()
 }
 
-fn extract_dnu_selector(heap: &Heap, message_mirror_shaped_array: &Value) -> Symbol {
-    // Matches `Mutator::decide_does_not_understand`'s `{selector. args}` array
-    // shape.
-    if let Value::Obj(obj) = message_mirror_shaped_array {
-        if let Some(Value::Obj(sym_obj)) = heap.array_at(*obj, 0) {
-            if let Some(s) = heap.sym_value(sym_obj) {
-                return s;
+fn extract_does_not_understand_selector(
+    heap: &Heap,
+    message_mirror_shaped_array: &Value,
+) -> Symbol {
+    // Matches `Mutator::decide_does_not_understand`'s `{selector. arguments}`
+    // array shape.
+    if let Value::Object(object) = message_mirror_shaped_array {
+        if let Some(Value::Object(symbol_object)) = heap.array_at(*object, 0) {
+            if let Some(symbol) = heap.symbol_value(symbol_object) {
+                return symbol;
             }
         }
     }

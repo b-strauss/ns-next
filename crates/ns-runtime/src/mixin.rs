@@ -8,19 +8,19 @@
 //! behaviour lives here, and that is what lets an inline cache stay
 //! monomorphic across enclosing instances.
 //!
-//! **A `Mixin` is not an AST view.** Everything the *running* system reads
-//! off a declaration -- its name, its slot names, its method dictionary with
-//! each method's accessibility and arity, its primary factory selector and
-//! arity, what its superclass clause names -- is stored here in its own
-//! right, because an image's mixin table has to rebuild all of it with no
-//! `ast::ClassDecl` anywhere in reach. The `ast` fields that remain
-//! (`MixinMethod::decl`, `MixinSlot::decl`, `Mixin::init_exprs`,
-//! `Mixin::decl`) are read only by the compiler, which runs while a mixin is
-//! built from source; a decoded mixin leaves them empty rather than
-//! inventing nodes for them. The compiled bodies themselves live on the
-//! mixin (`Mixin::initializer_code` and the two superclass-clause bodies)
-//! and on its methods (`MixinMethod::code`), for a built mixin and a decoded
-//! one alike.
+//! **A `Mixin` is not an AST view.** Everything the *running* system reads off
+//! a declaration -- its name, its slot names, its method dictionary with each
+//! method's accessibility and arity, its primary factory selector and arity,
+//! what its superclass clause names -- is stored here in its own right, because
+//! an image's mixin table has to rebuild all of it with no
+//! `ast::ClassDeclaration` anywhere in reach. The `ast` fields that remain
+//! (`MixinMethod::declaration`, `MixinSlot::declaration`,
+//! `Mixin::initializer_expressions`, `Mixin::declaration`) are read only by the
+//! compiler, which runs while a mixin is built from source; a decoded mixin
+//! leaves them empty rather than inventing nodes for them. The compiled bodies
+//! themselves live on the mixin (`Mixin::initializer_code` and the two
+//! superclass-clause bodies) and on its methods (`MixinMethod::code`), for a
+//! built mixin and a decoded one alike.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -45,15 +45,16 @@ pub struct MixinMethod {
     pub selector: Symbol,
     /// §5.2 accessibility, already defaulted through
     /// `dispatch::effective_access`. Read by every lookup, so it is stored
-    /// rather than re-derived from `decl`, which a decoded mixin has none of.
+    /// rather than re-derived from `declaration`, which a decoded mixin has
+    /// none of.
     pub access: ast::AccessModifier,
-    /// The selector's parameter count -- what a method activation's `args`
-    /// are checked against, and what a decoded body's `num_args` is
+    /// The selector's parameter count -- what a method activation's `arguments`
+    /// are checked against, and what a decoded body's `argument_count` is
     /// reconciled against on load.
-    pub num_args: usize,
+    pub argument_count: usize,
     /// The declaration this entry was built from. `None` for a mixin decoded
     /// from an image.
-    pub decl: Option<Rc<ast::MethodDecl>>,
+    pub declaration: Option<Rc<ast::MethodDeclaration>>,
     /// The compiled body, shared by every application of the mixin
     /// (`newspeak-spec.pdf` §6.2). Never replaced: editing a method builds a
     /// new `MixinMethod`.
@@ -63,17 +64,25 @@ pub struct MixinMethod {
 impl MixinMethod {
     /// The entry a parsed declaration becomes, compiled by `lowering` against
     /// the resolver's `bindings` for the module it belongs to.
-    pub fn from_decl(
-        decl: Rc<ast::MethodDecl>,
+    pub fn from_declaration(
+        declaration: Rc<ast::MethodDeclaration>,
         bindings: &Rc<HashMap<Span, Binding>>,
         lowering: crate::compiler::Lowering,
     ) -> MixinMethod {
         MixinMethod {
-            selector: Symbol::intern(&crate::interpreter::instantiate::method_name(&decl.pattern)),
-            access: crate::dispatch::effective_access(decl.access),
-            num_args: crate::interpreter::instantiate::pattern_param_count(&decl.pattern),
-            code: Rc::new(crate::compiler::compile_method(&decl, bindings, lowering)),
-            decl: Some(decl),
+            selector: Symbol::intern(&crate::interpreter::instantiate::method_name(
+                &declaration.pattern,
+            )),
+            access: crate::dispatch::effective_access(declaration.access),
+            argument_count: crate::interpreter::instantiate::pattern_parameter_count(
+                &declaration.pattern,
+            ),
+            code: Rc::new(crate::compiler::compile_method(
+                &declaration,
+                bindings,
+                lowering,
+            )),
+            declaration: Some(declaration),
         }
     }
 }
@@ -87,14 +96,14 @@ pub struct MixinSlot {
     pub name: Symbol,
     /// `None` for a slot of a mixin decoded from an image: its initializer
     /// is already compiled into that mixin's initializer body.
-    pub decl: Option<Rc<ast::SlotDecl>>,
+    pub declaration: Option<Rc<ast::SlotDeclaration>>,
 }
 
 impl MixinSlot {
-    pub fn from_decl(decl: Rc<ast::SlotDecl>) -> MixinSlot {
+    pub fn from_declaration(declaration: Rc<ast::SlotDeclaration>) -> MixinSlot {
         MixinSlot {
-            name: Symbol::intern(&decl.name.name),
-            decl: Some(decl),
+            name: Symbol::intern(&declaration.name.name),
+            declaration: Some(declaration),
         }
     }
 }
@@ -106,19 +115,19 @@ impl MixinSlot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Factory {
     pub selector: Symbol,
-    pub num_args: usize,
+    pub argument_count: usize,
 }
 
 /// A mixin's superclass clause, reduced to what run time reads off it.
 ///
 /// The clause's *expressions* are Newspeak code, compiled per mixin into
-/// `Mixin::superclass_clause_code` / `superclass_message_code`; what is
-/// left here is the part the orchestration around those bodies needs, which
-/// it consults before any body runs. Storing it is what keeps
-/// `instantiate::clause_message_body` from having to read
-/// `Mixin::decl`: without it, a mixin decoded from an image would fall back
-/// to `new` and every class whose superclass has a keyword factory would
-/// raise a spurious "not the primary factory message" error.
+/// `Mixin::superclass_clause_code` / `superclass_message_code`; what is left
+/// here is the part the orchestration around those bodies needs, which it
+/// consults before any body runs. Storing it is what keeps
+/// `instantiate::clause_message_body` from having to read `Mixin::declaration`:
+/// without it, a mixin decoded from an image would fall back to `new` and every
+/// class whose superclass has a keyword factory would raise a spurious "not the
+/// primary factory message" error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SuperclassClause {
     /// The factory selector the clause's message names; `new` when the
@@ -128,7 +137,7 @@ pub struct SuperclassClause {
     /// Whether that message carries argument expressions, and therefore a
     /// compiled body in `Mixin::superclass_message_code`. The
     /// overwhelmingly common `= Object new` shape has none and runs no code.
-    pub has_args: bool,
+    pub has_arguments: bool,
 }
 
 /// `Debug` is derived so `ObjectData::Class` keeps its own derived `Debug`
@@ -149,11 +158,12 @@ pub struct Mixin {
     pub superclass: Option<SuperclassClause>,
     /// Whether the declaration wrote any `initExpr`s. Stored because
     /// `instantiate::mixin_needs_initializer_code` asks the question of a
-    /// decoded mixin too, where `init_exprs` below is empty by construction.
-    pub has_init_exprs: bool,
+    /// decoded mixin too, where `initializer_expressions` below is empty by
+    /// construction.
+    pub has_initializer_expressions: bool,
     /// The `initExpr` statements themselves -- lowered by the compiler into the
     /// instance initializer. Empty for a decoded mixin.
-    pub init_exprs: Vec<ast::Stmt>,
+    pub initializer_expressions: Vec<ast::Statement>,
     /// The nested class declarations, in declaration order. Each one gets an
     /// implicit accessor and a hidden cache slot.
     pub nested: Vec<Rc<Mixin>>,
@@ -162,9 +172,9 @@ pub struct Mixin {
     pub span: Span,
     /// The declaration this mixin was built from: the compiler lowers its
     /// superclass clause. `None` for a builtin's mixin, for a class side (a
-    /// `ClassBody` is not an `ast::ClassDecl`), and for a mixin decoded from
-    /// an image.
-    pub decl: Option<Rc<ast::ClassDecl>>,
+    /// `ClassBody` is not an `ast::ClassDeclaration`), and for a mixin decoded
+    /// from an image.
+    pub declaration: Option<Rc<ast::ClassDeclaration>>,
     /// The instance initializer: this mixin's own slot initializers, then its
     /// own `initExpr`s. Every mixin built from source has one, a class side
     /// included. `None` for a builtin's mixin and `metaclass_of`'s
@@ -194,12 +204,12 @@ impl Mixin {
             slots: Vec::new(),
             factory: None,
             superclass: None,
-            has_init_exprs: false,
-            init_exprs: Vec::new(),
+            has_initializer_expressions: false,
+            initializer_expressions: Vec::new(),
             nested: Vec::new(),
             class_side: None,
             span: Span::new(0, 0),
-            decl: None,
+            declaration: None,
             initializer_code: None,
             superclass_clause_code: None,
             superclass_message_code: None,
@@ -233,16 +243,15 @@ pub struct MixinApplication {
     /// entries onto one index and make whichever was resolved first the
     /// answer to both.
     pub nested_slot: HashMap<usize, usize>,
-    pub num_slots: usize,
-    /// Where this application's *own* slots start -- `superclass.num_slots`,
-    /// or 0 with none. Read at run time
-    /// (`Mutator::initializer_body`, into the activation's `slot_base`)
-    /// to turn a compiled `InitSlot`'s mixin-relative `own_index` into this
-    /// application's absolute field index: the compiled initializer is
-    /// shared by every application of the mixin (keying code by mixin
-    /// without this would bake ONE application's offset into code every
-    /// application runs), while this field is computed fresh per
-    /// application, exactly like `slot_index`.
+    pub slot_count: usize,
+    /// Where this application's *own* slots start -- `superclass.slot_count`,
+    /// or 0 with none. Read at run time (`Mutator::initializer_body`, into the
+    /// activation's `slot_base`) to turn a compiled `InitializeSlot`'s
+    /// mixin-relative `own_index` into this application's absolute field index:
+    /// the compiled initializer is shared by every application of the mixin
+    /// (keying code by mixin without this would bake ONE application's offset
+    /// into code every application runs), while this field is computed fresh
+    /// per application, exactly like `slot_index`.
     pub own_slot_base: usize,
 }
 

@@ -11,14 +11,14 @@
 use indoc::indoc;
 mod common;
 
-use common::ScratchDir;
+use common::ScratchDirectory;
 
-/// Runs `src` with `ns-next run` under each lowering and asserts all three
+/// Runs `source` with `ns-next run` under each lowering and asserts all three
 /// streams exactly.
-fn assert_outcome(name: &str, src: &str, exit: i32, stdout: &str, stderr: &str) {
-    let dir = ScratchDir::new(name);
-    let path = dir.join(&format!("{name}.ns"));
-    std::fs::write(&path, src).expect("write source");
+fn assert_outcome(name: &str, source: &str, exit: i32, stdout: &str, stderr: &str) {
+    let directory = ScratchDirectory::new(name);
+    let path = directory.join(&format!("{name}.ns"));
+    std::fs::write(&path, source).expect("write source");
     for lowering in ["optimized", "reference"] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_ns-next"))
             .arg("run")

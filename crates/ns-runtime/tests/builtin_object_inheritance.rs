@@ -15,14 +15,16 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
         Ok(root) => root,
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
-        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
+        Err(HostSignal::Error(error)) => {
+            panic!("{what}: unexpected Newspeak error: {}", error.message)
+        }
     }
 }
 
 fn as_string(heap: &Heap, value: &Value) -> String {
     match value {
-        Value::Obj(obj) => heap
-            .str_value(*obj)
+        Value::Object(object) => heap
+            .str_value(*object)
             .unwrap_or_else(|| panic!("expected ObjectData::Str, got {}", heap.describe(value))),
         other => panic!("expected Value::Obj, got {}", heap.describe(other)),
     }
@@ -32,25 +34,25 @@ fn as_string(heap: &Heap, value: &Value) -> String {
 /// succeed by inheriting `Object`'s native `class`.
 #[test]
 fn a_builtin_receiver_inherits_objects_native_class() {
-    let mut interp = Interpreter::bootstrap();
+    let mut interpreter = Interpreter::bootstrap();
 
-    let result = interp.send(
-        &interp.stash(Value::SmallInt(3)),
+    let result = interpreter.send(
+        &interpreter.stash(Value::SmallInteger(3)),
         Symbol::intern("class"),
         &[],
     );
 
     let result = expect_ok(result, "3 class");
-    interp.enter(|m| {
-        let expected = m.builtin_class(BuiltinClass::Integer);
-        match m.fetch(&result) {
-            Value::Obj(obj) => assert!(
-                obj.same(expected),
+    interpreter.enter(|mutator| {
+        let expected = mutator.builtin_class(BuiltinClass::Integer);
+        match mutator.fetch(&result) {
+            Value::Object(object) => assert!(
+                object.same(expected),
                 "`3 class` must yield the Integer class object"
             ),
             other => panic!(
                 "expected Value::Obj(<Integer class>), got {}",
-                m.heap().describe(&other)
+                mutator.heap().describe(&other)
             ),
         }
     });
@@ -61,30 +63,36 @@ fn a_builtin_receiver_inherits_objects_native_class() {
 /// to `Object`'s own generic default rather than `doesNotUnderstand:`.
 #[test]
 fn builtins_without_their_own_print_string_inherit_objects_default() {
-    let mut interp = Interpreter::bootstrap();
+    let mut interpreter = Interpreter::bootstrap();
 
-    let nil_result = interp.send(
-        &interp.stash(Value::Nil),
+    let nil_result = interpreter.send(
+        &interpreter.stash(Value::Nil),
         Symbol::intern("printString"),
         &[],
     );
     let nil_result = expect_ok(nil_result, "nil printString");
-    interp.enter(|m| {
-        assert_eq!(as_string(m.heap(), &m.fetch(&nil_result)), "an Object");
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            as_string(mutator.heap(), &mutator.fetch(&nil_result)),
+            "an Object"
+        );
     });
 
-    let ordered_collection = interp.enter(|m| {
-        let class = m.builtin_class(BuiltinClass::OrderedCollection);
-        m.stash(Value::Obj(class))
+    let ordered_collection = interpreter.enter(|mutator| {
+        let class = mutator.builtin_class(BuiltinClass::OrderedCollection);
+        mutator.stash(Value::Object(class))
     });
-    let coll = expect_ok(
-        interp.send(&ordered_collection, Symbol::intern("new"), &[]),
+    let collection = expect_ok(
+        interpreter.send(&ordered_collection, Symbol::intern("new"), &[]),
         "OrderedCollection new",
     );
-    let coll_result = interp.send(&coll, Symbol::intern("printString"), &[]);
-    let coll_result = expect_ok(coll_result, "(OrderedCollection new) printString");
-    interp.enter(|m| {
-        assert_eq!(as_string(m.heap(), &m.fetch(&coll_result)), "an Object");
+    let collection_result = interpreter.send(&collection, Symbol::intern("printString"), &[]);
+    let collection_result = expect_ok(collection_result, "(OrderedCollection new) printString");
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            as_string(mutator.heap(), &mutator.fetch(&collection_result)),
+            "an Object"
+        );
     });
 }
 
@@ -92,24 +100,24 @@ fn builtins_without_their_own_print_string_inherit_objects_default() {
 /// `Integer` receiver.
 #[test]
 fn a_builtin_receiver_inherits_objects_identity_and_hash() {
-    let mut interp = Interpreter::bootstrap();
+    let mut interpreter = Interpreter::bootstrap();
 
-    let same = interp.send(
-        &interp.stash(Value::SmallInt(3)),
+    let same = interpreter.send(
+        &interpreter.stash(Value::SmallInteger(3)),
         Symbol::intern("=="),
-        &[interp.stash(Value::SmallInt(3))],
+        &[interpreter.stash(Value::SmallInteger(3))],
     );
     let same = expect_ok(same, "3 == 3");
-    assert!(interp.enter(|m| matches!(m.fetch(&same), Value::Bool(true))));
+    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&same), Value::Boolean(true))));
 
-    let hash = interp.send(
-        &interp.stash(Value::SmallInt(3)),
+    let hash = interpreter.send(
+        &interpreter.stash(Value::SmallInteger(3)),
         Symbol::intern("hash"),
         &[],
     );
     let hash = expect_ok(hash, "3 hash");
     assert!(
-        interp.enter(|m| matches!(m.fetch(&hash), Value::SmallInt(_))),
+        interpreter.enter(|mutator| matches!(mutator.fetch(&hash), Value::SmallInteger(_))),
         "Object's native `hash` must be reachable from an Integer receiver"
     );
 }
@@ -122,24 +130,24 @@ fn a_builtin_receiver_inherits_objects_identity_and_hash() {
 /// "(native class ... has no doesNotUnderstand: implementation)" fallback.
 #[test]
 fn an_unknown_selector_on_a_builtin_runs_objects_real_does_not_understand() {
-    let mut interp = Interpreter::bootstrap();
+    let mut interpreter = Interpreter::bootstrap();
 
-    let result = interp.send(
-        &interp.stash(Value::SmallInt(3)),
+    let result = interpreter.send(
+        &interpreter.stash(Value::SmallInteger(3)),
         Symbol::intern("frobnicate"),
         &[],
     );
 
     match result {
-        Err(HostSignal::Error(e)) => {
-            assert_eq!(e.selector, Symbol::intern("frobnicate"));
+        Err(HostSignal::Error(error)) => {
+            assert_eq!(error.selector, Symbol::intern("frobnicate"));
             assert_eq!(
-                e.message, "an object does not understand #frobnicate",
+                error.message, "an object does not understand #frobnicate",
                 "expected `object_class::dispatch`'s own doesNotUnderstand: message shape"
             );
         }
-        Ok(v) => {
-            let got = interp.enter(|m| m.heap().describe(&m.fetch(&v)));
+        Ok(value) => {
+            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
             panic!("expected a doesNotUnderstand: error for `3 frobnicate`, got Ok({got})")
         }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -150,20 +158,20 @@ fn an_unknown_selector_on_a_builtin_runs_objects_real_does_not_understand() {
 /// fallback is not specific to a primitive `Value` variant.
 #[test]
 fn an_unknown_selector_on_a_string_runs_objects_real_does_not_understand() {
-    let mut interp = Interpreter::bootstrap();
-    let receiver = interp.enter(|m| {
-        let obj = m.new_string("hi".to_string());
-        m.stash(Value::Obj(obj))
+    let mut interpreter = Interpreter::bootstrap();
+    let receiver = interpreter.enter(|mutator| {
+        let object = mutator.new_string("hi".to_string());
+        mutator.stash(Value::Object(object))
     });
 
-    let result = interp.send(&receiver, Symbol::intern("frobnicate"), &[]);
+    let result = interpreter.send(&receiver, Symbol::intern("frobnicate"), &[]);
 
     match result {
-        Err(HostSignal::Error(e)) => {
-            assert_eq!(e.message, "an object does not understand #frobnicate");
+        Err(HostSignal::Error(error)) => {
+            assert_eq!(error.message, "an object does not understand #frobnicate");
         }
-        Ok(v) => {
-            let got = interp.enter(|m| m.heap().describe(&m.fetch(&v)));
+        Ok(value) => {
+            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
             panic!("expected a doesNotUnderstand: error, got Ok({got})")
         }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -175,20 +183,20 @@ fn an_unknown_selector_on_a_string_runs_objects_real_does_not_understand() {
 /// `printString`, and those must still win.
 #[test]
 fn a_builtins_own_implementation_still_wins_over_objects() {
-    let mut interp = Interpreter::bootstrap();
+    let mut interpreter = Interpreter::bootstrap();
 
     // Object's `=` is identity; Integer's own `=` is numeric equality. Both
     // agree on `3 = 3`, so use `printString` -- where the two genuinely
     // differ -- as the discriminating case.
-    let printed = interp.send(
-        &interp.stash(Value::SmallInt(7)),
+    let printed = interpreter.send(
+        &interpreter.stash(Value::SmallInteger(7)),
         Symbol::intern("printString"),
         &[],
     );
     let printed = expect_ok(printed, "7 printString");
-    interp.enter(|m| {
+    interpreter.enter(|mutator| {
         assert_eq!(
-            as_string(m.heap(), &m.fetch(&printed)),
+            as_string(mutator.heap(), &mutator.fetch(&printed)),
             "7",
             "Integer's own printString must win over Object's generic default"
         );

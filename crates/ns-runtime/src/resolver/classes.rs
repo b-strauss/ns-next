@@ -43,7 +43,7 @@ pub(super) fn is_builtin_class_name(name: Symbol) -> bool {
 /// selectors is the *first* keyword/the operator itself -- see
 /// `member_name_of_pattern` below), its own slots, and its own immediately
 /// nested class names.
-pub(super) fn own_member_names(decl: &ast::ClassDecl) -> HashSet<Symbol> {
+pub(super) fn own_member_names(declaration: &ast::ClassDeclaration) -> HashSet<Symbol> {
     let mut names = HashSet::new();
     let mut collect_body = |body: &ast::ClassBody| {
         for slot in &body.slots {
@@ -56,8 +56,8 @@ pub(super) fn own_member_names(decl: &ast::ClassDecl) -> HashSet<Symbol> {
             names.insert(Symbol::intern(&nested.name.name));
         }
     };
-    collect_body(&decl.instance_side);
-    if let Some(class_side) = &decl.class_side {
+    collect_body(&declaration.instance_side);
+    if let Some(class_side) = &declaration.class_side {
         collect_body(class_side);
     }
     names
