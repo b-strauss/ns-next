@@ -30,8 +30,8 @@ handle carries a lifetime obtainable only inside `Interpreter::enter`, in safe
 Rust, so holding one across a safepoint, keeping one outside an entry, and a
 native re-entering the loop fail to compile; see "M4 — The lifetime brand"
 below. Measured whole, it is level with `a5d1e05` on every source; its first
-measurement was not, and finding out why pinned every function start to a
-64-byte boundary in `.cargo/config.toml` (the first finding below).
+measurement was not, and finding out why put a function-alignment pin into
+the measurement protocol — and only there (the first finding below).
 
 **The next piece is step 3, the inline caches** ([dispatch.md](design/dispatch.md),
 "Planned: inline caches"; item 3 of the order of work below). A candidate
@@ -55,42 +55,45 @@ measured, not assumed: the protocol and the seven sources of "What removing
 the re-entries moved" ([execution.md](design/execution.md); the four
 throwaway sources are written out in the
 [2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
-"Measurement protocol"), the before-binaries built in throwaway worktrees
-**with the same codegen flags as the current tree** — an older commit has
-no alignment pin in its configuration and gets the whole flag set through
-`RUSTFLAGS`, as the protocol says — two sittings for a whole step, and a
-comparison against `be3eb40` as well as against the commit the step starts
-from (the second finding below).
+"Measurement protocol"), **every compared binary, the current tree
+included, built with the protocol's explicit flags through `RUSTFLAGS`** —
+`+crt-static` and the function-alignment pin, which no configuration
+carries — two sittings for a whole step, and a comparison against `be3eb40`
+as well as against the commit the step starts from (the second finding
+below).
 
 **Open findings**, for whoever plans next to weigh:
 
-- **Function alignment is pinned, and a measurement builds every binary
-  with the same flags.** 2c's first whole-step measurement read 1–2.5%
-  slower than `a5d1e05` on the block and instantiation benchmarks,
-  `bench_new2.ns` beyond noise in both sittings, and a bisection placed it
-  on the brand commit, `1549fb0`. The cause was placement, not code: the
-  brand commit's hot machine code is instruction for instruction identical
-  to its parent's, but smaller cold host code ahead of it moved every hot
-  function by 224 or 240 bytes into a different 64-byte phase, and with
-  function starts pinned to 64 bytes the two commits measured level. So
-  `.cargo/config.toml` now passes `-C llvm-args=-align-all-functions=6` to
-  every build (about 110 KB of padding), and under it the whole step is
-  level with `a5d1e05` on every source in both sittings, −1.4% to +0.6%,
-  every group overlapping ([execution.md](design/execution.md), "What 2c
-  moved"). The pin itself reads −0.1% to −1.8% against the unpinned parent,
-  overlapping on all but one group: it buys repeatability, not speed. The
-  two earlier "uniform shift on unchanged code" findings of 2a likely share
-  the mechanism, verified only for 2c. What it means for whoever measures
-  next: a throwaway worktree of a commit before the pin must be built with
-  `RUSTFLAGS` carrying the whole set, `+crt-static` included, since
-  `RUSTFLAGS` replaces the configuration's flags
+- **A measurement builds every compared binary with the same explicit
+  flags, function alignment pinned; the shipped build is unpinned.** 2c's
+  first whole-step measurement read 1–2.5% slower than `a5d1e05` on the
+  block and instantiation benchmarks, `bench_new2.ns` beyond noise in both
+  sittings, and a bisection placed it on the brand commit, `1549fb0`. The
+  cause was placement, not code: the brand commit's hot machine code is
+  instruction for instruction identical to its parent's, but smaller cold
+  host code ahead of it moved every hot function by 224 or 240 bytes into a
+  different 64-byte phase, and with function starts pinned to 64 bytes
+  (`-C llvm-args=-align-all-functions=6`) the two commits measured level.
+  Under the pin the whole step is level with `a5d1e05` on every source in
+  both sittings, −1.4% to +0.6%, every group overlapping
+  ([execution.md](design/execution.md), "What 2c moved"). The pin itself
+  reads −0.1% to −1.8% against the unpinned parent, overlapping on all but
+  one group, and costs about 110 KB of padding, 5.6% of the binary: it buys
+  repeatability, not speed. So the user decided on 2026-09-14 that the pin
+  belongs to the measurement protocol only — `.cargo/config.toml` carries
+  `+crt-static` and nothing else, and every binary a measurement compares,
+  the current tree included, is built with
+  `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`
+  set for that build, since `RUSTFLAGS` replaces the configuration's flags
   ([execution.md](design/execution.md), "What removing the re-entries
-  moved", the protocol).
+  moved", the protocol). The two earlier "uniform shift on unchanged code"
+  findings of 2a likely share the mechanism, verified only for 2c.
 - **The comparison with `be3eb40` continues.** 2a left `bench_loop.ns` 1.4–1.9%
   and `bench_block.ns` 1.4–1.6% slower than `be3eb40`, the commit it started
   from — a uniform codegen shift in `vm::run` and `dispatch_native`, traced as
   far as inlining and register allocation and not bisected; code placement,
-  the mechanism 2c pinned, is the likely cause, verified only for 2c. 2b
+  the mechanism the protocol now pins, is the likely cause, verified only
+  for 2c. 2b
   took `bench_block.ns` to 2.5% faster than `be3eb40`, and 2c, measured
   under the pin, keeps it: `bench_block.ns` −2.2% and −3.2%,
   `bench_newarg.ns` −2.9% and −2.1% (2b: −3.2% to −3.4%), `bench_do.ns`
@@ -272,8 +275,9 @@ so nothing is lost by it going second.
      holds values only as `Root`s and reads through `enter`. Measured whole,
      every source is level with `a5d1e05`; a first measurement read 1–2.5%
      slower on the block and instantiation benchmarks, which turned out to be
-     code placement and pinned every function start to a 64-byte boundary
-     (the first finding above); see "M4 — The lifetime brand" below.
+     code placement, and the measurement protocol now pins every function
+     start to a 64-byte boundary in every binary it compares (the first
+     finding above); see "M4 — The lifetime brand" below.
 3. **Inline caches** — [dispatch.md](design/dispatch.md). The call-site slots are
    already emitted and inert, so no bytecode format break. A cache must guard on
    the **mixin application**, not on the class object; the obvious key is the
@@ -1729,9 +1733,9 @@ cast.
 Measured whole against `a5d1e05` and `be3eb40` in two sittings on a release
 build, five rounds of `ns-next bench <source> --iterations 30`, alternating
 the binaries within each round, the before-binaries built in throwaway
-worktrees, every binary with every function start pinned to a 64-byte
-boundary (below). Means of the five medians in ms from the first sitting,
-and the change in each sitting:
+worktrees, every binary built with `+crt-static` and every function start
+pinned to a 64-byte boundary (below). Means of the five medians in ms from
+the first sitting, and the change in each sitting:
 
 | Source | `be3eb40` | `a5d1e05` | After | Against `a5d1e05`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
 |---|---|---|---|---|---|
@@ -1757,17 +1761,19 @@ instruction for instruction identical to its parent's — the whole run loop,
 `dispatch_native`, `finish`, the pushes and pops — and only cold host code
 smaller, by 224 bytes ahead of the hot functions, which moved every one of
 them into a different 64-byte phase; rebuilt with function starts pinned to
-64 bytes, the two commits measured level. On 2026-09-14 the user decided to
-pin it: `.cargo/config.toml` passes `-C llvm-args=-align-all-functions=6`
-to every build, in a `cfg` table Cargo joins with the `+crt-static` entry,
-at about 110 KB of padding (2,091,520 against 1,979,904 bytes). The tables
-above are the step re-measured under the pin, with a fourth binary — the
-unpinned `a5d1e05` — in the same rounds: it reads −0.1% to −1.8% against
-the pinned one, overlapping on all but one group, so the pin buys
-repeatability, not speed. [execution.md](design/execution.md), "What 2c
-moved", has every sitting's figures, the bisection and the evidence; the
-protocol there says how a commit from before the pin is built for a
-comparison.
+64 bytes (`-C llvm-args=-align-all-functions=6`), the two commits measured
+level. The tables above are the step re-measured with every binary pinned,
+with a fourth binary — the unpinned `a5d1e05` — in the same rounds: it
+reads −0.1% to −1.8% against the pinned one, overlapping on all but one
+group, so the pin buys repeatability, not speed, at about 110 KB of padding
+(2,091,520 against 1,979,904 bytes, 5.6%). On 2026-09-14 the user decided
+that the pin belongs to the measurement protocol only: the shipped build
+stays unpinned, `.cargo/config.toml` carries `+crt-static` and nothing
+else, and every binary a measurement compares — the current tree included
+— gets the whole flag set through `RUSTFLAGS`.
+[execution.md](design/execution.md), "What 2c moved", has every sitting's
+figures, the bisection and the evidence; "What removing the re-entries
+moved" there has the protocol and the flags.
 
 The suite (`cargo test --workspace`, debug build, test binaries already
 built) takes 13.1 s, where 2b left 12.7 s. Under

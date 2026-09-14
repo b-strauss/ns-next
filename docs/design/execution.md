@@ -917,20 +917,33 @@ They are not fixtures; the first two are written out in the step's
 "Measurement protocol", and the other two are `bench_new.ns` with the classes
 above.
 
-Every binary a measurement compares is built with the same codegen flags.
-Since 2c, `.cargo/config.toml` pins every function start to a 64-byte
-boundary (`-C llvm-args=-align-all-functions=6`; "What 2c moved" below says
-why), and a throwaway worktree of an older commit has no such entry, so its
-build gets the whole set through the environment:
-`RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`,
-for that build only. `RUSTFLAGS` replaces the configuration's flags rather
-than adding to them, which is why `+crt-static` is repeated there and why the
-current tree is built from its configuration with `RUSTFLAGS` unset. Before
-timing, check that no binary imports `VCRUNTIME140.dll` (`dumpbin
-/dependents`) and that each prints the expected output for every source; a
-linker map (`-C link-arg=/MAP:<file>`) shows every function of the crate at a
-multiple of 64 — the only symbols off the boundary are the static C runtime's
-own objects.
+Every binary a measurement compares — the current tree included — is built
+with the same explicit flags, and those pin every function start to a
+64-byte boundary. In PowerShell, before each build and for the measurement
+only:
+
+```powershell
+$env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"
+cargo build --release -p ns-cli
+Remove-Item Env:RUSTFLAGS
+```
+
+`RUSTFLAGS` replaces the configuration's flags rather than adding to them,
+which is why `+crt-static` is repeated there; a Linux or macOS build carries
+the alignment flag alone. Why the pin: step 2c's brand commit changed no
+instruction of the run loop and still measured 1–2% slower than its parent,
+because smaller cold code ahead of the hot functions moved every one of them
+into a different 64-byte phase ("What 2c moved" below). With every function
+start pinned, a comparison measures code, not placement. Why the shipped
+build does not carry it: the pin costs about 110 KB of padding, 5.6% of the
+release binary, and measured no faster — the unpinned build was level or up
+to 1.8% faster than the pinned one — so `.cargo/config.toml` carries only
+`+crt-static`, and a build from the configuration alone is the one that
+ships, not the one that is compared. Before timing, check that no binary
+imports `VCRUNTIME140.dll` (`dumpbin /dependents`) and that each prints the
+expected output for every source; a linker map (`-C link-arg=/MAP:<file>`)
+shows every function of the crate at a multiple of 64 — the only symbols off
+the boundary are the static C runtime's own objects.
 
 Medians in ms from the first sitting, each group's mean, and the change of
 the mean in both sittings:
@@ -977,8 +990,9 @@ shift the first change of the step already showed on code it did not change
 investigation went. It is not isolated, and nothing removed from either
 benchmark's path explains it. Code placement is the likely mechanism — a
 change elsewhere moving the hot functions into another 64-byte phase — but
-that was verified only for 2c, whose investigation found it and pinned it
-("What 2c moved" below). The comparison with `be3eb40` is carried through
+that was verified only for 2c, whose investigation found it and is why a
+measurement now pins function alignment ("What 2c moved" below, and the
+protocol above). The comparison with `be3eb40` is carried through
 every measurement up to step 3; step 2b's ("What 2b moved" below) puts
 `bench_loop.ns` at +1.1% in both of its sittings, the groups overlapping, and
 `bench_block.ns` 2.5% faster than `be3eb40`.
@@ -1142,8 +1156,10 @@ sizes, 56, 136 and 56 bytes. The step was measured whole against the commit
 it started from, `a5d1e05`, and against `be3eb40`, in two sittings on
 2026-09-14, by the protocol of "What removing the re-entries moved" above,
 every binary built with every function start pinned to a 64-byte boundary
-(the protocol's rule on codegen flags; "The pin" below says where the rule
-comes from): the before-binaries built in throwaway worktrees, `ns-next
+and `+crt-static` — the protocol's flag set; "The pin" below says where the
+rule comes from — the before-binaries in throwaway worktrees through
+`RUSTFLAGS`, the head from a configuration that carried the alignment flag
+at the time (it no longer does; the protocol above says why), `ns-next
 bench <source> --iterations 30` over the same seven sources, five rounds,
 alternating the binaries within each round. A fourth binary ran in the same
 rounds — `a5d1e05` as its own configuration builds it, unpinned — to show
@@ -1211,7 +1227,10 @@ phase the compiler's own layout gives the loop headers inside a function,
 and `a5d1e05`'s hot functions happened to sit well. What the pin buys is
 that a change elsewhere can no longer move them, which is the history below.
 It costs about 110 KB of padding — 2,091,520 against 1,979,904 bytes, 5.6%,
-some 4,600 functions each padded to the next boundary.
+some 4,600 functions each padded to the next boundary. Padding that buys
+repeatability and no speed is why the shipped build does not carry it: the
+pin belongs to the measurement protocol, where every compared binary gets
+it through `RUSTFLAGS`, and `.cargo/config.toml` stays as it was.
 
 **The pin.** Before it, the same step measured 1–2.5% slower on the block
 and instantiation benchmarks, and finding out why is where the pin comes
@@ -1250,11 +1269,14 @@ different 64-byte line than before. Rebuilding both commits with
 `-C llvm-args=-align-all-functions=6` changed no instruction and brought
 them level in two sittings (`bench_block.ns` from +1.5% / +1.8% to −0.3% /
 −0.1%, `bench_send.ns` from +1.5% / +0.8% to +0.4% / +0.2%). That is the
-mechanism, and the pin in `.cargo/config.toml` is the decision, 2026-09-14:
-a change to cold code must not move the hot loop's phase, so every function
-starts on a 64-byte boundary in every build, and every binary a measurement
-compares is built with the same flags — the tables above are that
-measurement, re-run under the pin.
+mechanism, and the decision, 2026-09-14, is that the pin belongs to the
+measurement protocol and to nothing else: a change to cold code must not
+move the hot loop's phase *in a comparison*, so every binary a measurement
+compares is built with the alignment flag through `RUSTFLAGS` ("What
+removing the re-entries moved" above, the protocol), while the shipped
+build stays unpinned, since the pin measured no faster and costs 5.6% of
+the binary ("What the pin itself does" above). The tables above are that
+measurement, every binary aligned.
 
 One sitting of its own, so its figures are not compared with these: **the
 per-instruction entry** (Task 1 of the step, `d27e40b`, the step state moved

@@ -477,8 +477,10 @@ level with the commit it started from on every source, every group
 overlapping in both sittings. A first measurement had read 1–2.5% slower on
 the instantiation and block benchmarks; the brand commit's hot machine code
 turned out identical to its parent's, moved into another 64-byte phase by
-smaller cold code ahead of it, which is why every build now pins function
-starts to 64 bytes (`.cargo/config.toml`).
+smaller cold code ahead of it, which is why a measurement now builds every
+binary it compares with function starts pinned to 64 bytes — the shipped
+build stays unpinned ([execution.md](execution.md), "What removing the
+re-entries moved", the protocol).
 
 ### Host roots
 
