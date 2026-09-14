@@ -659,3 +659,33 @@ fn a_recursion_through_the_nested_class_accessor_is_bounded_by_the_activation_li
         "Uncaught Newspeak error: stack overflow: recursion too deep\n",
     );
 }
+
+/// `newspeak-spec.pdf` §5.10: "If a public or protected method f named s is
+/// defined for (3.5) S, the value of the send is the result of invoking f" --
+/// a private method of the superclass is not one, so `super p` falls to "the
+/// #doesNotUnderstand: method defined for S", which is `Object`'s.
+#[test]
+fn a_super_send_does_not_reach_a_private_method() {
+    assert_outcome(
+        "super-private",
+        indoc! {"
+            Newspeak3
+            'T'
+            class SuperPrivate usingPlatform: platform = Object new (
+            ) (
+                class SuperBase = Object new () (
+                    private p = ( ^10 )
+                )
+                class SuperChild = SuperBase new () (
+                    public run = ( ^super p )
+                )
+                public main: pl args: a = (
+                    SuperChild new run
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #p\n",
+    );
+}

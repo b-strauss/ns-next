@@ -94,62 +94,71 @@ pub fn kth_enclosing_object<'gc>(
     }
 }
 
-/// §5.5: ordinary (explicit-receiver) sends. A `protected`/`private`
-/// declaration shadows an inherited `public` one -- the search stops at
-/// the first declaration found, matching or not.
+/// What a lookup does with a declaration of its selector found at one level,
+/// decided by the declaration's accessibility.
+enum Verdict {
+    /// The declaration is the answer.
+    Accept,
+    /// The declaration is passed over; the search continues at the
+    /// superclass.
+    Skip,
+    /// The search ends with no answer.
+    Stop,
+}
+
+/// §5.5, ordinary (explicit-receiver) sends: lookupPublic(n, C) is "m, if the
+/// mixin of C defines a method m with selector n and public access.
+/// Undefined, if the mixin of C defines a method m with selector n and
+/// protected access. lookupPublic(n, superclass(C)) otherwise." So a
+/// `protected` declaration shadows an inherited `public` one and ends the
+/// search, while a `private` one falls to the "otherwise" and is passed over
+/// -- Primordial Soup's `OrdinarySendMiss` does the same.
 pub fn lookup_public<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
     selector: Symbol,
 ) -> Lookup<'gc> {
-    walk(
-        heap,
-        class,
-        selector,
-        |access| access == ast::AccessModifier::Public,
-        true,
-    )
+    walk(heap, class, selector, |access| match access {
+        ast::AccessModifier::Public => Verdict::Accept,
+        ast::AccessModifier::Protected => Verdict::Stop,
+        ast::AccessModifier::Private => Verdict::Skip,
+    })
 }
 
-/// §5.9 (non-`private` half of a `LexicalSend`): matches `public` or
-/// `protected`; a `private` declaration is transparently skipped, the walk
-/// continues past it.
+/// §5.9's lookupProtected(n, C): "m, if the mixin of C defines a method m
+/// with selector n and either public or protected access", and
+/// lookupProtected(n, superclass(C)) otherwise -- a `private` declaration is
+/// passed over. The lookup of a lexical send (§5.9) and of a super send
+/// (§5.10).
 pub fn lookup_protected<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
     selector: Symbol,
 ) -> Lookup<'gc> {
-    walk(
-        heap,
-        class,
-        selector,
-        |access| access != ast::AccessModifier::Private,
-        false,
-    )
+    walk(heap, class, selector, |access| match access {
+        ast::AccessModifier::Public | ast::AccessModifier::Protected => Verdict::Accept,
+        ast::AccessModifier::Private => Verdict::Skip,
+    })
 }
 
-/// The plain, access-blind "defined for" walk (§3.5): used by `super`
-/// sends (§5.10) and by `doesNotUnderstand:` resolution, which is exempt
-/// from every access check (§5.5).
+/// The plain, access-blind "defined for" walk (§3.5): used by
+/// `doesNotUnderstand:` resolution, which is exempt from every access check
+/// (§5.5: "the #doesNotUnderstand: method defined for (3.5) the class of o").
 pub fn lookup_defined_for<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
     selector: Symbol,
 ) -> Lookup<'gc> {
-    walk(heap, class, selector, |_| true, false)
+    walk(heap, class, selector, |_| Verdict::Accept)
 }
 
-/// `hard_stop_on_mismatch`: `lookupPublic`'s distinguishing rule -- when
-/// the mixin declares `selector` at all but the access predicate rejects
-/// it, stop searching (return `NotFound`) instead of continuing up.
-/// `lookupProtected`/`lookup_defined_for` never hard-stop: a declaration
-/// that doesn't match the predicate is transparently skipped.
+/// Walks `class`'s superclass chain for a declaration of `selector`, asking
+/// `verdict` what to do with each one it finds.
 fn walk<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
     selector: Symbol,
-    accept: impl Fn(ast::AccessModifier) -> bool,
-    hard_stop_on_mismatch: bool,
+    verdict: impl Fn(ast::AccessModifier) -> Verdict,
 ) -> Lookup<'gc> {
     let mut level = level_of(heap, class);
     while let Some((level_class, application)) = level {
@@ -164,15 +173,14 @@ fn walk<'gc>(
         };
         let next = next_level(superclass, &application);
         if let Some(method) = application.mixin.methods.get(&selector).cloned() {
-            let access = method.access;
-            return if accept(access) {
-                Lookup::Method(method, level_class)
-            } else if hard_stop_on_mismatch {
-                Lookup::NotFound
-            } else {
-                level = next;
-                continue;
-            };
+            match verdict(method.access) {
+                Verdict::Accept => return Lookup::Method(method, level_class),
+                Verdict::Stop => return Lookup::NotFound,
+                Verdict::Skip => {
+                    level = next;
+                    continue;
+                }
+            }
         }
         // §6: a nested declaration is a member of its enclosing class on
         // exactly the same footing as a method, so it is searched at the
@@ -189,15 +197,14 @@ fn walk<'gc>(
             .find(|nested| nested.name == selector)
             .cloned()
         {
-            let access = nested_access(&nested);
-            return if accept(access) {
-                Lookup::NestedClass(nested, level_class)
-            } else if hard_stop_on_mismatch {
-                Lookup::NotFound
-            } else {
-                level = next;
-                continue;
-            };
+            match verdict(nested_access(&nested)) {
+                Verdict::Accept => return Lookup::NestedClass(nested, level_class),
+                Verdict::Stop => return Lookup::NotFound,
+                Verdict::Skip => {
+                    level = next;
+                    continue;
+                }
+            }
         }
         if let Some(kind) = builtin {
             return Lookup::Native(kind);

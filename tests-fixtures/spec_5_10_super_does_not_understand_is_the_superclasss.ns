@@ -1,0 +1,19 @@
+Newspeak3
+'Test'
+class Spec510SuperDoesNotUnderstandIsTheSuperclasss usingPlatform: p = Object new (| t = p transcript. |) (
+    (* newspeak-spec.pdf 5.10: "If a public or protected method f named s is
+       defined for (3.5) S, the value of the send is the result of invoking f
+       ... Otherwise, the #doesNotUnderstand: method defined for S is invoked".
+       S is the superclass of the current class, A: nothing above B defines
+       foo, so A's doesNotUnderstand: answers -- not B's, the receiver's own. *)
+    class A = Object new () (
+        protected doesNotUnderstand: message = ( ^'A handled it' )
+    )
+    class B = A new () (
+        protected doesNotUnderstand: message = ( ^'B handled it' )
+        public foo = ( ^super foo )
+    )
+    public main: platform args: args = (
+        t show: B new foo; newLine.
+    )
+) : ()

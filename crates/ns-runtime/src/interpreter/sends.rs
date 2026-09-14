@@ -147,11 +147,16 @@ pub(crate) fn decide_lexical_send<'gc>(
     }
 }
 
-/// `newspeak-spec.pdf` §5.10: starts at the superclass of the *current
-/// activation's* `current_class`, not `self`'s own class. On success, the
-/// new activation's `current_class` is `definingClass(selector, superclass)`
-/// -- the activation's `defining_class` argument (from `lookup_defined_for`)
-/// already carries that.
+/// `newspeak-spec.pdf` §5.10: starts at S, the superclass of the *current
+/// activation's* `current_class`, not `self`'s own class. "If a public or
+/// protected method f named s is defined for (3.5) S, the value of the send
+/// is the result of invoking f in response to (3.5) message µ on o" -- so the
+/// walk is `lookup_protected`, which passes a private method over, as
+/// Primordial Soup's `SuperSendMiss` does with its `ProtectedSend`. On
+/// success, the new activation's `current_class` is
+/// `definingClass(selector, S)`, which the lookup's defining class carries.
+/// "Otherwise, the #doesNotUnderstand: method defined for S is invoked":
+/// `Mutator::decide_super_does_not_understand`.
 pub(crate) fn decide_super_send<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -176,7 +181,7 @@ pub(crate) fn decide_super_send<'gc>(
         }));
     };
     let self_value = mutator.heap.activation_receiver(activation);
-    match dispatch::lookup_defined_for(&mutator.heap, superclass, selector) {
+    match dispatch::lookup_protected(&mutator.heap, superclass, selector) {
         Lookup::Method(method, defining_class) => Ok(Step::Method {
             receiver: self_value,
             method,
@@ -194,11 +199,15 @@ pub(crate) fn decide_super_send<'gc>(
             crate::interpreter::nested::nested_class(mutator, &self_value, &mixin, declaring_class)
         }
         Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(mutator, kind, self_value, selector, arguments) {
+            match mutator.dispatch_native_inheriting_object(kind, &self_value, selector, arguments)
+            {
                 Some(result) => result,
-                None => mutator.decide_send(self_value, selector, arguments),
+                None => mutator
+                    .decide_super_does_not_understand(self_value, superclass, selector, arguments),
             }
         }
-        Lookup::NotFound => mutator.decide_send(self_value, selector, arguments),
+        Lookup::NotFound => {
+            mutator.decide_super_does_not_understand(self_value, superclass, selector, arguments)
+        }
     }
 }

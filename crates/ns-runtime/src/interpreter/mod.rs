@@ -623,7 +623,7 @@ impl<'gc> Mutator<'gc> {
     /// first (so a builtin that *does* implement a selector still wins),
     /// then `Object`'s. Returns `None` only when neither implements
     /// `selector`.
-    fn dispatch_native_inheriting_object(
+    pub(crate) fn dispatch_native_inheriting_object(
         &mut self,
         kind: BuiltinClass,
         receiver: &Value<'gc>,
@@ -672,6 +672,36 @@ impl<'gc> Mutator<'gc> {
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
         let class = self.class_of(&receiver);
+        self.decide_does_not_understand_in(receiver, class, selector, arguments)
+    }
+
+    /// §5.10's failure: "Otherwise, the #doesNotUnderstand: method defined
+    /// for S is invoked" -- looked up from `superclass`, S, rather than from
+    /// the receiver's own class, so a subclass's own `doesNotUnderstand:`
+    /// does not answer a `super` send that its superclass cannot. A class
+    /// object's `super` send of its own factory selector still instantiates
+    /// (`try_factory_send`), exactly as the same send to it does.
+    pub(crate) fn decide_super_does_not_understand(
+        &mut self,
+        receiver: Value<'gc>,
+        superclass: ClassReference<'gc>,
+        selector: Symbol,
+        arguments: &[Value<'gc>],
+    ) -> Result<Step<'gc>, Signal<'gc>> {
+        if let Some(result) = self.try_factory_send(&receiver, selector, arguments) {
+            return result;
+        }
+        self.decide_does_not_understand_in(receiver, superclass, selector, arguments)
+    }
+
+    /// `doesNotUnderstand:` for `receiver`, looked up from `class`.
+    fn decide_does_not_understand_in(
+        &mut self,
+        receiver: Value<'gc>,
+        class: ClassReference<'gc>,
+        selector: Symbol,
+        arguments: &[Value<'gc>],
+    ) -> Result<Step<'gc>, Signal<'gc>> {
         let does_not_understand_selector = Symbol::DOES_NOT_UNDERSTAND;
         // A minimal message-mirror-shaped value: an Array `{selector.
         // arguments}` rather than a real MessageMirror object, since mirrors do
