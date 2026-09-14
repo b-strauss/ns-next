@@ -754,3 +754,30 @@ fn an_enclosing_classs_inherited_member_is_not_lexically_visible() {
         "Uncaught Newspeak error: an object does not understand #n\n",
     );
 }
+
+/// `newspeak-spec.pdf` §6: a nested class declaration "implicitly defines a
+/// method with the same name and accessibility" in its enclosing class, so a
+/// `private class Hidden` defines a private accessor, which §5.5's
+/// `lookupPublic` never answers.
+#[test]
+fn a_private_nested_class_is_unreachable_from_outside() {
+    assert_outcome(
+        "private-nested",
+        indoc! {"
+            Newspeak3
+            'T'
+            class PrivateNested usingPlatform: platform = Object new (
+            ) (
+                class Holder = Object new () (
+                    private class Hidden = Object new () ()
+                )
+                public main: pl args: a = (
+                    Holder new Hidden
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #Hidden\n",
+    );
+}
