@@ -18,7 +18,8 @@ caches, argument buffer and spare instantiation boxes — moves out of
 `Mutator<'static>` by a `World` (`heap/world.rs`), and `World::enter` lends
 it out as a `Mutator<'gc>` for one closure generic over `'gc`, gc-arena's
 `mutate`. That lending is the crate's only `unsafe`: one pointer cast that
-changes nothing but a phantom lifetime. `Interpreter` keeps the `World` and
+changes nothing but a phantom lifetime (revised: no cast — see Decision 1).
+`Interpreter` keeps the `World` and
 the state only the run loop needs (`running`, the stress schedule), so no
 step, holding only a `&mut Mutator`, can reach `vm::run`, the safepoint or a
 host entry. Each instruction the run loop executes is one `enter`. The work
@@ -128,8 +129,9 @@ repository's invariants:
 In: `Mutator`, `World` and `Interpreter::enter`; the step code moved onto
 `Mutator`; one `enter` per instruction; the host entries, the CLI and every
 test reading through `enter`; the brand on every movable handle and every
-type that holds one; the one cast and `#![deny(unsafe_code)]`; the three
-`compile_fail` doctests; the measurements and the documents.
+type that holds one; the one cast and `#![deny(unsafe_code)]` (revised: no
+cast, `#![forbid(unsafe_code)]` — see Decision 1); the three `compile_fail`
+doctests; the measurements and the documents.
 
 Deliberately **not** in this plan:
 
@@ -162,7 +164,9 @@ Deliberately **not** in this plan:
   plan's.
 - **Only `heap.rs` rewrites or rebrands a handle.** `trace.rs` enumerates;
   `heap.rs`'s `Forwarder` rewrites; `heap.rs`'s private `rebrand` is the only
-  conversion of a brand, and `heap/world.rs`'s `enter` the only cast.
+  conversion of a brand, and `heap/world.rs`'s `enter` the only cast
+  (revised: no cast — see Decision 1; and the final review split `rebrand`
+  into `at_rest` and `branded`, one per direction, as Decision 3 says).
 - **Every `Trace` impl keeps naming every field and matching every variant**
   (no `..`, no `_` arm).
 - **Never `{:?}` a `Value`; never `.unwrap()`/`.expect()`/`{:?}` an
