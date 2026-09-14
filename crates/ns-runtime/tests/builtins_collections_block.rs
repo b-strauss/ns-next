@@ -395,7 +395,7 @@ fn block_argument_count_reports_the_declared_parameter_count() {
 }
 
 /// A block called with too few arguments must be a `NewspeakError`, never a
-/// Rust panic (the argument-count guard `Interpreter::push_step` runs on
+/// Rust panic (the argument-count guard `Mutator::push_step` runs on
 /// every block activation).
 #[test]
 fn block_called_with_too_few_arguments_is_a_newspeak_error_not_a_panic() {

@@ -419,7 +419,7 @@ fn a_superclass_factory_message_receives_its_own_arguments() {
 ///
 /// The last initializer an instantiation runs hands its own value to the
 /// send, with no step after it to answer the instance
-/// (`Interpreter::descend_levels`): that relies on the compiler ending every
+/// (`Mutator::descend_levels`): that relies on the compiler ending every
 /// initializer by answering `self`. An initializer that answered anything
 /// else -- its last statement's value, say, or `nil` -- would fail here.
 #[test]

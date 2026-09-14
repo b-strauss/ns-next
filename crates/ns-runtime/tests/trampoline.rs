@@ -744,7 +744,7 @@ fn a_return_through_a_superclass_clause_abandons_its_creation() {
 }
 
 /// A `^` in a block of a superclass clause's message returns from the
-/// message's own activation, which catches it (`Interpreter::catches_return`):
+/// message's own activation, which catches it (`Mutator::catches_return`):
 /// the run loop pops the activation there and hands the value to the
 /// instantiation's walk as the superclass's arguments, exactly as if the body
 /// had answered it. The clause message is the one clause body a block can be

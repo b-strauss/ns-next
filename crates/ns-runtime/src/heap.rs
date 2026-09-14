@@ -274,12 +274,33 @@ pub struct Root {
     slot: std::rc::Rc<std::cell::Cell<Value<'static>>>,
 }
 
-/// The one conversion of a brand (`docs/design/memory.md`, "The brand"): a
+/// The two conversions of a brand (`docs/design/memory.md`, "The brand"): a
 /// host root's slot is shared with a host outside every entry, so it holds
-/// `Value<'static>`, and `stash` and `fetch` pass a value through here on
-/// the way in and out. Private to this module, and there is no public
-/// counterpart: code outside `heap.rs` cannot change a handle's brand.
-fn rebrand<'from, 'to>(value: Value<'from>) -> Value<'to> {
+/// `Value<'static>`, and `stash` passes a value through `at_rest` on the
+/// way in, `fetch` through `branded` on the way out. Each is monomorphic in
+/// its direction, so a value cannot be carried from one entry's brand to
+/// another's even here, where the fields are in reach. Both are private to
+/// this module, and there is no public counterpart: code outside `heap.rs`
+/// cannot change a handle's brand.
+fn at_rest(value: Value<'_>) -> Value<'static> {
+    match value {
+        Value::Nil => Value::Nil,
+        Value::Boolean(boolean) => Value::Boolean(boolean),
+        Value::SmallInteger(integer) => Value::SmallInteger(integer),
+        Value::Float(float) => Value::Float(float),
+        Value::Object(object) => Value::Object(ObjectReference {
+            index: object.index,
+            #[cfg(debug_assertions)]
+            origin: object.origin,
+            #[cfg(debug_assertions)]
+            epoch: object.epoch,
+            brand: std::marker::PhantomData,
+        }),
+    }
+}
+
+/// See `at_rest`.
+fn branded<'gc>(value: Value<'static>) -> Value<'gc> {
     match value {
         Value::Nil => Value::Nil,
         Value::Boolean(boolean) => Value::Boolean(boolean),
@@ -1207,7 +1228,7 @@ impl<'gc> Heap<'gc> {
         if let Value::Object(object) = value {
             self.check_object_origin(object);
         }
-        let slot = std::rc::Rc::new(std::cell::Cell::new(rebrand(value)));
+        let slot = std::rc::Rc::new(std::cell::Cell::new(at_rest(value)));
         let mut roots = self.host_roots.borrow_mut();
         if roots.slots.len() >= roots.sweep_at {
             roots.sweep();
@@ -1219,7 +1240,7 @@ impl<'gc> Heap<'gc> {
     /// What `root` holds now. The answer is good until the next run of the
     /// loop, which may move it; read the root again after one.
     pub fn fetch(&self, root: &Root) -> Value<'gc> {
-        let value = rebrand(root.slot.get());
+        let value = branded(root.slot.get());
         if let Value::Object(object) = value {
             self.check_object_origin(object);
         }

@@ -1756,35 +1756,35 @@ mod tests {
         "};
         let (mut interpreter, class) = load(source);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-        let class_p = expect_ok(interpreter.send(&instance, Symbol::intern("P"), &[]), "P");
-        let class_q = expect_ok(interpreter.send(&instance, Symbol::intern("Q"), &[]), "Q");
-        let class_r = expect_ok(interpreter.send(&instance, Symbol::intern("R"), &[]), "R");
-        let class_s = expect_ok(interpreter.send(&instance, Symbol::intern("S"), &[]), "S");
+        let p_class_root = expect_ok(interpreter.send(&instance, Symbol::intern("P"), &[]), "P");
+        let q_class_root = expect_ok(interpreter.send(&instance, Symbol::intern("Q"), &[]), "Q");
+        let r_class_root = expect_ok(interpreter.send(&instance, Symbol::intern("R"), &[]), "R");
+        let s_class_root = expect_ok(interpreter.send(&instance, Symbol::intern("S"), &[]), "S");
         interpreter.enter(|mutator| {
-            let (class_p, class_q, class_r, class_s) = (
-                mutator.fetch(&class_p),
-                mutator.fetch(&class_q),
-                mutator.fetch(&class_r),
-                mutator.fetch(&class_s),
+            let (p_class, q_class, r_class, s_class) = (
+                mutator.fetch(&p_class_root),
+                mutator.fetch(&q_class_root),
+                mutator.fetch(&r_class_root),
+                mutator.fetch(&s_class_root),
             );
-            let Value::Object(p_class) = class_p else {
+            let Value::Object(p_class_object) = p_class else {
                 panic!("`P` answers a class object")
             };
-            let Value::Object(s_class) = class_s else {
+            let Value::Object(s_class_object) = s_class else {
                 panic!("`S` answers a class object")
             };
             assert!(
                 matches!(
-                    mutator.decide_send(class_p, Symbol::NEW, &[]),
-                    Ok(Step::Initializer { level, .. }) if level.same(p_class)
+                    mutator.decide_send(p_class, Symbol::NEW, &[]),
+                    Ok(Step::Initializer { level, .. }) if level.same(p_class_object)
                 ),
                 "`P new` is decided as P's initializer, which delivers"
             );
-            match mutator.decide_send(class_r, Symbol::NEW, &[]) {
+            match mutator.decide_send(r_class, Symbol::NEW, &[]) {
                 Ok(Step::InitializerThen {
                     level, then: state, ..
                 }) => {
-                    assert!(level.same(p_class));
+                    assert!(level.same(p_class_object));
                     assert!(matches!(
                         state.phase,
                         InstantiationPhase::Descending { index: 1 }
@@ -1794,19 +1794,19 @@ mod tests {
                     panic!("`R new` is decided as its superclass P's initializer, R's still to run")
                 }
             }
-            match mutator.decide_send(class_s, Symbol::NEW, &[]) {
+            match mutator.decide_send(s_class, Symbol::NEW, &[]) {
                 Ok(Step::ClauseMessage { level, then, .. }) => {
-                    assert!(level.same(s_class));
+                    assert!(level.same(s_class_object));
                     assert!(matches!(
                         then.phase,
-                        InstantiationPhase::Climbing { level, .. } if level.same(s_class)
+                        InstantiationPhase::Climbing { level, .. } if level.same(s_class_object)
                     ));
                 }
                 _ => panic!("`S new` is decided as its clause message's activation"),
             }
             assert!(
                 matches!(
-                    mutator.decide_send(class_q, Symbol::NEW, &[]),
+                    mutator.decide_send(q_class, Symbol::NEW, &[]),
                     Ok(Step::Value(Value::Object(_)))
                 ),
                 "`Q new` is decided as its instance"

@@ -240,7 +240,7 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     // lands, so an absolute index could only be right for one of them. The
     // failure is general, not nested-class-only -- reproducing it needs one
     // `Rc<Mixin>` applied to two different superclasses, which only happens
-    // by calling `Interpreter::apply_mixin` directly (`load_module` always
+    // by calling `Mutator::apply_mixin` directly (`load_module` always
     // builds a fresh `Mixin` per module, so two ordinary loaded classes
     // never share one).
     //

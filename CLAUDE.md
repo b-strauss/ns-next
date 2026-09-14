@@ -136,8 +136,9 @@ is checked for every `'gc`, so it can neither assume the brand is `'static`
 nor let a branded value out. The crate forbids unsafe code
 (`#![forbid(unsafe_code)]`) and the brand needs none. What keeps it meaning
 something: never add a public way to change a handle's brand — `heap.rs`'s
-private `rebrand`, for the host root table, is the only conversion, and there
-is no `unbind` — and never give `Mutator` a way to reach the `Interpreter`,
+private `at_rest` and `branded`, one per direction, for the host root table,
+are the only conversions, and there is no `unbind` — and never give `Mutator`
+a way to reach the `Interpreter`,
 which is what keeps a step (a decision, a native, a continuation) from
 running the loop. The three `compile_fail` doctests on `Interpreter::enter`
 pin the mistakes (`docs/design/memory.md`, "The brand").

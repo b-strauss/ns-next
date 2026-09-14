@@ -496,7 +496,7 @@ fn loading_a_second_module_keeps_the_first_modules_code() {
 /// A method activation addresses its arguments and temporaries as one run
 /// of registers, and `locals::read_local` finds the boundary from the count
 /// of arguments the frame was *given*. Without the arity check every method
-/// activation gets (`Interpreter::push_step`), sending `probe` two surplus
+/// activation gets (`Mutator::push_step`), sending `probe` two surplus
 /// arguments therefore made register 0
 /// -- `t` -- read back the first surplus argument instead of `Nil`,
 /// silently.

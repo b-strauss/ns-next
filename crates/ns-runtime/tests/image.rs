@@ -475,7 +475,7 @@ fn every_instruction_once() -> CompiledCode {
 }
 
 /// The compiled code of `class`'s method `selector` -- the body the method
-/// `Interpreter::push_step` activates carries.
+/// `Mutator::push_step` activates carries.
 fn method_code<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
@@ -561,16 +561,16 @@ fn round_trip_code_table<'gc>(
     let mut symbols = symbols::Builder::new();
     let ids = encode::encode_code_table(&mut writer, heap, class, &mut symbols)
         .expect("encode code table");
-    let mut mixin_w = encode::Writer::new();
-    mixins::encode(&mut mixin_w, heap, class, &mut symbols, &ids).expect("encode mixin table");
+    let mut mixin_writer = encode::Writer::new();
+    mixins::encode(&mut mixin_writer, heap, class, &mut symbols, &ids).expect("encode mixin table");
     let bytes = writer.into_bytes();
-    let mixin_bytes = mixin_w.into_bytes();
+    let mixin_bytes = mixin_writer.into_bytes();
     let table = symbols.build();
     let mut reader = decode::Reader::new(&bytes);
     let codes = decode::decode_code_table(&mut reader, &table).expect("decode code table");
-    let mut mixin_r = decode::Reader::new(&mixin_bytes);
+    let mut mixin_reader = decode::Reader::new(&mixin_bytes);
     let decoded_mixins =
-        mixins::decode(&mut mixin_r, &table, &codes.codes).expect("decode mixin table");
+        mixins::decode(&mut mixin_reader, &table, &codes.codes).expect("decode mixin table");
     (codes, decoded_mixins, ids)
 }
 
@@ -1755,7 +1755,7 @@ impl GraphFixture {
     /// answered out of the entry, and every read of it happens in `inspect`.
     ///
     /// `&mut self` because decoding a class record rebuilds its application
-    /// through `Interpreter::apply_mixin`, which writes to the shared cache.
+    /// through `Mutator::apply_mixin`, which writes to the shared cache.
     fn decode<R>(
         &mut self,
         bytes: &[u8],
@@ -1932,7 +1932,7 @@ fn an_invalid_class_tag_is_a_decode_error_not_a_panic() {
 // ---------------------------------------------------------------------------
 
 /// One class record: its own `.class` (the builtin `Object`, as
-/// `Interpreter::new_class_object` gives every class object), an identity
+/// `Mutator::new_class_object` gives every class object), an identity
 /// hash, the body tag, the mixin-table row id, then the three references
 /// `references` writes.
 fn class_record(
@@ -3746,7 +3746,7 @@ const NEEDS_INITIALIZER: &str = indoc! {"
 
 #[test]
 fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_on_load() {
-    // `Interpreter::initializer_body` panics -- "internal: class needs an instance
+    // `Mutator::initializer_body` panics -- "internal: class needs an instance
     // initializer and its mixin carries none" -- when the class has
     // initializer code and its mixin has none. A mixin-table row's
     // declaration half decides the first (it names slots or `initExpr`s)
@@ -4565,7 +4565,7 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
     // Two enclosing instances, one shared application before the snapshot.
     // Identity is per enclosing instance (§6) but behaviour is per mixin
     // application (§6.2), and only the second half survives a save -- the
-    // applications are rebuilt through `Interpreter::apply_mixin`, whose
+    // applications are rebuilt through `Mutator::apply_mixin`, whose
     // cache key is content-derived. If the rebuild lost the sharing,
     // the inline caches' call sites would go megamorphic after every load, which
     // is why this is a property test rather than a shape test.
@@ -5723,7 +5723,7 @@ fn dropping_a_loaded_world_whose_root_heads_a_long_instance_chain_does_not_blow_
 
 #[test]
 fn a_class_object_whose_own_class_is_another_record_is_refused() {
-    // `Interpreter::new_class_object` gives every class object the shared
+    // `Mutator::new_class_object` gives every class object the shared
     // bootstrap `Object` placeholder, so no real world contains one -- and
     // `class` is the single reference `Object`'s iterative `Drop` cannot
     // hand to its worklist, so a chain of them is the one link that would

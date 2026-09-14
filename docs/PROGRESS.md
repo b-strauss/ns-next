@@ -1665,8 +1665,9 @@ design, and one revised on the way:
 2. **The brand is phantom**: `'gc` appears in a field only through the
    `PhantomData` in a handle, which is why no conversion of the state is
    needed.
-3. **No public `unbind`**: `rebrand`, private to `heap.rs`, converts a value
-   for the host root table, and nothing else changes a brand.
+3. **No public `unbind`**: `at_rest` and `branded`, private to `heap.rs` and
+   one per direction, convert a value for the host root table, and nothing
+   else changes a brand.
 4. **`Mutator` never reaches the `Interpreter`**: `vm::run`, the safepoint
    and the host entries take `&mut Interpreter`, and a decision, a native or
    a continuation only a `&mut Mutator`.

@@ -2,7 +2,7 @@
 //! but `dispatch::walk` stops at the first `builtin: Some(kind)` class it
 //! reaches and never continues up that class's own superclass chain. These
 //! tests pin the call-site fallback that restores the one missing
-//! inheritance step (`Interpreter::dispatch_native_inheriting_object`):
+//! inheritance step (`Mutator::dispatch_native_inheriting_object`):
 //! a non-`Object` builtin receiver must still reach `Object`'s own native
 //! `class`/`==`/`=`/`hash`/`printString`, and -- most importantly --
 //! `Object`'s real, spec-shaped `doesNotUnderstand:`
@@ -126,7 +126,7 @@ fn a_builtin_receiver_inherits_objects_identity_and_hash() {
 /// route through `builtins::object_class::dispatch`'s real
 /// `doesNotUnderstand:` -- whose message is
 /// "<describe(receiver)> does not understand #<selector>" -- rather than
-/// `Interpreter::decide_does_not_understand`'s internal
+/// `Mutator::decide_does_not_understand`'s internal
 /// "(native class ... has no doesNotUnderstand: implementation)" fallback.
 #[test]
 fn an_unknown_selector_on_a_builtin_runs_objects_real_does_not_understand() {

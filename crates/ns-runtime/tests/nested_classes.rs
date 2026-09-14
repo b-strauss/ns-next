@@ -693,7 +693,7 @@ fn super_and_outer_both_resolve_through_the_defining_level() {
 /// A *three*-level hierarchy where the middle level (`Mid`) is reached only
 /// through inheritance -- `Leaf` declares no `describe` of its own. This is
 /// the shape a two-level fixture cannot exercise: if
-/// `Interpreter::push_step` set `current_class` to the receiver's own
+/// `Mutator::push_step` set `current_class` to the receiver's own
 /// (dynamic) class rather than the level `dispatch` found the method at, `Mid`'s
 /// activation would compute its `super` target from *`Leaf`'s* superclass
 /// (`Mid` itself) forever -- unbounded recursion, not a wrong value, so a

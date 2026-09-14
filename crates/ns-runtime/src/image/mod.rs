@@ -70,12 +70,12 @@ fn encode_describing<'gc>(
     // After the code table, whose ids its rows name; before the graph (or the
     // entry field), whose class objects and selector respectively might name
     // its rows.
-    let mut mixin_w = encode::Writer::new();
-    let mixin_ids = mixins::encode(&mut mixin_w, heap, root_class, &mut symbols, &ids)?;
+    let mut mixin_writer = encode::Writer::new();
+    let mixin_ids = mixins::encode(&mut mixin_writer, heap, root_class, &mut symbols, &ids)?;
     Ok(Describing {
         symbols,
         code,
-        mixins: mixin_w,
+        mixins: mixin_writer,
         ids,
         mixin_ids,
     })
@@ -153,9 +153,9 @@ pub fn snapshot<'gc>(
     // `symbols` builder the describing sections used, before `write_describing`
     // consumes `describing` -- the graph needs the mixin table's row ids, and
     // those exist only on `describing.mixin_ids`.
-    let mut graph_w = encode::Writer::new();
+    let mut graph_writer = encode::Writer::new();
     encode::encode_graph_section(
-        &mut graph_w,
+        &mut graph_writer,
         heap,
         roots,
         platform,
@@ -164,7 +164,7 @@ pub fn snapshot<'gc>(
         &describing.mixin_ids,
         &mut describing.symbols,
     )?;
-    encode::encode_tag_named_hashes(&mut graph_w, mutator, root_class, platform);
+    encode::encode_tag_named_hashes(&mut graph_writer, mutator, root_class, platform);
     let mut writer = encode::Writer::new();
     write_describing(&mut writer, source, origin, 0, describing, root_class, heap)?;
     // `snapshot` never names an entry selector of its own -- a snapshotted
@@ -172,7 +172,7 @@ pub fn snapshot<'gc>(
     // it fresh -- but the field is written unconditionally so every artifact
     // this format can produce shares one layout from here on.
     encode::encode_entry(&mut writer, None);
-    writer.write_raw(&graph_w.into_bytes());
+    writer.write_raw(&graph_writer.into_bytes());
     Ok(writer.into_bytes())
 }
 
