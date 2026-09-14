@@ -29,6 +29,7 @@ use ns_syntax::ast;
 use ns_syntax::Span;
 
 use crate::bytecode::CompiledCode;
+use crate::hash::IdentityMap;
 use crate::types::Binding;
 use crate::Symbol;
 
@@ -244,7 +245,7 @@ pub struct Mixin {
     pub access: ast::AccessModifier,
     /// The method table: the compiled methods and the accessors `slots`
     /// define (`slot_accessors`), one entry per selector.
-    pub methods: HashMap<Symbol, MethodEntry>,
+    pub methods: IdentityMap<Symbol, MethodEntry>,
     /// This mixin's own instance slots, in declaration order.
     pub slots: Vec<MixinSlot>,
     pub factory: Option<Factory>,
@@ -293,7 +294,7 @@ impl Mixin {
         Mixin {
             name,
             access: ast::AccessModifier::Protected,
-            methods: HashMap::new(),
+            methods: IdentityMap::default(),
             slots: Vec::new(),
             factory: None,
             superclass: None,
@@ -337,7 +338,7 @@ pub struct MixinApplication {
     /// while `N` reaches the subclass's; a name key would collapse the two
     /// entries onto one index and make whichever was resolved first the
     /// answer to both.
-    pub nested_slot: HashMap<usize, usize>,
+    pub nested_slot: IdentityMap<usize, usize>,
     pub slot_count: usize,
     /// Where this application's *own* slots start -- `superclass.slot_count`,
     /// or 0 with none. Read at run time (`Mutator::initializer_body`, into the

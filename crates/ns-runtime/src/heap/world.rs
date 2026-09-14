@@ -9,9 +9,8 @@
 //! heap to itself: `World` builds the only one an interpreter has, and moves
 //! it only while no `Mutator` is lent out.
 
-use std::collections::HashMap;
-
 use crate::compiler::Lowering;
+use crate::hash::IdentityMap;
 use crate::heap::{Heap, Root};
 use crate::interpreter::Mutator;
 use crate::types::Value;
@@ -28,8 +27,8 @@ impl World {
                 heap: Heap::new(),
                 builtin_classes: Vec::new(),
                 platform_singleton: None,
-                applications: HashMap::new(),
-                empty_class_sides: HashMap::new(),
+                applications: IdentityMap::default(),
+                empty_class_sides: IdentityMap::default(),
                 #[cfg(debug_assertions)]
                 creations_in_progress: 0,
                 spare_walks: Vec::new(),

@@ -2278,7 +2278,7 @@ mod tests {
         let application = std::rc::Rc::new(crate::mixin::MixinApplication {
             mixin: std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
-            nested_slot: std::collections::HashMap::new(),
+            nested_slot: crate::hash::IdentityMap::default(),
             slot_count: 0,
             own_slot_base: 0,
         });

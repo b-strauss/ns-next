@@ -362,7 +362,7 @@ mod tests {
         "};
         let module = ns_syntax::parse(&source).expect("parse");
         let method = module.root_class.instance_side.methods[0].clone();
-        let mut methods = HashMap::new();
+        let mut methods = crate::hash::IdentityMap::default();
         methods.insert(
             Symbol::intern(selector.trim_end_matches(':')),
             MethodEntry::Compiled(Rc::new(MixinMethod::from_declaration(
@@ -384,7 +384,7 @@ mod tests {
                 ..crate::mixin::Mixin::empty(Symbol::intern(name))
             }),
             superclass: super_application,
-            nested_slot: HashMap::new(),
+            nested_slot: crate::hash::IdentityMap::default(),
             slot_count: 0,
             own_slot_base: 0,
         });

@@ -12,11 +12,11 @@ mod safepoint;
 pub(crate) mod sends;
 mod slots;
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::compiler::Lowering;
 use crate::dispatch::{self, Lookup};
+use crate::hash::IdentityMap;
 use crate::heap::{ActivationHeader, ActivationReference, Heap, Root};
 use crate::types::*;
 use crate::Symbol;
@@ -195,7 +195,7 @@ pub struct Mutator<'gc> {
     /// object: a nested superclass has one class object per enclosing
     /// instance, so a class-object key would never hit and every instance
     /// would get its own behaviour.
-    pub(crate) applications: HashMap<(usize, usize), Rc<crate::mixin::MixinApplication>>,
+    pub(crate) applications: IdentityMap<(usize, usize), Rc<crate::mixin::MixinApplication>>,
     /// mixin identity -> the synthetic empty class side `metaclass_of`
     /// stands in for that mixin's own level when it declares none.
     ///
@@ -205,7 +205,7 @@ pub struct Mutator<'gc> {
     /// metaclass applications, and the shared-application property is
     /// exactly what the inline caches will guard on. It would
     /// also grow `applications` without bound.
-    pub(crate) empty_class_sides: HashMap<usize, Rc<crate::mixin::Mixin>>,
+    pub(crate) empty_class_sides: IdentityMap<usize, Rc<crate::mixin::Mixin>>,
     /// How many nested classes are marked as being created
     /// (`nested::begin_creation`), for `run_from_host`'s check that none
     /// outlives the run that began it. The mark itself lives in the class's
@@ -1367,9 +1367,10 @@ impl<'gc> Mutator<'gc> {
         // Keyed by declaration identity: a subclass that redeclares an
         // inherited nested class shadows it for a plain `N` but not for
         // `super N`, so the two need separate slots -- see `nested_slot`.
-        let mut nested_slot = superclass.map_or_else(HashMap::new, |superclass_application| {
-            superclass_application.nested_slot.clone()
-        });
+        let mut nested_slot = superclass
+            .map_or_else(IdentityMap::default, |superclass_application| {
+                superclass_application.nested_slot.clone()
+            });
         let mut next = inherited + mixin.slots.len();
         for nested in &mixin.nested {
             nested_slot.insert(crate::mixin::mixin_key(nested), next);

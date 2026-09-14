@@ -139,6 +139,14 @@ hit: every instance would mint its own application, which is wrong per §6.2 and
 would leave every call site megamorphic because no two instances would ever share
 behaviour.
 
+**Identity-keyed tables hash with `hash::IdentityMap`.** A mixin's `methods`, an
+application's `nested_slot` and the interpreter's `applications` and
+`empty_class_sides` are keyed by an identity the runtime assigned — an interned
+symbol's index, a mixin's or application's address — which no input chooses, so
+SipHash's resistance to chosen keys buys nothing there. They hash with one
+multiply per word and a rotation that brings the mixed high bits down to the
+bucket index (the FxHash scheme rustc's own tables use).
+
 ### Two parallel chains, both needed
 
 - The **class-object chain** carries identity and, at every level, that level's
@@ -158,8 +166,8 @@ method ([dispatch.md](dispatch.md), "Slot accessors"). An entry names its slot b
 position among the mixin's *own* slots, so one entry serves every application:
 the absolute field is the defining application's `own_slot_base` plus that
 position — the same mixin-relative addressing `InitializeSlot` uses, and for the
-same reason. Nothing maps a slot name to a field any more; nothing but an
-accessor needs to.
+same reason. Nothing maps a slot name to a field; nothing but an accessor needs
+to.
 
 ## The nested-class accessor
 

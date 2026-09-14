@@ -8,6 +8,7 @@ use std::rc::Rc;
 use ns_syntax::ast;
 use ns_syntax::Span;
 
+use crate::hash::IdentityMap;
 use crate::heap::{Heap, Root};
 use crate::mixin::{
     slot_accessors, Factory, MethodEntry, Mixin, MixinMethod, MixinSlot, SuperclassClause,
@@ -36,8 +37,8 @@ fn build_methods(
     slots: &[MixinSlot],
     bindings: &Rc<HashMap<Span, Binding>>,
     lowering: crate::compiler::Lowering,
-) -> HashMap<Symbol, MethodEntry> {
-    let mut methods: HashMap<Symbol, MethodEntry> = slot_accessors(slots).into_iter().collect();
+) -> IdentityMap<Symbol, MethodEntry> {
+    let mut methods: IdentityMap<Symbol, MethodEntry> = slot_accessors(slots).into_iter().collect();
     for declaration in &body.methods {
         let method =
             MixinMethod::from_declaration(Rc::new(declaration.clone()), bindings, lowering);
