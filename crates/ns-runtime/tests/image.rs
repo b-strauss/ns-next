@@ -1345,26 +1345,21 @@ fn round_trip_graph(
     let roots = make_roots(&mut interpreter, &class);
     let platform = interpreter.platform();
     let (decoded_roots, max_identity_hash) = interpreter.enter(|mutator| {
-        let class_reference_value = class_reference(mutator, &class);
+        let class = class_reference(mutator, &class);
         let root_values: Vec<Value> = roots.iter().map(|root| mutator.fetch(root)).collect();
         let platform_value = mutator.fetch(&platform);
         let mut symbols = symbols::Builder::new();
         let mut writer = encode::Writer::new();
-        let ids = encode::encode_code_table(
-            &mut writer,
-            mutator.heap(),
-            class_reference_value,
-            &mut symbols,
-        )
-        .expect("encode code table");
-        let mixin_ids = mixin_ids_for(class_reference_value, mutator, &mut symbols, &ids);
+        let ids = encode::encode_code_table(&mut writer, mutator.heap(), class, &mut symbols)
+            .expect("encode code table");
+        let mixin_ids = mixin_ids_for(class, mutator, &mut symbols, &ids);
         encode::encode_graph_section(
             &mut writer,
             mutator.heap(),
             &root_values,
             &platform_value,
             &ids,
-            class_reference_value,
+            class,
             &mixin_ids,
             &mut symbols,
         )
@@ -1373,11 +1368,11 @@ fn round_trip_graph(
         let symbol_table = symbols.build();
         let mut reader = decode::Reader::new(&bytes);
         let code_table = decode::decode_code_table(&mut reader, &symbol_table).expect("code table");
-        let mixin_order = mixin_preorder(mutator.heap(), class_reference_value);
+        let mixin_order = mixin_preorder(mutator.heap(), class);
         let decoded = {
             let mut context = decode::DecodeContext {
                 mutator,
-                root_class: &class_reference_value,
+                root_class: &class,
                 codes: &code_table.codes,
                 platform: platform_value,
                 mixins: &mixin_order,
@@ -1721,8 +1716,10 @@ fn the_graph_section_encoding_is_deterministic() {
 /// class, no compiled code, and the interpreter's own `platform`.
 struct GraphFixture {
     interpreter: Interpreter,
-    class: ClassReference,
-    platform: Value,
+    /// Roots, not handles: a fixture outlives every entry it makes, and only
+    /// a `Root` may do that. `decode` fetches both inside its own entry.
+    class: Root,
+    platform: Root,
     codes: Vec<Rc<CompiledCode>>,
     /// Empty by default: most fixtures' hand-crafted bytes never reference a
     /// selector. Tests that do (a frame kind's method name, a closure's
@@ -1735,17 +1732,10 @@ struct GraphFixture {
 
 impl GraphFixture {
     fn new() -> GraphFixture {
-        // Nothing ever runs in a fixture's interpreter, so the class and the
-        // platform read out of their roots here stay current for every entry
-        // a test or `decode` makes below.
         let (mut interpreter, class) = load(EMPTY);
         let platform = interpreter.platform();
-        let (class, platform, mixins) = interpreter.enter(|mutator| {
-            let class = class_reference(mutator, &class);
-            let platform = mutator.fetch(&platform);
-            let mixins = mixin_preorder(mutator.heap(), class);
-            (class, platform, mixins)
-        });
+        let mixins = interpreter
+            .enter(|mutator| mixin_preorder(mutator.heap(), class_reference(mutator, &class)));
         GraphFixture {
             interpreter,
             class,
@@ -1756,23 +1746,50 @@ impl GraphFixture {
         }
     }
 
+    /// Decodes `bytes` and hands the outcome to `inspect` inside the entry
+    /// that decoded it: a `DecodedGraph` holds handles, so it can never be
+    /// answered out of the entry, and every read of it happens in `inspect`.
+    ///
     /// `&mut self` because decoding a class record rebuilds its application
     /// through `Interpreter::apply_mixin`, which writes to the shared cache.
-    fn decode(&mut self, bytes: &[u8]) -> Result<decode::DecodedGraph, decode::DecodeError> {
-        let class = self.class;
-        let platform = self.platform;
+    fn decode<R>(
+        &mut self,
+        bytes: &[u8],
+        inspect: impl FnOnce(&Heap, Result<decode::DecodedGraph, decode::DecodeError>) -> R,
+    ) -> R {
+        let class = &self.class;
+        let platform = &self.platform;
         let codes = &self.codes;
         let mixins = &self.mixins;
         let symbols = &self.symbols;
         self.interpreter.enter(|mutator| {
-            let mut context = decode::DecodeContext {
-                mutator,
-                root_class: &class,
-                codes,
-                platform,
-                mixins,
+            let class = class_reference(mutator, class);
+            let platform = mutator.fetch(platform);
+            let decoded = {
+                let mut context = decode::DecodeContext {
+                    mutator,
+                    root_class: &class,
+                    codes,
+                    platform,
+                    mixins,
+                };
+                decode::decode_graph_section(&mut decode::Reader::new(bytes), &mut context, symbols)
             };
-            decode::decode_graph_section(&mut decode::Reader::new(bytes), &mut context, symbols)
+            inspect(mutator.heap(), decoded)
+        })
+    }
+
+    /// `decode` for a section that must decode: `inspect` sees the graph,
+    /// and a `DecodeError` fails the test with `what`.
+    fn decoded<R>(
+        &mut self,
+        bytes: &[u8],
+        what: &str,
+        inspect: impl FnOnce(&Heap, &decode::DecodedGraph) -> R,
+    ) -> R {
+        self.decode(bytes, |heap, decoded| match decoded {
+            Ok(graph) => inspect(heap, &graph),
+            Err(error) => panic!("{what}: expected a decoded graph, got a decode error: {error}"),
         })
     }
 
@@ -1780,10 +1797,10 @@ impl GraphFixture {
     /// `{:?}`s the success value: `DecodedGraph` has no `Debug` impl, so a
     /// manual match, as below, is the only way to reach the error.
     fn decode_error(&mut self, bytes: &[u8]) -> decode::DecodeError {
-        match self.decode(bytes) {
+        self.decode(bytes, |_, decoded| match decoded {
             Ok(_) => panic!("expected a decode error, got a decoded graph"),
             Err(error) => error,
-        }
+        })
     }
 }
 
@@ -1945,19 +1962,20 @@ fn a_well_formed_class_record_decodes_into_a_live_class_object() {
     // The positive side of the four refusals below: without it a decoder
     // that rejected every class record would pass all of them.
     let mut fixture = GraphFixture::new();
-    let graph = fixture
-        .decode(&one_class_object(0, no_class_references))
-        .expect("a class record naming row 0 of the mixin table");
-    fixture.interpreter.enter(|mutator| {
-        let application = mutator
-            .heap()
-            .class_application(graph.objects[0])
-            .expect("a class object");
-        assert!(
-            Rc::ptr_eq(&application.mixin, &fixture.mixins[0]),
-            "the record's mixin id names the decoded declaration tree, row by row"
-        );
-    });
+    let row_0 = fixture.mixins[0].clone();
+    fixture.decoded(
+        &one_class_object(0, no_class_references),
+        "a class record naming row 0 of the mixin table",
+        |heap, graph| {
+            let application = heap
+                .class_application(graph.objects[0])
+                .expect("a class object");
+            assert!(
+                Rc::ptr_eq(&application.mixin, &row_0),
+                "the record's mixin id names the decoded declaration tree, row by row"
+            );
+        },
+    );
 }
 
 #[test]
@@ -1971,15 +1989,11 @@ fn two_class_records_with_the_same_mixin_and_superclass_share_one_application() 
     class_record(&mut writer, 0, no_class_references);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
-    let mut fixture = GraphFixture::new();
-    let graph = fixture.decode(&bytes).expect("two class records");
-    fixture.interpreter.enter(|mutator| {
-        let first_application = mutator
-            .heap()
+    GraphFixture::new().decoded(&bytes, "two class records", |heap, graph| {
+        let first_application = heap
             .class_application(graph.objects[0])
             .expect("a class object");
-        let second_application = mutator
-            .heap()
+        let second_application = heap
             .class_application(graph.objects[1])
             .expect("a class object");
         assert!(!graph.objects[0].same(graph.objects[1]));
@@ -2164,7 +2178,7 @@ fn a_frame_record_in_the_old_layout_is_refused() {
     writer.write_boolean(false); // continuable
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
-    assert!(GraphFixture::new().decode(&bytes).is_err());
+    assert!(GraphFixture::new().decode(&bytes, |_, decoded| decoded.is_err()));
 }
 
 #[test]
@@ -2541,11 +2555,10 @@ fn a_top_level_frame_kind_decodes() {
     writer.write_boolean(false); // continuable
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
-    let decoded = GraphFixture::new()
-        .decode(&bytes)
-        .expect("a TopLevel frame");
-    assert!(decoded.roots.is_empty());
-    assert_eq!(decoded.max_identity_hash, 0);
+    GraphFixture::new().decoded(&bytes, "a TopLevel frame", |_, decoded| {
+        assert!(decoded.roots.is_empty());
+        assert_eq!(decoded.max_identity_hash, 0);
+    });
 }
 
 /// A block `CompiledCode` taking `argument_count` arguments in `argument_count
@@ -2605,16 +2618,16 @@ fn a_well_formed_closure_record_whose_arity_agrees_still_decodes() {
     let mut fixture = GraphFixture::new();
     fixture.codes.push(block_code(1));
     fixture.symbols = table_with(&["x"]);
-    let decoded = fixture
-        .decode(&closure_object_with_parameter_count(&["x"]))
-        .expect("arity agrees");
-    fixture.interpreter.enter(|mutator| {
-        let closure_data = mutator
-            .heap()
-            .closure_data(*object(&decoded.roots[0]))
-            .expect("expected a closure");
-        assert_eq!(*closure_data.parameters, vec![Symbol::intern("x")]);
-    });
+    fixture.decoded(
+        &closure_object_with_parameter_count(&["x"]),
+        "arity agrees",
+        |heap, decoded| {
+            let closure_data = heap
+                .closure_data(*object(&decoded.roots[0]))
+                .expect("expected a closure");
+            assert_eq!(*closure_data.parameters, vec![Symbol::intern("x")]);
+        },
+    );
 }
 
 #[test]
@@ -2683,18 +2696,17 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
     );
     let platform = interpreter.platform();
     let (bytes, max_hash) = interpreter.enter(|mutator| {
-        let instance_object = *object(&mutator.fetch(&instance));
-        let max_hash = mutator.heap_mut().ensure_identity_hash(instance_object);
+        let instance = mutator.fetch(&instance);
+        let max_hash = mutator.heap_mut().ensure_identity_hash(*object(&instance));
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
-        let instance_value = mutator.fetch(&instance);
         let bytes = image::snapshot(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
             &platform,
-            &[instance_value],
+            &[instance],
         )
         .expect("snapshot");
         (bytes, max_hash)
@@ -3430,8 +3442,6 @@ const ONE_METHOD: &str = indoc! {"
 /// that body. Everything a decoded closure over `block`
 /// needs to verify: its lexical parent is `foo`, which has two registers.
 fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
-    // Nothing ever runs in a fixture's interpreter, so the class and the
-    // platform read out of their roots here stay current.
     let (mut interpreter, class) = load(ONE_METHOD);
     let platform = interpreter.platform();
     let block = code_with(
@@ -3456,13 +3466,11 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
     let table = decode::DecodedCodeTable {
         codes: vec![block, parent.clone()],
     };
-    let (class, platform, mixins) = interpreter.enter(|mutator| {
+    let mixins = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "foo", parent.clone());
         install_mixin(mutator, class, doctored);
-        let mixins = mixin_preorder(mutator.heap(), class);
-        (class, platform, mixins)
+        mixin_preorder(mutator.heap(), class)
     });
     let fixture = GraphFixture {
         codes: table.codes.clone(),
@@ -3531,13 +3539,13 @@ fn a_closure_captured_by_its_lexical_parents_activation_verifies() {
     // captured frame really is an activation of the body its own body is
     // nested in, sized exactly as that body prescribes.
     let (mut fixture, table) = closure_world();
-    let graph = fixture
-        .decode(&closure_over_frame(foo_frame(2)))
-        .expect("decode");
-    fixture.interpreter.enter(|mutator| {
-        decode::verify_graph(&graph, &table, mutator.heap())
-            .expect("the captured frame runs `foo`");
-    });
+    fixture.decoded(
+        &closure_over_frame(foo_frame(2)),
+        "decode",
+        |heap, graph| {
+            decode::verify_graph(graph, &table, heap).expect("the captured frame runs `foo`");
+        },
+    );
 }
 
 #[test]
@@ -3547,12 +3555,8 @@ fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
     // one-element `temporaries` -- an unchecked out-of-bounds index in
     // `locals::read_local`, reached from a version-matching image.
     let (mut fixture, table) = closure_world();
-    let graph = fixture
-        .decode(&closure_over_frame(foo_frame(1)))
-        .expect("decode");
-    fixture.interpreter.enter(|mutator| {
-        let error = decode::verify_graph(&graph, &table, mutator.heap())
-            .expect_err("undersized frame");
+    fixture.decoded(&closure_over_frame(foo_frame(1)), "decode", |heap, graph| {
+        let error = decode::verify_graph(graph, &table, heap).expect_err("undersized frame");
         assert_eq!(
             error,
             decode::DecodeError::FrameRegisterFile {
@@ -3575,22 +3579,20 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
     // Nothing else in the format ties a closure's captured frame to its
     // body's lexical parent, and the whole outer-local bound rests on it.
     let (mut fixture, table) = closure_world();
-    let graph = fixture
-        .decode(&closure_over_frame(|writer: &mut encode::Writer| {
-            writer.write_u8(0); // receiver: nil
-            writer.write_u32(0); // no arguments
-            writer.write_u32(0); // no temporaries
-            writer.write_u32(0); // program_counter
-            writer.write_boolean(false); // no sender
-            writer.write_boolean(false); // no home
-            writer.write_boolean(false); // no current class
-            writer.write_u8(2); // frame kind: TopLevel -- runs no code at all
-            writer.write_boolean(false); // continuable
-        }))
-        .expect("decode");
-    fixture.interpreter.enter(|mutator| {
+    let bytes = closure_over_frame(|writer: &mut encode::Writer| {
+        writer.write_u8(0); // receiver: nil
+        writer.write_u32(0); // no arguments
+        writer.write_u32(0); // no temporaries
+        writer.write_u32(0); // program_counter
+        writer.write_boolean(false); // no sender
+        writer.write_boolean(false); // no home
+        writer.write_boolean(false); // no current class
+        writer.write_u8(2); // frame kind: TopLevel -- runs no code at all
+        writer.write_boolean(false); // continuable
+    });
+    fixture.decoded(&bytes, "decode", |heap, graph| {
         assert_eq!(
-            decode::verify_graph(&graph, &table, mutator.heap()),
+            decode::verify_graph(graph, &table, heap),
             Err(decode::DecodeError::CapturedFrameMismatch)
         );
     });
@@ -3694,20 +3696,17 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
             .heap()
             .instance_field(*object(&root_0), 0)
             .expect("expected an instance");
-        // Kept across the `value` send below.
-        mutator.stash(held)
-    });
-    loaded.interpreter.enter(|mutator| {
-        let held_value = mutator.fetch(&held);
         let captured = mutator
             .heap()
-            .closure_data(*object(&held_value))
+            .closure_data(*object(&held))
             .expect("the slot holds the inner closure")
             .captured_frame;
         assert!(
             matches!(mutator.heap().frame_kind(captured), FrameKind::Closure(_)),
             "the inner closure was captured by the outer block's activation"
         );
+        // Kept across the `value` send below.
+        mutator.stash(held)
     });
     let value = expect_ok(
         loaded.interpreter.send(&held, Symbol::intern("value"), &[]),
@@ -4947,11 +4946,9 @@ fn the_superclass_clause_frame_kinds_decode() {
         writer.write_boolean(false); // continuable
         writer.write_u32(0); // no roots
         let bytes = writer.into_bytes();
-        let mut fixture = GraphFixture::new();
-        let decoded = fixture.decode(&bytes).expect("a superclass clause frame");
-        let frame = decoded.frames.first().expect("the one frame");
-        fixture.interpreter.enter(|mutator| {
-            let kind = mutator.heap().frame_kind(*frame);
+        GraphFixture::new().decoded(&bytes, "a superclass clause frame", |heap, decoded| {
+            let frame = decoded.frames.first().expect("the one frame");
+            let kind = heap.frame_kind(*frame);
             let matched = match &kind {
                 FrameKind::SuperclassClause(_) => expect_clause,
                 FrameKind::SuperclassMessage(_) => !expect_clause,
@@ -5889,12 +5886,10 @@ fn the_two_variants_differ_only_by_the_source_blob() {
 #[test]
 fn a_frame_program_counter_past_its_bodys_last_instruction_is_refused() {
     let (mut fixture, table) = closure_world();
-    let graph = fixture
-        .decode(&closure_over_frame(foo_frame_at_program_counter(2, 99)))
-        .expect("decode");
-    fixture.interpreter.enter(|mutator| {
-        let error = decode::verify_graph(&graph, &table, mutator.heap())
-            .expect_err("out-of-range program counter");
+    let bytes = closure_over_frame(foo_frame_at_program_counter(2, 99));
+    fixture.decoded(&bytes, "decode", |heap, graph| {
+        let error =
+            decode::verify_graph(graph, &table, heap).expect_err("out-of-range program counter");
         assert_eq!(
             error,
             decode::DecodeError::ProgramCounterOutOfRange {
