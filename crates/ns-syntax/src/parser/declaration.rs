@@ -46,16 +46,16 @@ impl<'a> Parser<'a> {
 
     /// `codeBody` temporaries. Per the grammar
     /// (`corpus/reference/NewspeakGrammar.ns:148-150`), `temporaries =
-    /// slotDecls`, i.e. a temp list has the full slot-declaration form,
+    /// slotDecls`, i.e. a temporary list has the full slot-declaration form,
     /// including initialized locals `| x = expression. |`. Milestone 1's
     /// `CodeBody::temporaries` keeps only the names: a local initializer is
     /// parsed (so the rest of the body stays in sync) but then dropped, the
     /// same way `lazy` is dropped elsewhere. A code body never legitimately
     /// starts with a binary `|` send (there is no left operand), so a leading
-    /// `Bar` / `DoubleBar` is unambiguously a temp section.
+    /// `Bar` / `DoubleBar` is unambiguously a temporary section.
     fn parse_temporaries(&mut self) -> Vec<Identifier> {
         // The lexer emits `||` as one `DoubleBar` token. In code-body position
-        // that lone token is the degenerate empty simultaneous temp list —
+        // that lone token is the degenerate empty simultaneous temporary list —
         // short-circuit it before the `parse_slot_declarations` handoff, which
         // would otherwise consume `||` and then scan the rest of the body
         // hunting a closing `||` that never comes.
@@ -309,12 +309,12 @@ impl<'a> Parser<'a> {
     /// So a class is `class Id pattern? = superclause? ( G1 ) ( G2 ) ( ':' '(' G3 ')' )?`
     /// with three distinct paren groups:
     /// - **G1** (`classHeader` body): class comment, ONE slot section, then
-    ///   init expressions. No methods, no nested classes.
-    /// - **G2** (`sideDecl` body): nested classes, methods, and lazy-slot decls.
+    ///   initializer expressions. No methods, no nested classes.
+    /// - **G2** (`sideDecl` body): nested classes, methods, and lazy slot declarations.
     /// - **G3** (`classSideDecl` body): methods only.
     ///
     /// The AST keeps a single `instance_side: ClassBody`: G1's slots (plus any
-    /// G2 lazy-slot decls) land in `slots`, G1's init exprs in
+    /// G2 lazy slot declarations) land in `slots`, G1's initializer expressions in
     /// `initializer_expressions`, and G2's methods / nested classes in
     /// `methods` / `nested_classes`. `class_side` is G3.
     pub(crate) fn parse_class_declaration(&mut self) -> ClassDeclaration {
@@ -409,7 +409,7 @@ impl<'a> Parser<'a> {
     /// A leading `'...'` string in the header body is NOT a class comment: per
     /// grammar line 165 it is the first `initExprs` expression (e.g. its
     /// receiver in `'hello' printLine.`). Consuming it here silently dropped a
-    /// valid init expression, so that branch was removed.
+    /// valid initializer expression, so that branch was removed.
     fn take_class_comment(&mut self) -> Option<String> {
         let previous_end = self.tokens.get(self.position.checked_sub(1)?)?.span.end as usize;
         let current_start = self.current().span.start as usize;
@@ -508,7 +508,7 @@ impl<'a> Parser<'a> {
     /// `classComment? , slotDecls? , initExprs`. The class comment is consumed
     /// by the caller via [`Parser::take_class_comment`] right after the `(`.
     /// Here: an optional single slot section (`| .. |` or `|| .. ||`), then
-    /// zero or more `Dot`-separated/terminated init expressions, until `)` or
+    /// zero or more `Dot`-separated/terminated initializer expressions, until `)` or
     /// end of input. Methods, nested classes and a second slot section are NOT
     /// accepted here — they belong to G2.
     fn parse_header_body(&mut self) -> (Vec<SlotDeclaration>, Vec<Statement>, crate::span::Span) {
@@ -546,9 +546,9 @@ impl<'a> Parser<'a> {
     }
 
     /// **G2** — `sideDecl` body (`NewspeakGrammar.ns:189`):
-    /// `( classDecl | lazySlotDecl | methodDecl )*`. Returns the lazy-slot
-    /// decls (merged into `ClassBody::slots` by the caller), the methods, and
-    /// the nested classes. A `| .. |` slot section, a bare init expression or a
+    /// `( classDecl | lazySlotDecl | methodDecl )*`. Returns the lazy slot
+    /// declarations (merged into `ClassBody::slots` by the caller), the methods, and
+    /// the nested classes. A `| .. |` slot section, a bare initializer expression or a
     /// class comment here is malformed (those belong to G1).
     fn parse_side_body(
         &mut self,
@@ -621,7 +621,7 @@ impl<'a> Parser<'a> {
     }
 
     /// **G3** — `classSideDecl` body (`NewspeakGrammar.ns:200`):
-    /// `methodDecl*`. Methods only; slots / init exprs / nested classes stay
+    /// `methodDecl*`. Methods only; slots / initializer expressions / nested classes stay
     /// empty.
     fn parse_class_side_body(&mut self) -> ClassBody {
         let start = self.current().span;
@@ -742,7 +742,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Speculative lookahead: does the cursor sit at `accessModifier?
-    /// messagePattern '=' '('` (a method), rather than an init expression?
+    /// messagePattern '=' '('` (a method), rather than an initializer expression?
     fn looks_like_method(&mut self) -> bool {
         let checkpoint = self.checkpoint();
         self.parse_access_modifier();
@@ -760,7 +760,7 @@ impl<'a> Parser<'a> {
         // `looks_like_method` lookahead lands on `=` `(`, not `<` / `^`.
         let matched = if self.at_binary_selector_pattern() {
             self.bump(); // selector
-            self.bump(); // param ident
+            self.bump(); // parameter identifier
             self.skip_type_annotation();
             Some(())
         } else {
@@ -989,7 +989,7 @@ mod class_tests {
 
     #[test]
     fn slots_methods_and_nested_class() {
-        // Comment + `|..|` slot section + init exprs live in G1; methods and
+        // Comment + `|..|` slot section + initializer expressions live in G1; methods and
         // nested classes live in G2.
         let source = indoc! {"
             Newspeak3
@@ -1173,7 +1173,7 @@ mod class_tests {
         assert_eq!(body.methods.len(), 1);
     }
 
-    // --- I2: a leading string in the class header body is an init expression,
+    // --- I2: a leading string in the class header body is an initializer expression,
     // not a class comment. ---
     #[test]
     fn leading_string_in_header_is_an_initializer_expression_not_a_comment() {
@@ -1385,7 +1385,7 @@ mod method_tests {
 
     #[test]
     fn empty_double_bar_temporaries() {
-        // Lone `||` is the degenerate empty simultaneous temp list; the body
+        // Lone `||` is the degenerate empty simultaneous temporary list; the body
         // after it must still parse and no diagnostic is emitted.
         let method = method("foo = ( || ^ 1 )");
         assert!(method.body.temporaries.is_empty());

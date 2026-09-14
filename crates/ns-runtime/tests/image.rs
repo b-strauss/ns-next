@@ -1337,7 +1337,7 @@ fn mixin_ids_for<'gc>(
 
 /// Loads `source`, lets `make_roots` build the roots, encodes code table +
 /// graph section, decodes both with the same `Reader`, and returns
-/// (interpreter, class root, original roots, decoded roots, max identity
+/// (interpreter, class root, original roots, decoded roots, maximum identity
 /// hash) -- every handle rooted, since none of them may outlive the entry
 /// that produced it. `make_roots` may run code, so the class and the roots
 /// are only read again, inside a fresh entry, once it has returned.
@@ -2665,7 +2665,7 @@ fn a_closure_record_declaring_too_few_parameters_is_a_decode_error() {
 
 #[test]
 fn a_closure_record_declaring_too_many_parameters_is_a_decode_error() {
-    // The mirror case does not panic -- it silently misaddresses temps as
+    // The mirror case does not panic -- it silently misaddresses temporaries as
     // arguments -- so nothing downstream would ever report it.
     let mut fixture = GraphFixture::new();
     fixture.codes.push(block_code(0));
@@ -3370,7 +3370,7 @@ fn a_store_to_an_outer_local_is_checked_like_a_load() {
 #[test]
 fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_on_load() {
     // A method frame's `arguments` come from the send, so their count is the
-    // selector's arity; the frame's temps are sized from the *body's*
+    // selector's arity; the frame's temporaries are sized from the *body's*
     // `argument_count`. A body claiming a different arity leaves `read_local`
     // indexing `temporaries` past its end.
     let source = indoc! {"

@@ -178,13 +178,13 @@ fn run_one(
 }
 
 /// A scratch directory for one row's binary lane, removed on drop so a
-/// `run-corpus` run leaves the temp directory clean on every exit path --
+/// `run-corpus` run leaves the temporary directory clean on every exit path --
 /// including the early `?`/`continue` returns scattered through the caller --
 /// without every call site having to remember to clean up itself.
 struct ScratchDirectory(PathBuf);
 
 impl ScratchDirectory {
-    /// `tag` is only for a human reading the temp directory mid-run; the
+    /// `tag` is only for a human reading the temporary directory mid-run; the
     /// counter is what actually guarantees uniqueness across the rows this
     /// process runs, alongside the process id that separates concurrent
     /// `run-corpus` invocations.
@@ -207,7 +207,7 @@ impl ScratchDirectory {
 
 impl Drop for ScratchDirectory {
     fn drop(&mut self) {
-        // Best-effort: a leftover temp directory is a nuisance, never a
+        // Best-effort: a leftover temporary directory is a nuisance, never a
         // correctness problem, so a removal failure (e.g. a virus scanner
         // still holding the file open) must not turn into a panic-during-
         // unwind or a spurious second failure report for the row.
@@ -223,7 +223,7 @@ impl Drop for ScratchDirectory {
 /// gate exists to check: that the entry survives being written into the
 /// artifact and read back out of it.
 ///
-/// The scratch file lives under the system temp directory, never under
+/// The scratch file lives under the system temporary directory, never under
 /// `corpus/`, so a `run-corpus` invocation leaves the working tree exactly
 /// as it found it; `ScratchDirectory`'s `Drop` removes it once this row is done
 /// whether the row passed or failed.

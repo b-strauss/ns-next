@@ -18,9 +18,9 @@ pub fn fixture(name: &str) -> PathBuf {
 }
 
 /// A temporary directory that removes itself, under the repository's own
-/// `.temp/` (git-ignored) rather than the system temp folder.
+/// `.temp/` (git-ignored) rather than the system temporary folder.
 ///
-/// A developer's temp folder is not the suite's to litter, and helpers that
+/// A developer's temporary folder is not the suite's to litter, and helpers that
 /// forgot to clean up have filled it twice before -- once with a directory
 /// per test, once with one per run. Keeping scratch space inside the
 /// repository means that whatever a killed or aborted run still leaves

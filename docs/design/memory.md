@@ -424,9 +424,12 @@ generated.
 **Only `heap.rs` changes a brand.** A host root's slot is shared with a host
 outside every entry, so it holds a `Value<'static>`, and `Heap::stash` passes
 a value through `at_rest` on the way in, `fetch` through `branded` on the way
-out — two private functions, each monomorphic in its direction, so that not
-even `heap.rs` can carry a value from one brand to another. They are the only
-conversions of a brand, and there is **no public
+out — two private functions, each monomorphic in its direction. The split
+does not make rebranding impossible inside `heap.rs`: composing the two,
+`branded(at_rest(value))`, carries a value from one brand to another. What it
+guarantees is that no single call does, so a misuse there has to spell out
+both calls and pass visibly through `'static` at the call site. They are the
+only conversions of a brand, and there is **no public
 `unbind`** — which is where Nova's discipline leaves a hole that its own
 documentation closes by convention ("NEVER unbind a `Value` into a local
 variable"). `Heap::new` and `Heap::move_everything` are private to the heap

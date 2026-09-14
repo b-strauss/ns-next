@@ -166,8 +166,8 @@ impl<'a> Parser<'a> {
             self.bump();
             if self.at(TokenKind::Identifier) {
                 parameters.push(self.identifier());
-                // `[:x <T> :y <T> | ...]` — block params carry the same
-                // declaration-position `<Type>` annotations as method params.
+                // `[:x <T> :y <T> | ...]` — block parameters carry the same
+                // declaration-position `<Type>` annotations as method parameters.
                 self.skip_type_annotation();
             }
         }
@@ -406,13 +406,13 @@ impl<'a> Parser<'a> {
         let mut receiver = self.parse_unary_message();
         // The lexer emits lone `=`, `<`, `>`, `|` and `||` as dedicated tokens
         // (`Equals` / `LessThan` / `GreaterThan` / `Bar` / `DoubleBar`) for
-        // declaration and slot/temp syntax, but in operand position — after a
+        // declaration and slot/temporary syntax, but in operand position — after a
         // primary — they are ordinary binary selectors per the grammar's
         // `binarySelector` (`corpus/reference/NewspeakGrammar.ns:126`,
         // `binaryMsg`). A leading `<` is still a pattern literal and a leading
-        // `|` / `||` is still a temp section (both handled before we get here),
+        // `|` / `||` is still a temporary section (both handled before we get here),
         // so the ambiguity only bites where a left operand already exists. `|`
-        // / `||` double as slot/temp-section delimiters, so accept them as a
+        // / `||` double as slot/temporary-section delimiters, so accept them as a
         // binary operator only when a primary can actually follow. A
         // section-closing `|` / `||` is followed by `RightParenthesis` / a declaration
         // keyword / `EndOfInput` / another `|` — none of which start a primary
@@ -548,7 +548,7 @@ impl<'a> Parser<'a> {
 /// Whether a token of this kind can begin a `primary` (`NewspeakGrammar.ns:123`
 /// plus the parser's `nil`/`true`/`false`, `class` pseudo-variable and `<...>`
 /// pattern-literal extensions). Used to disambiguate `|` / `||` as a binary
-/// operator from a slot/temp-section delimiter.
+/// operator from a slot/temporary-section delimiter.
 fn starts_primary(kind: TokenKind) -> bool {
     matches!(
         kind,

@@ -140,7 +140,7 @@ fn selector_arity(selector: &str) -> usize {
 /// The template is the Core Library's `main: platform args: arguments`
 /// convention truncated to the selector's arity: a unary entry point takes
 /// nothing, a one-parameter one takes the platform, a two-parameter one
-/// takes the platform and `Nil` for the environment-args list -- there is
+/// takes the platform and `Nil` for the environment-arguments list -- there is
 /// still no command-line-argument passthrough into Newspeak. Beyond two
 /// the CLI has nothing to offer, and says so rather than padding.
 pub(crate) fn entry_arguments(

@@ -278,10 +278,12 @@ pub struct Root {
 /// host root's slot is shared with a host outside every entry, so it holds
 /// `Value<'static>`, and `stash` passes a value through `at_rest` on the
 /// way in, `fetch` through `branded` on the way out. Each is monomorphic in
-/// its direction, so a value cannot be carried from one entry's brand to
-/// another's even here, where the fields are in reach. Both are private to
-/// this module, and there is no public counterpart: code outside `heap.rs`
-/// cannot change a handle's brand.
+/// its direction, so no single call carries a value from one entry's brand
+/// to another's: composing them, `branded(at_rest(value))`, does, but a
+/// misuse inside this module has to spell out both calls and pass visibly
+/// through `'static` at the call site. Both are private to this module, and
+/// there is no public counterpart: code outside `heap.rs` cannot change a
+/// handle's brand at all.
 fn at_rest(value: Value<'_>) -> Value<'static> {
     match value {
         Value::Nil => Value::Nil,

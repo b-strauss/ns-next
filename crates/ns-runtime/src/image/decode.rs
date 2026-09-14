@@ -138,7 +138,7 @@ pub enum DecodeError {
     /// `locals::read_local` computing `temporaries[i - arguments.len()]` past
     /// the end of `temporaries` -- an unchecked index panic from a
     /// version-matching image -- or, the other way round, silently
-    /// misaddressing temps as arguments.
+    /// misaddressing temporaries as arguments.
     ClosureArityMismatch {
         parameters: usize,
         argument_count: u16,

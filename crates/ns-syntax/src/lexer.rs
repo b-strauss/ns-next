@@ -111,8 +111,8 @@ impl<'a> Lexer<'a> {
                     .peek_at(1)
                     .is_some_and(|next_byte| SPECIAL.contains(&next_byte))
                 {
-                    // `|` starting a multi-char run (`|>`, `|=`, ...) is a
-                    // binary selector, not a slot/temp delimiter.
+                    // `|` starting a multi-character run (`|>`, `|=`, ...) is a
+                    // binary selector, not a slot/temporary delimiter.
                     self.lex_operator();
                 } else {
                     self.single(TokenKind::Bar);
@@ -143,12 +143,12 @@ impl<'a> Lexer<'a> {
             }
             _ if SPECIAL.contains(&byte) => self.lex_operator(),
             _ => {
-                // Decode the real UTF-8 char at `self.position` rather than
-                // Latin-1-decoding a single byte: `b as char` mangles a
+                // Decode the real UTF-8 character at `self.position` rather than
+                // Latin-1-decoding a single byte: `byte as char` mangles a
                 // multi-byte codepoint (e.g. `é` -> `Ã©`, reported twice) and
                 // leaves the span ending mid-codepoint, which panics later in
-                // `Span::text`. Advance by the whole char; one diagnostic per
-                // stray char, span aligned to codepoint boundaries.
+                // `Span::text`. Advance by the whole character; one diagnostic per
+                // stray character, span aligned to codepoint boundaries.
                 let character = self.source[self.position..]
                     .chars()
                     .next()
@@ -210,7 +210,7 @@ impl<'a> Lexer<'a> {
 
     fn lex_operator(&mut self) {
         let start = self.position;
-        // Fixed single-char punctuation that also happens to be `specialCharacter`.
+        // Fixed single-character punctuation that also happens to be `specialCharacter`.
         let byte = self.bytes[self.position];
         let next = self.peek_at(1);
         let is_run_of_two_plus = next.is_some_and(|next_byte| SPECIAL.contains(&next_byte));
@@ -223,7 +223,7 @@ impl<'a> Lexer<'a> {
             }
         }
         // `::=` / `:=` are handled in `lex_one`'s `:` arm before we get here; a run
-        // starting with a special char is a binary selector.
+        // starting with a special character is a binary selector.
         while matches!(self.peek(), Some(next_byte) if SPECIAL.contains(&next_byte)) {
             self.position += 1;
         }
@@ -605,7 +605,7 @@ mod tests {
         let source = "é";
         let (_tokens, diagnostics) = Lexer::new(source).run();
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-        // Span is codepoint-aligned: `text` must not panic and covers the char.
+        // Span is codepoint-aligned: `text` must not panic and covers the character.
         assert_eq!(diagnostics[0].span.text(source), "é");
     }
 

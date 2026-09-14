@@ -91,7 +91,7 @@ pub enum MessagePattern {
     },
     Keyword {
         parts: Vec<(Identifier, Identifier)>,
-    }, // (keyword-without-colon, param)
+    }, // (keyword-without-colon, parameter)
 }
 
 #[derive(Debug, Clone, PartialEq)]

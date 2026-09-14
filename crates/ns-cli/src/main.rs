@@ -104,7 +104,7 @@ enum Command {
     },
     /// Time the entry send: bootstrap, load and compile once, then discard
     /// a warm-up run and time `--iterations` further runs, reporting the
-    /// median (with min and max) time for the entry send alone.
+    /// median (with minimum and maximum) time for the entry send alone.
     ///
     /// Only the entry send is timed -- parsing, resolving, bootstrapping,
     /// and compiling all happen once beforehand and are excluded, because

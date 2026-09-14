@@ -292,7 +292,7 @@ impl Resolver {
     /// A bare `Expression::Identifier` standing alone (not the receiver of an
     /// enclosing `Send`, since that case is handled in `resolve_send`
     /// below): try locals first, then the §5.7 depth search treating the
-    /// name itself as a zero-arg implicit send. `self`/`super` alone (no
+    /// name itself as a zero-argument implicit send. `self`/`super` alone (no
     /// message) need no binding entry -- the interpreter special-cases
     /// them directly against the current `Frame`.
     ///
@@ -388,7 +388,7 @@ impl Resolver {
     /// The `id` in `id:: e` (`Expression::Assign { target, .. }`) resolves
     /// exactly like an implicit-receiver keyword send to `id:` -- see
     /// `docs/design/dispatch.md`, "Setter sends". Locals win first (a local
-    /// temp/param can be reassigned directly); otherwise it is a
+    /// temporary/parameter can be reassigned directly); otherwise it is a
     /// `LexicalSend` at the depth found for the plain slot name (the
     /// setter and getter share one declared name -- see
     /// `classes::member_name_of_pattern`).

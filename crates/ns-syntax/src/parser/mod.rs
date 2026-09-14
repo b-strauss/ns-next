@@ -642,7 +642,7 @@ mod tests {
             panic!("{:?}", parse_expression("x <-: new"))
         };
         assert_eq!(send.message.selector, Selector::Unary("new".into()));
-        // `[ b ] <-: value fulfilled: [ r ]` — eventual send inside a keyword arg.
+        // `[ b ] <-: value fulfilled: [ r ]` — eventual send inside a keyword argument.
         let expression = parse_expression("Promise when: [ b ] <-: value fulfilled: [ r ]");
         let Expression::Send(send) = expression else {
             panic!("{expression:?}")

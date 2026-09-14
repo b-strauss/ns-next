@@ -24,7 +24,7 @@ pub(crate) enum InlineForm<'a> {
 
 /// The gate's per-block condition: a syntactic block literal with no
 /// parameters and no temporaries. A block with temporaries gets a fresh
-/// activation (and fresh temps) per invocation, which a closure created
+/// activation (and fresh temporaries) per invocation, which a closure created
 /// inside a loop body could observe; a register cannot reproduce that, so
 /// such blocks keep their real-send semantics.
 fn as_inlinable_block(expression: &ast::Expression) -> Option<&ast::BlockExpression> {

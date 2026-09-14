@@ -1118,7 +1118,7 @@ mod tests {
             "},
             0,
         );
-        let mut lowerer = method_lowerer(&method, &bindings); // 0 params, 0 temps -> base 0
+        let mut lowerer = method_lowerer(&method, &bindings); // 0 parameters, 0 temporaries -> base 0
         let register = lowerer.lower_expression(return_expression(&method));
         assert_eq!(register, 0);
         let code = lowerer.finish(method.span);
@@ -1146,7 +1146,7 @@ mod tests {
             "},
             0,
         );
-        let mut lowerer = method_lowerer(&method, &bindings); // 1 param (register 0)
+        let mut lowerer = method_lowerer(&method, &bindings); // 1 parameter (register 0)
         let register = lowerer.lower_expression(return_expression(&method));
         assert_eq!(
             register, 0,
@@ -1178,7 +1178,7 @@ mod tests {
             "},
             1,
         );
-        let mut lowerer = method_lowerer(&method, &bindings); // temp `t` is register 0
+        let mut lowerer = method_lowerer(&method, &bindings); // temporary `t` is register 0
         for statement in &method.body.statements {
             lowerer.lower_statement(statement, ValueUse::Discarded);
         }
@@ -1221,7 +1221,7 @@ mod tests {
             "},
             0,
         );
-        let mut lowerer = method_lowerer(&method, &bindings); // params a, b = registers 0, 1
+        let mut lowerer = method_lowerer(&method, &bindings); // parameters a, b = registers 0, 1
         lowerer.lower_expression(return_expression(&method));
         let code = lowerer.finish(method.span);
         assert!(
@@ -1290,7 +1290,7 @@ mod tests {
             "},
             0,
         );
-        let mut lowerer = method_lowerer(&method, &bindings); // temp `t` is register 0, base 1
+        let mut lowerer = method_lowerer(&method, &bindings); // temporary `t` is register 0, base 1
         lowerer.lower_statement(&method.body.statements[0], ValueUse::Discarded); // `t := 7.`
         let code = lowerer.finish(method.span);
         assert_eq!(
@@ -1554,7 +1554,7 @@ mod tests {
               m = ( | t | t := 1. n := t )
             ) : ()
         "};
-        let code = lower_whole_method(source, 0); // temp `t` is register 0
+        let code = lower_whole_method(source, 0); // temporary `t` is register 0
         assert!(
             !code
                 .instructions
@@ -1581,7 +1581,7 @@ mod tests {
               m = ( | t | t := 1. ^n := t )
             ) : ()
         "};
-        let code = lower_whole_method(source, 0); // temp `t` is register 0
+        let code = lower_whole_method(source, 0); // temporary `t` is register 0
         let [copy] = setter_arguments(&code)[..] else {
             panic!("expected one setter send: {:?}", code.instructions);
         };
@@ -1750,7 +1750,7 @@ mod tests {
             ) : ()
         "};
         let (foo, bindings) = resolve_method(source, 0);
-        let mut lowerer = method_lowerer(&foo, &bindings); // temp `c` is register 0
+        let mut lowerer = method_lowerer(&foo, &bindings); // temporary `c` is register 0
         lowerer.lower_statement(&foo.body.statements[0], ValueUse::Discarded);
         lowerer.lower_statement(&foo.body.statements[1], ValueUse::Discarded);
         let code = lowerer.finish(foo.span);
@@ -2102,7 +2102,7 @@ mod tests {
             "},
             0,
         );
-        // Reuse `foo`'s `^1` as if it were an initExpr: kind Initializer, 0 args.
+        // Reuse `foo`'s `^1` as if it were an initializer expression: kind Initializer, 0 arguments.
         let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, 0, &bindings, vec![]);
         lowerer.lower_body(&method.body.statements);
         let code = lowerer.finish(method.span);

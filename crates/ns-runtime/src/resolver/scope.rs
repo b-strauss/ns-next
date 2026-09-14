@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use crate::types::Binding;
 use crate::Symbol;
 
-/// One method or closure body's own temps+params, innermost activation last.
+/// One method or closure body's own temporaries and parameters, innermost
+/// activation last.
 pub(super) struct LocalScope {
     names: HashMap<Symbol, u16>,
 }

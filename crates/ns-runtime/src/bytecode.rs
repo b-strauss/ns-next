@@ -57,7 +57,7 @@ pub struct CallSite {
 }
 
 /// Every register operand is a `u16` index into the frame's unified
-/// args-then-temps register file; every jump target is an instruction
+/// arguments-then-temporaries register file; every jump target is an instruction
 /// index into the owning `CompiledCode.instructions`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
@@ -239,7 +239,7 @@ pub struct CompiledCode {
     pub kind: CodeKind,
     pub instructions: Vec<Instruction>,
     pub argument_count: u16,
-    /// Total register count: `argument_count` + named temps +
+    /// Total register count: `argument_count` + named temporaries +
     /// compiler-allocated scratch registers. An activation is pushed with
     /// `register_count - argument_count`.
     pub register_count: u16,
