@@ -1,6 +1,6 @@
 mod common;
 
-use common::ScratchDir;
+use common::ScratchDirectory;
 use indoc::indoc;
 use std::path::Path;
 use std::process::Command;
@@ -21,11 +21,11 @@ fn corpus_module(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn run_sends_main_args_and_prints_via_platform_transcript() {
-    let dir = ScratchDir::new("hello");
-    let f = dir.join("Hello.ns");
+fn run_sends_main_arguments_and_prints_via_platform_transcript() {
+    let directory = ScratchDirectory::new("hello");
+    let file = directory.join("Hello.ns");
     std::fs::write(
-        &f,
+        &file,
         indoc! {"
             Newspeak3
             'Test'
@@ -39,7 +39,7 @@ fn run_sends_main_args_and_prints_via_platform_transcript() {
     )
     .unwrap();
 
-    let out = ns_next().arg("run").arg(&f).output().unwrap();
+    let out = ns_next().arg("run").arg(&file).output().unwrap();
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -85,14 +85,14 @@ fn a_zero_argument_factory_no_longer_rejects_instantiation() {
 #[test]
 fn a_zero_argument_factory_reaches_its_public_entry_method() {
     // The same zero-argument-factory shape as `ADummyPush.ns`, end to end,
-    // with a public entry method (`entry::entry_args` sizes the entry
+    // with a public entry method (`entry::entry_arguments` sizes the entry
     // send's argument list to the selector's arity, so `foo:` still gets
     // the platform as its one argument -- only the *factory* call is now
     // zero-argument) so the fix's effect is directly observable on stdout.
-    let dir = ScratchDir::new("zero-arg-factory");
-    let f = dir.join("NoPlatform.ns");
+    let directory = ScratchDirectory::new("zero-arg-factory");
+    let file = directory.join("NoPlatform.ns");
     std::fs::write(
-        &f,
+        &file,
         indoc! {"
             Newspeak3
             'Test'
@@ -108,7 +108,7 @@ fn a_zero_argument_factory_reaches_its_public_entry_method() {
 
     let out = ns_next()
         .arg("run")
-        .arg(&f)
+        .arg(&file)
         .arg("--send")
         .arg("foo:")
         .output()
@@ -124,10 +124,10 @@ fn a_zero_argument_factory_reaches_its_public_entry_method() {
 
 #[test]
 fn a_multi_parameter_factory_is_refused_with_a_clear_error() {
-    let dir = ScratchDir::new("multi-arg-factory");
-    let f = dir.join("TwoArgs.ns");
+    let directory = ScratchDirectory::new("multi-arg-factory");
+    let file = directory.join("TwoArgs.ns");
     std::fs::write(
-        &f,
+        &file,
         indoc! {"
             Newspeak3
             'Test'
@@ -138,7 +138,7 @@ fn a_multi_parameter_factory_is_refused_with_a_clear_error() {
     )
     .unwrap();
 
-    let out = ns_next().arg("run").arg(&f).output().unwrap();
+    let out = ns_next().arg("run").arg(&file).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -153,10 +153,10 @@ fn a_multi_parameter_factory_is_refused_with_a_clear_error() {
 
 #[test]
 fn run_reports_a_parse_error_and_exits_nonzero() {
-    let dir = ScratchDir::new("bad-parse");
-    let f = dir.join("Bad.ns");
+    let directory = ScratchDirectory::new("bad-parse");
+    let file = directory.join("Bad.ns");
     std::fs::write(
-        &f,
+        &file,
         indoc! {"
             Newspeak3
             'Test'
@@ -165,17 +165,17 @@ fn run_reports_a_parse_error_and_exits_nonzero() {
     )
     .unwrap();
 
-    let out = ns_next().arg("run").arg(&f).output().unwrap();
+    let out = ns_next().arg("run").arg(&file).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(!String::from_utf8_lossy(&out.stderr).is_empty());
 }
 
 #[test]
 fn run_supports_a_custom_entry_selector_via_send() {
-    let dir = ScratchDir::new("custom-send");
-    let f = dir.join("Greet.ns");
+    let directory = ScratchDirectory::new("custom-send");
+    let file = directory.join("Greet.ns");
     std::fs::write(
-        &f,
+        &file,
         indoc! {"
             Newspeak3
             'Test'
@@ -191,7 +191,7 @@ fn run_supports_a_custom_entry_selector_via_send() {
 
     let out = ns_next()
         .arg("run")
-        .arg(&f)
+        .arg(&file)
         .arg("--send")
         .arg("greet:")
         .output()
@@ -229,13 +229,13 @@ const UNARY_PROBE: &str = indoc! {"
 
 #[test]
 fn a_unary_entry_selector_gets_no_arguments_and_reads_its_temporary_as_nil() {
-    let dir = ScratchDir::new("unary-send");
-    let f = dir.join("Probe.ns");
-    std::fs::write(&f, UNARY_PROBE).unwrap();
+    let directory = ScratchDirectory::new("unary-send");
+    let file = directory.join("Probe.ns");
+    std::fs::write(&file, UNARY_PROBE).unwrap();
 
     let out = ns_next()
         .arg("run")
-        .arg(&f)
+        .arg(&file)
         .arg("--send")
         .arg("probe")
         .output()
@@ -251,10 +251,10 @@ fn a_unary_entry_selector_gets_no_arguments_and_reads_its_temporary_as_nil() {
 
 #[test]
 fn an_entry_selector_the_cli_cannot_fill_is_refused_before_the_send() {
-    let dir = ScratchDir::new("wide-send");
-    let f = dir.join("Wide.ns");
+    let directory = ScratchDirectory::new("wide-send");
+    let file = directory.join("Wide.ns");
     std::fs::write(
-        &f,
+        &file,
         indoc! {"
             Newspeak3
             'Test'
@@ -270,7 +270,7 @@ fn an_entry_selector_the_cli_cannot_fill_is_refused_before_the_send() {
 
     let out = ns_next()
         .arg("run")
-        .arg(&f)
+        .arg(&file)
         .arg("--send")
         .arg("a:b:c:")
         .output()

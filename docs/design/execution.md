@@ -1,10 +1,12 @@
 # Execution — activations, the VM
 
 > **Status:** built, including the trampoline; nothing re-enters the run loop
-> from Rust, and the loop polls a safepoint.
+> from Rust, the loop polls a safepoint, and each instruction it executes is
+> one entry of the step state.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
-> arena, the `ActivationRef` and `FrameRef` handles, every read and write of an
-> activation), `types.rs` (`Frame`, `Continuation` and the state its variants
+> arena, the `ActivationReference` and `FrameReference` handles, every read and write of an
+> activation), `heap/world.rs` (the step state at rest, and its entry),
+> `types.rs` (`Frame`, `Continuation` and the state its variants
 > carry), `vm.rs` (the run loop and its safepoint poll), `interpreter/` (the
 > send decisions, `Step`, every push, the depth limit, the host entry, the
 > safepoint's slow path), `builtins/boolean.rs`,
@@ -86,17 +88,17 @@ struct ActivationStack {
 
 struct StackEntry {
     receiver: Value,
-    current_class: Option<ClassRef>,
-    kind: FrameKind,           // Closure(ObjRef): the closure object, whose payload
+    current_class: Option<ClassReference>,
+    kind: FrameKind,           // Closure(ObjectReference): the closure object, whose payload
                                // carries home and captured_frame
     base: u32,                 // first register in `values`
-    num_args: u32,
-    pc: usize,
+    argument_count: u32,
+    program_counter: usize,
     slot_base: usize,
     code: Rc<CompiledCode>,    // the body it runs, which the loop resumes it in
     then: Continuation,        // what the loop does with its value
     counted: bool,             // whether it counts against the depth limit
-    reified: Option<FrameRef>, // set once the activation is married
+    reified: Option<FrameReference>, // set once the activation is married
 }
 
 struct FrameSlot {             // one entry of the frame arena
@@ -104,7 +106,7 @@ struct FrameSlot {             // one entry of the frame arena
     live: Option<u32>,         // the stack entry this frame is married to
 }
 
-pub struct ActivationRef {
+pub struct ActivationReference {
     index: u32,
     #[cfg(debug_assertions)] origin: u32,
     #[cfg(debug_assertions)] generation: u32,
@@ -118,13 +120,13 @@ pub struct ActivationRef {
   the temporaries with nil and appends a `StackEntry`. Both vectors keep their
   capacity across pops, so once they have grown to the program's depth a push
   allocates nothing. Every activation the runtime pushes goes through one
-  function, `Interpreter::push`, which refuses a push past the depth limit ("The
+  function, `Mutator::push`, which refuses a push past the depth limit ("The
   depth limit" below) before it reaches the heap, so no new push site can skip
-  the check. It is called from one place, `Interpreter::push_step`, for the
+  the check. It is called from one place, `Mutator::push_step`, for the
   method, block or body a decision answered. An activation nothing reifies
   leaves nothing behind; only a block the compiler did not inline reifies one,
   since an inlined `ifTrue:`/`and:`/`whileTrue:` argument creates no closure.
-- **Register access through an `ActivationRef`** is `values[entries[i].base +
+- **Register access through an `ActivationReference`** is `values[entries[i].base +
   r]`, with no branch on the handle's kind or on an args/temps split; a release
   build still bounds-checks both slice indexes. A debug build also checks that
   the register lies inside the entry's own window: the neighbouring
@@ -132,15 +134,15 @@ pub struct ActivationRef {
   otherwise fail. An entry's `base` is fixed for its whole life and everything
   is addressed by index, so `values` reallocating as it grows moves nothing
   anyone holds.
-- **Two handle types, not one tagged handle.** `ActivationRef` names a live
-  stack entry; `FrameRef` names a reified frame in the arena and is the only
+- **Two handle types, not one tagged handle.** `ActivationReference` names a live
+  stack entry; `FrameReference` names a reified frame in the arena and is the only
   activation handle anything *stores*: `ClosureData.captured_frame` and `home`,
-  `Frame.home` and every image record take a `FrameRef`, so storing a stack
-  handle is a compile error rather than a convention. A tagged `FrameRef` would
+  `Frame.home` and every image record take a `FrameReference`, so storing a stack
+  handle is a compile error rather than a convention. A tagged `FrameReference` would
   have touched only `heap.rs`, but it would put a branch on every register
   access and leave "a stack handle was stored" to a debug-build assertion — the
   silent failure class the arena's private index was built to exclude.
-- **An `ActivationRef` is 4 bytes in a release build.** In a debug build it
+- **An `ActivationReference` is 4 bytes in a release build.** In a debug build it
   carries `origin`, like every handle, and a `generation` drawn from a counter at
   each push and recorded on the entry. A handle read after its entry was popped
   and the index reused would otherwise answer a different, perfectly valid
@@ -152,19 +154,19 @@ pub struct ActivationRef {
   married to. `Frame` is declared in `types.rs` with public fields, because the
   image encoder and decoder build and read whole records; the marriage is kept on
   the slot instead, so that nothing outside `heap.rs` can read or forge it. While
-  `live` is set, the frame's own `args`/`temps` are empty and a register read or
-  write through the `FrameRef` (`Heap::frame_local`/`frame_set_local`) reaches the
+  `live` is set, the frame's own `arguments`/`temporaries` are empty and a register read or
+  write through the `FrameReference` (`Heap::frame_local`/`frame_set_local`) reaches the
   stack slot. That branch exists only on the path from a block to its method's
   variables — `read_outer_local`/`write_outer_local`, behind the VM's
   `LoadOuterLocal`/`StoreOuterLocal`.
 - **The accessor prefix names the handle.** `activation_*` reads or writes a live
-  activation through an `ActivationRef`; `frame_*` a reified frame through a
-  `FrameRef`.
+  activation through an `ActivationReference`; `frame_*` a reified frame through a
+  `FrameReference`.
 
 ### Lifecycle
 
-**Reify.** `Heap::reify(act) -> FrameRef` is idempotent: the first call creates
-the arena `Frame` — receiver, `kind`, `current_class`, `pc`, and `home` when the
+**Reify.** `Heap::reify(activation) -> FrameReference` is idempotent: the first call creates
+the arena `Frame` — receiver, `kind`, `current_class`, `program_counter`, and `home` when the
 activation is a closure's — marries it to the entry, and records it in
 `entry.reified`; every later call answers the same handle. Its caller is closure
 creation, the VM's `MakeClosure`: directly for the new closure's
@@ -172,13 +174,13 @@ creation, the VM's `MakeClosure`: directly for the new closure's
 closure activation's own `home` on and reifies any other activation as its own
 home. Every block creation reifies the activation that creates it, whether or
 not the block reads one of its variables, because `captured_frame` is also where
-`Interpreter::push_step` reads the block's receiver and current class from.
+`Mutator::push_step` reads the block's receiver and current class from.
 
 **Pop.** The run loop pops every activation it runs, on *every* exit, error
 paths included (`vm::run`), and only the top entry can be popped. Popping hands
 back the entry's continuation (`Popped`), which the loop applies to the
 activation's value ("The VM" below). If the entry was reified, its frame is
-**divorced**: the registers are copied into the frame's `args`/`temps`, its `pc`
+**divorced**: the registers are copied into the frame's `arguments`/`temporaries`, its `program_counter`
 takes the entry's last stored one, `live` becomes `None`, `uncontinuable` becomes
 true and `sender` becomes `None`. Then `values` is truncated to the entry's
 `base`. An entry that was never reified leaves nothing behind, so storage for
@@ -194,28 +196,28 @@ return (`zap->set_sender(nil)`) and lazily in `HasLivingFrame`. `Frame.sender`
 remains because the image format records one per frame, so only a frame the
 decoder rebuilt can have one set.
 
-**Only a `FrameRef` is ever stored.** An `ActivationRef` is valid until its entry
+**Only a `FrameReference` is ever stored.** An `ActivationReference` is valid until its entry
 is popped, and the next activation at that depth reuses the index. Everything that
-outlives a call — a closure, another frame, an image record — holds a `FrameRef`.
+outlives a call — a closure, another frame, an image record — holds a `FrameReference`.
 
 ### Signatures
 
 - Wherever a function means *the running activation* it takes an
-  `ActivationRef`: `vm::run` and the loop's helpers, `sends::decide_lexical_send`,
+  `ActivationReference`: `vm::run` and the loop's helpers, `sends::decide_lexical_send`,
   `sends::decide_super_send`, `read_local`/`write_local`,
   `read_outer_local`/`write_outer_local`, `raise_return`.
-  `FrameRef` stays for closures, `Frame.home`, the image, and `frame_at_depth`
+  `FrameReference` stays for closures, `Frame.home`, the image, and `frame_at_depth`
   from depth 1 on: the first hop goes from a closure activation to its
-  `captured_frame`, the rest follow `FrameRef` links.
+  `captured_frame`, the rest follow `FrameReference` links.
 - **No send or block invocation takes a sender to record.** `Interpreter::send`,
   `decide_send`, `builtins::dispatch_native` and the `builtins/` modules have
-  no `sender` parameter. It was removed rather than retyped to an `ActivationRef`: its only
+  no `sender` parameter. It was removed rather than retyped to an `ActivationReference`: its only
   use was to fill `Frame.sender`, and once a live activation's sender is the
   entry below it, nothing read it. No native takes an activation handle at all.
-  The one function handed the sending activation is `Interpreter::push_step`,
+  The one function handed the sending activation is `Mutator::push_step`,
   which reads its reified frame for the depth count's exemption and stores
   nothing.
-- `vm::run` receives the `ActivationRef` of an activation its caller has just
+- `vm::run` receives the `ActivationReference` of an activation its caller has just
   pushed — its *base* — and pops it, with everything it pushes above it, on
   every path out.
 - The image encoder only ever runs between sends, when nothing is live:
@@ -239,21 +241,21 @@ The registers — arguments first, then temporaries — are addressed as describ
 register file, since the code is read before the push — the initializer's
 included — and a live window never grows: an entry below the top could not
 grow anyway, since its window ends where the next one's begins. A dead frame's
-`temps` is a growable `Vec` (`Heap::frame_grow_temps`). Adding a local slot to a
+`temporaries` is a growable `Vec` (`Heap::frame_grow_temporaries`). Adding a local slot to a
 running method — growing its register file, initializing the new entries to nil
-and remapping the `pc`, the edit-and-continue requirement — therefore means
+and remapping the `program_counter`, the edit-and-continue requirement — therefore means
 taking the activation off the stack first; see "How this meets the liveness
 requirements" below, which is not built.
 
 `kind` distinguishes a method, closure, initializer, superclass-clause,
 superclass-message and top-level activation. An initializer activation must be
-able to name the code it is executing so that `pc` is interpretable, since the
-statement→PC table is reached through its kind. A stack entry also holds its
+able to name the code it is executing so that `program_counter` is interpretable, since the
+statement→program-counter table is reached through its kind. A stack entry also holds its
 `code` directly, because the loop resumes a caller in it after a callee returns;
 `then`, the `Continuation` the loop applies to its value when it is popped; and
 `counted`, whether it counts against the depth limit ("The depth limit" below).
 
-`pc` is an instruction index into the activation's compiled body.
+`program_counter` is an instruction index into the activation's compiled body.
 
 **The chain of running activations is walkable independently of the Rust
 stack**: it is the activation stack, innermost last. That is what the debugger
@@ -268,10 +270,17 @@ off its `MixinMethod`, an initializer's and a superclass clause's off the
 `Mixin` — so what dispatch finds is what runs; nothing looks code up beside it.
 Everything in `interpreter/` decides *what* to run; `vm.rs` runs it.
 
-`vm::run(interp, base)` is the run loop. It is handed an activation its caller
+`vm::run(interpreter, base)` is the run loop. It is handed an activation its caller
 has just pushed — its *base* — and runs it and everything it activates, one
-instruction at a time (`execute`, a `match` over `Instr`), with the running
-activation, its code and its `pc` in locals. It never recurses: a send pushes
+instruction at a time (`execute`, a `match` over `Instruction`), with the running
+activation, its code and its `program_counter` in locals. **Each instruction is
+one entry** (`Interpreter::enter`, [memory.md](memory.md), "The brand"):
+`execute` runs inside it with a `&mut Mutator`, and `run` itself — its locals,
+the switch to another activation and the safepoint poll — is outside every
+one, so none of `run`'s locals can name a brand. A run ends inside its last
+entry: `vm::finish` or `vm::unwind` roots its answer for the host
+(`Mutator::to_host`), and `run` answers that `HostResult`, never a branded
+value. It never recurses: a send pushes
 the callee and switches to it, a return pops the callee and switches back to
 the caller. It pops everything it ran, `base` included, on every path out — a
 return from `base`, an error, or a non-local return aimed below `base` — so the
@@ -280,41 +289,41 @@ depth `base` sits at, the run's *floor*, is how the loop tells its own
 activations from its callers'.
 
 - **A send** (`vm::send`) gathers its arguments from the caller's registers
-  into the interpreter's reusable buffer, stores the caller's `pc`, and asks
-  `interpreter/` what the send means: `Interpreter::decide_send`,
+  into the step state's reusable buffer, stores the caller's `program_counter`, and asks
+  `interpreter/` what the send means: `Mutator::decide_send`,
   `sends::decide_lexical_send` or `sends::decide_super_send`, which answer a
   `Step`. `Step::Value` — a native leaf, a slot access, a nested class or an
-  instantiation that runs no code — is written to the send's `dst`,
+  instantiation that runs no code — is written to the send's `destination`,
   and the caller goes on. Anything else is an activation: `Step::Method`,
   `Step::Block`, or one of the bodies an instantiation or a nested-class
   accessor runs, `Step::Initializer`, `Step::InitializerThen`,
   `Step::ClauseMessage` and `Step::SuperclassClause`. It is
-  pushed by `Interpreter::push_step`, which checks a method's or block's arity
-  and the depth limit, and the loop switches to the new activation at `pc` 0,
+  pushed by `Mutator::push_step`, which checks a method's or block's arity
+  and the depth limit, and the loop switches to the new activation at `program_counter` 0,
   its window filled straight from the buffer. A send allocates no vector once
   the buffer has grown to the widest one.
 - **A return** (`vm::finish`) pops the activation and applies its
   continuation. `Continuation::Deliver`, every send's, hands the value to the
-  caller: `resume_caller` reads the `pc` the caller stored at its send, writes
-  the value to that send's `dst` and continues at the next instruction — or,
+  caller: `resume_caller` reads the `program_counter` the caller stored at its send, writes
+  the value to that send's `destination` and continues at the next instruction — or,
   when the popped activation was `base`, the loop leaves `run` with it. Every
   other continuation — a control-flow native's, `do:`'s, the nested-class
-  accessor's, an instantiation's — is applied by `Interpreter::resume`, which
+  accessor's, an instantiation's — is applied by `Mutator::resume`, which
   calls into `builtins/` or `interpreter/`; it may answer a value, or another
   activation — a native loop's next block, `do:`'s block for the next element,
   an instantiation's next body, or the method a non-Boolean condition's
-  `mustBeBoolean` send finds — which `Interpreter::push_continuation` pushes
+  `mustBeBoolean` send finds — which `Mutator::push_continuation` pushes
   in the popped activation's place ("The trampoline" below).
 - **A signal** — a Newspeak error, or a non-local return — goes to
   `vm::unwind`, which pops what it has to and either returns from the
   non-local return's target or leaves `run` with the signal ("Non-local
   return" below). Every activation it pops hands its continuation to
-  `Interpreter::abandon`, which undoes what that continuation had begun.
+  `Mutator::abandon`, which undoes what that continuation had begun.
 
 Four kinds of body run, and each reaches the loop one way:
 
 1. **Method body** — pushed by `push_step` for a `Step::Method`. A method
-   activation catches a `^` that targets it (`Interpreter::catches_return`).
+   activation catches a `^` that targets it (`Mutator::catches_return`).
 2. **Block body** — pushed by `push_step` for a `Step::Block`, which names the
    closure object; the activation runs the `code` of that object's
    `ClosureData`. `value`, the control-flow natives and `do:` answer the block
@@ -328,7 +337,7 @@ Four kinds of body run, and each reaches the loop one way:
    value, the instance ("No re-entry from Rust" below). A class with no
    compiled initializer and no slots is a no-op; a user class whose mixin
    carries no initializer is refused on load and panics if built any other way
-   (`Interpreter::initializer_body`).
+   (`Mutator::initializer_body`).
 4. **Superclass clause and its message arguments** — the nested-class
    accessor's clause is a `Step::SuperclassClause`, continuing with
    `Continuation::NestedClass`; an instantiation's clause message is a
@@ -348,9 +357,10 @@ poll calls `Interpreter::safepoint` (`interpreter/safepoint.rs`), out of line,
 which is where a collection will run ([memory.md](memory.md), "Where a
 collection can happen"); today only the debug-build stress mode sets it, and
 moves every object and every reified frame there. That is sound because of
-what the loop's locals are: the running `ActivationRef`, which indexes the
+what the loop's locals are, which the compiler holds it to, since each
+instruction's entry has ended before the poll: the running `ActivationReference`, which indexes the
 stack, and no stack entry moves; its `Rc<CompiledCode>`, which holds no
-handle; its `pc`; and the run's floor, a stack depth. Every value the loop
+handle; its `program_counter`; and the run's floor, a stack depth. Every value the loop
 works on is read from a register or an operand when an instruction needs it
 and written back before the next, so between two instructions every handle is
 in a register on the stack, in a stack entry or the continuation it owns, in an
@@ -372,39 +382,39 @@ native method, which answers the closure as a step; the closure's activation is
 pushed above the one that sent `value` — its sender, by position — and a wrong
 argument count is still the same error.
 
-## Where `pc` is stored
+## Where `program_counter` is stored
 
-An activation's `pc` is written **only by the instructions that can hand the
+An activation's `program_counter` is written **only by the instructions that can hand the
 activation to an observer**: every send, since a nested activation runs above it;
 `MakeClosure`, since the activation escapes into the object graph — the store
 comes just before `reify`, which copies it into the frame it creates; and
 `NonLocalReturn`, since control leaves with a signal.
 
-The stores go to the stack entry (`Heap::set_activation_pc`), so they keep the
-activation's `pc` current for as long as it runs; a frame married to it holds no
-`pc` of its own that anything reads meanwhile. When the activation returns, the
-divorce gives the frame the last `pc` stored — often a later send's, not the
+The stores go to the stack entry (`Heap::set_activation_program_counter`), so they keep the
+activation's `program_counter` current for as long as it runs; a frame married to it holds no
+`program_counter` of its own that anything reads meanwhile. When the activation returns, the
+divorce gives the frame the last `program_counter` stored — often a later send's, not the
 `MakeClosure` that reified it.
 
 The loop itself reads it back. While a callee runs, the caller's only record of
-where it stopped is the `pc` its send stored; when the callee returns,
-`vm::resume_caller` reads that `pc` (`Heap::activation_pc`), writes the value to
+where it stopped is the `program_counter` its send stored; when the callee returns,
+`vm::resume_caller` reads that `program_counter` (`Heap::activation_program_counter`), writes the value to
 the destination register of the send it names, and resumes the caller at the
 next instruction.
 
-Nothing can read `pc` while a straight-line instruction executes, because the
+Nothing can read `program_counter` while a straight-line instruction executes, because the
 loop never switches activations between them. Keeping the store out of the
 straight-line arms takes a write off the hot path for a value nothing observes
 there.
 
-Whether a debugger will force `pc` at every instruction is an open question for
+Whether a debugger will force `program_counter` at every instruction is an open question for
 the milestone that builds one; it is a deliberate trade, not an oversight.
 
 ## Non-local return
 
 A closure's `home` is the reified frame of the method, initializer,
 superclass-clause or superclass-message activation that lexically encloses it.
-`Signal::Return` carries an `ActivationRef`, its target, and `raise_return` picks
+`Signal::Return` carries an `ActivationReference`, its target, and `raise_return` picks
 it: for a closure activation, its closure's `home` — the stack entry that frame is
 married to (`Heap::frame_activation`) while its activation is still running, and
 `cannotReturn` if it is dead, either divorced because the activation returned or
@@ -413,13 +423,13 @@ the target is the activation itself.
 
 The loop unwinds the activation stack to it (`vm::unwind`). A target that is
 still live (`Heap::activation_is_live`), sits at or above the run's floor and
-catches a return (`Interpreter::catches_return`: a method, a superclass
+catches a return (`Mutator::catches_return`: a method, a superclass
 clause or its message) ends the unwind: every activation above it is popped,
 and the target returns the value through the ordinary return path, so a
 reified frame is divorced exactly as on any return. The popped activations'
 continuations are not applied, so a `^` out of an `and:` block, a native
 loop's body or a `do:` block abandons the coercion or the loop; they go to
-`Interpreter::abandon` instead, which unmarks a nested class's creation in its
+`Mutator::abandon` instead, which unmarks a nested class's creation in its
 cache slot and drops every other. Any other signal — an error, or a
 return whose target catches none — pops every activation of the run, `base`
 included, through `abandon` in the same way, and leaves `vm::run` with it, for
@@ -428,7 +438,7 @@ the host that started the run.
 Because there is one stack, a live target is always below the activation
 raising the return, and nothing is pushed while the signal propagates, so the
 target's index cannot have been reused by the time the unwind compares it
-(`ActivationRef::same`). In a release build that is also all
+(`ActivationReference::same`). In a release build that is also all
 `Heap::activation_is_live` rests on — it compares the index with the stack's
 depth, where a debug build also checks a generation — so anything that runs
 code while a signal propagates, an `ensure:` or an `on:do:` handler, would
@@ -450,12 +460,12 @@ observable discipline — a block invoked after its home has returned gets
 `cannotReturn` — comes from the pop, which divorces a reified home on every exit
 path, without a signal round-trip on the common path.
 
-**Never `.unwrap()`, `.expect()` or `{:?}` an `EvalResult`.** `Signal`
+**Never `.unwrap()`, `.expect()` or `{:?}` an `EvaluationResult`.** `Signal`
 deliberately carries no `Debug` impl of its own -- every field it holds
 could support one today, but leaving `Signal` without one means
-`EvalResult` (`Result<Value, Signal>`) has none either, and
+`EvaluationResult` (`Result<Value, Signal>`) has none either, and
 `Result::unwrap`/`expect` require `E: Debug`. Calling either, or writing
-`{:?}` on an `EvalResult`, is therefore a compile error, not a lapse a
+`{:?}` on an `EvaluationResult`, is therefore a compile error, not a lapse a
 reviewer has to catch. The same holds for the `HostResult` a host receives
 (`Result<Root, HostSignal>`, [memory.md](memory.md), "Host roots"): `Root`,
 `HostSignal` and `HostError` have no `Debug` either. Tests unwrap through a
@@ -468,9 +478,9 @@ compiling excluded — and reports the median of ten timed runs after a discarde
 warm-up. Its three fixtures each run a 50,000-iteration `whileTrue:` loop, which
 the compiler inlines: `bench_loop.ns` sums the counter, `bench_send.ns` adds a
 user-method send per iteration and `bench_block.ns` a method that creates and
-invokes a block. On a release build, on 2026-09-13, with the safepoint poll in
-the loop, their medians were about 11.3, 14.2 and 22.8 ms ("What 2b moved"
-below).
+invokes a block. On a release build, on 2026-09-14, with the safepoint poll in
+the loop and each instruction an entry of the step state, their medians were
+about 11.2, 14.1 and 22.6 ms ("What 2c moved" below).
 
 Never judge performance from a debug build.
 
@@ -510,12 +520,12 @@ of the other two by construction, so it is not an independent check on them.
 So **building an activation cost about 68 ns, roughly 41% of a user-method
 send**, and it was a fixed cost: a two-argument send measured the same as a
 one-argument one. What was in it was the representation, not the work: heap
-allocations (the `Rc<RefCell<Frame>>` block and the `args` vector `collect`
+allocations (the `Rc<RefCell<Frame>>` block and the `arguments` vector `collect`
 builds), reference-count traffic on `sender`, `method`, `bindings` and the
 defining class, and a `HashMap` lookup per invocation just to find the compiled
-body. A method with temporaries also allocated a `temps` vector. Row two's
+body. A method with temporaries also allocated a `temporaries` vector. Row two's
 `^x` has none (`ns-next disasm` gives `tick:` one register, its argument, where
-row three's has three), so its `temps` vector stayed empty and never allocated,
+row three's has three), so its `temporaries` vector stayed empty and never allocated,
 and row three's allocation landed in the ~97 ns attributed to `+`. On top of
 that, every register read and write in the VM took a `RefCell` borrow, which
 was spread across the straight-line instructions of all three rows rather than
@@ -549,8 +559,8 @@ reference-count traffic on `sender`, `home` and every shared handle, and the
 `RefCell` borrow on every register read and write — which is why the gain is
 spread across the straight-line instructions rather than concentrated in sends.
 
-What did **not** move was the rest of the activation cost. `Frame.args` and
-`Frame.temps` were still a `Vec` allocation apiece on every activation that had
+What did **not** move was the rest of the activation cost. `Frame.arguments` and
+`Frame.temporaries` were still a `Vec` allocation apiece on every activation that had
 arguments or temporaries, the `HashMap` lookup per invocation that finds the
 compiled body survived, and building an activation was still an allocation rather
 than an index bump. The activation stack took the two vectors and the allocation;
@@ -622,7 +632,7 @@ one) fell from ~62 ns to ~37 ns — per round 60.4, 78.0 and 60.9 before, 37.5,
 37.1 and 32.8 after.
 
 Row three minus row two fell as well, from ~84 ns to ~53 ns, although both
-binaries run the same native `+`. That is the `temps` allocation described under
+binaries run the same native `+`. That is the `temporaries` allocation described under
 the decomposition: under the arena, row three's `tick:` allocated a temporaries
 vector and row two's did not, so the arena binary's 3 − 2 carries that allocation
 and its 2 − 1 leaves it out. The stack allocates for neither. That attribution is
@@ -796,7 +806,7 @@ inferences from what each change removed, and no profile was taken.
   | the bounds, marked by a field | 12.0 | 14.7 | 24.4 |
   | the same, with the counting, the counted flag and the iterative walk taken out | 12.0 | 15.1 | 24.5 |
   | and the field taken out too | 11.2 | 14.1 | 23.4 |
-  | the bounds, marked by `StepArgs::ControlFlow` | 11.2 | 14.1 | 23.8 |
+  | the bounds, marked by `StepArguments::ControlFlow` | 11.2 | 14.1 | 23.8 |
 
   `size_of::<Result<Step, Signal>>()` is 56 bytes with and without the field,
   so the likely mechanism is the niche a `bool` offers for `Step`'s
@@ -905,8 +915,38 @@ printing the sum it accumulates:
 They are not fixtures; the first two are written out in the step's
 [plan](../superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md),
 "Measurement protocol", and the other two are `bench_new.ns` with the classes
-above. Medians in ms from the first sitting, each group's mean, and the change
-of the mean in both sittings:
+above.
+
+Every binary a measurement compares — the current tree included — is built
+with the same explicit flags, and those pin every function start to a
+64-byte boundary. In PowerShell, before each build and for the measurement
+only:
+
+```powershell
+$env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"
+cargo build --release -p ns-cli
+Remove-Item Env:RUSTFLAGS
+```
+
+`RUSTFLAGS` replaces the configuration's flags rather than adding to them,
+which is why `+crt-static` is repeated there; a Linux or macOS build carries
+the alignment flag alone. Why the pin: step 2c's brand commit changed no
+instruction of the run loop and still measured 1–2% slower than its parent,
+because smaller cold code ahead of the hot functions moved every one of them
+into a different 64-byte phase ("What 2c moved" below). With every function
+start pinned, a comparison measures code, not placement. Why the shipped
+build does not carry it: the pin costs about 110 KB of padding, 5.6% of the
+release binary, and measured no faster — the unpinned build was level or up
+to 1.8% faster than the pinned one — so `.cargo/config.toml` carries only
+`+crt-static`, and a build from the configuration alone is the one that
+ships, not the one that is compared. Before timing, check that no binary
+imports `VCRUNTIME140.dll` (`dumpbin /dependents`) and that each prints the
+expected output for every source; a linker map (`-C link-arg=/MAP:<file>`)
+shows every function of the crate at a multiple of 64 — the only symbols off
+the boundary are the static C runtime's own objects.
+
+Medians in ms from the first sitting, each group's mean, and the change of
+the mean in both sittings:
 
 | Source | Before, rounds 1–5 | mean | After, rounds 1–5 | mean | Change, sitting 1 / 2 |
 |---|---|---|---|---|---|
@@ -948,7 +988,11 @@ inline, so the loop never reaches `Interpreter::resume`. This is the uniform
 shift the first change of the step already showed on code it did not change
 (below), an artifact of inlining and register allocation as far as that
 investigation went. It is not isolated, and nothing removed from either
-benchmark's path explains it. The comparison with `be3eb40` is carried through
+benchmark's path explains it. Code placement is the likely mechanism — a
+change elsewhere moving the hot functions into another 64-byte phase — but
+that was verified only for 2c, whose investigation found it and is why a
+measurement now pins function alignment ("What 2c moved" below, and the
+protocol above). The comparison with `be3eb40` is carried through
 every measurement up to step 3; step 2b's ("What 2b moved" below) puts
 `bench_loop.ns` at +1.1% in both of its sittings, the groups overlapping, and
 `bench_block.ns` 2.5% faster than `be3eb40`.
@@ -965,7 +1009,8 @@ own, so its figures are not compared with these:
   register allocation differed, doing the same work. Moving the continuation
   handling out of `finish` and marking `do_step` `#[inline(never)]` recovered
   nothing. It was accepted as an LLVM inlining and layout artifact on unchanged
-  executed code, not bisected further.
+  executed code, not bisected further. Code placement is the likely mechanism,
+  verified only for 2c ("What 2c moved" below).
 - **The nested-class accessor as a step** made no source slower; by the
   protocol's rule `bench_send.ns`, `bench_block.ns` and `bench_new.ns` came out
   faster, with nothing on their paths to explain it.
@@ -1100,6 +1145,155 @@ rest the CLI tests that spawn `ns-next` per fixture or golden
 ([memory.md](memory.md), "Checking the roots before a collector exists: the
 stress mode").
 
+### What 2c moved
+
+Step 2c ([memory.md](memory.md), "The brand, checked by the compiler rather
+than by convention") put one thing into a release build: the step state
+behind `World::enter`, entered once per instruction the run loop executes
+("The VM" above). The brand itself is a zero-sized lifetime and changes no
+layout: `Object`, `FrameSlot` and `Result<Step, Signal>` kept their release
+sizes, 56, 136 and 56 bytes. The step was measured whole against the commit
+it started from, `a5d1e05`, and against `be3eb40`, in two sittings on
+2026-09-14, by the protocol of "What removing the re-entries moved" above,
+every binary built with every function start pinned to a 64-byte boundary
+and `+crt-static` — the protocol's flag set; "The pin" below says where the
+rule comes from — the before-binaries in throwaway worktrees through
+`RUSTFLAGS`, the head from a configuration that carried the alignment flag
+at the time (it no longer does; the protocol above says why), `ns-next
+bench <source> --iterations 30` over the same seven sources, five rounds,
+alternating the binaries within each round. A fourth binary ran in the same
+rounds — `a5d1e05` as its own configuration builds it, unpinned — to show
+what the pin itself does. Medians in ms, and each group's mean, from the
+first sitting:
+
+| Source | `be3eb40`, rounds 1–5 | mean | `a5d1e05`, rounds 1–5 | mean | `a5d1e05` unpinned, rounds 1–5 | mean | After, rounds 1–5 | mean |
+|---|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 10.95, 11.01, 11.06, 11.12, 11.22 | 11.07 | 11.20, 11.14, 11.24, 11.19, 11.21 | 11.20 | 11.15, 11.17, 11.19, 11.16, 11.21 | 11.17 | 11.30, 11.27, 11.26, 11.24, 11.21 | 11.26 |
+| `bench_send.ns` | 13.63, 13.77, 13.74, 13.99, 13.73 | 13.77 | 14.08, 14.16, 14.17, 14.14, 14.03 | 14.12 | 13.89, 14.02, 14.15, 14.20, 14.00 | 14.05 | 14.04, 14.14, 14.38, 14.25, 14.19 | 14.20 |
+| `bench_block.ns` | 23.01, 23.35, 23.21, 23.10, 23.11 | 23.16 | 22.60, 23.12, 22.62, 22.53, 22.52 | 22.68 | 22.40, 22.50, 22.49, 22.71, 22.88 | 22.59 | 22.56, 22.66, 22.61, 22.47, 22.98 | 22.66 |
+| `bench_do.ns` | 7.86, 8.07, 8.08, 8.13, 8.07 | 8.04 | 7.72, 7.79, 7.70, 7.71, 7.78 | 7.74 | 7.80, 7.70, 7.73, 7.68, 7.73 | 7.73 | 7.73, 7.77, 7.79, 7.78, 7.71 | 7.76 |
+| `bench_new.ns` | 7.34, 7.40, 7.38, 7.36, 7.43 | 7.38 | 7.37, 7.39, 7.37, 7.33, 7.58 | 7.40 | 7.25, 7.30, 7.32, 7.26, 7.38 | 7.30 | 7.30, 7.36, 7.27, 7.34, 7.34 | 7.32 |
+| `bench_new2.ns` | 8.44, 8.36, 8.32, 8.28, 8.54 | 8.39 | 8.25, 8.40, 8.39, 8.31, 8.48 | 8.36 | 8.21, 8.23, 8.17, 8.23, 8.22 | 8.21 | 8.32, 8.22, 8.40, 8.31, 8.35 | 8.32 |
+| `bench_newarg.ns` | 10.36, 10.50, 10.51, 10.56, 10.61 | 10.51 | 10.29, 10.34, 10.20, 10.23, 10.23 | 10.26 | 10.09, 10.04, 10.25, 10.10, 10.09 | 10.11 | 10.09, 10.15, 10.40, 10.08, 10.29 | 10.20 |
+
+And from the second:
+
+| Source | `be3eb40`, rounds 1–5 | mean | `a5d1e05`, rounds 1–5 | mean | `a5d1e05` unpinned, rounds 1–5 | mean | After, rounds 1–5 | mean |
+|---|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.02, 11.03, 11.07, 11.10, 10.96 | 11.03 | 11.36, 11.16, 11.24, 11.19, 11.32 | 11.25 | 11.29, 11.26, 11.22, 11.20, 11.11 | 11.21 | 11.20, 11.25, 11.27, 11.18, 11.21 | 11.22 |
+| `bench_send.ns` | 13.70, 13.83, 13.80, 13.77, 13.84 | 13.79 | 14.23, 14.06, 14.26, 14.11, 14.11 | 14.16 | 14.15, 13.97, 14.13, 13.99, 14.05 | 14.06 | 14.09, 14.15, 14.13, 14.07, 14.03 | 14.09 |
+| `bench_block.ns` | 23.32, 23.17, 23.27, 23.31, 23.39 | 23.29 | 22.39, 22.54, 23.38, 23.03, 22.90 | 22.85 | 22.86, 22.60, 22.54, 22.94, 22.44 | 22.68 | 22.47, 22.50, 22.74, 22.53, 22.44 | 22.54 |
+| `bench_do.ns` | 7.87, 7.94, 7.93, 8.11, 7.97 | 7.96 | 7.65, 7.79, 7.72, 7.75, 7.76 | 7.73 | 7.79, 7.89, 7.70, 7.70, 7.83 | 7.78 | 7.77, 7.83, 7.80, 7.74, 7.66 | 7.76 |
+| `bench_new.ns` | 7.35, 7.43, 7.33, 7.43, 7.34 | 7.37 | 7.29, 7.40, 7.34, 7.34, 7.33 | 7.34 | 7.40, 7.23, 7.45, 7.27, 7.40 | 7.35 | 7.45, 7.35, 7.32, 7.31, 7.25 | 7.34 |
+| `bench_new2.ns` | 8.43, 8.32, 8.32, 8.38, 8.26 | 8.34 | 8.31, 8.39, 8.23, 8.32, 8.21 | 8.29 | 8.21, 8.28, 8.30, 8.12, 8.34 | 8.25 | 8.35, 8.34, 8.30, 8.28, 8.28 | 8.31 |
+| `bench_newarg.ns` | 10.40, 10.31, 10.40, 10.42, 10.49 | 10.41 | 10.28, 10.20, 10.30, 10.16, 10.38 | 10.26 | 10.09, 10.18, 10.04, 10.14, 10.05 | 10.10 | 10.14, 10.15, 10.20, 10.16, 10.27 | 10.18 |
+
+The change of the after-group's mean in both sittings, and what the pin
+itself does — the unpinned `a5d1e05` against the pinned one:
+
+| Source | Against `a5d1e05`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 | `a5d1e05` unpinned against pinned, sitting 1 / 2 |
+|---|---|---|---|
+| `bench_loop.ns` | +0.5% / −0.3%, overlapping | +1.7% / +1.7%, after entirely above in the second | −0.2% / −0.4%, overlapping |
+| `bench_send.ns` | +0.6% / −0.4%, overlapping | +3.1% / +2.2%, after entirely above in both | −0.4% / −0.7%, overlapping |
+| `bench_block.ns` | −0.1% / −1.4%, overlapping | −2.2% / −3.2%, after entirely below in both | −0.4% / −0.8%, overlapping |
+| `bench_do.ns` | +0.2% / +0.4%, overlapping | −3.5% / −2.5%, after entirely below in both | −0.1% / +0.6%, overlapping |
+| `bench_new.ns` | −1.1% / +0.0%, overlapping | −0.8% / −0.5%, overlapping | −1.4% / +0.2%, overlapping |
+| `bench_new2.ns` | −0.5% / +0.2%, overlapping | −0.8% / −0.4%, overlapping | −1.8% / −0.5%, unpinned entirely below in the first |
+| `bench_newarg.ns` | −0.5% / −0.8%, overlapping | −2.9% / −2.1%, after entirely below in the second | −1.4% / −1.6%, overlapping |
+
+**Every source is level with `a5d1e05`**: the after-group overlaps its
+parent-group on all seven sources in both sittings, the change of the mean
+between −1.4% and +0.6%. A zero-sized lifetime and an entry that inlines away
+cost nothing at run time, as the design expected.
+
+**Against `be3eb40`**, the after-binary's shift is the parent's, read again:
+`a5d1e05` itself sits +2.5% and +2.7% above `be3eb40` on `bench_send.ns`
+and +1.1% and +2.0% on `bench_loop.ns` in these sittings — 2a's shift on
+those two sources ("What removing the re-entries moved" above) — and the
+after-binary +3.1% / +2.2% and +1.7% / +1.7%, level with its parent. No
+source's shift against `be3eb40` grew past what 2b left by more than either
+group's spread: `bench_send.ns`, which 2b left at +0.9% to +1.4%, grew by
+0.24 and 0.11 ms against `be3eb40`-group spreads of 0.36 and 0.14 ms, within
+them, just so in the second sitting. `bench_block.ns` is 2.2% and 3.2%
+faster than `be3eb40`, `bench_do.ns` 2.5–3.5%, `bench_newarg.ns` 2.1–2.9%,
+and `bench_new.ns` and `bench_new2.ns` are level with it.
+
+**What the pin itself does** is the last column: the unpinned `a5d1e05`
+reads −0.1% to −1.8% against the pinned one, the groups overlapping on every
+source in both sittings but one (`bench_new2.ns` in the first, the unpinned
+group entirely below by 1.8%). So the unpinned binary is, if anything,
+slightly faster: the pin fixes the phase of every function start, not the
+phase the compiler's own layout gives the loop headers inside a function,
+and `a5d1e05`'s hot functions happened to sit well. What the pin buys is
+that a change elsewhere can no longer move them, which is the history below.
+It costs about 110 KB of padding — 2,091,520 against 1,979,904 bytes, 5.6%,
+some 4,600 functions each padded to the next boundary. Padding that buys
+repeatability and no speed is why the shipped build does not carry it: the
+pin belongs to the measurement protocol, where every compared binary gets
+it through `RUSTFLAGS`, and `.cargo/config.toml` stays as it was.
+
+**The pin.** Before it, the same step measured 1–2.5% slower on the block
+and instantiation benchmarks, and finding out why is where the pin comes
+from. Two sittings of the same protocol on 2026-09-14, with the binaries as
+their configurations built them, put `bench_new2.ns` at +1.8% and +2.5%
+against `a5d1e05`, entirely above in both, `bench_block.ns` at +2.5% / +1.8%
+and `bench_newarg.ns` at +1.2% / +1.7%, each entirely above in one; the
+loop, the send and `do:` level. A bisection sitting over the step's commits
+— the four sources that moved, five rounds, the change of each group's mean
+against `a5d1e05` — placed the shift on the brand commit:
+
+| Source | `d27e40b` (the entry) | `7b41649` (the names written out) | `e59dc52` (hosts through `enter`) | `1549fb0` (the brand) | `2caf3e0` (no cast) |
+|---|---|---|---|---|---|
+| `bench_send.ns` | +0.7% | +0.8% | +0.6% | +1.6% | +1.0% |
+| `bench_block.ns` | +0.5% | +1.1% | +1.4% | +2.8% | +3.1% |
+| `bench_new2.ns` | −0.3% | +0.0% | +0.7% | +1.6% | +1.5% |
+| `bench_newarg.ns` | +0.5% | +0.1% | +0.1% | +1.3% | +1.6% |
+
+`e59dc52` to `1549fb0` is the one step between neighbours that separates
+groups, though the brand commit's diff is types and signatures apart from
+`rebrand` and small reshapes the lifetimes required, and its binary 512
+bytes smaller. The post-LTO assembly of both commits, split into functions
+and diffed, explained it: the hot path is instruction for instruction
+identical — `Interpreter::run_from_host` with `vm::run` inlined (2,470
+instructions), `builtins::dispatch_native` (3,082), `vm::finish`,
+`Mutator::decide_send`, `push_step`'s block and method arms,
+`Heap::push_activation`, `pop_activation` and `reify`, the lookups — and
+only cold host code differs: the `for<'gc>` closure through
+`Interpreter::enter` needs a smaller stack frame in the host entries —
+`Interpreter::send`, ns-cli's `entry::instantiate_root` and its command
+dispatcher shrink by 16, 16 and 256 bytes, `Interpreter::instantiate` grows
+by two instructions — and the `CREATION_IN_PROGRESS` constant that became a
+function stores 2 bytes where it stored 16, in `push_step`'s cold
+nested-class arm (−16 bytes). The linker map showed every function behind
+them moved by 224 or 240 bytes — 32 or 16 modulo 64 — so every hot entry
+point, and with it every loop header and branch target in the run loop, sat
+in a different 64-byte line than before. Rebuilding both commits with
+`-C llvm-args=-align-all-functions=6` changed no instruction and brought
+them level in two sittings (`bench_block.ns` from +1.5% / +1.8% to −0.3% /
+−0.1%, `bench_send.ns` from +1.5% / +0.8% to +0.4% / +0.2%). That is the
+mechanism, and the decision, 2026-09-14, is that the pin belongs to the
+measurement protocol and to nothing else: a change to cold code must not
+move the hot loop's phase *in a comparison*, so every binary a measurement
+compares is built with the alignment flag through `RUSTFLAGS` ("What
+removing the re-entries moved" above, the protocol), while the shipped
+build stays unpinned, since the pin measured no faster and costs 5.6% of
+the binary ("What the pin itself does" above). The tables above are that
+measurement, every binary aligned.
+
+One sitting of its own, so its figures are not compared with these: **the
+per-instruction entry** (Task 1 of the step, `d27e40b`, the step state moved
+behind `World::enter` with no lifetime yet), against `a5d1e05` in one
+sitting on 2026-09-14, unpinned: level on every source, every group
+overlapping its parent's — `bench_loop.ns` +0.1%, `bench_send.ns` −0.3%,
+`bench_block.ns` −0.9%, `bench_do.ns` +0.4%, `bench_new.ns` +0.9%,
+`bench_new2.ns` −0.0%, `bench_newarg.ns` +0.5%. So the entry inlines away,
+as `#[inline(always)]` asks.
+
+The suite (`cargo test --workspace`, debug build, test binaries already
+built) takes 13.1 s at 691 tests, and 190.3 s under `NS_NEXT_STRESS_MOVES=1`,
+where 2b left 12.7 s and 190.2 s ([memory.md](memory.md), "Checking the
+roots before a collector exists: the stress mode").
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -1116,7 +1310,7 @@ stack is what a trampolined run loop needs, so replacing the Rust-stack
 recursion with a loop that pushes is the same change viewed from the other
 side. Getting there split every send so that it *decides* without *executing*:
 lookup, `doesNotUnderstand:`, native dispatch and the nested-class accessor stay
-in `interpreter/` (`Interpreter::decide_send`, `sends::decide_lexical_send`,
+in `interpreter/` (`Mutator::decide_send`, `sends::decide_lexical_send`,
 `sends::decide_super_send`), unchanged in what they produce, but they answer a
 `Step` — a value, a method to activate, or a block to activate and what to do
 with its value — instead of activating it. That keeps `vm.rs` free of dispatch
@@ -1141,7 +1335,7 @@ Three things the trampoline settles on its own:
   ends the loop (`builtins::block::after_condition`), and the body's
   `Continuation::WhileBody` activates the condition again. The continuation
   rides on the block activation's stack entry and `vm::finish` applies it,
-  through `Interpreter::resume`, when it pops the activation, so a loop's
+  through `Mutator::resume`, when it pops the activation, so a loop's
   condition and body replace each other on the stack instead of nesting. This
   is Primordial Soup's model with one activation
   fewer: there `True>>ifTrue: then = (^then value)` is a Newspeak method whose
@@ -1202,22 +1396,22 @@ do not, so that changing the value later changes no recorded answer. It
 unwinds to the entry send like every other Newspeak error; nothing catches it
 yet.
 
-- **L is checked on every push.** `Interpreter::push`, the one function every
+- **L is checked on every push.** `Mutator::push`, the one function every
   activation the runtime pushes goes through, refuses a counted push when
   `Heap::counted_depth` has reached the limit. The heap keeps that count as a
   running total on push and pop, so an error path — which pops through
   `vm::unwind` like any other — leaves it exact. Whether an activation counts
   is recorded on its stack entry. Only the block arm of
-  `Interpreter::push_step` ever records an exemption; a method, and every body
+  `Mutator::push_step` ever records an exemption; a method, and every body
   an instantiation or a nested-class accessor runs — an initializer level, a
   superclass clause or its message — are counted by construction.
 - **The exemption is marked by the arguments.** A block a control-flow native
-  activates carries `StepArgs::ControlFlow` — it has no arguments, and only
+  activates carries `StepArguments::ControlFlow` — it has no arguments, and only
   those natives build that variant — and `push_step` exempts it when the send
   was a `SendInlinable` and the block's `captured_frame` is the reified frame
   of the activation that sent it ([compiler.md](compiler.md), "How the limit
   counts"). A native loop's next block goes through
-  `Interpreter::push_continuation`, which exempts it only if the one it
+  `Mutator::push_continuation`, which exempts it only if the one it
   replaces was; the loop forwards that entry's flag and decides nothing. The
   mark rides on the arguments rather than in a field of its own
   because the field measured 4–8% slower ("What the trampoline moved" above);
@@ -1252,7 +1446,7 @@ and the second also between a debug and a release build.
 ### A superclass chain is walked iteratively
 
 `climb_levels` and `descend_levels` (`interpreter/instantiate.rs`) walk it with
-an explicit list, as a state machine `Interpreter::advance_instantiation`
+an explicit list, as a state machine `Mutator::advance_instantiation`
 resumes whenever a body it answered returns: each level's factory arity
 checked and its clause message evaluated from the class upward, each level's
 arguments kept, then the initializers from the top down — the order of every
@@ -1319,7 +1513,7 @@ loop holds a value.
 
 All three follow the pattern `whileTrue:` set: a decision answers an activation
 together with a `Continuation`, the continuation rides on the activation's
-stack entry, and `Interpreter::resume` applies it when the activation returns.
+stack entry, and `Mutator::resume` applies it when the activation returns.
 The semantics and the order of every observable effect are what they were
 when these paths ran in nested runs of the loop.
 
@@ -1336,7 +1530,7 @@ when these paths ran in nested runs of the loop.
   per class. Each element's activation is counted, like any block a `value`
   send activates; a `^` in it unwinds like any other activation's, and its
   arity is checked by the same `check_block_arity`. Its argument is a
-  one-element vector, allocated per element: a `StepArgs` variant that carried
+  one-element vector, allocated per element: a `StepArguments` variant that carried
   one value would avoid that, and would change `Step`'s layout, which the
   trampoline measured as a 4–8% risk ("What the trampoline moved" above).
 - **The nested-class accessor** (`interpreter/nested.rs`) answers the class as
@@ -1352,7 +1546,7 @@ when these paths ran in nested runs of the loop.
   class. While the clause runs, the class's cache slot itself says that its
   creation is underway: `push_step` writes a marker into it once the clause's
   push has succeeded (`nested::begin_creation`), and `resume` or
-  `Interpreter::abandon` sets it back to nil when the activation is popped
+  `Mutator::abandon` sets it back to nil when the activation is popped
   (`nested::end_creation`), before `after_clause` caches the class there. An
   access that finds the marker is the cyclic-definition error; the slot is
   already keyed by the enclosing object and the declaration, the pair a cycle
@@ -1362,7 +1556,7 @@ when these paths ran in nested runs of the loop.
   since only a host snapshots, between runs; an image that puts `false` in a
   hidden slot itself gets a cyclic-definition error, the same kind of
   wrong-but-safe answer as any other non-class value it puts there. The reset
-  replaces only the marker: the decoder does not bound `InitSlot`'s field
+  replaces only the marker: the decoder does not bound `InitializeSlot`'s field
   index, so an image's clause body can overwrite the slot, and a debug build
   counts the marks rather than asserting on the slot's contents, which such an
   image could turn into a panic. `abandon` is `resume`'s counterpart for a
@@ -1410,7 +1604,7 @@ when these paths ran in nested runs of the loop.
 `Step::InitializerThen`, `Step::ClauseMessage` and `Step::SuperclassClause` each
 carry only what their push cannot find from their level or declaration — the
 code and slot base of an initializer are its level's, found when it is pushed
-(`Interpreter::initializer_body`), and a clause's are its declaration's — so
+(`Mutator::initializer_body`), and a clause's are its declaration's — so
 none needs a boxed description of its activation; boxing one per body, beside
 a fresh box for the walk's state, made a chain of two levels with code 15–18%
 slower than running it in a nested run of the loop had been
@@ -1418,7 +1612,7 @@ slower than running it in a nested run of the loop had been
 purpose: an `Initializer` with an optional continuation, as large as
 `Step::Method`, left `Result<Step, Signal>` at the 56 bytes the hot path was
 measured at and still made every benchmark 4–6% slower, none of which
-instantiates in its loop — the same effect `StepArgs::ControlFlow`'s comment
+instantiates in its loop — the same effect `StepArguments::ControlFlow`'s comment
 describes, presumably the discriminant's niche. Splitting it into
 `Initializer` and `InitializerThen`, which takes the receiver from its state,
 measured level with before. `a_decision_stays_the_size_the_hot_path_was_measured_at`
@@ -1433,12 +1627,13 @@ to the host rooted ([memory.md](memory.md), "Host roots").
 It is the one place Rust enters the loop. A debug build checks there that the
 loop is not already running — nothing it calls can reach `run_from_host` —
 that the stack is left as deep as it was found, and that no nested class's
-creation outlives the run. That the loop is never nested is a debug assertion
-now; it becomes structure in step 2c, where nothing a native can reach offers
-`run` at all ([memory.md](memory.md), "Planned: the brand").
+creation outlives the run. That the loop is never nested is also structure,
+which the debug assertion only confirms: a decision, a native or a
+continuation is handed only a `&mut Mutator`, which offers no way back to the
+`Interpreter` and so no `run` at all ([memory.md](memory.md), "The brand").
 
-`vm::send` still takes the interpreter's reusable argument buffer and gives it
-back, because the decision needs `&mut Interpreter` while it reads the
+`vm::send` still takes the step state's reusable argument buffer and gives it
+back, because the decision needs `&mut Mutator` while it reads the
 arguments. No decision runs code any more, so none takes a second, fresh
 buffer of its own. `Interpreter::reenter`, `invoke_closure`,
 `builtins::call_block`, the count of re-entries and its bound, and that
@@ -1476,7 +1671,7 @@ must be able to add a local to a method while an activation of it is live, and
 only the top entry's register window can grow in place. The answer is that
 editing a method takes its affected activations off the stack first — reified
 and divorced while still running, the operation Cog's `divorceAllFrames`
-performs on every stack page before a snapshot — and a divorced frame's `temps`
+performs on every stack page before a snapshot — and a divorced frame's `temporaries`
 is a growable `Vec`. Continuing an activation from its divorced frame needs a
 way to put the frame back on the stack, which does not exist yet; it is the
 same missing piece as resuming a decoded frame
@@ -1550,7 +1745,7 @@ binds it is that no native code may ever enter an image.
   code, so the reference lowering and a JIT share it. A send is split into a
   decision and an activation, which preserves this: the decision stays in
   `interpreter/`, and only running what it decided is the loop's.
-- **`pc` is stored only at observable points**, not at every instruction — a
+- **`program_counter` is stored only at observable points**, not at every instruction — a
   deliberate hot-path trade the debugger milestone may have to revisit.
 - **Activations are stack entries, reified on demand**, because the
   always-reified model cost about 41% of a send, before the arena, for a structure
@@ -1561,8 +1756,8 @@ binds it is that no native code may ever enter an image.
   `bench_send.ns` from 23.5 ms to 20.5 ms. Peak working set
   over `bench`'s twenty-two entry sends of `bench_loop.ns` fell from 340.7 MB to
   4.6 MB.
-- **A live activation and a reified frame are two handle types**, `ActivationRef`
-  and `FrameRef`, so that storing a stack handle is a compile error and a
+- **A live activation and a reified frame are two handle types**, `ActivationReference`
+  and `FrameReference`, so that storing a stack handle is a compile error and a
   register access never branches on which kind it holds.
 - **A returned activation has no sender**, as in Smalltalk, Cog and Primordial
   Soup. A live one's sender is the entry below it, by construction. The `sender`

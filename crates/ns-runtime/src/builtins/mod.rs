@@ -10,7 +10,7 @@ pub mod text;
 
 use crate::interpreter::{Signal, Step};
 use crate::types::*;
-use crate::{platform, Interpreter, Symbol};
+use crate::{platform, Mutator, Symbol};
 
 /// `None` = this builtin does not implement `selector` (let the caller fall
 /// through to `doesNotUnderstand:`). `Some(Err(Signal::Error(_)))` = a
@@ -26,48 +26,50 @@ use crate::{platform, Interpreter, Symbol};
 /// `leaf_step`) for every other selector. Every other native here stays a
 /// plain leaf: it keeps a `Result<Value, NewspeakError>` signature, wrapped
 /// into the step it is right here, by `wrap_error`.
-pub(crate) fn dispatch_native(
-    interp: &mut Interpreter,
+pub(crate) fn dispatch_native<'gc>(
+    mutator: &mut Mutator<'gc>,
     kind: BuiltinClass,
-    receiver: Value,
+    receiver: Value<'gc>,
     selector: Symbol,
-    args: &[Value],
-) -> Option<Result<Step, Signal>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     match kind {
         BuiltinClass::Object => {
-            object_class::dispatch(interp, receiver, selector, args).map(wrap_error)
+            object_class::dispatch(mutator, receiver, selector, arguments).map(wrap_error)
         }
         BuiltinClass::Boolean | BuiltinClass::True | BuiltinClass::False => {
-            boolean::dispatch(interp, receiver, selector, args)
+            boolean::dispatch(mutator, receiver, selector, arguments)
         }
         BuiltinClass::Integer => {
-            numbers::dispatch_integer(interp, receiver, selector, args).map(wrap_error)
+            numbers::dispatch_integer(mutator, receiver, selector, arguments).map(wrap_error)
         }
         BuiltinClass::Float => {
-            numbers::dispatch_float(interp, receiver, selector, args).map(wrap_error)
+            numbers::dispatch_float(mutator, receiver, selector, arguments).map(wrap_error)
         }
-        BuiltinClass::Str => {
-            text::dispatch_string(interp, receiver, selector, args).map(wrap_error)
+        BuiltinClass::String => {
+            text::dispatch_string(mutator, receiver, selector, arguments).map(wrap_error)
         }
-        BuiltinClass::Sym => {
-            text::dispatch_symbol(interp, receiver, selector, args).map(wrap_error)
+        BuiltinClass::Symbol => {
+            text::dispatch_symbol(mutator, receiver, selector, arguments).map(wrap_error)
         }
         BuiltinClass::Character => {
-            text::dispatch_character(interp, receiver, selector, args).map(wrap_error)
+            text::dispatch_character(mutator, receiver, selector, arguments).map(wrap_error)
         }
-        BuiltinClass::Array => collections::dispatch_array(interp, receiver, selector, args),
+        BuiltinClass::Array => collections::dispatch_array(mutator, receiver, selector, arguments),
         BuiltinClass::OrderedCollection => {
-            collections::dispatch_ordered_collection(interp, receiver, selector, args)
+            collections::dispatch_ordered_collection(mutator, receiver, selector, arguments)
         }
-        BuiltinClass::Block => block::dispatch(interp, receiver, selector, args),
+        BuiltinClass::Block => block::dispatch(mutator, receiver, selector, arguments),
         BuiltinClass::Platform => {
-            platform::dispatch(interp, receiver, selector, args).map(wrap_error)
+            platform::dispatch(mutator, receiver, selector, arguments).map(wrap_error)
         }
         _ => None,
     }
 }
 
 /// Lifts a leaf native's result into the step it is.
-fn wrap_error(result: Result<Value, NewspeakError>) -> Result<Step, Signal> {
+fn wrap_error<'gc>(
+    result: Result<Value<'gc>, NewspeakError<'gc>>,
+) -> Result<Step<'gc>, Signal<'gc>> {
     result.map(Step::Value).map_err(Signal::Error)
 }

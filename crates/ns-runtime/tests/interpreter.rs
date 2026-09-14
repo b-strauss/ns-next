@@ -5,26 +5,28 @@
 use indoc::indoc;
 use ns_runtime::{HostError, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
 
-/// Loads `src`, instantiates its root class and returns both.
-fn instance_of(src: &str) -> (Interpreter, Root) {
-    let module = ns_syntax::parse(src).expect("parse");
+/// Loads `source`, instantiates its root class and returns both.
+fn instance_of(source: &str) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
-        src.into(),
+        source.into(),
         ns_runtime::SourceOrigin::File("test.ns".into()),
     )
     .expect("resolve");
-    let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
-    let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
-    (interp, receiver)
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
+    let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    (interpreter, receiver)
 }
 
 fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
         Ok(root) => root,
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
-        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
+        Err(HostSignal::Error(error)) => {
+            panic!("{what}: unexpected Newspeak error: {}", error.message)
+        }
     }
 }
 
@@ -43,7 +45,7 @@ fn expect_cannot_return(result: HostResult, what: &str) {
 
 #[test]
 fn method_with_no_explicit_return_returns_self() {
-    let (mut interp, receiver) = instance_of(indoc! {"
+    let (mut interpreter, receiver) = instance_of(indoc! {"
         Newspeak3
         'T'
         class Foo = Object new (
@@ -51,17 +53,22 @@ fn method_with_no_explicit_return_returns_self() {
           public bar = ( 1. 2 )
         ) : ()
     "});
-    let result = expect_ok(interp.send(&receiver, Symbol::intern("bar"), &[]), "bar");
-    let (result, receiver) = (interp.fetch(&result), interp.fetch(&receiver));
-    assert!(
-        matches!((&result, &receiver), (Value::Obj(a), Value::Obj(b)) if a.same(*b)),
-        "a method with no explicit return must yield the receiver, not the last expression's value"
+    let result = expect_ok(
+        interpreter.send(&receiver, Symbol::intern("bar"), &[]),
+        "bar",
     );
+    interpreter.enter(|mutator| {
+        let (result, receiver) = (mutator.fetch(&result), mutator.fetch(&receiver));
+        assert!(
+            matches!((&result, &receiver), (Value::Object(result_object), Value::Object(receiver_object)) if result_object.same(*receiver_object)),
+            "a method with no explicit return must yield the receiver, not the last expression's value"
+        );
+    });
 }
 
 #[test]
 fn method_with_explicit_return_returns_the_returned_value() {
-    let (mut interp, receiver) = instance_of(indoc! {"
+    let (mut interpreter, receiver) = instance_of(indoc! {"
         Newspeak3
         'T'
         class Foo = Object new (
@@ -70,17 +77,17 @@ fn method_with_explicit_return_returns_the_returned_value() {
         ) : ()
     "});
     let result = expect_ok(
-        interp.send(&receiver, Symbol::intern("answer"), &[]),
+        interpreter.send(&receiver, Symbol::intern("answer"), &[]),
         "answer",
     );
-    assert!(matches!(interp.fetch(&result), Value::SmallInt(42)));
+    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&result), Value::SmallInteger(42))));
 }
 
 /// A bare `OrderedCollection` (no `platform` prefix, outside any superclass
 /// clause) names the builtin class.
 #[test]
 fn bare_builtin_class_name_reference_produces_a_working_instance() {
-    let (mut interp, receiver) = instance_of(indoc! {"
+    let (mut interpreter, receiver) = instance_of(indoc! {"
         Newspeak3
         'T'
         class Foo = Object new (
@@ -88,21 +95,26 @@ fn bare_builtin_class_name_reference_produces_a_working_instance() {
           public bar = ( ^OrderedCollection new )
         ) : ()
     "});
-    let result = expect_ok(interp.send(&receiver, Symbol::intern("bar"), &[]), "bar");
-    let Value::Obj(obj) = interp.fetch(&result) else {
-        panic!("expected an OrderedCollection instance")
-    };
-    assert!(matches!(
-        interp.heap_ref().array_elements(obj),
-        Some(elements) if elements.is_empty()
-    ));
+    let result = expect_ok(
+        interpreter.send(&receiver, Symbol::intern("bar"), &[]),
+        "bar",
+    );
+    interpreter.enter(|mutator| {
+        let Value::Object(object) = mutator.fetch(&result) else {
+            panic!("expected an OrderedCollection instance")
+        };
+        assert!(matches!(
+            mutator.heap().array_elements(object),
+            Some(elements) if elements.is_empty()
+        ));
+    });
 }
 
 /// `[ ^1 ] value`, invoked while its home method is still running, returns
 /// from the home: `m` answers 1, and its second statement never runs.
 #[test]
 fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
-    let (mut interp, receiver) = instance_of(indoc! {"
+    let (mut interpreter, receiver) = instance_of(indoc! {"
         Newspeak3
         'T'
         class Foo = Object new (
@@ -110,16 +122,19 @@ fn non_local_return_from_a_block_unwinds_to_the_home_methods_activation() {
           public m = ( [ ^1 ] value. ^2 )
         ) : ()
     "});
-    let result = expect_ok(interp.send(&receiver, Symbol::intern("m"), &[]), "m");
-    assert!(matches!(interp.fetch(&result), Value::SmallInt(1)));
-    assert_eq!(interp.heap_ref().activation_depth(), 0);
+    let result = expect_ok(interpreter.send(&receiver, Symbol::intern("m"), &[]), "m");
+    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&result), Value::SmallInteger(1))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.heap().activation_depth()),
+        0
+    );
 }
 
 /// The same block, stored and invoked again after its home returned, is
 /// the spec's `cannotReturn` -- a `NewspeakError`, not a panic.
 #[test]
 fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_not_a_panic() {
-    let (mut interp, receiver) = instance_of(indoc! {"
+    let (mut interpreter, receiver) = instance_of(indoc! {"
         Newspeak3
         'T'
         class Foo = Object new (|b.|) (
@@ -127,10 +142,10 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
           public again = ( ^b value )
         ) : ()
     "});
-    let first = expect_ok(interp.send(&receiver, Symbol::intern("m"), &[]), "m");
-    assert!(matches!(interp.fetch(&first), Value::SmallInt(1)));
+    let first = expect_ok(interpreter.send(&receiver, Symbol::intern("m"), &[]), "m");
+    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&first), Value::SmallInteger(1))));
     expect_cannot_return(
-        interp.send(&receiver, Symbol::intern("again"), &[]),
+        interpreter.send(&receiver, Symbol::intern("again"), &[]),
         "again",
     );
 }
@@ -139,7 +154,7 @@ fn invoking_an_escaped_block_after_its_home_method_returned_is_a_newspeak_error_
 /// an explicit `^`: `capture` stores `[^1]` and falls off the end.
 #[test]
 fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() {
-    let (mut interp, receiver) = instance_of(indoc! {"
+    let (mut interpreter, receiver) = instance_of(indoc! {"
         Newspeak3
         'T'
         class Foo = Object new (|b.|) (
@@ -148,11 +163,11 @@ fn a_block_escaping_a_normally_returned_method_is_a_clean_cannot_return_error() 
         ) : ()
     "});
     expect_ok(
-        interp.send(&receiver, Symbol::intern("capture"), &[]),
+        interpreter.send(&receiver, Symbol::intern("capture"), &[]),
         "capture",
     );
     expect_cannot_return(
-        interp.send(&receiver, Symbol::intern("runIt"), &[]),
+        interpreter.send(&receiver, Symbol::intern("runIt"), &[]),
         "runIt",
     );
 }

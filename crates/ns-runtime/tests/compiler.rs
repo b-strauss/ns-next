@@ -4,43 +4,46 @@ use indoc::indoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_runtime::bytecode::{CallSite, CodeKind, Instr, Literal};
+use ns_runtime::bytecode::{CallSite, CodeKind, Instruction, Literal};
 use ns_runtime::dispatch::Lookup;
-use ns_runtime::{Interpreter, Mixin, Root, SourceOrigin, Symbol, Value};
+use ns_runtime::{Interpreter, Mixin, Mutator, Root, SourceOrigin, Symbol, Value};
 
-fn load(src: &str) -> (Interpreter, Root) {
-    let module = ns_syntax::parse(src).expect("parse");
+fn load(source: &str) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
-        Rc::from(src),
+        Rc::from(source),
         SourceOrigin::File(PathBuf::from("t.ns")),
     )
     .expect("resolve");
-    let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
-    (interp, class)
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
+    (interpreter, class)
 }
 
-/// The object `root` holds, for the heap accessors that take one.
-fn obj(interp: &Interpreter, root: &Root) -> ns_runtime::ObjRef {
-    match interp.fetch(root) {
-        Value::Obj(obj) => obj,
+/// The object `root` holds, for the heap accessors that take one. Every
+/// caller is already inside an entry.
+fn object<'gc>(mutator: &Mutator<'gc>, root: &Root) -> ns_runtime::ObjectReference<'gc> {
+    match mutator.fetch(root) {
+        Value::Object(object) => object,
         _ => panic!("expected an object"),
     }
 }
 
-fn root_mixin(interp: &Interpreter, class: &Root) -> Rc<Mixin> {
-    interp
-        .heap_ref()
-        .class_application(obj(interp, class))
-        .unwrap_or_else(|| panic!("not a class"))
-        .mixin
-        .clone()
+fn root_mixin(interpreter: &mut Interpreter, class: &Root) -> Rc<Mixin> {
+    interpreter.enter(|mutator| {
+        mutator
+            .heap()
+            .class_application(object(mutator, class))
+            .unwrap_or_else(|| panic!("not a class"))
+            .mixin
+            .clone()
+    })
 }
 
 #[test]
 fn loading_compiles_every_method_and_the_initializer_onto_the_mixin() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -49,30 +52,33 @@ fn loading_compiles_every_method_and_the_initializer_onto_the_mixin() {
           bar = ( ^2 )
         ) : ()
     "};
-    let (interp, class) = load(src);
-    let mixin = root_mixin(&interp, &class);
+    let (mut interpreter, class) = load(source);
+    let mixin = root_mixin(&mut interpreter, &class);
     assert_eq!(mixin.methods.len(), 2);
     for method in mixin.methods.values() {
         assert_eq!(method.code.kind, CodeKind::Method);
         assert!(matches!(
-            method.code.instrs.last(),
-            Some(Instr::Return { .. })
+            method.code.instructions.last(),
+            Some(Instruction::Return { .. })
         ));
     }
-    let init = mixin
+    let initializer = mixin
         .initializer_code
         .as_ref()
         .expect("root initializer compiled");
-    assert_eq!(init.kind, CodeKind::Initializer);
+    assert_eq!(initializer.kind, CodeKind::Initializer);
     assert_eq!(
-        init.instrs,
-        vec![Instr::LoadSelf { dst: 0 }, Instr::ImplicitReturn { reg: 0 }]
+        initializer.instructions,
+        vec![
+            Instruction::LoadSelf { destination: 0 },
+            Instruction::ImplicitReturn { register: 0 }
+        ]
     );
 }
 
 #[test]
 fn the_method_dispatch_finds_carries_its_body() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -80,22 +86,24 @@ fn the_method_dispatch_finds_carries_its_body() {
           foo = ( ^1 )
         ) : ()
     "};
-    let (interp, class) = load(src);
+    let (mut interpreter, class) = load(source);
     // Access-blind: the fixture's unmarked `foo` is protected, which
     // `lookup_public` would not find.
-    match ns_runtime::dispatch::lookup_defined_for(
-        interp.heap_ref(),
-        obj(&interp, &class),
-        Symbol::intern("foo"),
-    ) {
-        Lookup::Method(method, _) => assert_eq!(method.code.kind, CodeKind::Method),
-        _ => panic!("expected a method"),
-    }
+    interpreter.enter(|mutator| {
+        match ns_runtime::dispatch::lookup_defined_for(
+            mutator.heap(),
+            object(mutator, &class),
+            Symbol::intern("foo"),
+        ) {
+            Lookup::Method(method, _) => assert_eq!(method.code.kind, CodeKind::Method),
+            _ => panic!("expected a method"),
+        }
+    });
 }
 
 #[test]
-fn the_initializer_lowers_slots_then_init_exprs_with_own_slot_indices() {
-    let src = indoc! {"
+fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indices() {
+    let source = indoc! {"
         Newspeak3
         'T'
         class Foo x: a = Object new (
@@ -104,61 +112,64 @@ fn the_initializer_lowers_slots_then_init_exprs_with_own_slot_indices() {
         ) (
         ) : ()
     "};
-    let (interp, class) = load(src);
-    let init = root_mixin(&interp, &class)
+    let (mut interpreter, class) = load(source);
+    let initializer = root_mixin(&mut interpreter, &class)
         .initializer_code
         .clone()
         .expect("an initializer");
-    assert_eq!(init.kind, CodeKind::Initializer);
+    assert_eq!(initializer.kind, CodeKind::Initializer);
     assert_eq!(
-        init.num_args, 1,
+        initializer.argument_count, 1,
         "the factory parameter `a` is the one argument"
     );
     assert_eq!(
-        init.instrs,
+        initializer.instructions,
         vec![
             // `p = a.` -- `a` is register 0, written straight into own
             // slot 0 (the VM adds the frame's `slot_base` at run
             // time to get the absolute field index).
-            Instr::InitSlot {
-                src: 0,
+            Instruction::InitializeSlot {
+                source: 0,
                 own_index: 0
             },
             // `q ::= 5.`
-            Instr::LoadLiteral {
-                dst: 1,
-                literal: Literal::SmallInt(5)
+            Instruction::LoadLiteral {
+                destination: 1,
+                literal: Literal::SmallInteger(5)
             },
-            Instr::InitSlot {
-                src: 1,
+            Instruction::InitializeSlot {
+                source: 1,
                 own_index: 1
             },
             // `q := p.` -- slot reads/writes are lexical sends.
-            Instr::SendLexical {
+            Instruction::SendLexical {
                 depth: 0,
                 selector: Symbol::intern("p"),
-                arg_regs: vec![],
-                dst: 1,
+                argument_registers: vec![],
+                destination: 1,
                 call_site: CallSite { call_site_id: 3 },
             },
-            Instr::SendLexical {
+            Instruction::SendLexical {
                 depth: 0,
                 selector: Symbol::intern("q:"),
-                arg_regs: vec![1],
-                dst: 2,
+                argument_registers: vec![1],
+                destination: 2,
                 call_site: CallSite { call_site_id: 4 },
             },
-            Instr::LoadSelf { dst: 3 },
-            Instr::ImplicitReturn { reg: 3 },
+            Instruction::LoadSelf { destination: 3 },
+            Instruction::ImplicitReturn { register: 3 },
         ]
     );
-    assert_eq!(init.statement_pc, vec![(0, 0..1), (1, 1..3), (2, 3..5)]);
-    assert_eq!(init.num_registers, 4);
+    assert_eq!(
+        initializer.statement_program_counter,
+        vec![(0, 0..1), (1, 1..3), (2, 3..5)]
+    );
+    assert_eq!(initializer.register_count, 4);
 }
 
 #[test]
 fn an_uninitialized_slot_emits_nothing() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -166,27 +177,31 @@ fn an_uninitialized_slot_emits_nothing() {
         ) (
         ) : ()
     "};
-    let (interp, class) = load(src);
-    let init = root_mixin(&interp, &class)
+    let (mut interpreter, class) = load(source);
+    let initializer = root_mixin(&mut interpreter, &class)
         .initializer_code
         .clone()
         .expect("an initializer");
-    let init_slots: Vec<u32> = init
-        .instrs
+    let initialize_slots: Vec<u32> = initializer
+        .instructions
         .iter()
-        .filter_map(|i| match i {
-            Instr::InitSlot { own_index, .. } => Some(*own_index),
+        .filter_map(|instruction| match instruction {
+            Instruction::InitializeSlot { own_index, .. } => Some(*own_index),
             _ => None,
         })
         .collect();
-    assert_eq!(init_slots, vec![1], "only `b` (field 1) has an initializer");
-    assert_eq!(init.statement_pc.len(), 1);
+    assert_eq!(
+        initialize_slots,
+        vec![1],
+        "only `b` (field 1) has an initializer"
+    );
+    assert_eq!(initializer.statement_program_counter.len(), 1);
 }
 
 /// The property that matters: loading compiles the *whole* mixin tree --
 /// nested declarations and class sides, not only the root's own method
 /// table.
-const NESTED_SRC: &str = indoc! {"
+const NESTED_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'
     class Outer usingPlatform: p = Object new () (
@@ -201,8 +216,8 @@ const NESTED_SRC: &str = indoc! {"
 
 #[test]
 fn every_mixin_in_the_tree_gets_its_bodies() {
-    let (interp, class) = load(NESTED_SRC);
-    let mixin = root_mixin(&interp, &class);
+    let (mut interpreter, class) = load(NESTED_SOURCE);
+    let mixin = root_mixin(&mut interpreter, &class);
 
     // The nested mixin's own method must be compiled -- proof the tree was
     // compiled past the root's own method table into `nested`.

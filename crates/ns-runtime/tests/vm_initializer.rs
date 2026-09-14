@@ -6,52 +6,61 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::{
-    BuiltinClass, ClassData, ClassRef, FrameKind, HostResult, HostSignal, Interpreter, Mixin,
+    BuiltinClass, ClassData, FrameKind, HostResult, HostSignal, Interpreter, Mixin,
     MixinApplication, ObjectData, Root, SourceOrigin, Symbol, Value,
 };
 use ns_syntax::Span;
 
-fn load(src: &str) -> (Interpreter, Root) {
-    let module = ns_syntax::parse(src).expect("parse");
+fn load(source: &str) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
-        Rc::from(src),
+        Rc::from(source),
         SourceOrigin::File(PathBuf::from("t.ns")),
     )
     .expect("resolve");
-    let mut interp = Interpreter::bootstrap();
-    let class = interp.load_module(&resolved);
-    (interp, class)
+    let mut interpreter = Interpreter::bootstrap();
+    let class = interpreter.load_module(&resolved);
+    (interpreter, class)
 }
 
 fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
         Ok(root) => root,
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
-        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
+        Err(HostSignal::Error(error)) => {
+            panic!("{what}: unexpected Newspeak error: {}", error.message)
+        }
     }
 }
 
-fn int_of(v: &Value) -> i64 {
-    match v {
-        Value::SmallInt(n) => *n,
-        _ => panic!("expected a SmallInt"),
+fn integer_of<'gc>(value: &Value<'gc>) -> i64 {
+    match value {
+        Value::SmallInteger(integer) => *integer,
+        _ => panic!("expected a SmallInteger"),
     }
 }
 
-/// Instantiates with `factory_args`, sends `getter`, returns the result.
-fn instantiate_and_get(src: &str, factory_args: Vec<Value>, getter: &str) -> Value {
-    let (mut interp, class) = load(src);
-    let factory_args: Vec<Root> = factory_args
+/// Instantiates with `factory_arguments`, sends `getter`, returns the
+/// `SmallInteger` it answers.
+fn instantiate_and_get(source: &str, factory_arguments: Vec<Value<'static>>, getter: &str) -> i64 {
+    let (mut interpreter, class) = load(source);
+    let factory_arguments: Vec<Root> = factory_arguments
         .into_iter()
-        .map(|arg| interp.stash(arg))
+        .map(|argument| interpreter.stash(argument))
         .collect();
-    let instance = expect_ok(interp.instantiate(&class, &factory_args), "instantiate");
-    let result = expect_ok(interp.send(&instance, Symbol::intern(getter), &[]), getter);
-    interp.fetch(&result)
+    let instance = expect_ok(
+        interpreter.instantiate(&class, &factory_arguments),
+        "instantiate",
+    );
+    let result = expect_ok(
+        interpreter.send(&instance, Symbol::intern(getter), &[]),
+        getter,
+    );
+    interpreter.enter(|mutator| integer_of(&mutator.fetch(&result)))
 }
 
-const FACTORY_PARAM: &str = indoc! {"
+const FACTORY_PARAMETER: &str = indoc! {"
     Newspeak3
     'T'
     class Foo x: a = Object new (
@@ -60,7 +69,7 @@ const FACTORY_PARAM: &str = indoc! {"
       public p2 = ( ^p )
     ) : ()
 "};
-const INIT_EXPRS: &str = indoc! {"
+const INITIALIZER_EXPRESSIONS: &str = indoc! {"
     Newspeak3
     'T'
     class Foo = Object new (
@@ -73,19 +82,19 @@ const INIT_EXPRS: &str = indoc! {"
 
 #[test]
 fn a_slot_initializer_reads_a_factory_parameter() {
-    let v = instantiate_and_get(FACTORY_PARAM, vec![Value::SmallInt(7)], "p2");
-    assert_eq!(int_of(&v), 7);
+    let value = instantiate_and_get(FACTORY_PARAMETER, vec![Value::SmallInteger(7)], "p2");
+    assert_eq!(value, 7);
 }
 
 #[test]
-fn init_exprs_run_after_slot_initializers() {
-    let v = instantiate_and_get(INIT_EXPRS, vec![], "r2");
-    assert_eq!(int_of(&v), 6);
+fn initializer_expressions_run_after_slot_initializers() {
+    let value = instantiate_and_get(INITIALIZER_EXPRESSIONS, vec![], "r2");
+    assert_eq!(value, 6);
 }
 
 #[test]
 fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initializer_frame() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Foo = Object new (
@@ -94,30 +103,35 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
           public blk2 = ( ^blk )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
-    let v = expect_ok(interp.send(&instance, Symbol::intern("blk2"), &[]), "blk2");
-    let Value::Obj(obj) = &interp.fetch(&v) else {
-        panic!("expected a closure object")
-    };
-    let closure = interp
-        .heap_ref()
-        .closure_data(*obj)
-        .unwrap_or_else(|| panic!("expected a closure"));
-    assert_eq!(closure.code.num_args, 0);
-    assert!(matches!(
-        interp.heap_ref().frame_kind(closure.home),
-        FrameKind::Initializer(_)
-    ));
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let value = expect_ok(
+        interpreter.send(&instance, Symbol::intern("blk2"), &[]),
+        "blk2",
+    );
+    interpreter.enter(|mutator| {
+        let Value::Object(object) = mutator.fetch(&value) else {
+            panic!("expected a closure object")
+        };
+        let closure = mutator
+            .heap()
+            .closure_data(object)
+            .unwrap_or_else(|| panic!("expected a closure"));
+        assert_eq!(closure.code.argument_count, 0);
+        assert!(matches!(
+            mutator.heap().frame_kind(closure.home),
+            FrameKind::Initializer(_)
+        ));
+    });
 }
 
 #[test]
-fn a_return_inside_a_block_in_init_exprs_escapes_instantiate() {
+fn a_return_inside_a_block_in_initializer_expressions_escapes_instantiate() {
     // A known gap (`docs/design/execution.md`, "Non-local return"): the
     // `Signal::Return` targets the initializer activation, which is still
     // running, and nothing catches it: the host receives it as
     // `HostSignal::Return`.
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Foo = Object new (
@@ -126,45 +140,45 @@ fn a_return_inside_a_block_in_init_exprs_escapes_instantiate() {
         ) (
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let result = interp.instantiate(&class, &[]);
+    let (mut interpreter, class) = load(source);
+    let result = interpreter.instantiate(&class, &[]);
     assert!(matches!(result, Err(HostSignal::Return)));
 }
 
 #[test]
 fn a_factory_arity_mismatch_is_still_the_shared_error() {
-    let (mut interp, class) = load(FACTORY_PARAM);
-    match interp.instantiate(&class, &[]) {
-        Err(HostSignal::Error(e)) => assert!(
-            e.message.contains("wrong number of factory arguments"),
+    let (mut interpreter, class) = load(FACTORY_PARAMETER);
+    match interpreter.instantiate(&class, &[]) {
+        Err(HostSignal::Error(error)) => assert!(
+            error.message.contains("wrong number of factory arguments"),
             "{}",
-            e.message
+            error.message
         ),
         _ => panic!("expected the arity error"),
     }
 }
 
 // ---------------------------------------------------------------------------
-// `InitSlot`'s field index must be relative to the mixin, not baked in
+// `InitializeSlot`'s field index must be relative to the mixin, not baked in
 // absolute at compile time.
 // ---------------------------------------------------------------------------
 
-/// A bare `SlotDecl` with no initializer -- only its presence (for the slot
-/// count) matters here, exactly like `tests/mixin.rs`'s own helper of the
+/// A bare `SlotDeclaration` with no initializer -- only its presence (for the
+/// slot count) matters here, exactly like `tests/mixin.rs`'s own helper of the
 /// same shape.
-fn slot_decl(name: &str) -> ns_runtime::mixin::MixinSlot {
-    ns_runtime::mixin::MixinSlot::from_decl(raw_slot_decl(name))
+fn slot_declaration(name: &str) -> ns_runtime::mixin::MixinSlot {
+    ns_runtime::mixin::MixinSlot::from_declaration(raw_slot_declaration(name))
 }
 
-fn raw_slot_decl(name: &str) -> Rc<ns_syntax::ast::SlotDecl> {
-    Rc::new(ns_syntax::ast::SlotDecl {
+fn raw_slot_declaration(name: &str) -> Rc<ns_syntax::ast::SlotDeclaration> {
+    Rc::new(ns_syntax::ast::SlotDeclaration {
         access: None,
-        name: ns_syntax::ast::Ident {
+        name: ns_syntax::ast::Identifier {
             name: name.to_string(),
             span: Span::new(0, 0),
         },
         mutability: ns_syntax::ast::SlotMutability::Immutable,
-        init: None,
+        initializer: None,
         span: Span::new(0, 0),
     })
 }
@@ -174,39 +188,42 @@ fn raw_slot_decl(name: &str) -> Rc<ns_syntax::ast::SlotDecl> {
 /// test is to apply *one* mixin to two different superclass shapes, which
 /// `load_module` cannot do (it always builds a fresh `Mixin` per module).
 fn make_class(
-    interp: &mut Interpreter,
-    class_of_class: ClassRef,
+    interpreter: &mut Interpreter,
+    class_of_class: BuiltinClass,
     application: Rc<MixinApplication>,
 ) -> Root {
-    let class = interp.heap_mut().alloc_object(
-        class_of_class,
-        ObjectData::Class(ClassData {
-            application,
-            enclosing: None,
-            declaring_class: None,
-            // Deliberately no class-object superclass link: this test only
-            // checks where the mixin's *own* slot lands, never a superclass
-            // level's own slots, so `climb_levels` (which walks
-            // this field, not the application's) finding no level above
-            // this one is exactly right.
-            superclass: None,
-            builtin: None,
-            metaclass: None,
-        }),
-    );
-    interp.stash(Value::Obj(class))
+    interpreter.enter(|mutator| {
+        let class_of_class = mutator.builtin_class(class_of_class);
+        let class = mutator.heap_mut().allocate_object(
+            class_of_class,
+            ObjectData::Class(ClassData {
+                application,
+                enclosing: None,
+                declaring_class: None,
+                // Deliberately no class-object superclass link: this test
+                // only checks where the mixin's *own* slot lands, never a
+                // superclass level's own slots, so `climb_levels` (which
+                // walks this field, not the application's) finding no level
+                // above this one is exactly right.
+                superclass: None,
+                builtin: None,
+                metaclass: None,
+            }),
+        );
+        mutator.stash(Value::Object(class))
+    })
 }
 
-/// The `SmallInt` held at `instance`'s field `index` -- `Value` has no
+/// The `SmallInteger` held at `instance`'s field `index` -- `Value` has no
 /// `PartialEq`, so this reads through the one variant the test needs
 /// instead of comparing `Value`s directly.
-fn field_at(heap: &ns_runtime::Heap, instance: &Value, index: usize) -> i64 {
-    let Value::Obj(obj) = instance else {
+fn field_at<'gc>(heap: &ns_runtime::Heap<'gc>, instance: &Value<'gc>, index: usize) -> i64 {
+    let Value::Object(object) = instance else {
         panic!("expected an instance")
     };
-    match heap.instance_field(*obj, index) {
-        Some(Value::SmallInt(n)) => n,
-        Some(_) => panic!("expected field {index} to hold a SmallInt"),
+    match heap.instance_field(*object, index) {
+        Some(Value::SmallInteger(integer)) => integer,
+        Some(_) => panic!("expected field {index} to hold a SmallInteger"),
         None => panic!("expected an Instance payload"),
     }
 }
@@ -214,7 +231,7 @@ fn field_at(heap: &ns_runtime::Heap, instance: &Value, index: usize) -> i64 {
 #[test]
 fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_ones_absolute_offset()
 {
-    // `InitSlot` must not carry an ABSOLUTE field index, baked in at
+    // `InitializeSlot` must not carry an ABSOLUTE field index, baked in at
     // compile time from whichever class the compiler happens to be called
     // against: the compiled initializer is shared by *every* application of
     // its mixin (it lives on the mixin, not on a class object, per §6.2).
@@ -223,14 +240,14 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     // lands, so an absolute index could only be right for one of them. The
     // failure is general, not nested-class-only -- reproducing it needs one
     // `Rc<Mixin>` applied to two different superclasses, which only happens
-    // by calling `Interpreter::apply_mixin` directly (`load_module` always
+    // by calling `Mutator::apply_mixin` directly (`load_module` always
     // builds a fresh `Mixin` per module, so two ordinary loaded classes
     // never share one).
     //
     // The mixin is the one `load_module` built, so the initializer it
     // compiled for it -- keyed by that mixin -- is the one both hand-made
     // applications run.
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Shared x: a = Object new (
@@ -238,70 +255,91 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
         ) (
         ) : ()
     "};
-    let (mut interp, loaded) = load(src);
-    let Value::Obj(loaded) = interp.fetch(&loaded) else {
-        panic!("load_module answers a class object")
-    };
-    let shared_mixin = interp
-        .heap_ref()
-        .class_application(loaded)
-        .expect("a class object")
-        .mixin
-        .clone();
-    let object_class = interp.builtin_class(BuiltinClass::Object);
+    let (mut interpreter, loaded) = load(source);
+    let shared_mixin = interpreter.enter(|mutator| {
+        let Value::Object(loaded) = mutator.fetch(&loaded) else {
+            panic!("load_module answers a class object")
+        };
+        mutator
+            .heap()
+            .class_application(loaded)
+            .expect("a class object")
+            .mixin
+            .clone()
+    });
 
     // Two structurally different superclass shapes for the same mixin: one
     // application inherits two slots (own_slot_base must be 2), the other
     // inherits none (own_slot_base must be 0).
-    let two_slots = Rc::new(Mixin {
-        slots: vec![slot_decl("p"), slot_decl("q")],
-        ..Mixin::empty(Symbol::intern("TwoSlots"))
+    let (a_application, b_application) = interpreter.enter(|mutator| {
+        let two_slots = Rc::new(Mixin {
+            slots: vec![slot_declaration("p"), slot_declaration("q")],
+            ..Mixin::empty(Symbol::intern("TwoSlots"))
+        });
+        let two_slot_super = mutator.apply_mixin(&two_slots, None);
+        let a_application = mutator.apply_mixin(&shared_mixin, Some(&two_slot_super));
+        let b_application = mutator.apply_mixin(&shared_mixin, None);
+        (a_application, b_application)
     });
-    let two_slot_super = interp.apply_mixin(&two_slots, None);
-
-    let app_a = interp.apply_mixin(&shared_mixin, Some(&two_slot_super));
-    let app_b = interp.apply_mixin(&shared_mixin, None);
     assert_ne!(
-        app_a.own_slot_base, app_b.own_slot_base,
+        a_application.own_slot_base, b_application.own_slot_base,
         "the setup must actually give the two applications different bases"
     );
 
-    let class_a = make_class(&mut interp, object_class, app_a.clone());
-    let class_b = make_class(&mut interp, object_class, app_b.clone());
+    let a_class = make_class(
+        &mut interpreter,
+        BuiltinClass::Object,
+        a_application.clone(),
+    );
+    let b_class = make_class(
+        &mut interpreter,
+        BuiltinClass::Object,
+        b_application.clone(),
+    );
 
-    let a = expect_ok(
-        interp.instantiate(&class_a, &[interp.stash(Value::SmallInt(11))]),
+    let a_instance = expect_ok(
+        interpreter.instantiate(&a_class, &[interpreter.stash(Value::SmallInteger(11))]),
         "instantiate a",
     );
-    let b = expect_ok(
-        interp.instantiate(&class_b, &[interp.stash(Value::SmallInt(22))]),
+    let b_instance = expect_ok(
+        interpreter.instantiate(&b_class, &[interpreter.stash(Value::SmallInteger(22))]),
         "instantiate b",
     );
-    assert_eq!(
-        field_at(interp.heap_ref(), &interp.fetch(&a), app_a.own_slot_base),
-        11,
-        "a's own slot must land at its own application's absolute offset"
-    );
-    assert_eq!(
-        field_at(interp.heap_ref(), &interp.fetch(&b), app_b.own_slot_base),
-        22,
-        "b's own slot must land at its own application's absolute offset"
-    );
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            field_at(
+                mutator.heap(),
+                &mutator.fetch(&a_instance),
+                a_application.own_slot_base
+            ),
+            11,
+            "a's own slot must land at its own application's absolute offset"
+        );
+        assert_eq!(
+            field_at(
+                mutator.heap(),
+                &mutator.fetch(&b_instance),
+                b_application.own_slot_base
+            ),
+            22,
+            "b's own slot must land at its own application's absolute offset"
+        );
+    });
 }
 
 /// A real three-level chain -- `Leaf` -> `Middle` -> `Base`, each level
 /// declaring two slots of its own and passing an argument up through its
 /// superclass clause.
 ///
-/// Until the clause's message was evaluated per level, no test ran two
-/// compiled `InitSlot` bodies in one chain, so the per-level `slot_base` a
-/// mixin-relative `own_index` is offset by was only ever proven by
-/// inspection. Here `Base`'s slots must land at 0-1, `Middle`'s at 2-3 and
-/// `Leaf`'s at 4-5 of the *same* instance: a level running with another
-/// level's base overwrites its superclass's slots instead of its own.
+/// Until the clause's message was evaluated per level, no test ran two compiled
+/// `InitializeSlot` bodies in one chain, so the per-level `slot_base` a
+/// mixin-relative `own_index` is offset by was only ever proven by inspection.
+/// Here `Base`'s slots must land at 0-1, `Middle`'s at 2-3 and `Leaf`'s at 4-5
+/// of the *same* instance: a level running with another level's base overwrites
+/// its superclass's slots instead of its own.
 #[test]
 fn a_three_level_chain_initializes_every_level_at_its_own_absolute_offsets() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Levels = Object new () (
@@ -313,21 +351,26 @@ fn a_three_level_chain_initializes_every_level_at_its_own_absolute_offsets() {
             )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
-    let module = expect_ok(interp.instantiate(&class, &[]), "instantiate Levels");
-    let leaf_class = expect_ok(interp.send(&module, Symbol::intern("Leaf"), &[]), "Leaf");
+    let (mut interpreter, class) = load(source);
+    let module = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Levels");
+    let leaf_class = expect_ok(
+        interpreter.send(&module, Symbol::intern("Leaf"), &[]),
+        "Leaf",
+    );
     let leaf = expect_ok(
-        interp.send(&leaf_class, Symbol::intern("new"), &[]),
+        interpreter.send(&leaf_class, Symbol::intern("new"), &[]),
         "Leaf new",
     );
-    let leaf = interp.fetch(&leaf);
     // `Middle withMiddle: 2` -> `Base withBase: 2 + 1`, so the deepest
     // level's own argument is the one its own clause computed.
-    for (index, expected) in [(0, 3), (1, 10), (2, 2), (3, 20), (4, 3), (5, 30)] {
-        assert_eq!(
-            field_at(interp.heap_ref(), &leaf, index),
-            expected,
-            "field {index} holds the wrong level's value"
-        );
-    }
+    interpreter.enter(|mutator| {
+        let leaf = mutator.fetch(&leaf);
+        for (index, expected) in [(0, 3), (1, 10), (2, 2), (3, 20), (4, 3), (5, 30)] {
+            assert_eq!(
+                field_at(mutator.heap(), &leaf, index),
+                expected,
+                "field {index} holds the wrong level's value"
+            );
+        }
+    });
 }

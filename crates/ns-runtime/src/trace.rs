@@ -1,8 +1,8 @@
 //! What the collector traces (`docs/design/memory.md`, "What the collector
-//! traces"): every field of every runtime type that holds an `ObjRef`, a
-//! `ClassRef` or a `FrameRef`, handed to a `Tracer` one `&mut` at a time.
-//! Enumerating is this module's; rewriting is `heap.rs`'s `Forwarder`, since
-//! only `heap.rs` can mint a handle.
+//! traces"): every field of every runtime type that holds an `ObjectReference`,
+//! a `ClassReference` or a `FrameReference`, handed to a `Tracer` one `&mut` at
+//! a time. Enumerating is this module's; rewriting is `heap.rs`'s `Forwarder`,
+//! since only `heap.rs` can mint a handle.
 //!
 //! Every impl names every field and matches every variant, with no `..` and
 //! no `_`: a field or variant added later fails to compile here until
@@ -12,16 +12,16 @@
 //!
 //! Debug builds only, until the collector (step 5) needs it in every build.
 
-use crate::heap::{FrameRef, ObjRef};
+use crate::heap::{FrameReference, ObjectReference};
 use crate::types::*;
 
 pub(crate) trait Tracer {
-    fn object(&mut self, handle: &mut ObjRef);
-    fn frame(&mut self, handle: &mut FrameRef);
-    fn value(&mut self, value: &mut Value) {
+    fn object(&mut self, handle: &mut ObjectReference<'_>);
+    fn frame(&mut self, handle: &mut FrameReference<'_>);
+    fn value(&mut self, value: &mut Value<'_>) {
         match value {
-            Value::Obj(handle) => self.object(handle),
-            Value::Nil | Value::Bool(_) | Value::SmallInt(_) | Value::Float(_) => {}
+            Value::Object(handle) => self.object(handle),
+            Value::Nil | Value::Boolean(_) | Value::SmallInteger(_) | Value::Float(_) => {}
         }
     }
 }
@@ -30,19 +30,19 @@ pub(crate) trait Trace {
     fn trace<T: Tracer>(&mut self, tracer: &mut T);
 }
 
-fn trace_values<T: Tracer>(values: &mut [Value], tracer: &mut T) {
+fn trace_values<T: Tracer>(values: &mut [Value<'_>], tracer: &mut T) {
     for value in values {
         tracer.value(value);
     }
 }
 
-fn trace_optional_object<T: Tracer>(handle: &mut Option<ObjRef>, tracer: &mut T) {
+fn trace_optional_object<T: Tracer>(handle: &mut Option<ObjectReference<'_>>, tracer: &mut T) {
     if let Some(handle) = handle {
         tracer.object(handle);
     }
 }
 
-impl Trace for Object {
+impl Trace for Object<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let Object {
             class,
@@ -54,23 +54,23 @@ impl Trace for Object {
     }
 }
 
-impl Trace for ObjectData {
+impl Trace for ObjectData<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
             ObjectData::Instance(values) | ObjectData::Array(values) => {
                 trace_values(values, tracer)
             }
-            ObjectData::Str(_) | ObjectData::Sym(_) => {}
+            ObjectData::String(_) | ObjectData::Symbol(_) => {}
             ObjectData::Closure(closure) => closure.trace(tracer),
             ObjectData::Class(class) => class.trace(tracer),
         }
     }
 }
 
-impl Trace for ClosureData {
+impl Trace for ClosureData<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let ClosureData {
-            params: _,
+            parameters: _,
             code: _,
             captured_frame,
             home,
@@ -80,7 +80,7 @@ impl Trace for ClosureData {
     }
 }
 
-impl Trace for ClassData {
+impl Trace for ClassData<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         // `application` holds no handle: a mixin application is behaviour,
         // shared by every class object built from it.
@@ -99,13 +99,13 @@ impl Trace for ClassData {
     }
 }
 
-impl Trace for Frame {
+impl Trace for Frame<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let Frame {
             receiver,
-            args,
-            temps,
-            pc: _,
+            arguments,
+            temporaries,
+            program_counter: _,
             sender,
             home,
             current_class,
@@ -114,8 +114,8 @@ impl Trace for Frame {
             slot_base: _,
         } = self;
         tracer.value(receiver);
-        trace_values(args, tracer);
-        trace_values(temps, tracer);
+        trace_values(arguments, tracer);
+        trace_values(temporaries, tracer);
         if let Some(sender) = sender {
             tracer.frame(sender);
         }
@@ -127,7 +127,7 @@ impl Trace for Frame {
     }
 }
 
-impl Trace for FrameKind {
+impl Trace for FrameKind<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
             FrameKind::Method(_) | FrameKind::TopLevel => {}
@@ -139,7 +139,7 @@ impl Trace for FrameKind {
     }
 }
 
-impl Trace for Continuation {
+impl Trace for Continuation<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
             Continuation::Deliver | Continuation::Truthy => {}
@@ -153,7 +153,7 @@ impl Trace for Continuation {
     }
 }
 
-impl Trace for WhileLoop {
+impl Trace for WhileLoop<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let WhileLoop {
             condition,
@@ -165,7 +165,7 @@ impl Trace for WhileLoop {
     }
 }
 
-impl Trace for DoLoop {
+impl Trace for DoLoop<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let DoLoop {
             receiver,
@@ -179,7 +179,7 @@ impl Trace for DoLoop {
     }
 }
 
-impl Trace for NestedClassCreation {
+impl Trace for NestedClassCreation<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let NestedClassCreation {
             enclosing,
@@ -192,7 +192,7 @@ impl Trace for NestedClassCreation {
     }
 }
 
-impl Trace for Instantiation {
+impl Trace for Instantiation<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let Instantiation {
             instance,
@@ -200,15 +200,15 @@ impl Trace for Instantiation {
             phase,
         } = self;
         tracer.value(instance);
-        for (level, args) in levels {
+        for (level, arguments) in levels {
             tracer.object(level);
-            trace_values(args, tracer);
+            trace_values(arguments, tracer);
         }
         phase.trace(tracer);
     }
 }
 
-impl Trace for InstantiationPhase {
+impl Trace for InstantiationPhase<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
             InstantiationPhase::Climbing { level, superclass } => {

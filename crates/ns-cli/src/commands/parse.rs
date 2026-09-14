@@ -6,14 +6,14 @@ use std::process::ExitCode;
 use crate::source::print_diagnostics;
 
 pub(crate) fn execute(file: &Path, ast: bool) -> ExitCode {
-    let src = match std::fs::read_to_string(file) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("{}: error: {e}", file.display());
+    let source = match std::fs::read_to_string(file) {
+        Ok(source) => source,
+        Err(error) => {
+            eprintln!("{}: error: {error}", file.display());
             return ExitCode::FAILURE;
         }
     };
-    match ns_syntax::parse(&src) {
+    match ns_syntax::parse(&source) {
         Ok(module) => {
             if ast {
                 println!("{module:#?}");
@@ -21,8 +21,8 @@ pub(crate) fn execute(file: &Path, ast: bool) -> ExitCode {
             println!("OK {}", file.display());
             ExitCode::SUCCESS
         }
-        Err(diags) => {
-            print_diagnostics(file, &src, &diags);
+        Err(diagnostics) => {
+            print_diagnostics(file, &source, &diagnostics);
             ExitCode::FAILURE
         }
     }

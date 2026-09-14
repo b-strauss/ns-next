@@ -7,22 +7,22 @@ use indoc::indoc;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use ns_runtime::bytecode::Instr;
+use ns_runtime::bytecode::Instruction;
 use ns_runtime::{
     HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol, Value,
 };
 
-fn load(src: &str, lowering: Lowering) -> (Interpreter, Root) {
-    let module = ns_syntax::parse(src).expect("parse");
+fn load(source: &str, lowering: Lowering) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
-        Rc::from(src),
+        Rc::from(source),
         SourceOrigin::File(PathBuf::from("t.ns")),
     )
     .expect("resolve");
-    let mut interp = Interpreter::bootstrap_with(lowering);
-    let class = interp.load_module(&resolved);
-    (interp, class)
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&resolved);
+    (interpreter, class)
 }
 
 /// `HostSignal` carries no `Debug` impl, so `Result::expect` is unusable on
@@ -31,7 +31,9 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
         Ok(root) => root,
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
-        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
+        Err(HostSignal::Error(error)) => {
+            panic!("{what}: unexpected Newspeak error: {}", error.message)
+        }
     }
 }
 
@@ -70,27 +72,27 @@ fn every_program_answers_the_same_under_both_lowerings() {
         ("chained", 10),
     ];
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load(PROGRAMS, lowering);
-        let instance = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+        let (mut interpreter, class) = load(PROGRAMS, lowering);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         for (selector, answer) in expected {
             let value = expect_ok(
-                interp.send(&instance, Symbol::intern(selector), &[]),
+                interpreter.send(&instance, Symbol::intern(selector), &[]),
                 selector,
             );
             assert!(
-                matches!(interp.fetch(&value), Value::SmallInt(n) if n == answer),
+                interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::SmallInteger(integer) if integer == answer)),
                 "{selector} under {lowering:?} did not answer {answer}"
             );
         }
     }
 }
 
-/// An initializer is each own slot's initializer followed by `InitSlot`, one
-/// statement apiece, then the `initExprs`, then `self` -- with nothing inlined
-/// and every value in a register of its own.
+/// An initializer is each own slot's initializer followed by `InitializeSlot`,
+/// one statement apiece, then the `initExprs`, then `self` -- with nothing
+/// inlined and every value in a register of its own.
 #[test]
 fn a_reference_initializer_initializes_each_slot_then_answers_self() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class X = Object new (
@@ -99,58 +101,75 @@ fn a_reference_initializer_initializes_each_slot_then_answers_self() {
         ) (
         ) : ()
     "};
-    let (interp, class) = load(src, Lowering::Reference);
-    let Value::Obj(class) = interp.fetch(&class) else {
-        panic!("load_module answers a class object")
-    };
-    let mixin = interp
-        .heap_ref()
-        .class_application(class)
-        .expect("a class")
-        .mixin
-        .clone();
-    let code = mixin.initializer_code.clone().expect("an initializer");
-    assert!(matches!(code.instrs[0], Instr::LoadLiteral { dst: 0, .. }));
+    let (mut interpreter, class) = load(source, Lowering::Reference);
+    let code = interpreter.enter(|mutator| {
+        let Value::Object(class) = mutator.fetch(&class) else {
+            panic!("load_module answers a class object")
+        };
+        let mixin = mutator
+            .heap()
+            .class_application(class)
+            .expect("a class")
+            .mixin
+            .clone();
+        mixin.initializer_code.clone().expect("an initializer")
+    });
+    assert!(matches!(
+        code.instructions[0],
+        Instruction::LoadLiteral { destination: 0, .. }
+    ));
     assert_eq!(
-        code.instrs[1],
-        Instr::InitSlot {
-            src: 0,
+        code.instructions[1],
+        Instruction::InitializeSlot {
+            source: 0,
             own_index: 0
         }
     );
-    assert!(matches!(code.instrs[2], Instr::LoadLiteral { dst: 1, .. }));
+    assert!(matches!(
+        code.instructions[2],
+        Instruction::LoadLiteral { destination: 1, .. }
+    ));
     assert_eq!(
-        code.instrs[3],
-        Instr::InitSlot {
-            src: 1,
+        code.instructions[3],
+        Instruction::InitializeSlot {
+            source: 1,
             own_index: 1
         }
     );
     assert!(matches!(
-        &code.instrs[4],
-        Instr::SendLexical { selector, arg_regs, dst: 2, .. }
-            if *selector == Symbol::intern("a") && arg_regs.is_empty()
+        &code.instructions[4],
+        Instruction::SendLexical { selector, argument_registers, destination: 2, .. }
+            if *selector == Symbol::intern("a") && argument_registers.is_empty()
     ));
     assert!(matches!(
-        &code.instrs[5],
-        Instr::SendPublic { selector, receiver_reg: 2, dst: 3, .. }
+        &code.instructions[5],
+        Instruction::SendPublic { selector, receiver_register: 2, destination: 3, .. }
             if *selector == Symbol::intern("printString")
     ));
-    assert_eq!(code.instrs[6], Instr::LoadSelf { dst: 4 });
-    assert_eq!(code.instrs[7], Instr::ImplicitReturn { reg: 4 });
-    assert_eq!(code.instrs.len(), 8);
-    assert_eq!(code.statement_pc, vec![(0, 0..2), (1, 2..4), (2, 4..6)]);
+    assert_eq!(
+        code.instructions[6],
+        Instruction::LoadSelf { destination: 4 }
+    );
+    assert_eq!(
+        code.instructions[7],
+        Instruction::ImplicitReturn { register: 4 }
+    );
+    assert_eq!(code.instructions.len(), 8);
+    assert_eq!(
+        code.statement_program_counter,
+        vec![(0, 0..2), (1, 2..4), (2, 4..6)]
+    );
 }
 
-fn collect_ns_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    for entry in std::fs::read_dir(dir)
+fn collect_ns_files(directory: &Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(directory)
         .expect("read corpus directory")
         .flatten()
     {
         let path = entry.path();
         if path.is_dir() {
             collect_ns_files(&path, out);
-        } else if path.extension().is_some_and(|e| e == "ns") {
+        } else if path.extension().is_some_and(|extension| extension == "ns") {
             out.push(path);
         }
     }
@@ -162,9 +181,9 @@ fn collect_ns_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Loading compiles every method and every per-mixin body, nothing runs.
 #[test]
 fn every_resolvable_corpus_module_compiles_under_both_lowerings() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/modules");
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/modules");
     let mut files = Vec::new();
-    collect_ns_files(&dir, &mut files);
+    collect_ns_files(&directory, &mut files);
     let mut compiled = 0;
     for path in &files {
         let source = std::fs::read_to_string(path).expect("read module");

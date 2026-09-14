@@ -1,5 +1,5 @@
 # `trivially_copy_pass_by_ref` must see every handle. In the build clippy
-# checks, `ActivationRef` carries its debug-only `origin` and `generation`
+# checks, `ActivationReference` carries its debug-only `origin` and `generation`
 # fields and is 12 bytes, past the lint's default 8-byte limit; in a release
 # build every handle is 4. And by default the lint skips `pub` functions --
 # which is every `Heap` accessor -- to avoid breaking an exported API; ns-next
@@ -11,3 +11,13 @@
 # otherwise leave them alone.
 trivial-copy-size-limit = 12
 avoid-breaking-exported-api = false
+
+# Names are written out (CLAUDE.md, "Conventions"): clippy refuses any
+# identifier shorter than three characters that the workspace declares.
+min-ident-chars-threshold = 2
+# Type parameters keep Rust's single-capital convention; `ok`, `id` and `Or`
+# are words.
+# `'a` and `'_`: the lint counts a lifetime with its quote, and lifetimes keep
+# the convention too. `Rc`: std's name, flagged where it is imported. `vm`: a
+# module name, and module names are not renamed.
+allowed-idents-below-min-chars = ["T", "R", "E", "id", "ok", "Or", "'a", "'_", "Rc", "vm"]

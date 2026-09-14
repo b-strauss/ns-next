@@ -18,9 +18,9 @@ pub fn fixture(name: &str) -> PathBuf {
 }
 
 /// A temporary directory that removes itself, under the repository's own
-/// `.temp/` (git-ignored) rather than the system temp folder.
+/// `.temp/` (git-ignored) rather than the system temporary folder.
 ///
-/// A developer's temp folder is not the suite's to litter, and helpers that
+/// A developer's temporary folder is not the suite's to litter, and helpers that
 /// forgot to clean up have filled it twice before -- once with a directory
 /// per test, once with one per run. Keeping scratch space inside the
 /// repository means that whatever a killed or aborted run still leaves
@@ -31,18 +31,18 @@ pub fn fixture(name: &str) -> PathBuf {
 /// name because cargo runs a binary's tests as threads of one process: two
 /// tests naming the same fixture would otherwise share a directory and delete
 /// each other's files.
-pub struct ScratchDir {
+pub struct ScratchDirectory {
     path: PathBuf,
 }
 
-impl ScratchDir {
-    pub fn new(test: &str) -> ScratchDir {
+impl ScratchDirectory {
+    pub fn new(test: &str) -> ScratchDirectory {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = scratch_root().join(format!("{}-{n}-{test}", std::process::id()));
+        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = scratch_root().join(format!("{}-{sequence}-{test}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create scratch directory");
-        ScratchDir { path }
+        ScratchDirectory { path }
     }
 
     pub fn path(&self) -> &Path {
@@ -64,7 +64,7 @@ fn scratch_root() -> PathBuf {
         .join(".temp")
 }
 
-impl Drop for ScratchDir {
+impl Drop for ScratchDirectory {
     fn drop(&mut self) {
         // Best effort on purpose. A failing test unwinds through here, and a
         // panic during a panic aborts the process -- which would replace the
@@ -75,9 +75,9 @@ impl Drop for ScratchDir {
 
 /// Runs the `ns-next` binary and returns `(success, stdout, stderr)`, with
 /// line endings normalized so an assertion reads the same on every platform.
-pub fn ns_next(args: &[&std::ffi::OsStr]) -> (bool, String, String) {
+pub fn ns_next(arguments: &[&std::ffi::OsStr]) -> (bool, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
-        .args(args)
+        .args(arguments)
         .output()
         .expect("run ns-next");
     (

@@ -1,6 +1,6 @@
 mod common;
 
-use common::ScratchDir;
+use common::ScratchDirectory;
 use indoc::indoc;
 use std::process::Command;
 
@@ -10,7 +10,7 @@ fn ns_next() -> Command {
 
 /// The repository root, so a test can name the real vendored corpus
 /// regardless of the working directory the test harness happens to use.
-fn repo_root() -> std::path::PathBuf {
+fn repository_root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
@@ -20,10 +20,10 @@ fn repo_root() -> std::path::PathBuf {
 
 #[test]
 fn parse_ok_file() {
-    let dir = ScratchDir::new("parse-ok");
-    let f = dir.join("Ok.ns");
+    let directory = ScratchDirectory::new("parse-ok");
+    let file = directory.join("Ok.ns");
     std::fs::write(
-        &f,
+        &file,
         indoc! {"
             Newspeak3
             'X'
@@ -31,7 +31,7 @@ fn parse_ok_file() {
         "},
     )
     .unwrap();
-    let out = ns_next().arg("parse").arg(&f).output().unwrap();
+    let out = ns_next().arg("parse").arg(&file).output().unwrap();
     assert!(
         out.status.success(),
         "{}",
@@ -41,10 +41,10 @@ fn parse_ok_file() {
 
 #[test]
 fn parse_bad_file_exits_1() {
-    let dir = ScratchDir::new("parse-bad");
-    let f = dir.join("Bad.ns");
+    let directory = ScratchDirectory::new("parse-bad");
+    let file = directory.join("Bad.ns");
     std::fs::write(
-        &f,
+        &file,
         indoc! {"
             Newspeak3
             'X'
@@ -52,15 +52,15 @@ fn parse_bad_file_exits_1() {
         "},
     )
     .unwrap();
-    let out = ns_next().arg("parse").arg(&f).output().unwrap();
+    let out = ns_next().arg("parse").arg(&file).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("error:"));
 }
 
 #[test]
 fn parse_corpus_reports_counts() {
-    let dir = ScratchDir::new("corpus-counts");
-    let modules = dir.join("modules");
+    let directory = ScratchDirectory::new("corpus-counts");
+    let modules = directory.join("modules");
     std::fs::create_dir_all(&modules).unwrap();
     std::fs::write(
         modules.join("Good.ns"),
@@ -89,9 +89,9 @@ fn parse_corpus_reports_counts() {
         "},
     )
     .unwrap();
-    let bl = dir.join("blacklist.toml");
+    let blacklist = directory.join("blacklist.toml");
     std::fs::write(
-        &bl,
+        &blacklist,
         "[[entry]]\nfile = \"Bad.ns\"\nreason = \"deliberately malformed for the test\"\n",
     )
     .unwrap();
@@ -100,7 +100,7 @@ fn parse_corpus_reports_counts() {
         .arg("parse-corpus")
         .arg(&modules)
         .arg("--blacklist")
-        .arg(&bl)
+        .arg(&blacklist)
         .output()
         .unwrap();
     assert!(
@@ -116,8 +116,8 @@ fn parse_corpus_reports_counts() {
 
 #[test]
 fn parse_corpus_stale_blacklist_entry_fails() {
-    let dir = ScratchDir::new("corpus-stale");
-    let modules = dir.join("modules");
+    let directory = ScratchDirectory::new("corpus-stale");
+    let modules = directory.join("modules");
     std::fs::create_dir_all(&modules).unwrap();
     std::fs::write(
         modules.join("Good.ns"),
@@ -128,10 +128,10 @@ fn parse_corpus_stale_blacklist_entry_fails() {
         "},
     )
     .unwrap();
-    let bl = dir.join("blacklist.toml");
+    let blacklist = directory.join("blacklist.toml");
     // Names a file that actually parses now -> stale.
     std::fs::write(
-        &bl,
+        &blacklist,
         "[[entry]]\nfile = \"Good.ns\"\nreason = \"no longer fails\"\n",
     )
     .unwrap();
@@ -140,7 +140,7 @@ fn parse_corpus_stale_blacklist_entry_fails() {
         .arg("parse-corpus")
         .arg(&modules)
         .arg("--blacklist")
-        .arg(&bl)
+        .arg(&blacklist)
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -155,8 +155,8 @@ fn parse_corpus_stale_blacklist_entry_fails() {
 
 #[test]
 fn parse_corpus_malformed_blacklist_fails_with_error() {
-    let dir = ScratchDir::new("corpus-malformed");
-    let modules = dir.join("modules");
+    let directory = ScratchDirectory::new("corpus-malformed");
+    let modules = directory.join("modules");
     std::fs::create_dir_all(&modules).unwrap();
     std::fs::write(
         modules.join("Good.ns"),
@@ -167,14 +167,14 @@ fn parse_corpus_malformed_blacklist_fails_with_error() {
         "},
     )
     .unwrap();
-    let bl = dir.join("blacklist.toml");
-    std::fs::write(&bl, "this is not valid toml :::\n[[entry\n").unwrap();
+    let blacklist = directory.join("blacklist.toml");
+    std::fs::write(&blacklist, "this is not valid toml :::\n[[entry\n").unwrap();
 
     let out = ns_next()
         .arg("parse-corpus")
         .arg(&modules)
         .arg("--blacklist")
-        .arg(&bl)
+        .arg(&blacklist)
         .output()
         .unwrap();
     assert_ne!(out.status.code(), Some(0));
@@ -200,20 +200,20 @@ const TALKATIVE: &str = indoc! {"
 /// sibling `runnable.toml` holding `whitelist`, in a scratch directory the
 /// caller keeps alive for as long as `run-corpus` reads it; point
 /// `run-corpus` at its `modules` subdirectory.
-fn run_corpus_fixture(name: &str, whitelist: &str) -> ScratchDir {
-    let dir = ScratchDir::new(name);
-    let modules = dir.join("modules");
+fn run_corpus_fixture(name: &str, whitelist: &str) -> ScratchDirectory {
+    let directory = ScratchDirectory::new(name);
+    let modules = directory.join("modules");
     std::fs::create_dir_all(&modules).unwrap();
     std::fs::write(modules.join("Talkative.ns"), TALKATIVE).unwrap();
-    std::fs::write(dir.join("runnable.toml"), whitelist).unwrap();
-    dir
+    std::fs::write(directory.join("runnable.toml"), whitelist).unwrap();
+    directory
 }
 
 #[test]
 fn the_run_corpus_gate_reports_its_counts() {
     let out = ns_next()
         .arg("run-corpus")
-        .arg(repo_root().join("corpus/modules"))
+        .arg(repository_root().join("corpus/modules"))
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -229,12 +229,12 @@ fn the_run_corpus_gate_reports_its_counts() {
 
 #[test]
 fn run_corpus_checks_a_whitelisted_module_against_its_expected_stdout() {
-    let dir = run_corpus_fixture(
+    let directory = run_corpus_fixture(
         "run-corpus-ok",
         "[[entry]]\nfile = \"Talkative.ns\"\nsend = \"main:args:\"\n\
          expected_status = 0\nexpected_stdout = \"hi\\n\"\nreason = \"fixture\"\n",
     );
-    let modules = dir.join("modules");
+    let modules = directory.join("modules");
     let out = ns_next().arg("run-corpus").arg(&modules).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
@@ -248,12 +248,12 @@ fn run_corpus_checks_a_whitelisted_module_against_its_expected_stdout() {
 
 #[test]
 fn run_corpus_fails_when_the_recorded_stdout_no_longer_matches() {
-    let dir = run_corpus_fixture(
+    let directory = run_corpus_fixture(
         "run-corpus-drift",
         "[[entry]]\nfile = \"Talkative.ns\"\nsend = \"main:args:\"\n\
          expected_status = 0\nexpected_stdout = \"something else\"\nreason = \"fixture\"\n",
     );
-    let modules = dir.join("modules");
+    let modules = directory.join("modules");
     let out = ns_next().arg("run-corpus").arg(&modules).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -267,12 +267,12 @@ fn run_corpus_fails_when_the_recorded_stdout_no_longer_matches() {
 
 #[test]
 fn run_corpus_fails_when_a_whitelisted_module_no_longer_runs() {
-    let dir = run_corpus_fixture(
+    let directory = run_corpus_fixture(
         "run-corpus-regressed",
         "[[entry]]\nfile = \"Talkative.ns\"\nsend = \"noSuchSelector\"\n\
          expected_status = 0\nexpected_stdout = \"\"\nreason = \"fixture\"\n",
     );
-    let modules = dir.join("modules");
+    let modules = directory.join("modules");
     let out = ns_next().arg("run-corpus").arg(&modules).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(
@@ -287,8 +287,8 @@ fn run_corpus_fails_when_a_whitelisted_module_no_longer_runs() {
 /// quietly lost its entries cannot masquerade as a green gate.
 #[test]
 fn run_corpus_with_an_empty_whitelist_reports_running_nothing() {
-    let dir = run_corpus_fixture("run-corpus-empty", "# no entries\n");
-    let modules = dir.join("modules");
+    let directory = run_corpus_fixture("run-corpus-empty", "# no entries\n");
+    let modules = directory.join("modules");
     let out = ns_next().arg("run-corpus").arg(&modules).output().unwrap();
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -297,8 +297,8 @@ fn run_corpus_with_an_empty_whitelist_reports_running_nothing() {
 
 #[test]
 fn run_corpus_malformed_whitelist_fails_with_error() {
-    let dir = run_corpus_fixture("run-corpus-malformed", "this is not toml :::\n[[entry\n");
-    let modules = dir.join("modules");
+    let directory = run_corpus_fixture("run-corpus-malformed", "this is not toml :::\n[[entry\n");
+    let modules = directory.join("modules");
     let out = ns_next().arg("run-corpus").arg(&modules).output().unwrap();
     assert_ne!(out.status.code(), Some(0));
     assert!(
@@ -309,10 +309,10 @@ fn run_corpus_malformed_whitelist_fails_with_error() {
 }
 
 #[test]
-fn bench_reports_the_entry_sends_median() {
+fn benchmark_reports_the_entry_sends_median() {
     let out = ns_next()
         .arg("bench")
-        .arg(repo_root().join("tests-fixtures/while_loop.ns"))
+        .arg(repository_root().join("tests-fixtures/while_loop.ns"))
         .arg("--iterations")
         .arg("3")
         .output()
@@ -331,10 +331,10 @@ fn bench_reports_the_entry_sends_median() {
 /// (the median computation indexes `timings[timings.len() / 2]`, which is
 /// only safe because `iterations >= 1` is enforced up front).
 #[test]
-fn bench_rejects_zero_iterations() {
+fn benchmark_rejects_zero_iterations() {
     let out = ns_next()
         .arg("bench")
-        .arg(repo_root().join("tests-fixtures/while_loop.ns"))
+        .arg(repository_root().join("tests-fixtures/while_loop.ns"))
         .arg("--iterations")
         .arg("0")
         .output()

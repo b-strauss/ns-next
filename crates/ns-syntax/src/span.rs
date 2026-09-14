@@ -20,8 +20,8 @@ impl Span {
         self.start <= offset && offset < self.end
     }
 
-    pub fn text(self, src: &str) -> &str {
-        &src[self.start as usize..self.end as usize]
+    pub fn text(self, source: &str) -> &str {
+        &source[self.start as usize..self.end as usize]
     }
 }
 
@@ -31,22 +31,22 @@ mod tests {
 
     #[test]
     fn merge_covers_both() {
-        let a = Span::new(2, 5);
-        let b = Span::new(10, 12);
-        assert_eq!(a.merge(b), Span::new(2, 12));
+        let first = Span::new(2, 5);
+        let second = Span::new(10, 12);
+        assert_eq!(first.merge(second), Span::new(2, 12));
     }
 
     #[test]
     fn text_slices_source() {
-        let src = "hello world";
-        assert_eq!(Span::new(6, 11).text(src), "world");
+        let source = "hello world";
+        assert_eq!(Span::new(6, 11).text(source), "world");
     }
 
     #[test]
     fn contains_is_half_open() {
-        let s = Span::new(3, 6);
-        assert!(s.contains(3));
-        assert!(s.contains(5));
-        assert!(!s.contains(6));
+        let span = Span::new(3, 6);
+        assert!(span.contains(3));
+        assert!(span.contains(5));
+        assert!(!span.contains(6));
     }
 }

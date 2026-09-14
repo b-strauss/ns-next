@@ -2,7 +2,7 @@ use indoc::indoc;
 
 #[test]
 fn hello_world_ast() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'HelloApp'
         class Hello usingPlatform: platform = (
@@ -11,6 +11,6 @@ fn hello_world_ast() {
             public main: args = ( Transcript show: 'Hello, World!' )
         ) : ()
     "};
-    let module = ns_syntax::parse(src).expect("parse");
+    let module = ns_syntax::parse(source).expect("parse");
     insta::assert_debug_snapshot!(module);
 }

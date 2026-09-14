@@ -17,44 +17,47 @@ pub(crate) fn execute(
     lowering: ns_runtime::Lowering,
 ) -> ExitCode {
     let loaded = match source::load_source(file) {
-        Ok(l) => l,
+        Ok(loaded) => loaded,
         Err(code) => return code,
     };
-    let (mut interp, class) = source::bootstrap(&loaded, lowering);
-    let instance = match entry::instantiate_root(&mut interp, &class) {
-        Ok(v) => v,
+    let (mut interpreter, class) = source::bootstrap(&loaded, lowering);
+    let instance = match entry::instantiate_root(&mut interpreter, &class) {
+        Ok(instance) => instance,
         Err(code) => return code,
     };
-    let platform = interp.platform();
+    let platform = interpreter.platform();
     let mut roots: Vec<ns_runtime::Root> = vec![instance.clone()];
     if let Some(selector) = send {
-        let args = match entry::entry_args(&interp, selector, &platform) {
-            Ok(args) => args,
-            Err(msg) => {
-                eprintln!("error: {msg}");
+        let arguments = match entry::entry_arguments(&interpreter, selector, &platform) {
+            Ok(arguments) => arguments,
+            Err(message) => {
+                eprintln!("error: {message}");
                 return ExitCode::FAILURE;
             }
         };
-        match interp.send(&instance, ns_runtime::Symbol::intern(selector), &args) {
+        match interpreter.send(&instance, ns_runtime::Symbol::intern(selector), &arguments) {
             Ok(result) => roots.push(result),
             Err(signal) => return entry::report_entry_send(Err(signal)),
         }
     }
     // Fetched only now, right before encoding: encoding runs no code, so
     // nothing can move these values between here and the write.
-    let platform = interp.fetch(&platform);
-    let root_values: Vec<ns_runtime::Value> = roots.iter().map(|r| interp.fetch(r)).collect();
-    let bytes = match ns_runtime::image::snapshot(
-        &interp,
-        debug_source.then_some(loaded.source.as_str()),
-        &loaded.origin,
-        entry::class_ref(&interp, &class),
-        &platform,
-        &root_values,
-    ) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: snapshot failed: {e}");
+    let bytes = match interpreter.enter(|mutator| {
+        let platform = mutator.fetch(&platform);
+        let root_values: Vec<ns_runtime::Value> =
+            roots.iter().map(|root| mutator.fetch(root)).collect();
+        ns_runtime::image::snapshot(
+            mutator,
+            debug_source.then_some(loaded.source.as_str()),
+            &loaded.origin,
+            entry::class_reference(mutator, &class),
+            &platform,
+            &root_values,
+        )
+    }) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("error: snapshot failed: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -63,8 +66,8 @@ pub(crate) fn execute(
             println!("wrote {}", out.display());
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("error: writing {}: {e}", out.display());
+        Err(error) => {
+            eprintln!("error: writing {}: {error}", out.display());
             ExitCode::FAILURE
         }
     }

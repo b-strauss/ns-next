@@ -27,23 +27,23 @@ struct RunnableEntry {
 
 fn load_whitelist(path: &Path) -> Result<Vec<RunnableEntry>, String> {
     #[derive(serde::Deserialize)]
-    struct Wl {
+    struct WhitelistFile {
         #[serde(default)]
         entry: Vec<RunnableEntry>,
     }
     let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             eprintln!(
                 "note: no whitelist at {} (treating as empty)",
                 path.display()
             );
             return Ok(Vec::new());
         }
-        Err(e) => return Err(e.to_string()),
+        Err(error) => return Err(error.to_string()),
     };
-    let wl: Wl = toml::from_str(&text).map_err(|e| e.to_string())?;
-    Ok(wl.entry)
+    let whitelist_file: WhitelistFile = toml::from_str(&text).map_err(|error| error.to_string())?;
+    Ok(whitelist_file.entry)
 }
 
 /// What one `ns-next run` or `load` of a whitelisted module produced.
@@ -94,7 +94,7 @@ const LANES: [Lane; 4] = [
 /// `executed` is set once the first lane's module has run at all, which is
 /// what `ran` counts.
 fn check_row(
-    exe: &Path,
+    executable: &Path,
     file: &Path,
     entry: &RunnableEntry,
     executed: &mut bool,
@@ -102,11 +102,11 @@ fn check_row(
     let mut first_stderr: Option<String> = None;
     for lane in &LANES {
         let outcome = if lane.binary {
-            run_one_binary(exe, file, &entry.send, lane.lowering)
+            run_one_binary(executable, file, &entry.send, lane.lowering)
         } else {
-            run_one(exe, file, &entry.send, lane.lowering)
+            run_one(executable, file, &entry.send, lane.lowering)
         }
-        .map_err(|e| format!("{}: {e}", lane.name))?;
+        .map_err(|error| format!("{}: {error}", lane.name))?;
         *executed = true;
         if outcome.status != Some(entry.expected_status) {
             return Err(format!(
@@ -114,7 +114,7 @@ fn check_row(
                 lane.name,
                 entry.expected_status,
                 match outcome.status {
-                    Some(c) => c.to_string(),
+                    Some(code) => code.to_string(),
                     None => "signal".to_string(),
                 },
                 outcome.stderr.trim_end()
@@ -155,8 +155,13 @@ fn check_row(
 /// stdout, which Newspeak code writes straight to the process's stdout
 /// through `platform transcript`, is what gets compared, and running it in
 /// this process would interleave it with the gate's own output.
-fn run_one(exe: &Path, file: &Path, send: &str, lowering: &str) -> Result<RunOutcome, String> {
-    let out = std::process::Command::new(exe)
+fn run_one(
+    executable: &Path,
+    file: &Path,
+    send: &str,
+    lowering: &str,
+) -> Result<RunOutcome, String> {
+    let out = std::process::Command::new(executable)
         .arg("run")
         .arg(file)
         .arg("--send")
@@ -164,7 +169,7 @@ fn run_one(exe: &Path, file: &Path, send: &str, lowering: &str) -> Result<RunOut
         .arg("--lowering")
         .arg(lowering)
         .output()
-        .map_err(|e| format!("could not run {}: {e}", exe.display()))?;
+        .map_err(|error| format!("could not run {}: {error}", executable.display()))?;
     Ok(RunOutcome {
         status: out.status.code(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -173,25 +178,26 @@ fn run_one(exe: &Path, file: &Path, send: &str, lowering: &str) -> Result<RunOut
 }
 
 /// A scratch directory for one row's binary lane, removed on drop so a
-/// `run-corpus` run leaves the temp directory clean on every exit path --
+/// `run-corpus` run leaves the temporary directory clean on every exit path --
 /// including the early `?`/`continue` returns scattered through the caller --
 /// without every call site having to remember to clean up itself.
-struct ScratchDir(PathBuf);
+struct ScratchDirectory(PathBuf);
 
-impl ScratchDir {
-    /// `tag` is only for a human reading the temp directory mid-run; the
+impl ScratchDirectory {
+    /// `tag` is only for a human reading the temporary directory mid-run; the
     /// counter is what actually guarantees uniqueness across the rows this
     /// process runs, alongside the process id that separates concurrent
     /// `run-corpus` invocations.
     fn new(tag: &str) -> Result<Self, String> {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "ns-next-run-corpus-{}-{n}-{tag}",
+        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "ns-next-run-corpus-{}-{sequence}-{tag}",
             std::process::id()
         ));
-        std::fs::create_dir_all(&dir).map_err(|e| format!("scratch dir {}: {e}", dir.display()))?;
-        Ok(Self(dir))
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| format!("scratch dir {}: {error}", directory.display()))?;
+        Ok(Self(directory))
     }
 
     fn path(&self) -> &Path {
@@ -199,9 +205,9 @@ impl ScratchDir {
     }
 }
 
-impl Drop for ScratchDir {
+impl Drop for ScratchDirectory {
     fn drop(&mut self) {
-        // Best-effort: a leftover temp directory is a nuisance, never a
+        // Best-effort: a leftover temporary directory is a nuisance, never a
         // correctness problem, so a removal failure (e.g. a virus scanner
         // still holding the file open) must not turn into a panic-during-
         // unwind or a spurious second failure report for the row.
@@ -217,24 +223,24 @@ impl Drop for ScratchDir {
 /// gate exists to check: that the entry survives being written into the
 /// artifact and read back out of it.
 ///
-/// The scratch file lives under the system temp directory, never under
+/// The scratch file lives under the system temporary directory, never under
 /// `corpus/`, so a `run-corpus` invocation leaves the working tree exactly
-/// as it found it; `ScratchDir`'s `Drop` removes it once this row is done
+/// as it found it; `ScratchDirectory`'s `Drop` removes it once this row is done
 /// whether the row passed or failed.
 fn run_one_binary(
-    exe: &Path,
+    executable: &Path,
     file: &Path,
     send: &str,
     lowering: &str,
 ) -> Result<RunOutcome, String> {
     let stem = file
         .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
+        .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_else(|| "row".to_string());
-    let scratch = ScratchDir::new(&stem)?;
+    let scratch = ScratchDirectory::new(&stem)?;
     let artifact = scratch.path().join("app.nsb");
 
-    let build = std::process::Command::new(exe)
+    let build = std::process::Command::new(executable)
         .arg("build")
         .arg(file)
         .arg(&artifact)
@@ -243,7 +249,7 @@ fn run_one_binary(
         .arg("--lowering")
         .arg(lowering)
         .output()
-        .map_err(|e| format!("could not build {}: {e}", exe.display()))?;
+        .map_err(|error| format!("could not build {}: {error}", executable.display()))?;
     if !build.status.success() {
         return Err(format!(
             "build failed: {}",
@@ -251,11 +257,11 @@ fn run_one_binary(
         ));
     }
 
-    let out = std::process::Command::new(exe)
+    let out = std::process::Command::new(executable)
         .arg("load")
         .arg(&artifact)
         .output()
-        .map_err(|e| format!("could not load {}: {e}", exe.display()))?;
+        .map_err(|error| format!("could not load {}: {error}", executable.display()))?;
     Ok(RunOutcome {
         status: out.status.code(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -286,33 +292,38 @@ fn run_one_binary(
 /// from real modules; it becomes one on the day a row can record something
 /// printed. Treat a green `run-corpus` as "nothing regressed", not as "the
 /// corpus is covered".
-pub(crate) fn execute(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
-    let wl_path = whitelist
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dir.parent().unwrap_or(dir).join("runnable.toml"));
-    let entries = match load_whitelist(&wl_path) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("error: whitelist {}: {e}", wl_path.display());
+pub(crate) fn execute(directory: &Path, whitelist: Option<&Path>) -> ExitCode {
+    let whitelist_path = whitelist.map(PathBuf::from).unwrap_or_else(|| {
+        directory
+            .parent()
+            .unwrap_or(directory)
+            .join("runnable.toml")
+    });
+    let entries = match load_whitelist(&whitelist_path) {
+        Ok(entries) => entries,
+        Err(error) => {
+            eprintln!("error: whitelist {}: {error}", whitelist_path.display());
             return ExitCode::FAILURE;
         }
     };
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: cannot locate this executable to re-run modules with: {e}");
+    let executable = match std::env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => {
+            eprintln!("error: cannot locate this executable to re-run modules with: {error}");
             return ExitCode::FAILURE;
         }
     };
 
     let mut present: Vec<PathBuf> = Vec::new();
-    collect_ns_files(dir, &mut present);
-    let listed: std::collections::HashSet<&str> = entries.iter().map(|e| e.file.as_str()).collect();
+    collect_ns_files(directory, &mut present);
+    let listed: std::collections::HashSet<&str> =
+        entries.iter().map(|entry| entry.file.as_str()).collect();
     let skipped = present
         .iter()
-        .filter(|p| {
-            !p.file_name()
-                .is_some_and(|n| listed.contains(n.to_string_lossy().as_ref()))
+        .filter(|path| {
+            !path
+                .file_name()
+                .is_some_and(|name| listed.contains(name.to_string_lossy().as_ref()))
         })
         .count();
 
@@ -321,20 +332,24 @@ pub(crate) fn execute(dir: &Path, whitelist: Option<&Path>) -> ExitCode {
     // failure without inflating the number a reader uses to judge coverage.
     let (mut ran, mut failed) = (0, 0);
     for entry in &entries {
-        let file = dir.join(&entry.file);
+        let file = directory.join(&entry.file);
         if !file.is_file() {
             failed += 1;
-            eprintln!("FAIL {}: no such file under {}", entry.file, dir.display());
+            eprintln!(
+                "FAIL {}: no such file under {}",
+                entry.file,
+                directory.display()
+            );
             continue;
         }
         let mut executed = false;
-        let result = check_row(&exe, &file, entry, &mut executed);
+        let result = check_row(&executable, &file, entry, &mut executed);
         if executed {
             ran += 1;
         }
-        if let Err(e) = result {
+        if let Err(error) = result {
             failed += 1;
-            eprintln!("FAIL {}: {e}", entry.file);
+            eprintln!("FAIL {}: {error}", entry.file);
         }
     }
     println!("ran {ran}, failed {failed}, skipped {skipped}");

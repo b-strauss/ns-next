@@ -1,13 +1,13 @@
 use indoc::indoc;
 use ns_runtime::{resolve, Binding, SourceOrigin};
 
-fn resolve_source(src: &str) -> ns_runtime::ResolvedModule {
-    let module = ns_syntax::parse(src).expect("parse");
-    resolve(module, src.into(), SourceOrigin::File("test.ns".into())).expect("resolve")
+fn resolve_source(source: &str) -> ns_runtime::ResolvedModule {
+    let module = ns_syntax::parse(source).expect("parse");
+    resolve(module, source.into(), SourceOrigin::File("test.ns".into())).expect("resolve")
 }
 
 #[test]
-fn method_temp_resolves_as_local() {
+fn method_temporary_resolves_as_local() {
     let resolved = resolve_source(indoc! {"
         Newspeak3
         'T'
@@ -21,7 +21,7 @@ fn method_temp_resolves_as_local() {
     assert!(resolved
         .bindings
         .values()
-        .any(|b| matches!(b, Binding::Local(_))));
+        .any(|binding| matches!(binding, Binding::Local(_))));
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn self_send_resolves_to_depth_zero() {
     assert!(resolved
         .bindings
         .values()
-        .any(|b| matches!(b, Binding::LexicalSend { depth: 0 })));
+        .any(|binding| matches!(binding, Binding::LexicalSend { depth: 0 })));
 }
 
 #[test]
@@ -51,7 +51,10 @@ fn super_send_resolves_to_super_send_binding() {
           bar = ( ^super baz )
         ) : ()
     "});
-    assert!(resolved.bindings.values().any(|b| *b == Binding::SuperSend));
+    assert!(resolved
+        .bindings
+        .values()
+        .any(|binding| *binding == Binding::SuperSend));
 }
 
 #[test]
@@ -71,7 +74,7 @@ fn outer_named_send_resolves_to_the_exact_depth() {
     assert!(resolved
         .bindings
         .values()
-        .any(|b| matches!(b, Binding::LexicalSend { depth: 1 })));
+        .any(|binding| matches!(binding, Binding::LexicalSend { depth: 1 })));
 }
 
 /// A bare reference to a builtin class name --
@@ -85,7 +88,7 @@ fn outer_named_send_resolves_to_the_exact_depth() {
 /// anywhere").
 #[test]
 fn bare_builtin_class_name_resolves_with_no_binding_at_its_span() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Foo = Object new (
@@ -93,25 +96,25 @@ fn bare_builtin_class_name_resolves_with_no_binding_at_its_span() {
           bar = ( | c | c := OrderedCollection new. ^c )
         ) : ()
     "};
-    let module = ns_syntax::parse(src).expect("parse");
+    let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module.clone(),
-        src.into(),
+        source.into(),
         ns_runtime::SourceOrigin::File("test.ns".into()),
     )
     .expect("resolve must succeed -- a bare builtin class name is not a resolve error");
 
     let method = &module.root_class.instance_side.methods[0];
-    let ns_syntax::ast::Stmt::Expr(ns_syntax::ast::Expr::Assign { value, .. }) =
-        &method.body.stmts[0]
+    let ns_syntax::ast::Statement::Expression(ns_syntax::ast::Expression::Assign { value, .. }) =
+        &method.body.statements[0]
     else {
         panic!("expected the method's first statement to be `c := OrderedCollection new.`");
     };
-    let ns_syntax::ast::Expr::Send(send) = value.as_ref() else {
+    let ns_syntax::ast::Expression::Send(send) = value.as_ref() else {
         panic!("expected the assignment's value to be a `Send` (`OrderedCollection new`)");
     };
-    let ns_syntax::ast::Expr::Ident(receiver_id) = &send.receiver else {
-        panic!("expected the send's receiver to be a bare `Ident` (`OrderedCollection`)");
+    let ns_syntax::ast::Expression::Identifier(receiver_id) = &send.receiver else {
+        panic!("expected the send's receiver to be a bare `Identifier` (`OrderedCollection`)");
     };
     assert_eq!(receiver_id.name, "OrderedCollection");
     assert!(

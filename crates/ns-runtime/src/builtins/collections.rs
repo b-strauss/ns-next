@@ -11,30 +11,37 @@
 //! grow independently of a literal array's fixed size; revisit if the two
 //! ever need to diverge (e.g. `Array` becoming genuinely fixed-size).
 
-use crate::interpreter::{Signal, Step, StepArgs};
+use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
-use crate::{Heap, Interpreter, Symbol};
+use crate::{Heap, Mutator, Symbol};
 
-fn out_of_range(receiver: &Value, selector: Symbol, index: i64, len: usize) -> NewspeakError {
+fn out_of_range<'gc>(
+    receiver: &Value<'gc>,
+    selector: Symbol,
+    index: i64,
+    length: usize,
+) -> NewspeakError<'gc> {
     NewspeakError {
         selector,
         receiver: *receiver,
-        message: format!("index {index} out of range: valid indices are 1..{len} (size {len})"),
+        message: format!(
+            "index {index} out of range: valid indices are 1..{length} (size {length})"
+        ),
     }
 }
 
-fn not_an_integer(
-    heap: &Heap,
-    receiver: &Value,
+fn not_an_integer<'gc>(
+    heap: &Heap<'gc>,
+    receiver: &Value<'gc>,
     selector: Symbol,
-    got: Option<&Value>,
-) -> NewspeakError {
+    got: Option<&Value<'gc>>,
+) -> NewspeakError<'gc> {
     NewspeakError {
         selector,
         receiver: *receiver,
         message: format!(
             "{selector} requires an Integer index, got {}",
-            heap.describe_arg(got)
+            heap.describe_argument(got)
         ),
     }
 }
@@ -47,34 +54,34 @@ fn not_an_integer(
 /// `dispatch_array`/`dispatch_ordered_collection` itself). `do:` is not a
 /// leaf and is not here: it activates a block, so it answers a step
 /// (`do_step`).
-fn dispatch_common(
-    interp: &mut Interpreter,
-    receiver: Value,
+fn dispatch_common<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    args: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
-    let Value::Obj(obj) = &receiver else {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let Value::Object(object) = &receiver else {
         return None;
     };
     match selector.as_str() {
-        "size" => interp
+        "size" => mutator
             .heap
-            .array_len(*obj)
-            .map(|len| Ok(Value::SmallInt(len as i64))),
+            .array_length(*object)
+            .map(|length| Ok(Value::SmallInteger(length as i64))),
         "at:" => {
-            let len = interp.heap.array_len(*obj)?;
-            Some(match args.first() {
-                Some(Value::SmallInt(index)) => {
-                    if *index >= 1 && (*index as usize) <= len {
-                        Ok(interp
+            let length = mutator.heap.array_length(*object)?;
+            Some(match arguments.first() {
+                Some(Value::SmallInteger(index)) => {
+                    if *index >= 1 && (*index as usize) <= length {
+                        Ok(mutator
                             .heap
-                            .array_at(*obj, (*index as usize) - 1)
+                            .array_at(*object, (*index as usize) - 1)
                             .unwrap_or(Value::Nil))
                     } else {
-                        Err(out_of_range(&receiver, selector, *index, len))
+                        Err(out_of_range(&receiver, selector, *index, length))
                     }
                 }
-                other => Err(not_an_integer(&interp.heap, &receiver, selector, other)),
+                other => Err(not_an_integer(&mutator.heap, &receiver, selector, other)),
             })
         }
         _ => None,
@@ -84,94 +91,98 @@ fn dispatch_common(
 /// `at:put:`, falling through to `dispatch_common` -- `dispatch_array`'s leaf
 /// half, kept apart from its `do:` arm so the two compose in `dispatch_array`
 /// without either copying the other's shape.
-fn array_leaf(
-    interp: &mut Interpreter,
-    receiver: Value,
+fn array_leaf<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    args: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     if selector.as_str() == "at:put:" {
-        let Value::Obj(obj) = &receiver else {
+        let Value::Object(object) = &receiver else {
             return None;
         };
-        let len = interp.heap.array_len(*obj)?;
-        let index = match args.first() {
-            Some(Value::SmallInt(index)) => *index,
+        let length = mutator.heap.array_length(*object)?;
+        let index = match arguments.first() {
+            Some(Value::SmallInteger(index)) => *index,
             other => {
                 return Some(Err(not_an_integer(
-                    &interp.heap,
+                    &mutator.heap,
                     &receiver,
                     selector,
                     other,
                 )))
             }
         };
-        if index < 1 || (index as usize) > len {
-            return Some(Err(out_of_range(&receiver, selector, index, len)));
+        if index < 1 || (index as usize) > length {
+            return Some(Err(out_of_range(&receiver, selector, index, length)));
         }
-        let value = args.get(1).copied().unwrap_or(Value::Nil);
-        interp.heap.array_set(*obj, (index as usize) - 1, value);
+        let value = arguments.get(1).copied().unwrap_or(Value::Nil);
+        mutator.heap.array_set(*object, (index as usize) - 1, value);
         return Some(Ok(receiver));
     }
-    dispatch_common(interp, receiver, selector, args)
+    dispatch_common(mutator, receiver, selector, arguments)
 }
 
 /// `add:`, falling through to `dispatch_common` -- `dispatch_ordered_collection`'s
 /// leaf half, kept apart from its `do:` arm for the same reason `array_leaf` is.
-fn ordered_collection_leaf(
-    interp: &mut Interpreter,
-    receiver: Value,
+fn ordered_collection_leaf<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    args: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     if selector.as_str() == "add:" {
-        let Value::Obj(obj) = &receiver else {
+        let Value::Object(object) = &receiver else {
             return None;
         };
-        interp.heap.array_len(*obj)?;
+        mutator.heap.array_length(*object)?;
         // Matches the reference library's convention: `add:` returns the
         // argument, not the receiver.
-        let value = args.first().copied().unwrap_or(Value::Nil);
-        interp.heap.array_push(*obj, value);
+        let value = arguments.first().copied().unwrap_or(Value::Nil);
+        mutator.heap.array_push(*object, value);
         return Some(Ok(value));
     }
-    dispatch_common(interp, receiver, selector, args)
+    dispatch_common(mutator, receiver, selector, arguments)
 }
 
 /// Lifts a leaf's result into the step it is -- the shared tail of
 /// `dispatch_array` and `dispatch_ordered_collection` once each has ruled
 /// `do:` out, so neither copies the wrapping itself.
-fn leaf_step(result: Option<Result<Value, NewspeakError>>) -> Option<Result<Step, Signal>> {
+fn leaf_step<'gc>(
+    result: Option<Result<Value<'gc>, NewspeakError<'gc>>>,
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     Some(result?.map(Step::Value).map_err(Signal::Error))
 }
 
 /// `Array`'s native methods, `do:` included: checks `do:` first and answers
 /// `do_step`'s block-activation step for it, `array_leaf`'s plain value or
 /// error (through `leaf_step`) for everything else.
-pub(crate) fn dispatch_array(
-    interp: &mut Interpreter,
-    receiver: Value,
+pub(crate) fn dispatch_array<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    args: &[Value],
-) -> Option<Result<Step, Signal>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     if selector.as_str() == "do:" {
-        return do_step(interp, receiver, selector, args);
+        return do_step(mutator, receiver, selector, arguments);
     }
-    leaf_step(array_leaf(interp, receiver, selector, args))
+    leaf_step(array_leaf(mutator, receiver, selector, arguments))
 }
 
 /// `OrderedCollection`'s native methods, `do:` included -- same split as
 /// `dispatch_array`.
-pub(crate) fn dispatch_ordered_collection(
-    interp: &mut Interpreter,
-    receiver: Value,
+pub(crate) fn dispatch_ordered_collection<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    args: &[Value],
-) -> Option<Result<Step, Signal>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     if selector.as_str() == "do:" {
-        return do_step(interp, receiver, selector, args);
+        return do_step(mutator, receiver, selector, arguments);
     }
-    leaf_step(ordered_collection_leaf(interp, receiver, selector, args))
+    leaf_step(ordered_collection_leaf(
+        mutator, receiver, selector, arguments,
+    ))
 }
 
 /// `do:` on an `Array` or an `OrderedCollection`: the block activated for each
@@ -180,17 +191,17 @@ pub(crate) fn dispatch_ordered_collection(
 /// on Newspeak code (`docs/design/execution.md`, "No re-entry from Rust").
 /// `None` when `receiver` has no `ObjectData::Array` payload, so the send
 /// falls through to `doesNotUnderstand:` as every other selector here does.
-fn do_step(
-    interp: &Interpreter,
-    receiver: Value,
+fn do_step<'gc>(
+    mutator: &Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    args: &[Value],
-) -> Option<Result<Step, Signal>> {
-    let Value::Obj(obj) = &receiver else {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
+    let Value::Object(object) = &receiver else {
         return None;
     };
-    let items = interp.heap.array_elements(*obj)?;
-    let Some(block) = args.first().copied() else {
+    let items = mutator.heap.array_elements(*object)?;
+    let Some(block) = arguments.first().copied() else {
         return Some(Err(Signal::Error(NewspeakError {
             selector,
             receiver,
@@ -204,10 +215,10 @@ fn do_step(
     }
     // A non-block stands for its own value, so handing it the elements
     // observes nothing: the loop is over before it starts.
-    let Value::Obj(block) = block else {
+    let Value::Object(block) = block else {
         return Some(Ok(Step::Value(receiver)));
     };
-    if !interp.heap.is_closure(block) {
+    if !mutator.heap.is_closure(block) {
         return Some(Ok(Step::Value(receiver)));
     }
     Some(Ok(element_step(Box::new(DoLoop {
@@ -221,22 +232,22 @@ fn do_step(
 /// The block returned for one element. Its value is dropped, as `do:` always
 /// dropped it, and the next element's activation takes its place on the
 /// stack.
-pub(crate) fn after_element(state: Box<DoLoop>) -> Step {
+pub(crate) fn after_element<'gc>(state: Box<DoLoop<'gc>>) -> Step<'gc> {
     element_step(state)
 }
 
 /// The block's activation for the element at `state.next`, or the receiver
 /// once there is none. Each activation is counted, like any block a `value`
-/// send activates: its arguments are `StepArgs::Owned`, never the
+/// send activates: its arguments are `StepArguments::Owned`, never the
 /// `ControlFlow` mark.
-fn element_step(mut state: Box<DoLoop>) -> Step {
+fn element_step<'gc>(mut state: Box<DoLoop<'gc>>) -> Step<'gc> {
     let Some(&item) = state.items.get(state.next) else {
         return Step::Value(state.receiver);
     };
     state.next += 1;
     Step::Block {
         closure: state.block,
-        args: StepArgs::Owned(vec![item]),
+        arguments: StepArguments::Owned(vec![item]),
         then: Continuation::DoElement(state),
     }
 }

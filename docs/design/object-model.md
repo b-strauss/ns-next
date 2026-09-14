@@ -8,12 +8,12 @@
 ## Values and objects
 
 ```rust
-Value = Nil | Bool(bool) | SmallInt(i64) | Float(f64) | Obj(ObjRef)   // Copy
-ObjRef = a 32-bit index into the `Heap`'s object arena; ClassRef is an alias
+Value = Nil | Boolean(bool) | SmallInteger(i64) | Float(f64) | Object(ObjectReference)   // Copy
+ObjectReference = a 32-bit index into the `Heap`'s object arena; ClassReference is an alias
 
-Object { class: ClassRef, identity_hash: u32, data: ObjectData }
+Object { class: ClassReference, identity_hash: u32, data: ObjectData }
 
-ObjectData = Instance(Vec<Value>) | Str(String) | Sym(Symbol)
+ObjectData = Instance(Vec<Value>) | String(String) | Symbol(Symbol)
            | Array(Vec<Value>) | Closure(ClosureData) | Class(ClassData)
 ```
 
@@ -21,7 +21,7 @@ ObjectData = Instance(Vec<Value>) | Str(String) | Sym(Symbol)
 objects, which is why nothing resembling an object store is needed to name them
 in a serialized image.
 
-**An `ObjRef` is an index, not a pointer.** Every `Object` lives in one
+**An `ObjectReference` is an index, not a pointer.** Every `Object` lives in one
 `Heap`'s arena and is reached only through a `Heap` accessor; the index is
 private to `crates/ns-runtime/src/heap.rs`, so the compiler refuses to read it
 anywhere else. `Value` is therefore `Copy` and a handle has no destructor. What
@@ -50,23 +50,23 @@ graph section, precisely because nothing about a record would otherwise carry
 one; see [image-format.md](image-format.md), "Identity hashes are preserved
 verbatim".
 
-`ClosureData { params, code, captured_frame: FrameRef, home: FrameRef }`
+`ClosureData { parameters, code, captured_frame: FrameReference, home: FrameReference }`
 captures its defining frame for closure semantics and its home activation for
-non-local return. `params` and `code` are `Rc`s shared with the `MakeClosure`
+non-local return. `parameters` and `code` are `Rc`s shared with the `MakeClosure`
 instruction that made the closure; the payload itself is inline in the closure
 object, never behind an `Rc` of its own, because a handle lives only where the
 tracer can rewrite it in place ([memory.md](memory.md), "What the collector
 traces") and an `Rc` shared by several holders is not such a place. So a block's
 activation (`FrameKind::Closure`), a native `whileTrue:` or `do:` loop's state
 and a decided block step name the closure object, and reach its body and its
-two frames through it. **`home` is a `FrameRef`, not an `ObjRef`** — it names the
+two frames through it. **`home` is a `FrameReference`, not an `ObjectReference`** — it names the
 lexically enclosing *method* or initializer activation, which is what
 `raise_return` walks to. `types.rs` names it an activation at the field too,
 because the enclosing *object* is the tempting misreading and both are handles.
 
-**Never `{:?}` a `Value`.** `ObjRef`'s hand-written `Debug` prints its arena
+**Never `{:?}` a `Value`.** `ObjectReference`'s hand-written `Debug` prints its arena
 index only, so this cannot recurse -- but it renders Rust internals such as
-`ObjRef(#42)`, useless in a message meant for a Newspeak programmer.
+`ObjectReference(#42)`, useless in a message meant for a Newspeak programmer.
 `Heap::describe` answers "the String \"foo\"" instead.
 
 ## Three layers, not one
@@ -107,9 +107,9 @@ Hence three layers:
 ```rust
 struct Mixin {                    // one per declaration, shared for its lifetime
     name: Symbol,
-    methods: HashMap<Symbol, Rc<ast::MethodDecl>>,
-    instance_slots: Vec<Rc<ast::SlotDecl>>,
-    init_exprs: Vec<ast::Stmt>,
+    methods: HashMap<Symbol, Rc<ast::MethodDeclaration>>,
+    instance_slots: Vec<Rc<ast::SlotDeclaration>>,
+    initializer_expressions: Vec<ast::Statement>,
     factory: Option<Rc<ast::MessagePattern>>,
     nested: Vec<Rc<Mixin>>,       // the nested declarations, for their accessors
     class_side: Option<Rc<Mixin>>,
@@ -119,16 +119,16 @@ struct MixinApplication {         // (mixin, super application) -> behaviour
     mixin: Rc<Mixin>,
     superclass: Option<Rc<MixinApplication>>,
     slot_index: HashMap<Symbol, usize>,   // absolute layout, inherited slots included
-    num_slots: usize,
+    slot_count: usize,
 }
 
 struct ClassData {                // one per enclosing instance, per level
     application: Rc<MixinApplication>,
-    enclosing: Option<ObjRef>,
-    declaring_class: Option<ClassRef>,    // the declaration chain `outer` walks
-    superclass: Option<ClassRef>,         // parallel to the application chain
+    enclosing: Option<ObjectReference>,
+    declaring_class: Option<ClassReference>,    // the declaration chain `outer` walks
+    superclass: Option<ClassReference>,         // parallel to the application chain
     builtin: Option<BuiltinClass>,
-    metaclass: Option<ClassRef>,          // built on first class-side send
+    metaclass: Option<ClassReference>,          // built on first class-side send
 }
 ```
 
@@ -146,7 +146,7 @@ behaviour.
   (`declaring_class`).
 - The **application chain** carries code and layout, and is shared.
 
-`slot_index`, `num_slots` and method lookup live on `MixinApplication` rather
+`slot_index`, `slot_count` and method lookup live on `MixinApplication` rather
 than on `ClassData`, because a superclass contributes slots and can differ
 between instances of the same enclosing class.
 
@@ -276,7 +276,7 @@ What reflection will need beyond it is not yet known; see
 [liveness-and-reflection.md](liveness-and-reflection.md).
 
 One consequence is load-bearing elsewhere: `Object::class` is not an
-`Option<ClassRef>`, because every class object's own class is the bootstrap
+`Option<ClassReference>`, because every class object's own class is the bootstrap
 `Object` placeholder. The image decoder relies on that: it allocates every
 record as a placeholder pointing at the bootstrap `Object` before it reads the
 record that says what the class really is. Building §3.2's hierarchy would make
@@ -300,10 +300,10 @@ and cheap to carry.
 ## Arena allocation and handles
 
 `Rc<RefCell<Object>>` was the Milestone 1 model. It is gone: an object is an
-entry in one `Heap`'s arena and an `ObjRef` is a 32-bit index into it, private to
+entry in one `Heap`'s arena and an `ObjectReference` is a 32-bit index into it, private to
 `heap.rs`. The representation, what it measured, and the root discipline —
-two of its three parts built, the lifetime brand and the collector still to
-come — are designed in [memory.md](memory.md), "Checked roots and a
+all three of its parts built, the lifetime brand included, and the collector
+still to come — are designed in [memory.md](memory.md), "Checked roots and a
 collector".
 
 Two consequences belong here rather than there, because they are about this
@@ -312,7 +312,7 @@ document's subject.
 **An activation is an object too, when something needs it to be.** A running
 activation is an entry on the `Heap`'s activation stack, and it becomes a
 first-class `Frame` — an entry in the same `Heap`'s frame arena, addressed by a
-`FrameRef` with the same privacy as an `ObjRef` — only when a block captures it.
+`FrameReference` with the same privacy as an `ObjectReference` — only when a block captures it.
 So an activation nothing captures costs no allocation and leaves nothing behind,
 and one that is captured is stored the way an object is. See
 [execution.md](execution.md), "Activations".

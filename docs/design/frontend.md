@@ -71,7 +71,7 @@ comments, character constants, string escapes and radix numbers.
 
 Character constants are double-quote delimited (`"a"`), per the grammar's
 `characterConstant`. The double quote is free for this because comments are
-`(* *)` and strings are `'...'`. `lex_char_constant` consumes exactly one
+`(* *)` and strings are `'...'`. `lex_character_constant` consumes exactly one
 character between the delimiters whatever that character is, including `"`
 itself, so `""""` — the quote character — lexes correctly;
 `corpus/modules/VCSSmalltalkSourceMirrors.ns` uses it and parses.
@@ -80,9 +80,9 @@ Comments are retained as tokens for tooling and skipped by the parser.
 
 ## AST
 
-`Module`, `ClassDecl`, `ClassHeader`, `SuperclassClause`,
-`SlotDecl { name, mutability, init }`, `MethodDecl { pattern, body }`,
-`MessagePattern`, `CodeBody { temps, statements }`, `Stmt`, `Expr` (`Ident`,
+`Module`, `ClassDeclaration`, `ClassHeader`, `SuperclassClause`,
+`SlotDeclaration { name, mutability, initializer }`, `MethodDeclaration { pattern, body }`,
+`MessagePattern`, `CodeBody { temporaries, statements }`, `Statement`, `Expression` (`Identifier`,
 `Literal`, `Block`, `Send`, `Cascade`, `Assign`, `Array`), `Literal`.
 
 **Every node carries a `Span`** — byte offsets into the source, as
@@ -126,7 +126,7 @@ expected-fail 1, stale 0**. A file that legitimately cannot parse yet belongs in
 keeps that list from accumulating entries that have quietly started working.
 
 The one blacklisted file is a lexer ambiguity rather than a missing construct:
-source that writes `expr -1` meaning `expr - 1`, where the lexer's rule makes
+source that writes `expression -1` meaning `expression - 1`, where the lexer's rule makes
 `-1` a negative literal. One file, `NewspeakColorizationForSqueak.ns`.
 
 ## Errors

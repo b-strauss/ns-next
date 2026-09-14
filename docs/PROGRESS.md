@@ -10,62 +10,104 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
 
-M4 is under way. Step 2, the compiler-checked root discipline, designed on
-2026-09-13 ([memory.md](design/memory.md), "Checked roots and a collector"),
-lands in three parts. **2a, no re-entry from Rust, is done** — `do:`,
+M4 is under way. **Step 2, the compiler-checked root discipline, is done**,
+in the three parts it was designed in on 2026-09-13 ([memory.md](design/memory.md),
+"Checked roots and a collector"). **2a, no re-entry from Rust** — `do:`,
 instantiation and the nested-class accessor are trampoline steps, so Rust
 enters the run loop only as the host; see "M4 — No re-entry from Rust" below.
-**2b, the safepoint, the tracing, host roots and the stress mode, is done** —
-the run loop polls a safepoint, `trace.rs` enumerates every handle a collector
-would trace, a host keeps values across runs only as `Root`s, and
+**2b, the safepoint, the tracing, host roots and the stress mode** — the run
+loop polls a safepoint, `trace.rs` enumerates every handle a collector would
+trace, a host keeps values across runs only as `Root`s, and
 `NS_NEXT_STRESS_MOVES=1` moves everything at the safepoints under the whole
 suite, which `CLAUDE.md` makes a gate; see "M4 — The safepoint, tracing, host
-roots and the stress mode" below.
+roots and the stress mode" below. **2c, the lifetime brand** — every movable
+handle carries a lifetime obtainable only inside `Interpreter::enter`, in safe
+Rust, so holding one across a safepoint, keeping one outside an entry, and a
+native re-entering the loop fail to compile; see "M4 — The lifetime brand"
+below. Measured whole, it is level with `a5d1e05` on every source; its first
+measurement was not, and finding out why put a function-alignment pin into
+the measurement protocol — and only there (the first finding below).
 
-**The next piece is 2c, the lifetime brand** ([memory.md](design/memory.md),
-"Planned: the brand, checked by the compiler rather than by convention"). Every
-movable handle — `ObjRef`, `ClassRef`, `FrameRef`, and so `Value` and every
-type that contains one — carries an invariant lifetime `'gc`, obtainable only
-inside `Interpreter::enter`, whose result cannot name it; each instruction the
-run loop executes is one `enter`, and `vm::run` and the safepoint stay outside
-every one. Holding a handle across a safepoint and a native re-entering the
-run loop then fail to compile, `heap_ref()` and `heap_mut()` go, and a host
-reads through `enter`, so a `Root` becomes the only way it can keep a value.
-Its gates, beside the usual ones and the two stress runs, are `compile_fail`
-doctests for both mistakes and for storing a branded handle in a host's own
-field, and a before-and-after measurement of the benchmarks, since `enter`
-should cost nothing. It gets its own plan under `docs/superpowers/plans/`,
-written against the code as 2b left it.
+**The next piece is step 3, the inline caches** ([dispatch.md](design/dispatch.md),
+"Planned: inline caches"; item 3 of the order of work below). A candidate
+small step of its own comes before them: a cached getter symbol for
+setter-shaped lexical sends and a hasher for `u32`-shaped keys in the method
+and slot tables, which would take most of `Symbol::intern`'s 11.9% of
+`bench_send.ns` out before a lexical-send cache entry removes the lookup
+altogether ("The profile of `bench_block.ns` is taken" below says why). Each
+gets its own plan under `docs/superpowers/plans/`, written against the code
+as 2c left it. Read for it: [dispatch.md](design/dispatch.md), "Planned:
+inline caches" (a cache guards on the mixin application, and a native entry
+carries an enumerated primitive); [compiler.md](design/compiler.md),
+"Safepoints and call-site identity", for the inert call-site slots every
+`CompiledCode` already carries;
+[execution.md](design/execution.md), "The VM", for the send path the caches
+sit on, where each instruction is one entry of the step state, `Mutator`; and
+[memory.md](design/memory.md), "The brand" and "What the collector traces" —
+code is shared behind an `Rc`, where no handle may live, so a cache entry in
+it must hold none, which a key on the application satisfies. Performance is
+measured, not assumed: the protocol and the seven sources of "What removing
+the re-entries moved" ([execution.md](design/execution.md); the four
+throwaway sources are written out in the
+[2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
+"Measurement protocol"), **every compared binary, the current tree
+included, built with the protocol's explicit flags through `RUSTFLAGS`** —
+`+crt-static` and the function-alignment pin, which no configuration
+carries — two sittings for a whole step, and a comparison against `be3eb40`
+as well as against the commit the step starts from (the second finding
+below).
 
 **Open findings**, for whoever plans next to weigh:
 
+- **A measurement builds every compared binary with the same explicit
+  flags, function alignment pinned; the shipped build is unpinned.** 2c's
+  first whole-step measurement read 1–2.5% slower than `a5d1e05` on the
+  block and instantiation benchmarks, `bench_new2.ns` beyond noise in both
+  sittings, and a bisection placed it on the brand commit, `1549fb0`. The
+  cause was placement, not code: the brand commit's hot machine code is
+  instruction for instruction identical to its parent's, but smaller cold
+  host code ahead of it moved every hot function by 224 or 240 bytes into a
+  different 64-byte phase, and with function starts pinned to 64 bytes
+  (`-C llvm-args=-align-all-functions=6`) the two commits measured level.
+  Under the pin the whole step is level with `a5d1e05` on every source in
+  both sittings, −1.4% to +0.6%, every group overlapping
+  ([execution.md](design/execution.md), "What 2c moved"). The unpinned
+  parent reads −0.1% to −1.8% against the pinned one, overlapping on all but
+  one group, and the pin costs about 110 KB of padding, 5.6% of the binary:
+  it buys repeatability, not speed. So the user decided on 2026-09-14 that the
+  pin belongs to the measurement protocol only — `.cargo/config.toml` carries
+  `+crt-static` and nothing else, and every binary a measurement compares,
+  the current tree included, is built with
+  `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`
+  set for that build, since `RUSTFLAGS` replaces the configuration's flags
+  ([execution.md](design/execution.md), "What removing the re-entries
+  moved", the protocol). The two earlier "uniform shift on unchanged code"
+  findings of 2a likely share the mechanism, verified only for 2c.
 - **The comparison with `be3eb40` continues.** 2a left `bench_loop.ns` 1.4–1.9%
   and `bench_block.ns` 1.4–1.6% slower than `be3eb40`, the commit it started
   from — a uniform codegen shift in `vm::run` and `dispatch_native`, traced as
-  far as inlining and register allocation and not bisected. 2b's whole-step
-  measurement, in two sittings, puts `bench_loop.ns` at +1.1% in both,
-  overlapping, and `bench_block.ns` at −2.5% and −2.6%, entirely below, since
-  the closure split made it faster. `bench_send.ns` is at +0.9% and +1.4%,
-  overlapping, where 2a measured +0.2% and +0.8%; 2b's binary is level with
-  2a's, and 2a's own binary sat +0.6% and +1.9% above `be3eb40` in the same
-  sittings, so that is spread between sittings rather than something 2b added.
-  Every other source is level or faster
-  ([execution.md](design/execution.md), "What 2b moved"). Nothing is slower
-  than `be3eb40` beyond the groups' spread now, but the rule stays: **every
-  performance measurement up to and including step 3 compares against
-  `be3eb40` as well as against the commit it starts from**, with the protocol
-  and the seven sources of "What removing the re-entries moved"
-  ([execution.md](design/execution.md); the four throwaway sources are written
-  out in the [no-reentry plan](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md)
-  and the [2b plan](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md),
-  "Measurement protocol"), and reports both. If a source is still slower than
-  `be3eb40` once step 3 has landed, the shift is chased then, on the rebuilt
-  send path.
+  far as inlining and register allocation and not bisected; code placement,
+  the mechanism the protocol now pins, is the likely cause, verified only
+  for 2c. 2b
+  took `bench_block.ns` to 2.5% faster than `be3eb40`, and 2c, measured
+  under the pin, keeps it: `bench_block.ns` −2.2% and −3.2%,
+  `bench_newarg.ns` −2.9% and −2.1% (2b: −3.2% to −3.4%), `bench_do.ns`
+  −3.5% and −2.5%, `bench_new.ns` and `bench_new2.ns` level. `bench_send.ns`
+  is +3.1% and +2.2%, entirely above `be3eb40` in both sittings (2b: +0.9%
+  to +1.4%), and `bench_loop.ns` +1.7% and +1.7% — the parent's own shift,
+  `a5d1e05` sitting +2.5% to +2.7% above `be3eb40` on the send and +1.1% to
+  +2.0% on the loop in the same sittings, with 2c level with it
+  ([execution.md](design/execution.md), "What 2c moved"). The rule stays:
+  **every performance measurement up to and including step 3 compares
+  against `be3eb40` as well as against the commit it starts from**, reports
+  both, and builds every binary with the same codegen flags (the finding
+  above). If a source is still slower than `be3eb40` once step 3 has landed,
+  the shift is chased then, on the rebuilt send path.
 - **A decoded image's last initializer is not held to answering `self`**, so
   `new` answers whatever it answers — wrong but safe, no panic.
   `image::decode::verify_mixins` could refuse such an initializer, which would
@@ -75,14 +117,9 @@ written against the code as 2b left it.
   block in that body; the clause *message*'s case, a `^` caught by the
   message's activation, is pinned
   (`a_return_in_a_clause_messages_block_hands_its_value_to_the_walk`).
-- **Two stale handles from the same old epoch compare in `same()` without a
-  panic.** `same` has no heap in reach, so it can check the two epochs only
-  against each other; a live handle against a stale one panics. That is what
-  2c's brand closes ([memory.md](design/memory.md), "Planned: the brand"),
-  and it is the one finding 2b's reviews left.
-- **The stress suite takes three minutes** (190 s against 12.7 s), almost half
+- **The stress suite takes three minutes** (190 s against 13.1 s), almost half
   of it one test, `the_depth_limit_is_exact_and_counts_alike_under_both_lowerings`.
-  It is a gate before every commit, so 2c's plan should budget for it.
+  It is a gate before every commit, so step 3's plan should budget for it.
 
 Sends run on the activation stack rather than the Rust stack, in one loop that
 pushes, pops and resumes; `value`, the control-flow natives, `do:`,
@@ -120,9 +157,9 @@ why the object and activation representations were converted together rather
 than one at a time. Each piece is designed in the document for its own aspect;
 those documents are the authority, and this is only the map to them.
 
-**Nine pieces are done.** The heap seam routes every object and activation
+**Ten pieces are done.** The heap seam routes every object and activation
 access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
-it replaced `Rc<RefCell<_>>`: an `ObjRef` or a `FrameRef` is a 32-bit index
+it replaced `Rc<RefCell<_>>`: an `ObjectReference` or a `FrameReference` is a 32-bit index
 into a `Vec` the `Heap` owns, with a private field so the compiler enforces the
 seam. That is worth ~15% of the benchmark and is described in
 [memory.md](design/memory.md); see "M4 — The heap seam" and "M4 — The object
@@ -140,7 +177,10 @@ trampoline" below. Then 2a took the last re-entries of the run loop from Rust
 away; see "M4 — No re-entry from Rust" below. Then 2b put a safepoint into the
 run loop, enumerated every handle a collector would trace, rooted what a host
 keeps, and checked all of it by moving everything under the whole suite; see
-"M4 — The safepoint, tracing, host roots and the stress mode" below.
+"M4 — The safepoint, tracing, host roots and the stress mode" below. Then 2c
+branded every movable handle with the lifetime of the entry that minted it,
+so the compiler checks what 2b's stress mode could only find at run time; see
+"M4 — The lifetime brand" below.
 
 **The profile of `bench_block.ns` is taken**
 ([execution.md](design/execution.md), "What the profiles show"). The question
@@ -159,7 +199,7 @@ symbol and a hasher for `u32`-shaped keys would take most of it out sooner,
 and are a candidate small step of their own before the caches.
 
 The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
-and all three done, 1b done, 2a and 2b done, everything from 2c on still ahead — and it is
+and all three done, 1b done, 2 done in all three parts, everything from 3 on still ahead — and it is
 not the order the milestone was originally sketched in. Two things settled the order of the
 numbered steps, neither of them a preference.
 
@@ -187,7 +227,7 @@ so nothing is lost by it going second.
    implements it for Newspeak. Split in two, each landing green and measured on
    its own:
    - **1a — the stack. Done.** Activations are entries on one stack the `Heap`
-     owns, addressed by an `ActivationRef`; a `Frame` is reified only when a
+     owns, addressed by an `ActivationReference`; a `Frame` is reified only when a
      block is created, and divorced — its registers copied out — when its
      activation returns. A user-method send fell from ~146 ns to ~91 ns, and
      an activation nothing captures leaves nothing behind; see "M4 — The
@@ -202,7 +242,7 @@ so nothing is lost by it going second.
      `SendInlinable` and the counter added together. `bench_loop.ns` fell by
      about 32%, `bench_send.ns` 31% and `bench_block.ns` 22%; see "M4 — The
      trampoline" below.
-2. **A compiler-checked root discipline. In progress.** [memory.md](design/memory.md),
+2. **A compiler-checked root discipline. Done.** [memory.md](design/memory.md),
    "Checked roots and a collector". Designed on 2026-09-13, from how
    Cog, Nova, CPython, piccolo, V8, HotSpot, Primordial Soup and SOMns place
    their collections: a collection only ever at a safepoint in the run loop,
@@ -210,8 +250,8 @@ so nothing is lost by it going second.
    the style of gc-arena, which makes holding a handle across a safepoint a
    compile error. That replaced the earlier plan of Nova's
    `GcScope`/`NoGcScope`, whose scopes would root the re-entry paths rather
-   than remove them. Free at run time; the ergonomic cost is accepted
-   deliberately. Split in three, each landing green and measured on its own:
+   than remove them. The ergonomic cost is accepted deliberately. Split in
+   three, each landing green and measured on its own:
    - **2a — no re-entry from Rust. Done.** `do:`, instantiation and the
      nested-class accessor are trampoline steps, and the bound on re-entries
      went with them ([execution.md](design/execution.md), "No re-entry from
@@ -228,10 +268,16 @@ so nothing is lost by it going second.
      the step beyond noise and `bench_block.ns` is about 4% faster; the suite
      takes 12.7 s, and 190 s under the stress mode; see "M4 — The safepoint,
      tracing, host roots and the stress mode" below.
-   - **2c — the brand. Next.** `Value<'gc>` and every movable handle,
-     obtainable only inside `Interpreter::enter`; `heap_ref()` and
-     `heap_mut()` go, so a host holds values only as `Root`s and reads
-     through `enter`.
+   - **2c — the brand. Done.** Every movable handle carries a lifetime
+     obtainable only inside `Interpreter::enter`, which lends the step state,
+     `Mutator`, to a closure generic over it in safe Rust — the crate forbids
+     `unsafe` code — once per instruction the run loop executes, so a host
+     holds values only as `Root`s and reads through `enter`. Measured whole,
+     every source is level with `a5d1e05`; a first measurement read 1–2.5%
+     slower on the block and instantiation benchmarks, which turned out to be
+     code placement, and the measurement protocol now pins every function
+     start to a 64-byte boundary in every binary it compares (the first
+     finding above); see "M4 — The lifetime brand" below.
 3. **Inline caches** — [dispatch.md](design/dispatch.md). The call-site slots are
    already emitted and inert, so no bytecode format break. A cache must guard on
    the **mixin application**, not on the class object; the obvious key is the
@@ -291,7 +337,7 @@ permanently as `--engine=tree-walk` — a byte-for-byte differential oracle over
 stdout, stderr and exit status. Adds baseline control-flow inlining, each
 occurrence guarded at run time with a fallback to a real virtual send;
 `ns-next disasm`; and the first image format, exposed as `snapshot` and `load`.
-Carries the statement→PC safepoint table and a reserved inert inline-cache slot
+Carries the statement→program-counter safepoint table and a reserved inert inline-cache slot
 per send from the start, so Milestone 4 needs no bytecode format break.
 
 A whole-branch review before the merge found two engine divergences the per-task
@@ -362,7 +408,7 @@ The first piece of M4's representation change, done ahead of the arena
 itself: every read and write of an `Object` or a `Frame` across the workspace
 now goes through one `Heap` (`crates/ns-runtime/src/heap.rs`), replacing the
 193 call sites (109 under `src`, 84 in the integration tests) that used to
-reach `Rc<RefCell<_>>` directly. `ObjRef` and `FrameRef` became opaque
+reach `Rc<RefCell<_>>` directly. `ObjectReference` and `FrameReference` became opaque
 newtypes with a `pub(crate)` inner field: the crate boundary was
 compiler-enforced (`ns-cli` and the integration-test crates under
 `crates/ns-runtime/tests/` could not reach it at all), while containment
@@ -394,11 +440,11 @@ regression it introduced was found and fixed.
 Plan: [ns-next-object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md).
 
 `Rc<RefCell<_>>` is gone. One `Heap` owns `objects: Vec<Object>` and
-`frames: Vec<Frame>`; an `ObjRef`, a `FrameRef` and the `ClassRef` alias are
+`frames: Vec<Frame>`; an `ObjectReference`, a `FrameReference` and the `ClassReference` alias are
 32-bit indices into them, declared in `crates/ns-runtime/src/heap.rs` with a
 **private** field — so the compiler, not a grep gate, refuses every read of a
 handle from anywhere else. The grep gate `CLAUDE.md` used to carry is removed.
-`ObjRef`, `FrameRef` and `Value` are now `Copy`. Converted in two steps —
+`ObjectReference`, `FrameReference` and `Value` are now `Copy`. Converted in two steps —
 activations first, then objects — so that each landed against a green suite and
 a measurable benchmark rather than as one unreviewable change.
 
@@ -416,9 +462,10 @@ What it deleted rather than moved:
   `Mixin`'s `nested`/`class_side` links still drop recursively, bounded by
   `image/mixins.rs`'s `MAX_MIXIN_DEPTH` rather than by iteration.
 - `bootstrap_self_referential_object`'s `Rc::new_uninit`/`Rc::from_raw`
-  construction, the crate's only `unsafe`. An arena knows a slot's index before
-  it fills the slot, so an object can name itself in safe Rust.
-  `grep -rn "unsafe" crates/ns-runtime/src/heap.rs` is empty.
+  construction, then the crate's only `unsafe`. An arena knows a slot's index
+  before it fills the slot, so an object can name itself in safe Rust.
+  `grep -rn "unsafe" crates/ns-runtime/src/heap.rs` is empty, and since 2c
+  the whole crate forbids `unsafe` code.
 
 What it added: a `debug_assertions`-only origin guard. Each `Heap` carries an id,
 each handle records the id of the heap that minted it, and all 46 accessor sites
@@ -429,7 +476,7 @@ release build neither the field nor the check exists, so a handle is exactly its
 32-bit index. The same reasoning retired a proof `interpreter/nested.rs` had been
 relying on: `cache_slot` used `0` as the sentinel for a non-object receiver,
 justified by "0 is an address no live `Rc` has", and under the arena index 0 is
-the first object allocated. It now returns `Option<(ObjRef, usize)>`, so the case
+the first object allocated. It now returns `Option<(ObjectReference, usize)>`, so the case
 cannot be expressed rather than being commented differently.
 
 Measured before and after in one sitting, on a release build, alternating three
@@ -445,7 +492,7 @@ machine's load rather than the code:
 **About 15% off the bytecode engine**, with the two groups not overlapping. What
 moved is the `Rc` box, its reference-count traffic, and the `RefCell` borrow on
 every register read and write. What did **not** move is the rest of the
-activation cost — `args` and `temps` are still a `Vec` allocation apiece per
+activation cost — `arguments` and `temporaries` are still a `Vec` allocation apiece per
 activation, and that is the next step's, not this one's. The tree-walker is
 unchanged within noise, as expected.
 
@@ -469,7 +516,7 @@ Plan: [ns-next-activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activ
 Step 1a of M4. Every Newspeak activation runs on one activation stack the `Heap`
 owns — `ActivationStack` in `crates/ns-runtime/src/heap.rs`, one contiguous
 `Vec<Value>` of registers and one `Vec<StackEntry>` — addressed by a new handle,
-`ActivationRef`, which is 4 bytes in a release build. A `Frame` exists only when
+`ActivationReference`, which is 4 bytes in a release build. A `Frame` exists only when
 a block is created: `Heap::reify` builds one *married* to its stack entry, so a
 block reads its method's variables through the live stack slot, and
 `Heap::pop_activation` *divorces* it when the activation returns, copying the
@@ -479,8 +526,8 @@ private to `heap.rs`. The four sites that build an activation (`invoke_method`,
 `invoke_closure`, `run_initializer_level`, `run_clause_body`) push and pop under
 both engines, and `Interpreter::send` and `instantiate` debug-assert that they
 leave the stack balanced. Every function that means *the running activation*
-takes an `ActivationRef`; closures, frames and image records take only a
-`FrameRef`, so storing a stack handle is a compile error. Accessors are
+takes an `ActivationReference`; closures, frames and image records take only a
+`FrameReference`, so storing a stack handle is a compile error. Accessors are
 `activation_*` for a live activation and `frame_*` for a reified frame. The
 design is in [execution.md](design/execution.md), "Activations".
 
@@ -488,14 +535,14 @@ What it deleted rather than moved:
 
 - The `sender` parameter of `Interpreter::send`, `invoke_method`,
   `invoke_closure`, `builtins::dispatch_native`, `builtins::call_block` and the
-  `builtins/` modules. The design had it retyped to an `ActivationRef`; it was
+  `builtins/` modules. The design had it retyped to an `ActivationReference`; it was
   removed instead, because its only use was to fill `Frame.sender`, and once a
   live activation's sender is the entry below it, nothing read it.
-- `FrameRef`'s `receiver_and_current_class`, `local`, `set_local`,
+- `FrameReference`'s `receiver_and_current_class`, `local`, `set_local`,
   `frame_slot_base` and `frame_is_method`, replaced by their `activation_*`
   counterparts, and `mark_uncontinuable`, whose job is now part of
   `pop_activation`'s divorce; `receiver` and `grow_temps` became
-  `frame_receiver` and `frame_grow_temps`. Outside tests, `Heap::alloc_frame`
+  `frame_receiver` and `frame_grow_temporaries`. Outside tests, `Heap::allocate_frame`
   has two callers left, `reify` and the image decoder.
 - An arena entry and two register vectors per activation. An activation that
   nothing captures allocates nothing once the stack has grown to the program's
@@ -608,8 +655,8 @@ claimed it was an error was wrong, and was corrected.
 - From the CLI: `--engine`, the tree-walk line of `bench`, and
   `crates/ns-cli/tests/differential.rs`. `run-corpus` runs each row from
   source and as a built binary.
-- From the image format: the frame record's pc-kind byte, so the minimum frame
-  record is 18 bytes rather than 19. `PC_KIND_*` retired its two numbers,
+- From the image format: the frame record's program-counter-kind byte, so the minimum frame
+  record is 18 bytes rather than 19. `PROGRAM_COUNTER_KIND_*` retired its two numbers,
   which stay pinned. A one-frame record in the old layout is refused
   (`crates/ns-runtime/tests/image.rs`,
   `a_frame_record_in_the_old_layout_is_refused`); in a multi-frame image the
@@ -623,8 +670,9 @@ claimed it was an error was wrong, and was corrected.
   `_under_bytecode` duplicates in `nested_classes.rs` folded into the tests
   they duplicated.
 - The resolver's bindings map from every run-time signature: `send(receiver,
-  selector, args)`, `instantiate(class, args)`, `invoke_closure(interp,
-  closure, args)`, `run_code(interp, act, code)`. `ClosureData`,
+  selector, arguments)`, `instantiate(class, arguments)`,
+  `invoke_closure(interpreter, closure, arguments)`,
+  `run_code(interpreter, activation, code)`. `ClosureData`,
   `CompiledModule` and `LoadedImage` no longer carry one.
 
 **What replaced the differential for now** is recorded answers: every fixture
@@ -726,10 +774,10 @@ snapshot changed.
    anything is built on the code. Its review found a panic reachable from a
    crafted artifact: `disasm --initializer` on an artifact whose root row names
    no initializer now refuses with an error, pinned by a CLI test.
-7. **Handles by value.** Every function taking an `ObjRef`, `ClassRef`,
-   `FrameRef` or `ActivationRef` takes it by value — 143 sites — and
+7. **Handles by value.** Every function taking an `ObjectReference`, `ClassReference`,
+   `FrameReference` or `ActivationReference` takes it by value — 143 sites — and
    `clippy::trivially_copy_pass_by_ref`, sized by a new `clippy.toml` to see
-   the debug-build `ActivationRef` and `pub` functions too, keeps it so. Four
+   the debug-build `ActivationReference` and `pub` functions too, keeps it so. Four
    `Option<&_>` parameters remain by reference, outside the lint's reach
    (`dispatch.rs`, `decode.rs`, `encode.rs` ×2).
 8. **One module per CLI command.** `ns-cli/src/main.rs` keeps the argument
@@ -800,13 +848,13 @@ the same result.
 
 - **Two error messages that name a milestone.** `builtins/numbers.rs`'s
   `type_mismatch` ("... (Milestone 1 has no Integer/Float coercion) ...") and
-  `interpreter/literals.rs`'s `parse_int_literal` ("fractional radix literals
+  `interpreter/literals.rs`'s `parse_integer_literal` ("fractional radix literals
   are not supported in Milestone 1"). A program observes them on stderr, so
   rewording them is a behaviour change that needs its own decision.
 - **The discarded `Object` allocation in `build_builtin_classes`.** Step C
   removed it once identity hashes became lazy, so dropping an allocation no
   longer shifted any hash.
-- **`ClosureData.params` duplicating `code.num_args`.** At run time only the
+- **`ClosureData.parameters` duplicating `code.argument_count`.** At run time only the
   count is read, but the image's closure record carries the names, so dropping
   them is a wire change. Step B shares the vector instead of copying it.
 - **The lexical-send slot lookup.** `dispatch_lexical_send` interns the getter
@@ -946,8 +994,8 @@ objects. The user decided on 2026-09-12 to record them
 verbatim"). Fixed; see "M4 — Tag-named identity hashes" below.
 
 **What was deleted:** `Heap::alloc_placeholder_object`, whose callers now use
-`alloc_object`, since every object starts at hash 0;
-`Interpreter::alloc_identity_hash` (the `Heap`'s own `alloc_identity_hash` is
+`allocate_object`, since every object starts at hash 0;
+`Interpreter::allocate_identity_hash` (the `Heap`'s own `allocate_identity_hash` is
 now private, with `ensure_identity_hash` its only caller outside tests); and
 the discarded `Object` allocation in
 `build_builtin_classes`, kept by step B only because removing it shifted every
@@ -1025,7 +1073,7 @@ ignored; `parse-corpus` reports **parsed 210, failed
 - **`ns-runtime`'s integration tests under the reference lowering.** They test
   dispatch, the natives, instantiation and the image, which the two lowerings
   share.
-- **The two error messages that name a milestone, `ClosureData.params` and the
+- **The two error messages that name a milestone, `ClosureData.parameters` and the
   lexical-send slot lookup**, still as listed under "M4 — Cleaning up with one
   engine".
 
@@ -1126,7 +1174,7 @@ show").
    pops all of it on every path out. `Interpreter::push_step` pushes what a
    send decided; `Interpreter::reenter` is the one way Rust enters the loop; a
    stack entry carries its own code, so a return resumes its caller from the
-   `pc` its send stored; a send's arguments go through one reusable buffer
+   `program_counter` its send stored; a send's arguments go through one reusable buffer
    instead of a vector per send. `Signal::Return` is an unwind of the
    activation stack (`vm::unwind`, `Interpreter::catches_return`). The plan's
    unwind had a defect the task found: a `^` into a running initializer made it
@@ -1148,7 +1196,7 @@ show").
    depth, `push_step` decides the exemption — through `push_continuation` for
    a native loop's next block — and `reenter` counts N. **A
    deviation:** the mark of a control-flow native's block is
-   `StepArgs::ControlFlow`, not a `bool` field on `Step::Block` as the plan had
+   `StepArguments::ControlFlow`, not a `bool` field on `Step::Block` as the plan had
    it — the field measured 4–8% slower on every benchmark even with nothing
    reading it. `&` and `|`, which share `and:`'s and `or:`'s native, carry the
    mark too, harmlessly: nothing emits a `SendInlinable` for them. The
@@ -1223,7 +1271,7 @@ test runs three recursions to 100,000 counted activations under each lowering.
   loop**, counted against N. `do:` moves to Newspeak after the inline caches;
   the other two could become trampoline steps once something needs it. (All
   three became trampoline steps in 2a; see "M4 — No re-entry from Rust" below.)
-- **The unchecked `args[0]`** in the control-flow natives (`builtins/boolean.rs`,
+- **The unchecked `arguments[0]`** in the control-flow natives (`builtins/boolean.rs`,
   `builtins/block.rs`). The decoder does not check a send's argument count
   against its selector, so a crafted artifact that sends `ifTrue:` with no
   argument still reaches it and panics
@@ -1259,7 +1307,7 @@ test runs three recursions to 100,000 counted activations under each lowering.
   does not refuse deeper nesting itself — no parsed source can produce it, so
   only a hand-built `CompiledCode` could write an image the decoder then
   refuses.
-- **The two error messages that name a milestone, `ClosureData.params` and the
+- **The two error messages that name a milestone, `ClosureData.parameters` and the
   lexical-send slot lookup** (now in `sends::decide_lexical_send`), still as
   listed under "M4 — Cleaning up with one engine".
 
@@ -1426,7 +1474,7 @@ quadratic, 7.8 s each.
   decoded last initializer to `self`**, for whoever plans next to weigh
   ("Where the next session starts").
 - **`do:`'s per-element argument vector.** Each element's block activation
-  takes a one-element `StepArgs::Owned` vector; a one-value `StepArgs` variant
+  takes a one-element `StepArguments::Owned` vector; a one-value `StepArguments` variant
   would avoid it, and would change `Step`'s layout, which the trampoline
   measured as a 4–8% risk.
 - **Suspend and resume must encode each stack entry's `Continuation`**, with
@@ -1466,8 +1514,8 @@ collector"). The step's commits follow the plan (`0cfe9dd`) on
    `Box<WhileLoop>` owned by one stack entry. A closure frame record names its
    closure object: `FRAME_CLOSURE` (1) is retired for `FRAME_CLOSURE_OBJECT`
    (6), and a record naming a non-closure is `NotAClosureReference`.
-3. **The host API takes and answers `Root`s**; `Signal` and `EvalResult`
-   become crate-private; `heap_ref()` and `heap_mut()` stay until 2c;
+3. **The host API takes and answers `Root`s**; `Signal` and `EvaluationResult`
+   become crate-private; `heap_reference()` and `heap_mut()` stay until 2c;
    `image::snapshot` and `image::build` keep taking plain values, fetched just
    before the call.
 4. **The root table lives in `Heap` behind a `RefCell`**, so `stash` and
@@ -1491,7 +1539,7 @@ collector"). The step's commits follow the plan (`0cfe9dd`) on
    CLI converted first, the tests under transitional names.
 3. **The epoch, the tracing and the move** (`277e606`). `trace.rs`, with
    every impl naming every field and matching every variant; a move epoch on
-   every `ObjRef` and `FrameRef` in a debug build; `Heap::move_everything`,
+   every `ObjectReference` and `FrameReference` in a debug build; `Heap::move_everything`,
    rotating both arenas with no fixed point and forwarding through a
    `Forwarder` that checks origin and epoch; `Interpreter::move_now` and
    `moves` for tests. The argument buffer is cleared when it is given back, so
@@ -1506,7 +1554,7 @@ collector"). The step's commits follow the plan (`0cfe9dd`) on
 6. **`image::load` on roots** (`a5da85f`): `LoadedImage` carries the root class
    and the image's roots as `Root`s.
 7. **Only roots leave the crate** (`b3d40d6`): the transitional entries went,
-   `Signal`, `EvalResult`, `platform_value` and `vm::run` became
+   `Signal`, `EvaluationResult`, `platform_value` and `vm::run` became
    crate-private, and `CLAUDE.md` gained the two stress runs as gates and the
    rule that a host keeps a value across a run only as a `Root`.
 8. **The documents**, and the whole-step measurement below.
@@ -1585,8 +1633,157 @@ against 7.6 s.
 
 **Left, deliberately**, the one finding of the reviews that is not closed:
 two stale handles from the same old epoch compare in `same()` without a
-panic, since `same` has no heap to check them against. That is what 2c's
-brand closes ([memory.md](design/memory.md), "Planned: the brand").
+panic, since `same` has no heap to check them against. 2c's brand closed it
+([memory.md](design/memory.md), "The brand").
+
+## M4 — The lifetime brand (2026-09-14)
+
+Plan: [ns-next-lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md).
+
+Step 2c, the third and last part of the root discipline. Every movable
+handle — `ObjectReference`, `ClassReference`, `FrameReference`, and so
+`Value` and every type that holds one — carries an invariant lifetime `'gc`
+obtainable only inside `Interpreter::enter`, so holding a handle across a
+safepoint, keeping one outside an entry, and a native re-entering the run
+loop are compile errors rather than mistakes the stress mode finds at run
+time ([memory.md](design/memory.md), "The brand, checked by the compiler
+rather than by convention"). The step's commits follow the plan (`7903050`)
+on `feature/lifetime-brand-2c`, from `a5d1e05`.
+
+**Decisions**, settled with the user on 2026-09-13 or following from the
+design, and one revised on the way:
+
+1. **Nothing is converted at a push, a pop or an allocation.** A safe
+   conversion per payload would reallocate every boxed continuation at every
+   push and pop and lose the spare instantiation boxes' reuse; the whole step
+   state rests as `Mutator<'static>` instead and is handed over as it is.
+   The plan made that one audited cast; Task 4's review found it
+   unnecessary — `body(&mut self.mutator)` gives the same guarantee in safe
+   Rust, since the closure is checked for every `'gc` — so the crate has
+   `#![forbid(unsafe_code)]` and no `unsafe` at all. Both alternatives are
+   recorded as considered and rejected in memory.md.
+2. **The brand is phantom**: `'gc` appears in a field only through the
+   `PhantomData` in a handle, which is why no conversion of the state is
+   needed.
+3. **No public `unbind`**: `at_rest` and `branded`, private to `heap.rs` and
+   one per direction, convert a value for the host root table, and nothing
+   else changes a brand.
+4. **`Mutator` never reaches the `Interpreter`**: `vm::run`, the safepoint
+   and the host entries take `&mut Interpreter`, and a decision, a native or
+   a continuation only a `&mut Mutator`.
+5. **`World` lives in `heap/world.rs`**, a child of the heap module, so
+   `Heap::new` and `Heap::move_everything` are private to it.
+6. **Each instruction is one entry**, and `vm::run` answers roots.
+7. **The host API**: `Interpreter::enter` is public; `send`, `instantiate`,
+   `load_module` and `platform` take and answer roots; `Interpreter::stash`
+   takes a `Value<'static>`, an immediate; heap access, `fetch` and every
+   step method are on `Mutator`.
+8. **The codec runs inside an entry**: `image::snapshot` takes a
+   `&Mutator<'gc>`, `image::build` a `&Heap<'gc>`, and `image::load` decodes
+   in one entry and roots what it answers.
+9. **`ActivationReference` stays unbranded**: nothing moves a stack entry.
+10. **Two stages**: Tasks 1–3 moved the code into its final shape with no
+    lifetime, and Task 4 added `'gc` and nothing else.
+11. **Three `compile_fail` doctests on `Interpreter::enter`**, each beside a
+    passing twin that differs from it in the one line that matters.
+12. **The finding "two stale handles from the same old epoch compare in
+    `same()` without a panic" closes**: within one entry nothing moves, and
+    no handle survives from one entry to the next.
+
+**What changed**, in the plan's order:
+
+1. **The step state becomes a `Mutator` the run loop enters per
+   instruction** (`d27e40b`): `World`, `Interpreter::enter`, and every step
+   method moved from `Interpreter` onto `Mutator`; `vm::run` makes one entry
+   per instruction and roots its answer in the last.
+2. **Hosts and tests read through `enter`** (`7425f22`, `1c61f1e`), the CLI
+   first, and nothing that holds a handle leaves an entry.
+3. **Only `enter` reaches the step state** (`e59dc52`, `9066e58`): the
+   transitional `Deref` from `Interpreter` to `Mutator` and the old heap
+   accessors and `Interpreter::fetch` went, and the image tests' graph
+   fixture keeps roots and inspects a decoded graph inside its entry.
+4. **The brand** (`1549fb0`, `2caf3e0`): `'gc` on every movable handle and
+   every type that holds one, `Heap::new` and `Heap::move_everything`
+   private, the three doctests, and then the cast replaced by the plain call
+   and the crate's `#![forbid(unsafe_code)]`. Two runtime tests that kept a
+   value across a run on purpose went with it, since that mistake no longer
+   compiles and the doctests pin it; the stress mode still checks what the
+   tracer knows.
+5. **The documents**, and the whole-step measurement below.
+
+**Names are written out.** Between Tasks 2 and 3, the user decided on
+2026-09-14 that no identifier in the workspace is one or two characters long
+or a truncated word — `interpreter`, not `interp`; `program_counter`, not
+`pc`; `ObjectReference`, not `ObjRef` — `ns-syntax` included (`a5c3a0f`,
+`41b8107`, `6b186cf`, `7b41649`). Clippy's `min_ident_chars`, configured in
+`clippy.toml`, refuses the short names, so the warning-free clippy gate
+enforces it; the rule and its exceptions are in `CLAUDE.md`, "Conventions".
+The one snapshot that changed, `ns-syntax`'s parse snapshot, is a dump of
+the AST's type and field names and differs from before in names only.
+
+No golden, no `.expected` file and no `run-corpus` row changed.
+
+**What reviews found**, each fixed before its task closed: values and a class
+handle answered out of one entry and used in the next, at about thirty test
+sites, and the image tests' graph fixture keeping a class and a decoded
+graph across entries — each the shape the brand would reject, found by
+review before Task 4 made it a compile error; closure parameters the rename
+had named `mutator` though they bound something else; and the unnecessary
+cast.
+
+Measured whole against `a5d1e05` and `be3eb40` in two sittings on a release
+build, five rounds of `ns-next bench <source> --iterations 30`, alternating
+the binaries within each round, the before-binaries built in throwaway
+worktrees, every binary built with `+crt-static` and every function start
+pinned to a 64-byte boundary (below). Means of the five medians in ms from
+the first sitting, and the change in each sitting:
+
+| Source | `be3eb40` | `a5d1e05` | After | Against `a5d1e05`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.07 | 11.20 | 11.26 | +0.5% / −0.3% | +1.7% / +1.7%, after entirely above in the second |
+| `bench_send.ns` | 13.77 | 14.12 | 14.20 | +0.6% / −0.4% | +3.1% / +2.2%, after entirely above in both |
+| `bench_block.ns` | 23.16 | 22.68 | 22.66 | −0.1% / −1.4% | −2.2% / −3.2%, after entirely below in both |
+| `bench_do.ns` | 8.04 | 7.74 | 7.76 | +0.2% / +0.4% | −3.5% / −2.5%, after entirely below in both |
+| `bench_new.ns` | 7.38 | 7.40 | 7.32 | −1.1% / +0.0% | −0.8% / −0.5% |
+| `bench_new2.ns` | 8.39 | 8.36 | 8.32 | −0.5% / +0.2% | −0.8% / −0.4% |
+| `bench_newarg.ns` | 10.51 | 10.26 | 10.20 | −0.5% / −0.8% | −2.9% / −2.1%, after entirely below in the second |
+
+**Every source is level with `a5d1e05`**, every group overlapping its
+parent's in both sittings, and against `be3eb40` the after-binary sits where
+its parent sits: `a5d1e05` itself is +2.5% to +2.7% above `be3eb40` on the
+send and +1.1% to +2.0% on the loop in these sittings.
+
+**The pin.** A first measurement of the step, with the binaries as their
+configurations built them, read 1–2.5% slower on the block and
+instantiation benchmarks, `bench_new2.ns` entirely above its parent's group
+in both sittings, and a bisection placed it on the brand commit, `1549fb0`.
+Diffing the post-LTO assembly function by function showed its hot code
+instruction for instruction identical to its parent's — the whole run loop,
+`dispatch_native`, `finish`, the pushes and pops — and only cold host code
+smaller, ahead of the hot functions, which moved every hot function by 224
+or 240 bytes into a different 64-byte phase; rebuilt with function starts
+pinned to 64 bytes (`-C llvm-args=-align-all-functions=6`), the two commits
+measured level. The tables above are the step re-measured with every
+binary pinned, with a fourth binary — the unpinned `a5d1e05` — in the same
+rounds: it reads −0.1% to −1.8% against the pinned one, overlapping on all
+but one group, so the pin buys repeatability, not speed, at about 110 KB of
+padding (2,091,520 against 1,979,904 bytes, 5.6%). On 2026-09-14 the user
+decided that the pin belongs to the measurement protocol only: the shipped build
+stays unpinned, `.cargo/config.toml` carries `+crt-static` and nothing
+else, and every binary a measurement compares — the current tree included
+— gets the whole flag set through `RUSTFLAGS`.
+[execution.md](design/execution.md), "What 2c moved", has every sitting's
+figures, the bisection and the evidence; "What removing the re-entries
+moved" there has the protocol and the flags.
+
+The suite (`cargo test --workspace`, debug build, test binaries already
+built) takes 13.1 s, where 2b left 12.7 s. Under
+`NS_NEXT_STRESS_MOVES=1` it takes 190.3 s: `crates/ns-runtime/tests/trampoline.rs`
+90.8 s against 3.1 s, and `ns-cli`'s tests, which spawn `ns-next` per
+fixture or golden, about 97 s against 7.5 s.
+
+690 tests pass, with one ignored (685 when 2b closed); `parse-corpus` stays at
+**210/0/1/0** and `run-corpus` at **6/0/205**, plain and under the stress mode.
 
 ## Notes
 
@@ -1618,8 +1815,8 @@ remember is cleanup that some call site will forget.
 reasoning that they removed what they created. They did not: `cli.rs`'s
 `tempdir()` never removed its directory, so every suite run left one behind
 (670 by 2026-09-13), and the other helpers removed theirs only when a test
-passed. Since 2026-09-13 every CLI test uses `ScratchDir`, whose `Drop` runs
-on the way out of a failing test too, and `ScratchDir` writes under the
+passed. Since 2026-09-13 every CLI test uses `ScratchDirectory`, whose `Drop` runs
+on the way out of a failing test too, and `ScratchDirectory` writes under the
 repository's git-ignored `.temp/` instead of the system temp folder, so that
 anything a killed run still leaves behind stays in the project.
 
@@ -1637,7 +1834,7 @@ the build that ships. `Heap::object_identity_key` and
 `Heap::frame_identity_key` check the origin like every other accessor, and
 the compiler enforces the rule in the most literal way available: no `Heap`,
 no key. All seven call sites already had one in reach;
-`GraphTable::object_id`, `GraphTable::frame_id` and `encode_frame_ref` gained
+`GraphTable::object_id`, `GraphTable::frame_id` and `encode_frame_reference` gained
 a `&Heap` parameter to pass it on.
 
 *Source comments citing plan bookkeeping.* The sweep was wider than the

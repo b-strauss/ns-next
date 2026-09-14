@@ -7,53 +7,61 @@
 use std::io::Write;
 
 use crate::types::*;
-use crate::{Interpreter, Symbol};
+use crate::{Mutator, Symbol};
 
 /// The `platform` singleton, its `transcript` stream, and its
 /// `collections` namespace all share `BuiltinClass::Platform` as their
 /// `.class` tag (a builtin class of their own would buy no behaviour), and
 /// are told apart here by payload shape: the platform singleton is built
 /// with a zero-field `ObjectData::Instance` (see `Interpreter::platform`), the
-/// stream with a one-field one (see `Interpreter::new_stream_object`), the
+/// stream with a one-field one (see `Mutator::new_stream_object`), the
 /// namespace with a two-field one (see
-/// `Interpreter::new_collections_namespace`). None ever holds real slot
+/// `Mutator::new_collections_namespace`). None ever holds real slot
 /// data; the field count is purely a tag.
-pub fn dispatch(
-    interp: &mut Interpreter,
-    receiver: Value,
+pub fn dispatch<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    args: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
-    let Value::Obj(obj) = &receiver else {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let Value::Object(object) = &receiver else {
         return None;
     };
     // The `?` below is unreachable: every `BuiltinClass::Platform`-classed
     // object is built by one of the three constructors named above.
-    let tag = interp.heap_ref().instance_field_count(*obj)?;
+    let tag = mutator.heap().instance_field_count(*object)?;
     if tag == 2 {
-        return dispatch_collections(interp, selector);
+        return dispatch_collections(mutator, selector);
     }
     if tag != 0 {
-        return dispatch_stream(interp, receiver, selector, args);
+        return dispatch_stream(mutator, receiver, selector, arguments);
     }
     match selector.as_str() {
-        "transcript" => Some(Ok(Value::Obj(interp.new_stream_object()))),
+        "transcript" => Some(Ok(Value::Object(mutator.new_stream_object()))),
         // Class accessors: some real corpus modules reach the Core Library
         // classes directly off `platform` rather than a named sub-module --
         // only the Core Library names are supported.
-        "Object" => Some(Ok(Value::Obj(interp.builtin_class(BuiltinClass::Object)))),
-        "Array" => Some(Ok(Value::Obj(interp.builtin_class(BuiltinClass::Array)))),
-        "OrderedCollection" => Some(Ok(Value::Obj(
-            interp.builtin_class(BuiltinClass::OrderedCollection),
+        "Object" => Some(Ok(Value::Object(
+            mutator.builtin_class(BuiltinClass::Object),
         ))),
-        "String" => Some(Ok(Value::Obj(interp.builtin_class(BuiltinClass::Str)))),
-        "Symbol" => Some(Ok(Value::Obj(interp.builtin_class(BuiltinClass::Sym)))),
+        "Array" => Some(Ok(Value::Object(
+            mutator.builtin_class(BuiltinClass::Array),
+        ))),
+        "OrderedCollection" => Some(Ok(Value::Object(
+            mutator.builtin_class(BuiltinClass::OrderedCollection),
+        ))),
+        "String" => Some(Ok(Value::Object(
+            mutator.builtin_class(BuiltinClass::String),
+        ))),
+        "Symbol" => Some(Ok(Value::Object(
+            mutator.builtin_class(BuiltinClass::Symbol),
+        ))),
         // The Core Library's `collections` namespace. Demand-driven: the
         // `run-corpus` whitelist's `Ducts.ns`, `NewspeakASTs.ns`, and
         // `V5BytecodeSimulation.ns` all open with
         // `private List = platform collections List.`, and none of them
         // reaches the platform any other way.
-        "collections" => Some(Ok(Value::Obj(interp.new_collections_namespace()))),
+        "collections" => Some(Ok(Value::Object(mutator.new_collections_namespace()))),
         _ => None,
     }
 }
@@ -70,28 +78,28 @@ pub fn dispatch(
 /// onto `OrderedCollection`, which is not a dictionary and not a set)
 /// would be a collections library of its own, which is deliberately not
 /// built. Modules needing them stay off the whitelist.
-fn dispatch_collections(
-    interp: &mut Interpreter,
+fn dispatch_collections<'gc>(
+    mutator: &mut Mutator<'gc>,
     selector: Symbol,
-) -> Option<Result<Value, NewspeakError>> {
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match selector.as_str() {
-        "List" => Some(Ok(Value::Obj(
-            interp.builtin_class(BuiltinClass::OrderedCollection),
+        "List" => Some(Ok(Value::Object(
+            mutator.builtin_class(BuiltinClass::OrderedCollection),
         ))),
         _ => None,
     }
 }
 
-fn dispatch_stream(
-    interp: &mut Interpreter,
-    receiver: Value,
+fn dispatch_stream<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    args: &[Value],
-) -> Option<Result<Value, NewspeakError>> {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match selector.as_str() {
         "show:" => {
-            if let Some(Value::Obj(s)) = args.first() {
-                if let Some(text) = interp.heap_ref().str_value(*s) {
+            if let Some(Value::Object(string)) = arguments.first() {
+                if let Some(text) = mutator.heap().str_value(*string) {
                     print!("{text}");
                     let _ = std::io::stdout().flush();
                 }

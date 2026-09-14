@@ -1,4 +1,7 @@
 #![warn(clippy::all)]
+// The brand needs no unsafe code: `World::enter` (`heap/world.rs`) hands the
+// step state to a closure the compiler checks for every `'gc`.
+#![forbid(unsafe_code)]
 
 //! Name resolution, object model, bytecode compiler and VM for the
 //! Newspeak3 language, including nested classes, mixin
@@ -22,8 +25,11 @@ pub mod types;
 pub mod vm;
 
 pub use compiler::Lowering;
-pub use heap::{ActivationHeader, ActivationRef, ClassRef, FrameRef, Heap, ObjRef, Root};
-pub use interpreter::{HostError, HostResult, HostSignal, Interpreter};
+pub use heap::{
+    ActivationHeader, ActivationReference, ClassReference, FrameReference, Heap, ObjectReference,
+    Root,
+};
+pub use interpreter::{HostError, HostResult, HostSignal, Interpreter, Mutator};
 pub use mixin::{Mixin, MixinApplication};
 pub use resolver::resolve;
 pub use symbol::Symbol;

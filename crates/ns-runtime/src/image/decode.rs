@@ -7,14 +7,14 @@ use std::rc::Rc;
 
 use ns_syntax::Span;
 
-use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instr, Literal};
+use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, Literal};
 use crate::heap::Heap;
 use crate::interpreter::instantiate;
 use crate::types::{
-    BuiltinClass, ClassRef, ClosureData, Frame, FrameKind, FrameRef, ObjRef, Object, ObjectData,
-    SourceOrigin, Value,
+    BuiltinClass, ClassReference, ClosureData, Frame, FrameKind, FrameReference, Object,
+    ObjectData, ObjectReference, SourceOrigin, Value,
 };
-use crate::Interpreter;
+use crate::Mutator;
 use crate::Symbol;
 
 use super::opcodes::*;
@@ -22,7 +22,7 @@ use super::{mixins, symbols};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
-    UnexpectedEof,
+    UnexpectedEndOfFile,
     BadMagic,
     VersionMismatch {
         found: u32,
@@ -39,14 +39,14 @@ pub enum DecodeError {
     UnknownHeaderFlags {
         flags: u8,
     },
-    /// A frame's `pc` is not an instruction index of the body that runs in
-    /// it. The VM stores the index of the instruction it is
-    /// executing, so every real activation's `pc` is in range; a crafted
-    /// one out of range would be an unchecked index the moment anything
-    /// resumed, resumed-through, or reported the frame.
-    PcOutOfRange {
-        pc: usize,
-        instrs: usize,
+    /// A frame's `program_counter` is not an instruction index of the body that
+    /// runs in it. The VM stores the index of the instruction it is executing,
+    /// so every real activation's `program_counter` is in range; a crafted one
+    /// out of range would be an unchecked index the moment anything resumed,
+    /// resumed-through, or reported the frame.
+    ProgramCounterOutOfRange {
+        program_counter: usize,
+        instructions: usize,
     },
     InvalidUtf8,
     InvalidSpan {
@@ -92,7 +92,7 @@ pub enum DecodeError {
     /// A closure frame's kind names an object that is not a closure.
     NotAClosureReference,
     /// A class object's own `class` is another record in the image's object
-    /// table. `Interpreter::new_class_object` always gives a class object
+    /// table. `Mutator::new_class_object` always gives a class object
     /// the shared bootstrap `Object` placeholder, so no real world contains
     /// one -- and `Object`'s iterative `Drop` cannot hand the `class` field
     /// to its worklist, so a chain of them is the one link left that would
@@ -123,25 +123,25 @@ pub enum DecodeError {
     /// its rebuilt method dictionary smaller than its own code list.
     DuplicateSelector(String),
     /// A selector or name reference (a send's selector, a method-dictionary
-    /// key, a closure's parameter name, a `Sym` object's text, ...) that
+    /// key, a closure's parameter name, a `Symbol` object's text, ...) that
     /// indexes past the end of the image's symbol table. Every such
     /// reference is a `u32` id checked against the table at the point of
     /// use, never trusted to have been validated elsewhere.
     BadSymbolId(u32),
-    /// A closure record's parameter list and the code it names disagree
-    /// about how many arguments the closure takes. The two are separate
-    /// fields on the wire, so only a decode-time reconciliation can catch
-    /// a crafted mismatch -- and it must, because the two halves are read
-    /// by different parts of `Interpreter::push_step`: it checks the
-    /// *call's* arity against `params.len()` but sizes the register file
-    /// from the *code* (`num_registers - num_args`). Disagreement leaves
-    /// `locals::read_local` computing `temps[i - args.len()]` past the end
-    /// of `temps` -- an unchecked index panic from a version-matching
-    /// image -- or, the other way round, silently misaddressing temps as
-    /// arguments.
+    /// A closure record's parameter list and the code it names disagree about
+    /// how many arguments the closure takes. The two are separate fields on the
+    /// wire, so only a decode-time reconciliation can catch a crafted mismatch
+    /// -- and it must, because the two halves are read by different parts of
+    /// `Mutator::push_step`: it checks the *call's* arity against
+    /// `parameters.len()` but sizes the register file from the *code*
+    /// (`register_count - argument_count`). Disagreement leaves
+    /// `locals::read_local` computing `temporaries[i - arguments.len()]` past
+    /// the end of `temporaries` -- an unchecked index panic from a
+    /// version-matching image -- or, the other way round, silently
+    /// misaddressing temporaries as arguments.
     ClosureArityMismatch {
-        params: usize,
-        num_args: u16,
+        parameters: usize,
+        argument_count: u16,
     },
     /// The image's mixin table is empty, so it describes no root class --
     /// and a world without one has nothing for the graph's class tag 1 to
@@ -154,7 +154,7 @@ pub enum DecodeError {
     UnknownSelector(String),
     /// A mixin-table row declares slots or `initExpr`s but carries no
     /// compiled initializer. Instantiating such a class runs initializer
-    /// code on every `X new`, and `Interpreter::initializer_body` panics on that
+    /// code on every `X new`, and `Mutator::initializer_body` panics on that
     /// invariant rather than failing -- so only refusing here keeps a
     /// crafted image from aborting the process at the first `X new`.
     MissingInitializer,
@@ -180,41 +180,41 @@ pub enum DecodeError {
         expected: &'static str,
     },
     /// A method's -- or the instance initializer's -- compiled body takes a
-    /// different number of arguments than its own declaration does. The
-    /// frame's `args` come from the send (or the factory), its `temps` from
-    /// the body's `num_args`; a disagreement leaves `read_local` indexing
-    /// `temps` past its end.
+    /// different number of arguments than its own declaration does. The frame's
+    /// `arguments` come from the send (or the factory), its `temporaries` from
+    /// the body's `argument_count`; a disagreement leaves `read_local` indexing
+    /// `temporaries` past its end.
     CodeArityMismatch {
         what: String,
-        params: usize,
-        num_args: u16,
+        parameters: usize,
+        argument_count: u16,
     },
     /// A body with no instructions, or one whose last instruction falls
-    /// through: the VM fetches `instrs[pc]` after every fall-through,
-    /// so either runs off the end of the vector.
+    /// through: the VM fetches `instructions[program_counter]` after every
+    /// fall-through, so either runs off the end of the vector.
     UnterminatedBody,
     /// A register operand outside its own body's register file.
     RegisterOutOfRange {
-        reg: u16,
-        num_registers: u16,
+        register: u16,
+        register_count: u16,
     },
     /// An outer-local operand outside the register file of the body it
     /// addresses -- the one `depth` closure hops out.
     OuterLocalOutOfRange {
         depth: u16,
         index: u16,
-        num_registers: u16,
+        register_count: u16,
     },
     /// A jump target that is not an instruction index of its own body.
     JumpTargetOutOfRange {
         target: u32,
-        instrs: usize,
+        instructions: usize,
     },
     /// More arguments than registers: an activation is pushed with
-    /// `num_registers - num_args` temporaries, which underflows here.
-    ArgsExceedRegisters {
-        num_args: u16,
-        num_registers: u16,
+    /// `register_count - argument_count` temporaries, which underflows here.
+    ArgumentsExceedRegisters {
+        argument_count: u16,
+        register_count: u16,
     },
     /// A `MakeClosure` (or a closure record) naming a body that is not in
     /// the code table it is verified against.
@@ -225,12 +225,12 @@ pub enum DecodeError {
     SharedBlockBody,
     /// A decoded frame's register file does not match the body that runs in
     /// it, so a register index the body considers in range would index
-    /// `args`/`temps` out of range.
+    /// `arguments`/`temporaries` out of range.
     FrameRegisterFile {
-        args: usize,
+        arguments: usize,
         locals: usize,
-        num_args: u16,
-        num_registers: u16,
+        argument_count: u16,
+        register_count: u16,
     },
     /// A decoded closure's captured frame is not an activation of the body
     /// its own body is lexically nested in -- the link every
@@ -238,7 +238,7 @@ pub enum DecodeError {
     CapturedFrameMismatch,
     /// An object's identity hash is `u32::MAX`, so there is no hash a
     /// loaded world could allocate *next*:
-    /// `Interpreter::advance_identity_hash_past` would have to compute
+    /// `Mutator::advance_identity_hash_past` would have to compute
     /// `u32::MAX + 1` (an overflow panic in this workspace's dev profile,
     /// and a wrap to 0 -- colliding with the loaded objects it exists to
     /// avoid -- in release), and even saturating it would only move the
@@ -263,7 +263,7 @@ pub enum DecodeError {
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DecodeError::UnexpectedEof => write!(f, "unexpected end of image"),
+            DecodeError::UnexpectedEndOfFile => write!(f, "unexpected end of image"),
             DecodeError::BadMagic => write!(f, "not an ns-next image (bad magic)"),
             DecodeError::VersionMismatch { found, expected } => {
                 write!(f, "image format version {found} is not supported (this build reads version {expected})")
@@ -274,9 +274,9 @@ impl std::fmt::Display for DecodeError {
                 "image header sets flag bits {:#04x} this build does not know",
                 flags & !super::encode::KNOWN_FLAGS
             ),
-            DecodeError::PcOutOfRange { pc, instrs } => write!(
+            DecodeError::ProgramCounterOutOfRange { program_counter, instructions } => write!(
                 f,
-                "frame pc {pc} is not an instruction index in a body of {instrs} instruction(s)"
+                "frame pc {program_counter} is not an instruction index in a body of {instructions} instruction(s)"
             ),
             DecodeError::InvalidUtf8 => write!(f, "invalid UTF-8 in image string"),
             DecodeError::InvalidSpan { start, end } => {
@@ -320,20 +320,20 @@ impl std::fmt::Display for DecodeError {
                 "the image's mixin table is not a declaration tree: row {row} is reached out of \
                  declaration order, twice, or not at all"
             ),
-            DecodeError::DuplicateSelector(s) => write!(
+            DecodeError::DuplicateSelector(selector) => write!(
                 f,
-                "a mixin-table row names method `{s}` more than once"
+                "a mixin-table row names method `{selector}` more than once"
             ),
-            DecodeError::ClosureArityMismatch { params, num_args } => write!(
+            DecodeError::ClosureArityMismatch { parameters, argument_count } => write!(
                 f,
-                "closure record declares {params} parameters but the code it names takes {num_args}"
+                "closure record declares {parameters} parameters but the code it names takes {argument_count}"
             ),
             DecodeError::NotAClass => {
                 write!(f, "the image's mixin table describes no root class")
             }
-            DecodeError::UnknownSelector(s) => write!(
+            DecodeError::UnknownSelector(selector) => write!(
                 f,
-                "the image names method `{s}`, which the declaration it belongs to does not define"
+                "the image names method `{selector}`, which the declaration it belongs to does not define"
             ),
             DecodeError::MissingInitializer => write!(
                 f,
@@ -352,41 +352,41 @@ impl std::fmt::Display for DecodeError {
             }
             DecodeError::CodeArityMismatch {
                 what,
-                params,
-                num_args,
+                parameters,
+                argument_count,
             } => write!(
                 f,
-                "the image's compiled {what} takes {num_args} argument(s), but its declaration says {params}"
+                "the image's compiled {what} takes {argument_count} argument(s), but its declaration says {parameters}"
             ),
             DecodeError::UnterminatedBody => write!(
                 f,
                 "image code body does not end in a return or a jump, so it would run past its last instruction"
             ),
             DecodeError::RegisterOutOfRange {
-                reg,
-                num_registers,
+                register,
+                register_count,
             } => write!(
                 f,
-                "register r{reg} is outside a body with {num_registers} register(s)"
+                "register r{register} is outside a body with {register_count} register(s)"
             ),
             DecodeError::OuterLocalOutOfRange {
                 depth,
                 index,
-                num_registers,
+                register_count,
             } => write!(
                 f,
-                "outer local r{index} at depth {depth} is outside the enclosing body's {num_registers} register(s)"
+                "outer local r{index} at depth {depth} is outside the enclosing body's {register_count} register(s)"
             ),
-            DecodeError::JumpTargetOutOfRange { target, instrs } => write!(
+            DecodeError::JumpTargetOutOfRange { target, instructions } => write!(
                 f,
-                "jump target {target} is not an instruction index in a body of {instrs} instruction(s)"
+                "jump target {target} is not an instruction index in a body of {instructions} instruction(s)"
             ),
-            DecodeError::ArgsExceedRegisters {
-                num_args,
-                num_registers,
+            DecodeError::ArgumentsExceedRegisters {
+                argument_count,
+                register_count,
             } => write!(
                 f,
-                "image code takes {num_args} argument(s) but declares only {num_registers} register(s)"
+                "image code takes {argument_count} argument(s) but declares only {register_count} register(s)"
             ),
             DecodeError::CodeNotInTable => {
                 write!(f, "image code refers to a body outside its code table")
@@ -396,13 +396,13 @@ impl std::fmt::Display for DecodeError {
                 "one block body in the image is created by more than one MakeClosure"
             ),
             DecodeError::FrameRegisterFile {
-                args,
+                arguments,
                 locals,
-                num_args,
-                num_registers,
+                argument_count,
+                register_count,
             } => write!(
                 f,
-                "a decoded frame holds {args} argument(s) and {locals} local(s), but the code that runs in it takes {num_args} argument(s) in {num_registers} register(s)"
+                "a decoded frame holds {arguments} argument(s) and {locals} local(s), but the code that runs in it takes {argument_count} argument(s) in {register_count} register(s)"
             ),
             DecodeError::CapturedFrameMismatch => write!(
                 f,
@@ -429,20 +429,23 @@ impl std::fmt::Display for DecodeError {
 }
 
 pub struct Reader<'a> {
-    buf: &'a [u8],
-    pos: usize,
+    buffer: &'a [u8],
+    position: usize,
 }
 
 impl<'a> Reader<'a> {
-    pub fn new(buf: &'a [u8]) -> Reader<'a> {
-        Reader { buf, pos: 0 }
+    pub fn new(buffer: &'a [u8]) -> Reader<'a> {
+        Reader {
+            buffer,
+            position: 0,
+        }
     }
 
     /// Bytes not yet consumed. Every item of a counted section costs at
     /// least one byte, so this bounds how many can really follow -- see
     /// `reserve_for`.
     pub fn remaining(&self) -> usize {
-        self.buf.len() - self.pos
+        self.buffer.len() - self.position
     }
 
     /// Bytes already consumed -- the offset of whatever comes next. Lets a
@@ -450,20 +453,20 @@ impl<'a> Reader<'a> {
     /// fixed section) locate exactly where the next section starts, e.g. to
     /// corrupt one field of it in a hostile-input test without hardcoding
     /// byte offsets that would drift as the format's earlier fields change.
-    pub fn pos(&self) -> usize {
-        self.pos
+    pub fn position(&self) -> usize {
+        self.position
     }
 
-    pub fn read_raw(&mut self, len: usize) -> Result<&'a [u8], DecodeError> {
+    pub fn read_raw(&mut self, length: usize) -> Result<&'a [u8], DecodeError> {
         let end = self
-            .pos
-            .checked_add(len)
-            .ok_or(DecodeError::UnexpectedEof)?;
-        if end > self.buf.len() {
-            return Err(DecodeError::UnexpectedEof);
+            .position
+            .checked_add(length)
+            .ok_or(DecodeError::UnexpectedEndOfFile)?;
+        if end > self.buffer.len() {
+            return Err(DecodeError::UnexpectedEndOfFile);
         }
-        let slice = &self.buf[self.pos..end];
-        self.pos = end;
+        let slice = &self.buffer[self.position..end];
+        self.position = end;
         Ok(slice)
     }
 
@@ -471,7 +474,7 @@ impl<'a> Reader<'a> {
         Ok(self.read_raw(1)?[0])
     }
 
-    pub fn read_bool(&mut self) -> Result<bool, DecodeError> {
+    pub fn read_boolean(&mut self) -> Result<bool, DecodeError> {
         match self.read_u8()? {
             0 => Ok(false),
             1 => Ok(true),
@@ -512,8 +515,8 @@ impl<'a> Reader<'a> {
     }
 
     pub fn read_bytes(&mut self) -> Result<Vec<u8>, DecodeError> {
-        let len = self.read_u32()? as usize;
-        Ok(self.read_raw(len)?.to_vec())
+        let length = self.read_u32()? as usize;
+        Ok(self.read_raw(length)?.to_vec())
     }
 
     pub fn read_str(&mut self) -> Result<String, DecodeError> {
@@ -532,19 +535,19 @@ pub struct Header {
     pub stateless: bool,
 }
 
-pub fn read_header(r: &mut Reader) -> Result<Header, DecodeError> {
-    let magic = r.read_raw(4)?;
+pub fn read_header(reader: &mut Reader) -> Result<Header, DecodeError> {
+    let magic = reader.read_raw(4)?;
     if magic != super::encode::MAGIC {
         return Err(DecodeError::BadMagic);
     }
-    let version = r.read_u32()?;
+    let version = reader.read_u32()?;
     if version != super::encode::FORMAT_VERSION {
         return Err(DecodeError::VersionMismatch {
             found: version,
             expected: super::encode::FORMAT_VERSION,
         });
     }
-    let flags = r.read_u8()?;
+    let flags = reader.read_u8()?;
     // A flag this build does not implement means a section it cannot see:
     // continuing would read the next field out of whatever that section
     // occupies. Refused rather than masked off.
@@ -561,21 +564,21 @@ pub fn read_header(r: &mut Reader) -> Result<Header, DecodeError> {
 /// symbol id it names, resolved against the image's own symbol table so an
 /// out-of-range id is a `DecodeError` rather than an index panic.
 pub fn decode_entry(
-    r: &mut Reader,
+    reader: &mut Reader,
     symbols: &symbols::Table,
 ) -> Result<Option<Symbol>, DecodeError> {
-    match r.read_u8()? {
+    match reader.read_u8()? {
         0 => Ok(None),
-        1 => Ok(Some(symbols.get(r.read_u32()?)?)),
+        1 => Ok(Some(symbols.get(reader.read_u32()?)?)),
         tag => Err(DecodeError::InvalidTag { what: "entry", tag }),
     }
 }
 
 /// The inverse of `encode::encode_source_origin`: the provenance a loaded
 /// world reports as its own.
-pub fn decode_source_origin(r: &mut Reader) -> Result<SourceOrigin, DecodeError> {
-    match r.read_u8()? {
-        0 => Ok(SourceOrigin::File(PathBuf::from(r.read_str()?))),
+pub fn decode_source_origin(reader: &mut Reader) -> Result<SourceOrigin, DecodeError> {
+    match reader.read_u8()? {
+        0 => Ok(SourceOrigin::File(PathBuf::from(reader.read_str()?))),
         tag => Err(DecodeError::InvalidTag {
             what: "source origin",
             tag,
@@ -583,13 +586,13 @@ pub fn decode_source_origin(r: &mut Reader) -> Result<SourceOrigin, DecodeError>
     }
 }
 
-pub fn decode_scalar_value(r: &mut Reader) -> Result<Value, DecodeError> {
-    match r.read_u8()? {
+pub fn decode_scalar_value<'gc>(reader: &mut Reader) -> Result<Value<'gc>, DecodeError> {
+    match reader.read_u8()? {
         0 => Ok(Value::Nil),
-        1 => Ok(Value::Bool(false)),
-        2 => Ok(Value::Bool(true)),
-        3 => Ok(Value::SmallInt(r.read_i64()?)),
-        4 => Ok(Value::Float(r.read_f64()?)),
+        1 => Ok(Value::Boolean(false)),
+        2 => Ok(Value::Boolean(true)),
+        3 => Ok(Value::SmallInteger(reader.read_i64()?)),
+        4 => Ok(Value::Float(reader.read_f64()?)),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
     }
 }
@@ -602,8 +605,8 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         3 => BuiltinClass::False,
         4 => BuiltinClass::Integer,
         5 => BuiltinClass::Float,
-        6 => BuiltinClass::Str,
-        7 => BuiltinClass::Sym,
+        6 => BuiltinClass::String,
+        7 => BuiltinClass::Symbol,
         8 => BuiltinClass::Character,
         9 => BuiltinClass::Array,
         10 => BuiltinClass::OrderedCollection,
@@ -614,8 +617,8 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
     })
 }
 
-pub fn read_builtin_class(r: &mut Reader) -> Result<BuiltinClass, DecodeError> {
-    let tag = r.read_u8()?;
+pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
+    let tag = reader.read_u8()?;
     builtin_class_from_tag(tag).ok_or(DecodeError::InvalidTag {
         what: "builtin class",
         tag,
@@ -631,16 +634,16 @@ pub struct DecodedCodeTable {
 }
 
 pub fn decode_code_table(
-    r: &mut Reader,
+    reader: &mut Reader,
     symbols: &symbols::Table,
 ) -> Result<DecodedCodeTable, DecodeError> {
-    let count = r.read_u32()? as usize;
-    let mut codes: Vec<Rc<CompiledCode>> = reserve_for(count, r);
+    let count = reader.read_u32()? as usize;
+    let mut codes: Vec<Rc<CompiledCode>> = reserve_for(count, reader);
     // How deep the blocks under each body already read nest, keyed like
     // `code_index`.
     let mut nesting: HashMap<usize, usize> = HashMap::new();
     for _ in 0..count {
-        let code = Rc::new(decode_code(r, &codes, symbols)?);
+        let code = Rc::new(decode_code(reader, &codes, symbols)?);
         let depth = block_nesting(&code, &nesting)?;
         nesting.insert(Rc::as_ptr(&code) as usize, depth);
         codes.push(code);
@@ -682,9 +685,9 @@ fn block_nesting(
     nesting: &HashMap<usize, usize>,
 ) -> Result<usize, DecodeError> {
     let mut depth = 0;
-    for instr in &code.instrs {
-        if let Instr::MakeClosure { code: block, .. } = instr {
-            // `decode_instr` resolved the id against the bodies already
+    for instruction in &code.instructions {
+        if let Instruction::MakeClosure { code: block, .. } = instruction {
+            // `decode_instruction` resolved the id against the bodies already
             // read, and every one of them was measured.
             let below = nesting
                 .get(&(Rc::as_ptr(block) as usize))
@@ -704,9 +707,9 @@ fn block_nesting(
 /// item costs at least one byte, so the bytes still unread are an upper
 /// bound on how many can really follow. Without the clamp a corrupt count
 /// prefix would reserve gigabytes and abort the process before the read
-/// could fail with `UnexpectedEof`.
-pub(crate) fn reserve_for<T>(count: usize, r: &Reader) -> Vec<T> {
-    Vec::with_capacity(count.min(r.remaining()))
+/// could fail with `UnexpectedEndOfFile`.
+pub(crate) fn reserve_for<T>(count: usize, reader: &Reader) -> Vec<T> {
+    Vec::with_capacity(count.min(reader.remaining()))
 }
 
 fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError> {
@@ -723,10 +726,10 @@ fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError>
 /// one side, a code-table id on the other -- so a crafted image can make them
 /// disagree:
 ///
-/// - a body's `kind` and `num_args` against the declaration's own arity
+/// - a body's `kind` and `argument_count` against the declaration's own arity
 ///   (`check_code_arity`), because the activation a body runs in is built
-///   from the *declaration* -- `args` from the send or the factory -- while its
-///   temporaries are sized from the *body*;
+///   from the *declaration* -- `arguments` from the send or the factory --
+///   while its temporaries are sized from the *body*;
 /// - the presence of a body wherever a declaration makes one mandatory (the
 ///   three `Missing*` errors), because the run-time paths that reach for
 ///   those bodies panic on the invariant rather than failing.
@@ -742,28 +745,28 @@ fn check_code_id(id: u32, codes: &[Rc<CompiledCode>]) -> Result<(), DecodeError>
 pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
     for mixin in &mixins.mixins {
         let mut methods: Vec<&Rc<crate::mixin::MixinMethod>> = mixin.methods.values().collect();
-        methods.sort_by(|a, b| a.selector.as_str().cmp(b.selector.as_str()));
+        methods.sort_by(|left, right| left.selector.as_str().cmp(right.selector.as_str()));
         for method in methods {
             check_code_arity(
                 &method.code,
                 CodeKind::Method,
                 format!("method `{}`", method.selector),
-                method.num_args,
+                method.argument_count,
             )?;
         }
         match &mixin.initializer_code {
-            // The same reconciliation for the initializer, whose `num_args`
-            // is the mixin's factory parameter count and whose activation's
-            // `args` are the factory arguments `instantiate` checked against
-            // that same pattern.
+            // The same reconciliation for the initializer, whose
+            // `argument_count` is the mixin's factory parameter count and whose
+            // activation's `arguments` are the factory arguments `instantiate`
+            // checked against that same pattern.
             Some(code) => check_code_arity(
                 code,
                 CodeKind::Initializer,
                 "instance initializer".to_string(),
-                mixin.factory.map_or(0, |factory| factory.num_args),
+                mixin.factory.map_or(0, |factory| factory.argument_count),
             )?,
             // A class with slots or `initExpr`s runs compiled initializer
-            // code on every `X new`, and `Interpreter::initializer_body` *panics*
+            // code on every `X new`, and `Mutator::initializer_body` *panics*
             // when the mixin carries none. The row's declaration half says
             // the mixin needs one and its code half says whether the image
             // carries it -- two fields only this function compares.
@@ -799,7 +802,7 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
                 code,
                 CodeKind::SuperclassMessage,
                 "superclass clause message".to_string(),
-                mixin.factory.map_or(0, |factory| factory.num_args),
+                mixin.factory.map_or(0, |factory| factory.argument_count),
             )?,
             // A mixin whose clause message carries arguments evaluates them
             // on every instantiation, and
@@ -820,7 +823,7 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
 /// `verify_mixins` asks of a decoded declaration, answered off the same
 /// field `instantiate::clause_message_body` decides by at run time.
 fn mixin_needs_superclass_message_code(mixin: &Rc<crate::mixin::Mixin>) -> bool {
-    mixin.superclass.is_some_and(|clause| clause.has_args)
+    mixin.superclass.is_some_and(|clause| clause.has_arguments)
 }
 
 /// One decoded body against the declaration it is attached to:
@@ -829,7 +832,7 @@ fn check_code_arity(
     code: &CompiledCode,
     kind: CodeKind,
     what: String,
-    params: usize,
+    parameters: usize,
 ) -> Result<(), DecodeError> {
     if code.kind != kind {
         return Err(DecodeError::WrongCodeKind {
@@ -842,11 +845,11 @@ fn check_code_arity(
             },
         });
     }
-    if code.num_args as usize != params {
+    if code.argument_count as usize != parameters {
         return Err(DecodeError::CodeArityMismatch {
             what,
-            params,
-            num_args: code.num_args,
+            parameters,
+            argument_count: code.argument_count,
         });
     }
     Ok(())
@@ -855,14 +858,15 @@ fn check_code_arity(
 // ---------------------------------------------------------------------------
 // Structural verification of a decoded code table.
 //
-// Decoding is byte-safe: every id, tag and length is checked as it is read.
-// It does not make the result *coherent*. The VM indexes
-// `code.instrs[pc]` directly, and `locals::read_local`/`write_local` index a
-// frame's `args`/`temps` directly, so a jump target, a register operand or
-// an arity that decoded cleanly can still panic the process the first time
-// the body runs. Everything below is a bounded, linear pass over the flat,
-// topologically ordered table -- no traversal, no recursion -- and reports
-// a `DecodeError` rather than leaving the VM to trip over it.
+// Decoding is byte-safe: every id, tag and length is checked as it is read. It
+// does not make the result *coherent*. The VM indexes
+// `code.instructions[program_counter]` directly, and
+// `locals::read_local`/`write_local` index a frame's `arguments`/`temporaries`
+// directly, so a jump target, a register operand or an arity that decoded
+// cleanly can still panic the process the first time the body runs. Everything
+// below is a bounded, linear pass over the flat, topologically ordered table --
+// no traversal, no recursion -- and reports a `DecodeError` rather than leaving
+// the VM to trip over it.
 // ---------------------------------------------------------------------------
 
 /// `Rc` pointer -> code-table index, the inverse of `encode::CodeIds`.
@@ -871,7 +875,7 @@ fn code_index(table: &DecodedCodeTable) -> HashMap<usize, usize> {
         .codes
         .iter()
         .enumerate()
-        .map(|(i, code)| (Rc::as_ptr(code) as usize, i))
+        .map(|(index, code)| (Rc::as_ptr(code) as usize, index))
         .collect()
 }
 
@@ -888,13 +892,13 @@ fn code_index(table: &DecodedCodeTable) -> HashMap<usize, usize> {
 fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, DecodeError> {
     let index_of = code_index(table);
     let mut parents: Vec<Option<usize>> = vec![None; table.codes.len()];
-    for (i, code) in table.codes.iter().enumerate() {
-        for instr in &code.instrs {
-            let Instr::MakeClosure {
-                params,
+    for (index, code) in table.codes.iter().enumerate() {
+        for instruction in &code.instructions {
+            let Instruction::MakeClosure {
+                parameters,
                 code: block,
                 ..
-            } = instr
+            } = instruction
             else {
                 continue;
             };
@@ -905,18 +909,18 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
                 return Err(DecodeError::WrongCodeKind { expected: "block" });
             }
             // The `MakeClosure` mirror of `decode_closure_record`'s check:
-            // `push_step` validates the call against `params.len()`
-            // but sizes the register file from the body's `num_args`.
-            if params.len() != block.num_args as usize {
+            // `push_step` validates the call against `parameters.len()`
+            // but sizes the register file from the body's `argument_count`.
+            if parameters.len() != block.argument_count as usize {
                 return Err(DecodeError::ClosureArityMismatch {
-                    params: params.len(),
-                    num_args: block.num_args,
+                    parameters: parameters.len(),
+                    argument_count: block.argument_count,
                 });
             }
             if parents[id].is_some() {
                 return Err(DecodeError::SharedBlockBody);
             }
-            parents[id] = Some(i);
+            parents[id] = Some(index);
         }
     }
     Ok(parents)
@@ -929,48 +933,48 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
 /// is inside the register file of the body it addresses.
 pub fn verify_code_table(table: &DecodedCodeTable) -> Result<(), DecodeError> {
     let parents = lexical_parents(table)?;
-    for (i, code) in table.codes.iter().enumerate() {
+    for (index, code) in table.codes.iter().enumerate() {
         verify_body(code)?;
-        verify_outer_locals(table, &parents, i, code)?;
+        verify_outer_locals(table, &parents, index, code)?;
     }
     Ok(())
 }
 
 fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
-    // Every activation is pushed with `num_registers - num_args`
+    // Every activation is pushed with `register_count - argument_count`
     // temporaries, a `u16` subtraction.
-    if code.num_args > code.num_registers {
-        return Err(DecodeError::ArgsExceedRegisters {
-            num_args: code.num_args,
-            num_registers: code.num_registers,
+    if code.argument_count > code.register_count {
+        return Err(DecodeError::ArgumentsExceedRegisters {
+            argument_count: code.argument_count,
+            register_count: code.register_count,
         });
     }
-    // The VM fetches `instrs[pc]` at the top of the loop and again
-    // after every fall-through, so an empty body -- or one whose last
+    // The VM fetches `instructions[program_counter]` at the top of the loop and
+    // again after every fall-through, so an empty body -- or one whose last
     // instruction falls through -- indexes past the end of the vector.
-    match code.instrs.last() {
+    match code.instructions.last() {
         Some(
-            Instr::Return { .. }
-            | Instr::ImplicitReturn { .. }
-            | Instr::NonLocalReturn { .. }
-            | Instr::Jump { .. },
+            Instruction::Return { .. }
+            | Instruction::ImplicitReturn { .. }
+            | Instruction::NonLocalReturn { .. }
+            | Instruction::Jump { .. },
         ) => {}
         _ => return Err(DecodeError::UnterminatedBody),
     }
-    for instr in &code.instrs {
-        for reg in own_registers(instr) {
-            if reg >= code.num_registers {
+    for instruction in &code.instructions {
+        for register in own_registers(instruction) {
+            if register >= code.register_count {
                 return Err(DecodeError::RegisterOutOfRange {
-                    reg,
-                    num_registers: code.num_registers,
+                    register,
+                    register_count: code.register_count,
                 });
             }
         }
-        if let Some(target) = jump_target(instr) {
-            if target as usize >= code.instrs.len() {
+        if let Some(target) = jump_target(instruction) {
+            if target as usize >= code.instructions.len() {
                 return Err(DecodeError::JumpTargetOutOfRange {
                     target,
-                    instrs: code.instrs.len(),
+                    instructions: code.instructions.len(),
                 });
             }
         }
@@ -982,82 +986,97 @@ fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
 /// `LoadOuterLocal`/`StoreOuterLocal`'s `index` is deliberately absent: it
 /// addresses another frame's register file, and `verify_outer_locals`
 /// bounds it against that one.
-fn own_registers(instr: &Instr) -> Vec<u16> {
-    match instr {
-        Instr::LoadLiteral { dst, .. }
-        | Instr::LoadSelf { dst }
-        | Instr::LoadBuiltinClass { dst, .. }
-        | Instr::MakeClosure { dst, .. } => vec![*dst],
-        Instr::Move { dst, src } => vec![*dst, *src],
+fn own_registers(instruction: &Instruction) -> Vec<u16> {
+    match instruction {
+        Instruction::LoadLiteral { destination, .. }
+        | Instruction::LoadSelf { destination }
+        | Instruction::LoadBuiltinClass { destination, .. }
+        | Instruction::MakeClosure { destination, .. } => vec![*destination],
+        Instruction::Move {
+            destination,
+            source,
+        } => vec![*destination, *source],
         // `slot` is a register index too: the VM writes it with
-        // `write_local`, exactly as it does a `Move`'s `dst`.
-        Instr::StoreLocal { src, slot } => vec![*src, *slot],
-        Instr::LoadOuterLocal { dst, .. } => vec![*dst],
-        Instr::StoreOuterLocal { src, .. } => vec![*src],
-        Instr::SendLexical { arg_regs, dst, .. } | Instr::SendSuper { arg_regs, dst, .. } => {
-            let mut regs = arg_regs.clone();
-            regs.push(*dst);
-            regs
-        }
-        Instr::SendPublic {
-            receiver_reg,
-            arg_regs,
-            dst,
+        // `write_local`, exactly as it does a `Move`'s `destination`.
+        Instruction::StoreLocal { source, slot } => vec![*source, *slot],
+        Instruction::LoadOuterLocal { destination, .. } => vec![*destination],
+        Instruction::StoreOuterLocal { source, .. } => vec![*source],
+        Instruction::SendLexical {
+            argument_registers,
+            destination,
             ..
         }
-        | Instr::SendInlinable {
-            receiver_reg,
-            arg_regs,
-            dst,
+        | Instruction::SendSuper {
+            argument_registers,
+            destination,
             ..
         } => {
-            let mut regs = arg_regs.clone();
-            regs.push(*receiver_reg);
-            regs.push(*dst);
-            regs
+            let mut registers = argument_registers.clone();
+            registers.push(*destination);
+            registers
         }
-        Instr::MakeArray { dst, elem_regs } => {
-            let mut regs = elem_regs.clone();
-            regs.push(*dst);
-            regs
+        Instruction::SendPublic {
+            receiver_register,
+            argument_registers,
+            destination,
+            ..
         }
-        Instr::InitSlot { src, .. } => vec![*src],
-        Instr::Return { reg }
-        | Instr::ImplicitReturn { reg }
-        | Instr::NonLocalReturn { reg }
-        | Instr::JumpIfNotBoolean { reg, .. }
-        | Instr::BranchIfFalse { reg, .. }
-        | Instr::BranchIfTrue { reg, .. } => vec![*reg],
-        Instr::Jump { .. } => vec![],
+        | Instruction::SendInlinable {
+            receiver_register,
+            argument_registers,
+            destination,
+            ..
+        } => {
+            let mut registers = argument_registers.clone();
+            registers.push(*receiver_register);
+            registers.push(*destination);
+            registers
+        }
+        Instruction::MakeArray {
+            destination,
+            element_registers,
+        } => {
+            let mut registers = element_registers.clone();
+            registers.push(*destination);
+            registers
+        }
+        Instruction::InitializeSlot { source, .. } => vec![*source],
+        Instruction::Return { register }
+        | Instruction::ImplicitReturn { register }
+        | Instruction::NonLocalReturn { register }
+        | Instruction::JumpIfNotBoolean { register, .. }
+        | Instruction::BranchIfFalse { register, .. }
+        | Instruction::BranchIfTrue { register, .. } => vec![*register],
+        Instruction::Jump { .. } => vec![],
     }
 }
 
 /// Exhaustive, like `own_registers` and for the same reason: a new
-/// jump-carrying `Instr` variant must fail to compile here rather than slip
-/// through a wildcard and reach the VM's `pc` unchecked.
-fn jump_target(instr: &Instr) -> Option<u32> {
-    match instr {
-        Instr::Jump { target }
-        | Instr::JumpIfNotBoolean { target, .. }
-        | Instr::BranchIfFalse { target, .. }
-        | Instr::BranchIfTrue { target, .. } => Some(*target),
-        Instr::LoadLiteral { .. }
-        | Instr::LoadSelf { .. }
-        | Instr::LoadBuiltinClass { .. }
-        | Instr::Move { .. }
-        | Instr::StoreLocal { .. }
-        | Instr::LoadOuterLocal { .. }
-        | Instr::StoreOuterLocal { .. }
-        | Instr::SendLexical { .. }
-        | Instr::SendPublic { .. }
-        | Instr::SendInlinable { .. }
-        | Instr::SendSuper { .. }
-        | Instr::MakeClosure { .. }
-        | Instr::MakeArray { .. }
-        | Instr::InitSlot { .. }
-        | Instr::Return { .. }
-        | Instr::ImplicitReturn { .. }
-        | Instr::NonLocalReturn { .. } => None,
+/// jump-carrying `Instruction` variant must fail to compile here rather than
+/// slip through a wildcard and reach the VM's `program_counter` unchecked.
+fn jump_target(instruction: &Instruction) -> Option<u32> {
+    match instruction {
+        Instruction::Jump { target }
+        | Instruction::JumpIfNotBoolean { target, .. }
+        | Instruction::BranchIfFalse { target, .. }
+        | Instruction::BranchIfTrue { target, .. } => Some(*target),
+        Instruction::LoadLiteral { .. }
+        | Instruction::LoadSelf { .. }
+        | Instruction::LoadBuiltinClass { .. }
+        | Instruction::Move { .. }
+        | Instruction::StoreLocal { .. }
+        | Instruction::LoadOuterLocal { .. }
+        | Instruction::StoreOuterLocal { .. }
+        | Instruction::SendLexical { .. }
+        | Instruction::SendPublic { .. }
+        | Instruction::SendInlinable { .. }
+        | Instruction::SendSuper { .. }
+        | Instruction::MakeClosure { .. }
+        | Instruction::MakeArray { .. }
+        | Instruction::InitializeSlot { .. }
+        | Instruction::Return { .. }
+        | Instruction::ImplicitReturn { .. }
+        | Instruction::NonLocalReturn { .. } => None,
     }
 }
 
@@ -1067,18 +1086,18 @@ fn verify_outer_locals(
     index: usize,
     code: &CompiledCode,
 ) -> Result<(), DecodeError> {
-    for instr in &code.instrs {
-        let (depth, local) = match instr {
-            Instr::LoadOuterLocal { depth, index, .. }
-            | Instr::StoreOuterLocal { depth, index, .. } => (*depth, *index),
+    for instruction in &code.instructions {
+        let (depth, local) = match instruction {
+            Instruction::LoadOuterLocal { depth, index, .. }
+            | Instruction::StoreOuterLocal { depth, index, .. } => (*depth, *index),
             _ => continue,
         };
         let enclosing = &table.codes[enclosing_body(table, parents, index, depth)];
-        if local >= enclosing.num_registers {
+        if local >= enclosing.register_count {
             return Err(DecodeError::OuterLocalOutOfRange {
                 depth,
                 index: local,
-                num_registers: enclosing.num_registers,
+                register_count: enclosing.register_count,
             });
         }
     }
@@ -1101,27 +1120,27 @@ fn verify_outer_locals(
 fn enclosing_body(
     table: &DecodedCodeTable,
     parents: &[Option<usize>],
-    mut at: usize,
+    mut body_index: usize,
     depth: u16,
 ) -> usize {
     for _ in 0..depth {
-        if table.codes[at].kind != CodeKind::Block {
+        if table.codes[body_index].kind != CodeKind::Block {
             break;
         }
-        match parents[at] {
-            Some(parent) => at = parent,
+        match parents[body_index] {
+            Some(parent) => body_index = parent,
             None => break,
         }
     }
-    at
+    body_index
 }
 
 fn decode_code(
-    r: &mut Reader,
+    reader: &mut Reader,
     codes: &[Rc<CompiledCode>],
     symbols: &symbols::Table,
 ) -> Result<CompiledCode, DecodeError> {
-    let kind = match r.read_u8()? {
+    let kind = match reader.read_u8()? {
         0 => CodeKind::Method,
         1 => CodeKind::Block,
         2 => CodeKind::Initializer,
@@ -1134,225 +1153,233 @@ fn decode_code(
             })
         }
     };
-    let num_args = r.read_u16()?;
-    let num_registers = r.read_u16()?;
-    let start = r.read_u32()?;
-    let end = r.read_u32()?;
+    let argument_count = reader.read_u16()?;
+    let register_count = reader.read_u16()?;
+    let start = reader.read_u32()?;
+    let end = reader.read_u32()?;
     if start > end {
         return Err(DecodeError::InvalidSpan { start, end });
     }
     let source = Span::new(start, end);
-    let pc_count = r.read_u32()? as usize;
-    let mut statement_pc = reserve_for(pc_count, r);
-    for _ in 0..pc_count {
-        let stmt = r.read_u32()? as usize;
-        let range_start = r.read_u32()? as usize;
-        let range_end = r.read_u32()? as usize;
-        statement_pc.push((stmt, range_start..range_end));
+    let program_counter_count = reader.read_u32()? as usize;
+    let mut statement_program_counter = reserve_for(program_counter_count, reader);
+    for _ in 0..program_counter_count {
+        let statement = reader.read_u32()? as usize;
+        let range_start = reader.read_u32()? as usize;
+        let range_end = reader.read_u32()? as usize;
+        statement_program_counter.push((statement, range_start..range_end));
     }
-    let site_count = r.read_u32()? as usize;
-    let mut call_sites = reserve_for(site_count, r);
+    let site_count = reader.read_u32()? as usize;
+    let mut call_sites = reserve_for(site_count, reader);
     for _ in 0..site_count {
-        call_sites.push(decode_call_site(r)?);
+        call_sites.push(decode_call_site(reader)?);
     }
-    let instr_count = r.read_u32()? as usize;
-    let mut instrs = reserve_for(instr_count, r);
-    for _ in 0..instr_count {
-        instrs.push(decode_instr(r, codes, symbols)?);
+    let instruction_count = reader.read_u32()? as usize;
+    let mut instructions = reserve_for(instruction_count, reader);
+    for _ in 0..instruction_count {
+        instructions.push(decode_instruction(reader, codes, symbols)?);
     }
     Ok(CompiledCode {
         kind,
-        instrs,
-        num_args,
-        num_registers,
-        statement_pc,
+        instructions,
+        argument_count,
+        register_count,
+        statement_program_counter,
         call_sites,
         source,
     })
 }
 
-fn decode_call_site(r: &mut Reader) -> Result<CallSite, DecodeError> {
+fn decode_call_site(reader: &mut Reader) -> Result<CallSite, DecodeError> {
     Ok(CallSite {
-        call_site_id: r.read_u16()?,
+        call_site_id: reader.read_u16()?,
     })
 }
 
-fn decode_regs(r: &mut Reader) -> Result<Vec<u16>, DecodeError> {
-    let n = r.read_u16()? as usize;
-    let mut regs = reserve_for(n, r);
-    for _ in 0..n {
-        regs.push(r.read_u16()?);
+fn decode_registers(reader: &mut Reader) -> Result<Vec<u16>, DecodeError> {
+    let count = reader.read_u16()? as usize;
+    let mut registers = reserve_for(count, reader);
+    for _ in 0..count {
+        registers.push(reader.read_u16()?);
     }
-    Ok(regs)
+    Ok(registers)
 }
 
 /// The table lookup that replaces a per-occurrence `Symbol::intern`: every
 /// selector or name in the code table is a `u32` id into the symbol table
 /// decoded once, up front, in `image::load`.
-fn decode_symbol(r: &mut Reader, symbols: &symbols::Table) -> Result<Symbol, DecodeError> {
-    symbols.get(r.read_u32()?)
+fn decode_symbol(reader: &mut Reader, symbols: &symbols::Table) -> Result<Symbol, DecodeError> {
+    symbols.get(reader.read_u32()?)
 }
 
-fn decode_instr(
-    r: &mut Reader,
+fn decode_instruction(
+    reader: &mut Reader,
     codes: &[Rc<CompiledCode>],
     symbols: &symbols::Table,
-) -> Result<Instr, DecodeError> {
-    Ok(match r.read_u8()? {
-        OP_LOAD_LITERAL => {
-            let dst = r.read_u16()?;
-            Instr::LoadLiteral {
-                dst,
-                literal: decode_literal(r, 0, symbols)?,
+) -> Result<Instruction, DecodeError> {
+    Ok(match reader.read_u8()? {
+        OPCODE_LOAD_LITERAL => {
+            let destination = reader.read_u16()?;
+            Instruction::LoadLiteral {
+                destination,
+                literal: decode_literal(reader, 0, symbols)?,
             }
         }
-        OP_LOAD_SELF => Instr::LoadSelf { dst: r.read_u16()? },
-        OP_LOAD_BUILTIN_CLASS => {
-            let dst = r.read_u16()?;
-            Instr::LoadBuiltinClass {
-                dst,
-                kind: read_builtin_class(r)?,
+        OPCODE_LOAD_SELF => Instruction::LoadSelf {
+            destination: reader.read_u16()?,
+        },
+        OPCODE_LOAD_BUILTIN_CLASS => {
+            let destination = reader.read_u16()?;
+            Instruction::LoadBuiltinClass {
+                destination,
+                kind: read_builtin_class(reader)?,
             }
         }
-        OP_MOVE => {
-            let dst = r.read_u16()?;
-            Instr::Move {
-                dst,
-                src: r.read_u16()?,
+        OPCODE_MOVE => {
+            let destination = reader.read_u16()?;
+            Instruction::Move {
+                destination,
+                source: reader.read_u16()?,
             }
         }
-        OP_STORE_LOCAL => {
-            let src = r.read_u16()?;
-            Instr::StoreLocal {
-                src,
-                slot: r.read_u16()?,
+        OPCODE_STORE_LOCAL => {
+            let source = reader.read_u16()?;
+            Instruction::StoreLocal {
+                source,
+                slot: reader.read_u16()?,
             }
         }
-        OP_LOAD_OUTER_LOCAL => {
-            let dst = r.read_u16()?;
-            let depth = r.read_u16()?;
-            Instr::LoadOuterLocal {
-                dst,
+        OPCODE_LOAD_OUTER_LOCAL => {
+            let destination = reader.read_u16()?;
+            let depth = reader.read_u16()?;
+            Instruction::LoadOuterLocal {
+                destination,
                 depth,
-                index: r.read_u16()?,
+                index: reader.read_u16()?,
             }
         }
-        OP_STORE_OUTER_LOCAL => {
-            let src = r.read_u16()?;
-            let depth = r.read_u16()?;
-            Instr::StoreOuterLocal {
-                src,
+        OPCODE_STORE_OUTER_LOCAL => {
+            let source = reader.read_u16()?;
+            let depth = reader.read_u16()?;
+            Instruction::StoreOuterLocal {
+                source,
                 depth,
-                index: r.read_u16()?,
+                index: reader.read_u16()?,
             }
         }
-        OP_SEND_LEXICAL => {
-            let depth = r.read_u16()?;
-            let selector = decode_symbol(r, symbols)?;
-            let arg_regs = decode_regs(r)?;
-            let dst = r.read_u16()?;
-            Instr::SendLexical {
+        OPCODE_SEND_LEXICAL => {
+            let depth = reader.read_u16()?;
+            let selector = decode_symbol(reader, symbols)?;
+            let argument_registers = decode_registers(reader)?;
+            let destination = reader.read_u16()?;
+            Instruction::SendLexical {
                 depth,
                 selector,
-                arg_regs,
-                dst,
-                call_site: decode_call_site(r)?,
+                argument_registers,
+                destination,
+                call_site: decode_call_site(reader)?,
             }
         }
-        OP_SEND_PUBLIC => {
-            let selector = decode_symbol(r, symbols)?;
-            let receiver_reg = r.read_u16()?;
-            let arg_regs = decode_regs(r)?;
-            let dst = r.read_u16()?;
-            Instr::SendPublic {
+        OPCODE_SEND_PUBLIC => {
+            let selector = decode_symbol(reader, symbols)?;
+            let receiver_register = reader.read_u16()?;
+            let argument_registers = decode_registers(reader)?;
+            let destination = reader.read_u16()?;
+            Instruction::SendPublic {
                 selector,
-                receiver_reg,
-                arg_regs,
-                dst,
-                call_site: decode_call_site(r)?,
+                receiver_register,
+                argument_registers,
+                destination,
+                call_site: decode_call_site(reader)?,
             }
         }
-        OP_SEND_INLINABLE => {
-            let selector = decode_symbol(r, symbols)?;
-            let receiver_reg = r.read_u16()?;
-            let arg_regs = decode_regs(r)?;
-            let dst = r.read_u16()?;
-            Instr::SendInlinable {
+        OPCODE_SEND_INLINABLE => {
+            let selector = decode_symbol(reader, symbols)?;
+            let receiver_register = reader.read_u16()?;
+            let argument_registers = decode_registers(reader)?;
+            let destination = reader.read_u16()?;
+            Instruction::SendInlinable {
                 selector,
-                receiver_reg,
-                arg_regs,
-                dst,
-                call_site: decode_call_site(r)?,
+                receiver_register,
+                argument_registers,
+                destination,
+                call_site: decode_call_site(reader)?,
             }
         }
-        OP_SEND_SUPER => {
-            let selector = decode_symbol(r, symbols)?;
-            let arg_regs = decode_regs(r)?;
-            let dst = r.read_u16()?;
-            Instr::SendSuper {
+        OPCODE_SEND_SUPER => {
+            let selector = decode_symbol(reader, symbols)?;
+            let argument_registers = decode_registers(reader)?;
+            let destination = reader.read_u16()?;
+            Instruction::SendSuper {
                 selector,
-                arg_regs,
-                dst,
-                call_site: decode_call_site(r)?,
+                argument_registers,
+                destination,
+                call_site: decode_call_site(reader)?,
             }
         }
-        OP_MAKE_CLOSURE => {
-            let dst = r.read_u16()?;
-            let n = r.read_u16()? as usize;
-            let mut params = reserve_for(n, r);
-            for _ in 0..n {
-                params.push(decode_symbol(r, symbols)?);
+        OPCODE_MAKE_CLOSURE => {
+            let destination = reader.read_u16()?;
+            let count = reader.read_u16()? as usize;
+            let mut parameters = reserve_for(count, reader);
+            for _ in 0..count {
+                parameters.push(decode_symbol(reader, symbols)?);
             }
-            let id = r.read_u32()?;
+            let id = reader.read_u32()?;
             // Post-order guarantees a block's code precedes its parent's,
             // so `codes` already holds it -- a forward or out-of-range id
             // is corruption.
             check_code_id(id, codes)?;
-            Instr::MakeClosure {
-                dst,
-                params: Rc::new(params),
+            Instruction::MakeClosure {
+                destination,
+                parameters: Rc::new(parameters),
                 code: codes[id as usize].clone(),
             }
         }
-        OP_MAKE_ARRAY => {
-            let dst = r.read_u16()?;
-            Instr::MakeArray {
-                dst,
-                elem_regs: decode_regs(r)?,
+        OPCODE_MAKE_ARRAY => {
+            let destination = reader.read_u16()?;
+            Instruction::MakeArray {
+                destination,
+                element_registers: decode_registers(reader)?,
             }
         }
-        OP_INIT_SLOT => {
-            let src = r.read_u16()?;
-            Instr::InitSlot {
-                src,
-                own_index: r.read_u32()?,
+        OPCODE_INITIALIZE_SLOT => {
+            let source = reader.read_u16()?;
+            Instruction::InitializeSlot {
+                source,
+                own_index: reader.read_u32()?,
             }
         }
-        OP_RETURN => Instr::Return { reg: r.read_u16()? },
-        OP_IMPLICIT_RETURN => Instr::ImplicitReturn { reg: r.read_u16()? },
-        OP_NON_LOCAL_RETURN => Instr::NonLocalReturn { reg: r.read_u16()? },
-        OP_JUMP => Instr::Jump {
-            target: r.read_u32()?,
+        OPCODE_RETURN => Instruction::Return {
+            register: reader.read_u16()?,
         },
-        OP_JUMP_IF_NOT_BOOLEAN => {
-            let reg = r.read_u16()?;
-            Instr::JumpIfNotBoolean {
-                reg,
-                target: r.read_u32()?,
+        OPCODE_IMPLICIT_RETURN => Instruction::ImplicitReturn {
+            register: reader.read_u16()?,
+        },
+        OPCODE_NON_LOCAL_RETURN => Instruction::NonLocalReturn {
+            register: reader.read_u16()?,
+        },
+        OPCODE_JUMP => Instruction::Jump {
+            target: reader.read_u32()?,
+        },
+        OPCODE_JUMP_IF_NOT_BOOLEAN => {
+            let register = reader.read_u16()?;
+            Instruction::JumpIfNotBoolean {
+                register,
+                target: reader.read_u32()?,
             }
         }
-        OP_BRANCH_IF_FALSE => {
-            let reg = r.read_u16()?;
-            Instr::BranchIfFalse {
-                reg,
-                target: r.read_u32()?,
+        OPCODE_BRANCH_IF_FALSE => {
+            let register = reader.read_u16()?;
+            Instruction::BranchIfFalse {
+                register,
+                target: reader.read_u32()?,
             }
         }
-        OP_BRANCH_IF_TRUE => {
-            let reg = r.read_u16()?;
-            Instr::BranchIfTrue {
-                reg,
-                target: r.read_u32()?,
+        OPCODE_BRANCH_IF_TRUE => {
+            let register = reader.read_u16()?;
+            Instruction::BranchIfTrue {
+                register,
+                target: reader.read_u32()?,
             }
         }
         tag => {
@@ -1390,7 +1417,7 @@ fn decode_instr(
 const MAX_LITERAL_DEPTH: usize = 128;
 
 fn decode_literal(
-    r: &mut Reader,
+    reader: &mut Reader,
     depth: usize,
     symbols: &symbols::Table,
 ) -> Result<Literal, DecodeError> {
@@ -1400,30 +1427,30 @@ fn decode_literal(
             limit: MAX_LITERAL_DEPTH,
         });
     }
-    Ok(match r.read_u8()? {
-        LIT_NIL => Literal::Nil,
-        LIT_BOOL => Literal::Bool(r.read_bool()?),
-        LIT_SMALL_INT => Literal::SmallInt(r.read_i64()?),
-        LIT_FLOAT => Literal::Float(r.read_f64()?),
-        LIT_STR => Literal::Str(r.read_str()?),
-        LIT_SYM => Literal::Sym(decode_symbol(r, symbols)?),
-        LIT_CHAR => {
-            let code = r.read_u32()?;
-            Literal::Char(char::from_u32(code).ok_or(DecodeError::InvalidTag {
+    Ok(match reader.read_u8()? {
+        LITERAL_NIL => Literal::Nil,
+        LITERAL_BOOLEAN => Literal::Boolean(reader.read_boolean()?),
+        LITERAL_SMALL_INTEGER => Literal::SmallInteger(reader.read_i64()?),
+        LITERAL_FLOAT => Literal::Float(reader.read_f64()?),
+        LITERAL_STRING => Literal::String(reader.read_str()?),
+        LITERAL_SYMBOL => Literal::Symbol(decode_symbol(reader, symbols)?),
+        LITERAL_CHARACTER => {
+            let code = reader.read_u32()?;
+            Literal::Character(char::from_u32(code).ok_or(DecodeError::InvalidTag {
                 what: "char",
                 tag: 6,
             })?)
         }
-        LIT_ARRAY => {
-            let n = r.read_u32()? as usize;
-            let mut elements = reserve_for(n, r);
-            for _ in 0..n {
-                elements.push(decode_literal(r, depth + 1, symbols)?);
+        LITERAL_ARRAY => {
+            let count = reader.read_u32()? as usize;
+            let mut elements = reserve_for(count, reader);
+            for _ in 0..count {
+                elements.push(decode_literal(reader, depth + 1, symbols)?);
             }
             Literal::Array(elements)
         }
-        LIT_MALFORMED_INT => Literal::MalformedInt(r.read_str()?),
-        LIT_UNRESOLVED_IDENT => Literal::UnresolvedIdent(r.read_str()?),
+        LITERAL_MALFORMED_INTEGER => Literal::MalformedInteger(reader.read_str()?),
+        LITERAL_UNRESOLVED_IDENTIFIER => Literal::UnresolvedIdentifier(reader.read_str()?),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "literal",
@@ -1438,20 +1465,20 @@ fn decode_literal(
 // ---------------------------------------------------------------------------
 
 /// Everything the graph decoder resolves tags against: the live bootstrap
-/// (`interp`), the root class built from the mixin table, the decoded code
+/// (`mutator`), the root class built from the mixin table, the decoded code
 /// table, the interpreter's `platform` singleton, and the decoded
 /// declaration tree a class object's mixin id names.
 ///
-/// `interp` is `&mut` because decoding a class object *allocates into* the
+/// `mutator` is `&mut` because decoding a class object *allocates into* the
 /// interpreter: rebuilding its `MixinApplication` goes through
-/// `Interpreter::apply_mixin`, and that shared cache is the whole mechanism
+/// `Mutator::apply_mixin`, and that shared cache is the whole mechanism
 /// by which two enclosing instances get back the one application they had
 /// before the snapshot.
-pub struct DecodeContext<'a> {
-    pub interp: &'a mut Interpreter,
-    pub root_class: &'a ClassRef,
+pub struct DecodeContext<'a, 'gc> {
+    pub mutator: &'a mut Mutator<'gc>,
+    pub root_class: &'a ClassReference<'gc>,
     pub codes: &'a [Rc<CompiledCode>],
-    pub platform: Value,
+    pub platform: Value<'gc>,
     /// The decoded mixin table's rows, indexed by row id -- the same
     /// `Rc<Mixin>`s that carry the image's compiled bodies and that
     /// `verify_mixins` reconciled, so a class object built around one of
@@ -1462,19 +1489,19 @@ pub struct DecodeContext<'a> {
     pub mixins: &'a [Rc<crate::mixin::Mixin>],
 }
 
-pub struct DecodedGraph {
-    pub roots: Vec<Value>,
+pub struct DecodedGraph<'gc> {
+    pub roots: Vec<Value<'gc>>,
     /// The largest identity hash of any decoded object -- `load` advances
     /// the interpreter's identity-hash counter past it.
     pub max_identity_hash: u32,
     /// The two decoded tables themselves, in image order. The roots reach
     /// most of them, but `verify_graph` must see *every* record -- a frame
     /// no root reaches can still be some closure's captured frame.
-    pub objects: Vec<ObjRef>,
-    pub frames: Vec<FrameRef>,
+    pub objects: Vec<ObjectReference<'gc>>,
+    pub frames: Vec<FrameReference<'gc>>,
 }
 
-impl DecodedGraph {
+impl<'gc> DecodedGraph<'gc> {
     /// What a stateless binary carries in place of a graph section: nothing.
     /// `load` skips `verify_graph` on this value rather than calling it --
     /// an empty frame list would make `verify_graph` a no-op anyway, but
@@ -1490,9 +1517,9 @@ impl DecodedGraph {
 }
 
 /// The two placeholder-allocated tables, indexed by the ids in the stream.
-pub struct Tables<'a> {
-    pub objects: &'a [ObjRef],
-    pub frames: &'a [FrameRef],
+pub struct Tables<'a, 'gc> {
+    pub objects: &'a [ObjectReference<'gc>],
+    pub frames: &'a [FrameReference<'gc>],
 }
 
 /// The inverse of `encode::encode_class_tag`. Tag 2's object may still be a
@@ -1500,66 +1527,69 @@ pub struct Tables<'a> {
 /// record is read -- so this resolves identity only; that the record really
 /// was a class record is `check_class_references`'s job, once every record
 /// has been read.
-pub fn decode_class_tag(
-    r: &mut Reader,
-    ctx: &DecodeContext,
-    tables: &Tables,
-) -> Result<ClassRef, DecodeError> {
-    match r.read_u8()? {
-        CLS_BUILTIN => Ok(ctx.interp.builtin_class(read_builtin_class(r)?)),
-        CLS_USER_ROOT => Ok(*ctx.root_class),
-        CLS_RECORD => decode_object_id(r, tables),
+pub fn decode_class_tag<'gc>(
+    reader: &mut Reader,
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<ClassReference<'gc>, DecodeError> {
+    match reader.read_u8()? {
+        CLASS_BUILTIN => Ok(context.mutator.builtin_class(read_builtin_class(reader)?)),
+        CLASS_USER_ROOT => Ok(*context.root_class),
+        CLASS_RECORD => decode_object_id(reader, tables),
         tag => Err(DecodeError::InvalidTag { what: "class", tag }),
     }
 }
 
-fn decode_optional_class(
-    r: &mut Reader,
-    ctx: &DecodeContext,
-    tables: &Tables,
-) -> Result<Option<ClassRef>, DecodeError> {
-    if r.read_bool()? {
-        Ok(Some(decode_class_tag(r, ctx, tables)?))
+fn decode_optional_class<'gc>(
+    reader: &mut Reader,
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<Option<ClassReference<'gc>>, DecodeError> {
+    if reader.read_boolean()? {
+        Ok(Some(decode_class_tag(reader, context, tables)?))
     } else {
         Ok(None)
     }
 }
 
-fn decode_value(
-    r: &mut Reader,
-    ctx: &DecodeContext,
-    tables: &Tables,
-) -> Result<Value, DecodeError> {
-    match r.read_u8()? {
-        VAL_NIL => Ok(Value::Nil),
-        VAL_FALSE => Ok(Value::Bool(false)),
-        VAL_TRUE => Ok(Value::Bool(true)),
-        VAL_SMALL_INT => Ok(Value::SmallInt(r.read_i64()?)),
-        VAL_FLOAT => Ok(Value::Float(r.read_f64()?)),
-        VAL_OBJECT_ID => Ok(Value::Obj(decode_object_id(r, tables)?)),
-        VAL_CLASS_TAG => Ok(Value::Obj(decode_class_tag(r, ctx, tables)?)),
-        VAL_PLATFORM => Ok(ctx.platform),
+fn decode_value<'gc>(
+    reader: &mut Reader,
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<Value<'gc>, DecodeError> {
+    match reader.read_u8()? {
+        VALUE_NIL => Ok(Value::Nil),
+        VALUE_FALSE => Ok(Value::Boolean(false)),
+        VALUE_TRUE => Ok(Value::Boolean(true)),
+        VALUE_SMALL_INTEGER => Ok(Value::SmallInteger(reader.read_i64()?)),
+        VALUE_FLOAT => Ok(Value::Float(reader.read_f64()?)),
+        VALUE_OBJECT_ID => Ok(Value::Object(decode_object_id(reader, tables)?)),
+        VALUE_CLASS_TAG => Ok(Value::Object(decode_class_tag(reader, context, tables)?)),
+        VALUE_PLATFORM => Ok(context.platform),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
     }
 }
 
-fn decode_values(
-    r: &mut Reader,
-    ctx: &DecodeContext,
-    tables: &Tables,
-) -> Result<Vec<Value>, DecodeError> {
-    let n = r.read_u32()? as usize;
-    let mut values = reserve_for(n, r);
-    for _ in 0..n {
-        values.push(decode_value(r, ctx, tables)?);
+fn decode_values<'gc>(
+    reader: &mut Reader,
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<Vec<Value<'gc>>, DecodeError> {
+    let count = reader.read_u32()? as usize;
+    let mut values = reserve_for(count, reader);
+    for _ in 0..count {
+        values.push(decode_value(reader, context, tables)?);
     }
     Ok(values)
 }
 
 /// An object id off the wire, resolved against the placeholders the first
 /// pass allocated: in range, or `BadObjectId` before anything indexes by it.
-fn decode_object_id(r: &mut Reader, tables: &Tables) -> Result<ObjRef, DecodeError> {
-    let id = r.read_u32()?;
+fn decode_object_id<'gc>(
+    reader: &mut Reader,
+    tables: &Tables<'_, 'gc>,
+) -> Result<ObjectReference<'gc>, DecodeError> {
+    let id = reader.read_u32()?;
     tables
         .objects
         .get(id as usize)
@@ -1567,8 +1597,11 @@ fn decode_object_id(r: &mut Reader, tables: &Tables) -> Result<ObjRef, DecodeErr
         .ok_or(DecodeError::BadObjectId(id))
 }
 
-fn decode_frame_id(r: &mut Reader, tables: &Tables) -> Result<FrameRef, DecodeError> {
-    let id = r.read_u32()?;
+fn decode_frame_id<'gc>(
+    reader: &mut Reader,
+    tables: &Tables<'_, 'gc>,
+) -> Result<FrameReference<'gc>, DecodeError> {
+    let id = reader.read_u32()?;
     tables
         .frames
         .get(id as usize)
@@ -1576,27 +1609,30 @@ fn decode_frame_id(r: &mut Reader, tables: &Tables) -> Result<FrameRef, DecodeEr
         .ok_or(DecodeError::BadFrameId(id))
 }
 
-fn decode_frame_ref(r: &mut Reader, tables: &Tables) -> Result<Option<FrameRef>, DecodeError> {
-    if r.read_bool()? {
-        Ok(Some(decode_frame_id(r, tables)?))
+fn decode_frame_reference<'gc>(
+    reader: &mut Reader,
+    tables: &Tables<'_, 'gc>,
+) -> Result<Option<FrameReference<'gc>>, DecodeError> {
+    if reader.read_boolean()? {
+        Ok(Some(decode_frame_id(reader, tables)?))
     } else {
         Ok(None)
     }
 }
 
-fn decode_closure_record(
-    r: &mut Reader,
-    ctx: &DecodeContext,
-    tables: &Tables,
+fn decode_closure_record<'gc>(
+    reader: &mut Reader,
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
     symbols: &symbols::Table,
-) -> Result<ClosureData, DecodeError> {
-    let n = r.read_u16()? as usize;
-    let mut params = reserve_for(n, r);
-    for _ in 0..n {
-        params.push(decode_symbol(r, symbols)?);
+) -> Result<ClosureData<'gc>, DecodeError> {
+    let count = reader.read_u16()? as usize;
+    let mut parameters = reserve_for(count, reader);
+    for _ in 0..count {
+        parameters.push(decode_symbol(reader, symbols)?);
     }
-    let code_id = r.read_u32()?;
-    let code = ctx
+    let code_id = reader.read_u32()?;
+    let code = context
         .codes
         .get(code_id as usize)
         .cloned()
@@ -1604,16 +1640,16 @@ fn decode_closure_record(
     // The one place in the format that can see both halves of a closure's
     // arity. Checked before the frame ids are read, so a mismatch is
     // reported as itself rather than as whatever the next field trips on.
-    if params.len() != code.num_args as usize {
+    if parameters.len() != code.argument_count as usize {
         return Err(DecodeError::ClosureArityMismatch {
-            params: params.len(),
-            num_args: code.num_args,
+            parameters: parameters.len(),
+            argument_count: code.argument_count,
         });
     }
-    let captured_frame = decode_frame_id(r, tables)?;
-    let home = decode_frame_id(r, tables)?;
+    let captured_frame = decode_frame_id(reader, tables)?;
+    let home = decode_frame_id(reader, tables)?;
     Ok(ClosureData {
-        params: Rc::new(params),
+        parameters: Rc::new(parameters),
         code,
         captured_frame,
         home,
@@ -1633,44 +1669,48 @@ fn decode_closure_record(
 /// selector or bind the frame to a same-named method of a different class.
 /// `None` -- a `TopLevel` activation -- has no class to ask, so the root
 /// class stands in, as it did for every frame before nesting.
-fn method_decl(
-    ctx: &DecodeContext,
-    current_class: Option<&ClassRef>,
+fn method_declaration<'gc>(
+    context: &DecodeContext<'_, 'gc>,
+    current_class: Option<&ClassReference<'gc>>,
     selector: Symbol,
 ) -> Result<Rc<crate::mixin::MixinMethod>, DecodeError> {
-    let class = current_class.unwrap_or(ctx.root_class);
-    let found = ctx
-        .interp
+    let class = current_class.unwrap_or(context.root_class);
+    let found = context
+        .mutator
         .heap
         .class_application(*class)
-        .and_then(|a| a.mixin.methods.get(&selector).cloned());
+        .and_then(|application| application.mixin.methods.get(&selector).cloned());
     found.ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
 }
 
-fn decode_frame(
-    r: &mut Reader,
-    ctx: &DecodeContext,
-    tables: &Tables,
+fn decode_frame<'gc>(
+    reader: &mut Reader,
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
     symbols: &symbols::Table,
-) -> Result<Frame, DecodeError> {
-    let receiver = decode_value(r, ctx, tables)?;
-    let args = decode_values(r, ctx, tables)?;
-    let temps = decode_values(r, ctx, tables)?;
-    let pc = r.read_u32()? as usize;
-    let sender = decode_frame_ref(r, tables)?;
-    let home = decode_frame_ref(r, tables)?;
-    let current_class = decode_optional_class(r, ctx, tables)?;
-    let kind = match r.read_u8()? {
-        FRAME_METHOD => FrameKind::Method(method_decl(
-            ctx,
+) -> Result<Frame<'gc>, DecodeError> {
+    let receiver = decode_value(reader, context, tables)?;
+    let arguments = decode_values(reader, context, tables)?;
+    let temporaries = decode_values(reader, context, tables)?;
+    let program_counter = reader.read_u32()? as usize;
+    let sender = decode_frame_reference(reader, tables)?;
+    let home = decode_frame_reference(reader, tables)?;
+    let current_class = decode_optional_class(reader, context, tables)?;
+    let kind = match reader.read_u8()? {
+        FRAME_METHOD => FrameKind::Method(method_declaration(
+            context,
             current_class.as_ref(),
-            decode_symbol(r, symbols)?,
+            decode_symbol(reader, symbols)?,
         )?),
         FRAME_TOP_LEVEL => FrameKind::TopLevel,
-        FRAME_INITIALIZER => FrameKind::Initializer(decode_class_tag(r, ctx, tables)?),
-        FRAME_SUPERCLASS_CLAUSE => FrameKind::SuperclassClause(decode_class_tag(r, ctx, tables)?),
-        FRAME_SUPERCLASS_MESSAGE => FrameKind::SuperclassMessage(decode_class_tag(r, ctx, tables)?),
-        FRAME_CLOSURE_OBJECT => FrameKind::Closure(decode_object_id(r, tables)?),
+        FRAME_INITIALIZER => FrameKind::Initializer(decode_class_tag(reader, context, tables)?),
+        FRAME_SUPERCLASS_CLAUSE => {
+            FrameKind::SuperclassClause(decode_class_tag(reader, context, tables)?)
+        }
+        FRAME_SUPERCLASS_MESSAGE => {
+            FrameKind::SuperclassMessage(decode_class_tag(reader, context, tables)?)
+        }
+        FRAME_CLOSURE_OBJECT => FrameKind::Closure(decode_object_id(reader, tables)?),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "frame kind",
@@ -1678,32 +1718,32 @@ fn decode_frame(
             })
         }
     };
-    let uncontinuable = r.read_bool()?;
+    let uncontinuable = reader.read_boolean()?;
     Ok(Frame {
         receiver,
-        args,
-        temps,
-        pc,
+        arguments,
+        temporaries,
+        program_counter,
         sender,
         home,
         current_class,
         kind,
         uncontinuable,
         // Nothing re-activates a decoded frame (this module's doc comment,
-        // below), so no compiled `InitSlot` ever reads this on a frame that
-        // came off the wire.
+        // below), so no compiled `InitializeSlot` ever reads this on a frame
+        // that came off the wire.
         slot_base: 0,
     })
 }
 
 /// A safe, fully initialized stand-in, overwritten in place by
 /// `decode_graph_section`'s second pass before anything can observe it.
-fn placeholder_frame() -> Frame {
+fn placeholder_frame<'gc>() -> Frame<'gc> {
     Frame {
         receiver: Value::Nil,
-        args: Vec::new(),
-        temps: Vec::new(),
-        pc: 0,
+        arguments: Vec::new(),
+        temporaries: Vec::new(),
+        program_counter: 0,
         sender: None,
         home: None,
         current_class: None,
@@ -1719,9 +1759,9 @@ fn placeholder_frame() -> Frame {
 const MIN_OBJECT_RECORD_BYTES: usize = 6;
 
 /// The smallest frame record the wire admits: a `nil` receiver (1), empty
-/// `args` and `temps` counts (4 + 4), a `pc` (4), absent `sender`, `home` and
-/// `current_class` (1 + 1 + 1), a `TopLevel` kind tag (1), and
-/// `uncontinuable` (1). Every other frame kind is larger.
+/// `arguments` and `temporaries` counts (4 + 4), a `program_counter` (4),
+/// absent `sender`, `home` and `current_class` (1 + 1 + 1), a `TopLevel` kind
+/// tag (1), and `uncontinuable` (1). Every other frame kind is larger.
 const MIN_FRAME_RECORD_BYTES: usize = 18;
 
 /// The smallest entry of the closing hash table: a tag (1) and a hash (4). A
@@ -1742,10 +1782,10 @@ const MIN_TAG_NAMED_HASH_BYTES: usize = 5;
 pub(crate) fn bounded_count(
     count: usize,
     bytes_per_record: usize,
-    r: &Reader,
+    reader: &Reader,
 ) -> Result<usize, DecodeError> {
-    if count > r.remaining() / bytes_per_record {
-        return Err(DecodeError::UnexpectedEof);
+    if count > reader.remaining() / bytes_per_record {
+        return Err(DecodeError::UnexpectedEndOfFile);
     }
     Ok(count)
 }
@@ -1761,21 +1801,21 @@ pub(crate) fn bounded_count(
 /// enclosing object and no declaring class -- the module's root class is
 /// the outermost level, so neither exists.
 ///
-/// The superclass arrives as an already-resolved `ClassRef` from
+/// The superclass arrives as an already-resolved `ClassReference` from
 /// `decode_root_superclass`, because `load_module` resolves it by *name*
 /// from the declaration and a decoded mixin has no declaration to read a
 /// name from.
-pub fn build_root_class(
-    interp: &mut Interpreter,
+pub fn build_root_class<'gc>(
+    mutator: &mut Mutator<'gc>,
     mixins: &mixins::Decoded,
-    superclass: Option<ClassRef>,
-) -> Result<ClassRef, DecodeError> {
+    superclass: Option<ClassReference<'gc>>,
+) -> Result<ClassReference<'gc>, DecodeError> {
     let root_mixin = mixins.root().cloned().ok_or(DecodeError::NotAClass)?;
     let super_application = superclass
         .as_ref()
-        .and_then(|superclass| interp.heap.class_application(*superclass));
-    let application = interp.apply_mixin(&root_mixin, super_application.as_ref());
-    Ok(interp.new_class_object(application, None, None, superclass))
+        .and_then(|superclass| mutator.heap.class_application(*superclass));
+    let application = mutator.apply_mixin(&root_mixin, super_application.as_ref());
+    Ok(mutator.new_class_object(application, None, None, superclass))
 }
 
 /// The root-class section's bytes, read but not resolved: whether a
@@ -1785,9 +1825,9 @@ pub fn build_root_class(
 /// many bytes the section spans -- duplicating this reading would let the
 /// two drift, and then the span `inspect` records would stop matching the
 /// real one.
-fn read_root_superclass_tag(r: &mut Reader) -> Result<Option<BuiltinClass>, DecodeError> {
-    if r.read_bool()? {
-        Ok(Some(read_builtin_class(r)?))
+fn read_root_superclass_tag(reader: &mut Reader) -> Result<Option<BuiltinClass>, DecodeError> {
+    if reader.read_boolean()? {
+        Ok(Some(read_builtin_class(reader)?))
     } else {
         Ok(None)
     }
@@ -1796,19 +1836,19 @@ fn read_root_superclass_tag(r: &mut Reader) -> Result<Option<BuiltinClass>, Deco
 /// The root-class section: the class the module's root class inherits from,
 /// as an optional builtin tag. The inverse of `encode::encode_root_class`,
 /// which explains why the format admits only a builtin here.
-pub fn decode_root_superclass(
-    r: &mut Reader,
-    interp: &Interpreter,
-) -> Result<Option<ClassRef>, DecodeError> {
-    Ok(read_root_superclass_tag(r)?.map(|tag| interp.builtin_class(tag)))
+pub fn decode_root_superclass<'gc>(
+    reader: &mut Reader,
+    mutator: &Mutator<'gc>,
+) -> Result<Option<ClassReference<'gc>>, DecodeError> {
+    Ok(read_root_superclass_tag(reader)?.map(|tag| mutator.builtin_class(tag)))
 }
 
 /// Reads the root-class section's bytes without resolving the tag to a live
 /// class. `inspect` has no interpreter to resolve a builtin tag against --
 /// it must not bootstrap one -- and only needs to know where this section
 /// ends.
-pub fn skip_root_superclass(r: &mut Reader) -> Result<(), DecodeError> {
-    read_root_superclass_tag(r)?;
+pub fn skip_root_superclass(reader: &mut Reader) -> Result<(), DecodeError> {
+    read_root_superclass_tag(reader)?;
     Ok(())
 }
 
@@ -1825,7 +1865,7 @@ struct PendingClass {
 /// Rebuilds every decoded class object's `MixinApplication`, superclass
 /// first.
 ///
-/// An application is derived, never stored: `Interpreter::apply_mixin`
+/// An application is derived, never stored: `Mutator::apply_mixin`
 /// computes the slot layout and the lookup chain from a mixin and its
 /// superclass's application, and caches the result under exactly that pair.
 /// So rebuilding restores identity as well as content -- two class objects
@@ -1840,18 +1880,24 @@ struct PendingClass {
 /// resolved by an earlier walk) over an explicit stack, then applies back
 /// down it. A chain that closes on itself is `SuperclassCycle` rather than
 /// a loop that never ends.
-fn rebuild_applications(
-    ctx: &mut DecodeContext,
-    objects: &[ObjRef],
+fn rebuild_applications<'gc>(
+    context: &mut DecodeContext<'_, 'gc>,
+    objects: &[ObjectReference<'gc>],
     pending: Vec<PendingClass>,
 ) -> Result<(), DecodeError> {
     // Class-object arena index -> position in `pending`, for the "is my
     // superclass still waiting for its own application?" question each step
-    // asks. Keyed by index because a superclass arrives as a `ClassRef`
+    // asks. Keyed by index because a superclass arrives as a `ClassReference`
     // handle, not as the id it was written with.
     let mut position: HashMap<usize, usize> = HashMap::with_capacity(pending.len());
-    for (i, p) in pending.iter().enumerate() {
-        position.insert(ctx.interp.heap.object_identity_key(objects[p.object]), i);
+    for (index, pending_class) in pending.iter().enumerate() {
+        position.insert(
+            context
+                .mutator
+                .heap
+                .object_identity_key(objects[pending_class.object]),
+            index,
+        );
     }
     let mut done = vec![false; pending.len()];
     let mut on_chain = vec![false; pending.len()];
@@ -1867,12 +1913,13 @@ fn rebuild_applications(
             }
             on_chain[current] = true;
             chain.push(current);
-            let superclass = ctx
-                .interp
+            let superclass = context
+                .mutator
                 .heap
                 .class_superclass(objects[pending[current].object]);
             let Some(superclass) = superclass else { break };
-            let Some(&next) = position.get(&ctx.interp.heap.object_identity_key(superclass)) else {
+            let Some(&next) = position.get(&context.mutator.heap.object_identity_key(superclass))
+            else {
                 break;
             };
             if done[next] {
@@ -1883,25 +1930,30 @@ fn rebuild_applications(
         // Deepest-first: every class in `chain` inherits from the next one,
         // so applying from the far end forward always has the superclass's
         // application in hand.
-        for &i in chain.iter().rev() {
-            let object = &objects[pending[i].object];
-            let super_application = match ctx.interp.heap.class_superclass(*object) {
+        for &pending_index in chain.iter().rev() {
+            let object = &objects[pending[pending_index].object];
+            let super_application = match context.mutator.heap.class_superclass(*object) {
                 Some(superclass) => Some(
-                    ctx.interp
+                    context
+                        .mutator
                         .heap
                         .class_application(superclass)
                         .ok_or(DecodeError::NotAClassReference)?,
                 ),
                 None => None,
             };
-            let application = ctx
-                .interp
-                .apply_mixin(&pending[i].mixin, super_application.as_ref());
-            if !ctx.interp.heap.set_class_application(*object, application) {
+            let application = context
+                .mutator
+                .apply_mixin(&pending[pending_index].mixin, super_application.as_ref());
+            if !context
+                .mutator
+                .heap
+                .set_class_application(*object, application)
+            {
                 unreachable!("this object was filled in as a class record");
             }
-            done[i] = true;
-            on_chain[i] = false;
+            done[pending_index] = true;
+            on_chain[pending_index] = false;
         }
         chain.clear();
     }
@@ -1916,7 +1968,11 @@ fn rebuild_applications(
 /// this answering `false` for a non-class object on its own terms rather
 /// than through that indirect argument, so it stays honest if either
 /// check's meaning shifts later.
-fn is_prebuilt_class(heap: &Heap, class: ClassRef, root_class: ClassRef) -> bool {
+fn is_prebuilt_class<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+    root_class: ClassReference<'gc>,
+) -> bool {
     heap.is_class(class) && (heap.class_builtin(class).is_some() || class.same(root_class))
 }
 
@@ -1929,11 +1985,11 @@ fn is_prebuilt_class(heap: &Heap, class: ClassRef, root_class: ClassRef) -> bool
 /// knowable once every record has been read, so it is checked here rather
 /// than where each tag is decoded. These five positions are the complete
 /// set: a class tag appears nowhere else in the graph section, and a plain
-/// `Value::Obj` pointing at a class object is legitimate (that is what a
+/// `Value::Object` pointing at a class object is legitimate (that is what a
 /// cached nested class in a slot *is*).
 ///
 /// The extra rule for a class object's *own* `class` is the runtime's
-/// invariant, not a limit invented here: `Interpreter::new_class_object` is
+/// invariant, not a limit invented here: `Mutator::new_class_object` is
 /// the only thing that mints a class object and always gives it the shared
 /// bootstrap `Object` placeholder -- §3.2's reified metaclass model stays
 /// deliberately unbuilt -- so this refuses nothing a real world contains.
@@ -1947,14 +2003,14 @@ fn is_prebuilt_class(heap: &Heap, class: ClassRef, root_class: ClassRef) -> bool
 /// reference, whether that record was a closure is only knowable once every
 /// record has been read. Everything that reaches a closure activation's
 /// body or captured frames reads through that object.
-fn check_class_references(
-    heap: &Heap,
-    objects: &[ObjRef],
-    frames: &[FrameRef],
-    root_class: ClassRef,
+fn check_class_references<'gc>(
+    heap: &Heap<'gc>,
+    objects: &[ObjectReference<'gc>],
+    frames: &[FrameReference<'gc>],
+    root_class: ClassReference<'gc>,
 ) -> Result<(), DecodeError> {
     for object in objects {
-        let class = heap.class_of_obj(*object);
+        let class = heap.class_of_object(*object);
         if !heap.is_class(class) {
             return Err(DecodeError::NotAClassReference);
         }
@@ -1980,9 +2036,9 @@ fn check_class_references(
             }
         }
         let kind_class = match &kind {
-            FrameKind::Initializer(c)
-            | FrameKind::SuperclassClause(c)
-            | FrameKind::SuperclassMessage(c) => Some(c),
+            FrameKind::Initializer(class)
+            | FrameKind::SuperclassClause(class)
+            | FrameKind::SuperclassMessage(class) => Some(class),
             FrameKind::Method(_) | FrameKind::Closure(_) | FrameKind::TopLevel => None,
         };
         for class in current_class.iter().chain(kind_class) {
@@ -2011,33 +2067,34 @@ fn check_class_references(
 /// no part of this decoder recurses on a depth the image controls. The one
 /// depth-bounded structure in the format, `Literal::Array`, lives in the
 /// code table (`decode_literal`'s `MAX_LITERAL_DEPTH`).
-pub fn decode_graph_section(
-    r: &mut Reader,
-    ctx: &mut DecodeContext,
+pub fn decode_graph_section<'gc>(
+    reader: &mut Reader,
+    context: &mut DecodeContext<'_, 'gc>,
     symbols: &symbols::Table,
-) -> Result<DecodedGraph, DecodeError> {
-    let object_count = bounded_count(r.read_u32()? as usize, MIN_OBJECT_RECORD_BYTES, r)?;
-    let frame_count = bounded_count(r.read_u32()? as usize, MIN_FRAME_RECORD_BYTES, r)?;
-    let placeholder_class = ctx.interp.builtin_class(BuiltinClass::Object);
+) -> Result<DecodedGraph<'gc>, DecodeError> {
+    let object_count = bounded_count(reader.read_u32()? as usize, MIN_OBJECT_RECORD_BYTES, reader)?;
+    let frame_count = bounded_count(reader.read_u32()? as usize, MIN_FRAME_RECORD_BYTES, reader)?;
+    let placeholder_class = context.mutator.builtin_class(BuiltinClass::Object);
     // A real application, standing in until `rebuild_applications` derives
     // each class object's own -- the same technique as the placeholder
     // object and `placeholder_frame`, and for the same reason: nothing may
     // observe a half-built record, and a `None` here would need an
     // `Option` on `ClassData` that no live class object could ever be.
-    let placeholder_application = ctx
-        .interp
+    let placeholder_application = context
+        .mutator
         .heap
         .class_application(placeholder_class)
         .ok_or(DecodeError::NotAClass)?;
-    let objects: Vec<ObjRef> = (0..object_count)
+    let objects: Vec<ObjectReference> = (0..object_count)
         .map(|_| {
-            ctx.interp
+            context
+                .mutator
                 .heap
-                .alloc_object(placeholder_class, ObjectData::Instance(Vec::new()))
+                .allocate_object(placeholder_class, ObjectData::Instance(Vec::new()))
         })
         .collect();
-    let frames: Vec<FrameRef> = (0..frame_count)
-        .map(|_| ctx.interp.heap.alloc_frame(placeholder_frame()))
+    let frames: Vec<FrameReference> = (0..frame_count)
+        .map(|_| context.mutator.heap.allocate_frame(placeholder_frame()))
         .collect();
     let tables = Tables {
         objects: &objects,
@@ -2045,9 +2102,9 @@ pub fn decode_graph_section(
     };
     let mut max_identity_hash = 0;
     let mut pending_classes: Vec<PendingClass> = Vec::new();
-    for (index, obj) in objects.iter().enumerate() {
-        let class = decode_class_tag(r, ctx, &tables)?;
-        let identity_hash = r.read_u32()?;
+    for (index, object) in objects.iter().enumerate() {
+        let class = decode_class_tag(reader, context, &tables)?;
+        let identity_hash = reader.read_u32()?;
         // Checked here, the one place identity hashes are read: `load`
         // hands the maximum straight to `advance_identity_hash_past`, which
         // must be able to allocate past it.
@@ -2055,14 +2112,17 @@ pub fn decode_graph_section(
             return Err(DecodeError::IdentityHashExhausted);
         }
         max_identity_hash = max_identity_hash.max(identity_hash);
-        let data = match r.read_u8()? {
-            OBJ_INSTANCE => ObjectData::Instance(decode_values(r, ctx, &tables)?),
-            OBJ_STR => ObjectData::Str(r.read_str()?),
-            OBJ_SYM => ObjectData::Sym(decode_symbol(r, symbols)?),
-            OBJ_ARRAY => ObjectData::Array(decode_values(r, ctx, &tables)?),
-            OBJ_CLOSURE => ObjectData::Closure(decode_closure_record(r, ctx, &tables, symbols)?),
-            OBJ_CLASS => {
-                let (data, mixin) = decode_class_record(r, ctx, &tables, &placeholder_application)?;
+        let data = match reader.read_u8()? {
+            OBJECT_INSTANCE => ObjectData::Instance(decode_values(reader, context, &tables)?),
+            OBJECT_STRING => ObjectData::String(reader.read_str()?),
+            OBJECT_SYMBOL => ObjectData::Symbol(decode_symbol(reader, symbols)?),
+            OBJECT_ARRAY => ObjectData::Array(decode_values(reader, context, &tables)?),
+            OBJECT_CLOSURE => {
+                ObjectData::Closure(decode_closure_record(reader, context, &tables, symbols)?)
+            }
+            OBJECT_CLASS => {
+                let (data, mixin) =
+                    decode_class_record(reader, context, &tables, &placeholder_application)?;
                 pending_classes.push(PendingClass {
                     object: index,
                     mixin,
@@ -2076,8 +2136,8 @@ pub fn decode_graph_section(
                 })
             }
         };
-        ctx.interp.heap.replace_object(
-            *obj,
+        context.mutator.heap.replace_object(
+            *object,
             Object {
                 class,
                 identity_hash,
@@ -2085,13 +2145,18 @@ pub fn decode_graph_section(
             },
         );
     }
-    rebuild_applications(ctx, &objects, pending_classes)?;
+    rebuild_applications(context, &objects, pending_classes)?;
     for frame in &frames {
-        let decoded = decode_frame(r, ctx, &tables, symbols)?;
-        ctx.interp.heap.replace_frame(*frame, decoded);
+        let decoded = decode_frame(reader, context, &tables, symbols)?;
+        context.mutator.heap.replace_frame(*frame, decoded);
     }
-    check_class_references(&ctx.interp.heap, &objects, &frames, *ctx.root_class)?;
-    let roots = decode_values(r, ctx, &tables)?;
+    check_class_references(
+        &context.mutator.heap,
+        &objects,
+        &frames,
+        *context.root_class,
+    )?;
+    let roots = decode_values(reader, context, &tables)?;
     Ok(DecodedGraph {
         roots,
         max_identity_hash,
@@ -2105,20 +2170,24 @@ pub fn decode_graph_section(
 /// answers the largest one, which `load` advances the counter past together
 /// with the graph's own maximum. A 0, a repeated object and `u32::MAX` are
 /// refused, each for the reason its `DecodeError` gives.
-pub fn decode_tag_named_hashes(
-    r: &mut Reader,
-    interp: &mut Interpreter,
-    root_class: ClassRef,
+pub fn decode_tag_named_hashes<'gc>(
+    reader: &mut Reader,
+    mutator: &mut Mutator<'gc>,
+    root_class: ClassReference<'gc>,
 ) -> Result<u32, DecodeError> {
-    let count = bounded_count(r.read_u32()? as usize, MIN_TAG_NAMED_HASH_BYTES, r)?;
-    let mut restored: Vec<ObjRef> = Vec::new();
+    let count = bounded_count(
+        reader.read_u32()? as usize,
+        MIN_TAG_NAMED_HASH_BYTES,
+        reader,
+    )?;
+    let mut restored: Vec<ObjectReference> = Vec::new();
     let mut max = 0;
     for _ in 0..count {
-        let target = match r.read_u8()? {
-            HASHED_BUILTIN_CLASS => interp.builtin_class(read_builtin_class(r)?),
+        let target = match reader.read_u8()? {
+            HASHED_BUILTIN_CLASS => mutator.builtin_class(read_builtin_class(reader)?),
             HASHED_ROOT_CLASS => root_class,
-            HASHED_PLATFORM => match interp.platform_value() {
-                Value::Obj(platform) => platform,
+            HASHED_PLATFORM => match mutator.platform_value() {
+                Value::Object(platform) => platform,
                 _ => unreachable!("the platform singleton is always an object"),
             },
             tag => {
@@ -2128,7 +2197,7 @@ pub fn decode_tag_named_hashes(
                 })
             }
         };
-        let hash = r.read_u32()?;
+        let hash = reader.read_u32()?;
         if hash == 0 {
             return Err(DecodeError::UnassignedTagNamedHash);
         }
@@ -2139,7 +2208,7 @@ pub fn decode_tag_named_hashes(
             return Err(DecodeError::DuplicateTagNamedHash);
         }
         restored.push(target);
-        interp.heap.set_identity_hash(target, hash);
+        mutator.heap.set_identity_hash(target, hash);
         max = max.max(hash);
     }
     Ok(max)
@@ -2155,28 +2224,28 @@ pub fn decode_tag_named_hashes(
 /// before this pass started), so a forward reference and a cycle are both
 /// ordinary; what cannot be settled yet is whether each really is a class
 /// record, which `check_class_references` establishes afterwards.
-fn decode_class_record(
-    r: &mut Reader,
-    ctx: &DecodeContext,
-    tables: &Tables,
+fn decode_class_record<'gc>(
+    reader: &mut Reader,
+    context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
     placeholder_application: &Rc<crate::mixin::MixinApplication>,
-) -> Result<(crate::types::ClassData, Rc<crate::mixin::Mixin>), DecodeError> {
-    let id = r.read_u32()?;
-    let mixin = ctx
+) -> Result<(crate::types::ClassData<'gc>, Rc<crate::mixin::Mixin>), DecodeError> {
+    let id = reader.read_u32()?;
+    let mixin = context
         .mixins
         .get(id as usize)
         .cloned()
         .ok_or(DecodeError::BadMixinId(id))?;
-    let superclass = decode_optional_class(r, ctx, tables)?;
-    let enclosing = if r.read_bool()? {
-        match decode_value(r, ctx, tables)? {
-            Value::Obj(obj) => Some(obj),
+    let superclass = decode_optional_class(reader, context, tables)?;
+    let enclosing = if reader.read_boolean()? {
+        match decode_value(reader, context, tables)? {
+            Value::Object(object) => Some(object),
             _ => return Err(DecodeError::EnclosingNotAnObject),
         }
     } else {
         None
     };
-    let declaring_class = decode_optional_class(r, ctx, tables)?;
+    let declaring_class = decode_optional_class(reader, context, tables)?;
     Ok((
         crate::types::ClassData {
             application: placeholder_application.clone(),
@@ -2187,7 +2256,7 @@ fn decode_class_record(
             // class *tag*, resolved through the bootstrap, and never an
             // object-table entry.
             builtin: None,
-            // Rebuilt by `Interpreter::metaclass_of` on the first
+            // Rebuilt by `Mutator::metaclass_of` on the first
             // class-side send, exactly as it is for a class object the
             // accessor just created.
             //
@@ -2214,8 +2283,8 @@ fn decode_class_record(
 // selector-to-body mapping, so it can check a closure record's own two
 // halves (`ClosureArityMismatch`) and nothing more. Once the decoded mixins
 // carry their code, every frame's body can be resolved --
-// and must be, because `locals::read_local` splits a frame at `args.len()`
-// and indexes `temps` unchecked. A crafted frame that is smaller than the
+// and must be, because `locals::read_local` splits a frame at `arguments.len()`
+// and indexes `temporaries` unchecked. A crafted frame that is smaller than the
 // body addressing it is an out-of-bounds index reached from a
 // version-matching image.
 // ---------------------------------------------------------------------------
@@ -2226,18 +2295,22 @@ fn decode_class_record(
 /// entered -- nothing re-activates a decoded frame, and no closure may be
 /// captured by one (`verify_closure` refuses that) -- so there is nothing to
 /// reconcile.
-fn frame_body(heap: &Heap, frame: FrameRef) -> Option<Rc<CompiledCode>> {
+fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<CompiledCode>> {
     /// The mixin whose code a class-carrying frame kind names. `None` only
     /// if the decoded value is not a class object -- `decode_class_tag`
     /// never produces one, but returning `None` keeps a future change to it
     /// from turning an untrusted image into a panic here.
-    fn frame_mixin(heap: &Heap, class: crate::types::ClassRef) -> Option<Rc<crate::mixin::Mixin>> {
-        heap.class_application(class).map(|a| a.mixin.clone())
+    fn frame_mixin<'gc>(
+        heap: &Heap<'gc>,
+        class: crate::types::ClassReference<'gc>,
+    ) -> Option<Rc<crate::mixin::Mixin>> {
+        heap.class_application(class)
+            .map(|application| application.mixin.clone())
     }
     match &heap.frame_kind(frame) {
         FrameKind::Method(method) => Some(method.code.clone()),
         FrameKind::Initializer(class) => {
-            frame_mixin(heap, *class).and_then(|m| m.initializer_code.clone())
+            frame_mixin(heap, *class).and_then(|mixin| mixin.initializer_code.clone())
         }
         // Each clause activation resolves against the field its own body
         // lives in. They share `Initializer`'s frame shape -- a class's code
@@ -2246,10 +2319,10 @@ fn frame_body(heap: &Heap, frame: FrameRef) -> Option<Rc<CompiledCode>> {
         // ran in it: a legitimate image refused, and a crafted one checked
         // against the wrong register file.
         FrameKind::SuperclassClause(class) => {
-            frame_mixin(heap, *class).and_then(|m| m.superclass_clause_code.clone())
+            frame_mixin(heap, *class).and_then(|mixin| mixin.superclass_clause_code.clone())
         }
         FrameKind::SuperclassMessage(class) => {
-            frame_mixin(heap, *class).and_then(|m| m.superclass_message_code.clone())
+            frame_mixin(heap, *class).and_then(|mixin| mixin.superclass_message_code.clone())
         }
         FrameKind::Closure(closure) => heap.closure_code(*closure),
         FrameKind::TopLevel => None,
@@ -2260,12 +2333,12 @@ fn frame_body(heap: &Heap, frame: FrameRef) -> Option<Rc<CompiledCode>> {
 /// decoded mixins carry, closing the three gaps a per-record decoder
 /// cannot see:
 ///
-/// 0. A frame's `pc` must be an instruction index of the body that runs in
-///    it. A frame's `pc` counts instructions (an image carries only
-///    bytecode), but which body it counts them in is only known once the
-///    decoded mixins carry their code.
+/// 0. A frame's `program_counter` must be an instruction index of the body
+///    that runs in it. A frame's `program_counter` counts instructions (an
+///    image carries only bytecode), but which body it counts them in is only
+///    known once the decoded mixins carry their code.
 /// 1. A frame's register file must match the body that runs in it -- the
-///    same `args` count, and at least as many registers. (At least, not
+///    same `arguments` count, and at least as many registers. (At least, not
 ///    exactly: a frame's register file is grown, never shrunk -- the
 ///    liveness spec's reified activations may be wider than the body
 ///    currently running in them -- so a wider frame is legitimate and only
@@ -2275,10 +2348,10 @@ fn frame_body(heap: &Heap, frame: FrameRef) -> Option<Rc<CompiledCode>> {
 ///    two together, and `verify_code_table`'s outer-local bound -- which
 ///    walks the *static* `MakeClosure` nesting -- is only a bound on the
 ///    real `frame_at_depth` walk because of this.
-pub fn verify_graph(
-    graph: &DecodedGraph,
+pub fn verify_graph<'gc>(
+    graph: &DecodedGraph<'gc>,
     table: &DecodedCodeTable,
-    heap: &Heap,
+    heap: &Heap<'gc>,
 ) -> Result<(), DecodeError> {
     // Recomputed rather than threaded through from `verify_code_table`:
     // one more linear pass over the code table at load time, in exchange
@@ -2289,24 +2362,25 @@ pub fn verify_graph(
         let Some(code) = frame_body(heap, *frame) else {
             continue;
         };
-        let (pc, num_args, num_temps) = heap.frame_register_shape(*frame);
+        let (program_counter, argument_count, temporary_count) = heap.frame_register_shape(*frame);
         // The VM stores the index of the instruction it is
         // executing, and a body with no instructions is already refused
         // (`UnterminatedBody`), so every genuine activation -- including one
         // that has not run a single instruction yet -- satisfies this.
-        if pc >= code.instrs.len() {
-            return Err(DecodeError::PcOutOfRange {
-                pc,
-                instrs: code.instrs.len(),
+        if program_counter >= code.instructions.len() {
+            return Err(DecodeError::ProgramCounterOutOfRange {
+                program_counter,
+                instructions: code.instructions.len(),
             });
         }
-        if num_args != code.num_args as usize || num_args + num_temps < code.num_registers as usize
+        if argument_count != code.argument_count as usize
+            || argument_count + temporary_count < code.register_count as usize
         {
             return Err(DecodeError::FrameRegisterFile {
-                args: num_args,
-                locals: num_temps,
-                num_args: code.num_args,
-                num_registers: code.num_registers,
+                arguments: argument_count,
+                locals: temporary_count,
+                argument_count: code.argument_count,
+                register_count: code.register_count,
             });
         }
     }
@@ -2322,12 +2396,12 @@ pub fn verify_graph(
     Ok(())
 }
 
-fn verify_closure(
-    closure: &ClosureData,
+fn verify_closure<'gc>(
+    closure: &ClosureData<'gc>,
     table: &DecodedCodeTable,
     parents: &[Option<usize>],
     index_of: &HashMap<usize, usize>,
-    heap: &Heap,
+    heap: &Heap<'gc>,
 ) -> Result<(), DecodeError> {
     let code = &closure.code;
     if code.kind != CodeKind::Block {

@@ -3,87 +3,91 @@
 //! on a Rust frame for Newspeak code (`docs/design/execution.md`, "The
 //! trampoline").
 
-use crate::interpreter::{Signal, Step, StepArgs};
+use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
-use crate::Interpreter;
+use crate::Mutator;
 use crate::Symbol;
 
-pub(crate) fn dispatch(
-    interp: &mut Interpreter,
-    receiver: Value,
+pub(crate) fn dispatch<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    args: &[Value],
-) -> Option<Result<Step, Signal>> {
-    let Value::Bool(b) = receiver else {
+    arguments: &[Value<'gc>],
+) -> Option<Result<Step<'gc>, Signal<'gc>>> {
+    let Value::Boolean(boolean) = receiver else {
         return None;
     };
     Some(Ok(match selector.as_str() {
         "ifTrue:ifFalse:" => block_step(
-            interp,
-            if b { args[0] } else { args[1] },
+            mutator,
+            if boolean { arguments[0] } else { arguments[1] },
             Continuation::Deliver,
         ),
         "ifFalse:ifTrue:" => block_step(
-            interp,
-            if b { args[1] } else { args[0] },
+            mutator,
+            if boolean { arguments[1] } else { arguments[0] },
             Continuation::Deliver,
         ),
         "ifTrue:" => {
-            if b {
-                block_step(interp, args[0], Continuation::Deliver)
+            if boolean {
+                block_step(mutator, arguments[0], Continuation::Deliver)
             } else {
                 Step::Value(Value::Nil)
             }
         }
         "ifFalse:" => {
-            if b {
+            if boolean {
                 Step::Value(Value::Nil)
             } else {
-                block_step(interp, args[0], Continuation::Deliver)
+                block_step(mutator, arguments[0], Continuation::Deliver)
             }
         }
-        "not" => Step::Value(Value::Bool(!b)),
+        "not" => Step::Value(Value::Boolean(!boolean)),
         // The short circuit holds: `false and: [...]` and `true or: [...]`
         // never activate the block. Otherwise the block's value is coerced
         // when it returns (`Continuation::Truthy`), so a `^` out of it or an
         // error in it passes through untouched.
         "&" | "and:" => {
-            if b {
-                block_step(interp, args[0], Continuation::Truthy)
+            if boolean {
+                block_step(mutator, arguments[0], Continuation::Truthy)
             } else {
-                Step::Value(Value::Bool(false))
+                Step::Value(Value::Boolean(false))
             }
         }
         "|" | "or:" => {
-            if b {
-                Step::Value(Value::Bool(true))
+            if boolean {
+                Step::Value(Value::Boolean(true))
             } else {
-                block_step(interp, args[0], Continuation::Truthy)
+                block_step(mutator, arguments[0], Continuation::Truthy)
             }
         }
-        "printString" => Step::Value(Value::Obj(
-            interp.new_string(if b { "true" } else { "false" }.to_string()),
+        "printString" => Step::Value(Value::Object(
+            mutator.new_string(if boolean { "true" } else { "false" }.to_string()),
         )),
         _ => return None,
     }))
 }
 
-/// `arg` activated as a block with no arguments, its value handed to `then`
-/// -- or, when `arg` is not a block, `arg` itself taken as the value, the
-/// reference library's `ifTrue: aValue` convention.
-fn block_step(interp: &Interpreter, arg: Value, then: Continuation) -> Step {
-    if let Value::Obj(obj) = arg {
-        if interp.heap_ref().is_closure(obj) {
+/// `argument` activated as a block with no arguments, its value handed to
+/// `then` -- or, when `argument` is not a block, `argument` itself taken as the
+/// value, the reference library's `ifTrue: aValue` convention.
+fn block_step<'gc>(
+    mutator: &Mutator<'gc>,
+    argument: Value<'gc>,
+    then: Continuation<'gc>,
+) -> Step<'gc> {
+    if let Value::Object(object) = argument {
+        if mutator.heap().is_closure(object) {
             return Step::Block {
-                closure: obj,
-                args: StepArgs::ControlFlow,
+                closure: object,
+                arguments: StepArguments::ControlFlow,
                 then,
             };
         }
     }
     match then {
-        Continuation::Truthy => Step::Value(Value::Bool(truthy(arg))),
-        Continuation::Deliver => Step::Value(arg),
+        Continuation::Truthy => Step::Value(Value::Boolean(truthy(argument))),
+        Continuation::Deliver => Step::Value(argument),
         Continuation::WhileCondition(_)
         | Continuation::WhileBody(_)
         | Continuation::DoElement(_)
@@ -95,8 +99,8 @@ fn block_step(interp: &Interpreter, arg: Value, then: Continuation) -> Step {
 }
 
 /// `and:`/`or:`'s rule, which the compiler's inlined form reproduces in
-/// bytecode (`compiler/lower.rs`, `emit_coerce_to_bool`): only exactly `true`
+/// bytecode (`compiler/lower.rs`, `emit_coerce_to_boolean`): only exactly `true`
 /// is true, and a non-Boolean is `false`.
-pub(crate) fn truthy(value: Value) -> bool {
-    matches!(value, Value::Bool(true))
+pub(crate) fn truthy<'gc>(value: Value<'gc>) -> bool {
+    matches!(value, Value::Boolean(true))
 }

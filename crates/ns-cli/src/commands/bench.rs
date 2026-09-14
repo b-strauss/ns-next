@@ -7,7 +7,7 @@ use crate::entry;
 use crate::source::{self, LoadedSource};
 
 /// The timing summary.
-struct BenchStats {
+struct BenchmarkStatistics {
     iterations: u32,
     median: std::time::Duration,
     min: std::time::Duration,
@@ -20,7 +20,9 @@ struct BenchStats {
 /// produces a `String`, not an `ExitCode`.
 fn signal_message(signal: ns_runtime::HostSignal) -> String {
     match signal {
-        ns_runtime::HostSignal::Error(e) => format!("Uncaught Newspeak error: {}", e.message),
+        ns_runtime::HostSignal::Error(error) => {
+            format!("Uncaught Newspeak error: {}", error.message)
+        }
         ns_runtime::HostSignal::Return => {
             "internal: non-local return escaped the entry send".to_string()
         }
@@ -36,56 +38,62 @@ fn signal_message(signal: ns_runtime::HostSignal) -> String {
 /// same instance a second time would time a cheaper run against
 /// already-mutated state instead of the same workload every iteration.
 fn timed_send(
-    interp: &mut ns_runtime::Interpreter,
+    interpreter: &mut ns_runtime::Interpreter,
     class: &ns_runtime::Root,
-    factory_args: &[ns_runtime::Root],
+    factory_arguments: &[ns_runtime::Root],
     selector: ns_runtime::Symbol,
-    entry_args: &[ns_runtime::Root],
+    entry_arguments: &[ns_runtime::Root],
 ) -> Result<std::time::Duration, String> {
-    let instance = interp
-        .instantiate(class, factory_args)
+    let instance = interpreter
+        .instantiate(class, factory_arguments)
         .map_err(signal_message)?;
     let start = std::time::Instant::now();
-    let outcome = interp.send(&instance, selector, entry_args);
+    let outcome = interpreter.send(&instance, selector, entry_arguments);
     let elapsed = start.elapsed();
     outcome.map(|_| elapsed).map_err(signal_message)
 }
 
-/// Bootstraps and loads the module (which compiles it), discards one
-/// warm-up `timed_send`, times `iterations` further ones, and reduces the
-/// samples to `BenchStats`. Bootstrapping, loading and compiling all happen
-/// before the loop -- once-per-process costs, excluded from the per-send
-/// timing for the same reason instantiation is.
-fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<BenchStats, String> {
-    let (mut interp, class) = source::bootstrap(loaded, ns_runtime::Lowering::Optimized);
-    let platform = interp.platform();
-    let factory_args = entry::factory_args_for(
-        interp.heap_ref(),
-        entry::class_ref(&interp, &class),
-        &platform,
-    )?;
-    let entry_args_list = entry::entry_args(&interp, send, &platform)?;
+/// Bootstraps and loads the module (which compiles it), discards one warm-up
+/// `timed_send`, times `iterations` further ones, and reduces the samples to
+/// `BenchmarkStatistics`. Bootstrapping, loading and compiling all happen
+/// before the loop -- once-per-process costs, excluded from the per-send timing
+/// for the same reason instantiation is.
+fn benchmark_entry(
+    loaded: &LoadedSource,
+    send: &str,
+    iterations: u32,
+) -> Result<BenchmarkStatistics, String> {
+    let (mut interpreter, class) = source::bootstrap(loaded, ns_runtime::Lowering::Optimized);
+    let platform = interpreter.platform();
+    let factory_arguments = interpreter.enter(|mutator| {
+        entry::factory_arguments_for(
+            mutator.heap(),
+            entry::class_reference(mutator, &class),
+            &platform,
+        )
+    })?;
+    let entry_arguments_list = entry::entry_arguments(&interpreter, send, &platform)?;
     let selector = ns_runtime::Symbol::intern(send);
 
     // Warm-up: discarded. It exercises the same allocation and lookup
     // paths the timed runs will, so the first timed sample does not carry
     // a one-time cost (e.g. a lazily-populated cache) the rest do not.
     timed_send(
-        &mut interp,
+        &mut interpreter,
         &class,
-        &factory_args,
+        &factory_arguments,
         selector,
-        &entry_args_list,
+        &entry_arguments_list,
     )?;
 
     let mut timings = Vec::with_capacity(iterations as usize);
     for _ in 0..iterations {
         timings.push(timed_send(
-            &mut interp,
+            &mut interpreter,
             &class,
-            &factory_args,
+            &factory_arguments,
             selector,
-            &entry_args_list,
+            &entry_arguments_list,
         )?);
     }
     timings.sort();
@@ -95,13 +103,13 @@ fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<Ben
     // GC-pause-sized outlier (there is no GC yet, but a scheduler
     // preemption is the same shape of problem) drag the whole number with
     // it, while the median shrugs off any one such sample.
-    let mid = timings.len() / 2;
+    let middle = timings.len() / 2;
     let median = if timings.len() % 2 == 1 {
-        timings[mid]
+        timings[middle]
     } else {
-        (timings[mid - 1] + timings[mid]) / 2
+        (timings[middle - 1] + timings[middle]) / 2
     };
-    Ok(BenchStats {
+    Ok(BenchmarkStatistics {
         iterations,
         median,
         min,
@@ -110,7 +118,7 @@ fn bench_entry(loaded: &LoadedSource, send: &str, iterations: u32) -> Result<Ben
 }
 
 /// `ns-next bench`: see the `Bench` variant's doc comment for what is
-/// timed and why, and `bench_entry`/`timed_send` for how.
+/// timed and why, and `benchmark_entry`/`timed_send` for how.
 pub(crate) fn execute(file: &Path, send: &str, iterations: u32) -> ExitCode {
     if cfg!(debug_assertions) {
         eprintln!(
@@ -123,7 +131,7 @@ pub(crate) fn execute(file: &Path, send: &str, iterations: u32) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let loaded = match source::load_source(file) {
-        Ok(l) => l,
+        Ok(loaded) => loaded,
         Err(code) => return code,
     };
     println!(
@@ -131,13 +139,13 @@ pub(crate) fn execute(file: &Path, send: &str, iterations: u32) -> ExitCode {
          bootstrapping, and compiling all happened once beforehand and are excluded. \
          {iterations} timed run(s), after one discarded warm-up run."
     );
-    match bench_entry(&loaded, send, iterations) {
-        Ok(stats) => println!(
+    match benchmark_entry(&loaded, send, iterations) {
+        Ok(statistics) => println!(
             "median {:?} (min {:?}, max {:?}, n={})",
-            stats.median, stats.min, stats.max, stats.iterations
+            statistics.median, statistics.min, statistics.max, statistics.iterations
         ),
-        Err(msg) => {
-            eprintln!("error: {msg}");
+        Err(message) => {
+            eprintln!("error: {message}");
             return ExitCode::FAILURE;
         }
     }

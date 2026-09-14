@@ -29,7 +29,7 @@ use ns_syntax::Span;
 use crate::bytecode::CompiledCode;
 use crate::heap::Heap;
 use crate::mixin::{mixin_key, Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
-use crate::types::ClassRef;
+use crate::types::ClassReference;
 use crate::Symbol;
 
 use super::decode::{reserve_for, DecodeError, Reader};
@@ -41,7 +41,7 @@ use super::symbols;
 /// `crates/ns-syntax/src/parser/mod.rs`, which is private to that crate, so
 /// the number has to be restated rather than imported).
 ///
-/// It counts *nested* classes only: `parser/decl.rs` calls `Parser::enter`
+/// It counts *nested* classes only: `parser/declaration.rs` calls `Parser::enter`
 /// where a class body starts a nested class declaration, and nowhere for the
 /// module's root class.
 const PARSER_MAX_NESTED_CLASS_DEPTH: usize = 128;
@@ -102,8 +102,10 @@ pub struct Row {
 /// (which needs them to write the table). Recomputing it is one walk of the
 /// tree and one `HashMap`; sharing a cached copy between the two would trade
 /// that for a lifetime that has to thread through `snapshot`.
-pub fn plan(heap: &Heap, root_class: ClassRef) -> Result<Vec<Row>, String> {
-    let root_mixin = heap.class_application(root_class).map(|a| a.mixin.clone());
+pub fn plan<'gc>(heap: &Heap<'gc>, root_class: ClassReference<'gc>) -> Result<Vec<Row>, String> {
+    let root_mixin = heap
+        .class_application(root_class)
+        .map(|application| application.mixin.clone());
     // Not a class object: no declarations to describe, so the table is
     // empty rather than an error -- `encode_code_table` has always tolerated
     // this, and the graph section is what actually refuses such a root.
@@ -115,12 +117,12 @@ pub fn plan(heap: &Heap, root_class: ClassRef) -> Result<Vec<Row>, String> {
     let ids: HashMap<usize, u32> = order
         .iter()
         .enumerate()
-        .map(|(i, mixin)| (mixin_key(mixin), u32_field("mixin table id", i)))
+        .map(|(index, mixin)| (mixin_key(mixin), u32_field("mixin table id", index)))
         .collect();
     let mut rows = Vec::with_capacity(order.len());
     for mixin in &order {
         let mut methods: Vec<Rc<MixinMethod>> = mixin.methods.values().cloned().collect();
-        methods.sort_by(|a, b| a.selector.as_str().cmp(b.selector.as_str()));
+        methods.sort_by(|left, right| left.selector.as_str().cmp(right.selector.as_str()));
         rows.push(Row {
             mixin: mixin.clone(),
             // Every child is in `order` -- `preorder` put it there -- so the
@@ -161,7 +163,7 @@ pub fn plan(heap: &Heap, root_class: ClassRef) -> Result<Vec<Row>, String> {
 /// `check_preorder` rather than to survive hostile input.
 fn depth_of(rows: &[Row]) -> usize {
     let mut depth = vec![0usize; rows.len()];
-    for (i, row) in rows.iter().enumerate().rev() {
+    for (index, row) in rows.iter().enumerate().rev() {
         let deepest_child = row
             .nested
             .iter()
@@ -169,7 +171,7 @@ fn depth_of(rows: &[Row]) -> usize {
             .map(|id| depth[*id as usize])
             .max()
             .unwrap_or(0);
-        depth[i] = deepest_child + 1;
+        depth[index] = deepest_child + 1;
     }
     depth.into_iter().max().unwrap_or(0)
 }
@@ -203,74 +205,80 @@ pub(crate) type MixinIds = HashMap<usize, u32>;
 
 /// Writes the mixin table and returns the `mixin_key` -> row id map the
 /// object graph addresses a class object's mixin by.
-pub fn encode(
-    w: &mut Writer,
-    heap: &Heap,
-    root_class: ClassRef,
+pub fn encode<'gc>(
+    writer: &mut Writer,
+    heap: &Heap<'gc>,
+    root_class: ClassReference<'gc>,
     symbols: &mut symbols::Builder,
     codes: &CodeIds,
 ) -> Result<MixinIds, String> {
     let rows = plan(heap, root_class)?;
-    w.write_u32(u32_field("mixin table entry count", rows.len()));
+    writer.write_u32(u32_field("mixin table entry count", rows.len()));
     for row in &rows {
         let mixin = &row.mixin;
-        w.write_u32(symbols.intern(mixin.name.as_str()));
-        w.write_u8(access_tag(mixin.access));
-        w.write_u32(mixin.span.start);
-        w.write_u32(mixin.span.end);
-        w.write_u32(u32_field("mixin's slot count", mixin.slots.len()));
+        writer.write_u32(symbols.intern(mixin.name.as_str()));
+        writer.write_u8(access_tag(mixin.access));
+        writer.write_u32(mixin.span.start);
+        writer.write_u32(mixin.span.end);
+        writer.write_u32(u32_field("mixin's slot count", mixin.slots.len()));
         for slot in &mixin.slots {
-            w.write_u32(symbols.intern(slot.name.as_str()));
+            writer.write_u32(symbols.intern(slot.name.as_str()));
         }
         match &mixin.factory {
             Some(factory) => {
-                w.write_bool(true);
-                w.write_u32(symbols.intern(factory.selector.as_str()));
-                w.write_u16(u16_arity("factory", factory.num_args));
+                writer.write_boolean(true);
+                writer.write_u32(symbols.intern(factory.selector.as_str()));
+                writer.write_u16(u16_arity("factory", factory.argument_count));
             }
-            None => w.write_bool(false),
+            None => writer.write_boolean(false),
         }
-        w.write_bool(mixin.has_init_exprs);
+        writer.write_boolean(mixin.has_initializer_expressions);
         match &mixin.superclass {
             Some(clause) => {
-                w.write_bool(true);
-                w.write_u32(symbols.intern(clause.selector.as_str()));
-                w.write_bool(clause.has_args);
+                writer.write_boolean(true);
+                writer.write_u32(symbols.intern(clause.selector.as_str()));
+                writer.write_boolean(clause.has_arguments);
             }
-            None => w.write_bool(false),
+            None => writer.write_boolean(false),
         }
-        w.write_u32(u32_field("mixin's method count", row.methods.len()));
+        writer.write_u32(u32_field("mixin's method count", row.methods.len()));
         for method in &row.methods {
-            w.write_u32(symbols.intern(method.selector.as_str()));
-            w.write_u8(access_tag(method.access));
-            w.write_u16(u16_arity("method", method.num_args));
-            w.write_u32(codes.id_of(&method.code));
+            writer.write_u32(symbols.intern(method.selector.as_str()));
+            writer.write_u8(access_tag(method.access));
+            writer.write_u16(u16_arity("method", method.argument_count));
+            writer.write_u32(codes.id_of(&method.code));
         }
-        w.write_u32(u32_field("mixin's nested count", row.nested.len()));
+        writer.write_u32(u32_field("mixin's nested count", row.nested.len()));
         for id in &row.nested {
-            w.write_u32(*id);
+            writer.write_u32(*id);
         }
-        write_optional_id(w, row.class_side);
-        write_optional_id(w, mixin.initializer_code.as_ref().map(|c| codes.id_of(c)));
+        write_optional_id(writer, row.class_side);
         write_optional_id(
-            w,
+            writer,
+            mixin
+                .initializer_code
+                .as_ref()
+                .map(|code| codes.id_of(code)),
+        );
+        write_optional_id(
+            writer,
             mixin
                 .superclass_clause_code
                 .as_ref()
-                .map(|c| codes.id_of(c)),
+                .map(|code| codes.id_of(code)),
         );
         write_optional_id(
-            w,
+            writer,
             mixin
                 .superclass_message_code
                 .as_ref()
-                .map(|c| codes.id_of(c)),
+                .map(|code| codes.id_of(code)),
         );
     }
     Ok(rows
         .iter()
         .enumerate()
-        .map(|(i, row)| (mixin_key(&row.mixin), u32_field("mixin table id", i)))
+        .map(|(index, row)| (mixin_key(&row.mixin), u32_field("mixin table id", index)))
         .collect())
 }
 
@@ -279,21 +287,21 @@ pub fn encode(
 /// something any parser produces; writing a truncated one would make the
 /// image self-inconsistent, so it aborts rather than truncating silently --
 /// the same contract as `encode::u32_field`.
-fn u16_arity(what: &str, n: usize) -> u16 {
+fn u16_arity(what: &str, count: usize) -> u16 {
     assert!(
-        u16::try_from(n).is_ok(),
-        "image {what} arity of {n} does not fit the format's u16 field"
+        u16::try_from(count).is_ok(),
+        "image {what} arity of {count} does not fit the format's u16 field"
     );
-    n as u16
+    count as u16
 }
 
-fn write_optional_id(w: &mut Writer, id: Option<u32>) {
+fn write_optional_id(writer: &mut Writer, id: Option<u32>) {
     match id {
         Some(id) => {
-            w.write_bool(true);
-            w.write_u32(id);
+            writer.write_boolean(true);
+            writer.write_u32(id);
         }
-        None => w.write_bool(false),
+        None => writer.write_boolean(false),
     }
 }
 
@@ -348,7 +356,7 @@ struct RawRow {
     span: Span,
     slots: Vec<Symbol>,
     factory: Option<Factory>,
-    has_init_exprs: bool,
+    has_initializer_expressions: bool,
     superclass: Option<SuperclassClause>,
     methods: Vec<(Symbol, AccessModifier, usize, u32)>,
     nested: Vec<u32>,
@@ -377,14 +385,14 @@ struct RawRow {
 ///    always already built when it is reached, and no back-patching pass or
 ///    interior mutability is needed to close the tree.
 pub fn decode(
-    r: &mut Reader,
+    reader: &mut Reader,
     symbols: &symbols::Table,
     codes: &[Rc<CompiledCode>],
 ) -> Result<Decoded, DecodeError> {
-    let count = r.read_u32()? as usize;
-    let mut raw: Vec<RawRow> = reserve_for(count, r);
+    let count = reader.read_u32()? as usize;
+    let mut raw: Vec<RawRow> = reserve_for(count, reader);
     for _ in 0..count {
-        raw.push(read_row(r, symbols, codes)?);
+        raw.push(read_row(reader, symbols, codes)?);
     }
     if raw.is_empty() {
         return Ok(Decoded::empty());
@@ -395,42 +403,42 @@ pub fn decode(
 }
 
 fn read_row(
-    r: &mut Reader,
+    reader: &mut Reader,
     symbols: &symbols::Table,
     codes: &[Rc<CompiledCode>],
 ) -> Result<RawRow, DecodeError> {
-    let name = read_symbol(r, symbols)?;
-    let access = access_from_tag(r.read_u8()?)?;
-    let span = read_span(r)?;
-    let slot_count = r.read_u32()? as usize;
-    let mut slots: Vec<Symbol> = reserve_for(slot_count, r);
+    let name = read_symbol(reader, symbols)?;
+    let access = access_from_tag(reader.read_u8()?)?;
+    let span = read_span(reader)?;
+    let slot_count = reader.read_u32()? as usize;
+    let mut slots: Vec<Symbol> = reserve_for(slot_count, reader);
     for _ in 0..slot_count {
-        slots.push(read_symbol(r, symbols)?);
+        slots.push(read_symbol(reader, symbols)?);
     }
-    let factory = if r.read_bool()? {
+    let factory = if reader.read_boolean()? {
         Some(Factory {
-            selector: read_symbol(r, symbols)?,
-            num_args: r.read_u16()? as usize,
+            selector: read_symbol(reader, symbols)?,
+            argument_count: reader.read_u16()? as usize,
         })
     } else {
         None
     };
-    let has_init_exprs = r.read_bool()?;
-    let superclass = if r.read_bool()? {
+    let has_initializer_expressions = reader.read_boolean()?;
+    let superclass = if reader.read_boolean()? {
         Some(SuperclassClause {
-            selector: read_symbol(r, symbols)?,
-            has_args: r.read_bool()?,
+            selector: read_symbol(reader, symbols)?,
+            has_arguments: reader.read_boolean()?,
         })
     } else {
         None
     };
-    let method_count = r.read_u32()? as usize;
-    let mut methods: Vec<(Symbol, AccessModifier, usize, u32)> = reserve_for(method_count, r);
+    let method_count = reader.read_u32()? as usize;
+    let mut methods: Vec<(Symbol, AccessModifier, usize, u32)> = reserve_for(method_count, reader);
     for _ in 0..method_count {
-        let selector = read_symbol(r, symbols)?;
-        let access = access_from_tag(r.read_u8()?)?;
-        let num_args = r.read_u16()? as usize;
-        let code = read_code_id(r, codes)?;
+        let selector = read_symbol(reader, symbols)?;
+        let access = access_from_tag(reader.read_u8()?)?;
+        let argument_count = reader.read_u16()? as usize;
+        let code = read_code_id(reader, codes)?;
         // A row that names one selector twice would build a method
         // dictionary with fewer entries than its code list has, silently
         // dropping one of the two bodies it names. The encoder writes each
@@ -441,24 +449,24 @@ fn read_row(
                 selector.as_str().to_string(),
             ));
         }
-        methods.push((selector, access, num_args, code));
+        methods.push((selector, access, argument_count, code));
     }
-    let nested_count = r.read_u32()? as usize;
-    let mut nested: Vec<u32> = reserve_for(nested_count, r);
+    let nested_count = reader.read_u32()? as usize;
+    let mut nested: Vec<u32> = reserve_for(nested_count, reader);
     for _ in 0..nested_count {
-        nested.push(r.read_u32()?);
+        nested.push(reader.read_u32()?);
     }
-    let class_side = read_optional(r, |r| r.read_u32())?;
-    let initializer = read_optional(r, |r| read_code_id(r, codes))?;
-    let superclass_clause = read_optional(r, |r| read_code_id(r, codes))?;
-    let superclass_message = read_optional(r, |r| read_code_id(r, codes))?;
+    let class_side = read_optional(reader, |reader| reader.read_u32())?;
+    let initializer = read_optional(reader, |reader| read_code_id(reader, codes))?;
+    let superclass_clause = read_optional(reader, |reader| read_code_id(reader, codes))?;
+    let superclass_message = read_optional(reader, |reader| read_code_id(reader, codes))?;
     Ok(RawRow {
         name,
         access,
         span,
         slots,
         factory,
-        has_init_exprs,
+        has_initializer_expressions,
         superclass,
         methods,
         nested,
@@ -469,21 +477,21 @@ fn read_row(
     })
 }
 
-fn read_symbol(r: &mut Reader, symbols: &symbols::Table) -> Result<Symbol, DecodeError> {
-    symbols.get(r.read_u32()?)
+fn read_symbol(reader: &mut Reader, symbols: &symbols::Table) -> Result<Symbol, DecodeError> {
+    symbols.get(reader.read_u32()?)
 }
 
-fn read_span(r: &mut Reader) -> Result<Span, DecodeError> {
-    let start = r.read_u32()?;
-    let end = r.read_u32()?;
+fn read_span(reader: &mut Reader) -> Result<Span, DecodeError> {
+    let start = reader.read_u32()?;
+    let end = reader.read_u32()?;
     if start > end {
         return Err(DecodeError::InvalidSpan { start, end });
     }
     Ok(Span::new(start, end))
 }
 
-fn read_code_id(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<u32, DecodeError> {
-    let id = r.read_u32()?;
+fn read_code_id(reader: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<u32, DecodeError> {
+    let id = reader.read_u32()?;
     if (id as usize) < codes.len() {
         Ok(id)
     } else {
@@ -492,11 +500,11 @@ fn read_code_id(r: &mut Reader, codes: &[Rc<CompiledCode>]) -> Result<u32, Decod
 }
 
 fn read_optional<T>(
-    r: &mut Reader,
+    reader: &mut Reader,
     read: impl FnOnce(&mut Reader) -> Result<T, DecodeError>,
 ) -> Result<Option<T>, DecodeError> {
-    if r.read_bool()? {
-        Ok(Some(read(r)?))
+    if reader.read_boolean()? {
+        Ok(Some(read(reader)?))
     } else {
         Ok(None)
     }
@@ -571,28 +579,28 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
     let code_at = |id: u32| codes[id as usize].clone();
     let mut built: Vec<Option<Rc<Mixin>>> = vec![None; raw.len()];
     let mut code: Vec<Option<MixinCode>> = (0..raw.len()).map(|_| None).collect();
-    for (i, row) in raw.into_iter().enumerate().rev() {
+    for (index, row) in raw.into_iter().enumerate().rev() {
         let methods = row
             .methods
             .iter()
-            .map(|&(selector, access, num_args, id)| {
+            .map(|&(selector, access, argument_count, id)| {
                 (
                     selector,
                     Rc::new(MixinMethod {
                         selector,
                         access,
-                        num_args,
+                        argument_count,
                         // No declaration to point at, and none invented:
                         // the compiled body the row names is what this
                         // method runs, and nothing reads a declaration at
                         // run time.
-                        decl: None,
+                        declaration: None,
                         code: code_at(id),
                     }),
                 )
             })
             .collect();
-        code[i] = Some(MixinCode {
+        code[index] = Some(MixinCode {
             methods: row
                 .methods
                 .iter()
@@ -623,30 +631,33 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
             slots: row
                 .slots
                 .into_iter()
-                .map(|name| MixinSlot { name, decl: None })
+                .map(|name| MixinSlot {
+                    name,
+                    declaration: None,
+                })
                 .collect(),
             factory: row.factory,
             superclass: row.superclass,
-            has_init_exprs: row.has_init_exprs,
-            init_exprs: Vec::new(),
+            has_initializer_expressions: row.has_initializer_expressions,
+            initializer_expressions: Vec::new(),
             nested,
             class_side,
             span: row.span,
-            decl: None,
+            declaration: None,
             initializer_code: row.initializer.map(code_at),
             superclass_clause_code: row.superclass_clause.map(code_at),
             superclass_message_code: row.superclass_message.map(code_at),
         });
-        built[i] = Some(mixin);
+        built[index] = Some(mixin);
     }
     Decoded {
         mixins: built
             .into_iter()
-            .map(|m| m.expect("every row was built"))
+            .map(|mixin| mixin.expect("every row was built"))
             .collect(),
         code: code
             .into_iter()
-            .map(|c| c.expect("every row was built"))
+            .map(|code| code.expect("every row was built"))
             .collect(),
     }
 }

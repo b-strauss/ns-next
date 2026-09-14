@@ -13,12 +13,12 @@ pub enum TokenKind {
     Private,
     Public,
     Protected,
-    LParen,
-    RParen,
-    LBracket,
-    RBracket,
-    LBrace,
-    RBrace,
+    LeftParenthesis,
+    RightParenthesis,
+    LeftBracket,
+    RightBracket,
+    LeftBrace,
+    RightBrace,
     Bar,
     DoubleBar,
     Caret,
@@ -35,9 +35,9 @@ pub enum TokenKind {
     Number,
     String,
     Symbol,
-    CharConstant,
+    CharacterConstant,
     // End of input
-    Eoi,
+    EndOfInput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -5,26 +5,26 @@
 use ns_syntax::ast;
 
 use crate::dispatch::{self, Lookup};
-use crate::heap::ActivationRef;
+use crate::heap::ActivationReference;
 use crate::types::*;
 use crate::Symbol;
 
-use super::{Interpreter, Signal, Step, StepArgs};
+use super::{Mutator, Signal, Step, StepArguments};
 
 /// A slot's getter (`x`, no colon) or setter (`x:`, exactly one trailing
 /// colon and no others) shape, per `newspeak-spec.pdf` §6.3.2 -- a slot's
 /// getter/setter are "implicitly defined by the slot declaration", not real
-/// `MethodDecl`s in the class's mixin, so `decide_lexical_send` must
+/// `MethodDeclaration`s in the class's mixin, so `decide_lexical_send` must
 /// recognize and serve them directly rather than relying on method lookup
 /// to ever find them. Returns `None` for a genuine multi-keyword selector
 /// (e.g. `at:put:`), which can never denote a slot access.
 fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
-    let s = selector.as_str();
-    if !s.contains(':') {
+    let text = selector.as_str();
+    if !text.contains(':') {
         return Some((selector, false));
     }
-    if s.ends_with(':') && s.matches(':').count() == 1 {
-        return Some((Symbol::intern(&s[..s.len() - 1]), true));
+    if text.ends_with(':') && text.matches(':').count() == 1 {
+        return Some((Symbol::intern(&text[..text.len() - 1]), true));
     }
     None
 }
@@ -44,7 +44,11 @@ fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
 ///
 /// One definition because `decide_lexical_send` asks it of two classes --
 /// a class object's metaclass and then the receiver's own class.
-fn lexical_lookup(heap: &crate::heap::Heap, class: ClassRef, selector: Symbol) -> Lookup {
+fn lexical_lookup<'gc>(
+    heap: &crate::heap::Heap<'gc>,
+    class: ClassReference<'gc>,
+    selector: Symbol,
+) -> Lookup<'gc> {
     match dispatch::lookup_defined_for(heap, class, selector) {
         Lookup::Method(method, defining_class) if method.access == ast::AccessModifier::Private => {
             Lookup::Method(method, defining_class)
@@ -58,25 +62,28 @@ fn lexical_lookup(heap: &crate::heap::Heap, class: ClassRef, selector: Symbol) -
     }
 }
 
-/// `newspeak-spec.pdf` §5.7-§5.9: `o` = the kth enclosing object of this
-/// activation's defining level (`dispatch::kth_enclosing_object`);
-/// dispatch privately (direct, non-virtual) if the target is `private` at
-/// depth `k`, otherwise virtually via `lookup_protected` on `o`'s actual
-/// class -- or, when `o` is a class object, on its metaclass first (§6.3).
-pub(crate) fn decide_lexical_send(
-    interp: &mut Interpreter,
-    act: ActivationRef,
+/// `newspeak-spec.pdf` §5.7-§5.9: `enclosing` = the kth enclosing object of
+/// this activation's defining level (`dispatch::kth_enclosing_object`);
+/// dispatch privately (direct, non-virtual) if the target is `private` at depth
+/// `k`, otherwise virtually via `lookup_protected` on `enclosing`'s actual
+/// class -- or, when `enclosing` is a class object, on its metaclass first
+/// (§6.3).
+pub(crate) fn decide_lexical_send<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
     depth: u16,
     selector: Symbol,
-    args: &[Value],
-) -> Result<Step, Signal> {
+    arguments: &[Value<'gc>],
+) -> Result<Step<'gc>, Signal<'gc>> {
     // The lexical depth counts levels out from the class that *defines* this
     // method, so the walk needs this activation's `current_class`, not the
     // receiver's own class -- see `dispatch::kth_enclosing_object`.
-    let (self_value, defining_class) = interp.heap.activation_receiver_and_current_class(act);
-    let o =
-        dispatch::kth_enclosing_object(&interp.heap, &self_value, defining_class.as_ref(), depth);
-    let class = interp.class_of(&o);
+    let (self_value, defining_class) = mutator
+        .heap
+        .activation_receiver_and_current_class(activation);
+    let enclosing =
+        dispatch::kth_enclosing_object(&mutator.heap, &self_value, defining_class.as_ref(), depth);
+    let class = mutator.class_of(&enclosing);
     // A `LexicalSend` to a user-defined class's own slot must resolve here,
     // *before* the method/native lookups below -- `build_mixin` never puts a
     // slot's implicit getter/setter into the mixin's method table, so
@@ -85,13 +92,13 @@ pub(crate) fn decide_lexical_send(
     // access-controlled by the slot's own declared modifier -- revisit if a
     // fixture needs it.
     if let Some((name, is_setter)) = slot_selector_shape(selector) {
-        if let Some(index) = dispatch::lookup_slot(&interp.heap, class, name) {
-            if let Value::Obj(obj) = &o {
+        if let Some(index) = dispatch::lookup_slot(&mutator.heap, class, name) {
+            if let Value::Object(object) = &enclosing {
                 if is_setter {
-                    let value = args.first().copied().unwrap_or(Value::Nil);
-                    interp.heap.set_instance_field(*obj, index, value);
-                    return Ok(Step::Value(o));
-                } else if let Some(value) = interp.heap.instance_field(*obj, index) {
+                    let value = arguments.first().copied().unwrap_or(Value::Nil);
+                    mutator.heap.set_instance_field(*object, index, value);
+                    return Ok(Step::Value(enclosing));
+                } else if let Some(value) = mutator.heap.instance_field(*object, index) {
                     return Ok(Step::Value(value));
                 }
             }
@@ -106,8 +113,8 @@ pub(crate) fn decide_lexical_send(
     // has fallen all the way through to `send`: its `protected` and
     // `private` members are unreachable, and any selector `Object` answers
     // natively silently wins over the class side's own declaration.
-    let metaclass = match &o {
-        Value::Obj(obj) if interp.heap.is_class(*obj) => interp.metaclass_of(*obj),
+    let metaclass = match &enclosing {
+        Value::Object(object) if mutator.heap.is_class(*object) => mutator.metaclass_of(*object),
         _ => None,
     };
     // A metaclass that does not declare the selector falls through to the
@@ -117,26 +124,26 @@ pub(crate) fn decide_lexical_send(
     // below and means the same thing either way.
     let lookup = metaclass
         .as_ref()
-        .map(|metaclass| lexical_lookup(&interp.heap, *metaclass, selector))
+        .map(|metaclass| lexical_lookup(&mutator.heap, *metaclass, selector))
         .filter(|found| matches!(found, Lookup::Method(..) | Lookup::NestedClass(..)))
-        .unwrap_or_else(|| lexical_lookup(&interp.heap, class, selector));
+        .unwrap_or_else(|| lexical_lookup(&mutator.heap, class, selector));
     match lookup {
         Lookup::Method(method, defining_class) => Ok(Step::Method {
-            receiver: o,
+            receiver: enclosing,
             method,
             defining_class,
-            args: StepArgs::Send,
+            arguments: StepArguments::Send,
         }),
         Lookup::NestedClass(mixin, declaring_class) => {
-            crate::interpreter::nested::nested_class(interp, &o, &mixin, declaring_class)
+            crate::interpreter::nested::nested_class(mutator, &enclosing, &mixin, declaring_class)
         }
         Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(interp, kind, o, selector, args) {
+            match crate::builtins::dispatch_native(mutator, kind, enclosing, selector, arguments) {
                 Some(result) => result,
-                None => interp.decide_send(o, selector, args),
+                None => mutator.decide_send(enclosing, selector, arguments),
             }
         }
-        Lookup::NotFound => interp.decide_send(o, selector, args),
+        Lookup::NotFound => mutator.decide_send(enclosing, selector, arguments),
     }
 }
 
@@ -145,36 +152,36 @@ pub(crate) fn decide_lexical_send(
 /// new activation's `current_class` is `definingClass(selector, superclass)`
 /// -- the activation's `defining_class` argument (from `lookup_defined_for`)
 /// already carries that.
-pub(crate) fn decide_super_send(
-    interp: &mut Interpreter,
-    act: ActivationRef,
+pub(crate) fn decide_super_send<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
     selector: Symbol,
-    args: &[Value],
-) -> Result<Step, Signal> {
-    let Some(current_class) = interp.heap.activation_current_class(act) else {
+    arguments: &[Value<'gc>],
+) -> Result<Step<'gc>, Signal<'gc>> {
+    let Some(current_class) = mutator.heap.activation_current_class(activation) else {
         return Err(Signal::Error(NewspeakError {
             selector,
-            receiver: interp.heap.activation_receiver(act),
+            receiver: mutator.heap.activation_receiver(activation),
             message:
                 "super send with no enclosing current_class (used outside a method activation)"
                     .to_string(),
         }));
     };
-    let superclass = interp.heap.class_superclass(current_class);
+    let superclass = mutator.heap.class_superclass(current_class);
     let Some(superclass) = superclass else {
         return Err(Signal::Error(NewspeakError {
             selector,
-            receiver: interp.heap.activation_receiver(act),
+            receiver: mutator.heap.activation_receiver(activation),
             message: "super send with no superclass (current class is Object or Top)".to_string(),
         }));
     };
-    let self_value = interp.heap.activation_receiver(act);
-    match dispatch::lookup_defined_for(&interp.heap, superclass, selector) {
+    let self_value = mutator.heap.activation_receiver(activation);
+    match dispatch::lookup_defined_for(&mutator.heap, superclass, selector) {
         Lookup::Method(method, defining_class) => Ok(Step::Method {
             receiver: self_value,
             method,
             defining_class,
-            args: StepArgs::Send,
+            arguments: StepArguments::Send,
         }),
         // `super N` for a nested class the superclass declares. The
         // receiver stays `self` (§5.10), which is also the enclosing object
@@ -184,14 +191,14 @@ pub(crate) fn decide_super_send(
         // caches against the declaration's own hidden slot
         // (`MixinApplication::nested_slot`), not against its name.
         Lookup::NestedClass(mixin, declaring_class) => {
-            crate::interpreter::nested::nested_class(interp, &self_value, &mixin, declaring_class)
+            crate::interpreter::nested::nested_class(mutator, &self_value, &mixin, declaring_class)
         }
         Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(interp, kind, self_value, selector, args) {
+            match crate::builtins::dispatch_native(mutator, kind, self_value, selector, arguments) {
                 Some(result) => result,
-                None => interp.decide_send(self_value, selector, args),
+                None => mutator.decide_send(self_value, selector, arguments),
             }
         }
-        Lookup::NotFound => interp.decide_send(self_value, selector, args),
+        Lookup::NotFound => mutator.decide_send(self_value, selector, arguments),
     }
 }

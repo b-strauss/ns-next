@@ -19,25 +19,25 @@ pub(crate) struct LoadedSource {
 /// command does. `Err` carries the exit code to return.
 pub(crate) fn load_source(file: &Path) -> Result<LoadedSource, ExitCode> {
     let source = match std::fs::read_to_string(file) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: reading {}: {e}", file.display());
+        Ok(source) => source,
+        Err(error) => {
+            eprintln!("error: reading {}: {error}", file.display());
             return Err(ExitCode::FAILURE);
         }
     };
     let module = match ns_syntax::parse(&source) {
-        Ok(m) => m,
-        Err(diags) => {
-            print_diagnostics(file, &source, &diags);
+        Ok(module) => module,
+        Err(diagnostics) => {
+            print_diagnostics(file, &source, &diagnostics);
             return Err(ExitCode::FAILURE);
         }
     };
     let origin = ns_runtime::SourceOrigin::File(file.to_path_buf());
     let resolved = match ns_runtime::resolve(module, source.as_str().into(), origin.clone()) {
-        Ok(r) => r,
+        Ok(resolved) => resolved,
         Err(errors) => {
-            for e in errors {
-                eprintln!("resolve error: {}", e.message);
+            for error in errors {
+                eprintln!("resolve error: {}", error.message);
             }
             return Err(ExitCode::FAILURE);
         }
@@ -57,50 +57,54 @@ pub(crate) fn bootstrap(
     loaded: &LoadedSource,
     lowering: ns_runtime::Lowering,
 ) -> (ns_runtime::Interpreter, ns_runtime::Root) {
-    let mut interp = ns_runtime::Interpreter::bootstrap_with(lowering);
-    let class = interp.load_module(&loaded.resolved);
-    (interp, class)
+    let mut interpreter = ns_runtime::Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&loaded.resolved);
+    (interpreter, class)
 }
 
-pub(crate) fn collect_ns_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
+pub(crate) fn collect_ns_files(directory: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
-    for entry in rd.flatten() {
+    for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
             collect_ns_files(&path, out);
-        } else if path.extension().is_some_and(|e| e == "ns") {
+        } else if path.extension().is_some_and(|extension| extension == "ns") {
             out.push(path);
         }
     }
 }
 
-pub(crate) fn print_diagnostics(file: &Path, src: &str, diags: &[Diagnostic]) {
-    for d in diags {
-        let (line, col) = line_col(src, d.span.start);
-        let level = match d.severity {
+pub(crate) fn print_diagnostics(file: &Path, source: &str, diagnostics: &[Diagnostic]) {
+    for diagnostic in diagnostics {
+        let (line, column) = line_column(source, diagnostic.span.start);
+        let level = match diagnostic.severity {
             Severity::Error => "error",
             Severity::Warning => "warning",
         };
-        eprintln!("{}:{line}:{col}: {level}: {}", file.display(), d.message);
+        eprintln!(
+            "{}:{line}:{column}: {level}: {}",
+            file.display(),
+            diagnostic.message
+        );
     }
 }
 
-fn line_col(src: &str, offset: u32) -> (usize, usize) {
+fn line_column(source: &str, offset: u32) -> (usize, usize) {
     let offset = offset as usize;
     let mut line = 1;
-    let mut col = 1;
-    for (i, ch) in src.char_indices() {
-        if i >= offset {
+    let mut column = 1;
+    for (byte_offset, character) in source.char_indices() {
+        if byte_offset >= offset {
             break;
         }
-        if ch == '\n' {
+        if character == '\n' {
             line += 1;
-            col = 1;
+            column = 1;
         } else {
-            col += 1;
+            column += 1;
         }
     }
-    (line, col)
+    (line, column)
 }

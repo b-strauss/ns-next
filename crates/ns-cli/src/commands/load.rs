@@ -17,20 +17,20 @@ use std::process::ExitCode;
 /// initializer at load is what makes the artifact stateless in the first
 /// place: it has never held a capability.
 ///
-/// Either way the entry send goes through the same `entry_args` convention
+/// Either way the entry send goes through the same `entry_arguments` convention
 /// and the same `report_entry_send` as `run`, so `load` of an artifact prints
 /// exactly what `run` of its source prints and nothing else. A malformed
 /// artifact is a message, never a stack trace.
 pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> ExitCode {
     let bytes = match std::fs::read(image) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: reading {}: {e}", image.display());
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("error: reading {}: {error}", image.display());
             return ExitCode::FAILURE;
         }
     };
     let ns_runtime::image::LoadedImage {
-        mut interp,
+        mut interpreter,
         root_class,
         roots,
         origin: _,
@@ -38,9 +38,9 @@ pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> E
         entry,
         stateless,
     } = match ns_runtime::image::load(&bytes) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("error: loading {}: {e}", image.display());
+        Ok(loaded) => loaded,
+        Err(error) => {
+            eprintln!("error: loading {}: {error}", image.display());
             return ExitCode::FAILURE;
         }
     };
@@ -76,8 +76,8 @@ pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> E
         // *that* a command-line entry point supplies the platform is a CLI
         // concern -- nothing in the runtime needs to know it was invoked
         // from a terminal.
-        match crate::entry::instantiate_root(&mut interp, &root_class) {
-            Ok(v) => v,
+        match crate::entry::instantiate_root(&mut interpreter, &root_class) {
+            Ok(instance) => instance,
             Err(code) => return code,
         }
     } else {
@@ -105,23 +105,23 @@ pub(crate) fn execute(image: &Path, send: Option<&str>, print_source: bool) -> E
     // format, not of this function -- a future image that records an entry
     // too should fall through to sending it, not panic.
     let selector = match send.or_else(|| entry.map(ns_runtime::Symbol::as_str)) {
-        Some(s) => s,
+        Some(selector) => selector,
         None => {
             eprintln!("error: this artifact records no entry point; pass --send");
             return ExitCode::FAILURE;
         }
     };
-    let platform = interp.platform();
-    let args = match crate::entry::entry_args(&interp, selector, &platform) {
-        Ok(args) => args,
-        Err(msg) => {
-            eprintln!("error: {msg}");
+    let platform = interpreter.platform();
+    let arguments = match crate::entry::entry_arguments(&interpreter, selector, &platform) {
+        Ok(arguments) => arguments,
+        Err(message) => {
+            eprintln!("error: {message}");
             return ExitCode::FAILURE;
         }
     };
-    crate::entry::report_entry_send(interp.send(
+    crate::entry::report_entry_send(interpreter.send(
         &instance,
         ns_runtime::Symbol::intern(selector),
-        &args,
+        &arguments,
     ))
 }

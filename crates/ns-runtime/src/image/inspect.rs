@@ -58,7 +58,7 @@ pub struct Report {
     /// names by tag. Rendered only by `render_full`.
     pub graph_tag_named_hashes: Vec<String>,
     pub entry: Option<String>,
-    pub total_len: usize,
+    pub total_length: usize,
 }
 
 /// Attributes each code id to the declaration that owns it.
@@ -114,8 +114,12 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
     let mut out = String::new();
     let _ = writeln!(out, "{} ({:?})", mixin.name, mixin.access);
     match &mixin.factory {
-        Some(f) => {
-            let _ = writeln!(out, "      factory   {}/{}", f.selector, f.num_args);
+        Some(factory) => {
+            let _ = writeln!(
+                out,
+                "      factory   {}/{}",
+                factory.selector, factory.argument_count
+            );
         }
         None => {
             let _ = writeln!(out, "      factory   -");
@@ -124,7 +128,11 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
     if mixin.slots.is_empty() {
         let _ = writeln!(out, "      slots     -");
     } else {
-        let names: Vec<String> = mixin.slots.iter().map(|s| s.name.to_string()).collect();
+        let names: Vec<String> = mixin
+            .slots
+            .iter()
+            .map(|slot| slot.name.to_string())
+            .collect();
         let _ = writeln!(out, "      slots     {}", names.join(", "));
     }
     for (selector, id) in &code.methods {
@@ -154,7 +162,7 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
 /// The object graph, read rather than rebuilt.
 ///
 /// `decode_graph_section` materializes: it allocates real objects, resolves
-/// class tags against live builtins and therefore needs an `Interpreter`. A
+/// class tags against live builtins and therefore needs a `Mutator`. A
 /// viewer must not do that -- `javap` does not instantiate a class to print
 /// it -- so this walks the same bytes and reports each record instead.
 ///
@@ -172,11 +180,11 @@ struct GraphView {
     tag_named: Vec<String>,
 }
 
-fn read_class_tag(r: &mut decode::Reader) -> Result<String, decode::DecodeError> {
-    Ok(match r.read_u8()? {
-        opcodes::CLS_BUILTIN => format!("{:?}", decode::read_builtin_class(r)?),
-        opcodes::CLS_USER_ROOT => "<root class>".to_string(),
-        opcodes::CLS_RECORD => format!("object {}", r.read_u32()?),
+fn read_class_tag(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    Ok(match reader.read_u8()? {
+        opcodes::CLASS_BUILTIN => format!("{:?}", decode::read_builtin_class(reader)?),
+        opcodes::CLASS_USER_ROOT => "<root class>".to_string(),
+        opcodes::CLASS_RECORD => format!("object {}", reader.read_u32()?),
         tag => {
             return Err(decode::DecodeError::InvalidTag {
                 what: "class tag",
@@ -186,53 +194,53 @@ fn read_class_tag(r: &mut decode::Reader) -> Result<String, decode::DecodeError>
     })
 }
 
-fn read_optional_class(r: &mut decode::Reader) -> Result<String, decode::DecodeError> {
-    if r.read_bool()? {
-        read_class_tag(r)
+fn read_optional_class(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    if reader.read_boolean()? {
+        read_class_tag(reader)
     } else {
         Ok("-".to_string())
     }
 }
 
-fn read_frame_ref(r: &mut decode::Reader) -> Result<String, decode::DecodeError> {
-    Ok(if r.read_bool()? {
-        format!("frame {}", r.read_u32()?)
+fn read_frame_reference(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    Ok(if reader.read_boolean()? {
+        format!("frame {}", reader.read_u32()?)
     } else {
         "-".to_string()
     })
 }
 
-fn read_value(r: &mut decode::Reader) -> Result<String, decode::DecodeError> {
-    Ok(match r.read_u8()? {
-        opcodes::VAL_NIL => "nil".to_string(),
-        opcodes::VAL_FALSE => "false".to_string(),
-        opcodes::VAL_TRUE => "true".to_string(),
-        opcodes::VAL_SMALL_INT => r.read_i64()?.to_string(),
-        opcodes::VAL_FLOAT => r.read_f64()?.to_string(),
-        opcodes::VAL_OBJECT_ID => format!("object {}", r.read_u32()?),
-        opcodes::VAL_CLASS_TAG => format!("class {}", read_class_tag(r)?),
-        opcodes::VAL_PLATFORM => "<platform>".to_string(),
+fn read_value(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    Ok(match reader.read_u8()? {
+        opcodes::VALUE_NIL => "nil".to_string(),
+        opcodes::VALUE_FALSE => "false".to_string(),
+        opcodes::VALUE_TRUE => "true".to_string(),
+        opcodes::VALUE_SMALL_INTEGER => reader.read_i64()?.to_string(),
+        opcodes::VALUE_FLOAT => reader.read_f64()?.to_string(),
+        opcodes::VALUE_OBJECT_ID => format!("object {}", reader.read_u32()?),
+        opcodes::VALUE_CLASS_TAG => format!("class {}", read_class_tag(reader)?),
+        opcodes::VALUE_PLATFORM => "<platform>".to_string(),
         tag => return Err(decode::DecodeError::InvalidTag { what: "value", tag }),
     })
 }
 
-fn read_values(r: &mut decode::Reader) -> Result<Vec<String>, decode::DecodeError> {
-    let n = decode::bounded_count(r.read_u32()? as usize, 1, r)?;
-    (0..n).map(|_| read_value(r)).collect()
+fn read_values(reader: &mut decode::Reader) -> Result<Vec<String>, decode::DecodeError> {
+    let count = decode::bounded_count(reader.read_u32()? as usize, 1, reader)?;
+    (0..count).map(|_| read_value(reader)).collect()
 }
 
 fn read_closure_record(
-    r: &mut decode::Reader,
+    reader: &mut decode::Reader,
     symbols: &symbols::Table,
 ) -> Result<String, decode::DecodeError> {
-    let params = r.read_u16()? as usize;
-    let mut names = Vec::with_capacity(params);
-    for _ in 0..params {
-        names.push(symbols.get(r.read_u32()?)?.to_string());
+    let parameters = reader.read_u16()? as usize;
+    let mut names = Vec::with_capacity(parameters);
+    for _ in 0..parameters {
+        names.push(symbols.get(reader.read_u32()?)?.to_string());
     }
-    let code = r.read_u32()?;
-    let captured = r.read_u32()?;
-    let home = r.read_u32()?;
+    let code = reader.read_u32()?;
+    let captured = reader.read_u32()?;
+    let home = reader.read_u32()?;
     Ok(format!(
         "[{}] code {code}, captured frame {captured}, home frame {home}",
         names.join(", ")
@@ -240,31 +248,31 @@ fn read_closure_record(
 }
 
 fn walk_graph(
-    r: &mut decode::Reader,
+    reader: &mut decode::Reader,
     symbols: &symbols::Table,
 ) -> Result<GraphView, decode::DecodeError> {
-    let object_count = decode::bounded_count(r.read_u32()? as usize, 1, r)?;
-    let frame_count = decode::bounded_count(r.read_u32()? as usize, 1, r)?;
+    let object_count = decode::bounded_count(reader.read_u32()? as usize, 1, reader)?;
+    let frame_count = decode::bounded_count(reader.read_u32()? as usize, 1, reader)?;
 
     let mut objects = Vec::with_capacity(object_count);
     for _ in 0..object_count {
-        let class = read_class_tag(r)?;
-        let hash = r.read_u32()?;
-        let body = match r.read_u8()? {
-            opcodes::OBJ_INSTANCE => format!("instance {{{}}}", read_values(r)?.join(", ")),
-            opcodes::OBJ_STR => format!("string {:?}", r.read_str()?),
-            opcodes::OBJ_SYM => format!("symbol #{}", symbols.get(r.read_u32()?)?),
-            opcodes::OBJ_ARRAY => format!("array [{}]", read_values(r)?.join(", ")),
-            opcodes::OBJ_CLOSURE => format!("closure {}", read_closure_record(r, symbols)?),
-            opcodes::OBJ_CLASS => {
-                let mixin = r.read_u32()?;
-                let superclass = read_optional_class(r)?;
-                let enclosing = if r.read_bool()? {
-                    read_value(r)?
+        let class = read_class_tag(reader)?;
+        let hash = reader.read_u32()?;
+        let body = match reader.read_u8()? {
+            opcodes::OBJECT_INSTANCE => format!("instance {{{}}}", read_values(reader)?.join(", ")),
+            opcodes::OBJECT_STRING => format!("string {:?}", reader.read_str()?),
+            opcodes::OBJECT_SYMBOL => format!("symbol #{}", symbols.get(reader.read_u32()?)?),
+            opcodes::OBJECT_ARRAY => format!("array [{}]", read_values(reader)?.join(", ")),
+            opcodes::OBJECT_CLOSURE => format!("closure {}", read_closure_record(reader, symbols)?),
+            opcodes::OBJECT_CLASS => {
+                let mixin = reader.read_u32()?;
+                let superclass = read_optional_class(reader)?;
+                let enclosing = if reader.read_boolean()? {
+                    read_value(reader)?
                 } else {
                     "-".to_string()
                 };
-                let declaring = read_optional_class(r)?;
+                let declaring = read_optional_class(reader)?;
                 format!(
                     "class mixin {mixin}, superclass {superclass}, enclosing {enclosing}, \
                      declaring {declaring}"
@@ -282,24 +290,24 @@ fn walk_graph(
 
     let mut frames = Vec::with_capacity(frame_count);
     for _ in 0..frame_count {
-        let receiver = read_value(r)?;
-        let args = read_values(r)?;
-        let temps = read_values(r)?;
-        let pc = r.read_u32()?;
-        let sender = read_frame_ref(r)?;
-        let home = read_frame_ref(r)?;
-        let current_class = read_optional_class(r)?;
-        let kind = match r.read_u8()? {
-            opcodes::FRAME_METHOD => format!("method {}", symbols.get(r.read_u32()?)?),
+        let receiver = read_value(reader)?;
+        let arguments = read_values(reader)?;
+        let temporaries = read_values(reader)?;
+        let program_counter = reader.read_u32()?;
+        let sender = read_frame_reference(reader)?;
+        let home = read_frame_reference(reader)?;
+        let current_class = read_optional_class(reader)?;
+        let kind = match reader.read_u8()? {
+            opcodes::FRAME_METHOD => format!("method {}", symbols.get(reader.read_u32()?)?),
             opcodes::FRAME_TOP_LEVEL => "top level".to_string(),
-            opcodes::FRAME_INITIALIZER => format!("initializer of {}", read_class_tag(r)?),
+            opcodes::FRAME_INITIALIZER => format!("initializer of {}", read_class_tag(reader)?),
             opcodes::FRAME_SUPERCLASS_CLAUSE => {
-                format!("superclass clause of {}", read_class_tag(r)?)
+                format!("superclass clause of {}", read_class_tag(reader)?)
             }
             opcodes::FRAME_SUPERCLASS_MESSAGE => {
-                format!("superclass message of {}", read_class_tag(r)?)
+                format!("superclass message of {}", read_class_tag(reader)?)
             }
-            opcodes::FRAME_CLOSURE_OBJECT => format!("closure object {}", r.read_u32()?),
+            opcodes::FRAME_CLOSURE_OBJECT => format!("closure object {}", reader.read_u32()?),
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
                     what: "frame kind",
@@ -307,23 +315,23 @@ fn walk_graph(
                 })
             }
         };
-        let uncontinuable = r.read_bool()?;
+        let uncontinuable = reader.read_boolean()?;
         frames.push(format!(
-            "{kind}, receiver {receiver}, args [{}], temps [{}], pc {pc}, \
+            "{kind}, receiver {receiver}, args [{}], temps [{}], pc {program_counter}, \
              sender {sender}, home {home}, current class {current_class}, \
              uncontinuable {uncontinuable}",
-            args.join(", "),
-            temps.join(", ")
+            arguments.join(", "),
+            temporaries.join(", ")
         ));
     }
 
-    let roots = read_values(r)?;
+    let roots = read_values(reader)?;
 
-    let count = decode::bounded_count(r.read_u32()? as usize, 1, r)?;
+    let count = decode::bounded_count(reader.read_u32()? as usize, 1, reader)?;
     let mut tag_named = Vec::new();
     for _ in 0..count {
-        let who = match r.read_u8()? {
-            opcodes::HASHED_BUILTIN_CLASS => format!("{:?}", decode::read_builtin_class(r)?),
+        let who = match reader.read_u8()? {
+            opcodes::HASHED_BUILTIN_CLASS => format!("{:?}", decode::read_builtin_class(reader)?),
             opcodes::HASHED_ROOT_CLASS => "<root class>".to_string(),
             opcodes::HASHED_PLATFORM => "<platform>".to_string(),
             tag => {
@@ -333,7 +341,7 @@ fn walk_graph(
                 })
             }
         };
-        tag_named.push(format!("{who} hash {}", r.read_u32()?));
+        tag_named.push(format!("{who} hash {}", reader.read_u32()?));
     }
 
     Ok(GraphView {
@@ -347,84 +355,86 @@ fn walk_graph(
 /// Decodes `bytes` far enough to describe it. Every failure is an `Err`, never
 /// a panic -- an artifact is untrusted input here exactly as it is in `load`.
 pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
-    let mut r = decode::Reader::new(bytes);
+    let mut reader = decode::Reader::new(bytes);
     let mut sections = Vec::new();
-    let mut at = 0usize;
+    let mut offset = 0usize;
 
-    let header = decode::read_header(&mut r).map_err(|e| e.to_string())?;
+    let header = decode::read_header(&mut reader).map_err(|error| error.to_string())?;
     sections.push(Section {
         name: "header",
-        start: at,
-        end: r.pos(),
+        start: offset,
+        end: reader.position(),
         detail: String::new(),
     });
-    at = r.pos();
+    offset = reader.position();
 
     if header.has_source {
-        let source = r.read_str().map_err(|e| e.to_string())?;
+        let source = reader.read_str().map_err(|error| error.to_string())?;
         sections.push(Section {
             name: "source",
-            start: at,
-            end: r.pos(),
+            start: offset,
+            end: reader.position(),
             detail: format!("{} bytes", source.len()),
         });
-        at = r.pos();
+        offset = reader.position();
     }
 
-    let origin = decode::decode_source_origin(&mut r).map_err(|e| e.to_string())?;
+    let origin = decode::decode_source_origin(&mut reader).map_err(|error| error.to_string())?;
     sections.push(Section {
         name: "origin",
-        start: at,
-        end: r.pos(),
+        start: offset,
+        end: reader.position(),
         detail: String::new(),
     });
-    at = r.pos();
+    offset = reader.position();
 
-    let symbol_table = symbols::decode(&mut r).map_err(|e| e.to_string())?;
+    let symbol_table = symbols::decode(&mut reader).map_err(|error| error.to_string())?;
     let symbol_list = symbol_table
         .all()
         .iter()
-        .map(|s| s.to_string())
+        .map(|symbol| symbol.to_string())
         .collect::<Vec<_>>();
     sections.push(Section {
         name: "symbols",
-        start: at,
-        end: r.pos(),
+        start: offset,
+        end: reader.position(),
         detail: format!("{} symbols", symbol_list.len()),
     });
-    at = r.pos();
+    offset = reader.position();
 
-    let table = decode::decode_code_table(&mut r, &symbol_table).map_err(|e| e.to_string())?;
+    let table =
+        decode::decode_code_table(&mut reader, &symbol_table).map_err(|error| error.to_string())?;
     sections.push(Section {
         name: "code",
-        start: at,
-        end: r.pos(),
+        start: offset,
+        end: reader.position(),
         detail: format!("{} bodies", table.codes.len()),
     });
-    at = r.pos();
+    offset = reader.position();
 
-    let decoded = mixins::decode(&mut r, &symbol_table, &table.codes).map_err(|e| e.to_string())?;
+    let decoded = mixins::decode(&mut reader, &symbol_table, &table.codes)
+        .map_err(|error| error.to_string())?;
     let mixin_lines = decoded
         .mixins
         .iter()
         .zip(decoded.code.iter())
-        .map(|(m, c)| {
+        .map(|(mixin, code)| {
             format!(
                 "{}  slots: {}  factory: {}  methods: {}",
-                m.name,
-                m.slots.len(),
-                match &m.factory {
-                    Some(f) => f.selector.to_string(),
+                mixin.name,
+                mixin.slots.len(),
+                match &mixin.factory {
+                    Some(factory) => factory.selector.to_string(),
                     None => "-".to_string(),
                 },
-                c.methods.len(),
+                code.methods.len(),
             )
         })
         .collect::<Vec<_>>();
     sections.push(Section {
         name: "mixins",
-        start: at,
-        end: r.pos(),
+        start: offset,
+        end: reader.position(),
         detail: format!("{} mixins", decoded.mixins.len()),
     });
     let attributed = attribute_code(&decoded, &table.codes);
@@ -442,7 +452,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         .mixins
         .iter()
         .zip(decoded.code.iter())
-        .map(|(m, c)| expand_mixin(m, c))
+        .map(|(mixin, code)| expand_mixin(mixin, code))
         .collect::<Vec<_>>();
     // Disassembled up front rather than on demand: a body is a few hundred
     // instructions at most, and carrying the strings keeps `Report` a plain
@@ -463,31 +473,32 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         })
         .collect::<Vec<_>>();
 
-    at = r.pos();
+    offset = reader.position();
 
-    // The root class's superclass reference. Decoding it needs an interpreter
+    // The root class's superclass reference. Decoding it needs a `Mutator`
     // only to resolve a builtin tag to a live class, which inspection does not
     // want; the bytes are read and their span recorded without resolving.
-    decode::skip_root_superclass(&mut r).map_err(|e| e.to_string())?;
+    decode::skip_root_superclass(&mut reader).map_err(|error| error.to_string())?;
     sections.push(Section {
         name: "root class",
-        start: at,
-        end: r.pos(),
+        start: offset,
+        end: reader.position(),
         detail: String::new(),
     });
-    at = r.pos();
+    offset = reader.position();
 
-    let entry = decode::decode_entry(&mut r, &symbol_table).map_err(|e| e.to_string())?;
+    let entry =
+        decode::decode_entry(&mut reader, &symbol_table).map_err(|error| error.to_string())?;
     sections.push(Section {
         name: "entry",
-        start: at,
-        end: r.pos(),
+        start: offset,
+        end: reader.position(),
         detail: match &entry {
-            Some(sym) => sym.to_string(),
+            Some(symbol) => symbol.to_string(),
             None => "none".to_string(),
         },
     });
-    at = r.pos();
+    offset = reader.position();
 
     // A stateless artifact ends here: it carries code and structure but no
     // object graph, so reading one past the entry field would run off the
@@ -499,14 +510,14 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         tag_named: Vec::new(),
     };
     if !header.stateless {
-        graph = walk_graph(&mut r, &symbol_table).map_err(|e| e.to_string())?;
+        graph = walk_graph(&mut reader, &symbol_table).map_err(|error| error.to_string())?;
         sections.push(Section {
             name: "graph",
-            start: at,
+            start: offset,
             // The walk consumes the section record by record, so this is the
             // real end rather than a stand-in. That it lands on the file.s
             // last byte is what `graph_walk_consumes_the_whole_section` pins.
-            end: r.pos(),
+            end: reader.position(),
             detail: format!(
                 "{} objects, {} frames, {} roots, {} tag-named hashes",
                 graph.objects.len(),
@@ -532,8 +543,8 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         graph_frames: graph.frames,
         graph_roots: graph.roots,
         graph_tag_named_hashes: graph.tag_named,
-        entry: entry.map(|s| s.to_string()),
-        total_len: bytes.len(),
+        entry: entry.map(|selector| selector.to_string()),
+        total_length: bytes.len(),
     })
 }
 
@@ -555,30 +566,30 @@ pub fn render(report: &Report) -> String {
         }
     );
     let _ = writeln!(out, "origin: {}", report.origin);
-    let _ = writeln!(out, "total: {} bytes", report.total_len);
+    let _ = writeln!(out, "total: {} bytes", report.total_length);
 
     let _ = writeln!(out, "\nsections");
-    for s in &report.sections {
+    for section in &report.sections {
         let _ = writeln!(
             out,
             "  {:<12} {:>8}..{:<8} {}",
-            s.name, s.start, s.end, s.detail
+            section.name, section.start, section.end, section.detail
         );
     }
 
     let _ = writeln!(out, "\nsymbols ({})", report.symbols.len());
-    for (i, s) in report.symbols.iter().enumerate() {
-        let _ = writeln!(out, "  {i:>4} {s}");
+    for (index, symbol) in report.symbols.iter().enumerate() {
+        let _ = writeln!(out, "  {index:>4} {symbol}");
     }
 
     let _ = writeln!(out, "\ncode table ({} bodies)", report.code.len());
-    for (i, c) in report.code.iter().enumerate() {
-        let _ = writeln!(out, "  {i:>4} {c}");
+    for (index, code) in report.code.iter().enumerate() {
+        let _ = writeln!(out, "  {index:>4} {code}");
     }
 
     let _ = writeln!(out, "\nmixins ({})", report.mixins.len());
-    for (i, m) in report.mixins.iter().enumerate() {
-        let _ = writeln!(out, "  {i:>4} {m}");
+    for (index, mixin) in report.mixins.iter().enumerate() {
+        let _ = writeln!(out, "  {index:>4} {mixin}");
     }
 
     out
@@ -602,18 +613,18 @@ pub fn render_full(report: &Report) -> String {
     out.push_str(&brief[..head_end]);
 
     let _ = writeln!(out, "\nsymbols ({})", report.symbols.len());
-    for (i, s) in report.symbols.iter().enumerate() {
-        let _ = writeln!(out, "  {i:>4} {s}");
+    for (index, symbol) in report.symbols.iter().enumerate() {
+        let _ = writeln!(out, "  {index:>4} {symbol}");
     }
 
     let _ = writeln!(out, "\ncode table ({} bodies)", report.code.len());
-    for (i, c) in report.code.iter().enumerate() {
-        let _ = writeln!(out, "  {i:>4} {c}");
+    for (index, code) in report.code.iter().enumerate() {
+        let _ = writeln!(out, "  {index:>4} {code}");
     }
 
     let _ = writeln!(out, "\nmixins ({})", report.mixin_detail.len());
-    for (i, m) in report.mixin_detail.iter().enumerate() {
-        let _ = writeln!(out, "  {i:>4} {m}");
+    for (index, mixin) in report.mixin_detail.iter().enumerate() {
+        let _ = writeln!(out, "  {index:>4} {mixin}");
     }
 
     // Only an image has one. A binary's whole point is that it does not, so
@@ -625,12 +636,12 @@ pub fn render_full(report: &Report) -> String {
     {
         let _ = writeln!(out, "\ngraph");
         let _ = writeln!(out, "  objects ({})", report.graph_objects.len());
-        for (i, o) in report.graph_objects.iter().enumerate() {
-            let _ = writeln!(out, "    {i:>4} {o}");
+        for (index, object) in report.graph_objects.iter().enumerate() {
+            let _ = writeln!(out, "    {index:>4} {object}");
         }
         let _ = writeln!(out, "  frames ({})", report.graph_frames.len());
-        for (i, f) in report.graph_frames.iter().enumerate() {
-            let _ = writeln!(out, "    {i:>4} {f}");
+        for (index, frame) in report.graph_frames.iter().enumerate() {
+            let _ = writeln!(out, "    {index:>4} {frame}");
         }
         let _ = writeln!(out, "  roots  {}", report.graph_roots.join(", "));
         let _ = writeln!(

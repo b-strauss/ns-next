@@ -2,7 +2,7 @@
 
 > **Status:** planned. Nothing in this document is built. What *is* built is the
 > groundwork every part of it depends on — reified activations, the safepoint
-> statement→PC table, stable call-site identity, source and provenance retention,
+> statement→program-counter table, stable call-site identity, source and provenance retention,
 > identity hashes — each described in the document for its own aspect.
 > **Code:** none yet.
 
@@ -74,7 +74,7 @@ class, and for a superclass change to its whole subtree.
 The key is the **mixin application**, not the class object; see
 [dispatch.md](dispatch.md) for why the obvious choice is wrong. Compiled
 initializers must be flushed along with everything else on a shape change,
-because `InitSlot` is layout-dependent.
+because `InitializeSlot` is layout-dependent.
 
 ## Debugger
 
@@ -83,16 +83,16 @@ because `InitSlot` is layout-dependent.
 2. **Inspect.** Read receiver, arguments, temps and the sender chain through
    mirrors.
 3. **Edit and continue.** Recompile the edited method — new bytecode, new temp
-   count, new statement→PC table. For every affected context, the active one and
-   any pending frames running the same method, grow `temps` if slots were added,
-   set the new ones to nil, and remap the PC through the statement→PC table.
+   count, new statement→program-counter table. For every affected context, the active one and
+   any pending frames running the same method, grow `temporaries` if slots were added,
+   set the new ones to nil, and remap the program counter through the statement→program-counter table.
    Growing an activation requires taking it off the stack into its reified
    frame first, because a running activation is an entry in a stack where an
    entry in the middle cannot grow ([execution.md](execution.md), "How this
    meets the liveness requirements"). That is the same move as forcing a frame out
    of JIT-optimized form before debugging it, one level down, so the requirement
    is met by the existing principle rather than in tension with it.
-   **Resume only at statement boundaries**, which is what keeps PC remapping
+   **Resume only at statement boundaries**, which is what keeps program-counter remapping
    tractable: restart the current statement, or the whole method with receiver
    and arguments preserved, rather than resuming mid-expression.
 4. **Other context-mirror operations:** restart frame, force return value, step
@@ -101,7 +101,7 @@ because `InitSlot` is layout-dependent.
    forces interpretation with a per-statement callback.
 
 Two things already in place serve this and are not to be regressed: the
-statement→PC table on every `CompiledCode`, and a chain of running activations
+statement→program-counter table on every `CompiledCode`, and a chain of running activations
 walkable independently of the Rust stack — the activation stack — on which the
 trampoline runs every send without recursing through the Rust stack
 ([execution.md](execution.md), "The trampoline"), and with no Rust frame
@@ -109,7 +109,7 @@ between the host and the loop, since nothing re-enters it from Rust ([execution.
 "No re-entry from Rust"). Two things still block it. Nothing can suspend an
 activation yet: there is no yield path out of the run loop
 ([image-format.md](image-format.md), "Planned: suspend and resume"). And an
-activation's `pc` is currently stored only at observable points, which the
+activation's `program_counter` is currently stored only at observable points, which the
 debugger milestone may need to revisit.
 
 The reified frame is not the *default* representation of an activation; it is

@@ -8,9 +8,9 @@ use std::process::ExitCode;
 /// only the decoders.
 pub(crate) fn execute(artifact: &Path, full: bool) -> ExitCode {
     let bytes = match std::fs::read(artifact) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: reading {}: {e}", artifact.display());
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("error: reading {}: {error}", artifact.display());
             return ExitCode::FAILURE;
         }
     };
@@ -24,8 +24,8 @@ pub(crate) fn execute(artifact: &Path, full: bool) -> ExitCode {
             print!("{rendered}");
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("error: {}: {e}", artifact.display());
+        Err(error) => {
+            eprintln!("error: {}: {error}", artifact.display());
             ExitCode::FAILURE
         }
     }

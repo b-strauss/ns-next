@@ -4,25 +4,25 @@
 //! numbered steps this exercises.
 
 use indoc::indoc;
-use ns_runtime::{HostResult, HostSignal, Interpreter, Lowering, Root, Symbol, Value};
+use ns_runtime::{HostResult, HostSignal, Interpreter, Lowering, Mutator, Root, Symbol, Value};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both.
-fn load(src: &str) -> (Interpreter, Root) {
-    load_with(src, Lowering::Optimized)
+fn load(source: &str) -> (Interpreter, Root) {
+    load_with(source, Lowering::Optimized)
 }
 
-fn load_with(src: &str, lowering: Lowering) -> (Interpreter, Root) {
-    let module = ns_syntax::parse(src).expect("parse");
+fn load_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
-        src.into(),
+        source.into(),
         ns_runtime::SourceOrigin::File("test.ns".into()),
     )
     .expect("resolve");
-    let mut interp = Interpreter::bootstrap_with(lowering);
-    let class = interp.load_module(&resolved);
-    (interp, class)
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&resolved);
+    (interpreter, class)
 }
 
 /// `HostSignal` carries no `Debug` impl, so `HostResult`
@@ -33,14 +33,17 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
         Ok(root) => root,
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
-        Err(HostSignal::Error(e)) => panic!("{what}: unexpected Newspeak error: {}", e.message),
+        Err(HostSignal::Error(error)) => {
+            panic!("{what}: unexpected Newspeak error: {}", error.message)
+        }
     }
 }
 
-/// The object `root` holds, for the heap accessors that take one.
-fn obj(interp: &Interpreter, root: &Root) -> ns_runtime::ObjRef {
-    match interp.fetch(root) {
-        Value::Obj(obj) => obj,
+/// The object `root` holds, for the heap accessors that take one. Every
+/// caller is already inside an entry.
+fn object<'gc>(mutator: &Mutator<'gc>, root: &Root) -> ns_runtime::ObjectReference<'gc> {
+    match mutator.fetch(root) {
+        Value::Object(object) => object,
         _ => panic!("expected an object"),
     }
 }
@@ -50,25 +53,27 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
     // `bar` must be `public` -- an ordinary (explicit-receiver) `send` only
     // reaches `public` members (`newspeak-spec.pdf` §5.5's `lookupPublic`);
     // the default access (no modifier) is `protected`.
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Foo = Object new (|x = 42.|) (public bar = (^x)) : ()
     "};
-    let (mut interp, class) = load(src);
+    let (mut interpreter, class) = load(source);
 
-    let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
 
-    let result = interp.send(&receiver, Symbol::intern("bar"), &[]);
+    let result = interpreter.send(&receiver, Symbol::intern("bar"), &[]);
 
-    match result.map(|root| interp.fetch(&root)) {
-        Ok(Value::SmallInt(42)) => {}
-        Ok(other) => panic!(
-            "expected Value::SmallInt(42), got {}",
-            interp.heap_ref().describe(&other)
-        ),
+    match result {
+        Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root) {
+            Value::SmallInteger(42) => {}
+            other => panic!(
+                "expected Value::SmallInteger(42), got {}",
+                mutator.heap().describe(&other)
+            ),
+        }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
-        Err(HostSignal::Error(e)) => panic!("unexpected Newspeak error: {}", e.message),
+        Err(HostSignal::Error(error)) => panic!("unexpected Newspeak error: {}", error.message),
     }
 }
 
@@ -103,26 +108,26 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 /// superclass `instantiate` actually walks at runtime.
 #[test]
 fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
-    let sup_src = indoc! {"
+    let superclass_source = indoc! {"
         Newspeak3
         'T'
         class Sup = Object new (|a = 10.|) () : ()
     "};
-    let (mut interp, sup_class) = load(sup_src);
+    let (mut interpreter, superclass) = load(superclass_source);
 
-    let sub_src = indoc! {"
+    let subclass_source = indoc! {"
         Newspeak3
         'T'
         class Sub = Object new (|b = a.|) (public getB = (^b)) : ()
     "};
-    let sub_module = ns_syntax::parse(sub_src).expect("parse");
-    let sub_resolved = ns_runtime::resolve(
-        sub_module,
-        sub_src.into(),
+    let subclass_module = ns_syntax::parse(subclass_source).expect("parse");
+    let subclass_resolved = ns_runtime::resolve(
+        subclass_module,
+        subclass_source.into(),
         ns_runtime::SourceOrigin::File("sub.ns".into()),
     )
     .expect("resolve");
-    let sub_root = interp.load_module(&sub_resolved);
+    let subclass_root = interpreter.load_module(&subclass_resolved);
 
     // Relink Sub -> Sup (see the doc comment above), on both chains: the
     // class-object chain that `super`/`instantiate` walk, and the
@@ -131,41 +136,48 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
     // Sup's one inherited slot -- hand-editing the layout would let the two
     // chains disagree about the instance's shape. Nothing has run yet, so
     // the class objects read from their roots here are current.
-    let sup_class = obj(&interp, &sup_class);
-    let sub_class = obj(&interp, &sub_root);
-    let sup_application = interp
-        .heap_ref()
-        .class_application(sup_class)
-        .unwrap_or_else(|| panic!("expected Sup to be a class object"));
-    let sub_mixin = interp
-        .heap_ref()
-        .class_application(sub_class)
-        .unwrap_or_else(|| panic!("expected Sub to be a class object"))
-        .mixin
-        .clone();
-    let sub_application = interp.apply_mixin(&sub_mixin, Some(&sup_application));
-    let relinked = interp.heap_mut().set_class_superclass(sub_class, sup_class)
-        && interp
+    let relinked = interpreter.enter(|mutator| {
+        let superclass = object(mutator, &superclass);
+        let subclass = object(mutator, &subclass_root);
+        let superclass_application = mutator
+            .heap()
+            .class_application(superclass)
+            .unwrap_or_else(|| panic!("expected Sup to be a class object"));
+        let subclass_mixin = mutator
+            .heap()
+            .class_application(subclass)
+            .unwrap_or_else(|| panic!("expected Sub to be a class object"))
+            .mixin
+            .clone();
+        let subclass_application =
+            mutator.apply_mixin(&subclass_mixin, Some(&superclass_application));
+        mutator
             .heap_mut()
-            .set_class_application(sub_class, sub_application);
+            .set_class_superclass(subclass, superclass)
+            && mutator
+                .heap_mut()
+                .set_class_application(subclass, subclass_application)
+    });
     assert!(relinked, "expected Sub to be a class object");
 
-    let receiver = expect_ok(interp.instantiate(&sub_root, &[]), "instantiate");
+    let receiver = expect_ok(interpreter.instantiate(&subclass_root, &[]), "instantiate");
 
-    let result = interp.send(&receiver, Symbol::intern("getB"), &[]);
+    let result = interpreter.send(&receiver, Symbol::intern("getB"), &[]);
 
-    match result.map(|root| interp.fetch(&root)) {
-        Ok(Value::SmallInt(10)) => {}
-        Ok(Value::Nil) => panic!(
-            "getB returned nil -- the superclass's own slot initializer (a = 10) did not run \
-             before the subclass's own slot initializer (b = a) read it"
-        ),
-        Ok(other) => panic!(
-            "expected Value::SmallInt(10), got {}",
-            interp.heap_ref().describe(&other)
-        ),
+    match result {
+        Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root) {
+            Value::SmallInteger(10) => {}
+            Value::Nil => panic!(
+                "getB returned nil -- the superclass's own slot initializer (a = 10) did not run \
+                 before the subclass's own slot initializer (b = a) read it"
+            ),
+            other => panic!(
+                "expected Value::SmallInteger(10), got {}",
+                mutator.heap().describe(&other)
+            ),
+        }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
-        Err(HostSignal::Error(e)) => panic!("unexpected Newspeak error: {}", e.message),
+        Err(HostSignal::Error(error)) => panic!("unexpected Newspeak error: {}", error.message),
     }
 }
 
@@ -179,30 +191,30 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
 /// `LexicalSend`, which fails at run time with `doesNotUnderstand: #platform`.
 #[test]
 fn a_factory_parameter_is_visible_in_a_slot_initializer() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class M usingPlatform: platform = Object new (|t = platform.|) (public getT = (^t)) : ()
     "};
-    let (mut interp, class) = load(src);
+    let (mut interpreter, class) = load(source);
 
     let receiver = expect_ok(
-        interp.instantiate(&class, &[interp.stash(Value::SmallInt(99))]),
+        interpreter.instantiate(&class, &[interpreter.stash(Value::SmallInteger(99))]),
         "instantiate",
     );
 
-    let result = interp.send(&receiver, Symbol::intern("getT"), &[]);
+    let result = interpreter.send(&receiver, Symbol::intern("getT"), &[]);
 
-    match result.map(|root| interp.fetch(&root)) {
-        Ok(Value::SmallInt(99)) => {}
-        Ok(other) => {
-            panic!(
-                "expected the slot to hold the factory argument (SmallInt(99)), got {}",
-                interp.heap_ref().describe(&other)
-            )
-        }
+    match result {
+        Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root) {
+            Value::SmallInteger(99) => {}
+            other => panic!(
+                "expected the slot to hold the factory argument (SmallInteger(99)), got {}",
+                mutator.heap().describe(&other)
+            ),
+        }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
-        Err(HostSignal::Error(e)) => panic!("unexpected Newspeak error: {}", e.message),
+        Err(HostSignal::Error(error)) => panic!("unexpected Newspeak error: {}", error.message),
     }
 }
 
@@ -212,131 +224,142 @@ fn a_factory_parameter_is_visible_in_a_slot_initializer() {
 /// i.e. exactly the path `ns-next run` takes.
 #[test]
 fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class M usingPlatform: p = Object new (|t = p printString.|) (public getT = (^t)) : ()
     "};
-    let (mut interp, class) = load(src);
+    let (mut interpreter, class) = load(source);
 
     let receiver = expect_ok(
-        interp.send(
+        interpreter.send(
             &class,
             Symbol::intern("usingPlatform:"),
-            &[interp.stash(Value::SmallInt(99))],
+            &[interpreter.stash(Value::SmallInteger(99))],
         ),
         "M usingPlatform: 99",
     );
 
-    let result = expect_ok(interp.send(&receiver, Symbol::intern("getT"), &[]), "getT");
+    let result = expect_ok(
+        interpreter.send(&receiver, Symbol::intern("getT"), &[]),
+        "getT",
+    );
 
-    let result = interp.fetch(&result);
-    match &result {
-        Value::Obj(obj) => match interp.heap_ref().str_value(*obj) {
-            Some(s) => assert_eq!(s, "99"),
-            None => panic!(
-                "expected ObjectData::Str(\"99\"), got {}",
-                interp.heap_ref().describe(&result)
+    interpreter.enter(|mutator| {
+        let result = mutator.fetch(&result);
+        match &result {
+            Value::Object(object) => match mutator.heap().str_value(*object) {
+                Some(string) => assert_eq!(string, "99"),
+                None => panic!(
+                    "expected ObjectData::String(\"99\"), got {}",
+                    mutator.heap().describe(&result)
+                ),
+            },
+            other => panic!(
+                "expected Value::Object(<String>), got {}",
+                mutator.heap().describe(other)
             ),
-        },
-        other => panic!(
-            "expected Value::Obj(<String>), got {}",
-            interp.heap_ref().describe(other)
-        ),
-    }
+        }
+    });
 }
 
 /// An `initExprs` statement (the class header's trailing statements, spec
 /// step 5) sees the factory parameters too -- same activation, same scope.
 #[test]
-fn a_factory_parameter_is_visible_in_an_init_expr() {
-    let src = indoc! {"
+fn a_factory_parameter_is_visible_in_an_initializer_expression() {
+    let source = indoc! {"
         Newspeak3
         'T'
         class M usingPlatform: p = Object new (|t.| t:: p.) (public getT = (^t)) : ()
     "};
-    let module = ns_syntax::parse(src).expect("parse");
+    let module = ns_syntax::parse(source).expect("parse");
     assert_eq!(
-        module.root_class.instance_side.init_exprs.len(),
+        module
+            .root_class
+            .instance_side
+            .initializer_expressions
+            .len(),
         1,
         "this fixture is only meaningful if the header's `t:: p.` really parsed as an initExpr"
     );
-    let (mut interp, class) = load(src);
+    let (mut interpreter, class) = load(source);
 
     let receiver = expect_ok(
-        interp.instantiate(&class, &[interp.stash(Value::SmallInt(7))]),
+        interpreter.instantiate(&class, &[interpreter.stash(Value::SmallInteger(7))]),
         "instantiate",
     );
 
-    let result = interp.send(&receiver, Symbol::intern("getT"), &[]);
+    let result = interpreter.send(&receiver, Symbol::intern("getT"), &[]);
 
-    match result.map(|root| interp.fetch(&root)) {
-        Ok(Value::SmallInt(7)) => {}
-        Ok(other) => panic!(
-            "expected SmallInt(7) assigned by the initExpr, got {}",
-            interp.heap_ref().describe(&other)
-        ),
+    match result {
+        Ok(root) => interpreter.enter(|mutator| match mutator.fetch(&root) {
+            Value::SmallInteger(7) => {}
+            other => panic!(
+                "expected SmallInteger(7) assigned by the initializer expression, got {}",
+                mutator.heap().describe(&other)
+            ),
+        }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
-        Err(HostSignal::Error(e)) => panic!("unexpected Newspeak error: {}", e.message),
+        Err(HostSignal::Error(error)) => panic!("unexpected Newspeak error: {}", error.message),
     }
 }
 
 /// A class declaring a two-keyword factory pattern (`usingPlatform:ide:`),
 /// instantiated with only one factory argument. A slot initializer
 /// referencing the *second*, missing parameter resolves to
-/// `Binding::Local(1)`, but `factory_args` here has only one element and
+/// `Binding::Local(1)`, but `factory_arguments` here has only one element and
 /// the instance-initializer activation starts with no temporaries -- without
 /// the arity check, `locals.rs`'s `read_local` would index straight past
 /// both and panic with "index out of bounds" instead of returning a clean
 /// `NewspeakError`.
 #[test]
 fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class M usingPlatform: p ide: q = Object new (|t = q.|) (public getT = (^t)) : ()
     "};
-    let (mut interp, class) = load(src);
+    let (mut interpreter, class) = load(source);
 
-    let result = interp.instantiate(&class, &[interp.stash(Value::SmallInt(1))]);
+    let result = interpreter.instantiate(&class, &[interpreter.stash(Value::SmallInteger(1))]);
 
     match result {
-        Err(HostSignal::Error(e)) => {
+        Err(HostSignal::Error(error)) => {
             assert!(
-                e.message.contains("wrong number of factory arguments"),
+                error.message.contains("wrong number of factory arguments"),
                 "unexpected error message: {}",
-                e.message
+                error.message
             );
         }
-        Ok(v) => panic!(
-            "expected a factory-arity Newspeak error, got Ok({})",
-            interp.heap_ref().describe(&interp.fetch(&v))
-        ),
+        Ok(value) => {
+            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            panic!("expected a factory-arity Newspeak error, got Ok({got})")
+        }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `instantiate`"),
     }
 }
 
 #[test]
 fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Foo = Object new () () : ()
     "};
-    let (mut interp, class) = load(src);
+    let (mut interpreter, class) = load(source);
 
-    let receiver = expect_ok(interp.instantiate(&class, &[]), "instantiate");
+    let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
 
-    let result = interp.send(&receiver, Symbol::intern("thisSelectorDoesNotExist"), &[]);
+    let result = interpreter.send(&receiver, Symbol::intern("thisSelectorDoesNotExist"), &[]);
 
     match result {
-        Err(HostSignal::Error(e)) => {
-            assert_eq!(e.selector, Symbol::intern("thisSelectorDoesNotExist"));
+        Err(HostSignal::Error(error)) => {
+            assert_eq!(error.selector, Symbol::intern("thisSelectorDoesNotExist"));
         }
-        Ok(v) => panic!(
-            "expected a doesNotUnderstand: error, got Ok({})",
-            interp.heap_ref().describe(&interp.fetch(&v))
-        ),
+        Ok(value) => {
+            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            panic!("expected a doesNotUnderstand: error, got Ok({got})")
+        }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
     }
 }
@@ -355,7 +378,7 @@ fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
 /// only resolves to a builtin (`resolve_superclass_receiver`).
 #[test]
 fn a_superclass_factory_message_receives_its_own_arguments() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'Test'
         class SuperclassArgs = Object new () (
@@ -366,22 +389,25 @@ fn a_superclass_factory_message_receives_its_own_arguments() {
             )
         ) : ()
     "};
-    let (mut interp, class) = load(src);
+    let (mut interpreter, class) = load(source);
     let module = expect_ok(
-        interp.instantiate(&class, &[]),
+        interpreter.instantiate(&class, &[]),
         "instantiate SuperclassArgs",
     );
     let derived = expect_ok(
-        interp.send(&module, Symbol::intern("Derived"), &[]),
+        interpreter.send(&module, Symbol::intern("Derived"), &[]),
         "Derived",
     );
     let instance = expect_ok(
-        interp.send(&derived, Symbol::intern("new"), &[]),
+        interpreter.send(&derived, Symbol::intern("new"), &[]),
         "Derived new",
     );
-    let stored = expect_ok(interp.send(&instance, Symbol::intern("base"), &[]), "base");
+    let stored = expect_ok(
+        interpreter.send(&instance, Symbol::intern("base"), &[]),
+        "base",
+    );
     assert!(
-        matches!(interp.fetch(&stored), Value::SmallInt(7)),
+        interpreter.enter(|mutator| matches!(mutator.fetch(&stored), Value::SmallInteger(7))),
         "the superclass's slot initializer did not see the clause's own argument"
     );
 }
@@ -393,12 +419,12 @@ fn a_superclass_factory_message_receives_its_own_arguments() {
 ///
 /// The last initializer an instantiation runs hands its own value to the
 /// send, with no step after it to answer the instance
-/// (`Interpreter::descend_levels`): that relies on the compiler ending every
+/// (`Mutator::descend_levels`): that relies on the compiler ending every
 /// initializer by answering `self`. An initializer that answered anything
 /// else -- its last statement's value, say, or `nil` -- would fail here.
 #[test]
 fn new_answers_the_instance_its_initializers_ran_on() {
-    let src = indoc! {"
+    let source = indoc! {"
         Newspeak3
         'T'
         class Kinds = Object new (
@@ -431,55 +457,65 @@ fn new_answers_the_instance_its_initializers_ran_on() {
         ) : ()
     "};
     for lowering in [Lowering::Optimized, Lowering::Reference] {
-        let (mut interp, class) = load_with(src, lowering);
-        let module = expect_ok(interp.instantiate(&class, &[]), "instantiate Kinds");
+        let (mut interpreter, class) = load_with(source, lowering);
+        let module = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Kinds");
         let cases: [(&str, &[(&str, i64)]); 3] = [
             ("One", &[("a", 1)]),
             ("Two", &[("b", 2), ("c", 3)]),
             ("Bare", &[("b", 2)]),
         ];
         for (name, slots) in cases {
-            let class = expect_ok(interp.send(&module, Symbol::intern(name), &[]), name);
-            let Value::Obj(_) = interp.fetch(&class) else {
-                panic!("{name} answers a class object")
-            };
+            let class = expect_ok(interpreter.send(&module, Symbol::intern(name), &[]), name);
+            interpreter.enter(|mutator| {
+                let Value::Object(_) = mutator.fetch(&class) else {
+                    panic!("{name} answers a class object")
+                };
+            });
             for from_newspeak in [false, true] {
                 let what = format!("{name} new, {lowering:?}, from Newspeak: {from_newspeak}");
                 let instance = if from_newspeak {
-                    interp.send(
+                    interpreter.send(
                         &module,
                         Symbol::intern("make:"),
                         std::slice::from_ref(&class),
                     )
                 } else {
-                    interp.send(&class, Symbol::intern("new"), &[])
+                    interpreter.send(&class, Symbol::intern("new"), &[])
                 };
                 let instance = expect_ok(instance, &what);
                 let seen = expect_ok(
-                    interp.send(&module, Symbol::intern("lastSeen"), &[]),
+                    interpreter.send(&module, Symbol::intern("lastSeen"), &[]),
                     "lastSeen",
                 );
                 // Every handle compared below is read after `lastSeen`, the
                 // last run before the comparisons.
-                let (Value::Obj(instance_obj), Value::Obj(seen_obj)) =
-                    (interp.fetch(&instance), interp.fetch(&seen))
-                else {
-                    panic!("{what}: answered something other than an object");
-                };
-                let class_obj = obj(&interp, &class);
-                assert!(
-                    instance_obj.same(seen_obj),
-                    "{what}: answered an object other than the one its initializers ran on"
-                );
-                assert!(
-                    interp.class_of(&Value::Obj(instance_obj)).same(class_obj),
-                    "{what}: answered an instance of another class"
-                );
-                for (getter, expected) in slots {
-                    let value =
-                        expect_ok(interp.send(&instance, Symbol::intern(getter), &[]), getter);
+                interpreter.enter(|mutator| {
+                    let (Value::Object(instance_object), Value::Object(seen_object)) =
+                        (mutator.fetch(&instance), mutator.fetch(&seen))
+                    else {
+                        panic!("{what}: answered something other than an object");
+                    };
+                    let class_object = object(mutator, &class);
                     assert!(
-                        matches!(interp.fetch(&value), Value::SmallInt(n) if n == *expected),
+                        instance_object.same(seen_object),
+                        "{what}: answered an object other than the one its initializers ran on"
+                    );
+                    assert!(
+                        mutator
+                            .class_of(&Value::Object(instance_object))
+                            .same(class_object),
+                        "{what}: answered an instance of another class"
+                    );
+                });
+                for (getter, expected) in slots {
+                    let value = expect_ok(
+                        interpreter.send(&instance, Symbol::intern(getter), &[]),
+                        getter,
+                    );
+                    assert!(
+                        interpreter.enter(
+                            |mutator| matches!(mutator.fetch(&value), Value::SmallInteger(integer) if integer == *expected)
+                        ),
                         "{what}: slot {getter}"
                     );
                 }
