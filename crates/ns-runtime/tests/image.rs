@@ -299,11 +299,28 @@ fn write_mixin_row(
     methods: &[(u32, u32)],
     nested: &[u32],
 ) {
+    write_mixin_row_with_slots(writer, name_id, &[], methods, nested);
+}
+
+/// `write_mixin_row` with `slots` as `(name symbol id, mutability tag,
+/// access tag)` records.
+fn write_mixin_row_with_slots(
+    writer: &mut encode::Writer,
+    name_id: u32,
+    slots: &[(u32, u8, u8)],
+    methods: &[(u32, u32)],
+    nested: &[u32],
+) {
     writer.write_u32(name_id);
     writer.write_u8(1); // AccessModifier::Protected
     writer.write_u32(0); // span.start
     writer.write_u32(0); // span.end
-    writer.write_u32(0); // no slots
+    writer.write_u32(slots.len() as u32);
+    for (name, mutability, access) in slots {
+        writer.write_u32(*name);
+        writer.write_u8(*mutability);
+        writer.write_u8(*access);
+    }
     writer.write_boolean(false); // no factory
     writer.write_boolean(false); // no initExprs
     writer.write_boolean(false); // no superclass clause
@@ -482,7 +499,10 @@ fn method_code<'gc>(
     selector: &str,
 ) -> Rc<CompiledCode> {
     let application = heap.class_application(class).expect("not a class");
-    application.mixin.methods[&Symbol::intern(selector)]
+    application
+        .mixin
+        .compiled_method(Symbol::intern(selector))
+        .expect("the class declares the method")
         .code
         .clone()
 }
@@ -526,13 +546,16 @@ fn install_mixin<'gc>(mutator: &mut Mutator<'gc>, class: ClassReference<'gc>, mi
 /// `mixin` with method `selector`'s body replaced by `code`.
 fn with_method_code(mut mixin: Mixin, selector: &str, code: Rc<CompiledCode>) -> Mixin {
     let selector = Symbol::intern(selector);
-    let method = mixin.methods[&selector].clone();
+    let method = mixin
+        .compiled_method(selector)
+        .expect("the mixin declares the method")
+        .clone();
     mixin.methods.insert(
         selector,
-        Rc::new(ns_runtime::mixin::MixinMethod {
+        ns_runtime::mixin::MethodEntry::Compiled(Rc::new(ns_runtime::mixin::MixinMethod {
             code,
             ..(*method).clone()
-        }),
+        })),
     );
     mixin
 }
@@ -657,8 +680,9 @@ fn a_decoded_mixin_carries_the_bodies_its_row_names() {
         let class = class_reference(mutator, &class);
         let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
         let root = decoded_mixins.root().expect("a root row");
-        assert_eq!(root.methods.len(), 3);
-        for (selector, method) in &root.methods {
+        assert_eq!(root.compiled_methods().count(), 3);
+        for method in root.compiled_methods() {
+            let selector = method.selector;
             assert_eq!(
                 *method.code,
                 *method_code(mutator.heap(), class, selector.as_str()),
@@ -1611,17 +1635,21 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
             Some(Value::SmallInteger(9))
         ));
         assert!(home.uncontinuable, "`mk` had returned");
-        let methods = heap
+        let mixin = heap
             .class_application(class)
             .expect("not a class")
             .mixin
-            .methods
             .clone();
         let FrameKind::Method(declaration) = &home.kind else {
             panic!("home is a method frame")
         };
         assert!(
-            Rc::ptr_eq(declaration, &methods[&Symbol::intern("mk")]),
+            Rc::ptr_eq(
+                declaration,
+                mixin
+                    .compiled_method(Symbol::intern("mk"))
+                    .expect("the class declares `mk`")
+            ),
             "re-resolved against the class's method map"
         );
         assert!(heap.class_of_object(*object(&home.receiver)).same(class));
@@ -2348,7 +2376,10 @@ fn a_closure_capturing_a_block_activation_round_trips() {
         let application = heap.class_application(class).expect("not a class");
         assert!(Rc::ptr_eq(
             declaration,
-            &application.mixin.methods[&Symbol::intern("mk")]
+            application
+                .mixin
+                .compiled_method(Symbol::intern("mk"))
+                .expect("the class declares `mk`")
         ));
     });
 }
@@ -3738,9 +3769,9 @@ const NEEDS_INITIALIZER: &str = indoc! {"
     Newspeak3
     'T'
     class X = Object new (
-      | n ::= 1. |
+      | count ::= 1. |
     ) (
-      public n = ( ^n )
+      public n = ( ^count )
     ) : ()
 "};
 
@@ -4185,13 +4216,15 @@ fn a_snapshotted_nested_mixins_method_and_initializer_survive_a_load() {
         // class objects apply.
         let inner_mixin = &decoded_mixins.root().expect("a root row").nested[0];
         let value_method = inner_mixin
-            .methods
-            .get(&Symbol::intern("value"))
+            .compiled_method(Symbol::intern("value"))
             .expect("Inner declares `value`");
         let live_inner = &root_mixin_of(mutator.heap(), class).nested[0];
         assert_eq!(
             *value_method.code,
-            *live_inner.methods[&Symbol::intern("value")].code,
+            *live_inner
+                .compiled_method(Symbol::intern("value"))
+                .expect("Inner declares `value`")
+                .code,
             "the nested mixin's own method must survive the round trip"
         );
         assert!(
@@ -5102,6 +5135,115 @@ fn a_root_lists_selector_id_out_of_range_is_a_decode_error_not_a_panic() {
     );
 }
 
+/// A one-row mixin table with `slots` and `methods`, decoded against a
+/// symbol table of `names` and one method body.
+fn decode_one_row_with_slots(
+    names: &[&str],
+    slots: &[(u32, u8, u8)],
+    methods: &[(u32, u32)],
+) -> Result<mixins::Decoded, decode::DecodeError> {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    write_mixin_row_with_slots(&mut writer, 0, slots, methods, &[]);
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    let codes = [Rc::new(every_instruction_once())];
+    mixins::decode(&mut reader, &table_with(names), &codes)
+}
+
+#[test]
+fn an_invalid_slot_mutability_tag_is_a_decode_error_not_a_panic() {
+    assert_eq!(
+        decode_one_row_with_slots(&["X", "x"], &[(1, 2, 1)], &[]).err(),
+        Some(decode::DecodeError::InvalidTag {
+            what: "slot mutability",
+            tag: 2
+        })
+    );
+}
+
+/// A decoded slot defines the accessors a slot declared in source does
+/// (`newspeak-spec.pdf` §6.3.2): a getter with the slot's accessibility and,
+/// for a mutable slot, a setter -- derived from the slot record, which lists
+/// none of them.
+#[test]
+fn a_decoded_slot_defines_its_accessors() {
+    let decoded =
+        decode_one_row_with_slots(&["X", "fixed", "mutable"], &[(1, 0, 0), (2, 1, 2)], &[])
+            .expect("decode");
+    let root = decoded.root().expect("a root row");
+    let accessor = |selector: &str| match root.methods.get(&Symbol::intern(selector)) {
+        Some(ns_runtime::mixin::MethodEntry::SlotAccessor(accessor)) => Some(*accessor),
+        _ => None,
+    };
+    let fixed = accessor("fixed").expect("a getter");
+    assert_eq!(fixed.access, ns_syntax::ast::AccessModifier::Public);
+    assert!(
+        accessor("fixed:").is_none(),
+        "an immutable slot has no setter"
+    );
+    let setter = accessor("mutable:").expect("a mutable slot's setter");
+    assert_eq!(setter.access, ns_syntax::ast::AccessModifier::Private);
+    assert_eq!(setter.own_index, 1);
+    assert_eq!(root.methods.len(), 3);
+}
+
+/// A row whose compiled method shares a selector with one of its slots'
+/// accessors: its method table could keep only one of the two, so the row
+/// is refused, as the resolver refuses the same declaration from source.
+#[test]
+fn a_row_whose_method_shares_a_slot_accessors_selector_is_refused() {
+    // Symbol 1 is `x`, symbol 2 `x:`; the method is named by `method`.
+    for (slot, method, expected) in [((1, 0, 1), 1, "x"), ((1, 1, 1), 2, "x:")] {
+        let error = decode_one_row_with_slots(&["X", "x", "x:"], &[slot], &[(method, 0)])
+            .expect_err("a colliding row is refused");
+        assert_eq!(
+            error,
+            decode::DecodeError::DuplicateSelector(expected.to_string())
+        );
+        assert_eq!(
+            error.to_string(),
+            format!("a mixin-table row declares member `{expected}` more than once")
+        );
+    }
+}
+
+/// §6.3.2: an immutable slot has "no setter method", so a method named by
+/// the slot's name with `:` appended is a member of its own.
+#[test]
+fn a_method_named_like_an_immutable_slots_setter_decodes() {
+    let decoded = decode_one_row_with_slots(&["X", "x", "x:"], &[(1, 0, 1)], &[(2, 0)])
+        .expect("an immutable slot defines no setter to collide with");
+    let root = decoded.root().expect("a root row");
+    assert!(root.compiled_method(Symbol::intern("x:")).is_some());
+}
+
+#[test]
+fn a_row_that_names_one_selector_twice_is_refused() {
+    assert_eq!(
+        decode_one_row_with_slots(&["X", "m"], &[], &[(1, 0), (1, 0)]).err(),
+        Some(decode::DecodeError::DuplicateSelector("m".to_string()))
+    );
+}
+
+/// §6: a nested declaration "implicitly defines a method with the same
+/// name", so a row whose method shares a nested row's name declares that
+/// member twice.
+#[test]
+fn a_row_whose_method_shares_a_nested_declarations_name_is_refused() {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(2);
+    write_mixin_row(&mut writer, 0, &[(1, 0)], &[1]);
+    write_mixin_row(&mut writer, 1, &[], &[]);
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    let codes = [Rc::new(every_instruction_once())];
+    assert_eq!(
+        mixins::decode(&mut reader, &table_with(&["X", "Inner"]), &codes).err(),
+        Some(decode::DecodeError::DuplicateSelector("Inner".to_string()))
+    );
+}
+
 /// `symbols::Table::get`'s own bounds check, isolated from everything else
 /// decoding touches: an empty table has no id 0, and `get` must say so
 /// rather than index-panic.
@@ -5230,7 +5372,10 @@ fn a_nested_mixin_round_trips_through_the_table() {
     let factory = inner.factory.expect("Inner declares a factory");
     assert_eq!(factory.selector, Symbol::intern("withV:"));
     assert_eq!(factory.argument_count, 1);
-    let value = inner.methods[&Symbol::intern("value")].clone();
+    let value = inner
+        .compiled_method(Symbol::intern("value"))
+        .expect("Inner declares `value`")
+        .clone();
     assert_eq!(value.argument_count, 0);
     assert_eq!(value.access, ns_syntax::ast::AccessModifier::Public);
     // The point of the whole task: nothing in the rebuilt tree came from an
@@ -6249,8 +6394,8 @@ const GOLDEN_SOURCE: &str = indoc! {"
         public current = ( ^count )
         public reset = ( count := 0. ^self )
         public doubled = ( ^count * 2 )
-        public class Inner withSeed: s = Object new (| seed = s. |) (
-            public seed = ( ^seed )
+        public class Inner withSeed: s = Object new (| held = s. |) (
+            public seed = ( ^held )
         )
     ) : (
         public marker = ( ^7 )

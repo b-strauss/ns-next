@@ -659,3 +659,174 @@ fn a_recursion_through_the_nested_class_accessor_is_bounded_by_the_activation_li
         "Uncaught Newspeak error: stack overflow: recursion too deep\n",
     );
 }
+
+/// `newspeak-spec.pdf` §5.10: "If a public or protected method f named s is
+/// defined for (3.5) S, the value of the send is the result of invoking f" --
+/// a private method of the superclass is not one, so `super p` falls to "the
+/// #doesNotUnderstand: method defined for S", which is `Object`'s.
+#[test]
+fn a_super_send_does_not_reach_a_private_method() {
+    assert_outcome(
+        "super-private",
+        indoc! {"
+            Newspeak3
+            'T'
+            class SuperPrivate usingPlatform: platform = Object new (
+            ) (
+                class SuperBase = Object new () (
+                    private p = ( ^10 )
+                )
+                class SuperChild = SuperBase new () (
+                    public run = ( ^super p )
+                )
+                public main: pl args: a = (
+                    SuperChild new run
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #p\n",
+    );
+}
+
+/// `newspeak-spec.pdf` §5.7: no lexically enclosing declaration declares
+/// `p` -- `Base2` is `Child2`'s superclass, not an enclosing class -- so `^p`
+/// is `self p`, that is `outer Child2 p` (§5.8). §5.9: `Child2` declares no
+/// private `p`, and `lookupProtected` passes `Base2`'s private `p` over, so
+/// the send falls to `doesNotUnderstand:`.
+#[test]
+fn a_superclasss_private_method_is_not_lexically_visible() {
+    assert_outcome(
+        "inherited-private",
+        indoc! {"
+            Newspeak3
+            'T'
+            class InheritedPrivate usingPlatform: platform = Object new (
+            ) (
+                class Base2 = Object new () (
+                    private p = ( ^10 )
+                )
+                class Child2 = Base2 new () (
+                    public run = ( ^p )
+                )
+                public main: pl args: a = (
+                    Child2 new run
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #p\n",
+    );
+}
+
+/// `newspeak-spec.pdf` §5.7: no lexically enclosing declaration declares `n`
+/// -- `Enclosing` only inherits it from `OuterBase` -- so `^n` is "equivalent
+/// to a self send", and on figure 4, "Only if this fails is the receiver's
+/// inheritance chain followed": the receiver's, `Nested`'s, which has no
+/// `n`. §2.3.1: "After that, no further lookup is done."
+#[test]
+fn an_enclosing_classs_inherited_member_is_not_lexically_visible() {
+    assert_outcome(
+        "enclosing-inherited",
+        indoc! {"
+            Newspeak3
+            'T'
+            class EnclosingInherited usingPlatform: platform = Object new (
+            ) (
+                class OuterBase = Object new () (
+                    public n = ( ^1 )
+                )
+                class Enclosing = OuterBase new () (
+                    class Nested = Object new () (
+                        public implicit = ( ^n )
+                    )
+                    public test = ( ^Nested new implicit )
+                )
+                public main: pl args: a = (
+                    Enclosing new test
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #n\n",
+    );
+}
+
+/// `newspeak-spec.pdf` §6: a nested class declaration "implicitly defines a
+/// method with the same name and accessibility" in its enclosing class, so a
+/// `private class Hidden` defines a private accessor, which §5.5's
+/// `lookupPublic` never answers.
+#[test]
+fn a_private_nested_class_is_unreachable_from_outside() {
+    assert_outcome(
+        "private-nested",
+        indoc! {"
+            Newspeak3
+            'T'
+            class PrivateNested usingPlatform: platform = Object new (
+            ) (
+                class Holder = Object new () (
+                    private class Hidden = Object new () ()
+                )
+                public main: pl args: a = (
+                    Holder new Hidden
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #Hidden\n",
+    );
+}
+
+/// `newspeak-spec.pdf` §6.3.2: an immutable slot "may be accessed exclusively
+/// by invoking a getter method" -- "There is no setter method associated with
+/// the slot", however public the slot is.
+#[test]
+fn an_immutable_slot_has_no_setter() {
+    assert_outcome(
+        "immutable-setter",
+        indoc! {"
+            Newspeak3
+            'T'
+            class ImmutableSetter usingPlatform: platform = Object new (
+            ) (
+                class Holder = Object new (| public y = 1. |) ()
+                public main: pl args: a = (
+                    Holder new y: 2
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #y:\n",
+    );
+}
+
+/// `newspeak-spec.pdf` §6.3.1: "If no access modifier is declared, the
+/// default is protected", and §6.3.2 gives the getter "the same"
+/// accessibility as the slot -- so §5.5's `lookupPublic` finds a protected
+/// method and answers "Undefined".
+#[test]
+fn a_protected_slot_does_not_answer_an_explicit_receiver() {
+    assert_outcome(
+        "protected-slot",
+        indoc! {"
+            Newspeak3
+            'T'
+            class ProtectedSlot usingPlatform: platform = Object new (
+            ) (
+                class Holder = Object new (| w = 3. |) ()
+                public main: pl args: a = (
+                    Holder new w
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #w\n",
+    );
+}

@@ -33,15 +33,25 @@ below. Measured whole, it is level with `a5d1e05` on every source; its first
 measurement was not, and finding out why put a function-alignment pin into
 the measurement protocol — and only there (the first finding below).
 
+**Name resolution and lookup follow the specification**, a step inserted
+ahead of the inline caches and done: a slot's accessors are method-table
+entries that a subclass overrides, §5.7 lets only lexically *declared*
+members decide a lexical send, and every send kind applies its access rule
+(§5.5–§5.10, §6.3.2). The method and slot tables hash their identity keys
+with a multiply-rotate hasher instead of SipHash. Measured whole, no source is
+slower than `59061ec` or `be3eb40`, and six are 4–12.5% faster than both; see
+"M4 — Spec-conformant lookup" below.
+
 **The next piece is step 3, the inline caches** ([dispatch.md](design/dispatch.md),
-"Planned: inline caches"; item 3 of the order of work below). A candidate
-small step of its own comes before them: a cached getter symbol for
-setter-shaped lexical sends and a hasher for `u32`-shaped keys in the method
-and slot tables, which would take most of `Symbol::intern`'s 11.9% of
-`bench_send.ns` out before a lexical-send cache entry removes the lookup
-altogether ("The profile of `bench_block.ns` is taken" below says why). Each
-gets its own plan under `docs/superpowers/plans/`, written against the code
-as 2c left it. Read for it: [dispatch.md](design/dispatch.md), "Planned:
+"Planned: inline caches"; item 3 of the order of work below). It gets its own
+plan under `docs/superpowers/plans/`, written against the code as the
+spec-conformant lookup left it. Two questions there are open and are decided
+with the caches, not before: **the megamorphic fallback** behind the inline
+caches (Cog's global method cache, V8's stub cache, Primordial Soup's
+`LookupCache`), and **a dense application id in the object header**, which
+makes a guard one load and one compare and touches the object representation,
+the tracer and the image. A slot accessor is an ordinary cache entry, the
+guard and then the field read or write. Read for it: [dispatch.md](design/dispatch.md), "Planned:
 inline caches" (a cache guards on the mixin application, and a native entry
 carries an enumerated primitive); [compiler.md](design/compiler.md),
 "Safepoints and call-site identity", for the inert call-site slots every
@@ -55,14 +65,37 @@ measured, not assumed: the protocol and the seven sources of "What removing
 the re-entries moved" ([execution.md](design/execution.md); the four
 throwaway sources are written out in the
 [2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
-"Measurement protocol"), **every compared binary, the current tree
+"Measurement protocol", three of them with their slots renamed as "What
+spec-conformant lookup moved" there says), **every compared binary, the current tree
 included, built with the protocol's explicit flags through `RUSTFLAGS`** —
 `+crt-static` and the function-alignment pin, which no configuration
 carries — two sittings for a whole step, and a comparison against `be3eb40`
 as well as against the commit the step starts from (the second finding
 below).
 
+**Known gaps the step left**, each recorded where it applies:
+
+- **Lazy slots are eager** (§6.3.3): the parser drops `lazy`, and the slot is
+  initialized with the others ([README.md](design/README.md), deviations).
+- **The class side's own scope**: both sides of a class declaration
+  contribute to one member set for lexical resolution; the specification is
+  silent and the canonical compiler scopes the class side apart
+  ([dispatch.md](design/dispatch.md), "Resolution").
+- **A builtin class name is loaded, not sent** (§3.2): `Object` and the other
+  builtin names resolve statically rather than as sends to the accessors
+  §3.2 describes ([dispatch.md](design/dispatch.md), "Deviation: a builtin
+  class name is loaded, not sent").
+
 **Open findings**, for whoever plans next to weigh:
+
+- **A lexical send's decision is sensitive to codegen.** It probes N's own
+  method table for §5.9's private rule and then the receiver's for
+  `lookupProtected`, the same table twice when N is the receiver's class.
+  Reusing the first probe measured level with the hasher in place, and a
+  variant of the reuse that returned its finding as a wider enum measured
+  3–15% slower on every source ([execution.md](design/execution.md), "What
+  spec-conformant lookup moved"). Step 3's caches replace that decision, and
+  a variant of them that looks free is measured, not assumed.
 
 - **A measurement builds every compared binary with the same explicit
   flags, function alignment pinned; the shipped build is unpinned.** 2c's
@@ -74,7 +107,7 @@ below).
   host code ahead of it moved every hot function by 224 or 240 bytes into a
   different 64-byte phase, and with function starts pinned to 64 bytes
   (`-C llvm-args=-align-all-functions=6`) the two commits measured level.
-  Under the pin the whole step is level with `a5d1e05` on every source in
+  Under the pin 2c is level with `a5d1e05` on every source in
   both sittings, −1.4% to +0.6%, every group overlapping
   ([execution.md](design/execution.md), "What 2c moved"). The unpinned
   parent reads −0.1% to −1.8% against the pinned one, overlapping on all but
@@ -93,21 +126,18 @@ below).
   from — a uniform codegen shift in `vm::run` and `dispatch_native`, traced as
   far as inlining and register allocation and not bisected; code placement,
   the mechanism the protocol now pins, is the likely cause, verified only
-  for 2c. 2b
-  took `bench_block.ns` to 2.5% faster than `be3eb40`, and 2c, measured
-  under the pin, keeps it: `bench_block.ns` −2.2% and −3.2%,
-  `bench_newarg.ns` −2.9% and −2.1% (2b: −3.2% to −3.4%), `bench_do.ns`
-  −3.5% and −2.5%, `bench_new.ns` and `bench_new2.ns` level. `bench_send.ns`
-  is +3.1% and +2.2%, entirely above `be3eb40` in both sittings (2b: +0.9%
-  to +1.4%), and `bench_loop.ns` +1.7% and +1.7% — the parent's own shift,
-  `a5d1e05` sitting +2.5% to +2.7% above `be3eb40` on the send and +1.1% to
-  +2.0% on the loop in the same sittings, with 2c level with it
-  ([execution.md](design/execution.md), "What 2c moved"). The rule stays:
+  for 2c. 2c, measured under the pin, left `bench_send.ns` +3.1% and +2.2%
+  and `bench_loop.ns` +1.7% above `be3eb40` ([execution.md](design/execution.md),
+  "What 2c moved"). Spec-conformant lookup closed both: `bench_send.ns` is
+  10.4% and 10.1% below `be3eb40`, `bench_loop.ns` level with it (+0.3% and
+  +0.8%, overlapping), and every other source 6.2–9.9% below it
+  ([execution.md](design/execution.md), "What spec-conformant lookup
+  moved"). The rule stays:
   **every performance measurement up to and including step 3 compares
   against `be3eb40` as well as against the commit it starts from**, reports
   both, and builds every binary with the same codegen flags (the finding
   above). If a source is still slower than `be3eb40` once step 3 has landed,
-  the shift is chased then, on the rebuilt send path.
+  the shift is chased then, on the rebuilt send path. None is slower now.
 - **A decoded image's last initializer is not held to answering `self`**, so
   `new` answers whatever it answers — wrong but safe, no panic.
   `image::decode::verify_mixins` could refuse such an initializer, which would
@@ -117,7 +147,7 @@ below).
   block in that body; the clause *message*'s case, a `^` caught by the
   message's activation, is pinned
   (`a_return_in_a_clause_messages_block_hands_its_value_to_the_walk`).
-- **The stress suite takes three minutes** (190 s against 13.1 s), almost half
+- **The stress suite takes three minutes** (190 s against 12.7 s), almost half
   of it one test, `the_depth_limit_is_exact_and_counts_alike_under_both_lowerings`.
   It is a gate before every commit, so step 3's plan should budget for it.
 
@@ -157,7 +187,7 @@ why the object and activation representations were converted together rather
 than one at a time. Each piece is designed in the document for its own aspect;
 those documents are the authority, and this is only the map to them.
 
-**Ten pieces are done.** The heap seam routes every object and activation
+**Eleven pieces are done.** The heap seam routes every object and activation
 access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
 it replaced `Rc<RefCell<_>>`: an `ObjectReference` or a `FrameReference` is a 32-bit index
 into a `Vec` the `Heap` owns, with a private field so the compiler enforces the
@@ -180,7 +210,10 @@ keeps, and checked all of it by moving everything under the whole suite; see
 "M4 — The safepoint, tracing, host roots and the stress mode" below. Then 2c
 branded every movable handle with the lifetime of the entry that minted it,
 so the compiler checks what 2b's stress mode could only find at run time; see
-"M4 — The lifetime brand" below.
+"M4 — The lifetime brand" below. Then name resolution and lookup were made to
+follow the specification, slot accessors became method-table entries, and the
+method and slot tables got an identity hasher; see "M4 — Spec-conformant
+lookup" below.
 
 **The profile of `bench_block.ns` is taken**
 ([execution.md](design/execution.md), "What the profiles show"). The question
@@ -192,14 +225,15 @@ into an arena that grows by doubling 9.6% and the divorce on return 8.9%; the
 trampoline took the first two. Profiling the trampoline's head as well found
 one cost no measurement had isolated: `Symbol::intern` is 11.9% of
 `bench_send.ns`, because a lexical send with a setter-shaped selector —
-`self tick: sum` — interns its getter name on every send to look for a slot,
-and the method and slot tables hash `Symbol` keys with SipHash. That is the
-lexical-send slot lookup listed as left for the inline caches; a cached getter
-symbol and a hasher for `u32`-shaped keys would take most of it out sooner,
-and are a candidate small step of their own before the caches.
+`self tick: sum` — interned its getter name on every send to look for a slot,
+and the method and slot tables hashed `Symbol` keys with SipHash.
+Spec-conformant lookup took both out: a slot's accessors are method-table
+entries, so no send interns a name, and the tables hash identity keys with
+one multiply; `bench_send.ns` is 12.5% faster for it.
 
 The list below is M4's order of work — 1a done, A to C inserted ahead of 1b
-and all three done, 1b done, 2 done in all three parts, everything from 3 on still ahead — and it is
+and all three done, 1b done, 2 done in all three parts, the spec-conformant
+lookup inserted ahead of 3 and done, everything from 3 on still ahead — and it is
 not the order the milestone was originally sketched in. Two things settled the order of the
 numbered steps, neither of them a preference.
 
@@ -278,7 +312,11 @@ so nothing is lost by it going second.
      code placement, and the measurement protocol now pins every function
      start to a 64-byte boundary in every binary it compares (the first
      finding above); see "M4 — The lifetime brand" below.
-3. **Inline caches** — [dispatch.md](design/dispatch.md). The call-site slots are
+3. **Inline caches** — [dispatch.md](design/dispatch.md). **Ahead of them, done:
+   spec-conformant lookup**, which made the lookups the caches record follow
+   §5.5–§5.10 and §6.3.2, put slot accessors into the method table, where a
+   cache entry records them like any member, and gave the tables an identity
+   hasher; see "M4 — Spec-conformant lookup" below. The call-site slots are
    already emitted and inert, so no bytecode format break. A cache must guard on
    the **mixin application**, not on the class object; the obvious key is the
    wrong one and would never hit. A native entry carries an enumerated
@@ -859,9 +897,9 @@ the same result.
   them is a wire change. Step B shares the vector instead of copying it.
 - **The lexical-send slot lookup.** `dispatch_lexical_send` interns the getter
   name for every setter-shaped selector and hashes the name into the
-  application's `slot_index` for every lexical send. A lexical-send inline-cache
-  entry that records the slot's index removes both
-  ([dispatch.md](design/dispatch.md), "Planned: inline caches").
+  application's `slot_index` for every lexical send. Spec-conformant lookup
+  removed both: a slot's accessors are method-table entries, and the tables
+  hash identity keys with one multiply ("M4 — Spec-conformant lookup" below).
 
 ## M4 — The reference lowering (2026-09-12)
 
@@ -1783,6 +1821,111 @@ built) takes 13.1 s, where 2b left 12.7 s. Under
 fixture or golden, about 97 s against 7.5 s.
 
 690 tests pass, with one ignored (685 when 2b closed); `parse-corpus` stays at
+**210/0/1/0** and `run-corpus` at **6/0/205**, plain and under the stress mode.
+
+## M4 — Spec-conformant lookup (2026-09-15)
+
+Plan: [ns-next-spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md).
+
+A step inserted ahead of the inline caches, because a cache records what a
+lookup answers and the lookups did not answer what `newspeak-spec.pdf`
+specifies. Twelve deviations were found by probe programs against `59061ec`,
+each pinned by a fixture or a program outcome whose expectation comes from the
+specification text, which it cites, written before the fix. The step's
+commits follow the plan (`1cfee47`) on `feature/spec-conformant-lookup`, from
+`59061ec`.
+
+**Decisions**, settled with the user on 2026-09-15:
+
+1. **Spec conformance is not optional.** Every rule follows the specification
+   PDF; the older paper it cites for the rationale is background only. Where
+   the specification is silent, the canonical compiler decides
+   (`prior-art/newspeak/`), and the test says so.
+2. **Slot accessors are methods** (§6.3.2): entries of the mixin's method
+   table with the slot's accessibility, overridable like any method, answered
+   without an activation. SOMns and the canonical compilers hold them the same
+   way ([dispatch.md](design/dispatch.md), "Slot accessors").
+3. **Only declared members are lexically visible** (§5.7, §2.3.1): an
+   enclosing class's inherited member is reached only through an explicit
+   `outer N m`.
+4. **A declaration may not declare one member twice** — a method, a slot's
+   getter, a mutable slot's setter, a nested class. The specification states
+   no rule; the canonical compiler's `checkForDuplicateNames:` refuses them,
+   and a method table cannot hold both.
+5. **An identity hasher** for the tables keyed by identities the runtime
+   assigned, written here rather than taken as a dependency.
+6. **Lazy slots stay out of scope** (§6.3.3); the parser drops `lazy`.
+7. **The megamorphic fallback and an application id in the object header
+   are open questions for step 3**, not part of this step.
+
+**What changed**, in the plan's order:
+
+1. **The design documents** (`f3a3847`): [dispatch.md](design/dispatch.md)'s
+   resolution rule, the three lookups with a verdict per access modifier,
+   the lexical private rule, super sends and slot accessors;
+   [object-model.md](design/object-model.md) and
+   [image-format.md](design/image-format.md) for the method table and the
+   slot record.
+2. **Public lookup passes a private declaration over, and super sends follow
+   §5.10** (`c920a7e`): `dispatch::walk` decides per level whether to accept,
+   skip or stop; a super send finds only public and protected methods, and
+   when it finds none, the `doesNotUnderstand:` defined for the superclass
+   answers, where the send used to recurse without bound.
+3. **A lexical send's private rule asks only N** (`bbe210d`), the lexically
+   enclosing class at the resolver's depth, as Primordial Soup's
+   `LexicalSend` does.
+4. **The resolver sees only declared members under their full selectors**
+   (`e730d13`): `foo:bar:` no longer captures `foo:`, an immutable slot
+   declares no setter, and a superclass clause's bare receiver is a lexical
+   send in its enclosing class (§6.1).
+5. **Parenthesized self sends and private nested classes pinned**
+   (`3cf7e3e`), both already right.
+6. **Slot accessors are method-table entries** (`431da35`): the lexical-send
+   slot pre-check and the per-application slot map are gone; an accessor
+   names its slot by its position among its mixin's own slots, resolved
+   through `own_slot_base` as `InitializeSlot` is. The resolver refuses a
+   duplicate member, the image's slot record carries mutability and access
+   so the decoder derives the same accessors and refuses a row whose members
+   collide, and the golden image is regenerated for the two new bytes per
+   slot and one renamed slot of its source.
+7. **The identity hasher** (`7b1901c`): `hash::IdentityMap` for the method
+   tables, the nested-class slot maps and the application caches.
+8. **The documents**, and the whole-step measurement below.
+
+Eleven fixtures and six program outcomes pin the twelve deviations and the
+cases around them, among them §2.3's two nested-class examples verbatim. Six
+existing test sources declared a slot and a getter method of one name, which
+is now a resolve error; their slots are renamed and nothing they assert
+changed. No other golden, `.expected` file or `run-corpus` row changed.
+
+Measured whole against `59061ec` and `be3eb40` in two sittings on a release
+build, by the protocol with every function start pinned, three of the four
+throwaway sources with their slots renamed for the same reason. Means of the
+five medians in ms from the first sitting, and the change in each sitting:
+
+| Source | `be3eb40` | `59061ec` | After | Against `59061ec`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.21 | 11.41 | 11.24 | −1.5% / −0.5% | +0.3% / +0.8% |
+| `bench_send.ns` | 13.92 | 14.24 | 12.47 | −12.5% / −12.4%, after entirely below in both | −10.4% / −10.1%, after entirely below in both |
+| `bench_block.ns` | 23.50 | 22.86 | 21.20 | −7.3% / −7.8%, after entirely below in both | −9.8% / −9.7%, after entirely below in both |
+| `bench_do.ns` | 8.07 | 7.84 | 7.54 | −3.8% / −5.1%, after entirely below in the second | −6.5% / −6.8%, after entirely below in both |
+| `bench_new.ns` | 7.46 | 7.41 | 6.81 | −8.1% / −8.2%, after entirely below in both | −8.7% / −9.9%, after entirely below in both |
+| `bench_new2.ns` | 8.37 | 8.39 | 7.85 | −6.4% / −6.3%, after entirely below in both | −6.2% / −6.4%, after entirely below in both |
+| `bench_newarg.ns` | 10.63 | 10.36 | 9.91 | −4.3% / −4.7%, after entirely below in both | −6.8% / −7.9%, after entirely below in both |
+
+**No source is slower, and six are faster than both commits.** A sitting of
+its own separated the two code changes that decide it: the accessors alone
+made every source 3.1–18.1% slower, since every lexical send then probed a
+SipHash table twice where a slot send had probed once, and the hasher made
+every source 11.8–19.7% faster than that. Sparing the second probe measured
+level once the hasher was in; [execution.md](design/execution.md), "What
+spec-conformant lookup moved", has every sitting's figures and the two
+variants of that reuse.
+
+The suite (`cargo test --workspace`, debug build, test binaries already
+built) takes 12.7 s, and 189.9 s under `NS_NEXT_STRESS_MOVES=1`.
+
+710 tests pass, with one ignored (690 when 2c closed); `parse-corpus` stays at
 **210/0/1/0** and `run-corpus` at **6/0/205**, plain and under the stress mode.
 
 ## Notes

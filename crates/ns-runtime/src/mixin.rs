@@ -29,6 +29,7 @@ use ns_syntax::ast;
 use ns_syntax::Span;
 
 use crate::bytecode::CompiledCode;
+use crate::hash::IdentityMap;
 use crate::types::Binding;
 use crate::Symbol;
 
@@ -87,13 +88,18 @@ impl MixinMethod {
     }
 }
 
-/// One of a mixin's own instance slots. The name is what the run time
-/// needs (`Mutator::apply_mixin` lays the instance out by name); the
-/// declaration carries the initializer expression, which only the compiler
-/// reads.
+/// One of a mixin's own instance slots: what decides the accessors it
+/// defines (`slot_accessors`) -- its name, whether it is mutable and its
+/// accessibility -- and, for a mixin built from source, the declaration
+/// whose initializer expression the compiler reads.
 #[derive(Debug, Clone)]
 pub struct MixinSlot {
     pub name: Symbol,
+    /// §6.3.2: only a mutable slot has a setter.
+    pub mutable: bool,
+    /// §6.3.2: the accessors' accessibility "is the same as the slot's",
+    /// already defaulted through `dispatch::effective_access` (§6.3.1).
+    pub access: ast::AccessModifier,
     /// `None` for a slot of a mixin decoded from an image: its initializer
     /// is already compiled into that mixin's initializer body.
     pub declaration: Option<Rc<ast::SlotDeclaration>>,
@@ -103,9 +109,95 @@ impl MixinSlot {
     pub fn from_declaration(declaration: Rc<ast::SlotDeclaration>) -> MixinSlot {
         MixinSlot {
             name: Symbol::intern(&declaration.name.name),
+            mutable: declaration.mutability != ast::SlotMutability::Immutable,
+            access: crate::dispatch::effective_access(declaration.access),
             declaration: Some(declaration),
         }
     }
+}
+
+/// §6.3.2: the getter a slot declaration defines, or a mutable slot's setter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessorKind {
+    Getter,
+    Setter,
+}
+
+/// One of the accessors a slot declaration implicitly defines
+/// (`newspeak-spec.pdf` §6.3.2): a method with the slot's own accessibility
+/// whose body reads or writes the slot. `own_index` is the slot's position
+/// among its mixin's *own* slots, resolved per application through
+/// `MixinApplication::own_slot_base` exactly as
+/// `Instruction::InitializeSlot` is -- one entry serves every application
+/// of the mixin, which may each place the mixin's slots at a different
+/// absolute offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotAccessor {
+    pub selector: Symbol,
+    pub access: ast::AccessModifier,
+    pub own_index: u32,
+    pub kind: AccessorKind,
+}
+
+/// One entry of a mixin's method table (§3.5): a compiled method, or one of
+/// the accessors a slot declaration defines -- methods on the same footing,
+/// found by the same lookup and overridden the same way
+/// (`docs/design/dispatch.md`, "Slot accessors").
+#[derive(Debug, Clone)]
+pub enum MethodEntry {
+    Compiled(Rc<MixinMethod>),
+    SlotAccessor(SlotAccessor),
+}
+
+impl MethodEntry {
+    /// The entry's §5.2 accessibility, which every lookup reads.
+    pub fn access(&self) -> ast::AccessModifier {
+        match self {
+            MethodEntry::Compiled(method) => method.access,
+            MethodEntry::SlotAccessor(accessor) => accessor.access,
+        }
+    }
+
+    /// The compiled method, for an entry that is one.
+    pub fn compiled(&self) -> Option<&Rc<MixinMethod>> {
+        match self {
+            MethodEntry::Compiled(method) => Some(method),
+            MethodEntry::SlotAccessor(_) => None,
+        }
+    }
+}
+
+/// The accessor entries `slots` define, in declaration order (§6.3.2): each
+/// slot's getter under its name and, for a mutable slot, its setter under
+/// the name with `:` appended -- "a single argument keyword message
+/// consisting of the slot name with : appended to it".
+pub fn slot_accessors(slots: &[MixinSlot]) -> Vec<(Symbol, MethodEntry)> {
+    let mut accessors = Vec::with_capacity(slots.len() * 2);
+    for (index, slot) in slots.iter().enumerate() {
+        let own_index = u32::try_from(index).expect("a mixin's slot count fits a u32");
+        accessors.push((
+            slot.name,
+            MethodEntry::SlotAccessor(SlotAccessor {
+                selector: slot.name,
+                access: slot.access,
+                own_index,
+                kind: AccessorKind::Getter,
+            }),
+        ));
+        if slot.mutable {
+            let setter = Symbol::intern(&format!("{}:", slot.name));
+            accessors.push((
+                setter,
+                MethodEntry::SlotAccessor(SlotAccessor {
+                    selector: setter,
+                    access: slot.access,
+                    own_index,
+                    kind: AccessorKind::Setter,
+                }),
+            ));
+        }
+    }
+    accessors
 }
 
 /// A mixin's primary factory message, reduced to the two things the run
@@ -151,7 +243,9 @@ pub struct Mixin {
     /// in its enclosing class (§6: "implicitly defines a method with the
     /// same name *and accessibility* in OC"), already defaulted.
     pub access: ast::AccessModifier,
-    pub methods: HashMap<Symbol, Rc<MixinMethod>>,
+    /// The method table: the compiled methods and the accessors `slots`
+    /// define (`slot_accessors`), one entry per selector.
+    pub methods: IdentityMap<Symbol, MethodEntry>,
     /// This mixin's own instance slots, in declaration order.
     pub slots: Vec<MixinSlot>,
     pub factory: Option<Factory>,
@@ -200,7 +294,7 @@ impl Mixin {
         Mixin {
             name,
             access: ast::AccessModifier::Protected,
-            methods: HashMap::new(),
+            methods: IdentityMap::default(),
             slots: Vec::new(),
             factory: None,
             superclass: None,
@@ -215,25 +309,27 @@ impl Mixin {
             superclass_message_code: None,
         }
     }
+
+    /// The compiled method `selector` names, if the table holds one under it.
+    pub fn compiled_method(&self, selector: Symbol) -> Option<&Rc<MixinMethod>> {
+        self.methods.get(&selector).and_then(MethodEntry::compiled)
+    }
+
+    /// Every compiled method of the table, in no particular order.
+    pub fn compiled_methods(&self) -> impl Iterator<Item = &Rc<MixinMethod>> {
+        self.methods.values().filter_map(MethodEntry::compiled)
+    }
 }
 
 #[derive(Debug)]
 pub struct MixinApplication {
     pub mixin: Rc<Mixin>,
     pub superclass: Option<Rc<MixinApplication>>,
-    /// Absolute index of every slot reachable on an instance, inherited ones
-    /// included -- resolved through the *current* layout, per the liveness
-    /// spec's object-model constraint. Used for by-name slot access
-    /// (`dispatch::lookup_slot`, a `SendLexical` read/write of a slot); never
-    /// baked into compiled code, since a mixin's *compiled* initializer runs
-    /// for every application of it (it lives on the mixin) and this map is a
-    /// per-application answer.
-    pub slot_index: HashMap<Symbol, usize>,
     /// Absolute index of the hidden cache slot for each nested class
     /// declaration, including inherited ones. The slot stores the cached
     /// nested class object; accessing it is a slot read rather than a
     /// hash lookup. Inherited declarations keep the index their declaring
-    /// level gave them (exactly like inherited slots in `slot_index`).
+    /// level gave them, as inherited slots keep theirs.
     ///
     /// Keyed by `mixin_key` -- the declaration's identity -- and not by its
     /// name, which is the one thing a subclass's nested declaration shares
@@ -242,7 +338,7 @@ pub struct MixinApplication {
     /// while `N` reaches the subclass's; a name key would collapse the two
     /// entries onto one index and make whichever was resolved first the
     /// answer to both.
-    pub nested_slot: HashMap<usize, usize>,
+    pub nested_slot: IdentityMap<usize, usize>,
     pub slot_count: usize,
     /// Where this application's *own* slots start -- `superclass.slot_count`,
     /// or 0 with none. Read at run time (`Mutator::initializer_body`, into the
@@ -251,7 +347,7 @@ pub struct MixinApplication {
     /// the compiled initializer is shared by every application of the mixin
     /// (keying code by mixin without this would bake ONE application's offset
     /// into code every application runs), while this field is computed fresh
-    /// per application, exactly like `slot_index`.
+    /// per application, as `nested_slot` is.
     pub own_slot_base: usize,
 }
 

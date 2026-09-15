@@ -99,7 +99,7 @@ pub(crate) fn compile_mixin_bodies(
 /// `argument_count` is `mixin`'s own factory parameter count -- the resolver
 /// scoped this code with exactly those parameters as `Binding::Local`.
 ///
-/// Needs no `slot_index`: each `InitializeSlot` carries `own_index`, the slot's
+/// Needs no absolute field index: each `InitializeSlot` carries `own_index`, the slot's
 /// position among `mixin`'s *own* slots only (plain declaration-order
 /// `enumerate()`, independent of any superclass) -- never an absolute field
 /// index, because this one compiled body runs for every application of

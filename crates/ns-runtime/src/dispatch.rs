@@ -7,12 +7,16 @@ use std::rc::Rc;
 use ns_syntax::ast;
 
 use crate::heap::Heap;
-use crate::mixin::{Mixin, MixinApplication, MixinMethod};
+use crate::mixin::{MethodEntry, Mixin, MixinApplication, MixinMethod, SlotAccessor};
 use crate::types::*;
 use crate::Symbol;
 
 pub enum Lookup<'gc> {
     Method(Rc<MixinMethod>, ClassReference<'gc>),
+    /// One of the accessors a slot declaration defines (`newspeak-spec.pdf`
+    /// §6.3.2), with the absolute field it reads or writes: the declaring
+    /// application's `own_slot_base` plus the slot's mixin-relative index.
+    SlotAccessor(SlotAccessor, usize),
     /// A nested class declaration, reached through the implicit accessor
     /// `newspeak-spec.pdf` §6 says every such declaration defines in its
     /// enclosing class. The `ClassReference` is the class object of the level
@@ -94,62 +98,125 @@ pub fn kth_enclosing_object<'gc>(
     }
 }
 
-/// §5.5: ordinary (explicit-receiver) sends. A `protected`/`private`
-/// declaration shadows an inherited `public` one -- the search stops at
-/// the first declaration found, matching or not.
+/// What a lookup does with a declaration of its selector found at one level,
+/// decided by the declaration's accessibility.
+enum Verdict {
+    /// The declaration is the answer.
+    Accept,
+    /// The declaration is passed over; the search continues at the
+    /// superclass.
+    Skip,
+    /// The search ends with no answer.
+    Stop,
+}
+
+/// The class declaration at lexical depth `depth` from `defining_class` --
+/// §5.9's `N`, "a class whose declaration D lexically encloses the outer
+/// send", at the depth the resolver fixed. Depth 0 is `defining_class`
+/// itself, the class that declares the running method; each further level
+/// is one step out along the declaration chain, the chain
+/// `kth_enclosing_object` walks. `None` where the chain is shorter than
+/// `depth`, and for a top-level activation (no `defining_class`).
+pub fn kth_lexical_class<'gc>(
+    heap: &Heap<'gc>,
+    defining_class: Option<ClassReference<'gc>>,
+    depth: u16,
+) -> Option<ClassReference<'gc>> {
+    let mut level = defining_class?;
+    for _ in 0..depth {
+        level = heap.class_declaring(level)?;
+    }
+    Some(level)
+}
+
+/// §5.9: "If N declares a private method f named s then the value of the
+/// send is the result of invoking f". Asks `lexical_class`'s *own* mixin
+/// only -- a private member of a subclass or a superclass of N is not N's
+/// -- and answers `NotFound` unless that mixin declares `selector` private.
+/// A private nested class is a private member on the same footing (§6: its
+/// accessor has "the same name and accessibility"). Primordial Soup's
+/// `LexicalSend` asks the same one table (`MethodAt` on N's application).
+pub fn private_member<'gc>(
+    heap: &Heap<'gc>,
+    lexical_class: ClassReference<'gc>,
+    selector: Symbol,
+) -> Lookup<'gc> {
+    let Some(application) = heap.class_application(lexical_class) else {
+        return Lookup::NotFound;
+    };
+    if let Some(entry) = application.mixin.methods.get(&selector) {
+        return if entry.access() == ast::AccessModifier::Private {
+            found_entry(entry, &application, lexical_class)
+        } else {
+            Lookup::NotFound
+        };
+    }
+    match application
+        .mixin
+        .nested
+        .iter()
+        .find(|nested| nested.name == selector)
+    {
+        Some(nested) if nested_access(nested) == ast::AccessModifier::Private => {
+            Lookup::NestedClass(nested.clone(), lexical_class)
+        }
+        _ => Lookup::NotFound,
+    }
+}
+
+/// §5.5, ordinary (explicit-receiver) sends: lookupPublic(n, C) is "m, if the
+/// mixin of C defines a method m with selector n and public access.
+/// Undefined, if the mixin of C defines a method m with selector n and
+/// protected access. lookupPublic(n, superclass(C)) otherwise." So a
+/// `protected` declaration shadows an inherited `public` one and ends the
+/// search, while a `private` one falls to the "otherwise" and is passed over
+/// -- Primordial Soup's `OrdinarySendMiss` does the same.
 pub fn lookup_public<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
     selector: Symbol,
 ) -> Lookup<'gc> {
-    walk(
-        heap,
-        class,
-        selector,
-        |access| access == ast::AccessModifier::Public,
-        true,
-    )
+    walk(heap, class, selector, |access| match access {
+        ast::AccessModifier::Public => Verdict::Accept,
+        ast::AccessModifier::Protected => Verdict::Stop,
+        ast::AccessModifier::Private => Verdict::Skip,
+    })
 }
 
-/// §5.9 (non-`private` half of a `LexicalSend`): matches `public` or
-/// `protected`; a `private` declaration is transparently skipped, the walk
-/// continues past it.
+/// §5.9's lookupProtected(n, C): "m, if the mixin of C defines a method m
+/// with selector n and either public or protected access", and
+/// lookupProtected(n, superclass(C)) otherwise -- a `private` declaration is
+/// passed over. The lookup of a lexical send (§5.9) and of a super send
+/// (§5.10).
 pub fn lookup_protected<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
     selector: Symbol,
 ) -> Lookup<'gc> {
-    walk(
-        heap,
-        class,
-        selector,
-        |access| access != ast::AccessModifier::Private,
-        false,
-    )
+    walk(heap, class, selector, |access| match access {
+        ast::AccessModifier::Public | ast::AccessModifier::Protected => Verdict::Accept,
+        ast::AccessModifier::Private => Verdict::Skip,
+    })
 }
 
-/// The plain, access-blind "defined for" walk (§3.5): used by `super`
-/// sends (§5.10) and by `doesNotUnderstand:` resolution, which is exempt
-/// from every access check (§5.5).
+/// The plain, access-blind "defined for" walk (§3.5): used by
+/// `doesNotUnderstand:` resolution, which is exempt from every access check
+/// (§5.5: "the #doesNotUnderstand: method defined for (3.5) the class of o").
 pub fn lookup_defined_for<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
     selector: Symbol,
 ) -> Lookup<'gc> {
-    walk(heap, class, selector, |_| true, false)
+    walk(heap, class, selector, |_| Verdict::Accept)
 }
 
-/// `hard_stop_on_mismatch`: `lookupPublic`'s distinguishing rule -- when
-/// the mixin declares `selector` at all but the access predicate rejects
-/// it, stop searching (return `NotFound`) instead of continuing up.
-/// `lookupProtected`/`lookup_defined_for` never hard-stop: a declaration
-/// that doesn't match the predicate is transparently skipped.
+/// Walks `class`'s superclass chain for a declaration of `selector`, asking
+/// `verdict` what to do with each one it finds.
 fn walk<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
     selector: Symbol,
-    accept: impl Fn(ast::AccessModifier) -> bool,
-    hard_stop_on_mismatch: bool,
+    verdict: impl Fn(ast::AccessModifier) -> Verdict,
 ) -> Lookup<'gc> {
     let mut level = level_of(heap, class);
     while let Some((level_class, application)) = level {
@@ -163,16 +230,15 @@ fn walk<'gc>(
             return Lookup::NotFound;
         };
         let next = next_level(superclass, &application);
-        if let Some(method) = application.mixin.methods.get(&selector).cloned() {
-            let access = method.access;
-            return if accept(access) {
-                Lookup::Method(method, level_class)
-            } else if hard_stop_on_mismatch {
-                Lookup::NotFound
-            } else {
-                level = next;
-                continue;
-            };
+        if let Some(entry) = application.mixin.methods.get(&selector) {
+            match verdict(entry.access()) {
+                Verdict::Accept => return found_entry(entry, &application, level_class),
+                Verdict::Stop => return Lookup::NotFound,
+                Verdict::Skip => {
+                    level = next;
+                    continue;
+                }
+            }
         }
         // §6: a nested declaration is a member of its enclosing class on
         // exactly the same footing as a method, so it is searched at the
@@ -189,15 +255,14 @@ fn walk<'gc>(
             .find(|nested| nested.name == selector)
             .cloned()
         {
-            let access = nested_access(&nested);
-            return if accept(access) {
-                Lookup::NestedClass(nested, level_class)
-            } else if hard_stop_on_mismatch {
-                Lookup::NotFound
-            } else {
-                level = next;
-                continue;
-            };
+            match verdict(nested_access(&nested)) {
+                Verdict::Accept => return Lookup::NestedClass(nested, level_class),
+                Verdict::Stop => return Lookup::NotFound,
+                Verdict::Skip => {
+                    level = next;
+                    continue;
+                }
+            }
         }
         if let Some(kind) = builtin {
             return Lookup::Native(kind);
@@ -205,6 +270,25 @@ fn walk<'gc>(
         level = next;
     }
     Lookup::NotFound
+}
+
+/// The answer a method-table entry found at `level_class`'s level gives: a
+/// compiled method with that level as its defining class, or a slot accessor
+/// with its field resolved against that level's application -- the level
+/// whose mixin declares the slot, so `own_slot_base` places it (§6.3.2, as
+/// `InitializeSlot` places a slot's initial value).
+fn found_entry<'gc>(
+    entry: &MethodEntry,
+    application: &MixinApplication,
+    level_class: ClassReference<'gc>,
+) -> Lookup<'gc> {
+    match entry {
+        MethodEntry::Compiled(method) => Lookup::Method(method.clone(), level_class),
+        MethodEntry::SlotAccessor(accessor) => Lookup::SlotAccessor(
+            *accessor,
+            application.own_slot_base + accessor.own_index as usize,
+        ),
+    }
 }
 
 /// One level of the two chains a lookup walks: the application supplies the
@@ -232,24 +316,6 @@ fn next_level<'gc>(
     let superclass = superclass?;
     let super_application = application.superclass.clone()?;
     Some((superclass, super_application))
-}
-
-/// `name`'s absolute instance-field index, if any. No chain walk: the
-/// application's `slot_index` already carries every inherited slot at its
-/// absolute offset, with an own slot's entry overriding an inherited one of
-/// the same name. There is no access check -- slot access is never
-/// access-controlled the way a method send is, which is a known gap. Used
-/// by `sends::decide_lexical_send` before falling through to
-/// `lookup_defined_for`/`lookup_protected`.
-pub fn lookup_slot<'gc>(
-    heap: &Heap<'gc>,
-    class: ClassReference<'gc>,
-    name: Symbol,
-) -> Option<usize> {
-    heap.class_application(class)?
-        .slot_index
-        .get(&name)
-        .copied()
 }
 
 #[cfg(test)]
@@ -296,14 +362,14 @@ mod tests {
         "};
         let module = ns_syntax::parse(&source).expect("parse");
         let method = module.root_class.instance_side.methods[0].clone();
-        let mut methods = HashMap::new();
+        let mut methods = crate::hash::IdentityMap::default();
         methods.insert(
             Symbol::intern(selector.trim_end_matches(':')),
-            Rc::new(MixinMethod::from_declaration(
+            MethodEntry::Compiled(Rc::new(MixinMethod::from_declaration(
                 Rc::new(method),
                 &Rc::new(HashMap::new()),
                 crate::compiler::Lowering::Optimized,
-            )),
+            ))),
         );
         // The application chain must be linked wherever the class-object
         // chain is: `next_level` steps both, so a superclass linked on only
@@ -318,8 +384,7 @@ mod tests {
                 ..crate::mixin::Mixin::empty(Symbol::intern(name))
             }),
             superclass: super_application,
-            slot_index: HashMap::new(),
-            nested_slot: HashMap::new(),
+            nested_slot: crate::hash::IdentityMap::default(),
             slot_count: 0,
             own_slot_base: 0,
         });

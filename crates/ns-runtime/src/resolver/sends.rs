@@ -7,9 +7,10 @@ use ns_syntax::ast::{Expression, Selector};
 use crate::Symbol;
 
 /// One entry in the lexical class-nesting chain currently open while
-/// walking a method body, innermost first. `members` is that class's own +
-/// statically-inherited member-name set (built by the caller in `mod.rs`
-/// via `classes::own_member_names` plus superclass-chain lookups).
+/// walking a method body, innermost first. `members` is what that class
+/// declaration itself declares, under full selectors
+/// (`classes::own_member_names`) -- never what it inherits
+/// (`newspeak-spec.pdf` §5.7).
 pub(super) struct EnclosingClass<'a> {
     pub name: Symbol,
     pub members: &'a std::collections::HashSet<Symbol>,

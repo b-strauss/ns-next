@@ -137,3 +137,82 @@ fn undeclared_outer_class_name_is_a_resolve_error() {
     let result = resolve(module, "src".into(), SourceOrigin::File("test.ns".into()));
     assert!(result.is_err());
 }
+
+/// The resolve errors `source` produces, as messages; empty when it resolves.
+fn resolve_errors(source: &str) -> Vec<String> {
+    let module = ns_syntax::parse(source).expect("parse");
+    match resolve(module, source.into(), SourceOrigin::File("test.ns".into())) {
+        Ok(_) => Vec::new(),
+        Err(errors) => errors.into_iter().map(|error| error.message).collect(),
+    }
+}
+
+// Two members of one declaration under one name. `newspeak-spec.pdf` states
+// no rule for them; the canonical compiler refuses them
+// (`prior-art/newspeak/Newspeak2SqueakCompilation.ns`,
+// `checkForDuplicateNames:`, which counts each method's selector, each
+// slot's name, each mutable slot's setter and each nested class's name), and
+// a mixin's method table cannot hold two members under one selector.
+
+#[test]
+fn a_slot_and_a_method_of_one_name_are_a_resolve_error() {
+    let errors = resolve_errors(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+          | x ::= 1. |
+        ) (
+          x = ( ^2 )
+        ) : ()
+    "});
+    assert_eq!(errors, ["class `Foo` has multiple definitions of `x`"]);
+}
+
+/// §6.3.2: a mutable slot's setter is "implicitly defined by the slot
+/// declaration", so a method `x:` beside it defines `x:` twice.
+#[test]
+fn a_mutable_slot_and_a_method_of_its_setters_name_are_a_resolve_error() {
+    let errors = resolve_errors(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+          | x ::= 1. |
+        ) (
+          x: value = ( ^value )
+        ) : ()
+    "});
+    assert_eq!(errors, ["class `Foo` has multiple definitions of `x:`"]);
+}
+
+/// §6.3.2: an immutable slot has "no setter method", and "defining a setter
+/// will not impact such an initialization" -- so a method `x:` beside an
+/// immutable slot `x` is legitimate.
+#[test]
+fn an_immutable_slot_and_a_method_of_its_setters_name_resolve() {
+    let errors = resolve_errors(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+          | x = 1. |
+        ) (
+          x: value = ( ^value )
+        ) : ()
+    "});
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+/// §6: a nested class declaration "implicitly defines a method with the same
+/// name", so a method of that name defines it twice.
+#[test]
+fn a_nested_class_and_a_method_of_one_name_are_a_resolve_error() {
+    let errors = resolve_errors(indoc! {"
+        Newspeak3
+        'T'
+        class Foo = Object new (
+        ) (
+          class Inner = Object new () ()
+          Inner = ( ^2 )
+        ) : ()
+    "});
+    assert_eq!(errors, ["class `Foo` has multiple definitions of `Inner`"]);
+}

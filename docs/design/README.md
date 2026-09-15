@@ -151,7 +151,8 @@ rather than an oversight.
 | No formal "value object" notion, because there are no actors to need it | §3.1.1 | [liveness-and-reflection.md](liveness-and-reflection.md) |
 | `self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved; they are recognized contextually | §4.1 | [frontend.md](frontend.md) |
 | Integers are `i64`; overflow raises a Newspeak error rather than promoting | — | [core-library.md](core-library.md) |
-| A public slot's implicit accessors are not reachable through a send with an explicit receiver | §6 | [dispatch.md](dispatch.md) |
+| Lazy slots are eager: the parser drops `lazy` | §6.3.3 | [frontend.md](frontend.md) |
+| A builtin class name no enclosing declaration declares loads the builtin class directly, rather than being a send to `Object`'s accessor for it, so a superclass cannot override it | §3.2 | [dispatch.md](dispatch.md) |
 
 ## What lives elsewhere
 

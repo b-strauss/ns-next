@@ -12,6 +12,7 @@ pub mod builtins;
 pub mod bytecode;
 pub mod compiler;
 pub mod dispatch;
+pub mod hash;
 pub mod heap;
 pub mod image;
 pub mod interpreter;

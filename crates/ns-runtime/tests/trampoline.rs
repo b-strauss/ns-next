@@ -757,14 +757,14 @@ fn a_return_in_a_clause_messages_block_hands_its_value_to_the_walk() {
         class Outer = Object new (
         ) (
             class Base x: a = Object new (
-                | u = a. |
+                | uValue = a. |
             ) (
-                public u = ( ^u )
+                public u = ( ^uValue )
             ) : ()
             class Cell = Base x: [^{3}] value (
-                | v = 4. |
+                | vValue = 4. |
             ) (
-                public v = ( ^v )
+                public v = ( ^vValue )
             ) : ()
             public make = ( | c | c := Cell new. ^c u * 10 + c v )
         ) : ()

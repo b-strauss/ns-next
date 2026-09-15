@@ -28,7 +28,10 @@ use ns_syntax::Span;
 
 use crate::bytecode::CompiledCode;
 use crate::heap::Heap;
-use crate::mixin::{mixin_key, Factory, Mixin, MixinMethod, MixinSlot, SuperclassClause};
+use crate::mixin::{
+    mixin_key, slot_accessors, Factory, MethodEntry, Mixin, MixinMethod, MixinSlot,
+    SuperclassClause,
+};
 use crate::types::ClassReference;
 use crate::Symbol;
 
@@ -88,9 +91,11 @@ pub struct Row {
     pub mixin: Rc<Mixin>,
     pub nested: Vec<u32>,
     pub class_side: Option<u32>,
-    /// Sorted by selector text: the mixin's method table is a `HashMap`, and
-    /// sorting is what makes the row canonical rather than dependent on that
-    /// map's iteration order.
+    /// The compiled methods, sorted by selector text: the mixin's method
+    /// table is a `HashMap`, and sorting is what makes the row canonical
+    /// rather than dependent on that map's iteration order. The table's slot
+    /// accessors are not listed: they are derived from the slots
+    /// (`mixin::slot_accessors`), on the way in as on the way out.
     pub methods: Vec<Rc<MixinMethod>>,
 }
 
@@ -121,7 +126,7 @@ pub fn plan<'gc>(heap: &Heap<'gc>, root_class: ClassReference<'gc>) -> Result<Ve
         .collect();
     let mut rows = Vec::with_capacity(order.len());
     for mixin in &order {
-        let mut methods: Vec<Rc<MixinMethod>> = mixin.methods.values().cloned().collect();
+        let mut methods: Vec<Rc<MixinMethod>> = mixin.compiled_methods().cloned().collect();
         methods.sort_by(|left, right| left.selector.as_str().cmp(right.selector.as_str()));
         rows.push(Row {
             mixin: mixin.clone(),
@@ -186,6 +191,26 @@ fn access_tag(access: AccessModifier) -> u8 {
     }
 }
 
+/// Explicit wire tags for a slot's mutability (§6.3.2: only a mutable slot
+/// has a setter).
+fn mutability_tag(mutable: bool) -> u8 {
+    match mutable {
+        false => 0,
+        true => 1,
+    }
+}
+
+fn mutability_from_tag(tag: u8) -> Result<bool, DecodeError> {
+    match tag {
+        0 => Ok(false),
+        1 => Ok(true),
+        tag => Err(DecodeError::InvalidTag {
+            what: "slot mutability",
+            tag,
+        }),
+    }
+}
+
 fn access_from_tag(tag: u8) -> Result<AccessModifier, DecodeError> {
     match tag {
         0 => Ok(AccessModifier::Public),
@@ -221,8 +246,12 @@ pub fn encode<'gc>(
         writer.write_u32(mixin.span.start);
         writer.write_u32(mixin.span.end);
         writer.write_u32(u32_field("mixin's slot count", mixin.slots.len()));
+        // A slot's name, mutability and accessibility decide the accessors
+        // it defines (§6.3.2), which the decoder derives from them.
         for slot in &mixin.slots {
             writer.write_u32(symbols.intern(slot.name.as_str()));
+            writer.write_u8(mutability_tag(slot.mutable));
+            writer.write_u8(access_tag(slot.access));
         }
         match &mixin.factory {
             Some(factory) => {
@@ -354,7 +383,7 @@ struct RawRow {
     name: Symbol,
     access: AccessModifier,
     span: Span,
-    slots: Vec<Symbol>,
+    slots: Vec<RawSlot>,
     factory: Option<Factory>,
     has_initializer_expressions: bool,
     superclass: Option<SuperclassClause>,
@@ -364,6 +393,13 @@ struct RawRow {
     initializer: Option<u32>,
     superclass_clause: Option<u32>,
     superclass_message: Option<u32>,
+}
+
+/// A slot as read: its name, mutability and accessibility.
+struct RawSlot {
+    name: Symbol,
+    mutable: bool,
+    access: AccessModifier,
 }
 
 /// Reads the mixin table.
@@ -399,6 +435,7 @@ pub fn decode(
     }
     check_ids(&raw)?;
     check_preorder(&raw)?;
+    check_member_names(&raw)?;
     Ok(build(raw, codes))
 }
 
@@ -411,9 +448,13 @@ fn read_row(
     let access = access_from_tag(reader.read_u8()?)?;
     let span = read_span(reader)?;
     let slot_count = reader.read_u32()? as usize;
-    let mut slots: Vec<Symbol> = reserve_for(slot_count, reader);
+    let mut slots: Vec<RawSlot> = reserve_for(slot_count, reader);
     for _ in 0..slot_count {
-        slots.push(read_symbol(reader, symbols)?);
+        slots.push(RawSlot {
+            name: read_symbol(reader, symbols)?,
+            mutable: mutability_from_tag(reader.read_u8()?)?,
+            access: access_from_tag(reader.read_u8()?)?,
+        });
     }
     let factory = if reader.read_boolean()? {
         Some(Factory {
@@ -439,16 +480,6 @@ fn read_row(
         let access = access_from_tag(reader.read_u8()?)?;
         let argument_count = reader.read_u16()? as usize;
         let code = read_code_id(reader, codes)?;
-        // A row that names one selector twice would build a method
-        // dictionary with fewer entries than its code list has, silently
-        // dropping one of the two bodies it names. The encoder writes each
-        // selector once, sorted, so this is only reachable from a crafted
-        // image.
-        if methods.iter().any(|(existing, ..)| *existing == selector) {
-            return Err(DecodeError::DuplicateSelector(
-                selector.as_str().to_string(),
-            ));
-        }
         methods.push((selector, access, argument_count, code));
     }
     let nested_count = reader.read_u32()? as usize;
@@ -523,6 +554,40 @@ fn check_ids(raw: &[RawRow]) -> Result<(), DecodeError> {
     Ok(())
 }
 
+/// No row declares one member twice -- the rule the resolver applies to
+/// source (`resolver::classes::duplicate_member_names`), over the members a
+/// row declares: its methods, its slots' accessors (a getter under the
+/// slot's name, a mutable slot's setter under the name with `:`, §6.3.2)
+/// and its nested classes' accessors (§6). A row that broke it would build
+/// a method table that silently keeps one of two members, or a nested class
+/// no send can reach. The encoder writes only what the resolver accepted,
+/// so this is only reachable from a crafted image.
+///
+/// Runs after `check_ids`, which is what lets it read a nested row's name.
+fn check_member_names(raw: &[RawRow]) -> Result<(), DecodeError> {
+    for row in raw {
+        let setters = row
+            .slots
+            .iter()
+            .filter(|slot| slot.mutable)
+            .map(|slot| Symbol::intern(&format!("{}:", slot.name)));
+        let members = row
+            .slots
+            .iter()
+            .map(|slot| slot.name)
+            .chain(setters)
+            .chain(row.methods.iter().map(|&(selector, ..)| selector))
+            .chain(row.nested.iter().map(|id| raw[*id as usize].name));
+        let mut seen = std::collections::HashSet::new();
+        for member in members {
+            if !seen.insert(member) {
+                return Err(DecodeError::DuplicateSelector(member.as_str().to_string()));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The rows must be exactly `mixin::preorder(row 0)`: row `i` is the `i`th
 /// declaration that walk reaches.
 ///
@@ -580,13 +645,26 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
     let mut built: Vec<Option<Rc<Mixin>>> = vec![None; raw.len()];
     let mut code: Vec<Option<MixinCode>> = (0..raw.len()).map(|_| None).collect();
     for (index, row) in raw.into_iter().enumerate().rev() {
-        let methods = row
+        let slots: Vec<MixinSlot> = row
+            .slots
+            .iter()
+            .map(|slot| MixinSlot {
+                name: slot.name,
+                mutable: slot.mutable,
+                access: slot.access,
+                declaration: None,
+            })
+            .collect();
+        // `check_member_names` proved no compiled method shares a selector
+        // with an accessor, so neither overwrites the other.
+        let accessors = slot_accessors(&slots);
+        let compiled = row
             .methods
             .iter()
             .map(|&(selector, access, argument_count, id)| {
                 (
                     selector,
-                    Rc::new(MixinMethod {
+                    MethodEntry::Compiled(Rc::new(MixinMethod {
                         selector,
                         access,
                         argument_count,
@@ -596,10 +674,10 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
                         // run time.
                         declaration: None,
                         code: code_at(id),
-                    }),
+                    })),
                 )
-            })
-            .collect();
+            });
+        let methods = accessors.into_iter().chain(compiled).collect();
         code[index] = Some(MixinCode {
             methods: row
                 .methods
@@ -628,14 +706,7 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>]) -> Decoded {
             name: row.name,
             access: row.access,
             methods,
-            slots: row
-                .slots
-                .into_iter()
-                .map(|name| MixinSlot {
-                    name,
-                    declaration: None,
-                })
-                .collect(),
+            slots,
             factory: row.factory,
             superclass: row.superclass,
             has_initializer_expressions: row.has_initializer_expressions,

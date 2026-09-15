@@ -38,44 +38,68 @@ pub(super) fn is_builtin_class_name(name: Symbol) -> bool {
     BUILTIN_CLASS_NAMES.contains(&name.as_str())
 }
 
-/// Names declared *directly* by one class declaration: its own methods
-/// (both sides' method selectors, unary base name for keyword/binary
-/// selectors is the *first* keyword/the operator itself -- see
-/// `member_name_of_pattern` below), its own slots, and its own immediately
-/// nested class names.
+/// The members one side of a class declaration *declares*, each under its
+/// full selector, in declaration order and with any repeats kept -- what
+/// `newspeak-spec.pdf` §5.7 searches, "a method, slot or class named s":
+///
+/// - every method, under its whole selector (`at:put:` declares `at:put:`,
+///   never `at`);
+/// - every slot's getter, under the slot's name, and a mutable slot's setter
+///   under the name with `:` appended -- §6.3.2 has both "implicitly defined
+///   by the slot declaration", and an immutable slot has "no setter method";
+/// - every nested class, whose accessor has "the same name" (§6).
+///
+/// Nothing inherited: §5.7 asks where a member is *declared*.
+fn declared_members(body: &ast::ClassBody) -> Vec<Symbol> {
+    let mut members = Vec::new();
+    for slot in &body.slots {
+        members.push(Symbol::intern(&slot.name.name));
+        if slot.mutability != ast::SlotMutability::Immutable {
+            members.push(Symbol::intern(&format!("{}:", slot.name.name)));
+        }
+    }
+    for method in &body.methods {
+        members.push(Symbol::intern(
+            &crate::interpreter::instantiate::method_name(&method.pattern),
+        ));
+    }
+    for nested in &body.nested_classes {
+        members.push(Symbol::intern(&nested.name.name));
+    }
+    members
+}
+
+/// The members one class declaration declares, both sides together
+/// (`docs/design/dispatch.md`, "Resolution": the class side's own scope is an
+/// open question the specification does not settle).
 pub(super) fn own_member_names(declaration: &ast::ClassDeclaration) -> HashSet<Symbol> {
-    let mut names = HashSet::new();
-    let mut collect_body = |body: &ast::ClassBody| {
-        for slot in &body.slots {
-            names.insert(Symbol::intern(&slot.name.name));
-        }
-        for method in &body.methods {
-            names.insert(member_name_of_pattern(&method.pattern));
-        }
-        for nested in &body.nested_classes {
-            names.insert(Symbol::intern(&nested.name.name));
-        }
-    };
-    collect_body(&declaration.instance_side);
+    let mut names: HashSet<Symbol> = declared_members(&declaration.instance_side)
+        .into_iter()
+        .collect();
     if let Some(class_side) = &declaration.class_side {
-        collect_body(class_side);
+        names.extend(declared_members(class_side));
     }
     names
 }
 
-/// The name a message pattern is looked up under for §5.7's search: a
-/// setter (`foo::`) counts under its getter's plain name `foo`, matching
-/// how a mutable slot's setter and getter share one declared slot name.
-fn member_name_of_pattern(pattern: &ast::MessagePattern) -> Symbol {
-    match pattern {
-        ast::MessagePattern::Unary { selector } => Symbol::intern(&selector.name),
-        ast::MessagePattern::Binary { selector, .. } => Symbol::intern(&selector.name),
-        ast::MessagePattern::Keyword { parts } => {
-            // The full keyword selector's first component names the member
-            // for §5.7 lookup purposes (e.g. `at:put:` is found under `at`).
-            Symbol::intern(&parts[0].0.name)
+/// The names one side of `declaration` declares more than once, each once.
+/// The specification states no rule; the canonical compiler refuses them
+/// (`prior-art/newspeak/Newspeak2SqueakCompilation.ns`,
+/// `checkForDuplicateNames:`), and a mixin's method table cannot hold two
+/// members under one selector. Each side is its own table, so a name the
+/// instance side and the class side both declare is not a duplicate.
+pub(super) fn duplicate_member_names(declaration: &ast::ClassDeclaration) -> Vec<Symbol> {
+    let mut duplicates = Vec::new();
+    let sides = std::iter::once(&declaration.instance_side).chain(declaration.class_side.as_ref());
+    for side in sides {
+        let mut seen = HashSet::new();
+        for member in declared_members(side) {
+            if !seen.insert(member) && !duplicates.contains(&member) {
+                duplicates.push(member);
+            }
         }
     }
+    duplicates
 }
 
 #[cfg(test)]

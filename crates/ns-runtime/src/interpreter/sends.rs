@@ -2,8 +2,6 @@
 //! The VM's `SendLexical` and `SendSuper` call these; an ordinary send is
 //! `Interpreter::send`.
 
-use ns_syntax::ast;
-
 use crate::dispatch::{self, Lookup};
 use crate::heap::ActivationReference;
 use crate::types::*;
@@ -11,63 +9,18 @@ use crate::Symbol;
 
 use super::{Mutator, Signal, Step, StepArguments};
 
-/// A slot's getter (`x`, no colon) or setter (`x:`, exactly one trailing
-/// colon and no others) shape, per `newspeak-spec.pdf` §6.3.2 -- a slot's
-/// getter/setter are "implicitly defined by the slot declaration", not real
-/// `MethodDeclaration`s in the class's mixin, so `decide_lexical_send` must
-/// recognize and serve them directly rather than relying on method lookup
-/// to ever find them. Returns `None` for a genuine multi-keyword selector
-/// (e.g. `at:put:`), which can never denote a slot access.
-fn slot_selector_shape(selector: Symbol) -> Option<(Symbol, bool)> {
-    let text = selector.as_str();
-    if !text.contains(':') {
-        return Some((selector, false));
-    }
-    if text.ends_with(':') && text.matches(':').count() == 1 {
-        return Some((Symbol::intern(&text[..text.len() - 1]), true));
-    }
-    None
-}
-
-/// What an implicit-receiver send resolves to on one class, per
-/// `newspeak-spec.pdf` §5.9: a `private` declaration *at exactly this
-/// class* wins first, because a private member is never overridden and so
-/// there is no search; anything else goes through the ordinary
-/// `lookup_protected` walk.
-///
-/// A `private class N` is a private declaration on exactly the same footing
-/// (§6: the implicit accessor has the declaration's own accessibility), and
-/// has to be caught by the same first step: `lookup_protected` skips a
-/// private declaration transparently and keeps walking, so leaving the
-/// nested case out would make `private class N` unreachable from the class
-/// that declares it while `private n = (...)` is reachable.
-///
-/// One definition because `decide_lexical_send` asks it of two classes --
-/// a class object's metaclass and then the receiver's own class.
-fn lexical_lookup<'gc>(
-    heap: &crate::heap::Heap<'gc>,
-    class: ClassReference<'gc>,
-    selector: Symbol,
-) -> Lookup<'gc> {
-    match dispatch::lookup_defined_for(heap, class, selector) {
-        Lookup::Method(method, defining_class) if method.access == ast::AccessModifier::Private => {
-            Lookup::Method(method, defining_class)
-        }
-        Lookup::NestedClass(mixin, declaring_class)
-            if dispatch::nested_access(&mixin) == ast::AccessModifier::Private =>
-        {
-            Lookup::NestedClass(mixin, declaring_class)
-        }
-        _ => dispatch::lookup_protected(heap, class, selector),
-    }
-}
-
-/// `newspeak-spec.pdf` §5.7-§5.9: `enclosing` = the kth enclosing object of
-/// this activation's defining level (`dispatch::kth_enclosing_object`);
-/// dispatch privately (direct, non-virtual) if the target is `private` at depth
-/// `k`, otherwise virtually via `lookup_protected` on `enclosing`'s actual
-/// class -- or, when `enclosing` is a class object, on its metaclass first
-/// (§6.3).
+/// `newspeak-spec.pdf` §5.7-§5.9: an implicit receiver send whose declaring
+/// class N is at lexical depth `k` is `outer N m`. `enclosing` is the kth
+/// enclosing object of this activation's defining level
+/// (`dispatch::kth_enclosing_object`). §5.9: "If N declares a private method
+/// f named s then the value of the send is the result of invoking f ... on
+/// o" -- asked of N's own mixin alone (`dispatch::private_member`), since a
+/// private member is never overridden and there is nothing to search.
+/// "Otherwise, Let f = lookupProtected(s, R) where R is the class of o" --
+/// virtual, on `enclosing`'s actual class, and, when `enclosing` is a class
+/// object, on its metaclass first (§6.3). A slot's accessors are found by
+/// the same lookups as any method (§6.3.2), so a subclass that overrides one
+/// is obeyed here too.
 pub(crate) fn decide_lexical_send<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -84,26 +37,6 @@ pub(crate) fn decide_lexical_send<'gc>(
     let enclosing =
         dispatch::kth_enclosing_object(&mutator.heap, &self_value, defining_class.as_ref(), depth);
     let class = mutator.class_of(&enclosing);
-    // A `LexicalSend` to a user-defined class's own slot must resolve here,
-    // *before* the method/native lookups below -- `build_mixin` never puts a
-    // slot's implicit getter/setter into the mixin's method table, so
-    // `lookup_defined_for`/`lookup_protected` would never find one.
-    // Known gap: unlike a method send, this is never
-    // access-controlled by the slot's own declared modifier -- revisit if a
-    // fixture needs it.
-    if let Some((name, is_setter)) = slot_selector_shape(selector) {
-        if let Some(index) = dispatch::lookup_slot(&mutator.heap, class, name) {
-            if let Value::Object(object) = &enclosing {
-                if is_setter {
-                    let value = arguments.first().copied().unwrap_or(Value::Nil);
-                    mutator.heap.set_instance_field(*object, index, value);
-                    return Ok(Step::Value(enclosing));
-                } else if let Some(value) = mutator.heap.instance_field(*object, index) {
-                    return Ok(Step::Value(value));
-                }
-            }
-        }
-    }
     // §6.3: a class object's class side is the behaviour of that class
     // object, so a send written inside a class-side method with no explicit
     // receiver has to search the metaclass before the class object's own
@@ -122,11 +55,21 @@ pub(crate) fn decide_lexical_send<'gc>(
     // declaration stops the search: a metaclass chain carries no builtin
     // tag, so `Lookup::Native` can only come from the class-object chain
     // below and means the same thing either way.
-    let lookup = metaclass
-        .as_ref()
-        .map(|metaclass| lexical_lookup(&mutator.heap, *metaclass, selector))
-        .filter(|found| matches!(found, Lookup::Method(..) | Lookup::NestedClass(..)))
-        .unwrap_or_else(|| lexical_lookup(&mutator.heap, class, selector));
+    let private = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth)
+        .map(|lexical_class| dispatch::private_member(&mutator.heap, lexical_class, selector))
+        .filter(|found| !matches!(found, Lookup::NotFound));
+    let lookup = private.unwrap_or_else(|| {
+        metaclass
+            .as_ref()
+            .map(|metaclass| dispatch::lookup_protected(&mutator.heap, *metaclass, selector))
+            .filter(|found| {
+                matches!(
+                    found,
+                    Lookup::Method(..) | Lookup::SlotAccessor(..) | Lookup::NestedClass(..)
+                )
+            })
+            .unwrap_or_else(|| dispatch::lookup_protected(&mutator.heap, class, selector))
+    });
     match lookup {
         Lookup::Method(method, defining_class) => Ok(Step::Method {
             receiver: enclosing,
@@ -134,6 +77,9 @@ pub(crate) fn decide_lexical_send<'gc>(
             defining_class,
             arguments: StepArguments::Send,
         }),
+        Lookup::SlotAccessor(accessor, field) => {
+            mutator.decide_slot_accessor(enclosing, accessor, field, arguments)
+        }
         Lookup::NestedClass(mixin, declaring_class) => {
             crate::interpreter::nested::nested_class(mutator, &enclosing, &mixin, declaring_class)
         }
@@ -147,11 +93,16 @@ pub(crate) fn decide_lexical_send<'gc>(
     }
 }
 
-/// `newspeak-spec.pdf` §5.10: starts at the superclass of the *current
-/// activation's* `current_class`, not `self`'s own class. On success, the
-/// new activation's `current_class` is `definingClass(selector, superclass)`
-/// -- the activation's `defining_class` argument (from `lookup_defined_for`)
-/// already carries that.
+/// `newspeak-spec.pdf` §5.10: starts at S, the superclass of the *current
+/// activation's* `current_class`, not `self`'s own class. "If a public or
+/// protected method f named s is defined for (3.5) S, the value of the send
+/// is the result of invoking f in response to (3.5) message µ on o" -- so the
+/// walk is `lookup_protected`, which passes a private method over, as
+/// Primordial Soup's `SuperSendMiss` does with its `ProtectedSend`. On
+/// success, the new activation's `current_class` is
+/// `definingClass(selector, S)`, which the lookup's defining class carries.
+/// "Otherwise, the #doesNotUnderstand: method defined for S is invoked":
+/// `Mutator::decide_super_does_not_understand`.
 pub(crate) fn decide_super_send<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -176,13 +127,18 @@ pub(crate) fn decide_super_send<'gc>(
         }));
     };
     let self_value = mutator.heap.activation_receiver(activation);
-    match dispatch::lookup_defined_for(&mutator.heap, superclass, selector) {
+    match dispatch::lookup_protected(&mutator.heap, superclass, selector) {
         Lookup::Method(method, defining_class) => Ok(Step::Method {
             receiver: self_value,
             method,
             defining_class,
             arguments: StepArguments::Send,
         }),
+        // `super x` reaches the superclass's accessor even where the
+        // receiver's own class overrides it (§5.10, §6.3.2).
+        Lookup::SlotAccessor(accessor, field) => {
+            mutator.decide_slot_accessor(self_value, accessor, field, arguments)
+        }
         // `super N` for a nested class the superclass declares. The
         // receiver stays `self` (§5.10), which is also the enclosing object
         // the accessor caches against -- so `super N` and `N` name the same
@@ -194,11 +150,15 @@ pub(crate) fn decide_super_send<'gc>(
             crate::interpreter::nested::nested_class(mutator, &self_value, &mixin, declaring_class)
         }
         Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(mutator, kind, self_value, selector, arguments) {
+            match mutator.dispatch_native_inheriting_object(kind, &self_value, selector, arguments)
+            {
                 Some(result) => result,
-                None => mutator.decide_send(self_value, selector, arguments),
+                None => mutator
+                    .decide_super_does_not_understand(self_value, superclass, selector, arguments),
             }
         }
-        Lookup::NotFound => mutator.decide_send(self_value, selector, arguments),
+        Lookup::NotFound => {
+            mutator.decide_super_does_not_understand(self_value, superclass, selector, arguments)
+        }
     }
 }

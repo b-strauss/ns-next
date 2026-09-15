@@ -193,11 +193,19 @@ closure frame names the object instead, as `FRAME_CLOSURE_OBJECT` (6). The old
 number stays assigned so that a stale record is refused as an unknown tag rather
 than read with a layout it does not have.
 
-**Mixin table.** One row per declaration: the name, its own slot names, the
-primary factory selector and arity, the method table as selector → code id, the
-ids of its nested declarations with their accessor names and accessibility, the
+**Mixin table.** One row per declaration: the name, its own slots, the primary
+factory selector and arity, the compiled methods as selector → code id, the ids
+of its nested declarations with their accessor names and accessibility, the
 class-side mixin id, the initializer code id, and the provenance span. This is
 what replaced the embedded source text and the re-parse on load.
+
+A slot is its name, its mutability (0 immutable, 1 mutable) and its
+accessibility (the access tags a method uses), because those three decide which
+accessors it defines (§6.3.2). The accessors themselves are not written: the
+decoder derives them from the slots, as building a mixin from source does. A row
+in which two members would share a name — a compiled method, a slot's getter, a
+mutable slot's setter, a nested declaration — is refused before any mixin is
+built, so a crafted row cannot make one member silently hide another.
 
 **Class objects are ordinary objects in the graph**, encoded as
 `{mixin id, superclass, enclosing object, declaring class}`. The declaring class

@@ -36,14 +36,47 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
 2. **Everything else is a send.** Method calls, slot reads, slot writes and bare
    references to nested or enclosing class names are all sends, per §2.2.1:
    "references to methods without arguments are not distinguished from references
-   to slots... or to nested classes". §5.7 gives the search: walk the enclosing
-   **class declarations** — not activations, which step 1 already covered — from
-   innermost outward, and take the smallest depth `k` whose class, including
-   everything it inherits, has a member of that name. `k = 0` is what is
-   colloquially a self send; §5.8 defines `self m` as literally `outer C m` where
-   `C` is the immediately enclosing class. A name found at no lexical level still
-   resolves at depth 0, and run-time dispatch then produces
-   `doesNotUnderstand:`.
+   to slots... or to nested classes". §5.7 gives the search: "Let d be the
+   innermost lexically enclosing construct in which a method, slot or class
+   named s is declared". Walk the enclosing **class declarations** — not
+   activations, which step 1 already covered — from innermost outward, and at
+   each one count only what that declaration itself **declares**: its methods
+   under their full selectors (`at:put:` declares `at:put:`, not `at`), each
+   slot's getter, each *mutable* slot's setter `x:` (§6.3.2: an immutable slot
+   has "no setter method"), and its nested classes. The first declaration that
+   declares the selector is `N`, at depth `k`, and the send is `outer N m`.
+   Nothing a declaration merely **inherits** counts: §2.3.1, "lookup proceeds up
+   the lexical scope chain ... and only if no lexically visible matching method
+   is found, do we proceed up the inheritance chain of self . After that, no
+   further lookup is done." So a name that no enclosing declaration declares is
+   `self m` (§5.7's "Otherwise"), and the receiver's inheritance chain decides
+   at run time, ending in `doesNotUnderstand:` if nothing answers. §5.7's
+   commentary on figure 4 says the same: "First, the surrounding lexical scope
+   chain is traversed ... Only if this fails is the receiver's inheritance chain
+   followed". It is the *receiver's* chain, so a member an *enclosing* class only
+   inherits is never found implicitly; an explicit `outer N m` (§5.9) reaches it,
+   since §5.9 runs `lookupProtected` on the class of the enclosing object.
+   Primordial Soup does the same at run time (`ImplicitReceiverSendMiss` asks
+   each lexical level's own methods through `HasMethod`), and the paper the
+   specification cites for the rationale, [Bra07b]
+   (`docs/references/dyla-final.pdf`), argues for exactly this rule. `k = 0` is
+   what is colloquially a self send; §5.8 defines `self m` as literally
+   `outer C m` where `C` is the immediately enclosing class.
+
+   Two names in one declaration that would define the same member — a method
+   and a slot getter, a mutable slot's setter and a method `x:`, a method and a
+   nested class — are a resolve error. The specification states no such rule;
+   the canonical compiler refuses them (`Newspeak2SqueakCompilation.ns`,
+   `checkForDuplicateNames:`), and a method table cannot hold both. An
+   immutable slot `x` beside a method `x:` is not a collision: §6.3.2,
+   "defining a setter will not impact such an initialization".
+
+   **Open: the class side's scope.** Both sides of a class declaration
+   contribute to one member set. The specification is silent on whether an
+   instance-side method sees class-side declarations lexically; the canonical
+   compiler scopes the class side apart (`compileClassSide:`). Nothing on
+   `corpus/runnable.toml` or among the fixtures depends on the difference, so it
+   stays as it is until a program does.
 
 ### Binding variants
 
@@ -64,6 +97,15 @@ and dispatch happens to land on that class's implicit accessor (§6.4). This
 includes the superclass clause's receiver part, which §6.1 evaluates "as if it
 occurred inside an instance method" of the enclosing class — the same mechanism,
 evaluated at a particular time rather than a distinct binding kind.
+
+**Deviation: a builtin class name is loaded, not sent.** §3.2 has `Object`
+provide "accessors for predefined classes and objects, such as the classes of
+the built-in literals (5.1) e.g., String", so a bare `String` that no enclosing
+declaration declares is, by §5.7, `self String`, answered by `Object`'s
+accessor. The resolver instead leaves such a name unbound and the compiler loads
+the builtin class directly (`Instruction::LoadBuiltinClass`). The two differ
+only when a user class overrides the accessor — a method named `String` in a
+superclass of the sender — which the direct load ignores.
 
 **Known gap: a `super`-prefixed clause receiver does not dispatch.** For
 `class N = super Foo (...)` the resolver binds the receiver `Foo` as
@@ -114,29 +156,38 @@ The parser normalizes several forms, and the resolver keys off those shapes:
 The specification defines three lookup shapes gated by access modifiers. This is
 a behavioural difference, not an editorial nuance.
 
+Each walks from a class up the superclass chain, and at every level that
+declares the selector — a method, a slot accessor or a nested class, which are
+members on the same footing — the declaration's accessibility decides one of
+three things: the declaration is the answer, it is passed over and the walk
+continues, or the walk stops with no answer (`dispatch::Verdict`).
+
 **`lookupPublic(selector, class)`** — ordinary sends with an explicit receiver
-(§5.5). Walk from `class` up the superclass chain. At each level: a `public`
-declaration of the selector matches. A declaration that exists but is
-`protected` or `private` **stops the search and fails** — a non-public
-declaration *shadows* a public implementation further up the chain rather than
-merely hiding the name locally. Only a level that does not declare the selector
-at all continues the walk.
+(§5.5): "m, if the mixin of C defines a method m with selector n and public
+access. Undefined, if ... protected access. lookupPublic(n, superclass(C))
+otherwise." A `public` declaration is the answer; a `protected` one **stops the
+search and fails** — it *shadows* a public implementation further up the chain
+rather than merely hiding the name locally; a `private` one is **passed over**,
+falling to §5.5's "otherwise". Primordial Soup's `OrdinarySendMiss` does exactly
+this.
 
 **`lookupProtected(selector, class)`** — the run-time half of a `LexicalSend`
-whose statically determined target is not private (§5.9). The same walk, but
-`public` and `protected` both match, and a `private` declaration at an
-intermediate level is transparently skipped rather than stopping the search.
+(§5.9), and of a super send. `public` and `protected` are the answer, and a
+`private` declaration is passed over.
 
-**Direct, non-virtual dispatch** — a `LexicalSend` whose statically determined
-target at depth `k` is `private` bypasses both lookups and invokes exactly that
-method, ignoring the enclosing object's run-time class. Private members are never
-overridden, so there is nothing to look up.
+**The "defined for" walk** (§3.5) — only for `doesNotUnderstand:`, below: every
+declaration is the answer, whatever its accessibility.
 
-**`SuperSend`** (§5.10) starts at the superclass of the *current activation's*
-`current_class`, not of `self`'s class, and uses the plain "defined for" walk
-(§3.5) where public and protected both match with no hard stop. On success the
-new activation's `current_class` becomes the defining class, which is what makes
-a chain of `super` sends walk one level at a time instead of looping.
+**`SuperSend`** (§5.10) starts at `S`, the superclass of the *current
+activation's* `current_class`, not of `self`'s class, and uses
+`lookupProtected`: "If a public or protected method f named s is defined for S,
+the value of the send is the result of invoking f" — a private method of `S` is
+passed over (Primordial Soup's `SuperSendMiss` runs its `ProtectedSend`). If
+nothing answers, "the #doesNotUnderstand: method defined for S is invoked": the
+`doesNotUnderstand:` lookup starts at `S`, not at the receiver's own class. On
+success the new activation's `current_class` becomes the defining class, which
+is what makes a chain of `super` sends walk one level at a time instead of
+looping.
 
 **`doesNotUnderstand:` is exempt from every access check.** `Object`'s own
 implementation must be `protected` (§5.5), so resolving it through
@@ -153,8 +204,22 @@ it.
 ## Resolving a lexical send at run time
 
 Compute `o`, the `k`th enclosing object of `self` with respect to the current
-class (§3.3), then apply the private-versus-`lookupProtected` rule above against
-`o`'s **actual run-time class**. That is what makes public and protected lexical
+class (§3.3). Then §5.9: "If N declares a private method f named s then the
+value of the send is the result of invoking f in response to (3.5) message µ on
+o. Otherwise, Let f = lookupProtected(s, R) where R is the class of o".
+
+**The private rule asks `N` alone.** `N` is the class declaration at lexical
+depth `k` — the class that declares the running method at `k = 0`, its
+declaring class one step out, and so on (`dispatch::kth_lexical_class`). Only
+`N`'s own mixin is asked whether it declares the selector private
+(`dispatch::private_member`); a private declaration anywhere else — in a
+subclass of `N` that `o` happens to be an instance of, or in a superclass of
+`N` — is not `N`'s, and `lookupProtected` passes it over. A private member is
+never overridden, so there is nothing to look up: the body is fixed, and only
+the receiver `o` is computed at run time. Primordial Soup's `LexicalSend` is
+the same two steps: `MethodAt` on `N`'s own application, then `ProtectedSend`
+from the receiver's class. Otherwise `lookupProtected` runs against `o`'s
+**actual run-time class** — which is what makes public and protected lexical
 sends virtual while private ones are not.
 
 **`outer` walks the lexical declaration chain, never the receiver's dynamic
@@ -182,16 +247,36 @@ temporaries as one run of registers, so a send whose argument count does not
 match the declaration would silently shift every temporary rather than fail.
 `Mutator::push_step` refuses the mismatch outright.
 
-## Deviation: slots are not reachable through an explicit receiver
+## Slot accessors
 
-`Interpreter::send` never consults slot lookup. A public slot's implicit
-accessors are reachable only through an ordinary unqualified send, not through a
-send with an explicit receiver — so the language specification's own example
-spelling, `(g Inner: Array) Nested`, does not work.
+A slot is reached only through messages (§2.3: "accessed exclusively via
+messages"). §6.3.2: "The getter method is implicitly defined by the slot
+declaration, and returns the value of the slot. The accessibility of the method
+is the same as the slot's"; a mutable slot also has a setter, named by the slot
+name with `:` appended, which "sets the value of the slot to be the incoming
+argument. It returns the receiver of the message"; an immutable slot has "no
+setter method".
 
-Fixing it means adding slot entries to `lookupPublic`'s walk, deciding
-setter-selector naming and its precedence against a same-named method, and
-enforcing a slot's access modifier. None of that exists yet.
+So a slot's accessors are **entries of its mixin's method table**, beside the
+compiled methods (`mixin::MethodEntry::SlotAccessor`), with the slot's own
+accessibility. Every send kind finds them by its ordinary lookup — an explicit
+receiver through `lookupPublic` (§6.3.2 and §2.3's own `(g Inner: Array)
+Nested`), a lexical send through §5.9, a super send through §5.10 — and they
+are overridden like any method: §2.3, "Methods are always virtual", and §6.3.2's
+"overriding a setter" presupposes it. That is how the canonical implementations
+hold them: the Newspeak compilers generate synthetic accessor methods into the
+mixin (`Newspeak2JSCompilation.ns`, `generateSlotSetterFor:`; setters only for
+mutable slots), and SOMns puts `SlotDefinition` and `SlotMutator` dispatchables
+in the same table as its methods (`MixinBuilder.java`).
+
+An accessor runs no code: its entry names the slot by its position among its
+mixin's own slots, resolved through the defining application's `own_slot_base`
+exactly as `Instruction::InitializeSlot` is, and `Mutator::decide_slot_accessor`
+answers the send without an activation — the interpreter's counterpart of Cog's
+quick methods (`quickPrimitiveInstVarIndexFor`) and SOMns's `CachedSlotRead`.
+Initialization never goes through an accessor ("The initialization itself is not
+accomplished by the setter method"): the instance initializer writes the field
+with `InitializeSlot`.
 
 ## Planned: inline caches
 
@@ -229,11 +314,27 @@ fallback send (`prior-art/opensmalltalk-vm/src/spur64.cog/`,
 `prior-art/primordialsoup/vm/primitives.cc`). SOMns reaches the same result
 through Graal's partial evaluation of its primitive nodes.
 
-**A lexical send to a slot is cached too.** `sends::decide_lexical_send` checks
-for a slot before any method lookup: it interns the getter name for every
-setter-shaped selector (`sends::slot_selector_shape`) and hashes the name
-into the application's `slot_index` for every lexical send. A lexical-send
-cache entry that records the slot's index removes both.
+**A slot accessor is an ordinary cache entry.** It is found by the same lookup
+as a method, so an entry records it like a primitive: the guard, then the field
+read or write.
+
+**Open: the megamorphic fallback.** A call site that sees more applications than
+a polymorphic cache holds needs a second level behind the inline caches: Cog's
+open PICs probe its global method cache, V8's megamorphic sites its stub cache,
+and Primordial Soup — which has no inline caches — relies on its global
+`LookupCache` alone (512 entries, two probes). Keyed by application, selector and
+send kind, it holds no handle, needs nothing from the collector, and a class
+change empties it through a counter, as Cog's `flushMethodCache` does. Designed
+with the caches, not before them.
+
+**Open: the application in the object header.** A guard that reaches the
+application through the class object costs several dependent loads. V8's maps,
+Cog's class index and HotSpot's klass pointer put the answer in the object
+header, so a guard is one load and one compare. A dense application id in the
+header would do the same for ns-next — and keeps a site monomorphic across
+enclosing instances, where Primordial Soup's per-class-object id
+(`Behavior_basicNew` allocates it) makes it polymorphic. It touches the object
+representation, the tracer and the image, so it is decided with the caches.
 
 **Caches come after the representation change, not before it.** A cache removes
 the lookup; the method it records carries its compiled body. It does not touch
@@ -260,6 +361,10 @@ application, for the same reason the guard is.
 - **Three lookup algorithms, not one.** A single "walk methods then superclass"
   routine is wrong for at least two of the three cases, and the difference is
   observable.
+- **Only declared members are lexically visible** (§5.7, §2.3.1). Counting
+  inherited ones is the "comb" semantics Newspeak was designed against.
+- **A slot's accessors are methods** (§6.3.2), in the method table, answered
+  without an activation.
 - **`doesNotUnderstand:` bypasses access control**, because `Object`'s own
   implementation is protected and would otherwise be unreachable.
 - **Unmarked members are protected**, per §6.3.1, which decides public

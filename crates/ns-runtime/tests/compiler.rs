@@ -55,7 +55,7 @@ fn loading_compiles_every_method_and_the_initializer_onto_the_mixin() {
     let (mut interpreter, class) = load(source);
     let mixin = root_mixin(&mut interpreter, &class);
     assert_eq!(mixin.methods.len(), 2);
-    for method in mixin.methods.values() {
+    for method in mixin.compiled_methods() {
         assert_eq!(method.code.kind, CodeKind::Method);
         assert!(matches!(
             method.code.instructions.last(),
@@ -223,8 +223,7 @@ fn every_mixin_in_the_tree_gets_its_bodies() {
     // compiled past the root's own method table into `nested`.
     let inner = &mixin.nested[0];
     let inner_value = inner
-        .methods
-        .get(&Symbol::intern("value"))
+        .compiled_method(Symbol::intern("value"))
         .expect("Inner declares `value`");
     assert_eq!(
         inner_value.code.kind,
@@ -235,8 +234,7 @@ fn every_mixin_in_the_tree_gets_its_bodies() {
     // The root's class side is a mixin too, and is compiled the same way.
     let class_side = mixin.class_side.as_ref().expect("Outer has a class side");
     let marker = class_side
-        .methods
-        .get(&Symbol::intern("marker"))
+        .compiled_method(Symbol::intern("marker"))
         .expect("class side declares `marker`");
     assert_eq!(
         marker.code.kind,
