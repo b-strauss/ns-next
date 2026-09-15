@@ -1326,6 +1326,81 @@ instantiation. Making the slots public and dropping the methods instead would
 have left both before-binaries, which answer no explicit-receiver slot send,
 with a `doesNotUnderstand:`.
 
+These are the three as every later measurement uses them, written under
+`target\bench-lookup\` (ignored by git) beside the unchanged `bench_do.ns` of
+the [2c plan](../superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
+"Measurement protocol". Each prints `20000`:
+
+```
+Newspeak3
+'Bench'
+class BenchNew usingPlatform: platform = Object new (
+	| sum ::= 0. |
+) (
+	class Cell = Object new (
+		| held ::= 1. |
+	) (
+		public v = ( ^held )
+	) : ()
+	public main: p args: a = (
+		| n |
+		n := 0.
+		[n < 20000] whileTrue: [sum := sum + Cell new v. n := n + 1].
+		p transcript show: sum printString; newLine
+	)
+) : ()
+```
+
+```
+Newspeak3
+'Bench'
+class BenchNew2 usingPlatform: platform = Object new (
+	| sum ::= 0. |
+) (
+	class Base = Object new (
+		| heldU ::= 1. |
+	) (
+		public u = ( ^heldU )
+	) : ()
+	class Cell = Base new (
+		| heldV ::= 1. |
+	) (
+		public v = ( ^heldV )
+	) : ()
+	public main: p args: a = (
+		| n |
+		n := 0.
+		[n < 20000] whileTrue: [sum := sum + Cell new v. n := n + 1].
+		p transcript show: sum printString; newLine
+	)
+) : ()
+```
+
+```
+Newspeak3
+'Bench'
+class BenchNewArg usingPlatform: platform = Object new (
+	| sum ::= 0. |
+) (
+	class Base x: a = Object new (
+		| heldU ::= a. |
+	) (
+		public u = ( ^heldU )
+	) : ()
+	class Cell = Base x: 1 (
+		| heldV ::= 1. |
+	) (
+		public v = ( ^heldV )
+	) : ()
+	public main: p args: a = (
+		| n |
+		n := 0.
+		[n < 20000] whileTrue: [sum := sum + Cell new u. n := n + 1].
+		p transcript show: sum printString; newLine
+	)
+) : ()
+```
+
 Medians in ms, and each group's mean, from the first sitting:
 
 | Source | `59061ec`, rounds 1–5 | mean | `be3eb40`, rounds 1–5 | mean | After, rounds 1–5 | mean |

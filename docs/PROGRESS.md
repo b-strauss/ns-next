@@ -62,11 +62,12 @@ sit on, where each instruction is one entry of the step state, `Mutator`; and
 code is shared behind an `Rc`, where no handle may live, so a cache entry in
 it must hold none, which a key on the application satisfies. Performance is
 measured, not assumed: the protocol and the seven sources of "What removing
-the re-entries moved" ([execution.md](design/execution.md); the four
-throwaway sources are written out in the
+the re-entries moved" ([execution.md](design/execution.md); `bench_do.ns`
+is written out in the
 [2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
-"Measurement protocol", three of them with their slots renamed as "What
-spec-conformant lookup moved" there says), **every compared binary, the current tree
+"Measurement protocol", and `bench_new.ns`, `bench_new2.ns` and
+`bench_newarg.ns`, whose slots had to be renamed, in "What spec-conformant
+lookup moved" there), **every compared binary, the current tree
 included, built with the protocol's explicit flags through `RUSTFLAGS`** —
 `+crt-static` and the function-alignment pin, which no configuration
 carries — two sittings for a whole step, and a comparison against `be3eb40`
