@@ -7,7 +7,7 @@ use crate::heap::ActivationReference;
 use crate::types::*;
 use crate::Symbol;
 
-use super::{Mutator, Signal, Step, StepArguments};
+use super::{Mutator, Settled, Signal, Step, StepArguments};
 
 /// `newspeak-spec.pdf` §5.7-§5.9: an implicit receiver send whose declaring
 /// class N is at lexical depth `k` is `outer N m`. `enclosing` is the kth
@@ -40,7 +40,7 @@ pub(crate) fn decide_lexical_send<'gc>(
     // §6.3: a class object's class side is the behaviour of that class
     // object, so a send written inside a class-side method with no explicit
     // receiver has to search the metaclass before the class object's own
-    // (native `Object`) behaviour -- the same order `Interpreter::send`
+    // behaviour, `Object`'s primitives -- the same order `Interpreter::send`
     // gives an explicit-receiver send. Without it a class side reaches only
     // what `lookup_public` on the metaclass happens to answer once the send
     // has fallen all the way through to `send`: its `protected` and
@@ -52,9 +52,10 @@ pub(crate) fn decide_lexical_send<'gc>(
     };
     // A metaclass that does not declare the selector falls through to the
     // class object's own behaviour, exactly as in `send`. Only a real
-    // declaration stops the search: a metaclass chain carries no builtin
-    // tag, so `Lookup::Native` can only come from the class-object chain
-    // below and means the same thing either way.
+    // declaration stops the search: no metaclass chain holds a primitive --
+    // a metaclass's mixins are class sides or empty stand-ins -- so a
+    // `Lookup::Primitive` can only come from the class-object chain below,
+    // and the filter would pass one over to reach that chain anyway.
     let private = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth)
         .map(|lexical_class| dispatch::private_member(&mutator.heap, lexical_class, selector))
         .filter(|found| !matches!(found, Lookup::NotFound));
@@ -70,26 +71,30 @@ pub(crate) fn decide_lexical_send<'gc>(
             })
             .unwrap_or_else(|| dispatch::lookup_protected(&mutator.heap, class, selector))
     });
-    match lookup {
-        Lookup::Method(method, defining_class) => Ok(Step::Method {
+    match mutator.settle(
+        dispatch::Rule::Protected,
+        lookup,
+        enclosing,
+        selector,
+        arguments,
+    ) {
+        Settled::Answered(result) => result,
+        Settled::Found(Lookup::Method(method, defining_class)) => Ok(Step::Method {
             receiver: enclosing,
             method,
             defining_class,
             arguments: StepArguments::Send,
         }),
-        Lookup::SlotAccessor(accessor, field) => {
+        Settled::Found(Lookup::SlotAccessor(accessor, field)) => {
             mutator.decide_slot_accessor(enclosing, accessor, field, arguments)
         }
-        Lookup::NestedClass(mixin, declaring_class) => {
+        Settled::Found(Lookup::NestedClass(mixin, declaring_class)) => {
             crate::interpreter::nested::nested_class(mutator, &enclosing, &mixin, declaring_class)
         }
-        Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(mutator, kind, enclosing, selector, arguments) {
-                Some(result) => result,
-                None => mutator.decide_send(enclosing, selector, arguments),
-            }
+        Settled::Found(Lookup::NotFound) => mutator.decide_send(enclosing, selector, arguments),
+        Settled::Found(Lookup::Primitive(..)) => {
+            unreachable!("internal: `settle` runs every primitive it is handed")
         }
-        Lookup::NotFound => mutator.decide_send(enclosing, selector, arguments),
     }
 }
 
@@ -127,8 +132,16 @@ pub(crate) fn decide_super_send<'gc>(
         }));
     };
     let self_value = mutator.heap.activation_receiver(activation);
-    match dispatch::lookup_protected(&mutator.heap, superclass, selector) {
-        Lookup::Method(method, defining_class) => Ok(Step::Method {
+    let lookup = dispatch::lookup_protected(&mutator.heap, superclass, selector);
+    match mutator.settle(
+        dispatch::Rule::Protected,
+        lookup,
+        self_value,
+        selector,
+        arguments,
+    ) {
+        Settled::Answered(result) => result,
+        Settled::Found(Lookup::Method(method, defining_class)) => Ok(Step::Method {
             receiver: self_value,
             method,
             defining_class,
@@ -136,7 +149,7 @@ pub(crate) fn decide_super_send<'gc>(
         }),
         // `super x` reaches the superclass's accessor even where the
         // receiver's own class overrides it (§5.10, §6.3.2).
-        Lookup::SlotAccessor(accessor, field) => {
+        Settled::Found(Lookup::SlotAccessor(accessor, field)) => {
             mutator.decide_slot_accessor(self_value, accessor, field, arguments)
         }
         // `super N` for a nested class the superclass declares. The
@@ -146,19 +159,14 @@ pub(crate) fn decide_super_send<'gc>(
         // and different ones when a subclass redeclares `N`: the accessor
         // caches against the declaration's own hidden slot
         // (`MixinApplication::nested_slot`), not against its name.
-        Lookup::NestedClass(mixin, declaring_class) => {
+        Settled::Found(Lookup::NestedClass(mixin, declaring_class)) => {
             crate::interpreter::nested::nested_class(mutator, &self_value, &mixin, declaring_class)
         }
-        Lookup::Native(kind) => {
-            match mutator.dispatch_native_inheriting_object(kind, &self_value, selector, arguments)
-            {
-                Some(result) => result,
-                None => mutator
-                    .decide_super_does_not_understand(self_value, superclass, selector, arguments),
-            }
-        }
-        Lookup::NotFound => {
+        Settled::Found(Lookup::NotFound) => {
             mutator.decide_super_does_not_understand(self_value, superclass, selector, arguments)
+        }
+        Settled::Found(Lookup::Primitive(..)) => {
+            unreachable!("internal: `settle` runs every primitive it is handed")
         }
     }
 }

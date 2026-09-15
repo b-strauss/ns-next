@@ -174,6 +174,14 @@ impl<'gc> StepArguments<'gc> {
     }
 }
 
+/// What a lookup answered once any primitive it found has run.
+pub(crate) enum Settled<'gc> {
+    /// A primitive ran and answered.
+    Answered(Result<Step<'gc>, Signal<'gc>>),
+    /// The lookup's answer; never `Lookup::Primitive`.
+    Found(Lookup<'gc>),
+}
+
 /// Everything a step of the interpreter works on -- the heap and the
 /// bootstrap's builtin classes, the caches of behaviour, the argument
 /// buffer and the spare instantiation boxes -- and every decision, native
@@ -529,12 +537,12 @@ impl<'gc> Mutator<'gc> {
     ///
     /// Checked first, before any lookup: `ClassName new` (or a class's own
     /// non-default factory selector) never has a real method to find --
-    /// every class object's own `.class` is a shared placeholder with an
-    /// empty method table (see `build_builtin_classes` below), so an
-    /// ordinary `lookup_public` search would just fall through to
-    /// `doesNotUnderstand:` every time. `try_factory_send`
-    /// (`instantiate.rs`) recognizes the shape and decides it as an
-    /// instantiation (`decide_instantiation`) -- not through the host entry
+    /// every class object's own `.class` is a shared placeholder whose
+    /// method table holds only `Object`'s primitives, none of them a factory
+    /// (see `build_builtin_classes` below), so an ordinary `lookup_public`
+    /// search would just fall through to `doesNotUnderstand:` every time.
+    /// `try_factory_send` (`instantiate.rs`) recognizes the shape and decides
+    /// it as an instantiation (`decide_instantiation`) -- not through the host entry
     /// `instantiate`, which would enter the run loop from inside it, the
     /// re-entry `run_from_host` refuses; see its own doc comment for why this can
     /// never double-fire against the superclass clause's own deferred
@@ -560,8 +568,21 @@ impl<'gc> Mutator<'gc> {
             let is_class = self.heap.is_class(*object);
             if is_class {
                 if let Some(metaclass) = self.metaclass_of(*object) {
-                    match dispatch::lookup_public(&self.heap, metaclass, selector) {
-                        Lookup::Method(method, defining_class) => {
+                    let lookup = dispatch::lookup_public(&self.heap, metaclass, selector);
+                    // No metaclass chain holds a primitive -- a metaclass's
+                    // mixins are class sides or empty stand-ins, never a
+                    // builtin's instance mixin -- so `Answered` is reached
+                    // only in principle; it is settled like every other
+                    // lookup so that nothing here depends on that.
+                    match self.settle(
+                        dispatch::Rule::Public,
+                        lookup,
+                        receiver,
+                        selector,
+                        arguments,
+                    ) {
+                        Settled::Answered(result) => return result,
+                        Settled::Found(Lookup::Method(method, defining_class)) => {
                             return Ok(Step::Method {
                                 receiver,
                                 method,
@@ -569,25 +590,31 @@ impl<'gc> Mutator<'gc> {
                                 arguments: StepArguments::Send,
                             });
                         }
-                        Lookup::SlotAccessor(accessor, field) => {
+                        Settled::Found(Lookup::SlotAccessor(accessor, field)) => {
                             return self.decide_slot_accessor(receiver, accessor, field, arguments);
                         }
-                        Lookup::NestedClass(mixin, declaring_class) => {
+                        Settled::Found(Lookup::NestedClass(mixin, declaring_class)) => {
                             return nested::nested_class(self, &receiver, &mixin, declaring_class);
                         }
-                        Lookup::Native(kind) => {
-                            return self.decide_native_or_does_not_understand(
-                                kind, receiver, selector, arguments,
-                            );
+                        Settled::Found(Lookup::NotFound) => {}
+                        Settled::Found(Lookup::Primitive(..)) => {
+                            unreachable!("internal: `settle` runs every primitive it is handed")
                         }
-                        Lookup::NotFound => {}
                     }
                 }
             }
         }
         let class = self.class_of(&receiver);
-        match dispatch::lookup_public(&self.heap, class, selector) {
-            Lookup::Method(method, defining_class) => Ok(Step::Method {
+        let lookup = dispatch::lookup_public(&self.heap, class, selector);
+        match self.settle(
+            dispatch::Rule::Public,
+            lookup,
+            receiver,
+            selector,
+            arguments,
+        ) {
+            Settled::Answered(result) => result,
+            Settled::Found(Lookup::Method(method, defining_class)) => Ok(Step::Method {
                 receiver,
                 method,
                 defining_class,
@@ -595,85 +622,66 @@ impl<'gc> Mutator<'gc> {
             }),
             // §6.3.2: a slot's accessors answer an explicit-receiver send
             // exactly when a method with the slot's accessibility would.
-            Lookup::SlotAccessor(accessor, field) => {
+            Settled::Found(Lookup::SlotAccessor(accessor, field)) => {
                 self.decide_slot_accessor(receiver, accessor, field, arguments)
             }
             // §6: the implicit accessor a nested declaration defines is
             // reached exactly like any other member, and it ignores `arguments`
             // -- the accessor is unary, so a send that supplied arguments
             // did not name it (`walk` matched on the bare selector).
-            Lookup::NestedClass(mixin, declaring_class) => {
+            Settled::Found(Lookup::NestedClass(mixin, declaring_class)) => {
                 nested::nested_class(self, &receiver, &mixin, declaring_class)
             }
-            Lookup::Native(kind) => {
-                self.decide_native_or_does_not_understand(kind, receiver, selector, arguments)
+            Settled::Found(Lookup::NotFound) => {
+                self.decide_does_not_understand(receiver, selector, arguments)
             }
-            Lookup::NotFound => self.decide_does_not_understand(receiver, selector, arguments),
+            Settled::Found(Lookup::Primitive(..)) => {
+                unreachable!("internal: `settle` runs every primitive it is handed")
+            }
         }
     }
 
-    /// Native dispatch that still inherits `Object`'s own native methods.
-    ///
-    /// `dispatch::walk` deliberately treats a class tagged
-    /// `builtin: Some(kind)` as a *dispatch leaf*: it returns
-    /// `Lookup::Native(kind)` the moment it reaches one, without continuing
-    /// up that class's own superclass chain -- that early return is what
-    /// keeps `lookupPublic`'s `hard_stop_on_mismatch` semantics uniform.
-    /// Every non-`Object` builtin's superclass is `Object` (see
-    /// `build_builtin_classes` below), and none of `numbers`/`text`/
-    /// `collections`/`block`/`boolean` implements `class`/`==`/`=`/`hash`/
-    /// `printString`/`doesNotUnderstand:` itself -- so without this helper
-    /// those `Object` methods would be unreachable on *every* non-`Object`
-    /// receiver, and `Object`'s spec-required `doesNotUnderstand:` would
-    /// never fire for a builtin at all.
-    ///
-    /// Restores exactly the one missing inheritance step, at the consuming
-    /// call site rather than inside `walk`: try `kind`'s own native table
-    /// first (so a builtin that *does* implement a selector still wins),
-    /// then `Object`'s. Returns `None` only when neither implements
-    /// `selector`.
-    pub(crate) fn dispatch_native_inheriting_object(
+    /// Runs the primitive `lookup` found, if it found one. A primitive fails
+    /// when its receiver has the wrong shape -- an instance of a user subclass
+    /// of `String`, which carries no string -- and a failure passes its level
+    /// over: the lookup continues under the same `rule` from that level's
+    /// superclass, `Object` for every builtin, and what it finds there is
+    /// settled the same way. So a send whose builtin primitive fails is
+    /// answered by `Object`'s primitive of the same selector if there is one,
+    /// and otherwise by the caller's own "not found" -- `doesNotUnderstand:`
+    /// (`docs/design/dispatch.md`, "A primitive can fail"). The loop ends:
+    /// each turn moves one level up a superclass chain that `image::decode`
+    /// refuses to let form a cycle.
+    pub(crate) fn settle(
         &mut self,
-        kind: BuiltinClass,
-        receiver: &Value<'gc>,
-        selector: Symbol,
-        arguments: &[Value<'gc>],
-    ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-        if let Some(result) =
-            crate::builtins::dispatch_native(self, kind, *receiver, selector, arguments)
-        {
-            return Some(result);
-        }
-        if kind == BuiltinClass::Object {
-            return None;
-        }
-        crate::builtins::dispatch_native(self, BuiltinClass::Object, *receiver, selector, arguments)
-    }
-
-    fn decide_native_or_does_not_understand(
-        &mut self,
-        kind: BuiltinClass,
+        rule: dispatch::Rule,
+        mut lookup: Lookup<'gc>,
         receiver: Value<'gc>,
         selector: Symbol,
         arguments: &[Value<'gc>],
-    ) -> Result<Step<'gc>, Signal<'gc>> {
-        match self.dispatch_native_inheriting_object(kind, &receiver, selector, arguments) {
-            Some(result) => result,
-            None => self.decide_does_not_understand(receiver, selector, arguments),
+    ) -> Settled<'gc> {
+        loop {
+            match lookup {
+                Lookup::Primitive(primitive, level) => {
+                    if let Some(result) =
+                        crate::builtins::execute(self, primitive, receiver, selector, arguments)
+                    {
+                        return Settled::Answered(result);
+                    }
+                    lookup = dispatch::lookup_above(&self.heap, rule, level, selector);
+                }
+                found => return Settled::Found(found),
+            }
         }
     }
 
     /// §5.5's `doesNotUnderstand:` fallback -- access-blind (`lookup_defined_for`),
     /// per `docs/design/dispatch.md`.
     ///
-    /// Two cases reach here. A user-overridden `doesNotUnderstand:` arrives as
-    /// `Lookup::Method`; `Object`'s own *native* one
-    /// (`builtins::object_class::dispatch`) arrives as `Lookup::Native`,
-    /// exactly like `decide_native_or_does_not_understand` reaches any other
-    /// native method. Without the native arm, `Object`'s builtin
-    /// `doesNotUnderstand:` -- which every class inherits, since
-    /// `lookup_defined_for` finds `ClassData.builtin` on any class with no
-    /// method override -- would never actually run.
+    /// A user-overridden `doesNotUnderstand:` arrives as `Lookup::Method`;
+    /// `Object`'s own primitive one, which every class inherits that does not
+    /// override it, arrives as `Lookup::Primitive` and runs through
+    /// `settle` like any other primitive.
     fn decide_does_not_understand(
         &mut self,
         receiver: Value<'gc>,
@@ -711,57 +719,36 @@ impl<'gc> Mutator<'gc> {
         selector: Symbol,
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
-        let does_not_understand_selector = Symbol::DOES_NOT_UNDERSTAND;
         // A minimal message-mirror-shaped value: an Array `{selector.
         // arguments}` rather than a real MessageMirror object, since mirrors do
         // not exist yet (`docs/design/liveness-and-reflection.md`, "Mirrors and
         // MirrorBuilder"). Callers relying on a real `MessageMirror` API are
-        // out of scope.
-        match dispatch::lookup_defined_for(&self.heap, class, does_not_understand_selector) {
-            Lookup::Method(method, defining_class) => {
-                let selector_value = self.new_symbol(selector);
-                let arguments_value = Value::Object(self.new_array(arguments.to_vec()));
-                let message_argument = Value::Object(self.new_array(vec![selector_value, arguments_value]));
-                Ok(Step::Method {
-                    receiver,
-                    method,
-                    defining_class,
-                    arguments: StepArguments::Owned(vec![message_argument]),
-                })
-            }
+        // out of scope. Built before the lookup, since every handler takes
+        // it; allocation order is unobservable, identity hashes being drawn
+        // lazily.
+        let selector_value = self.new_symbol(selector);
+        let arguments_value = Value::Object(self.new_array(arguments.to_vec()));
+        let message_argument = Value::Object(self.new_array(vec![selector_value, arguments_value]));
+        let lookup = dispatch::lookup_defined_for(&self.heap, class, Symbol::DOES_NOT_UNDERSTAND);
+        match self.settle(
+            dispatch::Rule::DefinedFor,
+            lookup,
+            receiver,
+            Symbol::DOES_NOT_UNDERSTAND,
+            &[message_argument],
+        ) {
+            Settled::Answered(result) => result,
+            Settled::Found(Lookup::Method(method, defining_class)) => Ok(Step::Method {
+                receiver,
+                method,
+                defining_class,
+                arguments: StepArguments::Owned(vec![message_argument]),
+            }),
             // §6.3.2: a mutable slot named `doesNotUnderstand` defines the
             // setter `doesNotUnderstand:`, a method like any other -- so it
             // is the handler, and stores the message.
-            Lookup::SlotAccessor(accessor, field) => {
-                let selector_value = self.new_symbol(selector);
-                let arguments_value = Value::Object(self.new_array(arguments.to_vec()));
-                let message_argument = Value::Object(self.new_array(vec![selector_value, arguments_value]));
+            Settled::Found(Lookup::SlotAccessor(accessor, field)) => {
                 self.decide_slot_accessor(receiver, accessor, field, &[message_argument])
-            }
-            Lookup::Native(kind) => {
-                let selector_value = self.new_symbol(selector);
-                let arguments_value = Value::Object(self.new_array(arguments.to_vec()));
-                let message_argument = Value::Object(self.new_array(vec![selector_value, arguments_value]));
-                // Same two-step fallback as
-                // `decide_native_or_does_not_understand`: `kind` is whatever
-                // builtin class `walk` stopped at, and no builtin implements
-                // `doesNotUnderstand:` itself, so without the `Object` step
-                // this would always miss and fall into the internal-error arm
-                // below instead of running `builtins::object_class`'s real,
-                // spec-shaped `doesNotUnderstand:`.
-                match self.dispatch_native_inheriting_object(
-                    kind,
-                    &receiver,
-                    does_not_understand_selector,
-                    &[message_argument],
-                ) {
-                    Some(result) => result,
-                    None => Err(Signal::Error(NewspeakError {
-                        selector,
-                        receiver,
-                        message: format!("doesNotUnderstand: {selector} (native class {kind:?} has no doesNotUnderstand: implementation)"),
-                    })),
-                }
             }
             // A nested declaration can never be the `doesNotUnderstand:`
             // handler: `walk` matches a declaration by name, and a class
@@ -769,11 +756,14 @@ impl<'gc> Mutator<'gc> {
             // rather than given an arm of its own so the unreachable case
             // still reports the ordinary "nothing handles this" error
             // instead of a second, differently-worded one.
-            Lookup::NotFound | Lookup::NestedClass(..) => Err(Signal::Error(NewspeakError {
+            Settled::Found(Lookup::NotFound | Lookup::NestedClass(..)) => Err(Signal::Error(NewspeakError {
                 selector,
                 receiver,
                 message: format!("doesNotUnderstand: {selector} (and no doesNotUnderstand: found anywhere in the class chain)"),
             })),
+            Settled::Found(Lookup::Primitive(..)) => {
+                unreachable!("internal: `settle` runs every primitive it is handed")
+            }
         }
     }
 
@@ -1125,10 +1115,10 @@ impl<'gc> Mutator<'gc> {
     /// already gives for a method.
     ///
     /// When `class`'s own mixin declares no class side but an ancestor's
-    /// does, an empty synthetic mixin stands in for `class`'s own level --
-    /// the same placeholder-mixin technique `builtin_mixin` below already
-    /// uses for a builtin with no user-declared behaviour of its own. It
-    /// contributes no methods, only relays the superclass's metaclass
+    /// does, an empty synthetic mixin (`empty_class_side_mixin`) stands in
+    /// for `class`'s own level -- synthesized, as `builtin_mixin` below
+    /// synthesizes a builtin's, since no declaration exists to build it
+    /// from. It contributes no methods, only relays the superclass's metaclass
     /// application onward, so `class`'s metaclass answers exactly what the
     /// nearest class-side-declaring ancestor's metaclass would.
     ///
@@ -1292,7 +1282,7 @@ impl<'gc> Mutator<'gc> {
     /// module doc for how its payload shape (a one-field, always-`Nil`
     /// `Instance`) tells it apart from the `platform` singleton itself
     /// (a zero-field `Instance`). `pub(crate)`, not `pub`: only
-    /// `crate::platform::dispatch` (`platform transcript`) ever needs to
+    /// `crate::platform::execute` (`platform transcript`) ever needs to
     /// mint one.
     pub(crate) fn new_stream_object(&mut self) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Platform);
@@ -1388,10 +1378,10 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The empty mixin `metaclass_of` applies for a class that declares no
-    /// class side of its own but inherits one from an ancestor -- same
-    /// placeholder technique as `builtin_mixin` below, one `Rc` per owning
-    /// mixin so the application cache keys each such level apart from its
-    /// siblings. Contributes no methods or slots of its own; its only job
+    /// class side of its own but inherits one from an ancestor -- one `Rc`
+    /// per owning mixin, as `builtin_mixin` below makes one per builtin, so
+    /// the application cache keys each such level apart from its siblings.
+    /// Contributes no methods or slots of its own; its only job
     /// is to give `apply_mixin` something to link the ancestor's metaclass
     /// application through.
     ///
@@ -1527,11 +1517,12 @@ fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<
     // `Object` struct could have made this shadow compile into the wrong
     // construction entirely. Referring to every variant through its
     // `BuiltinClass::` qualifier avoids the collision.
-    // A builtin's behaviour is native (`builtins::dispatch_native`), so its
-    // mixin declares nothing: the application exists to give the builtin the
-    // same shape every other class object has, and -- for the non-`Object`
-    // builtins -- to link an application chain parallel to the class-object
-    // chain, which `dispatch::next_level` steps in lockstep.
+    // A builtin's behaviour is native, so its mixin's method table holds its
+    // primitives and nothing else (`builtin_mixin`): the application gives
+    // the builtin the same shape every other class object has, and -- for
+    // the non-`Object` builtins -- links an application chain parallel to
+    // the class-object chain, which `dispatch::next_level` steps in lockstep
+    // and along which a builtin receiver reaches `Object`'s primitives.
     let object_application = mutator.apply_mixin(&builtin_mixin(BuiltinClass::Object), None);
     let class_of_class =
         build_self_referential_object_class(&mut mutator.heap, object_application.clone());
@@ -1561,13 +1552,16 @@ fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<
     classes
 }
 
-/// The empty mixin behind one `BuiltinClass`. A fresh `Rc` per call, so the
-/// application cache keys the builtins apart from each other even though
-/// their mixins are structurally identical.
+/// The mixin behind one `BuiltinClass`: its method table holds `kind`'s
+/// primitives (`builtins::primitive::method_table`), and nothing else. A
+/// fresh `Rc` per call, so the application cache keys the builtins apart from
+/// each other even where several -- `Boolean`, `True` and `False` -- hold the
+/// same primitives.
 fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
-    Rc::new(crate::mixin::Mixin::empty(Symbol::intern(&format!(
-        "{kind:?}"
-    ))))
+    Rc::new(crate::mixin::Mixin {
+        methods: crate::builtins::primitive::method_table(kind),
+        ..crate::mixin::Mixin::empty(Symbol::intern(&format!("{kind:?}")))
+    })
 }
 
 /// Builds the single, genuinely self-referential `Object`-tagged class

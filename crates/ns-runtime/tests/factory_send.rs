@@ -82,7 +82,7 @@ fn ordered_collection_new_via_ordinary_send_is_array_backed_and_supports_add_and
 
 /// `Array new` via ordinary `send` must also be `Array`-tagged (not
 /// `OrderedCollection`), confirmed here by `add:` *failing* --
-/// `dispatch_array` has no `add:` arm.
+/// `Array`'s method table has no `add:` primitive.
 #[test]
 fn array_new_via_ordinary_send_does_not_understand_add() {
     let mut interpreter = Interpreter::bootstrap();

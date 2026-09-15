@@ -5,7 +5,10 @@
 
 use ns_syntax::ast;
 
+use crate::hash::IdentityMap;
+use crate::mixin::{MethodEntry, PrimitiveMethod};
 use crate::types::BuiltinClass;
+use crate::Symbol;
 
 /// One native operation. Grouped by the builtin family whose module executes
 /// it, so each module matches its own group exhaustively.
@@ -325,6 +328,23 @@ pub fn primitives_of(kind: BuiltinClass) -> &'static [PrimitiveSelector] {
         BuiltinClass::Platform => PLATFORM,
         BuiltinClass::Nil => &[],
     }
+}
+
+/// The method table the bootstrap gives `kind`'s mixin: one
+/// `MethodEntry::Primitive` per selector `kind` answers natively.
+pub fn method_table(kind: BuiltinClass) -> IdentityMap<Symbol, MethodEntry> {
+    primitives_of(kind)
+        .iter()
+        .map(|entry| {
+            (
+                Symbol::intern(entry.selector),
+                MethodEntry::Primitive(PrimitiveMethod {
+                    primitive: entry.primitive,
+                    access: entry.access,
+                }),
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! Integration tests for the `Array`/`OrderedCollection` native
 //! methods (`crate::builtins::collections`) and `Block` native methods
-//! (`crate::builtins::block`), wired through `crate::builtins::dispatch_native`
+//! (`crate::builtins::block`), found as primitives by the ordinary lookup
 //! via `Interpreter::send` -- same pattern as `tests/builtins_boolean_numbers.rs`.
 
 use indoc::indoc;

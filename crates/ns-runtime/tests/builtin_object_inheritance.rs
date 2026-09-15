@@ -1,12 +1,9 @@
-//! Every builtin class's superclass is `Object`,
-//! but `dispatch::walk` stops at the first `builtin: Some(kind)` class it
-//! reaches and never continues up that class's own superclass chain. These
-//! tests pin the call-site fallback that restores the one missing
-//! inheritance step (`Mutator::dispatch_native_inheriting_object`):
-//! a non-`Object` builtin receiver must still reach `Object`'s own native
+//! Every builtin class's superclass is `Object`, and the ordinary lookup
+//! walk reaches `Object`'s primitives from any builtin receiver. These tests
+//! pin that a non-`Object` builtin receiver reaches `Object`'s own
 //! `class`/`==`/`=`/`hash`/`printString`, and -- most importantly --
 //! `Object`'s real, spec-shaped `doesNotUnderstand:`
-//! (`builtins::object_class::dispatch`), not the interpreter's internal
+//! (`builtins::object_class`), not the interpreter's internal
 //! "no doesNotUnderstand: found" fallback string.
 
 use ns_runtime::{BuiltinClass, Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
@@ -123,11 +120,10 @@ fn a_builtin_receiver_inherits_objects_identity_and_hash() {
 }
 
 /// The load-bearing half: an unimplemented selector on a builtin must
-/// route through `builtins::object_class::dispatch`'s real
-/// `doesNotUnderstand:` -- whose message is
-/// "<describe(receiver)> does not understand #<selector>" -- rather than
-/// `Mutator::decide_does_not_understand`'s internal
-/// "(native class ... has no doesNotUnderstand: implementation)" fallback.
+/// route through `builtins::object_class`'s real `doesNotUnderstand:` --
+/// whose message is "<describe(receiver)> does not understand #<selector>"
+/// -- rather than `Mutator::decide_does_not_understand`'s internal
+/// "(and no doesNotUnderstand: found anywhere in the class chain)" fallback.
 #[test]
 fn an_unknown_selector_on_a_builtin_runs_objects_real_does_not_understand() {
     let mut interpreter = Interpreter::bootstrap();
@@ -143,7 +139,7 @@ fn an_unknown_selector_on_a_builtin_runs_objects_real_does_not_understand() {
             assert_eq!(error.selector, Symbol::intern("frobnicate"));
             assert_eq!(
                 error.message, "an object does not understand #frobnicate",
-                "expected `object_class::dispatch`'s own doesNotUnderstand: message shape"
+                "expected `object_class`'s own doesNotUnderstand: message shape"
             );
         }
         Ok(value) => {

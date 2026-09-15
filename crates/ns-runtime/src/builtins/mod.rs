@@ -1,8 +1,9 @@
-//! Native ("primitive") method dispatch for the core library classes: one
-//! module per `BuiltinClass` family -- `object_class` for `Object` itself,
-//! then `boolean`, `numbers`, `text`, `collections` and `block`. `primitive`
-//! names every one of them as a `Primitive`, which `execute` runs; `selector`
-//! selects one only through the temporary bridge, `dispatch_native`.
+//! The native ("primitive") methods of the core library classes: one module
+//! per `BuiltinClass` family -- `object_class` for `Object` itself, then
+//! `boolean`, `numbers`, `text`, `collections` and `block`. `primitive` names
+//! every one of them as a `Primitive` and lists each builtin's as the entries
+//! of its method table, where the ordinary lookups find them
+//! (`dispatch::Lookup::Primitive`); `execute` runs the one a lookup found.
 pub mod block;
 pub mod boolean;
 pub mod collections;
@@ -57,22 +58,6 @@ pub(crate) fn execute<'gc>(
             platform::execute(mutator, primitive, receiver, arguments).map(wrap_error)
         }
     }
-}
-
-/// Temporary, until lookup finds primitives in the method tables (step 3a,
-/// Task 3): the primitive `kind` lists for `selector`, run.
-pub(crate) fn dispatch_native<'gc>(
-    mutator: &mut Mutator<'gc>,
-    kind: BuiltinClass,
-    receiver: Value<'gc>,
-    selector: Symbol,
-    arguments: &[Value<'gc>],
-) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-    let primitive = primitive::primitives_of(kind)
-        .iter()
-        .find(|entry| entry.selector == selector.as_str())?
-        .primitive;
-    execute(mutator, primitive, receiver, selector, arguments)
 }
 
 /// Lifts a leaf native's result into the step it is.
