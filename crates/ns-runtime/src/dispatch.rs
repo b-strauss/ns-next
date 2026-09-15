@@ -206,7 +206,7 @@ pub fn lookup_public<'gc>(
     class: ClassReference<'gc>,
     selector: Symbol,
 ) -> Lookup<'gc> {
-    lookup(heap, Rule::Public, class, selector)
+    walk(heap, class, selector, Rule::Public)
 }
 
 /// §5.9's lookupProtected(n, C): "m, if the mixin of C defines a method m
@@ -219,7 +219,7 @@ pub fn lookup_protected<'gc>(
     class: ClassReference<'gc>,
     selector: Symbol,
 ) -> Lookup<'gc> {
-    lookup(heap, Rule::Protected, class, selector)
+    walk(heap, class, selector, Rule::Protected)
 }
 
 /// The plain, access-blind "defined for" walk (§3.5): used by
@@ -230,23 +230,34 @@ pub fn lookup_defined_for<'gc>(
     class: ClassReference<'gc>,
     selector: Symbol,
 ) -> Lookup<'gc> {
-    lookup(heap, Rule::DefinedFor, class, selector)
+    walk(heap, class, selector, Rule::DefinedFor)
 }
 
 /// The lookup `rule` names, of `selector`, from `class`: `class`'s own level
 /// first, then each superclass in turn.
+///
+/// The three lookups above name their rule as a literal, so that each gets
+/// its own copy of `walk` with the verdict table folded away. This one,
+/// which carries the rule as a value, therefore branches to one of them
+/// rather than handing `walk` a run-time rule -- a fourth copy of the walk
+/// with a live `rule` register in its inner loop is what a run-time rule
+/// would mean, and its only caller is the cold `lookup_above`.
 pub fn lookup<'gc>(
     heap: &Heap<'gc>,
     rule: Rule,
     class: ClassReference<'gc>,
     selector: Symbol,
 ) -> Lookup<'gc> {
-    walk(heap, class, selector, rule)
+    match rule {
+        Rule::Public => lookup_public(heap, class, selector),
+        Rule::Protected => lookup_protected(heap, class, selector),
+        Rule::DefinedFor => lookup_defined_for(heap, class, selector),
+    }
 }
 
 /// The same lookup, continued from the level above `level`: where a
-/// primitive found at `level` that failed passes the send on
-/// (`Mutator::settle`). `NotFound` above the root.
+/// primitive found at `level` that failed passes the send on. `NotFound`
+/// above the root.
 pub fn lookup_above<'gc>(
     heap: &Heap<'gc>,
     rule: Rule,
@@ -261,6 +272,14 @@ pub fn lookup_above<'gc>(
 
 /// Walks `class`'s superclass chain for a declaration of `selector`, asking
 /// `rule` what to do with each one it finds.
+///
+/// `#[inline(always)]`, and called with a literal `Rule` by each of the three
+/// lookups above, so that each of them is its own specialized walk with
+/// `Rule::verdict` folded into a constant test -- the shape the three
+/// per-lookup verdict closures gave before the rule became a value. One
+/// shared walk taking the rule at run time measured 1.7-2.0% slower on both
+/// screening sources.
+#[inline(always)]
 fn walk<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
