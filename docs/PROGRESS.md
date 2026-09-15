@@ -897,9 +897,9 @@ the same result.
   them is a wire change. Step B shares the vector instead of copying it.
 - **The lexical-send slot lookup.** `dispatch_lexical_send` interns the getter
   name for every setter-shaped selector and hashes the name into the
-  application's `slot_index` for every lexical send. A lexical-send inline-cache
-  entry that records the slot's index removes both
-  ([dispatch.md](design/dispatch.md), "Planned: inline caches").
+  application's `slot_index` for every lexical send. Spec-conformant lookup
+  removed both: a slot's accessors are method-table entries, and the tables
+  hash identity keys with one multiply ("M4 — Spec-conformant lookup" below).
 
 ## M4 — The reference lowering (2026-09-12)
 
