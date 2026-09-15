@@ -334,12 +334,16 @@ its implicit-receiver cache above.
 **Planned.** Native behaviour becomes members of the builtin classes, found by
 the ordinary lookups; the string matching goes.
 
-An `enum Primitive` (`builtins/primitive.rs`) names every native operation —
-`IntegerAdd`, `IntegerLess`, `ObjectIdentical`, `ObjectDoesNotUnderstand`,
-`BooleanIfTrue`, `BlockValue`, `ArrayDo`, `StreamShow`, `PlatformTranscript`
-and the rest, one variant each. One function, `builtins::execute(mutator,
-primitive, receiver, arguments)`, matches on it; the bodies move there from
-today's `builtins/` modules with their semantics and error text unchanged. An
+An `enum Primitive` (`builtins/primitive.rs`) names every native operation,
+one variant each, grouped by the builtin family whose module executes it —
+`Primitive::Integer(IntegerPrimitive::Add)`,
+`Primitive::Object(ObjectPrimitive::DoesNotUnderstand)`,
+`Primitive::Collection(CollectionPrimitive::Enumerate)` for `do:`,
+`Primitive::Platform(PlatformPrimitive::Show)` and the rest. One function,
+`builtins::execute(mutator, primitive, receiver, selector, arguments)`,
+matches on it — the selector only for the error texts that name the send —
+and the bodies stay in today's `builtins/` modules with their semantics and
+error text unchanged. An
 enumeration and not a function pointer, because the JIT tiers must be able to
 recognize a primitive and emit it inline: a function pointer can only be
 called, which is the ceiling a Rust callback imposes
@@ -347,9 +351,9 @@ called, which is the ceiling a Rust callback imposes
 
 The bootstrap fills each builtin mixin's method table from a static list per
 `BuiltinClass` of (selector, access, primitive), as a
-`MethodEntry::Primitive` carrying the primitive, its access and its argument
-count. A lookup that reaches one answers `Lookup::Primitive(primitive)` in
-place of today's `Lookup::Native(kind)`. This is the model of the Smalltalk and
+`MethodEntry::Primitive` carrying the primitive and its access. A lookup that
+reaches one answers `Lookup::Primitive(primitive, level)` in place of today's
+`Lookup::Native(kind)`, the level being the class whose table holds it. This is the model of the Smalltalk and
 Newspeak systems above: in Cog and Primordial Soup a primitive is a *method* whose primitive
 number indexes the interpreter's table (`primitiveTable`,
 `Primitives::primitive_table_` in `prior-art/primordialsoup/vm/primitives.cc`),
