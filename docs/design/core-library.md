@@ -50,7 +50,13 @@ real slot data; the field count is purely a tag.
 
 This is a wart, and it is recorded rather than hidden. It exists because there was
 no second builtin-class slot to spare, and adding one would renumber the image
-format's builtin-class table for no behavioural gain.
+format's builtin-class table for no behavioural gain. Once natives are
+method-table entries (planned, [dispatch.md](dispatch.md), "3a — Primitives
+are method-table entries"), all three objects' selectors sit in the one
+`Platform` table, and a selector sent to the wrong one of them is a primitive
+failure, which continues the lookup at `Object` exactly as today's `None`
+does. They keep the shared class,
+since `platform transcript class` answering `Platform` is observable.
 
 ## Deviation: `i64` integers
 
@@ -151,11 +157,20 @@ on the activation stack, ~53 ns: `bench_send.ns` minus the send decomposition's
 row two. The arena binary's figure for the same difference, ~84 ns, also carries
 a temporaries allocation, so it overstates the native send
 ([execution.md](execution.md), "What the activation stack moved"). The fix
-lives with the inline caches, not in a faster `match`: a lookup that reaches a
-native binds an enumerated primitive, a native inline-cache entry carries it,
+is not a faster `match`. It is planned as step 3a, ahead of the inline caches:
+every native becomes an entry of its builtin class's method table carrying an
+enumerated primitive, found by the ordinary lookups and executed by a `match`
+on the enumeration; a native inline-cache entry then carries the primitive,
 and the JIT emits it inline ([dispatch.md](dispatch.md), "Planned: inline
-caches"). A leaf such as `+` additionally gets an inlined fast path in compiled
-code, guarded like the control-flow inlining, as Cog's `bytecodePrimAdd` does.
+caches", "3a — Primitives are method-table entries"). A native whose receiver
+has the wrong shape fails, and a failure passes its level over, so the lookup
+continues at `Object` and ends in `doesNotUnderstand:` if nothing answers —
+the outcome of the `None` a native answers today. It is the first half of "Where this is
+going" above — every builtin method a real method — for the leaves that exist
+now; the second half, Newspeak fallback bodies and library code in Newspeak,
+still comes after the caches. A leaf such as `+` additionally gets an inlined
+fast path in compiled code, guarded like the control-flow inlining, as Cog's
+`bytecodePrimAdd` does.
 
 ## Decisions
 
@@ -165,7 +180,9 @@ code, guarded like the control-flow inlining, as Cog's `bytecodePrimAdd` does.
   than reversing it: the reasons for that decision — artifact size and the trust
   boundary — apply to leaves, which are almost all of the library.
 - **A native is bound as an enumerated primitive, not a function pointer**, so
-  the JIT can emit it inline.
+  the JIT can emit it inline — found, once step 3a is built, as an entry of its
+  builtin class's method table, with an access modifier (§5.5 makes `Object`'s
+  `doesNotUnderstand:` protected).
 - **The core library is headed for Newspeak source with Rust primitives
   underneath**, as Primordial Soup's is, so that every builtin method is a real
   method. Planned, after the inline caches.

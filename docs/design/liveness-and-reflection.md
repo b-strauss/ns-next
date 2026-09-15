@@ -76,6 +76,15 @@ The key is the **mixin application**, not the class object; see
 initializers must be flushed along with everything else on a shape change,
 because `InitializeSlot` is layout-dependent.
 
+The inline caches planned in [dispatch.md](dispatch.md) ("3b — The caches")
+are built for this: an entry holds no handle, so invalidating all of them is
+resetting the heap's cache table and emptying its global cache, with every
+code family's range kept for the activations still running; a debug-build
+stress mode does exactly that at every safepoint. Scoping an invalidation to
+the applications a change affects comes with the first mutation that needs
+it. If step 3c puts the dispatch id into the object header, `become:` and a
+class change must exchange it along with the class.
+
 ## Debugger
 
 1. **Suspend.** An uncaught error or a breakpoint reifies the activation chain as

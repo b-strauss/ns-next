@@ -42,25 +42,35 @@ with a multiply-rotate hasher instead of SipHash. Measured whole, no source is
 slower than `59061ec` or `be3eb40`, and six are 4–12.5% faster than both; see
 "M4 — Spec-conformant lookup" below.
 
-**The next piece is step 3, the inline caches** ([dispatch.md](design/dispatch.md),
-"Planned: inline caches"; item 3 of the order of work below). It gets its own
-plan under `docs/superpowers/plans/`, written against the code as the
-spec-conformant lookup left it. Two questions there are open and are decided
-with the caches, not before: **the megamorphic fallback** behind the inline
-caches (Cog's global method cache, V8's stub cache, Primordial Soup's
-`LookupCache`), and **a dense application id in the object header**, which
-makes a guard one load and one compare and touches the object representation,
-the tracer and the image. A slot accessor is an ordinary cache entry, the
-guard and then the field read or write. Read for it: [dispatch.md](design/dispatch.md), "Planned:
-inline caches" (a cache guards on the mixin application, and a native entry
-carries an enumerated primitive); [compiler.md](design/compiler.md),
-"Safepoints and call-site identity", for the inert call-site slots every
-`CompiledCode` already carries;
-[execution.md](design/execution.md), "The VM", for the send path the caches
-sit on, where each instruction is one entry of the step state, `Mutator`; and
-[memory.md](design/memory.md), "The brand" and "What the collector traces" —
-code is shared behind an `Rc`, where no handle may live, so a cache entry in
-it must hold none, which a key on the application satisfies. Performance is
+**Step 3, the inline caches, is designed** (2026-09-15;
+[dispatch.md](design/dispatch.md), "Planned: inline caches"; item 3 of the
+order of work below), in three parts, each landing green and measured on its
+own:
+
+- **3a — primitives are method-table entries.** Every native becomes an entry
+  of its builtin class's method table carrying an enumerated primitive,
+  found by the ordinary lookups; `match selector.as_str()`, the dispatch
+  leaf and the hand-restored inheritance from `Object` go, and `Object`'s
+  `doesNotUnderstand:` becomes `protected` (§5.5).
+- **3b — the caches.** Cache state per heap, in a table the `Mutator` owns,
+  indexed from the activation's `feedback_base` (V8's split, HotSpot's frame
+  pointer); a site goes monomorphic, then a polymorphic cache of 4, then
+  megamorphic, with a global cache of 1024 entries behind every site; the
+  guard is a dense application id reached through the class object; `resolve`
+  then `act`, so a cache records what the lookup decided and never decides;
+  call-site ids numbered per code family and widened to `u32`, behind new send
+  tags; the reference lowering runs uncached as the oracle; a new stress mode,
+  `NS_NEXT_STRESS_CACHES=1`, empties every cache at every safepoint.
+- **3c — the dispatch id in the object header**, measured against 3b in two
+  variants, in the header (64-byte objects) or in the header with `ClassData`
+  boxed (about 48); the user decides on the numbers.
+
+The megamorphic fallback is the global cache, and the place of the dispatch id
+is decided by 3c's measurement.
+
+**The next piece is 3a's plan**, under `docs/superpowers/plans/`, written
+against [dispatch.md](design/dispatch.md), "3a — Primitives are method-table
+entries", and [core-library.md](design/core-library.md). Performance is
 measured, not assumed: the protocol and the seven sources of "What removing
 the re-entries moved" ([execution.md](design/execution.md); `bench_do.ns`
 is written out in the
@@ -317,10 +327,10 @@ so nothing is lost by it going second.
    spec-conformant lookup**, which made the lookups the caches record follow
    §5.5–§5.10 and §6.3.2, put slot accessors into the method table, where a
    cache entry records them like any member, and gave the tables an identity
-   hasher; see "M4 — Spec-conformant lookup" below. The call-site slots are
-   already emitted and inert, so no bytecode format break. A cache must guard on
-   the **mixin application**, not on the class object; the obvious key is the
-   wrong one and would never hit. A native entry carries an enumerated
+   hasher; see "M4 — Spec-conformant lookup" below. Designed on 2026-09-15 in
+   three parts, 3a to 3c ("Where the next session starts" above). A cache must
+   guard on the **mixin application**, not on the class object; the obvious key
+   is the wrong one and would never hit. A native entry carries an enumerated
    primitive, not a selector or a function pointer, so a hit costs the guard and
    an indexed jump and the JIT can emit the primitive inline
    ([dispatch.md](design/dispatch.md)).

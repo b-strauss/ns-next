@@ -377,6 +377,17 @@ one place, which the reference lowering and a later JIT will reach unchanged —
 and it is why `CLAUDE.md`'s "`vm.rs` holds no dispatch logic" forbids copying
 anything out of `interpreter/` into `vm.rs`.
 
+**Planned (step 3b, [dispatch.md](dispatch.md), "3b — The caches"):** the
+inline caches keep it that way. The running activation gains a
+`feedback_base`, the start of its code family's range in the heap's cache
+table; `run` holds it in a local beside the code, `Flow::Switch` carries it,
+and a send passes it and its call-site id to the decision in `interpreter/`,
+which probes the cache there. `vm.rs` learns two numbers and no dispatch. A
+method's base comes with the cache entry that chose it, a block's from its
+closure, which copied it from the activation that created it. Being one field
+more on the hot loop's path, it is measured as a variant of its own
+([dispatch.md](dispatch.md), "Measurement").
+
 Block invocation is not special-cased into an opcode: `Block value` is still a
 native method, which answers the closure as a step; the closure's activation is
 pushed above the one that sent `value` — its sender, by position — and a wrong

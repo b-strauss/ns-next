@@ -34,12 +34,12 @@ that cannot name its code is describing an intention, and should say so.
 |---|---|---|---|
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
-| Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches |
-| AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | inline-cache slots wired up |
+| Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches, designed in three steps: primitives as method-table entries (3a), the caches (3b), the dispatch id's place (3c) |
+| AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | call-site ids per code family, as `u32` (3b) |
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, and the loop polls a safepoint | closure conversion, JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena, the activation stack, the safepoint, tracing, host roots, the stress mode and the lifetime brand are built; nothing reclaims an arena slot | a collector |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
-| Builtins and the platform | [core-library.md](core-library.md) | Partial | the core library as Newspeak source |
+| Builtins and the platform | [core-library.md](core-library.md) | Partial | natives as method-table entries with an enumerated primitive (3a), then the core library as Newspeak source |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
 
 ## Architecture

@@ -215,6 +215,16 @@ Literals:
 - 9 `UnresolvedIdentifier`: an identifier that names nothing, such as a bare
   `super`; it raises its error when it runs.
 
+**Planned (step 3b, [dispatch.md](dispatch.md), "Bytecode and image"):** a
+send's call-site id widens from `u16` to `u32`, which changes what the four
+send tags mean, so 7–10 are retired and the four sends take the next free
+numbers. A code record's call-site list is then written empty, and a decoder
+refuses a non-empty one, so a stale code body with sends is refused before its
+instructions are read; the family size the caches need is derived from the
+sends' ids on decode, never read. No cache state and no activation's
+`feedback_base` is ever serialized: a loaded artifact starts with empty
+caches.
+
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.
 `crates/ns-runtime/tests/opcode_tags.rs` pins every value and checks that no two
