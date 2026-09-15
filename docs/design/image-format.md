@@ -156,23 +156,44 @@ noticed.
 The instructions are numbered in the order `bytecode::Instruction` declares
 them, and the frame kinds in the order `types::FrameKind` does.
 
-| Instructions | | | |
-|---|---|---|---|
-| 0 `LoadLiteral` | 6 `StoreOuterLocal` | 12 `MakeArray` | 18 `JumpIfNotBoolean` |
-| 1 `LoadSelf` | 7 `SendLexical` | 13 `InitializeSlot` | 19 `BranchIfFalse` |
-| 2 `LoadBuiltinClass` | 8 `SendPublic` | 14 `Return` | 20 `BranchIfTrue` |
-| 3 `Move` | 9 `SendInlinable` | 15 `ImplicitReturn` | |
-| 4 `StoreLocal` | 10 `SendSuper` | 16 `NonLocalReturn` | |
-| 5 `LoadOuterLocal` | 11 `MakeClosure` | 17 `Jump` | |
+Instructions:
 
-| Literals | | |
-|---|---|---|
-| 0 `Nil` | 4 `String` | 8 `MalformedInteger` |
-| 1 `Boolean` | 5 `Symbol` | 9 `UnresolvedIdentifier` |
-| 2 `SmallInteger` | 6 `Character` | |
-| 3 `Float` | 7 `Array` | |
+- 0 `LoadLiteral`
+- 1 `LoadSelf`
+- 2 `LoadBuiltinClass`
+- 3 `Move`
+- 4 `StoreLocal`
+- 5 `LoadOuterLocal`
+- 6 `StoreOuterLocal`
+- 7 `SendLexical`
+- 8 `SendPublic`
+- 9 `SendInlinable`
+- 10 `SendSuper`
+- 11 `MakeClosure`
+- 12 `MakeArray`
+- 13 `InitializeSlot`
+- 14 `Return`
+- 15 `ImplicitReturn`
+- 16 `NonLocalReturn`
+- 17 `Jump`
+- 18 `JumpIfNotBoolean`
+- 19 `BranchIfFalse`
+- 20 `BranchIfTrue`
 
-Both tables are declared once, in `image/opcodes.rs`, and used by the encoder and
+Literals:
+
+- 0 `Nil`
+- 1 `Boolean`
+- 2 `SmallInteger`
+- 3 `Float`
+- 4 `String`
+- 5 `Symbol`
+- 6 `Character`
+- 7 `Array`
+- 8 `MalformedInteger`
+- 9 `UnresolvedIdentifier`
+
+Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.
 `crates/ns-runtime/tests/opcode_tags.rs` pins every value and checks that no two
 share a number, so a renumbering fails the suite at the moment it happens instead
