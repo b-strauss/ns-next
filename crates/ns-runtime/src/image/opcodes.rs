@@ -20,42 +20,92 @@
 
 // Instructions, numbered in the order `bytecode::Instruction` declares them.
 // Next free number: 21.
+
+/// Loads a literal into a register; a string, symbol, character or array
+/// literal allocates a fresh object every time it runs.
 pub const OPCODE_LOAD_LITERAL: u8 = 0;
+/// Loads the receiver, `self`, into a register.
 pub const OPCODE_LOAD_SELF: u8 = 1;
+/// Loads the builtin class a bare name such as `Object` denotes when no
+/// enclosing declaration declares that name.
 pub const OPCODE_LOAD_BUILTIN_CLASS: u8 = 2;
+/// Copies one register into another.
 pub const OPCODE_MOVE: u8 = 3;
+/// Writes a register into a local variable of the running activation; reading
+/// one needs no instruction, since its register is its value.
 pub const OPCODE_STORE_LOCAL: u8 = 4;
+/// Reads a local variable of an enclosing activation, `depth` steps out along
+/// the chain of captured frames.
 pub const OPCODE_LOAD_OUTER_LOCAL: u8 = 5;
+/// Writes a local variable of an enclosing activation, reached the same way.
 pub const OPCODE_STORE_OUTER_LOCAL: u8 = 6;
+/// Sends a message with an implicit receiver, the enclosing object at the
+/// lexical depth the resolver fixed, by the rules of §5.7–§5.9.
 pub const OPCODE_SEND_LEXICAL: u8 = 7;
+/// Sends a message to an explicit receiver, found by `lookupPublic` (§5.5).
 pub const OPCODE_SEND_PUBLIC: u8 = 8;
+/// Exactly a `SendPublic`, emitted only by the reference lowering for a
+/// control-flow send the optimized lowering inlines, so that both lowerings
+/// count recursion depth alike.
 pub const OPCODE_SEND_INLINABLE: u8 = 9;
+/// Sends a message to `self`, looked up from the superclass of the running
+/// method's defining class (§5.10).
 pub const OPCODE_SEND_SUPER: u8 = 10;
+/// Creates a block closure over a compiled block body, capturing the running
+/// activation.
 pub const OPCODE_MAKE_CLOSURE: u8 = 11;
+/// Creates an array from the values of a list of registers, for a `{ ... }`
+/// expression.
 pub const OPCODE_MAKE_ARRAY: u8 = 12;
+/// Writes the initial value of one of the running mixin's own slots into
+/// `self`; emitted only in instance initializers.
 pub const OPCODE_INITIALIZE_SLOT: u8 = 13;
+/// Returns a register's value from the running method or initializer, a `^`
+/// outside a block.
 pub const OPCODE_RETURN: u8 = 14;
+/// Returns from a body that fell off its end, `self` from a method and the last
+/// value from a block; it runs exactly like `Return`.
 pub const OPCODE_IMPLICIT_RETURN: u8 = 15;
+/// Returns from a block's home method, a `^` inside a block, unwinding every
+/// activation above that method.
 pub const OPCODE_NON_LOCAL_RETURN: u8 = 16;
+/// Jumps unconditionally; emitted only by control-flow inlining.
 pub const OPCODE_JUMP: u8 = 17;
+/// Jumps when a register holds no Boolean at all: the guard in front of inlined
+/// control flow, whose target handles any other receiver.
 pub const OPCODE_JUMP_IF_NOT_BOOLEAN: u8 = 18;
+/// Jumps when a register holds exactly `false`, and falls through for anything
+/// else.
 pub const OPCODE_BRANCH_IF_FALSE: u8 = 19;
+/// Jumps when a register holds exactly `true`, and falls through for anything
+/// else.
 pub const OPCODE_BRANCH_IF_TRUE: u8 = 20;
 
 // Literals, carried by `OPCODE_LOAD_LITERAL` and nested inside `LITERAL_ARRAY`.
 // Next free number: 10.
+
+/// `nil`.
 pub const LITERAL_NIL: u8 = 0;
+/// `true` or `false`.
 pub const LITERAL_BOOLEAN: u8 = 1;
+/// An integer that fits a 64-bit signed word.
 pub const LITERAL_SMALL_INTEGER: u8 = 2;
+/// A 64-bit floating-point number.
 pub const LITERAL_FLOAT: u8 = 3;
+/// A string literal.
 pub const LITERAL_STRING: u8 = 4;
+/// A symbol literal, `#name`.
 pub const LITERAL_SYMBOL: u8 = 5;
+/// A character literal.
 pub const LITERAL_CHARACTER: u8 = 6;
+/// A literal array, `#( ... )`, whose elements are literals themselves.
 pub const LITERAL_ARRAY: u8 = 7;
 /// An integer the lexer accepted and the parser rejects. Carried as its
 /// original text because the error it raises is produced at execution time, by
 /// `interpreter::literals::malformed_integer_error`.
 pub const LITERAL_MALFORMED_INTEGER: u8 = 8;
+/// An identifier that names nothing, such as a bare `super`; it raises its
+/// error when it runs.
 pub const LITERAL_UNRESOLVED_IDENTIFIER: u8 = 9;
 
 // ---------------------------------------------------------------------------

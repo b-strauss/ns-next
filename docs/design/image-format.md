@@ -158,40 +158,62 @@ them, and the frame kinds in the order `types::FrameKind` does.
 
 Instructions:
 
-- 0 `LoadLiteral`
-- 1 `LoadSelf`
-- 2 `LoadBuiltinClass`
-- 3 `Move`
-- 4 `StoreLocal`
-- 5 `LoadOuterLocal`
-- 6 `StoreOuterLocal`
-- 7 `SendLexical`
-- 8 `SendPublic`
-- 9 `SendInlinable`
-- 10 `SendSuper`
-- 11 `MakeClosure`
-- 12 `MakeArray`
-- 13 `InitializeSlot`
-- 14 `Return`
-- 15 `ImplicitReturn`
-- 16 `NonLocalReturn`
-- 17 `Jump`
-- 18 `JumpIfNotBoolean`
-- 19 `BranchIfFalse`
-- 20 `BranchIfTrue`
+- 0 `LoadLiteral`: loads a literal into a register; a string, symbol, character
+  or array literal allocates a fresh object every time it runs.
+- 1 `LoadSelf`: loads the receiver, `self`, into a register.
+- 2 `LoadBuiltinClass`: loads the builtin class a bare name such as `Object`
+  denotes when no enclosing declaration declares that name.
+- 3 `Move`: copies one register into another.
+- 4 `StoreLocal`: writes a register into a local variable of the running
+  activation; reading one needs no instruction, since its register is its value.
+- 5 `LoadOuterLocal`: reads a local variable of an enclosing activation, `depth`
+  steps out along the chain of captured frames.
+- 6 `StoreOuterLocal`: writes a local variable of an enclosing activation,
+  reached the same way.
+- 7 `SendLexical`: sends a message with an implicit receiver, the enclosing
+  object at the lexical depth the resolver fixed, by the rules of §5.7–§5.9.
+- 8 `SendPublic`: sends a message to an explicit receiver, found by
+  `lookupPublic` (§5.5).
+- 9 `SendInlinable`: exactly a `SendPublic`, emitted only by the reference
+  lowering for a control-flow send the optimized lowering inlines, so that both
+  lowerings count recursion depth alike.
+- 10 `SendSuper`: sends a message to `self`, looked up from the superclass of
+  the running method's defining class (§5.10).
+- 11 `MakeClosure`: creates a block closure over a compiled block body,
+  capturing the running activation.
+- 12 `MakeArray`: creates an array from the values of a list of registers, for a
+  `{ ... }` expression.
+- 13 `InitializeSlot`: writes the initial value of one of the running mixin's
+  own slots into `self`; emitted only in instance initializers.
+- 14 `Return`: returns a register's value from the running method or
+  initializer, a `^` outside a block.
+- 15 `ImplicitReturn`: returns from a body that fell off its end, `self` from a
+  method and the last value from a block; it runs exactly like `Return`.
+- 16 `NonLocalReturn`: returns from a block's home method, a `^` inside a block,
+  unwinding every activation above that method.
+- 17 `Jump`: jumps unconditionally; emitted only by control-flow inlining.
+- 18 `JumpIfNotBoolean`: jumps when a register holds no Boolean at all: the
+  guard in front of inlined control flow, whose target handles any other receiver.
+- 19 `BranchIfFalse`: jumps when a register holds exactly `false`, and falls
+  through for anything else.
+- 20 `BranchIfTrue`: jumps when a register holds exactly `true`, and falls
+  through for anything else.
 
 Literals:
 
-- 0 `Nil`
-- 1 `Boolean`
-- 2 `SmallInteger`
-- 3 `Float`
-- 4 `String`
-- 5 `Symbol`
-- 6 `Character`
-- 7 `Array`
-- 8 `MalformedInteger`
-- 9 `UnresolvedIdentifier`
+- 0 `Nil`: `nil`.
+- 1 `Boolean`: `true` or `false`.
+- 2 `SmallInteger`: an integer that fits a 64-bit signed word.
+- 3 `Float`: a 64-bit floating-point number.
+- 4 `String`: a string literal.
+- 5 `Symbol`: a symbol literal, `#name`.
+- 6 `Character`: a character literal.
+- 7 `Array`: a literal array, `#( ... )`, whose elements are literals
+  themselves.
+- 8 `MalformedInteger`: an integer literal the lexer accepts and the parser
+  rejects, out of range or a fractional radix; it raises its error when it runs.
+- 9 `UnresolvedIdentifier`: an identifier that names nothing, such as a bare
+  `super`; it raises its error when it runs.
 
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.
