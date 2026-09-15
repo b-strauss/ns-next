@@ -153,13 +153,17 @@ case: it promises no panic, not no misreading. Retiring numbers instead means
 stale bytes hit an unknown tag and are refused, which is the outcome that can be
 noticed.
 
+The instructions are numbered in the order `bytecode::Instruction` declares
+them, and the frame kinds in the order `types::FrameKind` does.
+
 | Instructions | | | |
 |---|---|---|---|
-| 0 `LoadLiteral` | 5 `LoadOuterLocal` | 10 `MakeClosure` | 15 `NonLocalReturn` |
-| 1 `LoadSelf` | 6 `StoreOuterLocal` | 11 `MakeArray` | 16 `Jump` |
-| 2 `LoadBuiltinClass` | 7 `SendLexical` | 12 `InitializeSlot` | 17 `JumpIfNotBoolean` |
-| 3 `Move` | 8 `SendPublic` | 13 `Return` | 18 `BranchIfFalse` |
-| 4 `StoreLocal` | 9 `SendSuper` | 14 `ImplicitReturn` | 19 `BranchIfTrue` |
+| 0 `LoadLiteral` | 6 `StoreOuterLocal` | 12 `MakeArray` | 18 `JumpIfNotBoolean` |
+| 1 `LoadSelf` | 7 `SendLexical` | 13 `InitializeSlot` | 19 `BranchIfFalse` |
+| 2 `LoadBuiltinClass` | 8 `SendPublic` | 14 `Return` | 20 `BranchIfTrue` |
+| 3 `Move` | 9 `SendInlinable` | 15 `ImplicitReturn` | |
+| 4 `StoreLocal` | 10 `SendSuper` | 16 `NonLocalReturn` | |
+| 5 `LoadOuterLocal` | 11 `MakeClosure` | 17 `Jump` | |
 
 | Literals | | |
 |---|---|---|
@@ -180,18 +184,10 @@ a frame was activated for, and which tag-named object an entry of the closing
 hash table names (`HASHED_*`, below). They were bare literals in the encoder and
 again in the decoder until `inspect` became a third reader of those bytes — and
 three hand-kept copies of one numbering is how a viewer starts quietly
-disagreeing with the loader. A sixth family is *retired*: a frame record once
-carried a byte naming the unit its `program_counter` counted in, and only instruction indices
-were ever representable, so the byte was removed. Its two numbers, 0 and 1
-(`PROGRAM_COUNTER_KIND_*`), stay assigned and pinned, so a unit field that ever returns cannot
-give them a new meaning. One frame kind is retired the same way: `FRAME_CLOSURE`
-(1) carried a copy of the closure's record inline, from when the closure's data
-sat behind an `Rc` its object and every activation of it shared. That data now
-sits inline in the closure object, so that the tracer can rewrite its two frame
-handles in place ([memory.md](memory.md), "What the collector traces"), and a
-closure frame names the object instead, as `FRAME_CLOSURE_OBJECT` (6). The old
-number stays assigned so that a stale record is refused as an unknown tag rather
-than read with a layout it does not have.
+disagreeing with the loader. A closure frame (`FRAME_CLOSURE`) names the closure
+object it runs by object id: the closure's data sits inline in its object, so
+that the tracer can rewrite its two frame handles in place
+([memory.md](memory.md), "What the collector traces").
 
 **Mixin table.** One row per declaration: the name, its own slots, the primary
 factory selector and arity, the compiled methods as selector → code id, the ids

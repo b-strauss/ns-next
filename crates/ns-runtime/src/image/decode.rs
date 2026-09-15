@@ -1712,7 +1712,7 @@ fn decode_frame<'gc>(
         FRAME_SUPERCLASS_MESSAGE => {
             FrameKind::SuperclassMessage(decode_class_tag(reader, context, tables)?)
         }
-        FRAME_CLOSURE_OBJECT => FrameKind::Closure(decode_object_id(reader, tables)?),
+        FRAME_CLOSURE => FrameKind::Closure(decode_object_id(reader, tables)?),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "frame kind",

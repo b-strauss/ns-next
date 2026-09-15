@@ -27,18 +27,18 @@ fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_STORE_OUTER_LOCAL, 6);
     assert_eq!(OPCODE_SEND_LEXICAL, 7);
     assert_eq!(OPCODE_SEND_PUBLIC, 8);
-    assert_eq!(OPCODE_SEND_SUPER, 9);
-    assert_eq!(OPCODE_MAKE_CLOSURE, 10);
-    assert_eq!(OPCODE_MAKE_ARRAY, 11);
-    assert_eq!(OPCODE_INITIALIZE_SLOT, 12);
-    assert_eq!(OPCODE_RETURN, 13);
-    assert_eq!(OPCODE_IMPLICIT_RETURN, 14);
-    assert_eq!(OPCODE_NON_LOCAL_RETURN, 15);
-    assert_eq!(OPCODE_JUMP, 16);
-    assert_eq!(OPCODE_JUMP_IF_NOT_BOOLEAN, 17);
-    assert_eq!(OPCODE_BRANCH_IF_FALSE, 18);
-    assert_eq!(OPCODE_BRANCH_IF_TRUE, 19);
-    assert_eq!(OPCODE_SEND_INLINABLE, 20);
+    assert_eq!(OPCODE_SEND_INLINABLE, 9);
+    assert_eq!(OPCODE_SEND_SUPER, 10);
+    assert_eq!(OPCODE_MAKE_CLOSURE, 11);
+    assert_eq!(OPCODE_MAKE_ARRAY, 12);
+    assert_eq!(OPCODE_INITIALIZE_SLOT, 13);
+    assert_eq!(OPCODE_RETURN, 14);
+    assert_eq!(OPCODE_IMPLICIT_RETURN, 15);
+    assert_eq!(OPCODE_NON_LOCAL_RETURN, 16);
+    assert_eq!(OPCODE_JUMP, 17);
+    assert_eq!(OPCODE_JUMP_IF_NOT_BOOLEAN, 18);
+    assert_eq!(OPCODE_BRANCH_IF_FALSE, 19);
+    assert_eq!(OPCODE_BRANCH_IF_TRUE, 20);
 }
 
 #[test]
@@ -71,6 +71,7 @@ fn no_two_tags_share_a_number() {
         OPCODE_STORE_OUTER_LOCAL,
         OPCODE_SEND_LEXICAL,
         OPCODE_SEND_PUBLIC,
+        OPCODE_SEND_INLINABLE,
         OPCODE_SEND_SUPER,
         OPCODE_MAKE_CLOSURE,
         OPCODE_MAKE_ARRAY,
@@ -82,7 +83,6 @@ fn no_two_tags_share_a_number() {
         OPCODE_JUMP_IF_NOT_BOOLEAN,
         OPCODE_BRANCH_IF_FALSE,
         OPCODE_BRANCH_IF_TRUE,
-        OPCODE_SEND_INLINABLE,
     ];
     let mut sorted = opcodes;
     sorted.sort_unstable();
@@ -146,10 +146,6 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(FRAME_INITIALIZER, 3);
     assert_eq!(FRAME_SUPERCLASS_CLAUSE, 4);
     assert_eq!(FRAME_SUPERCLASS_MESSAGE, 5);
-    assert_eq!(FRAME_CLOSURE_OBJECT, 6);
-
-    assert_eq!(PROGRAM_COUNTER_KIND_TREE_WALK, 0);
-    assert_eq!(PROGRAM_COUNTER_KIND_BYTECODE, 1);
 
     assert_eq!(HASHED_BUILTIN_CLASS, 0);
     assert_eq!(HASHED_ROOT_CLASS, 1);
@@ -160,7 +156,7 @@ fn graph_section_tags_are_fixed() {
 /// stops two constants sharing one, and the compiler would not object.
 #[test]
 fn no_two_graph_tags_in_a_family_share_a_number() {
-    let families: [&[u8]; 6] = [
+    let families: [&[u8]; 5] = [
         &[
             VALUE_NIL,
             VALUE_FALSE,
@@ -187,11 +183,6 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             FRAME_INITIALIZER,
             FRAME_SUPERCLASS_CLAUSE,
             FRAME_SUPERCLASS_MESSAGE,
-            FRAME_CLOSURE_OBJECT,
-        ],
-        &[
-            PROGRAM_COUNTER_KIND_TREE_WALK,
-            PROGRAM_COUNTER_KIND_BYTECODE,
         ],
         &[HASHED_BUILTIN_CLASS, HASHED_ROOT_CLASS, HASHED_PLATFORM],
     ];
