@@ -7,7 +7,7 @@ use crate::heap::ActivationReference;
 use crate::types::*;
 use crate::Symbol;
 
-use super::{Mutator, Settled, Signal, Step, StepArguments};
+use super::{Mutator, Signal, Step, StepArguments};
 
 /// `newspeak-spec.pdf` §5.7-§5.9: an implicit receiver send whose declaring
 /// class N is at lexical depth `k` is `outer N m`. `enclosing` is the kth
@@ -71,31 +71,59 @@ pub(crate) fn decide_lexical_send<'gc>(
             })
             .unwrap_or_else(|| dispatch::lookup_protected(&mutator.heap, class, selector))
     });
-    match mutator.settle(
-        dispatch::Rule::Protected,
-        lookup,
-        enclosing,
-        selector,
-        arguments,
-    ) {
-        Settled::Answered(result) => result,
-        Settled::Found(Lookup::Method(method, defining_class)) => Ok(Step::Method {
+    decide_lexical_lookup(mutator, lookup, enclosing, selector, arguments)
+}
+
+/// What the lexical send's walk found, turned into the step it names. The
+/// `Lookup` is matched as it is, rather than routed through a wider enum
+/// that also carries a primitive's finished `Result<Step, Signal>`: see
+/// `Mutator::decide_public_lookup`, which this mirrors, for what that
+/// measured.
+fn decide_lexical_lookup<'gc>(
+    mutator: &mut Mutator<'gc>,
+    lookup: Lookup<'gc>,
+    enclosing: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Result<Step<'gc>, Signal<'gc>> {
+    match lookup {
+        Lookup::Method(method, defining_class) => Ok(Step::Method {
             receiver: enclosing,
             method,
             defining_class,
             arguments: StepArguments::Send,
         }),
-        Settled::Found(Lookup::SlotAccessor(accessor, field)) => {
+        Lookup::SlotAccessor(accessor, field) => {
             mutator.decide_slot_accessor(enclosing, accessor, field, arguments)
         }
-        Settled::Found(Lookup::NestedClass(mixin, declaring_class)) => {
+        Lookup::NestedClass(mixin, declaring_class) => {
             crate::interpreter::nested::nested_class(mutator, &enclosing, &mixin, declaring_class)
         }
-        Settled::Found(Lookup::NotFound) => mutator.decide_send(enclosing, selector, arguments),
-        Settled::Found(Lookup::Primitive(..)) => {
-            unreachable!("internal: `settle` runs every primitive it is handed")
+        Lookup::Primitive(primitive, level) => {
+            match crate::builtins::execute(mutator, primitive, enclosing, selector, arguments) {
+                Some(result) => result,
+                None => decide_lexical_above(mutator, level, enclosing, selector, arguments),
+            }
         }
+        Lookup::NotFound => mutator.decide_send(enclosing, selector, arguments),
     }
+}
+
+/// Where a failed primitive sends a lexical send on: §5.9's lookupProtected,
+/// continued from the level above the one that declared the primitive.
+/// `#[cold]` for the reason `Mutator::decide_public_above` gives -- a
+/// primitive fails only on a receiver whose shape it does not work on.
+#[cold]
+#[inline(never)]
+fn decide_lexical_above<'gc>(
+    mutator: &mut Mutator<'gc>,
+    level: ClassReference<'gc>,
+    enclosing: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Result<Step<'gc>, Signal<'gc>> {
+    let lookup = dispatch::lookup_above(&mutator.heap, dispatch::Rule::Protected, level, selector);
+    decide_lexical_lookup(mutator, lookup, enclosing, selector, arguments)
 }
 
 /// `newspeak-spec.pdf` §5.10: starts at S, the superclass of the *current
@@ -133,15 +161,22 @@ pub(crate) fn decide_super_send<'gc>(
     };
     let self_value = mutator.heap.activation_receiver(activation);
     let lookup = dispatch::lookup_protected(&mutator.heap, superclass, selector);
-    match mutator.settle(
-        dispatch::Rule::Protected,
-        lookup,
-        self_value,
-        selector,
-        arguments,
-    ) {
-        Settled::Answered(result) => result,
-        Settled::Found(Lookup::Method(method, defining_class)) => Ok(Step::Method {
+    decide_super_lookup(mutator, lookup, self_value, superclass, selector, arguments)
+}
+
+/// What the `super` walk found, turned into the step it names. `superclass`
+/// is S, carried along because §5.10's failure looks `doesNotUnderstand:` up
+/// from S rather than from the receiver's own class.
+fn decide_super_lookup<'gc>(
+    mutator: &mut Mutator<'gc>,
+    lookup: Lookup<'gc>,
+    self_value: Value<'gc>,
+    superclass: ClassReference<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Result<Step<'gc>, Signal<'gc>> {
+    match lookup {
+        Lookup::Method(method, defining_class) => Ok(Step::Method {
             receiver: self_value,
             method,
             defining_class,
@@ -149,7 +184,7 @@ pub(crate) fn decide_super_send<'gc>(
         }),
         // `super x` reaches the superclass's accessor even where the
         // receiver's own class overrides it (§5.10, §6.3.2).
-        Settled::Found(Lookup::SlotAccessor(accessor, field)) => {
+        Lookup::SlotAccessor(accessor, field) => {
             mutator.decide_slot_accessor(self_value, accessor, field, arguments)
         }
         // `super N` for a nested class the superclass declares. The
@@ -159,14 +194,36 @@ pub(crate) fn decide_super_send<'gc>(
         // and different ones when a subclass redeclares `N`: the accessor
         // caches against the declaration's own hidden slot
         // (`MixinApplication::nested_slot`), not against its name.
-        Settled::Found(Lookup::NestedClass(mixin, declaring_class)) => {
+        Lookup::NestedClass(mixin, declaring_class) => {
             crate::interpreter::nested::nested_class(mutator, &self_value, &mixin, declaring_class)
         }
-        Settled::Found(Lookup::NotFound) => {
+        Lookup::Primitive(primitive, level) => {
+            match crate::builtins::execute(mutator, primitive, self_value, selector, arguments) {
+                Some(result) => result,
+                None => {
+                    decide_super_above(mutator, level, self_value, superclass, selector, arguments)
+                }
+            }
+        }
+        Lookup::NotFound => {
             mutator.decide_super_does_not_understand(self_value, superclass, selector, arguments)
         }
-        Settled::Found(Lookup::Primitive(..)) => {
-            unreachable!("internal: `settle` runs every primitive it is handed")
-        }
     }
+}
+
+/// Where a failed primitive sends a `super` send on: §5.10's walk, continued
+/// from the level above the one that declared the primitive. `#[cold]` for
+/// the reason `Mutator::decide_public_above` gives.
+#[cold]
+#[inline(never)]
+fn decide_super_above<'gc>(
+    mutator: &mut Mutator<'gc>,
+    level: ClassReference<'gc>,
+    self_value: Value<'gc>,
+    superclass: ClassReference<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Result<Step<'gc>, Signal<'gc>> {
+    let lookup = dispatch::lookup_above(&mutator.heap, dispatch::Rule::Protected, level, selector);
+    decide_super_lookup(mutator, lookup, self_value, superclass, selector, arguments)
 }
