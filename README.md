@@ -139,12 +139,13 @@ docs/references/     the Newspeak papers the design argues from (third-party, se
 ```
 
 `prior-art/` holds the canonical Newspeak implementation, its benchmark suite,
-Primordial Soup, SOMns, Nova and the OpenSmalltalk VM, so that a design decision
-can be grounded in how a working system solved the same problem. They are
-submodules, so a plain clone does not fetch them and nothing in the build, the
-tests or either gate depends on them; `git submodule update --init` gets them
-when you want them — though `opensmalltalk-vm` alone is about 255 MB, so
-initializing by name is usually the better move.
+Primordial Soup, SOMns, Nova, the OpenSmalltalk VM and Strongtalk, so that a
+design decision can be grounded in how a working system solved the same
+problem. They are submodules, so a plain clone does not fetch them and nothing
+in the build, the tests or either gate depends on them;
+`git submodule update --init` gets them when you want them — though
+`opensmalltalk-vm` alone is about 255 MB, so initializing by name is usually the
+better move.
 
 ## License
 

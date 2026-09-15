@@ -9,7 +9,7 @@ Because they are submodules, a plain `git clone` of this repository does not
 fetch them. To get them:
 
 ```bash
-git submodule update --init          # all four
+git submodule update --init          # all of them
 git submodule update --init prior-art/newspeak    # just one
 ```
 
@@ -28,8 +28,9 @@ that carry design weight.
 | `newspeak-benchmarks/` | [newspeaklanguage/benchmarks](https://github.com/newspeaklanguage/benchmarks) | The same benchmarks in Newspeak, Smalltalk, Dart, Java and JavaScript. Useful both as workloads and as a cross-language baseline for what a given program *should* cost. |
 | `primordialsoup/` | [rmacnak/primordialsoup](https://github.com/rmacnak/primordialsoup) | A Newspeak VM in C++ by Ryan Macnak, with its own bytecode set, image format and garbage collector. The closest prior art to what this repository is building, and the most direct source of comparison for the image format and the collector. |
 | `somns/` | [smarr/SOMns](https://github.com/smarr/SOMns) | A Newspeak on Truffle/Graal by Stefan Marr. The reference for the optimizing end of the design: self-optimizing interpreters, specialization, and the measurement methodology behind them. |
-| `nova/` | [trynova/nova](https://github.com/trynova/nova) | A JavaScript engine in Rust. Not a Newspeak, and here for one specific reason: it is the model [memory.md](../docs/design/memory.md) names for the arena of typed handles and for the `GcScope`/`NoGcScope` root discipline. Rust is the point — a C++ engine's conventions do not carry over, because the borrow checker is available as an enforcement mechanism and their solutions do not use one. |
+| `nova/` | [trynova/nova](https://github.com/trynova/nova) | A JavaScript engine in Rust. Not a Newspeak, and here for one specific reason: it is the model [memory.md](../docs/design/memory.md) names for the arena of typed handles, which ns-next now has. Its `GcScope`/`NoGcScope` root discipline is the comparison memory.md weighs and rejects in favour of a gc-arena-style lifetime brand ("Considered and rejected: Nova's scopes"). Rust is the point — a C++ engine's conventions do not carry over, because the borrow checker is available as an enforcement mechanism and their solutions do not use one. |
 | `opensmalltalk-vm/` | [OpenSmalltalk/opensmalltalk-vm](https://github.com/OpenSmalltalk/opensmalltalk-vm) | Cog and Spur, the Smalltalk VM lineage. The model [execution.md](../docs/design/execution.md) names for activations living on a stack and reified into first-class contexts only on demand, and the closest thing to a reference answer for what that costs and what it complicates. |
+| `strongtalk/` | [b-strauss/strongtalk](https://github.com/b-strauss/strongtalk) | The Animorphic Smalltalk system that Sun open-sourced in 2006, in a GitHub copy of the project's Google Code repository; its VM became the basis of HotSpot. The reference for the optimizing end still ahead: an interpreter whose sends carry inline caches in the bytecode (`vm/interpreter/interpretedIC.*`), polymorphic inline caches (`vm/code/compiledPIC.*`), a recompiler that inlines along the recorded receiver types (`vm/recompiler/`, `vm/compiler/inliner.*`), and deoptimization of optimized frames back into interpreted activations (`vm/runtime/vframe.*`, `DeltaProcess::deoptimize_*` in `vm/runtime/process.cpp`), which is what keeps optimized code debuggable. It is also Newspeak's ancestor: Gilad Bracha's optional type system and first-class mixins are documented under `documentation/`. |
 
 ## Pinned versions
 
@@ -43,6 +44,13 @@ A submodule records one commit. These are the ones this repository points at.
 | `somns` | `e56f4c2815cef4cae2045a9b05dc1fd190315ba6` | 2019-07-07 | 2026-09-10 |
 | `nova` | `4eea7c6fae180a8a2eed45c3f6acd0d9256522b1` | 2026-06-13 | 2026-09-10 |
 | `opensmalltalk-vm` | `3ea6bd17fabb5aca6fcbd175185d2fccdd50d919` | 2026-09-07 | 2026-09-10 |
+| `strongtalk` | `e4ce7b69ad20e1013f07a53dfc11fdf57b6748cf` | 2010-01-06 | 2026-09-15 |
+
+`strongtalk` is pinned on its `gcc-linux` branch, not its default `master`, and
+`.gitmodules` names that branch so `git submodule update --remote` follows it.
+`gcc-linux` is the port to GCC and Linux, with build trees for Linux, macOS and
+Windows, and is the newest line of the VM: it carries every change on `master`
+but one, a name added to `contributorLicenses.html`, and 61 commits of its own.
 
 To move one forward: `git -C prior-art/<name> fetch && git -C prior-art/<name>
 checkout <commit>`, then commit the changed submodule pointer here and update
@@ -91,6 +99,10 @@ code. `ns-next`'s own license is at `LICENSE`.
   that the MPL is file-level copyleft, which makes it the most restrictive
   license here for any purpose beyond reading.
 - `opensmalltalk-vm` — MIT; see `prior-art/opensmalltalk-vm/LICENSE`.
+- `strongtalk` — a BSD-style license, Sun Microsystems 1994–2006; see
+  `prior-art/strongtalk/sourceLicense.html`. Contributions made after the
+  release are under the New BSD license, per `contributorLicenses.html`
+  beside it.
 
 Reading these to understand a design is fine. Copying code out of any of them
 into `ns-next` is a licensing decision, not a technical one, and none of it has
@@ -99,11 +111,11 @@ been made here.
 ## Checkout size
 
 Worth knowing before running `git submodule update --init` without an argument:
-`opensmalltalk-vm` is about **255 MB** checked out, an order of magnitude larger
-than everything else here combined (`newspeak` 17 MB, `nova` 8 MB, `somns`
-5.7 MB, `primordialsoup` 2.8 MB, `newspeak-benchmarks` 389 KB). It is mostly
-generated C sources and platform build trees, none of which is the interesting
-part — the Cog and Spur design lives in the Smalltalk-side sources and the
+`opensmalltalk-vm` is about **255 MB** checked out, several times larger than
+everything else here combined (`strongtalk` 38 MB, `newspeak` 17 MB, `nova`
+8 MB, `somns` 5.7 MB, `primordialsoup` 2.8 MB, `newspeak-benchmarks` 389 KB).
+It is mostly generated C sources and platform build trees, none of which is the
+interesting part — the Cog and Spur design lives in the Smalltalk-side sources and the
 comments. Initialize it by name when you want it rather than pulling everything.
 
 ## Nested submodules

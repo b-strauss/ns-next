@@ -84,10 +84,11 @@ implementation appears in this repository twice and why neither copy may be
 deleted. The file paths cited below are therefore real paths in the working
 tree once the submodule is initialized, not places to go looking upstream.
 
-Four of the six are listed here, because this file is scoped to what the design
-documents actually cite. `prior-art/somns/` and `prior-art/newspeak-benchmarks/`
-are not cited by any document under `docs/design/` today and so are absent from
-this list rather than omitted from it; `prior-art/PROVENANCE.md` covers all six.
+Four of the seven are listed here, because this file is scoped to what the design
+documents actually cite. `prior-art/somns/`, `prior-art/newspeak-benchmarks/` and
+`prior-art/strongtalk/` are not cited by any document under `docs/design/` today
+and so are absent from this list rather than omitted from it;
+`prior-art/PROVENANCE.md` covers all seven.
 
 - **The canonical Newspeak implementation** — `prior-art/newspeak/`, from
   <https://github.com/newspeaklanguage/newspeak>. The reference for what the
@@ -123,12 +124,26 @@ this list rather than omitted from it; `prior-art/PROVENANCE.md` covers all six.
 
 - **Nova** — `prior-art/nova/`, from <https://github.com/trynova/nova>. A JavaScript
   engine in Rust, and the one entry here that is not about Newspeak at all. It is the
-  model `docs/design/memory.md` names for the arena of typed handles and for the
-  `GcScope`/`NoGcScope` root discipline, where holding an unrooted handle across a
-  collection safepoint is a compile error rather than corruption found later. Rust is
-  the whole reason it is the comparison rather than V8: the borrow checker is available
-  as an enforcement mechanism, and a C++ engine's conventions do not carry over to a
-  solution built on one. MPL-2.0, the most restrictive license of the six.
+  model `docs/design/memory.md` names for the arena of typed handles, which ns-next now
+  has, and the comparison it weighs its root discipline against. Rust is the whole
+  reason it is the comparison rather than V8: the borrow checker is available as an
+  enforcement mechanism, and a C++ engine's conventions do not carry over to a
+  solution built on one. MPL-2.0, the most restrictive license of the seven. The parts
+  the design documents cite:
+
+  - `GARBAGE_COLLECTOR.md` — the `GcScope`/`NoGcScope` lifetimes and `Scoped` roots,
+    which `memory.md` rejects in favour of a gc-arena-style lifetime brand
+    ("Considered and rejected: Nova's scopes").
+  - `nova_vm/src/engine/context.rs` — `Bindable` and its `unbind`, which rebrand a
+    handle from one lifetime to another: where `memory.md` ("The brand") locates the
+    hole Nova's discipline leaves in the static guarantee, and which ns-next has no
+    public counterpart to.
+  - `nova_vm/src/engine/bytecode/vm.rs` — `Vm::inner_execute` checking for a
+    collection at the top of the instruction loop, one row of `memory.md`'s
+    comparison in "Where a collection can happen".
+  - `nova_vm/src/ecmascript/execution/agent.rs` — `Agent::check_call_depth`, the fixed
+    count of execution contexts `docs/design/execution.md` ("How other systems
+    bound recursion depth") compares its own depth limit against.
 - **The OpenSmalltalk VM** — `prior-art/opensmalltalk-vm/`, from
   <https://github.com/OpenSmalltalk/opensmalltalk-vm>. Cog and Spur, the Smalltalk VM
   lineage `docs/design/execution.md` names for activations living on a stack and

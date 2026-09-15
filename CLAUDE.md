@@ -246,7 +246,7 @@ Add no new external dependency without a reason that survives review — the ima
 is hand-rolled on purpose.
 
 **Ground a design decision in prior art before proposing options.** `prior-art/` holds
-six reference implementations as submodules. Four answer "what does Newspeak do here":
+seven reference implementations as submodules. Four answer "what does Newspeak do here":
 the canonical Newspeak on Squeak, its cross-language benchmark suite, Ryan Macnak's
 Primordial Soup (a Newspeak VM in C++, with its own bytecode set, image format and
 collector) and Stefan Marr's SOMns (a Newspeak on Truffle/Graal). Two are there because
@@ -255,14 +255,18 @@ for the arena of typed handles, which ns-next now has (its `GcScope`/`NoGcScope`
 discipline was weighed and rejected for a gc-arena-style lifetime brand, `memory.md`);
 `opensmalltalk-vm/` for Cog's activations on a stack, reified on demand, which ns-next
 now has, and its divorce of whole stack pages, which suspension and the debugger still
-need (`execution.md`).
+need (`execution.md`). One is there for the optimizing end still ahead: `strongtalk/`,
+the type-feedback Smalltalk VM that became HotSpot, for inline caches in the bytecode,
+polymorphic inline caches, recompilation along recorded receiver types and
+deoptimization back into interpreted activations -- and, through Gilad Bracha's
+optional types and first-class mixins, an ancestor of Newspeak itself.
 
 When a question is "how should this work", read how a working system answered it and
 cite that, rather than reasoning from first principles alone. Nothing under
 `prior-art/` is compiled, tested or linked, and no gate depends on it; a plain clone
 does not even fetch it (`git submodule update --init <name>` — by name, since
 `opensmalltalk-vm` alone is ~255 MB). Copying code out of any of them is a licensing
-decision, not a technical one, and `nova` is MPL-2.0, the most restrictive of the six.
+decision, not a technical one, and `nova` is MPL-2.0, the most restrictive of the seven.
 See `prior-art/PROVENANCE.md`, which also explains why `newspeaklanguage/newspeak`
 appears both there and under `corpus/`, and why neither copy may be deleted.
 
