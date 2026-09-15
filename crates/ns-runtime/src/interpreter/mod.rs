@@ -581,6 +581,13 @@ impl<'gc> Mutator<'gc> {
     /// benchmark source. It is the same effect the note on
     /// `Sparing the second probe` in `docs/design/execution.md` records for
     /// widening a lookup's answer.
+    ///
+    /// `#[inline(always)]` so that the caller that already holds the
+    /// `Lookup` also builds the step, rather than handing the 24-byte value
+    /// to a call that answers a 56-byte decision back through memory. The
+    /// `#[cold]` `decide_public_above` below breaks the recursion, so only
+    /// the hot half is duplicated into the senders.
+    #[inline(always)]
     fn decide_public_lookup(
         &mut self,
         lookup: Lookup<'gc>,

@@ -78,7 +78,8 @@ pub(crate) fn decide_lexical_send<'gc>(
 /// `Lookup` is matched as it is, rather than routed through a wider enum
 /// that also carries a primitive's finished `Result<Step, Signal>`: see
 /// `Mutator::decide_public_lookup`, which this mirrors, for what that
-/// measured.
+/// measured, and for why this is `#[inline(always)]`.
+#[inline(always)]
 fn decide_lexical_lookup<'gc>(
     mutator: &mut Mutator<'gc>,
     lookup: Lookup<'gc>,
@@ -166,7 +167,9 @@ pub(crate) fn decide_super_send<'gc>(
 
 /// What the `super` walk found, turned into the step it names. `superclass`
 /// is S, carried along because §5.10's failure looks `doesNotUnderstand:` up
-/// from S rather than from the receiver's own class.
+/// from S rather than from the receiver's own class. `#[inline(always)]` for
+/// the reason `Mutator::decide_public_lookup` gives.
+#[inline(always)]
 fn decide_super_lookup<'gc>(
     mutator: &mut Mutator<'gc>,
     lookup: Lookup<'gc>,
