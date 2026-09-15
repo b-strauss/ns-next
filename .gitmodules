@@ -16,3 +16,7 @@
 [submodule "prior-art/opensmalltalk-vm"]
 	path = prior-art/opensmalltalk-vm
 	url = https://github.com/OpenSmalltalk/opensmalltalk-vm.git
+[submodule "prior-art/strongtalk"]
+	path = prior-art/strongtalk
+	url = https://github.com/b-strauss/strongtalk.git
+	branch = gcc-linux
