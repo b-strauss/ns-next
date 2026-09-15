@@ -297,13 +297,21 @@ fn walk<'gc>(
         let Some(superclass) = heap.class_lookup_step(level_class) else {
             return Lookup::NotFound;
         };
-        let next = next_level(superclass, &application);
+        // The step to the next level is taken where the search continues,
+        // not once per level up front: `next_level` clones the superclass's
+        // application `Rc`, and a lookup that answers at the level it is
+        // already on -- a send to a slot accessor, a method the receiver's
+        // own class declares, a builtin's own primitive, which is most of
+        // them -- would otherwise pay that reference count for a level it
+        // never reads. Reading the superclass handle here rather than in
+        // `next_level` keeps the walk's loop state two words: carrying it
+        // along measured slower on both screening sources.
         if let Some(entry) = application.mixin.methods.get(&selector) {
             match rule.verdict(entry.access()) {
                 Verdict::Accept => return found_entry(entry, &application, level_class),
                 Verdict::Stop => return Lookup::NotFound,
                 Verdict::Skip => {
-                    level = next;
+                    level = next_level(superclass, &application);
                     continue;
                 }
             }
@@ -327,12 +335,12 @@ fn walk<'gc>(
                 Verdict::Accept => return Lookup::NestedClass(nested, level_class),
                 Verdict::Stop => return Lookup::NotFound,
                 Verdict::Skip => {
-                    level = next;
+                    level = next_level(superclass, &application);
                     continue;
                 }
             }
         }
-        level = next;
+        level = next_level(superclass, &application);
     }
     Lookup::NotFound
 }
