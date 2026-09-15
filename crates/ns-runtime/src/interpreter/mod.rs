@@ -645,13 +645,14 @@ impl<'gc> Mutator<'gc> {
     /// when its receiver has the wrong shape -- an instance of a user subclass
     /// of `String`, which carries no string -- and a failure passes its level
     /// over: the lookup continues under the same `rule` from that level's
-    /// superclass, `Object` for every builtin, and what it finds there is
-    /// settled the same way. So a send whose builtin primitive fails is
-    /// answered by `Object`'s primitive of the same selector if there is one,
-    /// and otherwise by the caller's own "not found" -- `doesNotUnderstand:`
-    /// (`docs/design/dispatch.md`, "A primitive can fail"). The loop ends:
-    /// each turn moves one level up a superclass chain that `image::decode`
-    /// refuses to let form a cycle.
+    /// superclass, `Object` for every builtin but `Object` itself, which has
+    /// none, and what it finds there is settled the same way. So a send
+    /// whose builtin primitive fails is answered by `Object`'s primitive of
+    /// the same selector if there is one, and otherwise by the caller's own
+    /// "not found" -- `doesNotUnderstand:` (`docs/design/dispatch.md`, "A
+    /// primitive can fail"). The loop ends: each turn moves at least one
+    /// level up a superclass chain that `image::decode` refuses to let form
+    /// a cycle.
     pub(crate) fn settle(
         &mut self,
         rule: dispatch::Rule,
@@ -679,8 +680,8 @@ impl<'gc> Mutator<'gc> {
     /// per `docs/design/dispatch.md`.
     ///
     /// A user-overridden `doesNotUnderstand:` arrives as `Lookup::Method`;
-    /// `Object`'s own primitive one, which every class inherits that does not
-    /// override it, arrives as `Lookup::Primitive` and runs through
+    /// `Object`'s own primitive one, which every class that does not
+    /// override it inherits, arrives as `Lookup::Primitive` and runs through
     /// `settle` like any other primitive.
     fn decide_does_not_understand(
         &mut self,

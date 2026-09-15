@@ -835,12 +835,12 @@ fn a_protected_slot_does_not_answer_an_explicit_receiver() {
 /// instances carry no payload of the builtin's kind, so every such native
 /// fails on them and the send falls to `Object`'s: `=` answers identity and
 /// `printString` the generic default, through an explicit receiver, a `self`
-/// send and a `super` send alike, while `size`, which `Object` does not
-/// have, ends in `doesNotUnderstand:`. The `transcript` stream shares the
-/// `Platform` class with the platform singleton and has no `=` of its own,
-/// so `=` is `Object`'s identity, false for two fresh streams. Step 3a keeps
-/// every one of these outcomes (`docs/design/dispatch.md`, "A primitive can
-/// fail").
+/// send, an implicit-receiver send and a `super` send alike, while `size`,
+/// which `Object` does not have, ends in `doesNotUnderstand:`. The
+/// `transcript` stream shares the `Platform` class with the platform
+/// singleton and has no `=` of its own, so `=` is `Object`'s identity, false
+/// for two fresh streams. Step 3a keeps every one of these outcomes
+/// (`docs/design/dispatch.md`, "A primitive can fail").
 #[test]
 fn a_native_that_fails_on_its_receiver_falls_to_objects() {
     assert_outcome(
@@ -853,6 +853,7 @@ fn a_native_that_fails_on_its_receiver_falls_to_objects() {
                 class Text = String new () (
                     public viaSelf = ( ^self printString )
                     public viaSuper = ( ^super printString )
+                    public viaLexical = ( ^printString )
                 )
                 public main: p args: a = (
                     | t |
@@ -861,13 +862,40 @@ fn a_native_that_fails_on_its_receiver_falls_to_objects() {
                     p transcript show: t printString; newLine.
                     p transcript show: t viaSelf; newLine.
                     p transcript show: t viaSuper; newLine.
+                    p transcript show: t viaLexical; newLine.
                     p transcript show: (p transcript = p transcript) printString; newLine.
                     p transcript show: t size printString; newLine
                 )
             ) : ()
         "},
         1,
-        "true\nan Object\nan Object\nan Object\nfalse\n",
+        "true\nan Object\nan Object\nan Object\nan Object\nfalse\n",
         "Uncaught Newspeak error: an object does not understand #size\n",
+    );
+}
+
+/// `newspeak-spec.pdf` §5.5: `Object`'s `doesNotUnderstand:` must be
+/// protected, and lookupPublic is "Undefined, if the mixin of C defines a
+/// method m with selector n and protected access". So an explicit-receiver
+/// send of `doesNotUnderstand:` finds nothing, and `Object`'s
+/// `doesNotUnderstand:` -- found by the access-blind "defined for" walk --
+/// is invoked for that send, whose selector is `doesNotUnderstand:`.
+#[test]
+fn an_explicit_does_not_understand_send_is_refused_as_protected() {
+    assert_outcome(
+        "explicit-dnu",
+        indoc! {"
+            Newspeak3
+            'T'
+            class Dnu usingPlatform: platform = Object new (
+            ) (
+                public main: p args: a = (
+                    3 doesNotUnderstand: 5
+                )
+            ) : ()
+        "},
+        1,
+        "",
+        "Uncaught Newspeak error: an object does not understand #doesNotUnderstand:\n",
     );
 }

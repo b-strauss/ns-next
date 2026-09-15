@@ -148,6 +148,14 @@ const fn public(selector: &'static str, primitive: Primitive) -> PrimitiveSelect
     }
 }
 
+const fn protected(selector: &'static str, primitive: Primitive) -> PrimitiveSelector {
+    PrimitiveSelector {
+        selector,
+        access: ast::AccessModifier::Protected,
+        primitive,
+    }
+}
+
 const OBJECT: &[PrimitiveSelector] = &[
     public("class", Primitive::Object(ObjectPrimitive::Class)),
     public("==", Primitive::Object(ObjectPrimitive::Identical)),
@@ -157,7 +165,11 @@ const OBJECT: &[PrimitiveSelector] = &[
         "printString",
         Primitive::Object(ObjectPrimitive::PrintString),
     ),
-    public(
+    // `newspeak-spec.pdf` §5.5: `Object`'s `doesNotUnderstand:` must be
+    // protected, so an explicit-receiver send of it finds nothing through
+    // `lookupPublic` and falls to the access-blind "defined for" walk that
+    // invokes it for the failing send itself.
+    protected(
         "doesNotUnderstand:",
         Primitive::Object(ObjectPrimitive::DoesNotUnderstand),
     ),

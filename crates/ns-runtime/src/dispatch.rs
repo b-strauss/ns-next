@@ -576,4 +576,27 @@ mod tests {
             ));
         });
     }
+
+    /// §5.5: `Object`'s `doesNotUnderstand:` is protected -- lookupPublic
+    /// stops at it, lookupProtected and the "defined for" walk accept it.
+    #[test]
+    fn objects_does_not_understand_is_protected() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let integer = mutator.builtin_class(BuiltinClass::Integer);
+            let selector = Symbol::DOES_NOT_UNDERSTAND;
+            assert!(matches!(
+                lookup_public(&mutator.heap, integer, selector),
+                Lookup::NotFound
+            ));
+            assert!(matches!(
+                lookup_protected(&mutator.heap, integer, selector),
+                Lookup::Primitive(Primitive::Object(ObjectPrimitive::DoesNotUnderstand), _)
+            ));
+            assert!(matches!(
+                lookup_defined_for(&mutator.heap, integer, selector),
+                Lookup::Primitive(Primitive::Object(ObjectPrimitive::DoesNotUnderstand), _)
+            ));
+        });
+    }
 }
