@@ -201,6 +201,18 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
     }
 }
 
+/// Explicit wire tags for `CodeKind`, for the same reason as
+/// `builtin_class_tag`.
+pub fn code_kind_tag(kind: CodeKind) -> u8 {
+    match kind {
+        CodeKind::Method => 0,
+        CodeKind::Block => 1,
+        CodeKind::Initializer => 2,
+        CodeKind::SuperclassClause => 3,
+        CodeKind::SuperclassMessage => 4,
+    }
+}
+
 /// The module's root class object, which `load` rebuilds *before* the
 /// object graph (the graph's class tag 1 names it, so it has to exist by
 /// then). Everything else about it comes from mixin-table row 0: this
@@ -330,13 +342,7 @@ fn encode_code(
     ids: &CodeIds,
     symbols: &mut symbols::Builder,
 ) {
-    writer.write_u8(match code.kind {
-        CodeKind::Method => 0,
-        CodeKind::Block => 1,
-        CodeKind::Initializer => 2,
-        CodeKind::SuperclassClause => 3,
-        CodeKind::SuperclassMessage => 4,
-    });
+    writer.write_u8(code_kind_tag(code.kind));
     writer.write_u16(code.argument_count);
     writer.write_u16(code.register_count);
     writer.write_u32(code.source.start);

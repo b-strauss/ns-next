@@ -9,16 +9,14 @@ use std::rc::Rc;
 
 use ns_runtime::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, Literal};
 use ns_runtime::image;
-use ns_runtime::image::opcodes::{
-    FRAME_CLOSURE, FRAME_METHOD, FRAME_SUPERCLASS_MESSAGE, FRAME_TOP_LEVEL, OPCODE_BRANCH_IF_TRUE,
-    OPCODE_LOAD_BUILTIN_CLASS, OPCODE_LOAD_LITERAL, OPCODE_MAKE_CLOSURE,
-};
+use ns_runtime::image::opcodes::*;
 use ns_runtime::image::{decode, encode, mixins, symbols};
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
     BuiltinClass, ClassData, ClassReference, FrameKind, Heap, HostResult, HostSignal, Interpreter,
     Mixin, MixinApplication, Mutator, ObjectData, Root, SourceOrigin, Symbol, Value,
 };
+use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
 
 #[test]
@@ -316,7 +314,7 @@ fn write_mixin_row_with_slots(
     nested: &[u32],
 ) {
     writer.write_u32(name_id);
-    writer.write_u8(1); // AccessModifier::Protected
+    writer.write_u8(mixins::access_tag(AccessModifier::Protected)); // AccessModifier::Protected
     writer.write_u32(0); // span.start
     writer.write_u32(0); // span.end
     writer.write_u32(slots.len() as u32);
@@ -331,7 +329,7 @@ fn write_mixin_row_with_slots(
     writer.write_u32(methods.len() as u32);
     for (selector, code) in methods {
         writer.write_u32(*selector);
-        writer.write_u8(1); // AccessModifier::Protected
+        writer.write_u8(mixins::access_tag(AccessModifier::Protected)); // AccessModifier::Protected
         writer.write_u16(0); // argument_count
         writer.write_u32(*code);
     }
@@ -718,7 +716,7 @@ fn a_root_list_code_id_out_of_range_is_a_decode_error_not_a_panic() {
 fn a_make_closure_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
     writer.write_u32(1); // one code entry ...
-    writer.write_u8(1); // CodeKind::Block
+    writer.write_u8(encode::code_kind_tag(CodeKind::Block)); // CodeKind::Block
     writer.write_u16(0); // argument_count
     writer.write_u16(1); // register_count
     writer.write_u32(0); // source.start
@@ -744,7 +742,7 @@ fn a_forward_make_closure_code_id_is_a_decode_error_not_a_panic() {
     // id pointing at a not-yet-decoded entry is corruption, not a cycle.
     let mut writer = encode::Writer::new();
     writer.write_u32(2); // two code entries ...
-    writer.write_u8(0); // ... the first a CodeKind::Method
+    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // ... the first a CodeKind::Method
     writer.write_u16(0);
     writer.write_u16(1);
     writer.write_u32(0);
@@ -784,7 +782,7 @@ fn an_invalid_code_kind_tag_is_a_decode_error_not_a_panic() {
 fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
-    writer.write_u8(0); // CodeKind::Method
+    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
     writer.write_u16(0);
     writer.write_u16(0);
     writer.write_u32(0);
@@ -807,12 +805,12 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
 #[test]
 fn an_invalid_literal_tag_and_a_bad_character_are_decode_errors_not_panics() {
     for (payload, what) in [
-        (vec![10u8], "literal"),
-        (vec![6u8, 0x00, 0xd8, 0x00, 0x00], "char"),
+        (vec![LITERAL_UNRESOLVED_IDENTIFIER + 1], "literal"),
+        (vec![LITERAL_CHARACTER, 0x00, 0xd8, 0x00, 0x00], "char"),
     ] {
         let mut writer = encode::Writer::new();
         writer.write_u32(1);
-        writer.write_u8(0); // CodeKind::Method
+        writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
         writer.write_u16(0);
         writer.write_u16(1);
         writer.write_u32(0);
@@ -837,7 +835,7 @@ fn an_invalid_literal_tag_and_a_bad_character_are_decode_errors_not_panics() {
 fn an_invalid_builtin_class_tag_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
-    writer.write_u8(0); // CodeKind::Method
+    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
     writer.write_u16(0);
     writer.write_u16(1);
     writer.write_u32(0);
@@ -917,7 +915,7 @@ fn every_builtin_class_tag_round_trips() {
 fn a_backwards_source_span_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
-    writer.write_u8(0); // CodeKind::Method
+    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
     writer.write_u16(0); // argument_count
     writer.write_u16(0); // register_count
     writer.write_u32(9); // source.start ...
@@ -956,7 +954,7 @@ fn a_huge_code_table_count_does_not_reserve_gigabytes() {
 fn code_table_with_nested_literal_array(depth: usize) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     writer.write_u32(1); // one code entry
-    writer.write_u8(0); // CodeKind::Method
+    writer.write_u8(encode::code_kind_tag(CodeKind::Method)); // CodeKind::Method
     writer.write_u16(0); // argument_count
     writer.write_u16(1); // register_count
     writer.write_u32(0); // source.start
@@ -964,13 +962,13 @@ fn code_table_with_nested_literal_array(depth: usize) -> Vec<u8> {
     writer.write_u32(0); // no statement_program_counter entries
     writer.write_u32(0); // no call sites
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(0); // ... a LoadLiteral
+    writer.write_u8(OPCODE_LOAD_LITERAL); // ... a LoadLiteral
     writer.write_u16(0); // destination
     for _ in 0..depth {
-        writer.write_u8(7); // Literal::Array ...
+        writer.write_u8(LITERAL_ARRAY); // Literal::Array ...
         writer.write_u32(1); // ... of exactly one element
     }
-    writer.write_u8(0); // Literal::Nil at the bottom
+    writer.write_u8(LITERAL_NIL); // Literal::Nil at the bottom
     writer.write_u32(0); // no mixin sections
     writer.into_bytes()
 }
@@ -1028,7 +1026,6 @@ fn a_literal_array_within_the_nesting_limit_still_decodes() {
 /// `MakeClosure` hops below the method. Each level is 37 bytes, so the file
 /// grows linearly with the nesting it asks for.
 fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
-    use ns_runtime::image::opcodes::OPCODE_RETURN;
     let body = |writer: &mut encode::Writer, kind: u8, creates: Option<usize>| {
         writer.write_u8(kind);
         writer.write_u16(0); // argument_count
@@ -1855,10 +1852,10 @@ fn graph_counts(writer: &mut encode::Writer, objects: u32, frames: u32) {
 fn one_array_object(element: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1, 0);
-    writer.write_u8(0); // class tag: builtin
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Array));
     writer.write_u32(5); // identity hash
-    writer.write_u8(3); // object body: Array
+    writer.write_u8(OBJECT_ARRAY); // object body: Array
     writer.write_u32(1); // one element
     element(&mut writer);
     writer.into_bytes()
@@ -1867,7 +1864,7 @@ fn one_array_object(element: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
 #[test]
 fn an_object_id_out_of_range_is_a_decode_error_not_a_panic() {
     let bytes = one_array_object(|writer| {
-        writer.write_u8(5); // value tag: object-table id
+        writer.write_u8(VALUE_OBJECT_ID); // value tag: object-table id
         writer.write_u32(99);
     });
     let error = GraphFixture::new().decode_error(&bytes);
@@ -1879,7 +1876,7 @@ fn an_object_id_out_of_range_is_a_decode_error_not_a_panic() {
 fn a_frame_id_out_of_range_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 0, 1);
-    writer.write_u8(0); // receiver: nil
+    writer.write_u8(VALUE_NIL); // receiver: nil
     writer.write_u32(0); // no arguments
     writer.write_u32(0); // no temporaries
     writer.write_u32(0); // program_counter
@@ -1921,7 +1918,7 @@ fn an_invalid_value_tag_in_the_graph_is_a_decode_error_not_a_panic() {
 fn an_invalid_object_body_tag_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1, 0);
-    writer.write_u8(0);
+    writer.write_u8(CLASS_BUILTIN);
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
     writer.write_u32(1);
     writer.write_u8(200); // no such object body
@@ -1945,7 +1942,7 @@ fn an_invalid_class_tag_is_a_decode_error_not_a_panic() {
                           // record and the class tag itself is what the decoder
                           // rejects.
     writer.write_u32(1); // identity hash
-    writer.write_u8(1); // object body: String
+    writer.write_u8(OBJECT_STRING); // object body: String
     let bytes = writer.into_bytes();
     assert_eq!(
         GraphFixture::new().decode_error(&bytes),
@@ -1972,10 +1969,10 @@ fn class_record(
     mixin_id: u32,
     references: impl FnOnce(&mut encode::Writer),
 ) {
-    writer.write_u8(0); // class tag: builtin
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
     writer.write_u32(7); // identity hash
-    writer.write_u8(5); // object body: Class
+    writer.write_u8(OBJECT_CLASS); // object body: Class
     writer.write_u32(mixin_id);
     references(writer);
 }
@@ -2055,7 +2052,7 @@ fn a_class_records_mixin_id_out_of_range_is_a_decode_error_not_a_panic() {
 fn a_class_records_superclass_id_out_of_range_is_a_decode_error_not_a_panic() {
     let bytes = one_class_object(0, |writer| {
         writer.write_boolean(true);
-        writer.write_u8(2); // class tag: object-table record
+        writer.write_u8(CLASS_RECORD); // class tag: object-table record
         writer.write_u32(9); // ... past the end of a one-object table
         writer.write_boolean(false);
         writer.write_boolean(false);
@@ -2071,7 +2068,7 @@ fn a_class_records_enclosing_id_out_of_range_is_a_decode_error_not_a_panic() {
     let bytes = one_class_object(0, |writer| {
         writer.write_boolean(false);
         writer.write_boolean(true);
-        writer.write_u8(5); // value tag: object-table id
+        writer.write_u8(VALUE_OBJECT_ID); // value tag: object-table id
         writer.write_u32(9);
         writer.write_boolean(false);
     });
@@ -2086,7 +2083,7 @@ fn a_class_records_enclosing_scalar_is_a_decode_error_not_a_silent_nil() {
     let bytes = one_class_object(0, |writer| {
         writer.write_boolean(false);
         writer.write_boolean(true);
-        writer.write_u8(3); // value tag: SmallInteger -- not an object at all
+        writer.write_u8(VALUE_SMALL_INTEGER); // value tag: SmallInteger -- not an object at all
         writer.write_i64(1);
         writer.write_boolean(false);
     });
@@ -2102,7 +2099,7 @@ fn a_class_records_declaring_class_id_out_of_range_is_a_decode_error_not_a_panic
         writer.write_boolean(false);
         writer.write_boolean(false);
         writer.write_boolean(true);
-        writer.write_u8(2); // class tag: object-table record
+        writer.write_u8(CLASS_RECORD); // class tag: object-table record
         writer.write_u32(9);
     });
     assert_eq!(
@@ -2120,15 +2117,15 @@ fn a_class_reference_naming_a_record_that_is_not_a_class_is_a_decode_error() {
     graph_counts(&mut writer, 2, 0);
     class_record(&mut writer, 0, |writer| {
         writer.write_boolean(true);
-        writer.write_u8(2);
+        writer.write_u8(CLASS_RECORD);
         writer.write_u32(1); // object 1, which is an array
         writer.write_boolean(false);
         writer.write_boolean(false);
     });
-    writer.write_u8(0); // object 1's class tag: builtin
+    writer.write_u8(CLASS_BUILTIN); // object 1's class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Array));
     writer.write_u32(1); // identity hash
-    writer.write_u8(3); // object body: Array
+    writer.write_u8(OBJECT_ARRAY); // object body: Array
     writer.write_u32(0); // no elements
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
@@ -2148,7 +2145,7 @@ fn class_objects_inheriting_from_each_other_in_a_cycle_are_refused() {
     for other in [1u32, 0] {
         class_record(&mut writer, 0, move |writer| {
             writer.write_boolean(true);
-            writer.write_u8(2);
+            writer.write_u8(CLASS_RECORD);
             writer.write_u32(other);
             writer.write_boolean(false);
             writer.write_boolean(false);
@@ -2166,7 +2163,7 @@ fn class_objects_inheriting_from_each_other_in_a_cycle_are_refused() {
 fn one_frame_prefix() -> encode::Writer {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 0, 1);
-    writer.write_u8(0); // receiver: nil
+    writer.write_u8(VALUE_NIL); // receiver: nil
     writer.write_u32(0); // no arguments
     writer.write_u32(0); // no temporaries
     writer.write_u32(0); // program_counter
@@ -2193,23 +2190,20 @@ fn an_invalid_frame_kind_tag_is_a_decode_error_not_a_panic() {
     );
 }
 
-/// The byte after `program_counter` is the frame's `sender` flag: a frame
-/// record no longer says what its `program_counter` counts, because an image's
-/// code table holds only bytecode. A record written in the old layout -- the
-/// retired program-counter-kind byte after `program_counter` -- therefore has
-/// that byte read as "a sender follows", and the next four bytes (the old
-/// sender, home and current-class flags and the kind tag) as a sender id far
-/// outside the one-frame table, so it is refused rather than read as a
-/// different frame.
+/// The byte after `program_counter` is the frame's `sender` flag. A record
+/// with one stray byte there has it read as "a sender follows", and the next
+/// four bytes (the sender, home and current-class flags and the kind tag) as
+/// a sender id far outside the one-frame table, so it is refused rather than
+/// read as a different frame.
 #[test]
-fn a_frame_record_in_the_old_layout_is_refused() {
+fn a_frame_record_with_a_stray_byte_is_refused() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 0, 1);
-    writer.write_u8(0); // receiver: nil
+    writer.write_u8(VALUE_NIL); // receiver: nil
     writer.write_u32(0); // no arguments
     writer.write_u32(0); // no temporaries
     writer.write_u32(0); // program_counter
-    writer.write_u8(1); // the retired program-counter-kind byte (bytecode)
+    writer.write_u8(1); // the stray byte
     writer.write_boolean(false); // no sender
     writer.write_boolean(false); // no home
     writer.write_boolean(false); // no current class
@@ -2239,10 +2233,10 @@ fn a_method_frame_naming_a_selector_the_class_lost_is_a_decode_error() {
 fn a_closure_objects_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1, 0);
-    writer.write_u8(0); // class tag: builtin
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
     writer.write_u32(1); // identity hash
-    writer.write_u8(4); // object body: Closure
+    writer.write_u8(OBJECT_CLOSURE); // object body: Closure
     writer.write_u16(0); // no parameters
     writer.write_u32(42); // code id, out of range for an empty code table
     let bytes = writer.into_bytes();
@@ -2562,12 +2556,12 @@ fn inspect_names_the_closure_object_a_closure_frame_runs() {
 fn a_closure_frame_naming_an_object_that_is_not_a_closure_is_refused() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1, 1);
-    writer.write_u8(0); // class tag: builtin
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
     writer.write_u32(1); // identity hash
-    writer.write_u8(1); // object body: String
+    writer.write_u8(OBJECT_STRING); // object body: String
     writer.write_str("not a closure");
-    writer.write_u8(0); // receiver: nil
+    writer.write_u8(VALUE_NIL); // receiver: nil
     writer.write_u32(0); // no arguments
     writer.write_u32(0); // no temporaries
     writer.write_u32(0); // program_counter
@@ -2624,10 +2618,10 @@ fn block_code(argument_count: u16) -> Rc<CompiledCode> {
 fn closure_object_with_parameter_count(parameters: &[&str]) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1, 1);
-    writer.write_u8(0); // class tag: builtin
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
     writer.write_u32(1); // identity hash
-    writer.write_u8(4); // object body: Closure
+    writer.write_u8(OBJECT_CLOSURE); // object body: Closure
     writer.write_u16(parameters.len() as u16);
     for (id, _) in parameters.iter().enumerate() {
         // `table_with(parameters)` interns them in this same order, so a
@@ -2637,7 +2631,7 @@ fn closure_object_with_parameter_count(parameters: &[&str]) -> Vec<u8> {
     writer.write_u32(0); // code id
     writer.write_u32(0); // captured frame id -- frame 0 exists
     writer.write_u32(0); // home frame id -- frame 0 exists
-    writer.write_u8(0); // frame 0: receiver nil
+    writer.write_u8(VALUE_NIL); // frame 0: receiver nil
     writer.write_u32(0); // no arguments
     writer.write_u32(0); // no temporaries
     writer.write_u32(0); // program_counter
@@ -2647,7 +2641,7 @@ fn closure_object_with_parameter_count(parameters: &[&str]) -> Vec<u8> {
     writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
     writer.write_boolean(false); // continuable
     writer.write_u32(1); // one root...
-    writer.write_u8(5);
+    writer.write_u8(VALUE_OBJECT_ID);
     writer.write_u32(0); // ...the closure
     writer.into_bytes()
 }
@@ -3533,17 +3527,17 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
 fn closure_over_frame(frame: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1, 1);
-    writer.write_u8(0); // class tag: builtin
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
     writer.write_u32(1); // identity hash
-    writer.write_u8(4); // object body: Closure
+    writer.write_u8(OBJECT_CLOSURE); // object body: Closure
     writer.write_u16(0); // no parameters
     writer.write_u32(0); // code id 0 -- the block body
     writer.write_u32(0); // captured frame id
     writer.write_u32(0); // home frame id
     frame(&mut writer);
     writer.write_u32(1); // one root...
-    writer.write_u8(5);
+    writer.write_u8(VALUE_OBJECT_ID);
     writer.write_u32(0); // ...the closure
     writer.into_bytes()
 }
@@ -3559,11 +3553,11 @@ fn foo_frame_at_program_counter(
     program_counter: u32,
 ) -> impl FnOnce(&mut encode::Writer) {
     move |writer: &mut encode::Writer| {
-        writer.write_u8(0); // receiver: nil
+        writer.write_u8(VALUE_NIL); // receiver: nil
         writer.write_u32(0); // no arguments
         writer.write_u32(temporaries);
         for _ in 0..temporaries {
-            writer.write_u8(0); // each temporary: nil
+            writer.write_u8(VALUE_NIL); // each temporary: nil
         }
         writer.write_u32(program_counter);
         writer.write_boolean(false); // no sender
@@ -3622,7 +3616,7 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
     // body's lexical parent, and the whole outer-local bound rests on it.
     let (mut fixture, table) = closure_world();
     let bytes = closure_over_frame(|writer: &mut encode::Writer| {
-        writer.write_u8(0); // receiver: nil
+        writer.write_u8(VALUE_NIL); // receiver: nil
         writer.write_u32(0); // no arguments
         writer.write_u32(0); // no temporaries
         writer.write_u32(0); // program_counter
@@ -3863,10 +3857,10 @@ fn an_identity_hash_at_the_ceiling_is_refused_rather_than_overflowing_the_counte
     // in release.
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1, 0);
-    writer.write_u8(0); // class tag: builtin
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
     writer.write_u32(u32::MAX); // identity hash, at the ceiling
-    writer.write_u8(1); // object body: String
+    writer.write_u8(OBJECT_STRING); // object body: String
     writer.write_str("x");
     writer.write_u32(0); // no roots -- otherwise complete, so the hash is what
                          // the decoder rejects, not a truncation
@@ -4123,13 +4117,13 @@ fn a_tag_named_hash_at_the_ceiling_is_refused() {
 fn an_unknown_tag_named_hash_tag_is_refused() {
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
-    writer.write_u8(3);
+    writer.write_u8(HASHED_PLATFORM + 1); // one past the last tag-named hash
     writer.write_u32(5);
     assert_eq!(
         decode_tag_named(&writer.into_bytes()),
         Err(decode::DecodeError::InvalidTag {
             what: "tag-named hash",
-            tag: 3
+            tag: HASHED_PLATFORM + 1
         })
     );
 }
@@ -4993,7 +4987,7 @@ fn the_superclass_clause_frame_kinds_decode() {
     for (tag, expect_clause) in [(4u8, true), (5u8, false)] {
         let mut writer = one_frame_prefix();
         writer.write_u8(tag);
-        writer.write_u8(0); // class tag: builtin
+        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
         writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
         writer.write_boolean(false); // continuable
         writer.write_u32(0); // no roots
@@ -5139,6 +5133,15 @@ fn a_root_lists_selector_id_out_of_range_is_a_decode_error_not_a_panic() {
     );
 }
 
+/// A slot record's three fields, tagged as the encoder tags them.
+fn slot_record(name: u32, mutable: bool, access: AccessModifier) -> (u32, u8, u8) {
+    (
+        name,
+        mixins::mutability_tag(mutable),
+        mixins::access_tag(access),
+    )
+}
+
 /// A one-row mixin table with `slots` and `methods`, decoded against a
 /// symbol table of `names` and one method body.
 fn decode_one_row_with_slots(
@@ -5158,7 +5161,12 @@ fn decode_one_row_with_slots(
 #[test]
 fn an_invalid_slot_mutability_tag_is_a_decode_error_not_a_panic() {
     assert_eq!(
-        decode_one_row_with_slots(&["X", "x"], &[(1, 2, 1)], &[]).err(),
+        decode_one_row_with_slots(
+            &["X", "x"],
+            &[(1, 2, mixins::access_tag(AccessModifier::Protected))],
+            &[]
+        )
+        .err(),
         Some(decode::DecodeError::InvalidTag {
             what: "slot mutability",
             tag: 2
@@ -5172,22 +5180,28 @@ fn an_invalid_slot_mutability_tag_is_a_decode_error_not_a_panic() {
 /// none of them.
 #[test]
 fn a_decoded_slot_defines_its_accessors() {
-    let decoded =
-        decode_one_row_with_slots(&["X", "fixed", "mutable"], &[(1, 0, 0), (2, 1, 2)], &[])
-            .expect("decode");
+    let decoded = decode_one_row_with_slots(
+        &["X", "fixed", "mutable"],
+        &[
+            slot_record(1, false, AccessModifier::Public),
+            slot_record(2, true, AccessModifier::Private),
+        ],
+        &[],
+    )
+    .expect("decode");
     let root = decoded.root().expect("a root row");
     let accessor = |selector: &str| match root.methods.get(&Symbol::intern(selector)) {
         Some(ns_runtime::mixin::MethodEntry::SlotAccessor(accessor)) => Some(*accessor),
         _ => None,
     };
     let fixed = accessor("fixed").expect("a getter");
-    assert_eq!(fixed.access, ns_syntax::ast::AccessModifier::Public);
+    assert_eq!(fixed.access, AccessModifier::Public);
     assert!(
         accessor("fixed:").is_none(),
         "an immutable slot has no setter"
     );
     let setter = accessor("mutable:").expect("a mutable slot's setter");
-    assert_eq!(setter.access, ns_syntax::ast::AccessModifier::Private);
+    assert_eq!(setter.access, AccessModifier::Private);
     assert_eq!(setter.own_index, 1);
     assert_eq!(root.methods.len(), 3);
 }
@@ -5198,7 +5212,10 @@ fn a_decoded_slot_defines_its_accessors() {
 #[test]
 fn a_row_whose_method_shares_a_slot_accessors_selector_is_refused() {
     // Symbol 1 is `x`, symbol 2 `x:`; the method is named by `method`.
-    for (slot, method, expected) in [((1, 0, 1), 1, "x"), ((1, 1, 1), 2, "x:")] {
+    for (slot, method, expected) in [
+        (slot_record(1, false, AccessModifier::Protected), 1, "x"),
+        (slot_record(1, true, AccessModifier::Protected), 2, "x:"),
+    ] {
         let error = decode_one_row_with_slots(&["X", "x", "x:"], &[slot], &[(method, 0)])
             .expect_err("a colliding row is refused");
         assert_eq!(
@@ -5216,8 +5233,12 @@ fn a_row_whose_method_shares_a_slot_accessors_selector_is_refused() {
 /// the slot's name with `:` appended is a member of its own.
 #[test]
 fn a_method_named_like_an_immutable_slots_setter_decodes() {
-    let decoded = decode_one_row_with_slots(&["X", "x", "x:"], &[(1, 0, 1)], &[(2, 0)])
-        .expect("an immutable slot defines no setter to collide with");
+    let decoded = decode_one_row_with_slots(
+        &["X", "x", "x:"],
+        &[slot_record(1, false, AccessModifier::Protected)],
+        &[(2, 0)],
+    )
+    .expect("an immutable slot defines no setter to collide with");
     let root = decoded.root().expect("a root row");
     assert!(root.compiled_method(Symbol::intern("x:")).is_some());
 }
@@ -5751,7 +5772,7 @@ fn superclass_chain_graph(levels: u32) -> Vec<u8> {
         class_record(&mut writer, 0, |writer| {
             if level + 1 < levels {
                 writer.write_boolean(true);
-                writer.write_u8(2); // class tag: object-table record
+                writer.write_u8(CLASS_RECORD); // class tag: object-table record
                 writer.write_u32(level + 1);
             } else {
                 writer.write_boolean(false);
@@ -5761,8 +5782,8 @@ fn superclass_chain_graph(levels: u32) -> Vec<u8> {
         });
     }
     writer.write_u32(1); // one root
-    writer.write_u8(6); // value tag: class tag
-    writer.write_u8(2); // class tag: object-table record
+    writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
+    writer.write_u8(CLASS_RECORD); // class tag: object-table record
     writer.write_u32(0);
     writer.write_u32(0); // no tag-named hashes
     writer.into_bytes()
@@ -5775,20 +5796,20 @@ fn instance_chain_graph(levels: u32) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, levels, 0);
     for level in 0..levels {
-        writer.write_u8(0); // class tag: builtin
+        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
         writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
         writer.write_u32(level);
-        writer.write_u8(0); // object body: Instance
+        writer.write_u8(OBJECT_INSTANCE); // object body: Instance
         if level + 1 < levels {
             writer.write_u32(1);
-            writer.write_u8(5); // value tag: object-table id
+            writer.write_u8(VALUE_OBJECT_ID); // value tag: object-table id
             writer.write_u32(level + 1);
         } else {
             writer.write_u32(0);
         }
     }
     writer.write_u32(1); // one root
-    writer.write_u8(5);
+    writer.write_u8(VALUE_OBJECT_ID);
     writer.write_u32(0);
     writer.write_u32(0); // no tag-named hashes
     writer.into_bytes()
@@ -5881,10 +5902,10 @@ fn a_class_object_whose_own_class_is_another_record_is_refused() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 2, 0);
     // Object 0: a class record whose own class is object 1.
-    writer.write_u8(2); // class tag: object-table record
+    writer.write_u8(CLASS_RECORD); // class tag: object-table record
     writer.write_u32(1);
     writer.write_u32(7); // identity hash
-    writer.write_u8(5); // object body: Class
+    writer.write_u8(OBJECT_CLASS); // object body: Class
     writer.write_u32(0); // mixin id
     no_class_references(&mut writer);
     // Object 1: an ordinary class record.
