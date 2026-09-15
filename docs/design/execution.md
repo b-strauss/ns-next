@@ -886,9 +886,9 @@ lexical send whose selector has a setter's shape, so
 `sends::decide_lexical_send` interns the getter name `tick` — hashing its text —
 on every send to find out whether the receiver has a slot of that name. The
 method and slot tables add SipHash on `Symbol` keys (`hash_one<Symbol>`, 5.1%
-self). Both are the lexical-send slot lookup PROGRESS.md lists as left for the
-inline caches; a cached getter symbol and a hasher for `u32`-shaped keys would
-remove most of it sooner.
+self). Spec-conformant lookup removed both: a slot's accessors are method-table
+entries, so no send interns a name, and the tables hash identity keys with one
+multiply ("What spec-conformant lookup moved" below).
 
 ### What removing the re-entries moved
 
@@ -1293,6 +1293,127 @@ The suite (`cargo test --workspace`, debug build, test binaries already
 built) takes 13.1 s at 691 tests, and 190.3 s under `NS_NEXT_STRESS_MOVES=1`,
 where 2b left 12.7 s and 190.2 s ([memory.md](memory.md), "Checking the
 roots before a collector exists: the stress mode").
+
+### What spec-conformant lookup moved
+
+The step that made name resolution and lookup follow the specification
+([dispatch.md](dispatch.md), "Resolution", "Lookup" and "Slot accessors")
+changed three things a release build runs whenever it decides a send. A slot's
+accessors are entries of the method table, found by the ordinary lookups, so
+the lexical-send slot pre-check is gone and with it the `Symbol::intern` of a
+getter name on every setter-shaped lexical send ("What the profiles show"
+above); in its place a lexical send asks N's own table for §5.9's private rule
+before `lookupProtected` asks the receiver's. The explicit-receiver, lexical and
+super lookups apply the specification's verdicts. And the method tables, the
+nested-class slot maps and the interpreter's application caches hash their
+identity keys with one multiply and a rotation instead of SipHash
+([object-model.md](object-model.md), "Identity-keyed tables hash with
+`hash::IdentityMap`").
+
+It was measured whole against the commit it started from, `59061ec`, and
+against `be3eb40`, in two sittings on 2026-09-15, by the protocol of "What
+removing the re-entries moved" above: every binary built through `RUSTFLAGS`
+with `+crt-static` and the function-alignment pin, the before-binaries in
+throwaway worktrees, `ns-next bench <source> --iterations 30` over the seven
+sources, five rounds, the order of the three binaries rotating from round to
+round. Three of the four throwaway sources had to change. `bench_new.ns`,
+`bench_new2.ns` and `bench_newarg.ns` declared a slot and a getter method of
+one name in one class body (`| v ::= 1. |` beside `public v = ( ^v )`), which
+the resolver now refuses as a duplicate member. Their slots are renamed
+(`held`, `heldU`, `heldV`) and the methods keep their names and bodies, so every
+binary does the same work, a method activation and a slot read per
+instantiation. Making the slots public and dropping the methods instead would
+have left both before-binaries, which answer no explicit-receiver slot send,
+with a `doesNotUnderstand:`.
+
+Medians in ms, and each group's mean, from the first sitting:
+
+| Source | `59061ec`, rounds 1–5 | mean | `be3eb40`, rounds 1–5 | mean | After, rounds 1–5 | mean |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.22, 11.41, 11.45, 11.54, 11.42 | 11.41 | 11.39, 11.22, 11.10, 11.09, 11.23 | 11.21 | 11.29, 11.20, 11.32, 11.21, 11.19 | 11.24 |
+| `bench_send.ns` | 14.51, 14.09, 14.26, 14.18, 14.17 | 14.24 | 13.73, 13.95, 13.98, 13.90, 14.05 | 13.92 | 12.65, 12.51, 12.36, 12.52, 12.31 | 12.47 |
+| `bench_block.ns` | 22.61, 22.61, 22.99, 23.17, 22.93 | 22.86 | 23.76, 23.69, 23.39, 23.31, 23.37 | 23.50 | 21.29, 21.15, 21.43, 21.06, 21.09 | 21.20 |
+| `bench_do.ns` | 7.74, 7.84, 7.76, 7.91, 7.95 | 7.84 | 7.94, 8.07, 8.30, 8.04, 8.01 | 8.07 | 7.43, 7.58, 7.83, 7.48, 7.41 | 7.54 |
+| `bench_new.ns` | 7.41, 7.46, 7.36, 7.39, 7.45 | 7.41 | 7.42, 7.48, 7.58, 7.46, 7.35 | 7.46 | 6.83, 6.76, 6.92, 6.76, 6.77 | 6.81 |
+| `bench_new2.ns` | 8.40, 8.37, 8.45, 8.37, 8.36 | 8.39 | 8.37, 8.39, 8.38, 8.39, 8.34 | 8.37 | 7.95, 7.83, 7.81, 7.77, 7.90 | 7.85 |
+| `bench_newarg.ns` | 10.33, 10.33, 10.35, 10.43, 10.35 | 10.36 | 10.73, 10.62, 10.66, 10.57, 10.55 | 10.63 | 9.80, 9.87, 9.92, 10.03, 9.92 | 9.91 |
+
+And from the second:
+
+| Source | `59061ec`, rounds 1–5 | mean | `be3eb40`, rounds 1–5 | mean | After, rounds 1–5 | mean |
+|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.30, 11.34, 11.32, 11.43, 11.34 | 11.34 | 11.13, 11.13, 11.30, 11.30, 11.15 | 11.20 | 11.27, 11.33, 11.36, 11.33, 11.17 | 11.29 |
+| `bench_send.ns` | 14.19, 14.29, 14.33, 14.30, 14.23 | 14.27 | 13.76, 13.90, 14.00, 13.81, 13.99 | 13.89 | 12.41, 12.46, 12.57, 12.53, 12.51 | 12.50 |
+| `bench_block.ns` | 22.74, 23.07, 22.88, 22.78, 23.18 | 22.93 | 23.40, 23.39, 23.47, 23.31, 23.42 | 23.40 | 21.20, 21.16, 21.07, 21.18, 21.04 | 21.13 |
+| `bench_do.ns` | 7.79, 8.01, 7.86, 7.75, 7.83 | 7.85 | 8.12, 8.08, 7.88, 7.96, 7.95 | 8.00 | 7.41, 7.46, 7.49, 7.44, 7.46 | 7.45 |
+| `bench_new.ns` | 7.49, 7.46, 7.37, 7.47, 7.35 | 7.43 | 7.66, 7.55, 7.52, 7.63, 7.48 | 7.57 | 6.77, 6.82, 6.75, 6.85, 6.90 | 6.82 |
+| `bench_new2.ns` | 8.36, 8.34, 8.35, 8.43, 8.30 | 8.36 | 8.30, 8.37, 8.43, 8.38, 8.35 | 8.37 | 7.84, 7.75, 8.06, 7.75, 7.76 | 7.83 |
+| `bench_newarg.ns` | 10.27, 10.34, 10.30, 10.27, 10.28 | 10.29 | 10.72, 10.58, 10.66, 10.54, 10.70 | 10.64 | 9.76, 9.80, 9.87, 9.79, 9.79 | 9.80 |
+
+The change of the after-group's mean in both sittings:
+
+| Source | Against `59061ec`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
+|---|---|---|
+| `bench_loop.ns` | −1.5% / −0.5%, overlapping | +0.3% / +0.8%, overlapping |
+| `bench_send.ns` | −12.5% / −12.4%, after entirely below in both | −10.4% / −10.1%, after entirely below in both |
+| `bench_block.ns` | −7.3% / −7.8%, after entirely below in both | −9.8% / −9.7%, after entirely below in both |
+| `bench_do.ns` | −3.8% / −5.1%, after entirely below in the second | −6.5% / −6.8%, after entirely below in both |
+| `bench_new.ns` | −8.1% / −8.2%, after entirely below in both | −8.7% / −9.9%, after entirely below in both |
+| `bench_new2.ns` | −6.4% / −6.3%, after entirely below in both | −6.2% / −6.4%, after entirely below in both |
+| `bench_newarg.ns` | −4.3% / −4.7%, after entirely below in both | −6.8% / −7.9%, after entirely below in both |
+
+**No source is slower than either commit, and six are faster than both.**
+`bench_send.ns` gained most, 12.5% against `59061ec` and 10% against
+`be3eb40`. Every one of its iterations makes a setter-shaped lexical send,
+`self tick: sum`, which interned `tick` every time it ran. The others gained
+3.8–9.9%, every after-group but one entirely below its before-group in both
+sittings. `bench_loop.ns` makes only slot sends and native leaf sends, and it
+is level with both. So the shift against `be3eb40` that 2a left on the send and
+the loop, and that 2c carried ("What 2c moved" above), is gone: `bench_send.ns`
+now sits 10% below `be3eb40` and `bench_loop.ns` level with it.
+
+**The accessors alone were slower, and the hasher is what made the step
+faster.** One sitting of its own, the same protocol, measured the step's last
+two code commits against their parents. Its figures are not compared with the
+tables above:
+
+| Source | `3cf7e3e` mean | `431da35` mean | `7b1901c` mean | Accessors, `431da35` against `3cf7e3e` | Hasher, `7b1901c` against `431da35` |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.87 | 14.02 | 11.26 | +18.1%, entirely above | −19.7%, entirely below |
+| `bench_send.ns` | 14.55 | 15.46 | 12.44 | +6.3%, entirely above | −19.5%, entirely below |
+| `bench_block.ns` | 23.47 | 24.21 | 21.26 | +3.1%, entirely above | −12.2%, entirely below |
+| `bench_do.ns` | 8.13 | 8.53 | 7.44 | +5.0%, entirely above | −12.8%, entirely below |
+| `bench_new.ns` | 7.62 | 7.96 | 6.84 | +4.5%, entirely above | −14.0%, entirely below |
+| `bench_new2.ns` | 8.61 | 8.93 | 7.81 | +3.8%, entirely above | −12.6%, entirely below |
+| `bench_newarg.ns` | 10.66 | 11.14 | 9.83 | +4.5%, entirely above | −11.8%, entirely below |
+
+Making the accessors method-table entries (`431da35`) slowed every source,
+`bench_loop.ns` most. Before it, a lexical slot send made one SipHash probe of
+the application's slot map, and a setter-shaped one interned its getter name
+first. After it, every lexical send made two probes of the method table: N's
+for the private rule, then the receiver's for `lookupProtected`. The loop makes
+300,000 slot sends, four getters and two setters an iteration, and 2.15 ms more
+is about 7 ns a send, of the order of one SipHash probe of a 4-byte key. That
+is an inference from what the change did; no profile was taken. The hasher
+(`7b1901c`) made every probe a multiply, and took every source past where it
+started.
+
+**Sparing the second probe measured level, so the lexical path keeps it.**
+When N is the receiver's class, which is the common case for a slot send,
+`lookupProtected`'s first level is N and it answers what N's own table
+already answered. Two variants reused the first probe, each measured against
+`7b1901c` in one sitting of its own. The first passed the receiver's class to
+the private-member probe, which answered a visible member when that class was
+N. It came out level on every source, −0.4% to +2.2%, every group
+overlapping, so with the hasher the second probe costs nothing measurable. The
+second returned the probe's finding as a three-way enum. It measured 3.4–14.7%
+slower on every source, entirely above on six. That variant changed only how a
+result travelled between two functions, so the lexical send's decision is
+sensitive to codegen. Step 3's caches rebuild that decision. They are measured
+the same way, and a variant that looks free is not assumed to be.
+
+The suite (`cargo test --workspace`, debug build, test binaries already
+built) takes 12.7 s at 710 tests, and 189.9 s under `NS_NEXT_STRESS_MOVES=1`.
 
 ## The trampoline
 
