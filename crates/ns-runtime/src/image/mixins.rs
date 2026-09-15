@@ -183,7 +183,7 @@ fn depth_of(rows: &[Row]) -> usize {
 
 /// Explicit wire tags for `AccessModifier` -- never `as u8` on the enum,
 /// whose declaration order is not a wire format.
-fn access_tag(access: AccessModifier) -> u8 {
+pub fn access_tag(access: AccessModifier) -> u8 {
     match access {
         AccessModifier::Public => 0,
         AccessModifier::Protected => 1,
@@ -193,7 +193,7 @@ fn access_tag(access: AccessModifier) -> u8 {
 
 /// Explicit wire tags for a slot's mutability (§6.3.2: only a mutable slot
 /// has a setter).
-fn mutability_tag(mutable: bool) -> u8 {
+pub fn mutability_tag(mutable: bool) -> u8 {
     match mutable {
         false => 0,
         true => 1,
