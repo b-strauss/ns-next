@@ -9,6 +9,10 @@ use std::rc::Rc;
 
 use ns_runtime::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, Literal};
 use ns_runtime::image;
+use ns_runtime::image::opcodes::{
+    FRAME_CLOSURE, FRAME_METHOD, FRAME_SUPERCLASS_MESSAGE, FRAME_TOP_LEVEL, OPCODE_BRANCH_IF_TRUE,
+    OPCODE_LOAD_BUILTIN_CLASS, OPCODE_LOAD_LITERAL, OPCODE_MAKE_CLOSURE,
+};
 use ns_runtime::image::{decode, encode, mixins, symbols};
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
@@ -722,7 +726,7 @@ fn a_make_closure_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     writer.write_u32(0); // no statement_program_counter entries
     writer.write_u32(0); // no call sites
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(10); // ... a MakeClosure
+    writer.write_u8(OPCODE_MAKE_CLOSURE);
     writer.write_u16(0); // destination
     writer.write_u16(0); // no parameters
     writer.write_u32(9); // ... whose block-body code id is out of range
@@ -748,7 +752,7 @@ fn a_forward_make_closure_code_id_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(10); // ... a MakeClosure
+    writer.write_u8(OPCODE_MAKE_CLOSURE);
     writer.write_u16(0); // destination
     writer.write_u16(0); // no parameters
     writer.write_u32(1); // ... naming the *following*, not-yet-decoded entry
@@ -788,7 +792,7 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(21); // ... one past the last real tag
+    writer.write_u8(OPCODE_BRANCH_IF_TRUE + 1); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
@@ -816,7 +820,7 @@ fn an_invalid_literal_tag_and_a_bad_character_are_decode_errors_not_panics() {
         writer.write_u32(0);
         writer.write_u32(0);
         writer.write_u32(1); // one instruction ...
-        writer.write_u8(0); // ... a LoadLiteral
+        writer.write_u8(OPCODE_LOAD_LITERAL);
         writer.write_u16(0); // destination
         writer.write_raw(&payload);
         let bytes = writer.into_bytes();
@@ -841,7 +845,7 @@ fn an_invalid_builtin_class_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(2); // ... a LoadBuiltinClass
+    writer.write_u8(OPCODE_LOAD_BUILTIN_CLASS);
     writer.write_u16(0); // destination
     writer.write_u8(200); // ... naming no builtin class
     let bytes = writer.into_bytes();
@@ -1024,7 +1028,7 @@ fn a_literal_array_within_the_nesting_limit_still_decodes() {
 /// `MakeClosure` hops below the method. Each level is 37 bytes, so the file
 /// grows linearly with the nesting it asks for.
 fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
-    use ns_runtime::image::opcodes::{OPCODE_MAKE_CLOSURE, OPCODE_RETURN};
+    use ns_runtime::image::opcodes::OPCODE_RETURN;
     let body = |writer: &mut encode::Writer, kind: u8, creates: Option<usize>| {
         writer.write_u8(kind);
         writer.write_u16(0); // argument_count
@@ -2209,7 +2213,7 @@ fn a_frame_record_in_the_old_layout_is_refused() {
     writer.write_boolean(false); // no sender
     writer.write_boolean(false); // no home
     writer.write_boolean(false); // no current class
-    writer.write_u8(2); // frame kind: TopLevel
+    writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
     writer.write_boolean(false); // continuable
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
@@ -2219,7 +2223,7 @@ fn a_frame_record_in_the_old_layout_is_refused() {
 #[test]
 fn a_method_frame_naming_a_selector_the_class_lost_is_a_decode_error() {
     let mut writer = one_frame_prefix();
-    writer.write_u8(0); // frame kind: Method
+    writer.write_u8(FRAME_METHOD); // frame kind: Method
     writer.write_u32(0); // selector id 0 ("gone")
     let bytes = writer.into_bytes();
     let mut fixture = GraphFixture::new();
@@ -2253,7 +2257,7 @@ fn a_closure_objects_code_id_out_of_range_is_a_decode_error_not_a_panic() {
 #[test]
 fn a_closure_frames_object_id_out_of_range_is_a_decode_error_not_a_panic() {
     let mut writer = one_frame_prefix();
-    writer.write_u8(6); // frame kind: FRAME_CLOSURE_OBJECT...
+    writer.write_u8(FRAME_CLOSURE); // frame kind: a closure...
     writer.write_u32(42); // ...naming an object past the empty object table
     writer.write_boolean(false); // continuable
     let bytes = writer.into_bytes();
@@ -2426,11 +2430,11 @@ fn a_closure_frame_names_the_closure_object_it_runs() {
     });
 }
 
-/// A one-frame graph section whose frame carries the retired closure frame
-/// tag, for the two readers of a graph section below.
-fn retired_closure_frame_graph() -> Vec<u8> {
+/// A one-frame graph section whose frame carries a frame kind no build
+/// assigns, for the two readers of a graph section below.
+fn unknown_frame_kind_graph() -> Vec<u8> {
     let mut writer = one_frame_prefix();
-    writer.write_u8(1); // frame kind: the retired FRAME_CLOSURE
+    writer.write_u8(FRAME_SUPERCLASS_MESSAGE + 1); // one past the last frame kind
 
     // Padded past the shortest frame record the wire admits, so
     // `bounded_count` admits the announced frame and the kind tag itself is
@@ -2440,27 +2444,26 @@ fn retired_closure_frame_graph() -> Vec<u8> {
     writer.into_bytes()
 }
 
-/// The frame kind a stale artifact wrote for a closure activation, before
-/// the record named the closure object. Its number is retired: the decoder
-/// refuses it rather than read the old inline layout as the new one.
+/// A frame kind no build assigns is refused rather than read as some other
+/// record's layout.
 #[test]
-fn the_retired_closure_frame_tag_is_refused() {
+fn an_unknown_frame_kind_tag_is_refused() {
     assert_eq!(
-        GraphFixture::new().decode_error(&retired_closure_frame_graph()),
+        GraphFixture::new().decode_error(&unknown_frame_kind_graph()),
         decode::DecodeError::InvalidTag {
             what: "frame kind",
-            tag: 1
+            tag: FRAME_SUPERCLASS_MESSAGE + 1
         }
     );
 }
 
-/// `inspect` walks the graph with its own reader, so it has to refuse the
-/// retired tag itself: an artifact `load` refuses must not inspect as if it
-/// were well-formed. The describing sections come from a real snapshot and
+/// `inspect` walks the graph with its own reader, so it has to refuse an
+/// unknown frame kind itself: an artifact `load` refuses must not inspect as
+/// if it were well-formed. The describing sections come from a real snapshot and
 /// the graph section is the hand-written one above, spliced in where the
 /// snapshot's own graph began.
 #[test]
-fn inspect_refuses_the_retired_closure_frame_tag() {
+fn inspect_refuses_an_unknown_frame_kind_tag() {
     let (mut interpreter, class) = load(TRIVIAL_MODULE);
     let platform = interpreter.platform();
     let mut bytes = interpreter.enter(|mutator| {
@@ -2484,13 +2487,14 @@ fn inspect_refuses_the_retired_closure_frame_tag() {
         .expect("a snapshot has a graph section")
         .start;
     bytes.truncate(graph_start);
-    bytes.extend_from_slice(&retired_closure_frame_graph());
+    bytes.extend_from_slice(&unknown_frame_kind_graph());
     let error = match image::inspect::inspect(&bytes) {
-        Ok(_) => panic!("inspect accepted the retired closure frame tag"),
+        Ok(_) => panic!("inspect accepted an unknown frame kind tag"),
         Err(error) => error,
     };
-    assert_eq!(error, "invalid frame kind tag 1");
-    assert_eq!(load_error(&bytes), "invalid frame kind tag 1");
+    let expected = format!("invalid frame kind tag {}", FRAME_SUPERCLASS_MESSAGE + 1);
+    assert_eq!(error, expected);
+    assert_eq!(load_error(&bytes), expected);
 }
 
 /// `inspect` renders a closure frame as the object id it names: after
@@ -2571,7 +2575,7 @@ fn a_closure_frame_naming_an_object_that_is_not_a_closure_is_refused() {
     writer.write_boolean(true); // a home...
     writer.write_u32(0); // ...frame 0 itself
     writer.write_boolean(false); // no current class
-    writer.write_u8(6); // frame kind: FRAME_CLOSURE_OBJECT...
+    writer.write_u8(FRAME_CLOSURE); // frame kind: a closure...
     writer.write_u32(0); // ...naming object 0, the string
     writer.write_boolean(false); // continuable
     writer.write_u32(0); // no roots
@@ -2589,7 +2593,7 @@ fn a_top_level_frame_kind_decodes() {
     // `types::FrameKind`), so only a hand-written section can reach the
     // decoder's tag-2 branch.
     let mut writer = one_frame_prefix();
-    writer.write_u8(2); // frame kind: TopLevel
+    writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
     writer.write_boolean(false); // continuable
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
@@ -2640,7 +2644,7 @@ fn closure_object_with_parameter_count(parameters: &[&str]) -> Vec<u8> {
     writer.write_boolean(false); // no sender
     writer.write_boolean(false); // no home
     writer.write_boolean(false); // no current class
-    writer.write_u8(2); // frame kind: TopLevel
+    writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
     writer.write_boolean(false); // continuable
     writer.write_u32(1); // one root...
     writer.write_u8(5);
@@ -3565,7 +3569,7 @@ fn foo_frame_at_program_counter(
         writer.write_boolean(false); // no sender
         writer.write_boolean(false); // no home
         writer.write_boolean(false); // no current class
-        writer.write_u8(0); // frame kind: Method
+        writer.write_u8(FRAME_METHOD); // frame kind: Method
         writer.write_u32(0); // selector id 0 -- "foo", per `closure_world`'s fixture
         writer.write_boolean(false); // continuable
     }
@@ -3625,7 +3629,7 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
         writer.write_boolean(false); // no sender
         writer.write_boolean(false); // no home
         writer.write_boolean(false); // no current class
-        writer.write_u8(2); // frame kind: TopLevel -- runs no code at all
+        writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel -- runs no code at all
         writer.write_boolean(false); // continuable
     });
     fixture.decoded(&bytes, "decode", |heap, graph| {

@@ -18,43 +18,94 @@
 //! instead of being noticed later by an image that no longer means what it
 //! said.
 
-// Instructions. Next free number: 21.
+// Instructions, numbered in the order `bytecode::Instruction` declares them.
+// Next free number: 21.
+
+/// Loads a literal into a register; a string, symbol, character or array
+/// literal allocates a fresh object every time it runs.
 pub const OPCODE_LOAD_LITERAL: u8 = 0;
+/// Loads the receiver, `self`, into a register.
 pub const OPCODE_LOAD_SELF: u8 = 1;
+/// Loads the builtin class a bare name such as `Object` denotes when no
+/// enclosing declaration declares that name.
 pub const OPCODE_LOAD_BUILTIN_CLASS: u8 = 2;
+/// Copies one register into another.
 pub const OPCODE_MOVE: u8 = 3;
+/// Writes a register into a local variable of the running activation; reading
+/// one needs no instruction, since its register is its value.
 pub const OPCODE_STORE_LOCAL: u8 = 4;
+/// Reads a local variable of an enclosing activation, `depth` steps out along
+/// the chain of captured frames.
 pub const OPCODE_LOAD_OUTER_LOCAL: u8 = 5;
+/// Writes a local variable of an enclosing activation, reached the same way.
 pub const OPCODE_STORE_OUTER_LOCAL: u8 = 6;
+/// Sends a message with an implicit receiver, the enclosing object at the
+/// lexical depth the resolver fixed, by the rules of §5.7–§5.9.
 pub const OPCODE_SEND_LEXICAL: u8 = 7;
+/// Sends a message to an explicit receiver, found by `lookupPublic` (§5.5).
 pub const OPCODE_SEND_PUBLIC: u8 = 8;
-pub const OPCODE_SEND_SUPER: u8 = 9;
-pub const OPCODE_MAKE_CLOSURE: u8 = 10;
-pub const OPCODE_MAKE_ARRAY: u8 = 11;
-pub const OPCODE_INITIALIZE_SLOT: u8 = 12;
-pub const OPCODE_RETURN: u8 = 13;
-pub const OPCODE_IMPLICIT_RETURN: u8 = 14;
-pub const OPCODE_NON_LOCAL_RETURN: u8 = 15;
-pub const OPCODE_JUMP: u8 = 16;
-pub const OPCODE_JUMP_IF_NOT_BOOLEAN: u8 = 17;
-pub const OPCODE_BRANCH_IF_FALSE: u8 = 18;
-pub const OPCODE_BRANCH_IF_TRUE: u8 = 19;
-pub const OPCODE_SEND_INLINABLE: u8 = 20;
+/// Exactly a `SendPublic`, emitted only by the reference lowering for a
+/// control-flow send the optimized lowering inlines, so that both lowerings
+/// count recursion depth alike.
+pub const OPCODE_SEND_INLINABLE: u8 = 9;
+/// Sends a message to `self`, looked up from the superclass of the running
+/// method's defining class (§5.10).
+pub const OPCODE_SEND_SUPER: u8 = 10;
+/// Creates a block closure over a compiled block body, capturing the running
+/// activation.
+pub const OPCODE_MAKE_CLOSURE: u8 = 11;
+/// Creates an array from the values of a list of registers, for a `{ ... }`
+/// expression.
+pub const OPCODE_MAKE_ARRAY: u8 = 12;
+/// Writes the initial value of one of the running mixin's own slots into
+/// `self`; emitted only in instance initializers.
+pub const OPCODE_INITIALIZE_SLOT: u8 = 13;
+/// Returns a register's value from the running method or initializer, a `^`
+/// outside a block.
+pub const OPCODE_RETURN: u8 = 14;
+/// Returns from a body that fell off its end, `self` from a method and the last
+/// value from a block; it runs exactly like `Return`.
+pub const OPCODE_IMPLICIT_RETURN: u8 = 15;
+/// Returns from a block's home method, a `^` inside a block, unwinding every
+/// activation above that method.
+pub const OPCODE_NON_LOCAL_RETURN: u8 = 16;
+/// Jumps unconditionally; emitted only by control-flow inlining.
+pub const OPCODE_JUMP: u8 = 17;
+/// Jumps when a register holds no Boolean at all: the guard in front of inlined
+/// control flow, whose target handles any other receiver.
+pub const OPCODE_JUMP_IF_NOT_BOOLEAN: u8 = 18;
+/// Jumps when a register holds exactly `false`, and falls through for anything
+/// else.
+pub const OPCODE_BRANCH_IF_FALSE: u8 = 19;
+/// Jumps when a register holds exactly `true`, and falls through for anything
+/// else.
+pub const OPCODE_BRANCH_IF_TRUE: u8 = 20;
 
 // Literals, carried by `OPCODE_LOAD_LITERAL` and nested inside `LITERAL_ARRAY`.
 // Next free number: 10.
+
+/// `nil`.
 pub const LITERAL_NIL: u8 = 0;
+/// `true` or `false`.
 pub const LITERAL_BOOLEAN: u8 = 1;
+/// An integer that fits a 64-bit signed word.
 pub const LITERAL_SMALL_INTEGER: u8 = 2;
+/// A 64-bit floating-point number.
 pub const LITERAL_FLOAT: u8 = 3;
+/// A string literal.
 pub const LITERAL_STRING: u8 = 4;
+/// A symbol literal, `#name`.
 pub const LITERAL_SYMBOL: u8 = 5;
+/// A character literal.
 pub const LITERAL_CHARACTER: u8 = 6;
+/// A literal array, `#( ... )`, whose elements are literals themselves.
 pub const LITERAL_ARRAY: u8 = 7;
 /// An integer the lexer accepted and the parser rejects. Carried as its
 /// original text because the error it raises is produced at execution time, by
 /// `interpreter::literals::malformed_integer_error`.
 pub const LITERAL_MALFORMED_INTEGER: u8 = 8;
+/// An identifier that names nothing, such as a bare `super`; it raises its
+/// error when it runs.
 pub const LITERAL_UNRESOLVED_IDENTIFIER: u8 = 9;
 
 // ---------------------------------------------------------------------------
@@ -97,28 +148,15 @@ pub const CLASS_BUILTIN: u8 = 0;
 pub const CLASS_USER_ROOT: u8 = 1;
 pub const CLASS_RECORD: u8 = 2;
 
-/// What a frame was activated for.
+/// What a frame was activated for, numbered in the order `types::FrameKind`
+/// declares it.
 pub const FRAME_METHOD: u8 = 0;
-/// Retired. A closure frame record once carried a copy of its closure's
-/// record inline, from when the closure's data sat behind an `Rc` its object
-/// and its activations shared. It names the closure object now
-/// (`FRAME_CLOSURE_OBJECT`); the number stays assigned so that a stale
-/// record is refused rather than read with a layout it does not have.
+/// A closure activation: the object id of the closure object it runs.
 pub const FRAME_CLOSURE: u8 = 1;
 pub const FRAME_TOP_LEVEL: u8 = 2;
 pub const FRAME_INITIALIZER: u8 = 3;
 pub const FRAME_SUPERCLASS_CLAUSE: u8 = 4;
 pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
-/// A closure activation: the object id of the closure object it runs.
-pub const FRAME_CLOSURE_OBJECT: u8 = 6;
-
-/// Retired. A frame record once said which unit its `program_counter` counted
-/// in -- a statement or an instruction -- and only bytecode was ever
-/// representable, so the byte was removed from the record. Both numbers stay
-/// assigned so that a program-counter-unit field, if one ever returns, cannot
-/// give them a new meaning.
-pub const PROGRAM_COUNTER_KIND_TREE_WALK: u8 = 0;
-pub const PROGRAM_COUNTER_KIND_BYTECODE: u8 = 1;
 
 /// Which tag-named object an entry of the graph section's closing hash table
 /// names. The three are exactly the objects `CLASS_BUILTIN`, `CLASS_USER_ROOT`

@@ -344,7 +344,7 @@ fn disasm_rejects_a_corrupt_artifact_with_a_message() {
     let directory = ScratchDirectory::new("disasm-bad");
     let bad = directory.join("truncated.img");
     // Magic, so it is taken for an artifact, and then nothing.
-    std::fs::write(&bad, b"NSIM").expect("write");
+    std::fs::write(&bad, ns_runtime::image::encode::MAGIC).expect("write");
 
     let out = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")

@@ -307,7 +307,7 @@ fn walk_graph(
             opcodes::FRAME_SUPERCLASS_MESSAGE => {
                 format!("superclass message of {}", read_class_tag(reader)?)
             }
-            opcodes::FRAME_CLOSURE_OBJECT => format!("closure object {}", reader.read_u32()?),
+            opcodes::FRAME_CLOSURE => format!("closure object {}", reader.read_u32()?),
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
                     what: "frame kind",

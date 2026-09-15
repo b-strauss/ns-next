@@ -15,7 +15,7 @@ use crate::Mutator;
 use super::opcodes::*;
 use super::{mixins, symbols};
 
-pub const MAGIC: &[u8; 4] = b"NSIM";
+pub const MAGIC: &[u8; 4] = b"NSNX";
 /// The format version, refused on load when it does not match and never
 /// migrated. It is not bumped when the layout or the compiler's codegen
 /// changes: the project has no external users, so an image written before
@@ -1062,7 +1062,7 @@ fn encode_frame<'gc>(
             writer.write_u32(symbols.intern(method.selector.as_str()));
         }
         FrameKind::Closure(closure) => {
-            writer.write_u8(FRAME_CLOSURE_OBJECT);
+            writer.write_u8(FRAME_CLOSURE);
             writer.write_u32(context.table.object_id(context.heap, *closure));
         }
         FrameKind::TopLevel => writer.write_u8(FRAME_TOP_LEVEL),

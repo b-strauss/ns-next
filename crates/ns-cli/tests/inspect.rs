@@ -58,7 +58,9 @@ fn inspect_reports_a_debug_variants_source_blob() {
 fn inspect_reports_a_corrupt_artifact_rather_than_panicking() {
     let directory = ScratchDirectory::new("corrupt");
     let bad = directory.join("bad.img");
-    std::fs::write(&bad, b"NSIM\x01\x00\x00\x00").expect("write");
+    let mut bytes = ns_runtime::image::encode::MAGIC.to_vec();
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+    std::fs::write(&bad, bytes).expect("write");
 
     let (ok, _, error) = ns_next(&["inspect".as_ref(), bad.as_os_str()]);
     assert!(!ok);
