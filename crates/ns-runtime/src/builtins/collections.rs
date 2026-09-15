@@ -11,6 +11,7 @@
 //! grow independently of a literal array's fixed size; revisit if the two
 //! ever need to diverge (e.g. `Array` becoming genuinely fixed-size).
 
+use crate::builtins::primitive::CollectionPrimitive;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
@@ -46,15 +47,24 @@ fn not_an_integer<'gc>(
     }
 }
 
-/// `size` and `at:` -- shared by `Array` and `OrderedCollection` since both
-/// share the `ObjectData::Array` payload (see this module's design note).
-/// Returns `None` if `receiver` isn't `ObjectData::Array`-backed at all, or
-/// if `selector` isn't one of these two (letting the caller fall through to
-/// `doesNotUnderstand:`, or to the class-specific selector handled by
-/// `dispatch_array`/`dispatch_ordered_collection` itself). `do:` is not a
-/// leaf and is not here: it activates a block, so it answers a step
-/// (`do_step`).
-fn dispatch_common<'gc>(
+/// `size` -- shared by `Array` and `OrderedCollection` since both share the
+/// `ObjectData::Array` payload (see this module's design note). `None` if
+/// `receiver` isn't `ObjectData::Array`-backed at all.
+fn size<'gc>(
+    mutator: &Mutator<'gc>,
+    receiver: Value<'gc>,
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let Value::Object(object) = &receiver else {
+        return None;
+    };
+    mutator
+        .heap
+        .array_length(*object)
+        .map(|length| Ok(Value::SmallInteger(length as i64)))
+}
+
+/// `at:` -- shared by `Array` and `OrderedCollection`, same payload as `size`.
+fn element_at<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
@@ -63,126 +73,101 @@ fn dispatch_common<'gc>(
     let Value::Object(object) = &receiver else {
         return None;
     };
-    match selector.as_str() {
-        "size" => mutator
-            .heap
-            .array_length(*object)
-            .map(|length| Ok(Value::SmallInteger(length as i64))),
-        "at:" => {
-            let length = mutator.heap.array_length(*object)?;
-            Some(match arguments.first() {
-                Some(Value::SmallInteger(index)) => {
-                    if *index >= 1 && (*index as usize) <= length {
-                        Ok(mutator
-                            .heap
-                            .array_at(*object, (*index as usize) - 1)
-                            .unwrap_or(Value::Nil))
-                    } else {
-                        Err(out_of_range(&receiver, selector, *index, length))
-                    }
-                }
-                other => Err(not_an_integer(&mutator.heap, &receiver, selector, other)),
-            })
-        }
-        _ => None,
-    }
-}
-
-/// `at:put:`, falling through to `dispatch_common` -- `dispatch_array`'s leaf
-/// half, kept apart from its `do:` arm so the two compose in `dispatch_array`
-/// without either copying the other's shape.
-fn array_leaf<'gc>(
-    mutator: &mut Mutator<'gc>,
-    receiver: Value<'gc>,
-    selector: Symbol,
-    arguments: &[Value<'gc>],
-) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    if selector.as_str() == "at:put:" {
-        let Value::Object(object) = &receiver else {
-            return None;
-        };
-        let length = mutator.heap.array_length(*object)?;
-        let index = match arguments.first() {
-            Some(Value::SmallInteger(index)) => *index,
-            other => {
-                return Some(Err(not_an_integer(
-                    &mutator.heap,
-                    &receiver,
-                    selector,
-                    other,
-                )))
+    let length = mutator.heap.array_length(*object)?;
+    Some(match arguments.first() {
+        Some(Value::SmallInteger(index)) => {
+            if *index >= 1 && (*index as usize) <= length {
+                Ok(mutator
+                    .heap
+                    .array_at(*object, (*index as usize) - 1)
+                    .unwrap_or(Value::Nil))
+            } else {
+                Err(out_of_range(&receiver, selector, *index, length))
             }
-        };
-        if index < 1 || (index as usize) > length {
-            return Some(Err(out_of_range(&receiver, selector, index, length)));
         }
-        let value = arguments.get(1).copied().unwrap_or(Value::Nil);
-        mutator.heap.array_set(*object, (index as usize) - 1, value);
-        return Some(Ok(receiver));
-    }
-    dispatch_common(mutator, receiver, selector, arguments)
+        other => Err(not_an_integer(&mutator.heap, &receiver, selector, other)),
+    })
 }
 
-/// `add:`, falling through to `dispatch_common` -- `dispatch_ordered_collection`'s
-/// leaf half, kept apart from its `do:` arm for the same reason `array_leaf` is.
-fn ordered_collection_leaf<'gc>(
+/// `at:put:` -- `Array`'s alone; the lists in `builtins::primitive` are what
+/// keeps `OrderedCollection` from answering it.
+fn element_at_put<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    if selector.as_str() == "add:" {
-        let Value::Object(object) = &receiver else {
-            return None;
-        };
-        mutator.heap.array_length(*object)?;
-        // Matches the reference library's convention: `add:` returns the
-        // argument, not the receiver.
-        let value = arguments.first().copied().unwrap_or(Value::Nil);
-        mutator.heap.array_push(*object, value);
-        return Some(Ok(value));
+    let Value::Object(object) = &receiver else {
+        return None;
+    };
+    let length = mutator.heap.array_length(*object)?;
+    let index = match arguments.first() {
+        Some(Value::SmallInteger(index)) => *index,
+        other => {
+            return Some(Err(not_an_integer(
+                &mutator.heap,
+                &receiver,
+                selector,
+                other,
+            )))
+        }
+    };
+    if index < 1 || (index as usize) > length {
+        return Some(Err(out_of_range(&receiver, selector, index, length)));
     }
-    dispatch_common(mutator, receiver, selector, arguments)
+    let value = arguments.get(1).copied().unwrap_or(Value::Nil);
+    mutator.heap.array_set(*object, (index as usize) - 1, value);
+    Some(Ok(receiver))
 }
 
-/// Lifts a leaf's result into the step it is -- the shared tail of
-/// `dispatch_array` and `dispatch_ordered_collection` once each has ruled
-/// `do:` out, so neither copies the wrapping itself.
+/// `add:` -- `OrderedCollection`'s alone; the lists in `builtins::primitive`
+/// are what keeps `Array` from answering it.
+fn add<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let Value::Object(object) = &receiver else {
+        return None;
+    };
+    mutator.heap.array_length(*object)?;
+    // Matches the reference library's convention: `add:` returns the
+    // argument, not the receiver.
+    let value = arguments.first().copied().unwrap_or(Value::Nil);
+    mutator.heap.array_push(*object, value);
+    Some(Ok(value))
+}
+
+/// Lifts a leaf's result into the step it is, so `execute`'s leaf arms don't
+/// each repeat the wrapping.
 fn leaf_step<'gc>(
     result: Option<Result<Value<'gc>, NewspeakError<'gc>>>,
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     Some(result?.map(Step::Value).map_err(Signal::Error))
 }
 
-/// `Array`'s native methods, `do:` included: checks `do:` first and answers
-/// `do_step`'s block-activation step for it, `array_leaf`'s plain value or
-/// error (through `leaf_step`) for everything else.
-pub(crate) fn dispatch_array<'gc>(
+/// `Array` and `OrderedCollection`'s native methods: which class answers
+/// `at:put:` and which `add:` is decided by their lists in
+/// `builtins::primitive`, not by this function -- both send
+/// `CollectionPrimitive::ElementAtPut`/`Add` through the same arm here.
+pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
+    primitive: CollectionPrimitive,
     receiver: Value<'gc>,
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-    if selector.as_str() == "do:" {
-        return do_step(mutator, receiver, selector, arguments);
+    match primitive {
+        CollectionPrimitive::Enumerate => do_step(mutator, receiver, selector, arguments),
+        CollectionPrimitive::Size => leaf_step(size(mutator, receiver)),
+        CollectionPrimitive::ElementAt => {
+            leaf_step(element_at(mutator, receiver, selector, arguments))
+        }
+        CollectionPrimitive::ElementAtPut => {
+            leaf_step(element_at_put(mutator, receiver, selector, arguments))
+        }
+        CollectionPrimitive::Add => leaf_step(add(mutator, receiver, arguments)),
     }
-    leaf_step(array_leaf(mutator, receiver, selector, arguments))
-}
-
-/// `OrderedCollection`'s native methods, `do:` included -- same split as
-/// `dispatch_array`.
-pub(crate) fn dispatch_ordered_collection<'gc>(
-    mutator: &mut Mutator<'gc>,
-    receiver: Value<'gc>,
-    selector: Symbol,
-    arguments: &[Value<'gc>],
-) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-    if selector.as_str() == "do:" {
-        return do_step(mutator, receiver, selector, arguments);
-    }
-    leaf_step(ordered_collection_leaf(
-        mutator, receiver, selector, arguments,
-    ))
 }
 
 /// `do:` on an `Array` or an `OrderedCollection`: the block activated for each

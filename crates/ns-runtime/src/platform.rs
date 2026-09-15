@@ -6,8 +6,9 @@
 
 use std::io::Write;
 
+use crate::builtins::primitive::PlatformPrimitive;
 use crate::types::*;
-use crate::{Mutator, Symbol};
+use crate::Mutator;
 
 /// The `platform` singleton, its `transcript` stream, and its
 /// `collections` namespace all share `BuiltinClass::Platform` as their
@@ -18,10 +19,10 @@ use crate::{Mutator, Symbol};
 /// namespace with a two-field one (see
 /// `Mutator::new_collections_namespace`). None ever holds real slot
 /// data; the field count is purely a tag.
-pub fn dispatch<'gc>(
+pub fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
+    primitive: PlatformPrimitive,
     receiver: Value<'gc>,
-    selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let Value::Object(object) = &receiver else {
@@ -30,30 +31,29 @@ pub fn dispatch<'gc>(
     // The `?` below is unreachable: every `BuiltinClass::Platform`-classed
     // object is built by one of the three constructors named above.
     let tag = mutator.heap().instance_field_count(*object)?;
-    if tag == 2 {
-        return dispatch_collections(mutator, selector);
-    }
-    if tag != 0 {
-        return dispatch_stream(mutator, receiver, selector, arguments);
-    }
-    match selector.as_str() {
-        "transcript" => Some(Ok(Value::Object(mutator.new_stream_object()))),
+    match primitive {
+        PlatformPrimitive::List => (tag == 2).then(|| collections_list(mutator)),
+        PlatformPrimitive::Show | PlatformPrimitive::NewLine => {
+            (tag != 0 && tag != 2).then(|| stream(mutator, primitive, receiver, arguments))
+        }
+        _ if tag != 0 => None,
+        PlatformPrimitive::Transcript => Some(Ok(Value::Object(mutator.new_stream_object()))),
         // Class accessors: some real corpus modules reach the Core Library
         // classes directly off `platform` rather than a named sub-module --
         // only the Core Library names are supported.
-        "Object" => Some(Ok(Value::Object(
+        PlatformPrimitive::ObjectClass => Some(Ok(Value::Object(
             mutator.builtin_class(BuiltinClass::Object),
         ))),
-        "Array" => Some(Ok(Value::Object(
+        PlatformPrimitive::ArrayClass => Some(Ok(Value::Object(
             mutator.builtin_class(BuiltinClass::Array),
         ))),
-        "OrderedCollection" => Some(Ok(Value::Object(
+        PlatformPrimitive::OrderedCollectionClass => Some(Ok(Value::Object(
             mutator.builtin_class(BuiltinClass::OrderedCollection),
         ))),
-        "String" => Some(Ok(Value::Object(
+        PlatformPrimitive::StringClass => Some(Ok(Value::Object(
             mutator.builtin_class(BuiltinClass::String),
         ))),
-        "Symbol" => Some(Ok(Value::Object(
+        PlatformPrimitive::SymbolClass => Some(Ok(Value::Object(
             mutator.builtin_class(BuiltinClass::Symbol),
         ))),
         // The Core Library's `collections` namespace. Demand-driven: the
@@ -61,55 +61,48 @@ pub fn dispatch<'gc>(
         // `V5BytecodeSimulation.ns` all open with
         // `private List = platform collections List.`, and none of them
         // reaches the platform any other way.
-        "collections" => Some(Ok(Value::Object(mutator.new_collections_namespace()))),
-        _ => None,
+        PlatformPrimitive::Collections => {
+            Some(Ok(Value::Object(mutator.new_collections_namespace())))
+        }
     }
 }
 
-/// The `collections` namespace's own protocol.
-///
-/// Exactly one member, because exactly one is asked for. `List` is the
-/// Core Library's growable ordered sequence, which is the class this
-/// runtime already has under its Smalltalk name `OrderedCollection` -- so
-/// this is a name for an existing class, not a new collection
-/// implementation. The corpus also asks this namespace for `Map`,
+/// The `collections` namespace's `List` -- its only member, because exactly
+/// one is asked for. `List` is the Core Library's growable ordered sequence,
+/// which is the class this runtime already has under its Smalltalk name
+/// `OrderedCollection` -- so this is a name for an existing class, not a new
+/// collection implementation. The corpus also asks this namespace for `Map`,
 /// `IdentityMap`, `IdentitySet`, `WeakArray`, and `Collection`; those name
 /// classes the runtime does not have, and inventing them (or aliasing them
-/// onto `OrderedCollection`, which is not a dictionary and not a set)
-/// would be a collections library of its own, which is deliberately not
-/// built. Modules needing them stay off the whitelist.
-fn dispatch_collections<'gc>(
-    mutator: &mut Mutator<'gc>,
-    selector: Symbol,
-) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    match selector.as_str() {
-        "List" => Some(Ok(Value::Object(
-            mutator.builtin_class(BuiltinClass::OrderedCollection),
-        ))),
-        _ => None,
-    }
+/// onto `OrderedCollection`, which is not a dictionary and not a set) would
+/// be a collections library of its own, which is deliberately not built.
+/// Modules needing them stay off the whitelist.
+fn collections_list<'gc>(mutator: &mut Mutator<'gc>) -> Result<Value<'gc>, NewspeakError<'gc>> {
+    Ok(Value::Object(
+        mutator.builtin_class(BuiltinClass::OrderedCollection),
+    ))
 }
 
-fn dispatch_stream<'gc>(
+fn stream<'gc>(
     mutator: &mut Mutator<'gc>,
+    primitive: PlatformPrimitive,
     receiver: Value<'gc>,
-    selector: Symbol,
     arguments: &[Value<'gc>],
-) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    match selector.as_str() {
-        "show:" => {
+) -> Result<Value<'gc>, NewspeakError<'gc>> {
+    match primitive {
+        PlatformPrimitive::Show => {
             if let Some(Value::Object(string)) = arguments.first() {
                 if let Some(text) = mutator.heap().str_value(*string) {
                     print!("{text}");
                     let _ = std::io::stdout().flush();
                 }
             }
-            Some(Ok(receiver))
+            Ok(receiver)
         }
-        "newLine" => {
+        PlatformPrimitive::NewLine => {
             println!();
-            Some(Ok(receiver))
+            Ok(receiver)
         }
-        _ => None,
+        _ => unreachable!("internal: `stream` is only called for `Show`/`NewLine`"),
     }
 }
