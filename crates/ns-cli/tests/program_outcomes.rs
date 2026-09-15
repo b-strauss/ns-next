@@ -830,3 +830,44 @@ fn a_protected_slot_does_not_answer_an_explicit_receiver() {
         "Uncaught Newspeak error: an object does not understand #w\n",
     );
 }
+
+/// A user subclass of a builtin inherits the builtin's natives, but its
+/// instances carry no payload of the builtin's kind, so every such native
+/// fails on them and the send falls to `Object`'s: `=` answers identity and
+/// `printString` the generic default, through an explicit receiver, a `self`
+/// send and a `super` send alike, while `size`, which `Object` does not
+/// have, ends in `doesNotUnderstand:`. The `transcript` stream shares the
+/// `Platform` class with the platform singleton and has no `=` of its own,
+/// so `=` is `Object`'s identity, false for two fresh streams. Step 3a keeps
+/// every one of these outcomes (`docs/design/dispatch.md`, "A primitive can
+/// fail").
+#[test]
+fn a_native_that_fails_on_its_receiver_falls_to_objects() {
+    assert_outcome(
+        "native-fallback",
+        indoc! {"
+            Newspeak3
+            'T'
+            class Sub usingPlatform: platform = Object new (
+            ) (
+                class Text = String new () (
+                    public viaSelf = ( ^self printString )
+                    public viaSuper = ( ^super printString )
+                )
+                public main: p args: a = (
+                    | t |
+                    t := Text new.
+                    p transcript show: (t = t) printString; newLine.
+                    p transcript show: t printString; newLine.
+                    p transcript show: t viaSelf; newLine.
+                    p transcript show: t viaSuper; newLine.
+                    p transcript show: (p transcript = p transcript) printString; newLine.
+                    p transcript show: t size printString; newLine
+                )
+            ) : ()
+        "},
+        1,
+        "true\nan Object\nan Object\nan Object\nfalse\n",
+        "Uncaught Newspeak error: an object does not understand #size\n",
+    );
+}
