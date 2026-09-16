@@ -149,21 +149,18 @@ investment in Rust callbacks while it is rewriting the code around them; step
 2a took the last callback away, as a trampoline step rather than as Newspeak,
 which leaves this ordering as it is.
 
-A related item, same cause, closed by step 3a: native dispatch used to select
-with `match selector.as_str()`, a string-comparison chain on the hot path that
-was not a shape a compiler could specialize either — part of what one native
-`+` cost on the activation stack, ~53 ns (`bench_send.ns` minus the send
+A related item, same cause: every native is an entry of its builtin class's
+method table carrying an enumerated primitive, found by the ordinary lookups
+and executed by a `match` on the enumeration ([dispatch.md](dispatch.md),
+"Primitives") — a shape a compiler can specialize, part of what one native
+`+` costs on the activation stack, ~53 ns (`bench_send.ns` minus the send
 decomposition's row two; the arena binary's figure for the same difference,
 ~84 ns, also carried a temporaries allocation, so it overstated the native
-send, [execution.md](execution.md), "What the activation stack moved"). Every
-native is now an entry of its builtin class's method table carrying an
-enumerated primitive, found by the ordinary lookups and executed by a `match`
-on the enumeration ([dispatch.md](dispatch.md), "Primitives"); a native
-inline-cache entry will carry the primitive once 3b exists, and the JIT will
-emit it inline. A native whose receiver has the wrong shape fails, and a
-failure passes its level over, so the lookup continues at `Object` and ends
-in `doesNotUnderstand:` if nothing answers — the outcome the removed `None`
-gave. It is the first half of "Where this is going" above — every builtin
+send, [execution.md](execution.md), "What the activation stack moved"). A
+native inline-cache entry will carry the primitive once 3b exists, and the
+JIT will emit it inline. A native whose receiver has the wrong shape fails,
+and a failure passes its level over, so the lookup continues at `Object` and
+ends in `doesNotUnderstand:` if nothing answers. It is the first half of "Where this is going" above — every builtin
 method a real method — for the leaves that exist now; the second half,
 Newspeak fallback bodies and library code in Newspeak, still comes after the
 caches. A leaf such as `+` will additionally get an inlined fast path in

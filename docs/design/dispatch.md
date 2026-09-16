@@ -2,7 +2,7 @@
 
 > **Status:** built.
 > **Code:** `crates/ns-runtime/src/resolver/`, `dispatch.rs`,
-> `interpreter/mod.rs` (send, `doesNotUnderstand:`, lexical, super, native),
+> `interpreter/mod.rs` (send, `doesNotUnderstand:`, primitive execution),
 > `interpreter/sends.rs` (lexical and super sends), `builtins/primitive.rs`
 > (the enumerated primitive and each builtin class's method table).
 
@@ -308,10 +308,8 @@ The bootstrap fills each builtin mixin's method table from a static list per
 `BuiltinClass` of (selector, access, primitive) (`builtins/primitive.rs`'s
 `method_table`), as a `MethodEntry::Primitive` carrying the primitive and its
 access. Every primitive is `public`, except `Object`'s `doesNotUnderstand:`,
-which §5.5 requires to be `protected`. Before this, a native had no access at
-all and answered any explicit-receiver send, so an explicit
-`x doesNotUnderstand: m` sent from outside the receiver now itself ends in
-`doesNotUnderstand:` — the one behaviour change this step made.
+which §5.5 requires to be `protected`, so an explicit `x doesNotUnderstand: m`
+sent from outside the receiver itself ends in `doesNotUnderstand:`.
 
 A lookup that reaches a primitive answers `Lookup::Primitive(primitive,
 level)`, `level` being the class object whose method table holds it — the

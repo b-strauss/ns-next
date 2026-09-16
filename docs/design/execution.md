@@ -1512,8 +1512,9 @@ every binary — start's and `be3eb40`'s built in throwaway worktrees, the
 current tree's built in place — through the same `RUSTFLAGS`, `+crt-static`
 and the function-alignment pin; `ns-next bench <source> --iterations 30`
 over the same seven sources, five rounds, the order of the three binaries
-rotating from round to round; two whole sittings, taken on separate days,
-with nothing else running on the machine during either.
+rotating from round to round; two whole sittings, each a complete pass of
+the timing loop run one after the other in the same session, with nothing
+else running on the machine during either.
 
 Sitting 1, means in ms:
 
@@ -1539,13 +1540,14 @@ Sitting 2, means in ms:
 | `bench_new2.ns` | 8.3527 | 7.7316 | 7.7927 | +0.79% | −6.71% | overlapping | entirely below |
 | `bench_newarg.ns` | 10.6841 | 9.8072 | 9.5929 | −2.18% | −10.21% | entirely below | entirely below |
 
-**The gate passes: no source's after-group lies entirely above its
-start-group, in either sitting** (`bench_newarg.ns` is even entirely below
+**Both sittings agree: no source's after-group lies entirely above its
+start-group in either one** (`bench_newarg.ns` is even entirely below
 start in the second sitting — faster than start, not merely level). Against
 `be3eb40`, six of the seven sources are faster by about 7–10% in both
 sittings, entirely below throughout; `bench_loop.ns` is level, +1.15%/+1.56%,
-its group overlapping in both. `bench_loop.ns` makes 150,000 native-leaf and
-slot sends and no method send or instantiation, so it is the source that
+its group overlapping in both. `bench_loop.ns` makes three native sends and
+six lexical slot sends per iteration — 150,000 native sends and 300,000 slot
+sends in all — and no method send or instantiation, so it is the source that
 exercises the rebuilt decision path hardest with nothing else to gain from —
 level with `be3eb40` there is this step's whole answer for that path, where
 the other six sources also gain from lookup and hashing work earlier steps

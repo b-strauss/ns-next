@@ -196,10 +196,16 @@ is worth checking for again rather than assumed fixed.
   accessors as they already were (method-table entries) but this check
   predates that and was never updated to tell the two accessor kinds apart.
   A build whose only entry selector is a setter passes the check and still
-  fails at start-up as an ordinary `doesNotUnderstand:`, since `mixins::encode`
-  never interns the setter selector — wrong but safe, not a build that starts.
-  Pre-existing, untouched by this step; worth a small task
-  (`crates/ns-cli/src/commands/build.rs`).
+  starts and runs: `image::build` interns the entry selector itself
+  (`crates/ns-runtime/src/image/mod.rs`, "The symbol table is not covered by
+  that guarantee"), and a decoded mixin carries its slot accessors again. The
+  consequence is the one `build.rs`'s own doc comment names — accepting a
+  selector `mixins::encode` never interned makes `build` grow the symbol
+  table to record it, breaking the byte-identity guarantee with `snapshot`
+  that `root_class_answers` exists to preserve
+  (`a_build_and_a_snapshot_agree_on_the_describing_sections`,
+  `crates/ns-cli/tests/build_load.rs`). Pre-existing, untouched by this step;
+  worth a small task (`crates/ns-cli/src/commands/build.rs`).
 
 Sends run on the activation stack rather than the Rust stack, in one loop that
 pushes, pops and resumes; `value`, the control-flow natives, `do:`,
@@ -2026,11 +2032,11 @@ level). Against `be3eb40`, six of seven sources are 7–10% faster and
 [execution.md](design/execution.md), "What primitives as method-table entries
 moved", which also records what the step's first shape cost — a 64-byte
 settled enum on every send's return path measured 5.5–22.4% slower than start
-in the first, blocked measurement — and the four `perf:` commits that
-recovered it by having each of the five callers that can reach a
-`Lookup::Primitive` match it directly instead. 3b rebuilds this same decision
-path and should not repeat that shape; carried forward as an open finding
-above.
+in the first, blocked measurement — and the five `perf:` commits that
+recovered it, the largest by having each of the five callers that can reach a
+`Lookup::Primitive` match it directly instead (`8a05621`). 3b rebuilds this
+same decision path and should not repeat that shape; carried forward as an
+open finding above.
 
 Gates: `cargo fmt --all` clean; `cargo clippy --workspace --all-targets`
 warning-free; `cargo test --workspace`, 722 tests passing with one ignored;
