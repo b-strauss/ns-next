@@ -931,14 +931,20 @@ impl InlineCaches {
             }
         }
         numbers.sort_unstable();
-        let base = self.families.get(&(Rc::as_ptr(code) as usize)).copied();
+        // `families` has no entry at all while the family has never run --
+        // treated the same as `NOT_ASSIGNED`, since `site_index` already
+        // answers `None` for that and every site is vacant either way.
+        let base = self
+            .families
+            .get(&(Rc::as_ptr(code) as usize))
+            .copied()
+            .unwrap_or(FeedbackBase::NOT_ASSIGNED);
         numbers
             .into_iter()
             .map(|number| {
-                let entry = base
-                    .filter(|base| *base != FeedbackBase::NOT_ASSIGNED)
-                    .and_then(|base| self.sites.get(base.index() + number as usize));
-                match entry {
+                match site_index(base, code.family_size, CallSite { number })
+                    .and_then(|index| self.sites.get(index))
+                {
                     None => CallSiteState::Vacant,
                     Some(entry) => self.state_of(entry),
                 }

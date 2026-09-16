@@ -450,6 +450,39 @@ fn does_not_understand_handlers_are_entries_like_any_other() {
     );
 }
 
+/// A second call site with the same guard, selector and rule as a first --
+/// two different methods sending `value` to the same receiver kind -- fills
+/// straight from the global cache the first send left behind, and leaves the
+/// same state a direct resolve would: `Monomorphic`.
+#[test]
+fn a_second_site_fills_from_the_global_cache() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          class Kind = Object new () ( public value = ( ^1 ) )
+          public first = ( ^Kind new value )
+          public second = ( ^Kind new value )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = instantiate(&mut interpreter, &class);
+    let first = send(&mut interpreter, &instance, "first", &[]);
+    assert_eq!(small_integer(&mut interpreter, &first), 1);
+    let second = send(&mut interpreter, &instance, "second", &[]);
+    assert_eq!(small_integer(&mut interpreter, &second), 1);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &class,
+            MethodSide::Instance,
+            "second",
+            "value"
+        ),
+        vec![CallSiteState::Monomorphic(method("value"))]
+    );
+}
+
 /// A cached primitive that fails on a receiver of its own class -- the
 /// `transcript` stream shares the `Platform` class with the platform object
 /// -- keeps its entry, and the send continues uncached into
