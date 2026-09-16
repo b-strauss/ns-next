@@ -7,7 +7,7 @@ use indoc::indoc;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use ns_runtime::bytecode::Instruction;
+use ns_runtime::bytecode::{CallSite, Instruction};
 use ns_runtime::{
     HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol, Value,
 };
@@ -159,6 +159,51 @@ fn a_reference_initializer_initializes_each_slot_then_answers_self() {
         code.statement_program_counter,
         vec![(0, 0..2), (1, 2..4), (2, 4..6)]
     );
+}
+
+/// The reference lowering is the uncached oracle: every send it emits is
+/// `CallSite::UNCACHED`, and none of its bodies has a family.
+#[test]
+fn the_reference_lowering_emits_every_send_uncached() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new (
+        ) (
+          public run: items = (
+            items do: [:each | each printString].
+            ^items size
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source, Lowering::Reference);
+    let code = interpreter.enter(|mutator| {
+        let Value::Object(object) = mutator.fetch(&class) else {
+            panic!("the module's class is a class object")
+        };
+        let application = mutator.heap().class_application(object).expect("a class");
+        application
+            .mixin
+            .compiled_method(Symbol::intern("run:"))
+            .expect("run: is compiled")
+            .code
+            .clone()
+    });
+    let mut pending = vec![code];
+    let mut sends = 0;
+    while let Some(body) = pending.pop() {
+        assert_eq!(body.family_size, 0);
+        for instruction in &body.instructions {
+            if let Instruction::MakeClosure { code: block, .. } = instruction {
+                pending.push(block.clone());
+            }
+            if let Some(site) = instruction.call_site() {
+                assert_eq!(site, CallSite::UNCACHED);
+                sends += 1;
+            }
+        }
+    }
+    assert_eq!(sends, 3, "do:, printString and size");
 }
 
 fn collect_ns_files(directory: &Path, out: &mut Vec<PathBuf>) {

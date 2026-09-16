@@ -67,7 +67,8 @@ pub(crate) struct Lowerer<'a> {
     max_register: u16,
     statement_index: usize,
     statement_program_counter: Vec<(usize, Range<usize>)>,
-    call_sites: Vec<CallSite>,
+    /// The next send's number within this family (`take_call_site`).
+    next_call_site: u32,
     /// The most recent top-level `Statement::Expression`'s value register, for
     /// `finish_body`'s block case and for reading an inlined
     /// block's result.
@@ -81,6 +82,7 @@ impl<'a> Lowerer<'a> {
         named_temporary_count: u16,
         bindings: &'a Rc<HashMap<Span, Binding>>,
         mut enclosing_scopes: Vec<ScopeKind>,
+        first_call_site: u32,
     ) -> Self {
         enclosing_scopes.push(ScopeKind::Frame);
         let base = argument_count + named_temporary_count;
@@ -95,7 +97,7 @@ impl<'a> Lowerer<'a> {
             max_register: base,
             statement_index: 0,
             statement_program_counter: Vec::new(),
-            call_sites: Vec::new(),
+            next_call_site: first_call_site,
             last_expression_register: None,
         }
     }
@@ -290,9 +292,16 @@ impl<'a> Lowerer<'a> {
             block.body.temporaries.len() as u16,
             self.bindings,
             self.scopes.clone(),
+            self.next_call_site,
         );
         inner.lower_body(&block.body.statements);
+        // The block's sends share the enclosing family's one counter, so the
+        // root and every nested block number densely across the whole
+        // family, never restarting at each `MakeClosure`
+        // (`docs/design/dispatch.md`, "Code families").
+        let after = inner.next_call_site;
         let code = inner.finish(block.span);
+        self.next_call_site = after;
         let destination = self.allocate_scratch();
         self.emit(Instruction::MakeClosure {
             destination,
@@ -566,30 +575,23 @@ impl<'a> Lowerer<'a> {
         value_register
     }
 
-    /// One `Send*` instruction's `CallSite`: the instruction's own
-    /// about-to-be-pushed index, always in sync with `instructions`.
-    fn next_call_site(&self) -> CallSite {
-        // `call_site_id` is `u16` -- the inline caches' reserved slot -- so
-        // a body of more than 65535 instructions would silently alias two
-        // call sites onto the same id. Inlining raises
-        // instructions-per-body, so this is not purely theoretical; make
-        // the ceiling an explicit assertion rather than a silent
-        // truncation.
-        debug_assert!(
-            self.instructions.len() <= u16::MAX as usize,
-            "internal: more than {} instructions in one body -- call_site_id (u16) would alias",
-            u16::MAX
-        );
-        CallSite {
-            call_site_id: self.instructions.len() as u16,
-        }
+    /// The next send's number within this family. Numbers are handed out in
+    /// emission order across the root and every block nested in it, so a
+    /// family's sends are dense from 0 and none shares a cache entry
+    /// (`docs/design/dispatch.md`, "Code families").
+    fn take_call_site(&mut self) -> CallSite {
+        let number = self.next_call_site;
+        self.next_call_site = number
+            .checked_add(1)
+            .filter(|next| *next < CallSite::UNCACHED.number)
+            .expect("internal: more than u32::MAX - 1 sends in one code family");
+        CallSite { number }
     }
 
     fn emit_send(&mut self, build: impl FnOnce(u16, CallSite) -> Instruction) -> u16 {
         let destination = self.allocate_scratch();
-        let call_site = self.next_call_site();
+        let call_site = self.take_call_site();
         self.emit(build(destination, call_site));
-        self.call_sites.push(call_site);
         destination
     }
 
@@ -1010,11 +1012,11 @@ impl<'a> Lowerer<'a> {
         );
         CompiledCode {
             kind: self.kind,
+            family_size: crate::bytecode::family_size_of(&self.instructions),
             instructions: self.instructions,
             argument_count: self.argument_count,
             register_count: self.max_register,
             statement_program_counter: self.statement_program_counter,
-            call_sites: self.call_sites,
             source,
         }
     }
@@ -1095,6 +1097,7 @@ mod tests {
             method.body.temporaries.len() as u16,
             bindings,
             vec![],
+            0,
         )
     }
 
@@ -1423,13 +1426,13 @@ mod tests {
                     receiver_register: 1,
                     argument_registers: vec![0],
                     destination: 2,
-                    call_site: CallSite { call_site_id: 1 },
+                    call_site: CallSite { number: 0 },
                 },
             ]
         );
         assert_eq!(destination, 2);
         assert_eq!(code.register_count, 3);
-        assert_eq!(code.call_sites, vec![CallSite { call_site_id: 1 }]);
+        assert_eq!(code.family_size, 1);
     }
 
     #[test]
@@ -1456,7 +1459,7 @@ mod tests {
                 selector: crate::Symbol::intern("bar"),
                 argument_registers: vec![],
                 destination: 0,
-                call_site: CallSite { call_site_id: 0 },
+                call_site: CallSite { number: 0 },
             }]
         );
         assert_eq!(destination, 0);
@@ -1611,7 +1614,7 @@ mod tests {
             ) : ()
         "};
         let (method, bindings) = resolve_method(source, 0);
-        let mut lowerer = Lowerer::new(CodeKind::Initializer, 1, 0, &bindings, vec![]);
+        let mut lowerer = Lowerer::new(CodeKind::Initializer, 1, 0, &bindings, vec![], 0);
         lowerer.lower_slot_initializer(return_expression(&method), 4);
         let code = lowerer.finish(method.span);
         let [copy] = setter_arguments(&code)[..] else {
@@ -1633,7 +1636,7 @@ mod tests {
                     selector: crate::Symbol::intern("n:"),
                     argument_registers: vec![copy],
                     destination: copy + 1,
-                    call_site: CallSite { call_site_id: 1 },
+                    call_site: CallSite { number: 0 },
                 },
                 Instruction::InitializeSlot {
                     source: copy,
@@ -1784,7 +1787,7 @@ mod tests {
             receiver_registers[1], receiver_registers[2],
             "both cascade sends share one receiver register"
         );
-        assert_eq!(code.call_sites.len(), 3);
+        assert_eq!(code.family_size, 3);
     }
 
     #[test]
@@ -1889,6 +1892,55 @@ mod tests {
             vec![Instruction::ImplicitReturn { register: 0 }]
         );
         assert_eq!(block.statement_program_counter, vec![(0, 0..0)]);
+    }
+
+    /// A family's sends are numbered densely in the order they are emitted,
+    /// blocks included, and every body records one past the highest number in
+    /// itself and the blocks nested in it (`docs/design/dispatch.md`, "Code
+    /// families").
+    #[test]
+    fn a_family_numbers_its_sends_densely_across_nested_blocks() {
+        let source = indoc! {"
+            Newspeak3
+            'T'
+            class Subject = Object new (
+            ) (
+              public run: items = (
+                items size.
+                items do: [:each | each printString. [:inner | inner foo] value: each].
+                ^items isEmpty
+              )
+            ) : ()
+        "};
+        let code = lower_whole_method(source, 0);
+        let numbers = |code: &CompiledCode| -> Vec<u32> {
+            code.instructions
+                .iter()
+                .filter_map(Instruction::call_site)
+                .map(|site| site.number)
+                .collect()
+        };
+        let first_block = |code: &CompiledCode| -> Rc<CompiledCode> {
+            code.instructions
+                .iter()
+                .find_map(|instruction| match instruction {
+                    Instruction::MakeClosure { code: block, .. } => Some(block.clone()),
+                    _ => None,
+                })
+                .expect("the body creates a block")
+        };
+        // Emission order: `size` 0; the `do:` block's `printString` 1; the inner
+        // block's `foo` 2, lowered when its literal is reached; `value:` 3;
+        // `do:` 4, after its block literal; `isEmpty` 5. Verified against
+        // `ns-next disasm` on START when the plan was written.
+        assert_eq!(numbers(&code), vec![0, 4, 5]);
+        assert_eq!(code.family_size, 6);
+        let block = first_block(&code);
+        assert_eq!(numbers(&block), vec![1, 3]);
+        assert_eq!(block.family_size, 4);
+        let inner = first_block(&block);
+        assert_eq!(numbers(&inner), vec![2]);
+        assert_eq!(inner.family_size, 3);
     }
 
     #[test]
@@ -2103,7 +2155,7 @@ mod tests {
             0,
         );
         // Reuse `foo`'s `^1` as if it were an initializer expression: kind Initializer, 0 arguments.
-        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, 0, &bindings, vec![]);
+        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, 0, &bindings, vec![], 0);
         lowerer.lower_body(&method.body.statements);
         let code = lowerer.finish(method.span);
         assert_eq!(
@@ -2132,7 +2184,7 @@ mod tests {
             "},
             0,
         );
-        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, 0, &bindings, vec![]);
+        let mut lowerer = Lowerer::new(CodeKind::Initializer, 0, 0, &bindings, vec![], 0);
         lowerer.lower_slot_initializer(return_expression(&method), 4);
         let code = lowerer.finish(method.span);
         // `6`, `7`, the `*` send, then the field write: four instructions.

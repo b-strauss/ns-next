@@ -356,10 +356,10 @@ fn encode_code(
         writer.write_u32(u32_field("statement program counter", range.start));
         writer.write_u32(u32_field("statement program counter", range.end));
     }
-    writer.write_u32(u32_field("call site count", code.call_sites.len()));
-    for site in &code.call_sites {
-        encode_call_site(writer, *site);
-    }
+    // The call-site list is retired; the count stays in the record, written
+    // empty, so that a stale body with sends is refused before its
+    // instructions are read.
+    writer.write_u32(0);
     writer.write_u32(u32_field("instruction count", code.instructions.len()));
     for instruction in &code.instructions {
         encode_instruction(writer, instruction, ids, symbols);
@@ -367,7 +367,7 @@ fn encode_code(
 }
 
 fn encode_call_site(writer: &mut Writer, site: CallSite) {
-    writer.write_u16(site.call_site_id);
+    writer.write_u32(site.number);
 }
 
 fn encode_registers(writer: &mut Writer, registers: &[u16]) {

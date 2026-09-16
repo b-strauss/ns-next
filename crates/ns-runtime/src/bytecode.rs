@@ -48,12 +48,17 @@ pub enum Literal {
     UnresolvedIdentifier(String),
 }
 
-/// One send instruction's stable identity -- the instruction's own index into
-/// `CompiledCode.instructions`. Reserved for the inline caches; inert until
-/// they land (`docs/design/compiler.md`, "Safepoints and call-site identity").
+/// One send's identity within its code family (`docs/design/dispatch.md`,
+/// "Code families"): its number among every send of one root body and the
+/// blocks nested in it, dense from 0. `UNCACHED` is what the reference
+/// lowering emits, so every send it compiles runs the full lookup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CallSite {
-    pub call_site_id: u16,
+    pub number: u32,
+}
+
+impl CallSite {
+    pub const UNCACHED: CallSite = CallSite { number: u32::MAX };
 }
 
 /// Every register operand is a `u16` index into the frame's unified
@@ -249,9 +254,41 @@ pub struct CompiledCode {
     /// safepoint boundary, and how an activation's instruction
     /// `program_counter` maps back to the statement it is in.
     pub statement_program_counter: Vec<(usize, Range<usize>)>,
-    /// One entry per `Send*` instruction, in instruction order. Inert.
-    pub call_sites: Vec<CallSite>,
+    /// One past the highest call-site number among this body's own sends
+    /// and its nested blocks' `family_size`s; 0 when there is none.
+    pub family_size: u32,
     pub source: Span,
+}
+
+impl Instruction {
+    /// A send's call site; `None` for every other instruction.
+    pub fn call_site(&self) -> Option<CallSite> {
+        match self {
+            Instruction::SendLexical { call_site, .. }
+            | Instruction::SendPublic { call_site, .. }
+            | Instruction::SendInlinable { call_site, .. }
+            | Instruction::SendSuper { call_site, .. } => Some(*call_site),
+            _ => None,
+        }
+    }
+}
+
+/// One past the highest call-site number among `instructions`' sends and
+/// the `family_size` of every block they create; 0 when there is none.
+/// `UNCACHED` sends are not numbered. The compiler and the decoder both
+/// compute it here, so the two cannot disagree about a body.
+pub(crate) fn family_size_of(instructions: &[Instruction]) -> u32 {
+    instructions
+        .iter()
+        .map(|instruction| match instruction {
+            Instruction::MakeClosure { code, .. } => code.family_size,
+            other => match other.call_site() {
+                Some(site) if site != CallSite::UNCACHED => site.number + 1,
+                _ => 0,
+            },
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// A human-readable listing of `code` for `ns-next disasm`. Nested block
@@ -343,9 +380,9 @@ fn format_instruction(instruction: &Instruction) -> String {
             destination,
             call_site,
         } => format!(
-            "SendLexical r{destination} <- depth {depth} #{selector} ({}) @{}",
+            "SendLexical r{destination} <- depth {depth} #{selector} ({}) {}",
             registers(argument_registers),
-            call_site.call_site_id
+            format_call_site(*call_site)
         ),
         Instruction::SendPublic {
             selector,
@@ -354,9 +391,9 @@ fn format_instruction(instruction: &Instruction) -> String {
             destination,
             call_site,
         } => format!(
-            "SendPublic r{destination} <- r{receiver_register} #{selector} ({}) @{}",
+            "SendPublic r{destination} <- r{receiver_register} #{selector} ({}) {}",
             registers(argument_registers),
-            call_site.call_site_id
+            format_call_site(*call_site)
         ),
         Instruction::SendInlinable {
             selector,
@@ -365,9 +402,9 @@ fn format_instruction(instruction: &Instruction) -> String {
             destination,
             call_site,
         } => format!(
-            "SendInlinable r{destination} <- r{receiver_register} #{selector} ({}) @{}",
+            "SendInlinable r{destination} <- r{receiver_register} #{selector} ({}) {}",
             registers(argument_registers),
-            call_site.call_site_id
+            format_call_site(*call_site)
         ),
         Instruction::SendSuper {
             selector,
@@ -375,9 +412,9 @@ fn format_instruction(instruction: &Instruction) -> String {
             destination,
             call_site,
         } => format!(
-            "SendSuper r{destination} <- #{selector} ({}) @{}",
+            "SendSuper r{destination} <- #{selector} ({}) {}",
             registers(argument_registers),
-            call_site.call_site_id
+            format_call_site(*call_site)
         ),
         Instruction::MakeClosure {
             destination,
@@ -414,6 +451,16 @@ fn format_instruction(instruction: &Instruction) -> String {
         Instruction::BranchIfTrue { register, target } => {
             format!("BranchIfTrue r{register} -> {target}")
         }
+    }
+}
+
+/// A send's call site as `disasm` prints it: its family number, or `@-` for
+/// `UNCACHED` -- the reference lowering's bodies carry no numbering at all.
+fn format_call_site(call_site: CallSite) -> String {
+    if call_site == CallSite::UNCACHED {
+        "@-".to_string()
+    } else {
+        format!("@{}", call_site.number)
     }
 }
 
@@ -457,7 +504,7 @@ mod tests {
             argument_count: 1,
             register_count: 2,
             statement_program_counter: vec![(0, 0..2)],
-            call_sites: vec![],
+            family_size: 0,
             source: Span::new(0, 10),
         };
         assert_eq!(code.instructions.len(), 2);
@@ -466,8 +513,8 @@ mod tests {
     }
 
     #[test]
-    fn call_site_id_is_copy_and_comparable() {
-        let original = CallSite { call_site_id: 3 };
+    fn call_site_number_is_copy_and_comparable() {
+        let original = CallSite { number: 3 };
         let copy = original;
         assert_eq!(original, copy);
     }
@@ -479,12 +526,12 @@ mod tests {
             receiver_register: 0,
             argument_registers: vec![1],
             destination: 2,
-            call_site: CallSite { call_site_id: 0 },
+            call_site: CallSite { number: 0 },
         };
         assert!(matches!(
             send,
             Instruction::SendPublic {
-                call_site: CallSite { call_site_id: 0 },
+                call_site: CallSite { number: 0 },
                 ..
             }
         ));
@@ -498,7 +545,7 @@ mod tests {
             argument_count: 1,
             register_count: 1,
             statement_program_counter: vec![(0, 0..1)],
-            call_sites: vec![],
+            family_size: 0,
             source: Span::new(0, 5),
         });
         let make = Instruction::MakeClosure {
@@ -527,7 +574,7 @@ mod tests {
             argument_count: 0,
             register_count: 1,
             statement_program_counter: vec![(0, 0..2)],
-            call_sites: vec![],
+            family_size: 0,
             source: Span::new(0, 5),
         });
         let code = CompiledCode {
@@ -543,7 +590,7 @@ mod tests {
                     receiver_register: 1,
                     argument_registers: vec![],
                     destination: 2,
-                    call_site: CallSite { call_site_id: 1 },
+                    call_site: CallSite { number: 1 },
                 },
                 Instruction::LoadSelf { destination: 3 },
                 Instruction::ImplicitReturn { register: 3 },
@@ -551,7 +598,7 @@ mod tests {
             argument_count: 1,
             register_count: 4,
             statement_program_counter: vec![(0, 0..2)],
-            call_sites: vec![CallSite { call_site_id: 1 }],
+            family_size: 2,
             source: Span::new(0, 10),
         };
         let text = disassemble(&code, "foo:");

@@ -118,7 +118,6 @@ struct Body<'a> {
     next_register: u16,
     instructions: Vec<Instruction>,
     statement_program_counter: Vec<(usize, Range<usize>)>,
-    call_sites: Vec<CallSite>,
 }
 
 impl<'a> Body<'a> {
@@ -141,7 +140,6 @@ impl<'a> Body<'a> {
             next_register: first_scratch,
             instructions: Vec::new(),
             statement_program_counter: Vec::new(),
-            call_sites: Vec::new(),
         }
     }
 
@@ -454,17 +452,12 @@ impl<'a> Body<'a> {
         destination
     }
 
+    /// The reference lowering is the uncached oracle (`docs/design/dispatch.md`,
+    /// "The reference lowering"): every send it emits carries `UNCACHED`, so a
+    /// send it compiles always runs the full lookup, never a cache hit.
     fn emit_send(&mut self, build: impl FnOnce(u16, CallSite) -> Instruction) -> u16 {
         let destination = self.fresh();
-        // A call site is its send's own instruction index. Checked in every
-        // build for the same reason as `fresh`: a wrapped id would alias two
-        // call sites silently.
-        let call_site = CallSite {
-            call_site_id: u16::try_from(self.instructions.len())
-                .expect("internal: more than u16::MAX instructions in one body"),
-        };
-        self.emit(build(destination, call_site));
-        self.call_sites.push(call_site);
+        self.emit(build(destination, CallSite::UNCACHED));
         destination
     }
 
@@ -474,11 +467,11 @@ impl<'a> Body<'a> {
         }
         CompiledCode {
             kind: self.kind,
+            family_size: crate::bytecode::family_size_of(&self.instructions),
             instructions: self.instructions,
             argument_count: self.argument_count,
             register_count: self.next_register,
             statement_program_counter: self.statement_program_counter,
-            call_sites: self.call_sites,
             source,
         }
     }
@@ -645,19 +638,20 @@ mod tests {
         "}
     }
 
+    /// Every send the reference lowering emits carries `CallSite::UNCACHED`
+    /// (`emit_send`), so these helpers take no id -- there is nothing to vary.
     fn send(
         selector: &str,
         receiver_register: u16,
         argument_registers: Vec<u16>,
         destination: u16,
-        id: u16,
     ) -> Instruction {
         Instruction::SendPublic {
             selector: Symbol::intern(selector),
             receiver_register,
             argument_registers,
             destination,
-            call_site: CallSite { call_site_id: id },
+            call_site: CallSite::UNCACHED,
         }
     }
 
@@ -666,14 +660,13 @@ mod tests {
         receiver_register: u16,
         argument_registers: Vec<u16>,
         destination: u16,
-        id: u16,
     ) -> Instruction {
         Instruction::SendInlinable {
             selector: Symbol::intern(selector),
             receiver_register,
             argument_registers,
             destination,
-            call_site: CallSite { call_site_id: id },
+            call_site: CallSite::UNCACHED,
         }
     }
 
@@ -820,7 +813,7 @@ mod tests {
         ));
         assert_eq!(
             code.instructions[3],
-            inlinable("ifTrue:ifFalse:", 1, vec![2, 3], 4, 3)
+            inlinable("ifTrue:ifFalse:", 1, vec![2, 3], 4)
         );
         assert_eq!(code.instructions[4], Instruction::Return { register: 4 });
         assert_eq!(
@@ -861,10 +854,7 @@ mod tests {
             code.instructions[3],
             Instruction::MakeClosure { destination: 3, .. }
         ));
-        assert_eq!(
-            code.instructions[4],
-            inlinable("whileTrue:", 2, vec![3], 4, 4)
-        );
+        assert_eq!(code.instructions[4], inlinable("whileTrue:", 2, vec![3], 4));
         assert_eq!(
             code.instructions[5],
             Instruction::Move {
@@ -889,7 +879,7 @@ mod tests {
                     destination: 1,
                     literal: BytecodeLiteral::SmallInteger(3)
                 },
-                send("<", 0, vec![1], 2, 2),
+                send("<", 0, vec![1], 2),
                 Instruction::ImplicitReturn { register: 2 },
             ]
         );
@@ -905,7 +895,7 @@ mod tests {
                     destination: 1,
                     literal: BytecodeLiteral::SmallInteger(1)
                 },
-                send("+", 0, vec![1], 2, 2),
+                send("+", 0, vec![1], 2),
                 Instruction::StoreOuterLocal {
                     source: 2,
                     depth: 1,
@@ -959,8 +949,8 @@ mod tests {
                     destination: 1,
                     source: 0
                 },
-                send("foo", 1, vec![], 2, 1),
-                send("bar", 1, vec![], 3, 2),
+                send("foo", 1, vec![], 2),
+                send("bar", 1, vec![], 3),
                 Instruction::Return { register: 3 },
             ]
         );

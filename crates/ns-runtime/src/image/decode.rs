@@ -260,6 +260,19 @@ pub enum DecodeError {
     TrailingBytes {
         count: usize,
     },
+    /// A code record carries a call-site list, which the format no longer
+    /// has: the list was retired when a call site's identity moved from the
+    /// instruction's own index to a number the compiler and the decoder both
+    /// derive (`bytecode::family_size_of`). A non-empty count is a stale
+    /// artifact from before that change, written by an encoder this decoder
+    /// no longer matches -- refused before its instructions are read, rather
+    /// than silently skipped.
+    CallSiteListNotEmpty,
+    /// A code family's call sites are not numbered densely from 0: two sends
+    /// sharing a number would share a cache entry and run each other's
+    /// targets, and a number past the family's own count would let a crafted
+    /// family allocate a range its bytes do not pay for.
+    CallSitesNotDense,
 }
 
 impl std::fmt::Display for DecodeError {
@@ -426,6 +439,14 @@ impl std::fmt::Display for DecodeError {
             DecodeError::TrailingBytes { count } => {
                 write!(f, "{count} trailing byte(s) after the last section")
             }
+            DecodeError::CallSiteListNotEmpty => write!(
+                f,
+                "a code record carries a call-site list, which the format no longer has"
+            ),
+            DecodeError::CallSitesNotDense => write!(
+                f,
+                "a code family's call sites are not numbered densely from 0"
+            ),
         }
     }
 }
@@ -939,6 +960,62 @@ pub fn verify_code_table(table: &DecodedCodeTable) -> Result<(), DecodeError> {
         verify_body(code)?;
         verify_outer_locals(table, &parents, index, code)?;
     }
+    verify_call_site_numbering(table, &parents)?;
+    Ok(())
+}
+
+/// Every family -- a body no `MakeClosure` creates, with every block under
+/// it -- numbers its sends densely: each number once, all below the root's
+/// `family_size`, and exactly `family_size` of them. Two sends sharing a
+/// number would share a cache entry and run each other's targets, and a
+/// sparse family would make its first activation allocate a range its bytes
+/// do not pay for. `UNCACHED` sends are not counted. Iterative: a family's
+/// depth is bounded, but its width is the image's.
+fn verify_call_site_numbering(
+    table: &DecodedCodeTable,
+    parents: &[Option<usize>],
+) -> Result<(), DecodeError> {
+    for (index, root) in table.codes.iter().enumerate() {
+        if parents[index].is_some() {
+            continue;
+        }
+        // Collected once, iteratively: every body under `root`, the block
+        // nesting the decoder already bounded.
+        let mut family: Vec<&CompiledCode> = Vec::new();
+        let mut pending: Vec<&CompiledCode> = vec![root];
+        while let Some(code) = pending.pop() {
+            for instruction in &code.instructions {
+                if let Instruction::MakeClosure { code: block, .. } = instruction {
+                    pending.push(block);
+                }
+            }
+            family.push(code);
+        }
+        let numbers = || {
+            family
+                .iter()
+                .flat_map(|code| code.instructions.iter())
+                .filter_map(Instruction::call_site)
+                .filter(|site| *site != CallSite::UNCACHED)
+                .map(|site| site.number as usize)
+        };
+        let size = root.family_size as usize;
+        // Bound before allocating `seen`: `family_size` is a claim from the
+        // wire, and a `seen` sized off it before this count would let a
+        // crafted body claim a `u32`-sized family on a handful of bytes.
+        // Counting first bounds the allocation by the family's own decoded
+        // sends instead.
+        if numbers().count() != size {
+            return Err(DecodeError::CallSitesNotDense);
+        }
+        let mut seen = vec![false; size];
+        for number in numbers() {
+            if number >= size || seen[number] {
+                return Err(DecodeError::CallSitesNotDense);
+            }
+            seen[number] = true;
+        }
+    }
     Ok(())
 }
 
@@ -1171,10 +1248,12 @@ fn decode_code(
         let range_end = reader.read_u32()? as usize;
         statement_program_counter.push((statement, range_start..range_end));
     }
-    let site_count = reader.read_u32()? as usize;
-    let mut call_sites = reserve_for(site_count, reader);
-    for _ in 0..site_count {
-        call_sites.push(decode_call_site(reader)?);
+    // The call-site list is retired: a non-zero count is a stale artifact
+    // from before a call site's identity moved off the instruction stream,
+    // refused here rather than skipped or misread.
+    let site_count = reader.read_u32()?;
+    if site_count != 0 {
+        return Err(DecodeError::CallSiteListNotEmpty);
     }
     let instruction_count = reader.read_u32()? as usize;
     let mut instructions = reserve_for(instruction_count, reader);
@@ -1183,18 +1262,18 @@ fn decode_code(
     }
     Ok(CompiledCode {
         kind,
+        family_size: crate::bytecode::family_size_of(&instructions),
         instructions,
         argument_count,
         register_count,
         statement_program_counter,
-        call_sites,
         source,
     })
 }
 
 fn decode_call_site(reader: &mut Reader) -> Result<CallSite, DecodeError> {
     Ok(CallSite {
-        call_site_id: reader.read_u16()?,
+        number: reader.read_u32()?,
     })
 }
 

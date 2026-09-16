@@ -68,6 +68,7 @@ pub fn compile_method(
         named_temporary_count,
         bindings,
         vec![],
+        0,
     );
     lowerer.lower_body(&method.body.statements);
     lowerer.finish(method.span)
@@ -111,7 +112,14 @@ pub(crate) fn compile_mixin_bodies(
 /// absolute index the instance array actually needs.
 fn compile_mixin_initializer(mixin: &Mixin, bindings: &Rc<HashMap<Span, Binding>>) -> CompiledCode {
     let argument_count = factory_argument_count(mixin);
-    let mut lowerer = Lowerer::new(CodeKind::Initializer, argument_count, 0, bindings, vec![]);
+    let mut lowerer = Lowerer::new(
+        CodeKind::Initializer,
+        argument_count,
+        0,
+        bindings,
+        vec![],
+        0,
+    );
     let mut source: Option<Span> = None;
     for (own_index, slot) in mixin.slots.iter().enumerate() {
         let Some(declaration) = &slot.declaration else {
@@ -148,7 +156,7 @@ fn compile_superclass_clause(
     let statements = vec![Statement::Return(
         crate::interpreter::nested::superclass_clause_expression(clause),
     )];
-    let mut lowerer = Lowerer::new(CodeKind::SuperclassClause, 0, 0, bindings, vec![]);
+    let mut lowerer = Lowerer::new(CodeKind::SuperclassClause, 0, 0, bindings, vec![], 0);
     lowerer.lower_body(&statements);
     Some(lowerer.finish(clause.span))
 }
@@ -184,6 +192,7 @@ fn compile_superclass_message(
         0,
         bindings,
         vec![],
+        0,
     );
     lowerer.lower_body(&statements);
     Some(lowerer.finish(clause.span))

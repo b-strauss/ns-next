@@ -2403,7 +2403,7 @@ mod tests {
             argument_count: 0,
             register_count: 1,
             statement_program_counter: Vec::new(),
-            call_sites: Vec::new(),
+            family_size: 0,
             source: ns_syntax::Span::new(0, 0),
         })
     }
@@ -2699,7 +2699,7 @@ mod tests {
                     argument_count: 0,
                     register_count: 1,
                     statement_program_counter: vec![],
-                    call_sites: vec![],
+                    family_size: 0,
                     source: ns_syntax::Span::new(0, 0),
                 }),
                 captured_frame,
