@@ -31,7 +31,7 @@ Rust, so holding one across a safepoint, keeping one outside an entry, and a
 native re-entering the loop fail to compile; see "M4 — The lifetime brand"
 below. Measured whole, it is level with `a5d1e05` on every source; its first
 measurement was not, and finding out why put a function-alignment pin into
-the measurement protocol — and only there (the third finding below).
+the measurement protocol — and only there (the second finding below).
 
 **Name resolution and lookup follow the specification**, a step inserted
 ahead of the inline caches and done: a slot's accessors are method-table
@@ -90,10 +90,7 @@ changes what every cached guard reads, which is on the hot path the run
 loop's step inlines, so its measurement should check with `dumpbin /disasm`
 that the step is still inline before it times anything (the first finding
 below).
-**One decision from 3b is open and the user's**: whether to pursue the
-16-byte cache entry kept on `experiment/sixteen-byte-entry` (the second
-finding below). 3c does not touch the entry. **The points 3b settled on its
-own await the user's confirmation too**: the plan's five refinements and the
+**The points 3b settled on its own await the user's confirmation**: the plan's five refinements and the
 rulings made during execution ([dispatch.md](design/dispatch.md),
 "Decisions").
 
@@ -128,22 +125,6 @@ rulings made during execution ([dispatch.md](design/dispatch.md),
   the Visual Studio Build Tools, not on `PATH`) on a release build with debug
   information — no `vm::run::closure` may be a function of its own — before
   timing it.
-- **Open, the user's decision: the 16-byte cache entry.** 3b's entry holds an
-  `Rc` and is 24 bytes, a polymorphic block 96. A variant holding a `u32`
-  index into side tables of methods and mixins instead is 16 bytes, so a
-  block fits one 64-byte cache line; it is on the branch
-  `experiment/sixteen-byte-entry` (`16e901f`), all gates green, unmerged and
-  not deleted. Measured against the 24-byte entry in two sittings, no source
-  was faster, and `bench_send.ns` was entirely slower (+2.33%) in the
-  second. Independent of speed, its side tables grow with every genuine miss
-  rather than with distinct methods, and nothing but an invalidation shrinks
-  them, so a megamorphic site cycling through more receiver shapes than the
-  global cache holds would grow them without bound; deduplicating on record
-  or reference-counting the slots would close that and would have to be
-  measured again. The measurement recommends keeping the 24-byte entry; the
-  branch stays until the user decides ([execution.md](design/execution.md),
-  "What the inline caches moved").
-
 - **A measurement builds every compared binary with the same explicit
   flags, function alignment pinned; the shipped build is unpinned.** 2c's
   first whole-step measurement read 1–2.5% slower than `a5d1e05` on the
@@ -2145,8 +2126,8 @@ lookup decided and never decides.
    with a one-entry global cache; `Interpreter::cache_statistics` and
    `ns-next run|bench --cache-statistics`.
 9. **The measurement of the whole step, and of a 16-byte entry**, on no
-   commit of this branch; the entry is on `experiment/sixteen-byte-entry`
-   (`16e901f`).
+   commit of this branch; the 16-byte entry was an experiment and was not
+   merged.
 10. **The documents.**
 
 The plan sharpened five points of the design, executed as written and still
@@ -2170,8 +2151,8 @@ whole gain and the forcing only keeps it. After the benchmarks the table
 holds 12–16 sites and the global cache 9–13 entries; after each
 `run-corpus` module, at most 2 of each; no site went polymorphic. The
 16-byte entry measured no faster, `bench_send.ns` entirely slower in one
-sitting, and carries an unbounded growth risk; it is open for the user (the
-findings above). See [execution.md](design/execution.md), "What the inline
+sitting, and carries an unbounded growth risk; the user kept the 24-byte
+entry. See [execution.md](design/execution.md), "What the inline
 caches moved".
 
 **The open finding that a lexical send's decision is sensitive to codegen is

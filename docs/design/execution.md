@@ -1814,8 +1814,8 @@ gain; the forcing is what keeps it, once the caches' hit path makes the step
 too large for the inliner — the standing hazard [dispatch.md](dispatch.md)
 records.
 
-**The 16-byte entry** (`16e901f`, on the branch
-`experiment/sixteen-byte-entry`, against `c9c3c0f`): an index into side
+**The 16-byte entry** (an experiment measured against `c9c3c0f` and not
+merged): an index into side
 tables of methods and mixins instead of an `Rc`, which makes a `Target` 12
 bytes and an entry 16. Change of the mean, sitting 1 / sitting 2:
 `bench_loop.ns` +2.02% / +1.36%, `bench_send.ns` +0.84% / +2.33% (entirely
@@ -1828,9 +1828,8 @@ already holds the pointer. The side tables also grow with every genuine miss,
 not with distinct methods, so a megamorphic site cycling through more
 receiver shapes than the global cache holds grows them without bound until an
 invalidation — a regime none of the seven sources reaches, and one the cache
-stress mode cannot show, since it empties the tables at every safepoint. It
-was not adopted; the decision is the user's
-([PROGRESS.md](../PROGRESS.md), open findings).
+stress mode cannot show, since it empties the tables at every safepoint. The user
+decided to keep the 24-byte entry.
 
 **What the caches hold** (`--cache-statistics`, a release build of
 `c9c3c0f`). An entry is 24 bytes, a polymorphic block 96, a global-cache

@@ -844,9 +844,8 @@ the 24-byte entry, no source was faster, `bench_send.ns` was entirely slower in
 one of two sittings, and the side tables grow with every genuine miss rather
 than with distinct methods, so a megamorphic site cycling through more shapes
 than the global cache holds would grow them without bound until an invalidation.
-The experiment is kept, unmerged, on the branch `experiment/sixteen-byte-entry`
-(`16e901f`); whether to pursue it is the user's decision, open in
-[PROGRESS.md](../PROGRESS.md).
+The user decided on 2026-09-16 to keep the 24-byte entry; the experiment
+was not merged.
 
 #### A standing hazard
 
@@ -987,11 +986,10 @@ by that measurement. The user decides on the numbers.
   - `vm::run`'s step is forced inline, because the caches' hit path pushes
     it past LLVM's inlining threshold, where every instruction pays a call
     (a ruling during execution).
-- **Open: the entry's size.** An entry holds an `Rc` and is 24 bytes; the
-  16-byte variant with an index into side tables measured no faster and grows
-  those tables with misses ("Considered, not adopted: a 16-byte entry"
-  above). It waits on the branch `experiment/sixteen-byte-entry` for the
-  user's decision.
+- **An entry holds an `Rc` and is 24 bytes** (2026-09-16, the user's
+  decision): the 16-byte variant with an index into side tables measured no
+  faster and grows those tables with misses ("Considered, not adopted: a
+  16-byte entry" above).
 - **Planned (2026-09-15): the dispatch id's place is decided by measurement**
   (3c): on the class object, in the header, or in the header with `ClassData`
   boxed.
