@@ -230,6 +230,10 @@ pub struct Mutator<'gc> {
     /// when it is given back, so it holds no handle a move would have to
     /// find.
     pub(crate) argument_buffer: Vec<Value<'gc>>,
+    /// The next dispatch id `apply_mixin` mints. Past the last id below
+    /// `DispatchId::VACANT` it stops minting and applications get `NONE`,
+    /// which is never cached: slower, never wrong.
+    pub(crate) next_dispatch_id: u32,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -453,6 +457,46 @@ impl<'gc> Mutator<'gc> {
     /// calls it once, in the first entry the world makes.
     pub(crate) fn bootstrap_builtin_classes(&mut self) {
         self.builtin_classes = build_builtin_classes(self);
+        // An immediate has no class field to read a dispatch id from, so the
+        // ids `dispatch_id` answers for one are read once, here, off the
+        // builtin class objects that were just built, and kept in a table of
+        // their own (`Heap::set_immediate_dispatch_ids`).
+        let instances = |mutator: &Mutator<'gc>, kind| {
+            mutator
+                .heap
+                .class_dispatch_ids(mutator.builtin_class(kind))
+                .instances
+        };
+        let ids = [
+            instances(self, BuiltinClass::Nil),
+            instances(self, BuiltinClass::False),
+            instances(self, BuiltinClass::True),
+            instances(self, BuiltinClass::Integer),
+            instances(self, BuiltinClass::Float),
+        ];
+        self.heap.set_immediate_dispatch_ids(ids);
+    }
+
+    /// The next pair of dispatch ids, or `DispatchIds::NONE` once the counter
+    /// is exhausted: an application built after that point is simply never
+    /// cached, which is slower but never wrong, so running out is not an
+    /// error. Stopping strictly before `DispatchId::VACANT` and
+    /// `DispatchId::NONE` -- rather than at them -- is what keeps
+    /// `DispatchId::from_counter`'s assertion from ever firing on a minted
+    /// id.
+    pub(crate) fn mint_dispatch_ids(&mut self) -> crate::mixin::DispatchIds {
+        let first = self.next_dispatch_id;
+        let Some(after) = first.checked_add(2) else {
+            return crate::mixin::DispatchIds::NONE;
+        };
+        if after > u32::MAX - 1 {
+            return crate::mixin::DispatchIds::NONE;
+        }
+        self.next_dispatch_id = after;
+        crate::mixin::DispatchIds {
+            instances: crate::mixin::DispatchId::from_counter(first),
+            class_side: crate::mixin::DispatchId::from_counter(first + 1),
+        }
     }
 
     /// After `image::load`: never hand out an identity hash a loaded object
@@ -1424,14 +1468,13 @@ impl<'gc> Mutator<'gc> {
         let class = self.builtin_class(BuiltinClass::Object);
         self.heap.allocate_object(
             class,
-            ObjectData::Class(ClassData {
+            ObjectData::Class(ClassData::new(
                 application,
                 enclosing,
                 declaring_class,
                 superclass,
-                builtin: None,
-                metaclass: None,
-            }),
+                None,
+            )),
         )
     }
 
@@ -1467,12 +1510,14 @@ impl<'gc> Mutator<'gc> {
             nested_slot.insert(crate::mixin::mixin_key(nested), next);
             next += 1;
         }
+        let dispatch_ids = self.mint_dispatch_ids();
         let application = Rc::new(crate::mixin::MixinApplication {
             mixin: mixin.clone(),
             superclass: superclass.cloned(),
             slot_count: next,
             nested_slot,
             own_slot_base: inherited,
+            dispatch_ids,
         });
         self.applications.insert(key, application.clone());
         application
@@ -1640,14 +1685,13 @@ fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<
         let application = mutator.apply_mixin(&builtin_mixin(kind), Some(&object_application));
         classes.push(mutator.heap.allocate_object(
             class_of_class,
-            ObjectData::Class(ClassData {
+            ObjectData::Class(ClassData::new(
                 application,
-                enclosing: None,
-                declaring_class: None,
-                superclass: Some(class_of_class),
-                builtin: Some(kind),
-                metaclass: None,
-            }),
+                None,
+                None,
+                Some(class_of_class),
+                Some(kind),
+            )),
         ));
     }
     classes
@@ -1674,14 +1718,13 @@ fn build_self_referential_object_class<'gc>(
     heap: &mut Heap<'gc>,
     application: Rc<crate::mixin::MixinApplication>,
 ) -> ClassReference<'gc> {
-    heap.allocate_self_referential_class(ObjectData::Class(ClassData {
+    heap.allocate_self_referential_class(ObjectData::Class(ClassData::new(
         application,
-        enclosing: None,
-        declaring_class: None,
-        superclass: None,
-        builtin: Some(BuiltinClass::Object),
-        metaclass: None,
-    }))
+        None,
+        None,
+        None,
+        Some(BuiltinClass::Object),
+    )))
 }
 
 #[cfg(test)]
@@ -2095,5 +2138,27 @@ mod tests {
     #[test]
     fn a_lookup_stays_the_size_the_hot_path_was_measured_at() {
         assert_eq!(std::mem::size_of::<Lookup>(), 24);
+    }
+
+    /// Minting stops strictly before `DispatchId::VACANT`, never landing on
+    /// it or on `NONE`: both are reserved meanings (`Heap::dispatch_id` never
+    /// answers `VACANT`, and `NONE` means "not cached"), so a minted id must
+    /// never equal either.
+    #[test]
+    fn minting_never_reaches_vacant_and_answers_none_once_exhausted() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            // One pair below the ceiling: the last mintable pair is
+            // (MAX - 3, MAX - 2), immediately below `VACANT` (MAX - 1).
+            mutator.next_dispatch_id = u32::MAX - 3;
+            let last = mutator.mint_dispatch_ids();
+            assert_ne!(last.instances, crate::mixin::DispatchId::VACANT);
+            assert_ne!(last.class_side, crate::mixin::DispatchId::VACANT);
+            assert_ne!(last.instances, crate::mixin::DispatchId::NONE);
+            assert_ne!(last.class_side, crate::mixin::DispatchId::NONE);
+
+            let exhausted = mutator.mint_dispatch_ids();
+            assert_eq!(exhausted, crate::mixin::DispatchIds::NONE);
+        });
     }
 }

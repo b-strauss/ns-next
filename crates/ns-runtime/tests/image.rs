@@ -4179,14 +4179,7 @@ fn apply_and_wrap<'gc>(
     let application = mutator.apply_mixin(mixin, superclass);
     mutator.heap_mut().allocate_object(
         class_of_class,
-        ObjectData::Class(ClassData {
-            application,
-            enclosing: None,
-            declaring_class: None,
-            superclass: None,
-            builtin: None,
-            metaclass: None,
-        }),
+        ObjectData::Class(ClassData::new(application, None, None, None, None)),
     )
 }
 
@@ -5672,14 +5665,7 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
         let object_class = mutator.builtin_class(BuiltinClass::Object);
         let class: ClassReference = mutator.heap_mut().allocate_object(
             object_class,
-            ObjectData::Class(ClassData {
-                application,
-                enclosing: None,
-                declaring_class: None,
-                superclass: None,
-                builtin: None,
-                metaclass: None,
-            }),
+            ObjectData::Class(ClassData::new(application, None, None, None, None)),
         );
         let platform = mutator.fetch(&platform);
         let Err(error) = image::snapshot(

@@ -465,18 +465,12 @@ mod tests {
             nested_slot: crate::hash::IdentityMap::default(),
             slot_count: 0,
             own_slot_base: 0,
+            dispatch_ids: crate::mixin::DispatchIds::NONE,
         });
         let class_of_class = dummy_class(heap);
         heap.allocate_object(
             class_of_class,
-            ObjectData::Class(ClassData {
-                application,
-                enclosing: None,
-                declaring_class: None,
-                superclass,
-                builtin: None,
-                metaclass: None,
-            }),
+            ObjectData::Class(ClassData::new(application, None, None, superclass, None)),
         )
     }
 

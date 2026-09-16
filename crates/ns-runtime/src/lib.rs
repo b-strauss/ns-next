@@ -31,7 +31,7 @@ pub use heap::{
     Root,
 };
 pub use interpreter::{HostError, HostResult, HostSignal, Interpreter, Mutator};
-pub use mixin::{Mixin, MixinApplication};
+pub use mixin::{DispatchId, DispatchIds, Mixin, MixinApplication};
 pub use resolver::resolve;
 pub use symbol::Symbol;
 pub use types::*;

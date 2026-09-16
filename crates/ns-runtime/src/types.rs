@@ -103,6 +103,34 @@ pub struct ClassData<'gc> {
     /// one whose mixin declares no class side at all -- §6.3's "no
     /// metaclass" case costs nothing.
     pub metaclass: Option<ClassReference<'gc>>,
+    /// A copy of `application.dispatch_ids`, so that a cache's guard reads
+    /// it from the class object without following the `Rc`
+    /// (`Heap::dispatch_id`). Kept equal to the application's by
+    /// `ClassData::new` and `Heap::set_class_application`, the only ways
+    /// either changes.
+    pub dispatch_ids: crate::mixin::DispatchIds,
+}
+
+impl<'gc> ClassData<'gc> {
+    /// A class object's data around `application`, with no metaclass yet
+    /// (`Mutator::metaclass_of` builds it on first use).
+    pub fn new(
+        application: Rc<crate::mixin::MixinApplication>,
+        enclosing: Option<ObjectReference<'gc>>,
+        declaring_class: Option<ClassReference<'gc>>,
+        superclass: Option<ClassReference<'gc>>,
+        builtin: Option<BuiltinClass>,
+    ) -> ClassData<'gc> {
+        ClassData {
+            dispatch_ids: application.dispatch_ids,
+            application,
+            enclosing,
+            declaring_class,
+            superclass,
+            builtin,
+            metaclass: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -430,6 +458,7 @@ mod tests {
             nested_slot: crate::hash::IdentityMap::default(),
             slot_count: 0,
             own_slot_base: 0,
+            dispatch_ids: crate::mixin::DispatchIds::NONE,
         })
     }
 
@@ -442,14 +471,13 @@ mod tests {
     /// ordinary safe Rust under the arena: the slot's index is known before
     /// the slot is filled.
     fn dummy_class<'gc>(heap: &mut crate::Heap<'gc>) -> ClassReference<'gc> {
-        heap.allocate_self_referential_class(ObjectData::Class(ClassData {
-            application: empty_application("Object"),
-            enclosing: None,
-            declaring_class: None,
-            superclass: None,
-            builtin: Some(BuiltinClass::Object),
-            metaclass: None,
-        }))
+        heap.allocate_self_referential_class(ObjectData::Class(ClassData::new(
+            empty_application("Object"),
+            None,
+            None,
+            None,
+            Some(BuiltinClass::Object),
+        )))
     }
 
     #[test]

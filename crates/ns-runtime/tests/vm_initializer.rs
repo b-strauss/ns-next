@@ -194,21 +194,14 @@ fn make_class(
 ) -> Root {
     interpreter.enter(|mutator| {
         let class_of_class = mutator.builtin_class(class_of_class);
+        // Deliberately no class-object superclass link: this test only
+        // checks where the mixin's *own* slot lands, never a superclass
+        // level's own slots, so `climb_levels` (which walks this field, not
+        // the application's) finding no level above this one is exactly
+        // right.
         let class = mutator.heap_mut().allocate_object(
             class_of_class,
-            ObjectData::Class(ClassData {
-                application,
-                enclosing: None,
-                declaring_class: None,
-                // Deliberately no class-object superclass link: this test
-                // only checks where the mixin's *own* slot lands, never a
-                // superclass level's own slots, so `climb_levels` (which
-                // walks this field, not the application's) finding no level
-                // above this one is exactly right.
-                superclass: None,
-                builtin: None,
-                metaclass: None,
-            }),
+            ObjectData::Class(ClassData::new(application, None, None, None, None)),
         );
         mutator.stash(Value::Object(class))
     })

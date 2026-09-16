@@ -33,6 +33,44 @@ use crate::hash::IdentityMap;
 use crate::types::Binding;
 use crate::Symbol;
 
+/// The guard an inline cache compares: a dense number, minted per heap, that
+/// names one mixin application's behaviour for its instances or for its
+/// class objects (`docs/design/dispatch.md`, "The dispatch id").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DispatchId(u32);
+
+impl DispatchId {
+    /// What `Heap::dispatch_id` answers for a value whose class has no
+    /// application -- only a crafted image makes one -- and what an
+    /// application built outside `apply_mixin` carries. Never cached.
+    pub const NONE: DispatchId = DispatchId(u32::MAX);
+    /// The guard of a cache entry that guards nothing: a vacant, polymorphic
+    /// or megamorphic site. `Heap::dispatch_id` never answers it, so no
+    /// receiver matches one.
+    pub(crate) const VACANT: DispatchId = DispatchId(u32::MAX - 1);
+
+    pub(crate) fn from_counter(value: u32) -> DispatchId {
+        debug_assert!(value < DispatchId::VACANT.0);
+        DispatchId(value)
+    }
+}
+
+/// An application's two ids: one for its instances, one for its class
+/// objects' class side, since every class object shares one placeholder
+/// class and its behaviour depends on its application alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DispatchIds {
+    pub instances: DispatchId,
+    pub class_side: DispatchId,
+}
+
+impl DispatchIds {
+    pub const NONE: DispatchIds = DispatchIds {
+        instances: DispatchId::NONE,
+        class_side: DispatchId::NONE,
+    };
+}
+
 /// One entry of a mixin's method dictionary, with the body it runs.
 ///
 /// The body lives here, on the entry dispatch hands back, rather than in a
@@ -361,6 +399,11 @@ pub struct MixinApplication {
     /// into code every application runs), while this field is computed fresh
     /// per application, as `nested_slot` is.
     pub own_slot_base: usize,
+    /// The ids an inline cache guards on (`DispatchId`), minted by
+    /// `Mutator::apply_mixin` when it creates the application, so an id never
+    /// comes from an image's bytes. `DispatchIds::NONE` for an application
+    /// built anywhere else, which only tests do.
+    pub dispatch_ids: DispatchIds,
 }
 
 /// Unlinks the superclass list in a loop rather than through the stack.

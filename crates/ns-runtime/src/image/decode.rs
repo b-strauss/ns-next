@@ -2248,32 +2248,30 @@ fn decode_class_record<'gc>(
         None
     };
     let declaring_class = decode_optional_class(reader, context, tables)?;
+    // A record only ever describes a user class: a builtin is a class *tag*,
+    // resolved through the bootstrap, and never an object-table entry.
+    //
+    // `ClassData::new` also sets `metaclass: None`, rebuilt by
+    // `Mutator::metaclass_of` on the first class-side send, exactly as it is
+    // for a class object the accessor just created.
+    //
+    // Not the *same* metaclass, though, in one case: a metaclass that was
+    // itself in the graph -- as a class-side activation's `current_class` --
+    // decodes as a class record of its own and is never linked back into the
+    // class it belongs to, so `metaclass_of` mints a second one beside it.
+    // Nothing observes the difference today: `metaclass_of` is reached only
+    // from `Interpreter::send`'s dispatch, so no Newspeak value names a
+    // metaclass and no two of them can be compared. Recording it rather than
+    // claiming stability, because the claim would stop being true the moment
+    // §3.2's reified model is built.
     Ok((
-        crate::types::ClassData {
-            application: placeholder_application.clone(),
+        crate::types::ClassData::new(
+            placeholder_application.clone(),
             enclosing,
             declaring_class,
             superclass,
-            // A record only ever describes a user class: a builtin is a
-            // class *tag*, resolved through the bootstrap, and never an
-            // object-table entry.
-            builtin: None,
-            // Rebuilt by `Mutator::metaclass_of` on the first
-            // class-side send, exactly as it is for a class object the
-            // accessor just created.
-            //
-            // Not the *same* metaclass, though, in one case: a metaclass
-            // that was itself in the graph -- as a class-side activation's
-            // `current_class` -- decodes as a class record of its own and
-            // is never linked back into the class it belongs to, so
-            // `metaclass_of` mints a second one beside it. Nothing observes
-            // the difference today: `metaclass_of` is reached only from
-            // `Interpreter::send`'s dispatch, so no Newspeak value names a
-            // metaclass and no two of them can be compared. Recording it
-            // rather than claiming stability, because the claim would stop
-            // being true the moment §3.2's reified model is built.
-            metaclass: None,
-        },
+            None,
+        ),
         mixin,
     ))
 }

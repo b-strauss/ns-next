@@ -34,6 +34,7 @@ impl World {
                 spare_walks: Vec::new(),
                 lowering,
                 argument_buffer: Vec::new(),
+                next_dispatch_id: 0,
             },
         };
         world.enter(|mutator| mutator.bootstrap_builtin_classes());

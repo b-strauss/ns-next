@@ -15,6 +15,7 @@
 //! sites that call back into the interpreter while holding one -- which is
 //! most of `interpreter/locals.rs`.
 
+use crate::mixin::{DispatchId, DispatchIds};
 use crate::types::*;
 use crate::Symbol;
 
@@ -30,6 +31,18 @@ fn next_heap_id() -> u32 {
     use std::sync::atomic::{AtomicU32, Ordering};
     static NEXT: AtomicU32 = AtomicU32::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Where `immediate_dispatch_ids` keeps an immediate's id.
+fn immediate_index(value: &Value<'_>) -> usize {
+    match value {
+        Value::Nil => 0,
+        Value::Boolean(false) => 1,
+        Value::Boolean(true) => 2,
+        Value::SmallInteger(_) => 3,
+        Value::Float(_) => 4,
+        Value::Object(_) => unreachable!("an object carries its own class"),
+    }
 }
 
 /// The brand every movable handle carries (`docs/design/memory.md`, "The
@@ -417,6 +430,10 @@ pub struct Heap<'gc> {
     /// the mode is on; otherwise the safepoint that takes a request clears
     /// it.
     safepoint_requested: bool,
+    /// The instance ids of the builtin classes of the immediates, indexed by
+    /// `immediate_index`: an immediate has no class field to read one from.
+    /// Set once by the bootstrap; `NONE` before it.
+    immediate_dispatch_ids: [DispatchId; 5],
     /// This heap's distinct id, stamped onto every handle it mints. Debug
     /// builds only; see `next_heap_id`. No accessor exists for it: nothing
     /// outside a `cfg`-guarded position may name a field that does not
@@ -596,6 +613,7 @@ impl<'gc> Heap<'gc> {
                 sweep_at: MIN_ROOT_SWEEP,
             }),
             safepoint_requested: false,
+            immediate_dispatch_ids: [DispatchId::NONE; 5],
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
             #[cfg(debug_assertions)]
@@ -1329,6 +1347,42 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// The dispatch id an inline cache guards `value`'s send on
+    /// (`docs/design/dispatch.md`, "The dispatch id"): an instance's class's
+    /// instance id -- two arena loads -- a class object's own class-side id,
+    /// and an immediate's from a table. Nothing outside this function knows
+    /// where the id lives, which is what lets step 3c move it.
+    #[inline(always)]
+    pub fn dispatch_id(&self, value: &Value<'gc>) -> DispatchId {
+        let Value::Object(object) = value else {
+            return self.immediate_dispatch_ids[immediate_index(value)];
+        };
+        self.check_object_origin(*object);
+        let entry = &self.objects[object.index as usize];
+        if let ObjectData::Class(data) = &entry.data {
+            return data.dispatch_ids.class_side;
+        }
+        self.check_object_origin(entry.class);
+        match &self.objects[entry.class.index as usize].data {
+            ObjectData::Class(data) => data.dispatch_ids.instances,
+            _ => DispatchId::NONE,
+        }
+    }
+
+    /// `class`'s ids, or `NONE` when it is not a class object: the key of a
+    /// `super` send and of a private lexical send.
+    pub fn class_dispatch_ids(&self, class: ClassReference<'gc>) -> DispatchIds {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => data.dispatch_ids,
+            _ => DispatchIds::NONE,
+        }
+    }
+
+    pub(crate) fn set_immediate_dispatch_ids(&mut self, ids: [DispatchId; 5]) {
+        self.immediate_dispatch_ids = ids;
+    }
+
     /// Answers whether the write happened, mirroring `array_set`,
     /// `set_instance_field` and `set_class_superclass`/`set_class_application`
     /// below. `Mutator::metaclass_of` is the only caller, and it only
@@ -1388,6 +1442,7 @@ impl<'gc> Heap<'gc> {
     ) -> bool {
         self.check_object_origin(class);
         if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
+            data.dispatch_ids = application.dispatch_ids;
             data.application = application;
             return true;
         }
@@ -2281,15 +2336,15 @@ mod tests {
             nested_slot: crate::hash::IdentityMap::default(),
             slot_count: 0,
             own_slot_base: 0,
+            dispatch_ids: crate::mixin::DispatchIds::NONE,
         });
-        heap.allocate_self_referential_class(ObjectData::Class(ClassData {
+        heap.allocate_self_referential_class(ObjectData::Class(ClassData::new(
             application,
-            enclosing: None,
-            declaring_class: None,
-            superclass: None,
-            builtin: None,
-            metaclass: None,
-        }))
+            None,
+            None,
+            None,
+            None,
+        )))
     }
 
     /// `describe`'s `ObjectData::Instance` arm is the one non-mechanical
@@ -2821,5 +2876,24 @@ mod tests {
         };
         heap.array_push(array, Value::Object(stale));
         move_bare_heap(&mut heap);
+    }
+
+    /// A class object whose data is not a class -- only a crafted image makes
+    /// an instance of one -- answers `NONE`, which nothing caches.
+    #[test]
+    fn an_instance_of_a_non_class_answers_no_dispatch_id() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let not_a_class = mutator
+                .heap
+                .allocate_self_referential_class(ObjectData::Instance(vec![]));
+            let instance = mutator
+                .heap
+                .allocate_object(not_a_class, ObjectData::Instance(vec![]));
+            assert_eq!(
+                mutator.heap.dispatch_id(&Value::Object(instance)),
+                crate::mixin::DispatchId::NONE
+            );
+        });
     }
 }

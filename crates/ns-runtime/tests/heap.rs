@@ -5,7 +5,7 @@
 use indoc::indoc;
 use ns_runtime::types::Value;
 use ns_runtime::Interpreter;
-use ns_runtime::{HostResult, HostSignal, Root, Symbol};
+use ns_runtime::{BuiltinClass, DispatchId, HostResult, HostSignal, Mutator, Root, Symbol};
 
 #[test]
 fn array_accessors_read_and_write_through_the_seam() {
@@ -207,4 +207,116 @@ fn register_addressing_puts_arguments_before_temporaries() {
         "run:",
     );
     assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&result), Value::SmallInteger(41))));
+}
+
+/// Two `Inner` class objects of two `Outer` instances share one application,
+/// and so one dispatch id for their instances and one for their class side,
+/// while the class objects themselves differ (`docs/design/dispatch.md`, "A
+/// cache guards on the application, not on the class object").
+#[test]
+fn instances_of_a_nested_class_share_a_dispatch_id_across_enclosing_objects() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new (
+        ) (
+          public class Outer = Object new () (
+            public class Inner = Object new () ()
+          )
+          public class Other = Object new () ()
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let root = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let mut make_inner = || {
+        let outer_class = expect_ok(
+            interpreter.send(&root, Symbol::intern("Outer"), &[]),
+            "Outer",
+        );
+        let outer = expect_ok(
+            interpreter.send(&outer_class, Symbol::NEW, &[]),
+            "Outer new",
+        );
+        let inner_class = expect_ok(
+            interpreter.send(&outer, Symbol::intern("Inner"), &[]),
+            "Inner",
+        );
+        let inner = expect_ok(
+            interpreter.send(&inner_class, Symbol::NEW, &[]),
+            "Inner new",
+        );
+        (inner_class, inner)
+    };
+    let (first_class, first) = make_inner();
+    let (second_class, second) = make_inner();
+    let other_class = expect_ok(
+        interpreter.send(&root, Symbol::intern("Other"), &[]),
+        "Other",
+    );
+    let other = expect_ok(
+        interpreter.send(&other_class, Symbol::NEW, &[]),
+        "Other new",
+    );
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let id = |root: &Root| heap.dispatch_id(&mutator.fetch(root));
+        assert_eq!(id(&first), id(&second), "one application, one instance id");
+        assert_eq!(
+            id(&first_class),
+            id(&second_class),
+            "one application, one class-side id"
+        );
+        assert_ne!(
+            id(&first),
+            id(&first_class),
+            "instances and class side differ"
+        );
+        assert_ne!(id(&first), id(&other), "another application");
+        assert_ne!(id(&first), DispatchId::NONE);
+    });
+}
+
+/// Every immediate kind answers its builtin class's instance id, `true` and
+/// `false` two different ones, since they are instances of two classes.
+#[test]
+fn immediates_answer_their_builtin_classes_instance_ids() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let expected = |mutator: &Mutator, kind: BuiltinClass| {
+            mutator
+                .heap()
+                .class_dispatch_ids(mutator.builtin_class(kind))
+                .instances
+        };
+        let heap = mutator.heap();
+        assert_eq!(
+            heap.dispatch_id(&Value::Nil),
+            expected(mutator, BuiltinClass::Nil)
+        );
+        assert_eq!(
+            heap.dispatch_id(&Value::Boolean(true)),
+            expected(mutator, BuiltinClass::True)
+        );
+        assert_eq!(
+            heap.dispatch_id(&Value::Boolean(false)),
+            expected(mutator, BuiltinClass::False)
+        );
+        assert_eq!(
+            heap.dispatch_id(&Value::SmallInteger(3)),
+            expected(mutator, BuiltinClass::Integer)
+        );
+        assert_eq!(
+            heap.dispatch_id(&Value::Float(2.5)),
+            expected(mutator, BuiltinClass::Float)
+        );
+        assert_ne!(
+            expected(mutator, BuiltinClass::True),
+            expected(mutator, BuiltinClass::False)
+        );
+        let array = mutator.new_array(vec![]);
+        assert_eq!(
+            mutator.heap().dispatch_id(&Value::Object(array)),
+            expected(mutator, BuiltinClass::Array)
+        );
+    });
 }
