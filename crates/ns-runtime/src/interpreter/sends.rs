@@ -1,6 +1,8 @@
-//! Implicit-receiver and `super` sends: `newspeak-spec.pdf` §5.7-§5.10.
-//! The VM's `SendLexical` and `SendSuper` call these; an ordinary send is
-//! `Interpreter::send`.
+//! Implicit-receiver and `super` sends, uncached: `newspeak-spec.pdf`
+//! §5.7-§5.10. The VM's `SendLexical` and `SendSuper` reach them through
+//! `inline_cache::send_lexical` and `send_super` whenever a send runs
+//! uncached; an ordinary send's uncached counterpart is
+//! `Mutator::decide_send`.
 
 use crate::dispatch;
 use crate::heap::ActivationReference;

@@ -122,8 +122,9 @@ fn a_builtin_receiver_inherits_objects_identity_and_hash() {
 /// The load-bearing half: an unimplemented selector on a builtin must
 /// route through `builtins::object_class`'s real `doesNotUnderstand:` --
 /// whose message is "<describe(receiver)> does not understand #<selector>"
-/// -- rather than `Mutator::decide_does_not_understand`'s internal
-/// "(and no doesNotUnderstand: found anywhere in the class chain)" fallback.
+/// -- rather than the "(and no doesNotUnderstand: found anywhere in the
+/// class chain)" fallback `interpreter/resolve.rs` raises when its handler
+/// lookup finds nothing (`Resolved::Unhandled`).
 #[test]
 fn an_unknown_selector_on_a_builtin_runs_objects_real_does_not_understand() {
     let mut interpreter = Interpreter::bootstrap();

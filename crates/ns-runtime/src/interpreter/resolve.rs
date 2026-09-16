@@ -86,10 +86,10 @@ impl Resolved<'_> {
 }
 
 impl<'gc> Mutator<'gc> {
-    /// §5.5, the explicit-receiver send (was `decide_send`'s lookup): the
-    /// factory check first (§6.1, `try_factory_send`'s condition), then a
-    /// class object's class side (§6.3), then `lookupPublic` on the class,
-    /// then `doesNotUnderstand:`.
+    /// §5.5, the explicit-receiver send's lookup, which `decide_send` acts
+    /// on: the factory check first (§6.1, `try_factory_send`'s condition),
+    /// then a class object's class side (§6.3), then `lookupPublic` on the
+    /// class, then `doesNotUnderstand:`.
     ///
     /// The factory check comes before any lookup because `ClassName new` (or
     /// a class's own non-default factory selector) never has a real method
@@ -177,7 +177,7 @@ impl<'gc> Mutator<'gc> {
         };
         match lookup {
             Lookup::NotFound => None,
-            // §5.9 on a class side (was `decide_lexical_send`'s filter):
+            // §5.9 on a class side:
             // only a real declaration stops the search, so a primitive there
             // would be passed over to reach the class-object chain anyway.
             Lookup::Primitive(..) if chain == Chain::ProtectedClassSide => None,
@@ -185,7 +185,7 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
-    /// §5.7-§5.9, the lexical send (was `decide_lexical_send`'s lookup):
+    /// §5.7-§5.9, the lexical send's lookup:
     /// N's private member first (`lexical_class` is N, `None` when the
     /// chain is shorter than the depth), then the class side of `o` when
     /// `o` is a class object, then lookupProtected on `o`'s class; nothing
@@ -228,7 +228,8 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
-    /// §5.10 (was `decide_super_send`'s lookup, after its two errors):
+    /// §5.10's lookup, once `decide_super_send` or `send_super` has ruled
+    /// out its two errors:
     /// lookupProtected from S; nothing found is the factory check on `self`,
     /// then the `doesNotUnderstand:` defined for S.
     pub(crate) fn resolve_super(
@@ -337,10 +338,9 @@ fn resolved<'gc>(lookup: Lookup<'gc>, chain: Chain) -> Resolved<'gc> {
 }
 
 impl<'gc> Mutator<'gc> {
-    /// Runs what a send resolved to (was the five `decide_*_lookup`
-    /// functions). `receiver` is the send's receiver -- `o` for a lexical
-    /// send, `self` for `super` -- and `superclass` is S for a `super` send,
-    /// `None` otherwise.
+    /// Runs what a send resolved to. `receiver` is the send's receiver --
+    /// `o` for a lexical send, `self` for `super` -- and `superclass` is S
+    /// for a `super` send, `None` otherwise.
     ///
     /// `#[inline(always)]` so that the caller holding the `Resolved` also
     /// builds the step, rather than handing it to a call that answers a

@@ -73,8 +73,8 @@ fn extract_does_not_understand_selector<'gc>(
     heap: &Heap<'gc>,
     message_mirror_shaped_array: &Value<'gc>,
 ) -> Symbol {
-    // Matches `Mutator::decide_does_not_understand`'s `{selector. arguments}`
-    // array shape.
+    // Matches the `{selector. arguments}` array shape
+    // `interpreter/resolve.rs`'s `handler_message` builds.
     if let Value::Object(object) = message_mirror_shaped_array {
         if let Some(Value::Object(symbol_object)) = heap.array_at(*object, 0) {
             if let Some(symbol) = heap.symbol_value(symbol_object) {

@@ -81,9 +81,13 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
         // function of its own, so that every instruction, not only every
         // send, pays a call and a `Flow` returned through memory: 6.6-13.6%
         // on every benchmark when splitting resolve from act first did that.
-        // The caches and this forcing were measured together, as one change,
-        // against that split's tuned head: 7.5-13.8% faster on all seven
-        // benchmarks -- the figure is the pair's, not the caches' alone.
+        // Forcing it buys no speed of its own: on the code before the caches,
+        // where the inliner took the step anyway, it moved no benchmark
+        // beyond noise (at most 2.1%). What it keeps is the caches' gain,
+        // 4.3-11.3% against that code, from being paid back in a call per
+        // instruction (`docs/design/execution.md`, "What the inline caches
+        // moved"). The step sits near the threshold: anything added to a
+        // send's hit path lands here.
         match interpreter.enter(
             #[inline(always)]
             |mutator| {

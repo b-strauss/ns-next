@@ -452,7 +452,7 @@ impl<'a> Body<'a> {
         destination
     }
 
-    /// The reference lowering is the uncached oracle (`docs/design/dispatch.md`,
+    /// The reference lowering is the uncached oracle (`docs/design/compiler.md`,
     /// "The reference lowering"): every send it emits carries `UNCACHED`, so a
     /// send it compiles always runs the full lookup, never a cache hit.
     fn emit_send(&mut self, build: impl FnOnce(u16, CallSite) -> Instruction) -> u16 {

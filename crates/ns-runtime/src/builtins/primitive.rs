@@ -1,7 +1,7 @@
 //! The enumerated primitives: every native operation of the builtin classes,
 //! named rather than selected by its selector's text, so that a lookup can
 //! bind one and a later JIT tier can recognize it and emit it inline
-//! (`docs/design/dispatch.md`, "3a — Primitives are method-table entries").
+//! (`docs/design/dispatch.md`, "Primitives").
 
 use ns_syntax::ast;
 

@@ -192,8 +192,8 @@ pub struct SlotAccessor {
     pub kind: AccessorKind,
 }
 
-/// A native method of a builtin class (`docs/design/dispatch.md`, "3a --
-/// Primitives are method-table entries"): the primitive it runs and its §5.2
+/// A native method of a builtin class (`docs/design/dispatch.md`,
+/// "Primitives"): the primitive it runs and its §5.2
 /// accessibility. Found by the same lookups as a compiled method; it runs no
 /// code and pushes no activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

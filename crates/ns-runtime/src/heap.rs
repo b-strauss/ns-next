@@ -1153,12 +1153,8 @@ impl<'gc> Heap<'gc> {
         self.closure(object).cloned()
     }
 
-    /// Gives a decoded closure -- the only one still carrying
-    /// `FeedbackBase::NOT_ASSIGNED` once it has been activated -- the fresh
-    /// range `Mutator::push_step` minted for it, so every later activation of
-    /// the same closure object reuses it instead of minting again. On a
-    /// non-closure it does nothing: `image::decode`'s reconciliation is what
-    /// guarantees the caller's object is a closure, not this accessor.
+    /// Closure `object`'s payload, to write; `None` when `object` is not a
+    /// closure.
     fn closure_mut(&mut self, object: ObjectReference<'gc>) -> Option<&mut ClosureData<'gc>> {
         self.check_object_origin(object);
         match &mut self.objects[object.index as usize].data {
@@ -1167,6 +1163,12 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Gives a decoded closure -- the only one still carrying
+    /// `FeedbackBase::NOT_ASSIGNED` once it has been activated -- the fresh
+    /// range `Mutator::push_step` minted for it, so every later activation of
+    /// the same closure object reuses it instead of minting again. On a
+    /// non-closure it does nothing: `image::decode`'s reconciliation is what
+    /// guarantees the caller's object is a closure, not this accessor.
     pub(crate) fn set_closure_feedback_base(
         &mut self,
         object: ObjectReference<'gc>,

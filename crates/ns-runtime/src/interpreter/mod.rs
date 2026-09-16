@@ -1961,9 +1961,12 @@ mod tests {
         assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 64);
     }
 
-    /// `resolve::resolved_public`'s doc comment argues its shape from `Lookup`
-    /// being 24 bytes against a 64-byte settled enum; pinned here so that
-    /// growing a `Lookup` variant does not quietly make that argument wrong.
+    /// Every lookup hands its answer to `resolve` as a `Lookup`, which
+    /// `resolve::resolved_public` matches as it is rather than through the
+    /// 64-byte settled enum 3a measured as costly on this path
+    /// (`docs/design/execution.md`, "What primitives as method-table entries
+    /// moved"); pinned here so that growing a `Lookup` variant widens that
+    /// path noticeably rather than quietly.
     /// Unlike `Result<Step, Signal>` above, this one does not grow in a debug
     /// build: `SlotAccessor`'s own 12 bytes plus the absolute field index it
     /// carries already need a 24-byte slot once alignment rounds it up, and a
