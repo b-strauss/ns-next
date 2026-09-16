@@ -7087,16 +7087,6 @@ fn the_graph_walk_consumes_the_section_exactly() {
 /// range of its family's size when it is first activated.
 #[test]
 fn a_snapshot_with_full_caches_loads_with_empty_ones() {
-    // The cache stress mode invalidates on every safepoint by design
-    // (`docs/design/dispatch.md`, "Invalidation"), so nothing this test pins
-    // -- caches full before the snapshot, empty right after load -- survives
-    // under it: skip rather than fail on an interaction the stress mode is
-    // not testing.
-    if std::env::var_os("NS_NEXT_STRESS_CACHES")
-        .is_some_and(|value| !value.is_empty() && value != "0")
-    {
-        return;
-    }
     let source = indoc! {"
         Newspeak3
         'T'
@@ -7108,6 +7098,13 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
+    // This test pins what a site holds right after a run -- caches full
+    // before the snapshot, empty right after load -- which the cache stress
+    // mode vacates at every safepoint by design
+    // (`docs/design/dispatch.md`, "Invalidation"); turned off here regardless
+    // of `NS_NEXT_STRESS_CACHES` so the assertions below still run under it.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_caches(false);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     expect_ok(
         interpreter.send(&instance, Symbol::intern("prepare"), &[]),
@@ -7135,6 +7132,10 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
         .expect("snapshot")
     });
     let mut loaded = image::load(&bytes).expect("load");
+    // `image::load` bootstraps its own interpreter from the environment, so
+    // it must be turned off here too, for the same reason as above.
+    #[cfg(debug_assertions)]
+    loaded.interpreter.set_stress_caches(false);
     assert_eq!(loaded.interpreter.cache_statistics().site_entries, 0);
     let forty_one = loaded.interpreter.stash(Value::SmallInteger(41));
     let answer = expect_ok(
