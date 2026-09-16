@@ -1,0 +1,9 @@
+cell v | narrow cell
+cell v | wide wide a wide c cell
+cell v | narrow cell
+set narrow cell / set narrow cell | hidden!
+set wide wide a wide c cell / set wide wide a wide c cell | hidden!
+set narrow cell / set narrow cell | hidden!
+narrow cell | hidden!!
+wide wide a wide c cell | hidden!!
+narrow cell | hidden!!

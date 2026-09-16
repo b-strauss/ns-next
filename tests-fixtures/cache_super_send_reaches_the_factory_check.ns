@@ -1,0 +1,19 @@
+Newspeak3
+'Test'
+class CacheSuperSendReachesTheFactoryCheck usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+	class Base = Object new () (
+	) : (
+		public doesNotUnderstand: message = ( ^'base class side does not understand' )
+	)
+	class Simple = Base new () (
+		public printString = ( ^'a simple' )
+	) : (
+		public build = ( ^super new )
+	)
+	class Keyed with: seed = Simple new () (
+	)
+	public main: platform args: args = (
+		{Simple. Keyed. Simple. Keyed} do: [:each | transcript show: each build printString; newLine].
+		{Keyed. Simple. Keyed. Simple} do: [:each | transcript show: each build printString; newLine].
+	)
+) : ()

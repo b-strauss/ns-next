@@ -1,0 +1,15 @@
+Newspeak3
+'Test'
+class CacheNestedClassesShareBehaviour usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+	class Outer tag: label = Object new (| name = label. |) (
+		public class Inner = Object new () (
+			public describe = ( ^'inner of ', name )
+		)
+	)
+	public main: platform args: args = (
+		| inners |
+		inners := {(Outer tag: 'a') Inner new. (Outer tag: 'b') Inner new. (Outer tag: 'c') Inner new}.
+		inners do: [:each | transcript show: each describe; newLine].
+		transcript show: ((Outer tag: 'a') Inner == (Outer tag: 'a') Inner) printString; newLine.
+	)
+) : ()

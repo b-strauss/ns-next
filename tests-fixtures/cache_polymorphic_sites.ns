@@ -1,0 +1,24 @@
+Newspeak3
+'Test'
+class CachePolymorphicSites usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+	class One = Object new () ( public value = ( ^1 ) )
+	class Two = Object new () ( public value = ( ^2 ) )
+	class Three = Object new () ( public value = ( ^3 ) )
+	class Four = Object new () ( public value = ( ^4 ) )
+	class Five = Object new () ( public value = ( ^5 ) )
+	class Six = Object new () ( public value = ( ^6 ) )
+	public main: platform args: args = (
+		| sum all round |
+		sum := 0.
+		round := 0.
+		all := {One new. Two new. Three new. Four new. Five new. Six new. [7]}.
+		[round < 3] whileTrue: [
+			all do: [:each | sum := sum + each value].
+			round := round + 1].
+		transcript show: sum printString; newLine.
+		{true. false. true. 3 < 4. 4 < 3} do: [:each | transcript show: each not printString; show: ' '].
+		transcript newLine.
+		{1. 2.5. 'x'. #y. nil. true. One new} do: [:each | transcript show: each printString; show: ' '].
+		transcript newLine.
+	)
+) : ()
