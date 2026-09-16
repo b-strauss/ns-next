@@ -1,6 +1,6 @@
 //! Integration tests for the `Boolean`/`True`/`False` and
-//! `Integer`/`Float` native methods, wired through
-//! `crate::builtins::dispatch_native` via `Interpreter::send`.
+//! `Integer`/`Float` native methods, found as primitives by the ordinary
+//! lookup via `Interpreter::send`.
 
 use indoc::{formatdoc, indoc};
 use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value};

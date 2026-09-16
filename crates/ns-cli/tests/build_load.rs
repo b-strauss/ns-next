@@ -39,6 +39,27 @@ fn build_refuses_an_entry_the_root_class_does_not_have() {
     assert!(!out.exists(), "a refused build must write no file");
 }
 
+/// `build` accepts an entry only where `mixins::encode` has interned its
+/// selector (`commands/build.rs`, `root_class_answers`): a method or nested
+/// class of the module's own. `printString` is answered only by a builtin's
+/// primitive, which no table of the module names, so it stays refused now
+/// that primitives are method-table entries too.
+#[test]
+fn build_refuses_an_entry_only_a_builtin_answers() {
+    let directory = ScratchDirectory::new("builtin-entry");
+    let out = directory.join("app.nsb");
+    let (ok, _, error) = ns_next(&[
+        "build".as_ref(),
+        fixture("arithmetic.ns").as_os_str(),
+        out.as_os_str(),
+        "--entry".as_ref(),
+        "printString".as_ref(),
+    ]);
+    assert!(!ok);
+    assert!(error.contains("does not answer `printString`"), "{error}");
+    assert!(!out.exists(), "a refused build must write no file");
+}
+
 #[test]
 fn build_refuses_an_entry_arity_the_cli_cannot_supply() {
     let directory = ScratchDirectory::new("bad-arity");

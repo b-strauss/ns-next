@@ -40,7 +40,7 @@ pub(crate) fn decide_lexical_send<'gc>(
     // §6.3: a class object's class side is the behaviour of that class
     // object, so a send written inside a class-side method with no explicit
     // receiver has to search the metaclass before the class object's own
-    // (native `Object`) behaviour -- the same order `Interpreter::send`
+    // behaviour, `Object`'s primitives -- the same order `Interpreter::send`
     // gives an explicit-receiver send. Without it a class side reaches only
     // what `lookup_public` on the metaclass happens to answer once the send
     // has fallen all the way through to `send`: its `protected` and
@@ -52,9 +52,10 @@ pub(crate) fn decide_lexical_send<'gc>(
     };
     // A metaclass that does not declare the selector falls through to the
     // class object's own behaviour, exactly as in `send`. Only a real
-    // declaration stops the search: a metaclass chain carries no builtin
-    // tag, so `Lookup::Native` can only come from the class-object chain
-    // below and means the same thing either way.
+    // declaration stops the search: no metaclass chain holds a primitive --
+    // a metaclass's mixins are class sides or empty stand-ins -- so a
+    // `Lookup::Primitive` can only come from the class-object chain below,
+    // and the filter would pass one over to reach that chain anyway.
     let private = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth)
         .map(|lexical_class| dispatch::private_member(&mutator.heap, lexical_class, selector))
         .filter(|found| !matches!(found, Lookup::NotFound));
@@ -70,6 +71,22 @@ pub(crate) fn decide_lexical_send<'gc>(
             })
             .unwrap_or_else(|| dispatch::lookup_protected(&mutator.heap, class, selector))
     });
+    decide_lexical_lookup(mutator, lookup, enclosing, selector, arguments)
+}
+
+/// What the lexical send's walk found, turned into the step it names. The
+/// `Lookup` is matched as it is, rather than routed through a wider enum
+/// that also carries a primitive's finished `Result<Step, Signal>`: see
+/// `Mutator::decide_public_lookup`, which this mirrors, for what that
+/// measured, and for why this is `#[inline(always)]`.
+#[inline(always)]
+fn decide_lexical_lookup<'gc>(
+    mutator: &mut Mutator<'gc>,
+    lookup: Lookup<'gc>,
+    enclosing: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Result<Step<'gc>, Signal<'gc>> {
     match lookup {
         Lookup::Method(method, defining_class) => Ok(Step::Method {
             receiver: enclosing,
@@ -83,14 +100,31 @@ pub(crate) fn decide_lexical_send<'gc>(
         Lookup::NestedClass(mixin, declaring_class) => {
             crate::interpreter::nested::nested_class(mutator, &enclosing, &mixin, declaring_class)
         }
-        Lookup::Native(kind) => {
-            match crate::builtins::dispatch_native(mutator, kind, enclosing, selector, arguments) {
+        Lookup::Primitive(primitive, level) => {
+            match crate::builtins::execute(mutator, primitive, enclosing, selector, arguments) {
                 Some(result) => result,
-                None => mutator.decide_send(enclosing, selector, arguments),
+                None => decide_lexical_above(mutator, level, enclosing, selector, arguments),
             }
         }
         Lookup::NotFound => mutator.decide_send(enclosing, selector, arguments),
     }
+}
+
+/// Where a failed primitive sends a lexical send on: §5.9's lookupProtected,
+/// continued from the level above the one that declared the primitive.
+/// `#[cold]` for the reason `Mutator::decide_public_above` gives -- a
+/// primitive fails only on a receiver whose shape it does not work on.
+#[cold]
+#[inline(never)]
+fn decide_lexical_above<'gc>(
+    mutator: &mut Mutator<'gc>,
+    level: ClassReference<'gc>,
+    enclosing: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Result<Step<'gc>, Signal<'gc>> {
+    let lookup = dispatch::lookup_above(&mutator.heap, dispatch::Rule::Protected, level, selector);
+    decide_lexical_lookup(mutator, lookup, enclosing, selector, arguments)
 }
 
 /// `newspeak-spec.pdf` §5.10: starts at S, the superclass of the *current
@@ -127,7 +161,24 @@ pub(crate) fn decide_super_send<'gc>(
         }));
     };
     let self_value = mutator.heap.activation_receiver(activation);
-    match dispatch::lookup_protected(&mutator.heap, superclass, selector) {
+    let lookup = dispatch::lookup_protected(&mutator.heap, superclass, selector);
+    decide_super_lookup(mutator, lookup, self_value, superclass, selector, arguments)
+}
+
+/// What the `super` walk found, turned into the step it names. `superclass`
+/// is S, carried along because §5.10's failure looks `doesNotUnderstand:` up
+/// from S rather than from the receiver's own class. `#[inline(always)]` for
+/// the reason `Mutator::decide_public_lookup` gives.
+#[inline(always)]
+fn decide_super_lookup<'gc>(
+    mutator: &mut Mutator<'gc>,
+    lookup: Lookup<'gc>,
+    self_value: Value<'gc>,
+    superclass: ClassReference<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Result<Step<'gc>, Signal<'gc>> {
+    match lookup {
         Lookup::Method(method, defining_class) => Ok(Step::Method {
             receiver: self_value,
             method,
@@ -149,16 +200,33 @@ pub(crate) fn decide_super_send<'gc>(
         Lookup::NestedClass(mixin, declaring_class) => {
             crate::interpreter::nested::nested_class(mutator, &self_value, &mixin, declaring_class)
         }
-        Lookup::Native(kind) => {
-            match mutator.dispatch_native_inheriting_object(kind, &self_value, selector, arguments)
-            {
+        Lookup::Primitive(primitive, level) => {
+            match crate::builtins::execute(mutator, primitive, self_value, selector, arguments) {
                 Some(result) => result,
-                None => mutator
-                    .decide_super_does_not_understand(self_value, superclass, selector, arguments),
+                None => {
+                    decide_super_above(mutator, level, self_value, superclass, selector, arguments)
+                }
             }
         }
         Lookup::NotFound => {
             mutator.decide_super_does_not_understand(self_value, superclass, selector, arguments)
         }
     }
+}
+
+/// Where a failed primitive sends a `super` send on: §5.10's walk, continued
+/// from the level above the one that declared the primitive. `#[cold]` for
+/// the reason `Mutator::decide_public_above` gives.
+#[cold]
+#[inline(never)]
+fn decide_super_above<'gc>(
+    mutator: &mut Mutator<'gc>,
+    level: ClassReference<'gc>,
+    self_value: Value<'gc>,
+    superclass: ClassReference<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Result<Step<'gc>, Signal<'gc>> {
+    let lookup = dispatch::lookup_above(&mutator.heap, dispatch::Rule::Protected, level, selector);
+    decide_super_lookup(mutator, lookup, self_value, superclass, selector, arguments)
 }

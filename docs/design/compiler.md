@@ -302,8 +302,21 @@ instruction's own index into `instructions`, so it is stable and reconstructible
 separate counter to drift. Each send carries its call site by value and
 `call_sites` lists them in instruction order. **Nothing reads or writes them
 today** — they are inert, existing so that inline caches can start writing state
-into an already-present slot instead of changing `Instruction`'s shape, which would be
-an image format break.
+into an already-present slot instead of changing `Instruction`'s shape.
+
+**Planned (step 3b, [dispatch.md](dispatch.md), "Code families"):** the id
+becomes the send's number within its *family* — a root body with every block
+nested in it, numbered densely — widened to a `u32`, and indexes the running
+heap's cache table from the activation's `feedback_base`. Every `CompiledCode`
+of a family records the family's size, and `call_sites` is no longer needed.
+The widening is a wire change handled by the tag rule: the four send tags are
+retired and the sends take new numbers ([image-format.md](image-format.md)).
+It also closes the open ceiling below, where `next_call_site` checks the
+`u16` with a `debug_assert!` only — harmless while the id is inert, a defect
+once a cache reads it, since two sends would share one entry. The reference
+lowering emits every send with `CallSite::UNCACHED`, so the code it compiles
+runs the full lookup on every send, and is the uncached oracle the cached
+optimized lowering is checked against.
 
 ## Compilation cannot fail
 
@@ -682,7 +695,8 @@ signatures is a design change to the image module's interface, not a migration.
 - **Code lives on the mixin and `InitializeSlot` is mixin-relative**, because one mixin
   backs many applications with different inherited layouts.
 - **Call-site slots are emitted inert from the start**, so wiring up inline caches
-  is not a format break.
+  changes no instruction's shape; step 3b changes only the id's meaning and
+  width (planned, "Safepoints and call-site identity").
 - **The reference lowering is an independent module, not a mode of `Lowerer`**,
   so that it checks everything a lowering decides and no optimization can switch
   it off by forgetting a guard.

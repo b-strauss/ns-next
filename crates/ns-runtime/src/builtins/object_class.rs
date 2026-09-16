@@ -1,26 +1,29 @@
 //! `Object`'s native methods and the default `doesNotUnderstand:`
 //! (`newspeak-spec.pdf` §5.5).
 
+use crate::builtins::primitive::ObjectPrimitive;
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
-pub(crate) fn dispatch<'gc>(
+pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
+    primitive: ObjectPrimitive,
     receiver: Value<'gc>,
-    selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    match selector.as_str() {
-        "class" => Some(Ok(Value::Object(mutator.class_of(&receiver)))),
-        "==" => Some(Ok(Value::Boolean(identical(&receiver, &arguments[0])))),
-        "=" => Some(Ok(Value::Boolean(identical(&receiver, &arguments[0])))), // Object's default: identity
-        "hash" => Some(Ok(Value::SmallInteger(
-            identity_hash_of(&mut mutator.heap, &receiver) as i64,
-        ))),
-        "printString" => Some(Ok(Value::Object(
+    match primitive {
+        ObjectPrimitive::Class => Some(Ok(Value::Object(mutator.class_of(&receiver)))),
+        ObjectPrimitive::Identical => Some(Ok(Value::Boolean(identical(&receiver, &arguments[0])))),
+        // Object's default `=`: identity.
+        ObjectPrimitive::Equal => Some(Ok(Value::Boolean(identical(&receiver, &arguments[0])))),
+        ObjectPrimitive::Hash => Some(Ok(Value::SmallInteger(identity_hash_of(
+            &mut mutator.heap,
+            &receiver,
+        ) as i64))),
+        ObjectPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string("an Object".to_string()),
         ))),
-        "doesNotUnderstand:" => {
+        ObjectPrimitive::DoesNotUnderstand => {
             // Object's default doesNotUnderstand: (spec §5.5): must be
             // `protected`, always raises a MessageNotUnderstood-shaped
             // NewspeakError. There is no exception-class hierarchy yet;
@@ -38,7 +41,6 @@ pub(crate) fn dispatch<'gc>(
                 ),
             }))
         }
-        _ => None,
     }
 }
 

@@ -1,5 +1,5 @@
 //! Integration tests for the `String`/`Symbol`/`Character` native
-//! methods, wired through `crate::builtins::dispatch_native` via
+//! methods, found as primitives by the ordinary lookup via
 //! `Interpreter::send`.
 
 use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value};

@@ -6,10 +6,10 @@
 //! is no `Number` protocol, no `generality`/`coerce:` pair, and no promotion
 //! of a mixed operation to the wider type:
 //!
-//! * `Integer` arithmetic (`dispatch_integer`) requires an `Integer`
+//! * `Integer` arithmetic (`execute_integer`) requires an `Integer`
 //!   argument. `1 + 1.5` does **not** produce `2.5`; it raises a
 //!   type-mismatch `NewspeakError`.
-//! * `Float` arithmetic (`dispatch_float`) is one-directional: it accepts an
+//! * `Float` arithmetic (`execute_float`) is one-directional: it accepts an
 //!   `Integer` argument and widens it (`1.5 + 1` is `2.5`), because that
 //!   direction is lossless and free. Any other argument type raises a
 //!   type-mismatch `NewspeakError`.
@@ -21,7 +21,7 @@
 //!   convention. It is asymmetric across the two receivers, for the same
 //!   missing-coercion reason: `1 = 1.0` is `false` (`Integer`'s `=` only
 //!   accepts an `Integer`), while `1.0 = 1` is `true` (`Float`'s `=` widens
-//!   its argument like the rest of `dispatch_float`). A real numeric tower
+//!   its argument like the rest of `execute_float`). A real numeric tower
 //!   would answer `true` both ways.
 //!
 //! Implementing the tower means widening the whole `Value` numeric domain
@@ -30,6 +30,7 @@
 //! with a type-mismatch message of their own: reporting a mixed-type
 //! argument as an "Integer overflow" would be actively misleading.
 
+use crate::builtins::primitive::{FloatPrimitive, IntegerPrimitive};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
@@ -53,10 +54,10 @@ fn type_mismatch<'gc>(
     }
 }
 
-pub(crate) fn dispatch_integer<'gc>(
+pub(crate) fn execute_integer<'gc>(
     mutator: &mut Mutator<'gc>,
+    primitive: IntegerPrimitive,
     receiver: Value<'gc>,
-    selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let Value::SmallInteger(receiver_integer) = receiver else {
@@ -97,11 +98,11 @@ pub(crate) fn dispatch_integer<'gc>(
         None => Err(mismatch(operator)),
         Some(argument) => Ok(Value::Boolean(operation(receiver_integer, argument))),
     };
-    match selector.as_str() {
-        "+" => Some(arithmetic("+", i64::checked_add)),
-        "-" => Some(arithmetic("-", i64::checked_sub)),
-        "*" => Some(arithmetic("*", i64::checked_mul)),
-        "//" => Some(match argument_integer() {
+    match primitive {
+        IntegerPrimitive::Add => Some(arithmetic("+", i64::checked_add)),
+        IntegerPrimitive::Subtract => Some(arithmetic("-", i64::checked_sub)),
+        IntegerPrimitive::Multiply => Some(arithmetic("*", i64::checked_mul)),
+        IntegerPrimitive::FloorDivide => Some(match argument_integer() {
             None => Err(mismatch("//")),
             Some(0) => Err(NewspeakError {
                 selector: Symbol::intern("//"),
@@ -113,38 +114,37 @@ pub(crate) fn dispatch_integer<'gc>(
                 .map(Value::SmallInteger)
                 .ok_or_else(|| overflow("//")),
         }),
-        "<" => Some(compare("<", |left, right| left < right)),
-        ">" => Some(compare(">", |left, right| left > right)),
-        "<=" => Some(compare("<=", |left, right| left <= right)),
-        ">=" => Some(compare(">=", |left, right| left >= right)),
+        IntegerPrimitive::Less => Some(compare("<", |left, right| left < right)),
+        IntegerPrimitive::Greater => Some(compare(">", |left, right| left > right)),
+        IntegerPrimitive::LessOrEqual => Some(compare("<=", |left, right| left <= right)),
+        IntegerPrimitive::GreaterOrEqual => Some(compare(">=", |left, right| left >= right)),
         // Deliberately *not* an error on a type mismatch -- see the
         // module-level note.
-        "=" => Some(Ok(Value::Boolean(
+        IntegerPrimitive::Equal => Some(Ok(Value::Boolean(
             argument_integer() == Some(receiver_integer),
         ))),
-        "negated" => Some(
+        IntegerPrimitive::Negated => Some(
             receiver_integer
                 .checked_neg()
                 .map(Value::SmallInteger)
                 .ok_or_else(|| overflow("negated")),
         ),
-        "abs" => Some(
+        IntegerPrimitive::Absolute => Some(
             receiver_integer
                 .checked_abs()
                 .map(Value::SmallInteger)
                 .ok_or_else(|| overflow("abs")),
         ),
-        "printString" | "asString" => Some(Ok(Value::Object(
+        IntegerPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(receiver_integer.to_string()),
         ))),
-        _ => None,
     }
 }
 
-pub(crate) fn dispatch_float<'gc>(
+pub(crate) fn execute_float<'gc>(
     mutator: &mut Mutator<'gc>,
+    primitive: FloatPrimitive,
     receiver: Value<'gc>,
-    selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let Value::Float(receiver_float) = receiver else {
@@ -174,18 +174,17 @@ pub(crate) fn dispatch_float<'gc>(
         None => Err(mismatch(operator)),
         Some(argument) => Ok(Value::Boolean(operation(receiver_float, argument))),
     };
-    match selector.as_str() {
-        "+" => Some(arithmetic("+", |left, right| left + right)),
-        "-" => Some(arithmetic("-", |left, right| left - right)),
-        "*" => Some(arithmetic("*", |left, right| left * right)),
-        "/" => Some(arithmetic("/", |left, right| left / right)),
-        "<" => Some(compare("<", |left, right| left < right)),
-        ">" => Some(compare(">", |left, right| left > right)),
+    match primitive {
+        FloatPrimitive::Add => Some(arithmetic("+", |left, right| left + right)),
+        FloatPrimitive::Subtract => Some(arithmetic("-", |left, right| left - right)),
+        FloatPrimitive::Multiply => Some(arithmetic("*", |left, right| left * right)),
+        FloatPrimitive::Divide => Some(arithmetic("/", |left, right| left / right)),
+        FloatPrimitive::Less => Some(compare("<", |left, right| left < right)),
+        FloatPrimitive::Greater => Some(compare(">", |left, right| left > right)),
         // Same exception as `Integer`'s `=`: never an error.
-        "=" => Some(Ok(Value::Boolean(argument_float() == Some(receiver_float)))),
-        "printString" | "asString" => Some(Ok(Value::Object(
+        FloatPrimitive::Equal => Some(Ok(Value::Boolean(argument_float() == Some(receiver_float)))),
+        FloatPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(receiver_float.to_string()),
         ))),
-        _ => None,
     }
 }

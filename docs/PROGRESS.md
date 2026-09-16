@@ -10,7 +10,7 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
@@ -42,28 +42,42 @@ with a multiply-rotate hasher instead of SipHash. Measured whole, no source is
 slower than `59061ec` or `be3eb40`, and six are 4–12.5% faster than both; see
 "M4 — Spec-conformant lookup" below.
 
-**The next piece is step 3, the inline caches** ([dispatch.md](design/dispatch.md),
-"Planned: inline caches"; item 3 of the order of work below). It gets its own
-plan under `docs/superpowers/plans/`, written against the code as the
-spec-conformant lookup left it. Two questions there are open and are decided
-with the caches, not before: **the megamorphic fallback** behind the inline
-caches (Cog's global method cache, V8's stub cache, Primordial Soup's
-`LookupCache`), and **a dense application id in the object header**, which
-makes a guard one load and one compare and touches the object representation,
-the tracer and the image. A slot accessor is an ordinary cache entry, the
-guard and then the field read or write. Read for it: [dispatch.md](design/dispatch.md), "Planned:
-inline caches" (a cache guards on the mixin application, and a native entry
-carries an enumerated primitive); [compiler.md](design/compiler.md),
-"Safepoints and call-site identity", for the inert call-site slots every
-`CompiledCode` already carries;
-[execution.md](design/execution.md), "The VM", for the send path the caches
-sit on, where each instruction is one entry of the step state, `Mutator`; and
-[memory.md](design/memory.md), "The brand" and "What the collector traces" —
-code is shared behind an `Rc`, where no handle may live, so a cache entry in
-it must hold none, which a key on the application satisfies. Performance is
-measured, not assumed: the protocol and the seven sources of "What removing
-the re-entries moved" ([execution.md](design/execution.md); `bench_do.ns`
-is written out in the
+**Step 3, the inline caches, is designed** (2026-09-15;
+[dispatch.md](design/dispatch.md), "Planned: inline caches"; item 3 of the
+order of work below), in three parts, each landing green and measured on its
+own. **3a, primitives are method-table entries, is done**: every native is
+an entry of its builtin class's method table carrying an enumerated
+primitive, found by the ordinary lookups; `match selector.as_str()`, the
+dispatch leaf and the hand-restored inheritance from `Object` are gone, and
+`Object`'s `doesNotUnderstand:` is `protected` (§5.5) — the one behaviour
+change the step made. Measured whole, no source is slower than the commit it
+started from and six are 7–10% faster than `be3eb40`; see "M4 — Primitives as
+method-table entries" below.
+
+- **3b — the caches.** Cache state per heap, in a table the `Mutator` owns,
+  indexed from the activation's `feedback_base` (V8's split, HotSpot's frame
+  pointer); a site goes monomorphic, then a polymorphic cache of 4, then
+  megamorphic, with a global cache of 1024 entries behind every site; the
+  guard is a dense application id reached through the class object; `resolve`
+  then `act`, so a cache records what the lookup decided and never decides;
+  call-site ids numbered per code family and widened to `u32`, behind new send
+  tags; the reference lowering runs uncached as the oracle; a new stress mode,
+  `NS_NEXT_STRESS_CACHES=1`, empties every cache at every safepoint.
+- **3c — the dispatch id in the object header**, measured against 3b in two
+  variants, in the header (64-byte objects) or in the header with `ClassData`
+  boxed (about 48); the user decides on the numbers.
+
+The megamorphic fallback is the global cache, and the place of the dispatch id
+is decided by 3c's measurement.
+
+**The next piece is 3b's plan**, under `docs/superpowers/plans/`, written
+against [dispatch.md](design/dispatch.md), "3b — The caches". It opens with a
+fresh profile, taken against 3a's head rather than carried over from before
+it, so that the caches' ceiling is measured on the send path they will
+actually sit in front of ([dispatch.md](design/dispatch.md), "Planned: inline
+caches", "What bounds the gain"). Performance is measured, not assumed: the
+protocol and the seven sources of "What removing the re-entries moved"
+([execution.md](design/execution.md); `bench_do.ns` is written out in the
 [2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
 "Measurement protocol", and `bench_new.ns`, `bench_new2.ns` and
 `bench_newarg.ns`, whose slots had to be renamed, in "What spec-conformant
@@ -72,7 +86,11 @@ included, built with the protocol's explicit flags through `RUSTFLAGS`** —
 `+crt-static` and the function-alignment pin, which no configuration
 carries — two sittings for a whole step, and a comparison against `be3eb40`
 as well as against the commit the step starts from (the second finding
-below).
+below). 3a's own measurement found that the shape a decision travels through
+matters as much as the lookup it replaces — see "M4 — Primitives as
+method-table entries" below and the open finding it adds — and 3b rebuilds
+that same decision path to insert a cache in front of it, so the same shape
+is worth checking for again rather than assumed fixed.
 
 **Known gaps the step left**, each recorded where it applies:
 
@@ -97,6 +115,21 @@ below).
   3–15% slower on every source ([execution.md](design/execution.md), "What
   spec-conformant lookup moved"). Step 3's caches replace that decision, and
   a variant of them that looks free is measured, not assumed.
+
+- **A send's decision is sensitive to the shape it travels through, not only
+  to what it looks up.** 3a's first shape had every decision — slot, method,
+  nested class, primitive — answer one settled enum, 64 bytes against
+  `Lookup`'s own 24, so every send paid to build, return and re-match it even
+  where it never touched a primitive. That alone cost 5.5–22.4% against the
+  commit the step started from, entirely above it on all seven sources in two
+  sittings — an order of magnitude past the codegen jitter every earlier
+  step's measurement had allowed for. Recovered by having each caller match
+  its `Lookup` directly instead ([execution.md](design/execution.md), "What
+  primitives as method-table entries moved"). 3b rebuilds this same decision
+  path to insert a cache in front of it (`resolve` then `act`,
+  [dispatch.md](design/dispatch.md), "3b — The caches"), so its own
+  measurement should watch for the same shape, not assume it fixed once and
+  for all.
 
 - **A measurement builds every compared binary with the same explicit
   flags, function alignment pinned; the shipped build is unpinned.** 2c's
@@ -137,8 +170,12 @@ below).
   **every performance measurement up to and including step 3 compares
   against `be3eb40` as well as against the commit it starts from**, reports
   both, and builds every binary with the same codegen flags (the finding
-  above). If a source is still slower than `be3eb40` once step 3 has landed,
-  the shift is chased then, on the rebuilt send path. None is slower now.
+  above). 3a closed the rest: `bench_loop.ns` stays level with `be3eb40`
+  (+1.15%/+1.56%, overlapping) and the other six sources are 7–10% below it
+  ([execution.md](design/execution.md), "What primitives as method-table
+  entries moved"). If a source is still slower than `be3eb40` once step 3 has
+  fully landed, the shift is chased then, on the rebuilt send path. None is
+  slower now.
 - **A decoded image's last initializer is not held to answering `self`**, so
   `new` answers whatever it answers — wrong but safe, no panic.
   `image::decode::verify_mixins` could refuse such an initializer, which would
@@ -151,6 +188,24 @@ below).
 - **The stress suite takes three minutes** (190 s against 12.7 s), almost half
   of it one test, `the_depth_limit_is_exact_and_counts_alike_under_both_lowerings`.
   It is a gate before every commit, so step 3's plan should budget for it.
+- **`ns-cli build`'s `root_class_answers` accepts a slot setter as an entry
+  selector, although its own doc comment says it must not.** It checks
+  `mixin.methods.get(&symbol)` for any entry that is not a
+  `MethodEntry::Primitive` — which now also matches a
+  `MethodEntry::SlotAccessor`, getter and setter alike, since 3a left slot
+  accessors as they already were (method-table entries) but this check
+  predates that and was never updated to tell the two accessor kinds apart.
+  A build whose only entry selector is a setter passes the check and still
+  starts and runs: `image::build` interns the entry selector itself
+  (`crates/ns-runtime/src/image/mod.rs`, "The symbol table is not covered by
+  that guarantee"), and a decoded mixin carries its slot accessors again. The
+  consequence is the one `build.rs`'s own doc comment names — accepting a
+  selector `mixins::encode` never interned makes `build` grow the symbol
+  table to record it, breaking the byte-identity guarantee with `snapshot`
+  that `root_class_answers` exists to preserve
+  (`a_build_and_a_snapshot_agree_on_the_describing_sections`,
+  `crates/ns-cli/tests/build_load.rs`). Pre-existing, untouched by this step;
+  worth a small task (`crates/ns-cli/src/commands/build.rs`).
 
 Sends run on the activation stack rather than the Rust stack, in one loop that
 pushes, pops and resumes; `value`, the control-flow natives, `do:`,
@@ -188,7 +243,7 @@ why the object and activation representations were converted together rather
 than one at a time. Each piece is designed in the document for its own aspect;
 those documents are the authority, and this is only the map to them.
 
-**Eleven pieces are done.** The heap seam routes every object and activation
+**Twelve pieces are done.** The heap seam routes every object and activation
 access through `Heap` (`crates/ns-runtime/src/heap.rs`), and the arena behind
 it replaced `Rc<RefCell<_>>`: an `ObjectReference` or a `FrameReference` is a 32-bit index
 into a `Vec` the `Heap` owns, with a private field so the compiler enforces the
@@ -214,7 +269,9 @@ so the compiler checks what 2b's stress mode could only find at run time; see
 "M4 — The lifetime brand" below. Then name resolution and lookup were made to
 follow the specification, slot accessors became method-table entries, and the
 method and slot tables got an identity hasher; see "M4 — Spec-conformant
-lookup" below.
+lookup" below. Then 3a made every builtin's native an entry of its class's
+method table too, carrying an enumerated primitive instead of a selector
+matched as a string; see "M4 — Primitives as method-table entries" below.
 
 **The profile of `bench_block.ns` is taken**
 ([execution.md](design/execution.md), "What the profiles show"). The question
@@ -317,13 +374,16 @@ so nothing is lost by it going second.
    spec-conformant lookup**, which made the lookups the caches record follow
    §5.5–§5.10 and §6.3.2, put slot accessors into the method table, where a
    cache entry records them like any member, and gave the tables an identity
-   hasher; see "M4 — Spec-conformant lookup" below. The call-site slots are
-   already emitted and inert, so no bytecode format break. A cache must guard on
-   the **mixin application**, not on the class object; the obvious key is the
-   wrong one and would never hit. A native entry carries an enumerated
-   primitive, not a selector or a function pointer, so a hit costs the guard and
-   an indexed jump and the JIT can emit the primitive inline
-   ([dispatch.md](design/dispatch.md)).
+   hasher; see "M4 — Spec-conformant lookup" below. Designed on 2026-09-15 in
+   three parts, 3a to 3c ("Where the next session starts" above).
+   **3a, primitives are method-table entries, is done**: a native entry
+   carries an enumerated primitive, not a selector or a function pointer, so a
+   hit will cost the guard and an indexed jump and a later JIT tier can emit
+   the primitive inline ([dispatch.md](design/dispatch.md), "Primitives");
+   see "M4 — Primitives as method-table entries" below. **3b, the caches, and
+   3c, the dispatch id's place, are still ahead.** A cache must guard on the
+   **mixin application**, not on the class object; the obvious key is the
+   wrong one and would never hit.
 4. **Closure conversion** — [execution.md](design/execution.md). Blocks copy the
    variables they only read and share a box for the ones they write, instead of
    reaching them through their method's frame. That ends 1a's divorce copy and
@@ -1928,6 +1988,61 @@ built) takes 12.7 s, and 189.9 s under `NS_NEXT_STRESS_MOVES=1`.
 
 710 tests pass, with one ignored (690 when 2c closed); `parse-corpus` stays at
 **210/0/1/0** and `run-corpus` at **6/0/205**, plain and under the stress mode.
+
+## M4 — Primitives as method-table entries (2026-09-16)
+
+Plan: [ns-next-primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md).
+
+3a of the inline caches ([dispatch.md](design/dispatch.md), "Planned: inline
+caches"), ahead of 3b and 3c. Every builtin class's natives are now entries of
+its mixin's method table, found by the ordinary lookups instead of matched by
+`selector.as_str()` after the lookup found a native leaf — the model Cog and
+Primordial Soup hold their primitives in, and SOMns its dispatchables.
+
+**What changed.** `enum Primitive` (`builtins/primitive.rs`) names every
+native operation, one variant each, grouped by the builtin family whose
+module executes it; `builtins::execute` matches on it once, in place of
+every `match selector.as_str()` that `builtins/` and `platform.rs` used to
+carry.
+The bootstrap fills each builtin mixin's method table from a static list per
+`BuiltinClass` of (selector, access, primitive), as `MethodEntry::Primitive`.
+A lookup that reaches one answers `Lookup::Primitive(primitive, level)`; a
+primitive that fails on a receiver of the wrong shape passes its level over,
+and the lookup continues from the superclass through `dispatch::lookup_above`
+— the same outcome the `None` a native answered before this step gave, now
+carried by the lookup instead of by a hand-written fallback. `dispatch::walk`'s
+early return at a builtin level, `Mutator::dispatch_native_inheriting_object`
+and the fallbacks that used to turn a native's `None` into a public send are
+gone. See [dispatch.md](design/dispatch.md), "Primitives".
+
+**The one behaviour change.** Every primitive is `public`, except `Object`'s
+`doesNotUnderstand:`, which §5.5 requires to be `protected` — a native used to
+have no access at all and answered any explicit-receiver send, so an explicit
+`x doesNotUnderstand: m` sent from outside the receiver now itself ends in
+`doesNotUnderstand:`. No recorded outcome needed updating for it.
+
+**Measurement.** Measured whole against the commit the step started from,
+`883431b`, and against `be3eb40`, in two sittings, by the protocol of
+"What removing the re-entries moved" ([execution.md](design/execution.md)):
+the gate passes in both sittings, and the step is level with its start on all
+seven sources (within ±2.2%, every group overlapping except `bench_newarg.ns`,
+which is entirely below start in the second sitting — faster, not merely
+level). Against `be3eb40`, six of seven sources are 7–10% faster and
+`bench_loop.ns` is level (+1.15%/+1.56%, overlapping). See
+[execution.md](design/execution.md), "What primitives as method-table entries
+moved", which also records what the step's first shape cost — a 64-byte
+settled enum on every send's return path measured 5.5–22.4% slower than start
+in the first, blocked measurement — and the five `perf:` commits that
+recovered it, the largest by having each of the five callers that can reach a
+`Lookup::Primitive` match it directly instead (`8a05621`). 3b rebuilds this
+same decision path and should not repeat that shape; carried forward as an
+open finding above.
+
+Gates: `cargo fmt --all` clean; `cargo clippy --workspace --all-targets`
+warning-free; `cargo test --workspace`, 722 tests passing with one ignored;
+`NS_NEXT_STRESS_MOVES=1 cargo test --workspace`, the same tests passing;
+`parse-corpus` at **210/0/1/0** and `run-corpus` at **6/0/205**, plain and
+under the stress mode. No recorded outcome moved.
 
 ## Notes
 

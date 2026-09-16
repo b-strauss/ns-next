@@ -262,10 +262,11 @@ impl<'gc> Mutator<'gc> {
     /// fall through to ordinary dispatch.
     ///
     /// No user-overridable `new` method is ever registered anywhere to
-    /// find (every `BuiltinClass`-tagged placeholder's method table is
-    /// empty, and a user class's own `.class` is that same shared
-    /// placeholder -- there is no reified metaclass hierarchy, see
-    /// `docs/design/object-model.md`, "Class sides and metaclasses"), so
+    /// find (a `BuiltinClass`-tagged class's method table holds only its
+    /// primitives, none of them `new`, and a user class's own `.class` is
+    /// the shared `Object`-tagged placeholder -- there is no reified
+    /// metaclass hierarchy, see `docs/design/object-model.md`, "Class sides
+    /// and metaclasses"), so
     /// without this check `ClassName new` would unconditionally end in
     /// `doesNotUnderstand:`, for every class, every time.
     ///
@@ -295,8 +296,8 @@ impl<'gc> Mutator<'gc> {
         Some(match builtin {
             // `Array`/`OrderedCollection`'s representation is
             // `ObjectData::Array`, not the generic `instantiate()`'s
-            // `ObjectData::Instance` -- `builtins::collections`' dispatch
-            // functions pattern-match on `ObjectData::Array`
+            // `ObjectData::Instance` -- `builtins::collections`' primitives
+            // pattern-match on `ObjectData::Array`
             // directly, so handing them a generic instance payload would
             // leave every native method on the result silently unable to
             // find its data (falling straight through to
@@ -305,7 +306,7 @@ impl<'gc> Mutator<'gc> {
             // (the receiver's own class -- *not* `Mutator::new_array`,
             // which unconditionally tags its result `BuiltinClass::Array`;
             // using that here would make `OrderedCollection new`'s result
-            // dispatch through `dispatch_array`, which has no `add:`).
+            // an `Array`, whose method table has no `add:`).
             Some(BuiltinClass::OrderedCollection) | Some(BuiltinClass::Array) => Ok(Step::Value(
                 Value::Object(self.new_instance_object(class_reference, ObjectData::Array(vec![]))),
             )),

@@ -139,14 +139,25 @@ pub struct SlotAccessor {
     pub kind: AccessorKind,
 }
 
-/// One entry of a mixin's method table (§3.5): a compiled method, or one of
-/// the accessors a slot declaration defines -- methods on the same footing,
-/// found by the same lookup and overridden the same way
+/// A native method of a builtin class (`docs/design/dispatch.md`, "3a --
+/// Primitives are method-table entries"): the primitive it runs and its §5.2
+/// accessibility. Found by the same lookups as a compiled method; it runs no
+/// code and pushes no activation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrimitiveMethod {
+    pub primitive: crate::builtins::primitive::Primitive,
+    pub access: ast::AccessModifier,
+}
+
+/// One entry of a mixin's method table (§3.5): a compiled method, one of the
+/// accessors a slot declaration defines, or a builtin's primitive -- methods
+/// on the same footing, found by the same lookup and overridden the same way
 /// (`docs/design/dispatch.md`, "Slot accessors").
 #[derive(Debug, Clone)]
 pub enum MethodEntry {
     Compiled(Rc<MixinMethod>),
     SlotAccessor(SlotAccessor),
+    Primitive(PrimitiveMethod),
 }
 
 impl MethodEntry {
@@ -155,6 +166,7 @@ impl MethodEntry {
         match self {
             MethodEntry::Compiled(method) => method.access,
             MethodEntry::SlotAccessor(accessor) => accessor.access,
+            MethodEntry::Primitive(method) => method.access,
         }
     }
 
@@ -162,7 +174,7 @@ impl MethodEntry {
     pub fn compiled(&self) -> Option<&Rc<MixinMethod>> {
         match self {
             MethodEntry::Compiled(method) => Some(method),
-            MethodEntry::SlotAccessor(_) => None,
+            MethodEntry::SlotAccessor(_) | MethodEntry::Primitive(_) => None,
         }
     }
 }

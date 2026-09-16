@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use ns_syntax::ast;
 
+use crate::builtins::primitive::Primitive;
 use crate::heap::Heap;
 use crate::mixin::{MethodEntry, Mixin, MixinApplication, MixinMethod, SlotAccessor};
 use crate::types::*;
@@ -25,7 +26,10 @@ pub enum Lookup<'gc> {
     /// object itself does not exist until `interpreter::nested::nested_class`
     /// materializes it for a particular receiver.
     NestedClass(Rc<Mixin>, ClassReference<'gc>),
-    Native(BuiltinClass),
+    /// A builtin's primitive, with the class object of the level whose
+    /// method table holds it: a primitive that fails passes that level over,
+    /// and the lookup continues from its superclass (`lookup_above`).
+    Primitive(Primitive, ClassReference<'gc>),
     NotFound,
 }
 
@@ -110,6 +114,32 @@ enum Verdict {
     Stop,
 }
 
+/// Which of the three lookups a walk is (`newspeak-spec.pdf` §5.5, §5.9,
+/// §3.5) -- what it does with a declaration it finds at one level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rule {
+    /// §5.5's lookupPublic: public accepted, protected stops, private skipped.
+    Public,
+    /// §5.9's lookupProtected: public and protected accepted, private skipped.
+    Protected,
+    /// §3.5's "defined for", `doesNotUnderstand:`'s: every declaration accepted.
+    DefinedFor,
+}
+
+impl Rule {
+    fn verdict(self, access: ast::AccessModifier) -> Verdict {
+        match (self, access) {
+            (Rule::DefinedFor, _)
+            | (Rule::Public, ast::AccessModifier::Public)
+            | (Rule::Protected, ast::AccessModifier::Public | ast::AccessModifier::Protected) => {
+                Verdict::Accept
+            }
+            (Rule::Public, ast::AccessModifier::Protected) => Verdict::Stop,
+            (Rule::Public | Rule::Protected, ast::AccessModifier::Private) => Verdict::Skip,
+        }
+    }
+}
+
 /// The class declaration at lexical depth `depth` from `defining_class` --
 /// §5.9's `N`, "a class whose declaration D lexically encloses the outer
 /// send", at the depth the resolver fixed. Depth 0 is `defining_class`
@@ -176,11 +206,7 @@ pub fn lookup_public<'gc>(
     class: ClassReference<'gc>,
     selector: Symbol,
 ) -> Lookup<'gc> {
-    walk(heap, class, selector, |access| match access {
-        ast::AccessModifier::Public => Verdict::Accept,
-        ast::AccessModifier::Protected => Verdict::Stop,
-        ast::AccessModifier::Private => Verdict::Skip,
-    })
+    walk(heap, class, selector, Rule::Public)
 }
 
 /// §5.9's lookupProtected(n, C): "m, if the mixin of C defines a method m
@@ -193,10 +219,7 @@ pub fn lookup_protected<'gc>(
     class: ClassReference<'gc>,
     selector: Symbol,
 ) -> Lookup<'gc> {
-    walk(heap, class, selector, |access| match access {
-        ast::AccessModifier::Public | ast::AccessModifier::Protected => Verdict::Accept,
-        ast::AccessModifier::Private => Verdict::Skip,
-    })
+    walk(heap, class, selector, Rule::Protected)
 }
 
 /// The plain, access-blind "defined for" walk (§3.5): used by
@@ -207,16 +230,61 @@ pub fn lookup_defined_for<'gc>(
     class: ClassReference<'gc>,
     selector: Symbol,
 ) -> Lookup<'gc> {
-    walk(heap, class, selector, |_| Verdict::Accept)
+    walk(heap, class, selector, Rule::DefinedFor)
+}
+
+/// The lookup `rule` names, of `selector`, from `class`: `class`'s own level
+/// first, then each superclass in turn.
+///
+/// The three lookups above name their rule as a literal, so that each gets
+/// its own copy of `walk` with the verdict table folded away. This one,
+/// which carries the rule as a value, therefore branches to one of them
+/// rather than handing `walk` a run-time rule -- a fourth copy of the walk
+/// with a live `rule` register in its inner loop is what a run-time rule
+/// would mean, and its only caller is the cold `lookup_above`.
+pub fn lookup<'gc>(
+    heap: &Heap<'gc>,
+    rule: Rule,
+    class: ClassReference<'gc>,
+    selector: Symbol,
+) -> Lookup<'gc> {
+    match rule {
+        Rule::Public => lookup_public(heap, class, selector),
+        Rule::Protected => lookup_protected(heap, class, selector),
+        Rule::DefinedFor => lookup_defined_for(heap, class, selector),
+    }
+}
+
+/// The same lookup, continued from the level above `level`: where a
+/// primitive found at `level` that failed passes the send on. `NotFound`
+/// above the root.
+pub fn lookup_above<'gc>(
+    heap: &Heap<'gc>,
+    rule: Rule,
+    level: ClassReference<'gc>,
+    selector: Symbol,
+) -> Lookup<'gc> {
+    match heap.class_superclass(level) {
+        Some(superclass) => lookup(heap, rule, superclass, selector),
+        None => Lookup::NotFound,
+    }
 }
 
 /// Walks `class`'s superclass chain for a declaration of `selector`, asking
-/// `verdict` what to do with each one it finds.
+/// `rule` what to do with each one it finds.
+///
+/// `#[inline(always)]`, and called with a literal `Rule` by each of the three
+/// lookups above, so that each of them is its own specialized walk with
+/// `Rule::verdict` folded into a constant test -- the shape the three
+/// per-lookup verdict closures gave before the rule became a value. One
+/// shared walk taking the rule at run time measured 1.7-2.0% slower on both
+/// screening sources.
+#[inline(always)]
 fn walk<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,
     selector: Symbol,
-    verdict: impl Fn(ast::AccessModifier) -> Verdict,
+    rule: Rule,
 ) -> Lookup<'gc> {
     let mut level = level_of(heap, class);
     while let Some((level_class, application)) = level {
@@ -226,16 +294,26 @@ fn walk<'gc>(
         // hierarchy where that chain diverges from the application chain must
         // end the search here rather than read stale `data` off a `level_class`
         // that no longer names a class.
-        let Some((builtin, superclass)) = heap.class_lookup_step(level_class) else {
+        let Some(superclass) = heap.class_lookup_step(level_class) else {
             return Lookup::NotFound;
         };
-        let next = next_level(superclass, &application);
+        // The step to the next level is taken where the search continues,
+        // not once per level up front: `next_level` clones the superclass's
+        // application `Rc`, and a lookup that answers at the level it is
+        // already on -- a send to a slot accessor, a method the receiver's
+        // own class declares, a builtin's own primitive, which is most of
+        // them -- would otherwise pay that reference count for a level it
+        // never reads. Reading the superclass handle here rather than in
+        // `next_level` keeps the walk's loop state two words: measured 2.5%
+        // (`bench_loop.ns`) and 1.6% (`bench_send.ns`) faster than building
+        // it unconditionally at the top of the loop, on both screening
+        // sources.
         if let Some(entry) = application.mixin.methods.get(&selector) {
-            match verdict(entry.access()) {
+            match rule.verdict(entry.access()) {
                 Verdict::Accept => return found_entry(entry, &application, level_class),
                 Verdict::Stop => return Lookup::NotFound,
                 Verdict::Skip => {
-                    level = next;
+                    level = next_level(superclass, &application);
                     continue;
                 }
             }
@@ -255,28 +333,26 @@ fn walk<'gc>(
             .find(|nested| nested.name == selector)
             .cloned()
         {
-            match verdict(nested_access(&nested)) {
+            match rule.verdict(nested_access(&nested)) {
                 Verdict::Accept => return Lookup::NestedClass(nested, level_class),
                 Verdict::Stop => return Lookup::NotFound,
                 Verdict::Skip => {
-                    level = next;
+                    level = next_level(superclass, &application);
                     continue;
                 }
             }
         }
-        if let Some(kind) = builtin {
-            return Lookup::Native(kind);
-        }
-        level = next;
+        level = next_level(superclass, &application);
     }
     Lookup::NotFound
 }
 
 /// The answer a method-table entry found at `level_class`'s level gives: a
-/// compiled method with that level as its defining class, or a slot accessor
+/// compiled method with that level as its defining class, a slot accessor
 /// with its field resolved against that level's application -- the level
 /// whose mixin declares the slot, so `own_slot_base` places it (§6.3.2, as
-/// `InitializeSlot` places a slot's initial value).
+/// `InitializeSlot` places a slot's initial value) -- or a primitive with
+/// that level, which its failure passes over.
 fn found_entry<'gc>(
     entry: &MethodEntry,
     application: &MixinApplication,
@@ -288,6 +364,7 @@ fn found_entry<'gc>(
             *accessor,
             application.own_slot_base + accessor.own_index as usize,
         ),
+        MethodEntry::Primitive(method) => Lookup::Primitive(method.primitive, level_class),
     }
 }
 
@@ -321,6 +398,7 @@ fn next_level<'gc>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtins::primitive::{IntegerPrimitive, ObjectPrimitive, Primitive};
     use indoc::formatdoc;
     use std::collections::HashMap;
 
@@ -475,5 +553,79 @@ mod tests {
     #[test]
     fn default_access_is_protected() {
         assert_eq!(effective_access(None), ast::AccessModifier::Protected);
+    }
+
+    /// A builtin's own native is an entry of its own method table.
+    #[test]
+    fn a_builtins_own_primitive_is_found_at_its_own_level() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let integer = mutator.builtin_class(BuiltinClass::Integer);
+            match lookup_public(&mutator.heap, integer, Symbol::intern("+")) {
+                Lookup::Primitive(Primitive::Integer(IntegerPrimitive::Add), level) => {
+                    assert!(level.same(integer), "found above Integer's own level")
+                }
+                _ => panic!("`3 + 4` must find Integer's own `+`"),
+            }
+        });
+    }
+
+    /// `Integer` has no `==`; the ordinary walk reaches `Object`'s, since
+    /// `Integer`'s superclass is `Object` -- no hand-restored inheritance.
+    #[test]
+    fn a_primitive_a_builtin_lacks_is_found_at_objects_level() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let integer = mutator.builtin_class(BuiltinClass::Integer);
+            let object = mutator.builtin_class(BuiltinClass::Object);
+            match lookup_public(&mutator.heap, integer, Symbol::intern("==")) {
+                Lookup::Primitive(Primitive::Object(ObjectPrimitive::Identical), level) => {
+                    assert!(level.same(object))
+                }
+                _ => panic!("`3 == 3` must find Object's `==`"),
+            }
+        });
+    }
+
+    /// What a failed primitive passes to: the same lookup, from the level
+    /// above the one that declared it.
+    #[test]
+    fn a_lookup_continued_above_a_level_passes_that_levels_entry_over() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let string = mutator.builtin_class(BuiltinClass::String);
+            match lookup_above(&mutator.heap, Rule::Public, string, Symbol::intern("=")) {
+                Lookup::Primitive(Primitive::Object(ObjectPrimitive::Equal), _) => {}
+                _ => panic!("above String, `=` is Object's"),
+            }
+            let object = mutator.builtin_class(BuiltinClass::Object);
+            assert!(matches!(
+                lookup_above(&mutator.heap, Rule::Public, object, Symbol::intern("=")),
+                Lookup::NotFound
+            ));
+        });
+    }
+
+    /// §5.5: `Object`'s `doesNotUnderstand:` is protected -- lookupPublic
+    /// stops at it, lookupProtected and the "defined for" walk accept it.
+    #[test]
+    fn objects_does_not_understand_is_protected() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let integer = mutator.builtin_class(BuiltinClass::Integer);
+            let selector = Symbol::DOES_NOT_UNDERSTAND;
+            assert!(matches!(
+                lookup_public(&mutator.heap, integer, selector),
+                Lookup::NotFound
+            ));
+            assert!(matches!(
+                lookup_protected(&mutator.heap, integer, selector),
+                Lookup::Primitive(Primitive::Object(ObjectPrimitive::DoesNotUnderstand), _)
+            ));
+            assert!(matches!(
+                lookup_defined_for(&mutator.heap, integer, selector),
+                Lookup::Primitive(Primitive::Object(ObjectPrimitive::DoesNotUnderstand), _)
+            ));
+        });
     }
 }

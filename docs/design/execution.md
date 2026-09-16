@@ -210,7 +210,7 @@ outlives a call — a closure, another frame, an image record — holds a `Frame
   from depth 1 on: the first hop goes from a closure activation to its
   `captured_frame`, the rest follow `FrameReference` links.
 - **No send or block invocation takes a sender to record.** `Interpreter::send`,
-  `decide_send`, `builtins::dispatch_native` and the `builtins/` modules have
+  `decide_send`, `builtins::execute` and the `builtins/` modules have
   no `sender` parameter. It was removed rather than retyped to an `ActivationReference`: its only
   use was to fill `Frame.sender`, and once a live activation's sender is the
   entry below it, nothing read it. No native takes an activation handle at all.
@@ -376,6 +376,17 @@ Every error a program can observe is produced there. That keeps dispatch in
 one place, which the reference lowering and a later JIT will reach unchanged —
 and it is why `CLAUDE.md`'s "`vm.rs` holds no dispatch logic" forbids copying
 anything out of `interpreter/` into `vm.rs`.
+
+**Planned (step 3b, [dispatch.md](dispatch.md), "3b — The caches"):** the
+inline caches keep it that way. The running activation gains a
+`feedback_base`, the start of its code family's range in the heap's cache
+table; `run` holds it in a local beside the code, `Flow::Switch` carries it,
+and a send passes it and its call-site id to the decision in `interpreter/`,
+which probes the cache there. `vm.rs` learns two numbers and no dispatch. A
+method's base comes with the cache entry that chose it, a block's from its
+closure, which copied it from the activation that created it. Being one field
+more on the hot loop's path, it is measured as a variant of its own
+([dispatch.md](dispatch.md), "Measurement").
 
 Block invocation is not special-cased into an opcode: `Block value` is still a
 native method, which answers the closure as a step; the closure's activation is
@@ -1490,6 +1501,124 @@ the same way, and a variant that looks free is not assumed to be.
 The suite (`cargo test --workspace`, debug build, test binaries already
 built) takes 12.7 s at 710 tests, and 189.9 s under `NS_NEXT_STRESS_MOVES=1`.
 
+### What primitives as method-table entries moved
+
+The step that made every builtin's native an entry of its class's method
+table, found by the ordinary lookups instead of matched by
+`selector.as_str()` ([dispatch.md](dispatch.md), "Primitives"), was measured
+against the commit it started from, `883431b` ("start"), and against
+`be3eb40`, by the protocol of "What removing the re-entries moved" above:
+every binary — start's and `be3eb40`'s built in throwaway worktrees, the
+current tree's built in place — through the same `RUSTFLAGS`, `+crt-static`
+and the function-alignment pin; `ns-next bench <source> --iterations 30`
+over the same seven sources, five rounds, the order of the three binaries
+rotating from round to round; two whole sittings, each a complete pass of
+the timing loop run one after the other in the same session, with nothing
+else running on the machine during either.
+
+Sitting 1, means in ms:
+
+| Source | `be3eb40` mean | start mean | after mean | after − start | after − `be3eb40` | vs start | vs `be3eb40` |
+|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.1225 | 11.1931 | 11.2503 | +0.51% | +1.15% | overlapping | overlapping |
+| `bench_send.ns` | 13.8138 | 12.4300 | 12.4673 | +0.30% | −9.75% | overlapping | entirely below |
+| `bench_block.ns` | 23.2705 | 21.2777 | 21.2112 | −0.31% | −8.85% | overlapping | entirely below |
+| `bench_do.ns` | 7.9111 | 7.4094 | 7.3474 | −0.84% | −7.12% | overlapping | entirely below |
+| `bench_new.ns` | 7.4628 | 6.8485 | 6.8266 | −0.32% | −8.53% | overlapping | entirely below |
+| `bench_new2.ns` | 8.3601 | 7.7574 | 7.6929 | −0.83% | −7.98% | overlapping | entirely below |
+| `bench_newarg.ns` | 10.5532 | 9.7983 | 9.7168 | −0.83% | −7.93% | overlapping | entirely below |
+
+Sitting 2, means in ms:
+
+| Source | `be3eb40` mean | start mean | after mean | after − start | after − `be3eb40` | vs start | vs `be3eb40` |
+|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.1329 | 11.2409 | 11.3064 | +0.58% | +1.56% | overlapping | overlapping |
+| `bench_send.ns` | 13.8035 | 12.4302 | 12.6491 | +1.76% | −8.36% | overlapping | entirely below |
+| `bench_block.ns` | 23.4623 | 21.1425 | 21.2321 | +0.42% | −9.51% | overlapping | entirely below |
+| `bench_do.ns` | 7.9702 | 7.4758 | 7.3564 | −1.60% | −7.70% | overlapping | entirely below |
+| `bench_new.ns` | 7.4407 | 6.7809 | 6.6963 | −1.25% | −10.00% | overlapping | entirely below |
+| `bench_new2.ns` | 8.3527 | 7.7316 | 7.7927 | +0.79% | −6.71% | overlapping | entirely below |
+| `bench_newarg.ns` | 10.6841 | 9.8072 | 9.5929 | −2.18% | −10.21% | entirely below | entirely below |
+
+**Both sittings agree: no source's after-group lies entirely above its
+start-group in either one** (`bench_newarg.ns` is even entirely below
+start in the second sitting — faster than start, not merely level). Against
+`be3eb40`, six of the seven sources are faster by about 7–10% in both
+sittings, entirely below throughout; `bench_loop.ns` is level, +1.15%/+1.56%,
+its group overlapping in both. `bench_loop.ns` makes three native sends and
+six lexical slot sends per iteration — 150,000 native sends and 300,000 slot
+sends in all — and no method send or instantiation, so it is the source that
+exercises the rebuilt decision path hardest with nothing else to gain from —
+level with `be3eb40` there is this step's whole answer for that path, where
+the other six sources also gain from lookup and hashing work earlier steps
+already made faster.
+
+**What the first shape of this decision cost, and what recovered it.** The
+commit that put every native behind the ordinary lookup, `e4ec1bd`, first
+measured 5.5% to 22.4% slower than start on all seven sources, in two
+sittings — an order of magnitude past the 1–4% codegen jitter every earlier
+step's measurement had allowed for, and reproduced in a bisection across the
+step's four commits. `bench_loop.ns` was hit hardest, +20.9%/+20.4% against
+start, consistent with the change removing a fast path only a native send
+had used. The cause was not the extra method-table probe a builtin's send now
+makes: priced directly with a diagnostic build that added a redundant
+`black_box(methods.get(black_box(selector)))` to every level of every walk,
+the extra probe cost 0.4% for nine of them a `bench_loop.ns` iteration makes,
+about 0.05% each — the tables' hasher is a multiply and a rotation, not
+SipHash, which is why. The cost was the shape every lookup's answer travelled
+through on its way back to its sender:
+
+- **A 64-byte settled enum on every send's return path.** Every decision —
+  slot, method, nested class, primitive — answered `Settled { Answered(...),
+  Found(Lookup) }`, 64 bytes against `Lookup`'s own 24, so a slot or method
+  send that never touches a primitive still built, returned and re-matched the
+  wider value. Removing it, so each of the five callers that can reach a
+  `Lookup::Primitive` matches its `Lookup` directly, measured 6.5%
+  (`bench_loop.ns`) and 5.1% (`bench_send.ns`) faster — the largest single
+  piece (`8a05621`).
+- **The lookup rule as a run-time value.** The three per-lookup verdict
+  closures had become one shared `walk` taking a `Rule` at run time; naming
+  the rule as a literal again, so each of the three lookups gets its own
+  specialized walk with `Rule::verdict` folded into a constant test, measured
+  2.0%/1.7% faster (`d295cac`).
+- **`walk` stepping to the superclass before probing the level it stood
+  on.** A lookup that answers where it starts — a slot accessor, a method the
+  receiver's own class declares, a builtin's own primitive, which is most
+  sends — paid an `Rc<MixinApplication>` clone and drop for a level it never
+  read. Moving the step to the three places the search actually continues
+  measured 2.5%/1.6% faster (`8eb6360`); this one predates the primitive step
+  and would have cost the same regardless of it.
+- **The decision split across a function boundary.** The three finishers
+  marked `#[inline(always)]`, with their continuations broken out into
+  `#[cold]` helpers so only the hot half duplicates into the senders, measured
+  1.9%/2.6% faster (`0e71299`).
+- **`doesNotUnderstand:` competing for room in the hot match.** Marking it and
+  its `super` counterpart `#[cold]` measured a further 0.6–1.3% across three
+  sources — the weakest of the five kept changes on its own numbers, but
+  consistent in direction, and what turned `bench_send.ns` and `bench_do.ns`
+  from entirely above start into overlapping it (`1abe627`).
+
+Four further variants were measured and rejected: outlining the primitive
+arm into `#[inline(never)]` helpers; letting the class-object branch finish
+its own send instead of falling through an `Option`; `#[inline(always)]` on
+the two lookup entry points themselves, which measured 6.6%/6.2% slower, the
+worst of the four; and a batched heap read answering a lookup level's
+application and its superclass together, which grows the walk's loop state
+from two to three words and measured 2.0%/0.9% slower. What is on the send
+path now is exactly the four kept changes above plus the one predating this
+step; nothing about the design changed — a primitive still fails exactly as
+"Primitives" ([dispatch.md](dispatch.md)) describes, into the same
+`dispatch::lookup_above`.
+
+**What the next step must not repeat.** 3b rebuilds this same decision path
+to insert a cache in front of it, as `resolve` then `act`
+([dispatch.md](dispatch.md), "3b — The caches"). A `resolve` that hands its
+caller a decision through a settled enum the way this step's first shape did,
+or a cache hit and miss sharing a function boundary the uncached path had
+just been split out of, would pay the same 15–20% this step paid before it
+was found and removed. 3b's own measurement watches for this shape
+specifically, not only for a slowdown at the end.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -1720,10 +1849,13 @@ when these paths ran in nested runs of the loop.
   element with `Continuation::DoElement`, whose `DoLoop` carries the receiver,
   the block, the snapshot and the next index; `resume` hands it to
   `after_element`, which activates the block for the next element or answers
-  the receiver. `dispatch_array` and `dispatch_ordered_collection` check for
-  `do:` first and answer its step themselves, and lift every other selector's
-  value into a step (`leaf_step`), so `builtins::dispatch_native` keeps one arm
-  per class. Each element's activation is counted, like any block a `value`
+  the receiver. `collections::execute` matches the enumerated
+  `CollectionPrimitive` a lookup found ([dispatch.md](dispatch.md),
+  "Primitives"): `Enumerate` (`do:`) answers `do_step`'s step directly, and
+  every other primitive's leaf result is lifted into a step through
+  `leaf_step`. `Array` and `OrderedCollection` share this one function; which
+  of them answers `at:put:` and which `add:` is decided by their own lists in
+  `builtins/primitive.rs`, not here. Each element's activation is counted, like any block a `value`
   send activates; a `^` in it unwinds like any other activation's, and its
   arity is checked by the same `check_block_arity`. Its argument is a
   one-element vector, allocated per element: a `StepArguments` variant that carried

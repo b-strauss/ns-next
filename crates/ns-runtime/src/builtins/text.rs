@@ -4,10 +4,11 @@
 //! `Mutator::new_character` represents a character as a one-`char`
 //! `ObjectData::String`, tagged with the `BuiltinClass::Character` class so
 //! dispatch still lands here (see that constructor's doc comment). This
-//! module's `dispatch_character` therefore extracts its payload exactly like
-//! `dispatch_string` does, just from a string that is always one `char`
+//! module's `execute_character` therefore extracts its payload exactly like
+//! `execute_string` does, just from a string that is always one `char`
 //! long.
 
+use crate::builtins::primitive::{CharacterPrimitive, StringPrimitive, SymbolPrimitive};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
@@ -40,8 +41,9 @@ fn quote_string(text: &str) -> String {
     out
 }
 
-pub(crate) fn dispatch_string<'gc>(
+pub(crate) fn execute_string<'gc>(
     mutator: &mut Mutator<'gc>,
+    primitive: StringPrimitive,
     receiver: Value<'gc>,
     selector: Symbol,
     arguments: &[Value<'gc>],
@@ -50,61 +52,63 @@ pub(crate) fn dispatch_string<'gc>(
         return None;
     };
     let string = mutator.heap.str_value(*object)?;
-    match selector.as_str() {
-        "size" => Some(Ok(Value::SmallInteger(string.chars().count() as i64))),
-        "," => Some(match argument_string(&mutator.heap, arguments.first()) {
-            Some(other) => Ok(Value::Object(
-                mutator.new_string(format!("{string}{other}")),
-            )),
-            None => Err(NewspeakError {
-                selector,
-                receiver,
-                message: format!(
-                    "String concatenation (,) requires a String argument, got {}",
-                    mutator.heap.describe_argument(arguments.first())
-                ),
-            }),
-        }),
-        "=" => Some(Ok(Value::Boolean(
+    match primitive {
+        StringPrimitive::Size => Some(Ok(Value::SmallInteger(string.chars().count() as i64))),
+        StringPrimitive::Concatenate => {
+            Some(match argument_string(&mutator.heap, arguments.first()) {
+                Some(other) => Ok(Value::Object(
+                    mutator.new_string(format!("{string}{other}")),
+                )),
+                None => Err(NewspeakError {
+                    selector,
+                    receiver,
+                    message: format!(
+                        "String concatenation (,) requires a String argument, got {}",
+                        mutator.heap.describe_argument(arguments.first())
+                    ),
+                }),
+            })
+        }
+        StringPrimitive::Equal => Some(Ok(Value::Boolean(
             argument_string(&mutator.heap, arguments.first()).as_deref() == Some(string.as_str()),
         ))),
-        "asSymbol" => Some(Ok(mutator.new_symbol(Symbol::intern(&string)))),
-        "printString" => Some(Ok(Value::Object(mutator.new_string(quote_string(&string))))),
-        _ => None,
+        StringPrimitive::AsSymbol => Some(Ok(mutator.new_symbol(Symbol::intern(&string)))),
+        StringPrimitive::PrintString => {
+            Some(Ok(Value::Object(mutator.new_string(quote_string(&string)))))
+        }
     }
 }
 
-pub(crate) fn dispatch_symbol<'gc>(
+pub(crate) fn execute_symbol<'gc>(
     mutator: &mut Mutator<'gc>,
+    primitive: SymbolPrimitive,
     receiver: Value<'gc>,
-    selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let Value::Object(object) = &receiver else {
         return None;
     };
     let symbol = mutator.heap.symbol_value(*object)?;
-    match selector.as_str() {
-        "asString" => Some(Ok(Value::Object(
+    match primitive {
+        SymbolPrimitive::AsString => Some(Ok(Value::Object(
             mutator.new_string(symbol.as_str().to_string()),
         ))),
-        "=" => Some(Ok(Value::Boolean(match arguments.first() {
+        SymbolPrimitive::Equal => Some(Ok(Value::Boolean(match arguments.first() {
             Some(Value::Object(argument_object)) => {
                 mutator.heap.symbol_value(*argument_object) == Some(symbol)
             }
             _ => false,
         }))),
-        "printString" => Some(Ok(Value::Object(
+        SymbolPrimitive::PrintString => Some(Ok(Value::Object(
             mutator.new_string(format!("#{}", symbol.as_str())),
         ))),
-        _ => None,
     }
 }
 
-pub(crate) fn dispatch_character<'gc>(
+pub(crate) fn execute_character<'gc>(
     mutator: &mut Mutator<'gc>,
+    primitive: CharacterPrimitive,
     receiver: Value<'gc>,
-    selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let Value::Object(object) = &receiver else {
@@ -115,12 +119,13 @@ pub(crate) fn dispatch_character<'gc>(
     // exactly one `char`. Fall back to `'\0'` rather than panicking if that
     // invariant is ever violated -- never panic on a Newspeak-input path.
     let character = string.chars().next().unwrap_or('\0');
-    match selector.as_str() {
-        "asInteger" => Some(Ok(Value::SmallInteger(character as i64))),
-        "asString" => Some(Ok(Value::Object(mutator.new_string(character.to_string())))),
-        "=" => Some(Ok(Value::Boolean(
+    match primitive {
+        CharacterPrimitive::AsInteger => Some(Ok(Value::SmallInteger(character as i64))),
+        CharacterPrimitive::AsString => {
+            Some(Ok(Value::Object(mutator.new_string(character.to_string()))))
+        }
+        CharacterPrimitive::Equal => Some(Ok(Value::Boolean(
             argument_string(&mutator.heap, arguments.first()).as_deref() == Some(string.as_str()),
         ))),
-        _ => None,
     }
 }

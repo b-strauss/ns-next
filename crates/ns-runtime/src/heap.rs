@@ -957,7 +957,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The number of fields in `object`'s `ObjectData::Instance`, mirroring
-    /// `array_length`. `platform::dispatch` is the only caller: it
+    /// `array_length`. `platform::execute` is the only caller: it
     /// tells the platform singleton, its stream and its `collections`
     /// namespace apart by field count rather than a builtin variant of
     /// their own (see `platform.rs`'s module doc), so the dispatcher needs
@@ -1307,16 +1307,16 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// A lookup level's builtin kind and superclass in one borrow, or `None`
-    /// when `class` is not a class object -- which is what ends a `walk` that
-    /// stepped onto one through `next_level`'s unverified class-object chain.
+    /// A lookup level's superclass, or `None` when `class` is not a class
+    /// object -- which is what ends a `walk` that stepped onto one through
+    /// `next_level`'s unverified class-object chain.
     pub fn class_lookup_step(
         &self,
         class: ClassReference<'gc>,
-    ) -> Option<(Option<BuiltinClass>, Option<ClassReference<'gc>>)> {
+    ) -> Option<Option<ClassReference<'gc>>> {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => Some((data.builtin, data.superclass)),
+            ObjectData::Class(data) => Some(data.superclass),
             _ => None,
         }
     }

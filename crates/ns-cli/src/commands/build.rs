@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use ns_runtime::mixin::MethodEntry;
+
 use crate::source;
 
 /// Whether the root class can answer `selector`: a method anywhere up its
@@ -29,14 +31,15 @@ use crate::source;
 /// Walking past the root level (`application = a.superclass.clone()`) is safe
 /// only because of an invariant this function relies on but does not check:
 /// every non-own mixin reachable from a root class's superclass chain today is
-/// a builtin's, and a builtin mixin is `Mixin::empty()` -- empty `methods`,
-/// empty `nested` -- since native methods dispatch through
-/// `builtins::dispatch_native`, never through `Mixin.methods`, and cross-module
-/// inheritance does not exist yet. So the ancestor branch can never actually
-/// return `true` today; the loop climbs `superclass` only to stay correct if a
-/// root class's chain ever grows past one level of `Mixin::empty()`. If ns-next
-/// later gains cross-module inheritance, or a core-library superclass written
-/// in Newspeak, an ancestor mixin could carry real `methods`/`nested` entries
+/// a builtin's, and a builtin mixin's method table holds nothing but its
+/// primitives (`MethodEntry::Primitive`), with empty `nested` -- and
+/// `mixins::encode` never writes a primitive, so the check counts only an
+/// entry that is not one. Cross-module inheritance does not exist yet, so the
+/// ancestor branch can never actually return `true` today; the loop climbs
+/// `superclass` only to stay correct if a root class's chain ever grows past
+/// one level of builtin mixin. If ns-next later gains cross-module
+/// inheritance, or a core-library superclass written in Newspeak, an
+/// ancestor mixin could carry real `methods`/`nested` entries
 /// that `mixins::encode` never interns for *this* module's symbol table (it
 /// only walks the module's own declaration tree) -- and this check would then
 /// accept a selector absent from that table, silently breaking the guarantee
@@ -50,7 +53,12 @@ fn root_class_answers<'gc>(
     let symbol = ns_runtime::Symbol::intern(selector);
     let mut level = heap.class_application(class);
     while let Some(application) = level {
-        if application.mixin.methods.contains_key(&symbol) {
+        let declared = application
+            .mixin
+            .methods
+            .get(&symbol)
+            .is_some_and(|entry| !matches!(entry, MethodEntry::Primitive(_)));
+        if declared {
             return true;
         }
         if application

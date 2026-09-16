@@ -2,7 +2,9 @@
 
 > **Status:** built.
 > **Code:** `crates/ns-runtime/src/resolver/`, `dispatch.rs`,
-> `interpreter/mod.rs` (send, `doesNotUnderstand:`, lexical, super, native).
+> `interpreter/mod.rs` (send, `doesNotUnderstand:`, primitive execution),
+> `interpreter/sends.rs` (lexical and super sends), `builtins/primitive.rs`
+> (the enumerated primitive and each builtin class's method table).
 
 What a name means is settled in two halves: the resolver fixes the *shape* of
 each reference statically, and dispatch resolves the *target* at run time. They
@@ -19,7 +21,8 @@ object it runs on still depends on run-time enclosing-object navigation.
 
 The consequence for performance is structural: with no static dispatch anywhere
 outside the private case, inline caches are not an optional speedup but the
-mechanism that makes dispatch affordable at all. The slots they will use are
+mechanism that makes dispatch affordable at all. They are designed, not built:
+"Planned: inline caches" below. The call-site identity they will index by is
 already emitted; see [compiler.md](compiler.md).
 
 ## Resolution
@@ -278,83 +281,442 @@ Initialization never goes through an accessor ("The initialization itself is not
 accomplished by the setter method"): the instance initializer writes the field
 with `InitializeSlot`.
 
+## Primitives
+
+The builtin classes' natives are entries of their mixins' method tables
+(`MethodEntry::Primitive`, `mixin.rs`), found by the ordinary lookups instead
+of matched by their selector's text. `enum Primitive` (`builtins/primitive.rs`)
+names every native operation, one variant each, grouped by the builtin family
+whose module executes it — `Primitive::Integer(IntegerPrimitive::Add)`,
+`Primitive::Object(ObjectPrimitive::DoesNotUnderstand)`,
+`Primitive::Collection(CollectionPrimitive::Enumerate)` for `do:`,
+`Primitive::Platform(PlatformPrimitive::Show)` and the rest. One function,
+`builtins::execute(mutator, primitive, receiver, selector, arguments)`,
+matches on it — the selector only for the error texts that name the send —
+and the bodies stay in `builtins/`'s modules, with their semantics and error
+text unchanged. An enumeration and not a function pointer, because a later
+JIT tier must be able to recognize a primitive and emit it inline: a function
+pointer can only be called, the ceiling a Rust callback imposes
+([core-library.md](core-library.md)). This is the model of the Smalltalk and
+Newspeak systems above: in Cog and Primordial Soup a primitive is a *method*
+whose primitive number indexes the interpreter's table (`primitiveTable`,
+`Primitives::primitive_table_` in `prior-art/primordialsoup/vm/primitives.cc`),
+and SOMns keeps its primitives as dispatchables in the same table as its
+methods.
+
+The bootstrap fills each builtin mixin's method table from a static list per
+`BuiltinClass` of (selector, access, primitive) (`builtins/primitive.rs`'s
+`method_table`), as a `MethodEntry::Primitive` carrying the primitive and its
+access. Every primitive is `public`, except `Object`'s `doesNotUnderstand:`,
+which §5.5 requires to be `protected`, so an explicit `x doesNotUnderstand: m`
+sent from outside the receiver itself ends in `doesNotUnderstand:`.
+
+A lookup that reaches a primitive answers `Lookup::Primitive(primitive,
+level)`, `level` being the class object whose method table holds it — the
+same "defining class" a `Lookup::Method` reports.
+
+**A primitive can fail.** `builtins::execute` answers `None` exactly where the
+native it replaced did: a receiver of the wrong variant or payload — a user
+subclass of `Array`, whose instances carry no array payload, or one of the
+three platform objects that share `BuiltinClass::Platform` and are told apart
+by payload shape ([core-library.md](core-library.md), "Tagging inside the
+platform"). A failure passes the level over and the lookup continues from its
+superclass — `Object`, for every builtin — ending in `doesNotUnderstand:` if
+nothing above answers. In Cog a failing primitive falls into its method's
+body, whose code often sends the message on to `super`; these primitives have
+no body, so the lookup does it. Every place that can reach a
+`Lookup::Primitive` carries this rule itself: the arm matches on
+`builtins::execute`'s answer and, on `None`, continues the same lookup from
+`dispatch::lookup_above`, in the five callers that can reach one —
+`Mutator::decide_public_lookup`, whose continuation is the `#[cold]`
+`decide_public_above`; `Mutator::decide_class_side_lookup` and
+`Mutator::decide_does_not_understand_lookup` (`interpreter/mod.rs`), which
+continue inline rather than through a separately named helper; and
+`sends::decide_lexical_lookup` and `sends::decide_super_lookup`
+(`interpreter/sends.rs`), whose continuations are the `#[cold]`
+`decide_lexical_above` and `decide_super_above`. The platform objects keep
+their shared class: a class of their own each would be observable
+(`platform transcript class` answers `Platform`) and is not needed for
+correctness.
+
+Bytecode and image are unaffected: the builtin mixins are built by the
+bootstrap and never serialized, so primitive numbers never reach the wire.
+
 ## Planned: inline caches
 
-A stable call-site identity and an inert inline-cache slot per send are already
-carried by every `CompiledCode`, so wiring caches up needs no bytecode format
-break. Nothing reads or writes those slots today; see [compiler.md](compiler.md).
+Every send would consult a cache at its own call site before running a lookup.
+Designed on 2026-09-15, in three steps — 3a, 3b, 3c below — each landing
+green and measured on its own. **3a is built** — a native send binds an
+enumerated primitive found by the ordinary lookup, "Primitives" above —
+**3b and 3c are not**; every send still runs the full lookup of "The three
+lookup algorithms" above on every occurrence, uncached.
 
-**A cache must guard on the application, not on the class object.** Two `Inner`
+**What bounds the gain.** A cache removes the lookup and nothing else: what an
+activation costs to build is untouched. The last profile, taken before the
+method tables got their identity hasher, put deciding a send at 10.8% of the
+timed samples of `bench_block.ns` and 16.7% of `bench_send.ns`
+([execution.md](execution.md), "What the profiles show"). The representation
+work the caches waited for has happened — the arena, the activation stack, the
+trampoline — so the caches land on the cheaper activation, as intended. 3b's
+plan opens with a fresh profile, so that the ceiling is measured before
+anything is built rather than assumed.
+
+### How other systems cache sends
+
+The choices below were made against what these systems do, and each one names
+the system it follows.
+
+| System | At the call site | Behind it | Guard |
+|---|---|---|---|
+| Strongtalk, interpreter (`prior-art/strongtalk/vm/interpreter/interpretedIC.hpp`) | Cache words in the bytecode itself, the send opcode rewritten from monomorphic to a polymorphic cache of 2–5 entries, allocated when a site first turns polymorphic, to megamorphic | a global `lookupCache` (16K + 2K entries); the caches are the type feedback its optimizer reads | the klass |
+| Cog (`prior-art/opensmalltalk-vm/src/spur64.cog/`) | Interpreter: nothing. JIT: a monomorphic cache in the machine code, then a closed PIC of up to 6 cases (`MaxCPICCases`), then an open PIC | the method cache, 1024 entries of 4 words (`MethodCacheEntries`) | a 22-bit class index in the object header |
+| SOMns (`prior-art/somns/src/som/interpreter/nodes/dispatch/`) | A dispatch chain of up to 6 cached nodes (`INLINE_CACHE_SIZE`), `CachedDnuNode`, `CachedSlotRead` and `CachedSlotWrite` among them | a generic dispatch node | the object's `ClassFactory` or layout (`DispatchGuard`) — the counterpart of a mixin application |
+| Primordial Soup (`prior-art/primordialsoup/vm/lookup_cache.h`) | Nothing | a global `LookupCache`, 512 entries, two probes; an implicit-receiver send keyed by (class id, selector, calling method, rule), caching the enclosing receiver too — which works only because its class id is per class *object* | a class id in the object header |
+| V8 | Bytecodes carry a feedback-slot index into a `FeedbackVector` that hangs off the closure, per context, not off the shared, immutable bytecode, and is allocated lazily once a function has run about 1 KB of bytecode; up to 4 maps per site | a global stub cache, primary and secondary tables | the map, the first word of every object |
+| HotSpot | Interpreter: none — `invokevirtual` resolves once to a vtable index in the constant-pool cache, since a Java hierarchy's vtable layout is fixed at link time; the interpreter frame carries a method-data pointer into the method's `MethodData`, which profiles `TypeProfileWidth` (2) receiver types per site. Compiled code: a monomorphic `CompiledIC` | vtable and itable stubs | the compressed klass pointer in the header |
+
+For V8 and HotSpot: [A lighter V8](https://v8.dev/blog/v8-lite) (lazy feedback
+allocation), [An Introduction to Speculative Optimization in
+V8](https://benediktmeurer.de/2017/12/13/an-introduction-to-speculative-optimization-in-v8/),
+[Overview of CompiledIC](https://wiki.openjdk.org/spaces/HotSpot/pages/11829292/Overview+of+CompiledIC+and+CompiledStaticCall),
+[TypeProfile](https://wiki.openjdk.org/display/HotSpot/TypeProfile) and
+[MethodData](https://wiki.openjdk.org/spaces/HotSpot/pages/13729947/MethodData)
+on the OpenJDK wiki.
+
+**A cache guards on the application, not on the class object.** Two `Inner`
 instances from different `Outer` instances have different class objects, as §6
-requires, but the same application, so the call site stays monomorphic. An entry
-records (application → method, defining level `k`); reaching that level's class
-object for `outer` and `super` starts at the defining level's own class object
-and steps `k` levels out along the declaration chain, with `k = 0` for an
-ordinary send.
+requires, but the same application, so a site that sees both stays
+monomorphic. This is recorded because the obvious key — the class object — is
+the wrong one, and a cache keyed by it would never hit on a nested class.
+Primordial Soup's per-class-object id is that key, and the price is visible in
+its implicit-receiver cache above.
 
-This is recorded here rather than derived later because the obvious key — the
-class object — is the wrong one, and picking it would produce a cache that
-never hits.
+### 3a is built
 
-**A native send binds an enumerated primitive.** Native dispatch today
-selects with `match selector.as_str()` after the lookup found
-`Lookup::Native(kind)`. The caches do not keep that shape. A lookup that
-reaches a native binds an *enumerated primitive* — a Rust enum naming the
-operation, `IntAdd` rather than a selector — and a native cache entry
-carries it, so a hit costs the guard and an indexed jump. An enumeration,
-not a function pointer, because the JIT tiers must be able to recognize the
-primitive and emit it inline: a function pointer can only be called, which
-is the same ceiling a Rust callback imposes ([core-library.md](core-library.md)).
-This is Cog's and Primordial Soup's model: a method's primitive number
-indexes an interpreter-side table (Cog's `primitiveTable`; Primordial Soup's
-`Primitives::primitive_table_`) and, in Cog's JIT, `primitiveGeneratorTable`,
-whose generators (`genPrimitiveAdd`) emit machine code, and at the send site
-`genSpecialSelectorArithmetic` emits SmallInteger arithmetic inline with a
-fallback send (`prior-art/opensmalltalk-vm/src/spur64.cog/`,
-`prior-art/primordialsoup/vm/primitives.cc`). SOMns reaches the same result
-through Graal's partial evaluation of its primitive nodes.
+See "Primitives" above.
 
-**A slot accessor is an ordinary cache entry.** It is found by the same lookup
-as a method, so an entry records it like a primitive: the guard, then the field
-read or write.
+### 3b — The caches
 
-**Open: the megamorphic fallback.** A call site that sees more applications than
-a polymorphic cache holds needs a second level behind the inline caches: Cog's
-open PICs probe its global method cache, V8's megamorphic sites its stub cache,
-and Primordial Soup — which has no inline caches — relies on its global
-`LookupCache` alone (512 entries, two probes). Keyed by application, selector and
-send kind, it holds no handle, needs nothing from the collector, and a class
-change empties it through a counter, as Cog's `flushMethodCache` does. Designed
-with the caches, not before them.
+**Planned.** Every send probes a cache at its own call site; a miss probes a
+global cache; only a miss there runs the lookup.
 
-**Open: the application in the object header.** A guard that reaches the
-application through the class object costs several dependent loads. V8's maps,
-Cog's class index and HotSpot's klass pointer put the answer in the object
-header, so a guard is one load and one compare. A dense application id in the
-header would do the same for ns-next — and keeps a site monomorphic across
-enclosing instances, where Primordial Soup's per-class-object id
-(`Behavior_basicNew` allocates it) makes it polymorphic. It touches the object
-representation, the tracer and the image, so it is decided with the caches.
+**The state lives per heap.** The cache entries live in a table the step state
+owns (`Mutator`), not in the shared `CompiledCode`, which stays immutable.
+This is V8's split — shared bytecode, feedback per context — reached the way
+HotSpot's interpreter reaches its `MethodData`: the running activation carries
+an index into the table, `feedback_base`, and a site's entry is
+`feedback[feedback_base + call_site]`. It follows from invariants this
+repository already holds:
 
-**Caches come after the representation change, not before it.** A cache removes
-the lookup; the method it records carries its compiled body. It does not touch
-what an activation costs to build, which was measured at ~68 ns — about 41% of a
-user-method send — on the pre-arena representation; see
-[execution.md](execution.md)'s measurements. Wiring caches up first would
-optimize the half of a send that sits on top of a fixed cost the same milestone
-removes anyway, so the representation goes first and the caches land on the
-cheaper one.
+- A per-heap id in shared code would mean nothing in another heap, and would
+  answer a *different, valid* application there — the failure `CLAUDE.md`
+  describes for handles. Kept in the heap's own table, a cache cannot be
+  reached from another heap at all.
+- Code shared behind an `Rc` holds no handle ([memory.md](memory.md), "What the
+  collector traces"), and needs no `Cell` or `RefCell`: every step already has
+  `&mut Mutator`, so an entry can hold an `Rc<MixinMethod>` and a hit pays no
+  borrow check.
+- Invalidation is resetting one table.
+- `CompiledCode` stays immutable, which suits a later actor, running on a heap
+  and a thread of its own, and a stateless binary whose code need never be
+  written.
 
-That representation change has happened. The arena replaced `Rc<RefCell<_>>`,
-worth about 15% of the benchmark ([memory.md](memory.md)). The activation stack
-means an activation nothing captures allocates nothing: no arena entry and none
-of the two `Vec`s every activation used to take. A captured one still pays for
-its reified frame and, when it returns, two vectors for the divorce. Against the
-arena, a user-method send fell from ~146 ns to ~91 ns
-([execution.md](execution.md), "What the activation stack moved"). Each cache
-also carries a dependency key, per
-[liveness-and-reflection.md](liveness-and-reflection.md); the key is the
-application, for the same reason the guard is.
+The cost is bookkeeping: an activation carries `feedback_base`, and so does
+`vm.rs`'s `Flow::Switch` beside the code it switches to. This repository has
+measured layout effects of 4–8% from a single field on `Step`
+([execution.md](execution.md)), so that field is measured on its own, not
+assumed free.
+
+**The dispatch id.** A dense `u32`, minted per heap by a counter in the
+`Mutator` when `apply_mixin` creates an application — two per application, one
+for its instances and one for its class objects' class side, since every class
+object shares one placeholder class and its behaviour (factory, metaclass,
+`Object`'s own) depends on its application alone. Both are copied into
+`ClassData`, so a guard does not follow the `Rc` to the application. A decoded
+image rebuilds its applications through the same path
+([image-format.md](image-format.md), "What is not serialized"), so an id never
+comes from its bytes. `Heap::dispatch_id(value)` answers it: for an instance,
+object → class → `ClassData` (two arena loads); for a class object, its own
+`ClassData`; for `nil`, a boolean, an integer or a float, a table indexed by
+the `Value` variant. Nothing outside that function knows where the id lives,
+which is what lets 3c move it.
+
+**An entry** is a guard id and a target, one of:
+
+- `Method` — the method, its defining level `k`, and whether the chain it was
+  found on is the class's or its metaclass's;
+- `SlotGetter` or `SlotSetter` — the absolute field index, fixed by the
+  application the guard names;
+- `NestedClass` — the mixin and its level `k`;
+- `Primitive` — the primitive and its level `k`, where a failure continues;
+- `Factory` — the receiver is a class object and the selector its factory
+  selector;
+- `DoesNotUnderstand` — the handler the defined-for walk found;
+
+and two states a site can be in, `Polymorphic` (an index into the pool below)
+and `Megamorphic`. An entry holds no handle: the defining class is a class
+object per enclosing instance, so it is not recorded but recomputed on a hit,
+`k` superclass steps from the starting class object — the receiver's class, or
+its metaclass for a class-side method, the superclass of `current_class` for
+`super`, the class of `o` for a lexical send; `k = 0` is the common case. Its
+size, 16–24 bytes by estimate, is measured in the plan, for the same layout
+reason as `feedback_base`.
+
+**A site's states** go empty → monomorphic → polymorphic, up to 4 entries in
+the order first seen → megamorphic, and a megamorphic site stays so until an
+invalidation. A site's first entry is inline in the table; the second type
+seen allocates a block of 4 entries, one 64-byte cache line at 16 bytes an
+entry, from a pool in the `Mutator`, moves the first entry into it and leaves
+the site pointing at it; the fifth makes the site megamorphic and returns its
+block to a free list. That is Strongtalk's and V8's shape,
+with V8's width. Beyond the speed of a polymorphic hit, a site's entries are
+the receiver-type profile the optimizing tiers of M5–M6 will read, which is
+what Strongtalk's interpreter caches are for. Two kinds of site cannot go
+polymorphic at all in practice: a `super` send, whose target depends only on
+the running method's application, and a lexical send the private rule decides
+(below). And some are polymorphic by nature: `true` and `false` are instances
+of two builtin classes, so every site that is not inlined and sees both is
+bimorphic.
+
+**The global cache**: 1024 entries keyed by (dispatch id, selector, rule) —
+the rule public, lexical or super — probed twice, at two hashes of the key, as
+Primordial Soup's is. It is every site's miss path, probed before a lookup
+runs, and the only cache a megamorphic site consults, as Cog's open PICs probe
+the method cache and Strongtalk's miss handler its `lookupCache`. About 24 KB,
+whatever the program's size.
+
+**Code families.** A family is one root body — a method, an instance
+initializer, a superclass clause or its message — with every block nested in
+it. Its sends are numbered densely, blocks included, and each of its
+`CompiledCode`s records the family's size; that number is the send's
+`CallSite`. A family gets a contiguous range of the table the first time its
+root is activated, so a table that code never ran stays unallocated, as V8
+allocates a feedback vector lazily. `feedback_base` reaches an activation
+this way:
+
+- A method: a hit carries its target's base in the entry; a miss asks a map
+  from code identity to base, and assigns a range on first use.
+- A block: `MakeClosure` copies the creating activation's base into
+  `ClosureData`, since both belong to one family, and the block's activation
+  takes it from there — no probe per closure, which `bench_block.ns` would pay.
+- An initializer, a clause, a clause message: the map, per push. If that shows
+  on the instantiation benchmarks, a `Factory` entry carries the bases of the
+  bodies its instantiation runs.
+- A closure decoded from an image carries "not assigned", since a base is
+  never serialized, and is given a fresh range of its family's size when it is
+  first activated. Any range of that size is a correct one.
+
+A site index at or beyond the end of its range is treated as uncached, never
+indexed, so no crafted artifact can make the table panic.
+
+**Resolve, then act.** The `decide_*` functions answer a `Step` today, lookup
+and execution in one. 3b splits them. `resolve` is today's lookup, its order
+and its rules unchanged, and answers a target — one of the entries above.
+`act` turns a target into the `Step`, value or signal. The uncached path is
+literally `act(resolve(…))`, the cached one `act(target)`, so there is one
+place that executes a target, and a hit cannot do anything a miss would not.
+**A cache records what the lookup decided; it never decides.** Every detour
+today's code takes ends in a target too: a lexical send whose `lookupProtected`
+finds nothing falls to `decide_send`, factory check and `doesNotUnderstand:`
+included, and what it ends in is what is recorded. That is what makes the
+uncached reference lowering a valid oracle for the cached one ("Verification"
+below).
+
+**A send**, step by step, in `interpreter/inline_cache.rs`; `vm.rs` passes
+only `feedback_base` and the site, so it gains no dispatch logic:
+
+1. The key. `SendPublic`: `dispatch_id(receiver)`; for a class object that is
+   its class side, which covers today's order of factory, metaclass, then
+   `Object`'s behaviour. `SendLexical`: `o = kth_enclosing_object(...)`, then
+   `dispatch_id(o)`. `SendSuper`: the id of `current_class`'s application;
+   the receiver stays `self`. `SendInlinable` is emitted only by the reference
+   lowering, which runs uncached.
+2. The site's entry: if its id matches, `act`.
+3. `Polymorphic`: the block's entries, in order.
+4. A miss, or `Megamorphic`: the global cache; a hit there is `act`, and the
+   site's state moves on.
+5. A miss there: `resolve`; its target is recorded in the global cache and at
+   the site, then `act`.
+
+What `act` does, per target: `Method` computes the defining class and answers
+`Step::Method` as today, with the target's `feedback_base`, and `push_step`
+still checks the arity. `SlotGetter` and `SlotSetter` read or write the field
+without an activation, as `decide_slot_accessor` does. `NestedClass` calls
+`nested::nested_class` with the declaring class `k` steps out; creating one
+still runs its clause as a step. `Primitive` calls `builtins::execute`; a
+failure continues the lookup above the primitive's level, uncached, as 3a
+defines it, and the entry stays, as Cog keeps a method whose primitive
+failed. `Factory` is `try_factory_send`'s action, and it re-checks that the
+selector is the receiver's factory selector, taking the uncached path if not:
+a `super` send that misses reaches the factory check on `self`
+(`decide_super_does_not_understand`), and under a `super` key the guard names
+`current_class`'s application, not the receiver. `DoesNotUnderstand` builds
+the message array per send, as today, and calls the handler.
+
+**Every target is a function of its key and its site.** That is the property
+the entries rest on, and a path that also reads something the key does not
+cover re-checks it in `act`, as `Factory` does; the plan audits `resolve` for
+every such read.
+
+**The private rule, decided once per site.** Whether §5.9's private rule
+applies depends on `N` alone, the class declaration `k` levels out from the
+code's own mixin: code lives on its mixin, and a block runs with its home's
+`current_class`. So the decision is made when a lexical site is first filled.
+Where the rule applies, the target is fixed and needs no guard — the site
+stays monomorphic however many classes `o` has — and only `o` and the
+defining class (`kth_lexical_class`) are computed per send. Where it does not,
+the site proceeds by `o`'s id. A debug build checks on every hit that `N` is
+still the mixin the decision was made for. An image crafted to break that
+relation would get wrong but safe behaviour, never a panic; 3b's plan checks
+whether `image::decode::verify_mixins` already guarantees the relation, and
+adds the check there if not.
+
+**No new error text.** Every error still comes from today's paths, inside
+`resolve` or `act`; a hit produces exactly the step, value or signal the
+uncached path would.
+
+**Invalidation.** Nothing mutates a method table at run time yet, so nothing
+has to be invalidated. The mechanism is fixed now, because the entries are
+designed for it: they hold no handle, so invalidating is setting every entry
+empty, emptying the global cache and resetting the pool, with every family's
+range kept, since running activations keep their bases. A debug-build stress
+mode, `NS_NEXT_STRESS_CACHES=1`, does exactly that at every safepoint, so that
+filling, transitions and invalidation run under the whole suite long before
+edit-and-continue needs them. Scoping an invalidation to the application a
+change affects — the dependency key of
+[liveness-and-reflection.md](liveness-and-reflection.md), "Caches and their
+dependency keys" — comes with the first mutation that needs it.
+
+**Bytecode and image.** No instruction changes shape except in the width of
+its site:
+
+- `CallSite` becomes the send's number within its family, and a `u32`. Today it
+  is the instruction's index as a `u16`, which `next_call_site` checks with a
+  `debug_assert!` only ([compiler.md](compiler.md), "The reference lowering"),
+  so a very large body aliases two sites in a release build. Inert, that is
+  harmless; read by a cache, two sends would share one entry and the second
+  would run the first's method.
+- A wider operand changes what a tag means, so the four send tags are retired
+  and the sends take the next free numbers ([image-format.md](image-format.md),
+  "The instruction encoding"). A stale artifact meets a retired tag and is
+  refused.
+- The code record's call-site list is written empty and a non-empty one is
+  refused, so a stale code body with sends is refused before its instructions
+  are read; the family size is derived from the sends' numbers on decode, never
+  read.
+- The reference lowering emits every send with `CallSite::UNCACHED`, so
+  everything it compiles runs the full lookup on every send.
+- No cache state and no `feedback_base` is ever serialized; a loaded artifact
+  starts with empty caches.
+
+**Verification.** The oracle is in place already: the reference lowering runs
+uncached and the optimized lowering cached, and both are held to every
+`tests-fixtures/*.ns` and its `.expected`, the golden outcomes in
+`program_outcomes.rs`, and `run-corpus` from source and as a binary, so a cache
+defect shows as the two lowerings disagreeing. `NS_NEXT_STRESS_CACHES=1` is a
+gate of its own beside `NS_NEXT_STRESS_MOVES`; they are not combined, because
+an entry holds no handle for a move to break, and emptied caches would leave
+the moves hardly any hit to run under. Its run time, expected well below the
+move suite's three minutes, is measured in the plan. Targeted tests pin,
+through a test view of a site's state:
+
+- two `Inner` instances from two `Outer` instances sharing one monomorphic
+  entry — the requirement this section opens with;
+- the transitions to polymorphic and megamorphic, and a bimorphic site on
+  `true` and `false`;
+- a slot accessor under two applications of one mixin with different inherited
+  slots, each with its own field, as `vm_initializer.rs` pins `InitializeSlot`;
+- `super` in a mixin applied under two superclasses;
+- a private lexical site with a changing `o`;
+- class objects: a factory send, a class-side method and `Object`'s behaviour,
+  at one site that also sees instances;
+- a `super` send in an inherited class-side method that misses and reaches the
+  factory check, from two class objects with different factory selectors — the
+  `Factory` re-check;
+- `doesNotUnderstand:` with the native handler, a user handler, and the setter
+  of a slot named `doesNotUnderstand`;
+- a cached primitive that fails;
+- an invalidation in the middle of a run;
+- a snapshot taken with the caches full loading with them empty, and a decoded
+  closure getting its base;
+- collisions in the global cache, forced through a size for tests;
+- the new send tags pinned in `opcode_tags.rs`, and a retired one refused.
+
+**Measurement.** First, before anything is built, a `samply` profile of the
+seven sources at 3a's head, for the share `resolve` still has. Then the step
+whole, in two sittings by the protocol of [execution.md](execution.md), "What
+removing the re-entries moved", every binary built with its `RUSTFLAGS`,
+against 3a's head and against `be3eb40`. The entry's layout and
+`feedback_base`'s field are measured as variants of their own. The size of the
+table, the pool and the global cache is reported after `run-corpus` and after
+the benchmarks. The open finding that a lexical send's decision is sensitive
+to codegen ([PROGRESS.md](../PROGRESS.md)) is closed or carried forward with
+the result.
+
+### 3c — The dispatch id in the object header
+
+**Planned.** `Heap::dispatch_id` stops reaching the id through the class
+object; 3c changes that one function's representation and measures two
+variants against 3b.
+
+- **C2: the id in the header.** `Object` gains `dispatch_id: u32`, set at
+  allocation — an instance's from its class's instance id, a class object's
+  from its own class-side id. A placeholder the decoder allocates before it can
+  validate its record carries an id no application is ever given, so it matches
+  no entry, and is set when the record is filled; the id still never comes from
+  the bytes. A guard becomes one load and one compare, for instances and class
+  objects alike. It is where V8, HotSpot, Cog and Primordial Soup all keep the
+  answer. Its cost is memory: an `Object` grows from 56 to 64 bytes in a release
+  build, and the amplification a crafted image can reach at the graph section
+  from about 16.9x to about 18.2x ([memory.md](memory.md)). The tracer is
+  unaffected — the id is not a handle — and `become:` will have to exchange it
+  with the class ([liveness-and-reflection.md](liveness-and-reflection.md)).
+- **C2+: the id in the header, `ClassData` out of it.** `ClassData` alone sets
+  `ObjectData`'s size, and class objects are few. Boxed —
+  `ObjectData::Class(Box<ClassData>)` — an `Object` shrinks to about 48 bytes
+  with the id, smaller than today, and the amplification to about 15.6x. Cog's
+  class table is the alternative to a box, and buys nothing here: this id is
+  per application, not per class object. The price is one more indirection on
+  every read of a class's data: every level `kth_enclosing_object` walks, the
+  start of a `super` send, the `k` steps of a hit with `k > 0`,
+  `metaclass_of`, the miss path, instantiation — and an allocation per class
+  object.
+
+Each is measured against 3b in two sittings, with `be3eb40`, together with the
+object sizes, the amplification and the memory after `run-corpus`. The
+proposed rule: the faster wins; within noise, the smaller; if neither beats
+3b, the id stays on the class object and the question is recorded as closed
+by that measurement. The user decides on the numbers.
+
+### Considered and rejected
+
+- **Cache state in the instruction stream** (Strongtalk). Every instruction
+  would grow to the size of the largest variant, a send with its cache, and
+  shared code would become mutable: `Instruction` holds `Vec`s, so safe Rust
+  could rewrite one only behind a `RefCell`, and the encoder would have to write
+  a neutral form back out.
+- **Cache state in `CompiledCode`**, as HotSpot keeps `MethodData` on the
+  method. The hot loop would stay as it is, but shared code would need `Cell`
+  or `RefCell`, ids would have to be unique across the process to stay correct
+  if code were ever shared between heaps, and invalidation would walk every
+  body.
+- **A global cache alone** (Primordial Soup, Cog's interpreter): every send pays
+  a hash and two or three comparisons, sends that collide evict each other, and
+  no site keeps a profile for the optimizing tiers.
+- **Vtables, or a resolved table per application** (HotSpot's interpreter): the
+  method sets are open, three access rules answer differently for one selector,
+  and `doesNotUnderstand:` exists, so a vtable needs an index per selector
+  across every application and a table per send kind; a memoized table per
+  application still hashes on every send and keeps no profile.
+- **Monomorphic only**, as HotSpot's compiled code: a site that alternates
+  between two types misses every time, and HotSpot can afford that only because
+  its megamorphic path is a vtable load, where this one is a hash. **Four
+  entries inline at every site**: no indirection even for a polymorphic hit,
+  but four times the memory for the monomorphic majority.
+- **A side table (builtin class, selector) → primitive** in place of 3a: it
+  replaces the string matching but keeps a second kind of member, the dispatch
+  leaf, the hand-restored inheritance from `Object`, and natives with no
+  access; none of the Smalltalk or Newspeak systems above does it that way.
 
 ## Decisions
 
@@ -371,3 +733,14 @@ application, for the same reason the guard is.
   reachability rather than only documenting intent.
 - **Dispatch lives in `interpreter/`, once.** Duplicating it into the VM is the
   failure mode this rule exists to prevent.
+- **Primitives are method-table entries** (3a, 2026-09-15), bound as an
+  enumerated primitive, so natives are members found by the ordinary lookups,
+  with an access modifier, as in Cog and Primordial Soup. Built; see
+  "Primitives" above.
+- **Planned (2026-09-15): inline caches per heap** (3b) — monomorphic, a
+  polymorphic cache of 4, then megamorphic, with a global cache of 1024
+  entries behind every site — guarded on the mixin application, never on the
+  class object. A cache records what the lookup decided and never decides.
+- **Planned (2026-09-15): the dispatch id's place is decided by measurement**
+  (3c): on the class object, in the header, or in the header with `ClassData`
+  boxed.

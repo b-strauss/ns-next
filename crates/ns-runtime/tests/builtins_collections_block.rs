@@ -1,6 +1,6 @@
 //! Integration tests for the `Array`/`OrderedCollection` native
 //! methods (`crate::builtins::collections`) and `Block` native methods
-//! (`crate::builtins::block`), wired through `crate::builtins::dispatch_native`
+//! (`crate::builtins::block`), found as primitives by the ordinary lookup
 //! via `Interpreter::send` -- same pattern as `tests/builtins_boolean_numbers.rs`.
 
 use indoc::indoc;
@@ -48,7 +48,7 @@ fn expect_error(interpreter: &mut Interpreter, result: HostResult, what: &str) -
 /// Builds a bare `OrderedCollection` instance directly: an
 /// `ObjectData::Array` payload tagged with the `OrderedCollection` class,
 /// the shape `try_factory_send` gives `OrderedCollection new`. Constructing
-/// it without a send is sufficient to exercise `dispatch_ordered_collection`.
+/// it without a send is sufficient to exercise `collections::execute`.
 fn new_ordered_collection(interpreter: &mut Interpreter) -> Root {
     interpreter.enter(|mutator| {
         let class = mutator.builtin_class(BuiltinClass::OrderedCollection);

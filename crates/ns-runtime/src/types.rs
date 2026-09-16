@@ -81,12 +81,15 @@ pub struct ClassData<'gc> {
     /// across a nesting boundary. See `dispatch::kth_enclosing_object`.
     pub declaring_class: Option<ClassReference<'gc>>,
     /// The per-instance class-object chain, parallel to the application
-    /// chain. `outer` and `super` need it; lookup does not.
+    /// chain. `outer` and `super` need it, and lookup steps it beside the
+    /// application chain for each level's class object -- the level a found
+    /// method runs in, and the one a failed primitive passes over.
     pub superclass: Option<ClassReference<'gc>>,
     /// `None` for a user-defined class. `Some(kind)` marks one of the
-    /// core-library classes `builtins/` implements natively -- the same
-    /// `BuiltinClass` `dispatch::Lookup::Native` carries once lookup
-    /// resolves a send to one.
+    /// core-library classes `builtins/` implements natively, for the image's
+    /// class tags and for `try_factory_send`, which instantiates `Array` and
+    /// `OrderedCollection` with their own payload. Lookup does not read it:
+    /// a builtin's primitives are entries of its mixin's method table.
     pub builtin: Option<BuiltinClass>,
     /// The metaclass built from this class's mixin's `class_side`, created
     /// on first use and cached here (`Mutator::metaclass_of`) so a

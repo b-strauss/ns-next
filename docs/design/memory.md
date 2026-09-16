@@ -588,6 +588,16 @@ whose `captured_frame` and `home` the tracer then rewrites once, in its record.
 A native loop's state is boxed in its continuation (`Box<WhileLoop>`,
 `Box<DoLoop>`), owned by exactly one stack entry.
 
+The inline caches planned in [dispatch.md](dispatch.md) ("3b — The caches")
+add nothing to this list, by design: an entry holds a dispatch id and a target
+— an `Rc` to a method or a mixin, a field index, a primitive — and never a
+handle, the defining class included, which a hit recomputes from the receiver.
+The table lives in the step state, per heap, so nothing in it is ever reached
+from another heap. The ids a cache guards on are per heap and never serialized;
+step 3c may move them into the object header, where they would change
+`Object`'s size and so the amplification figures below, and are still not a
+handle.
+
 ### Checking the roots before a collector exists: the stress mode
 
 The brand checks what Rust locals hold; it cannot check that the list above

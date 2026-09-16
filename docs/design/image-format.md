@@ -215,6 +215,16 @@ Literals:
 - 9 `UnresolvedIdentifier`: an identifier that names nothing, such as a bare
   `super`; it raises its error when it runs.
 
+**Planned (step 3b, [dispatch.md](dispatch.md), "Bytecode and image"):** a
+send's call-site id widens from `u16` to `u32`, which changes what the four
+send tags mean, so 7–10 are retired and the four sends take the next free
+numbers. A code record's call-site list is then written empty, and a decoder
+refuses a non-empty one, so a stale code body with sends is refused before its
+instructions are read; the family size the caches need is derived from the
+sends' ids on decode, never read. No cache state and no activation's
+`feedback_base` is ever serialized: a loaded artifact starts with empty
+caches.
+
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.
 `crates/ns-runtime/tests/opcode_tags.rs` pins every value and checks that no two
@@ -518,10 +528,14 @@ default, which makes upstream's convention a default rather than a rule.
 Otherwise `--entry` is required. `build` refuses an arity other than 0, 1 or 2,
 and a selector the root class's own mixin chain carries as neither a method
 nor a nested declaration, rather than deferring either to start-up. This is
-narrower than what a real send would find at start-up — `doesNotUnderstand:`
-and every native method live outside a mixin's own `methods` table — on
-purpose: see `root_class_answers` in `crates/ns-cli/src/commands/build.rs` for
-why only this narrower set keeps the byte-identity guarantee above sound.
+narrower than what a real send would find at start-up: a primitive, though an
+entry of a mixin's own `methods` table like any other
+([dispatch.md](dispatch.md), "Primitives"), is never a selector
+`mixins::encode` interns — the builtin mixins that carry primitives are never
+serialized — and `doesNotUnderstand:` answers a send `build`'s check found
+nothing for at all. On purpose: see `root_class_answers` in
+`crates/ns-cli/src/commands/build.rs` for why only this narrower set keeps the
+byte-identity guarantee above sound.
 
 **Loading.** `load` reads the header and branches. A stateful image is unchanged.
 A stateless binary decodes symbols → code → mixins → root class → entry id, with

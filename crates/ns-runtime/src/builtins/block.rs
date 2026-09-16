@@ -2,38 +2,38 @@
 //! `numArgs`, and `whileTrue:`/`whileFalse:`. Each returns the block to
 //! activate as a step; the loops continue through `Continuation`s.
 
+use crate::builtins::primitive::BlockPrimitive;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
-pub(crate) fn dispatch<'gc>(
+pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
+    primitive: BlockPrimitive,
     receiver: Value<'gc>,
-    selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let Value::Object(closure) = receiver else {
         return None;
     };
     let parameters = mutator.heap().closure_parameter_count(closure)?;
-    Some(Ok(match selector.as_str() {
-        "value" | "value:" | "value:value:" | "value:value:value:" => Step::Block {
+    Some(Ok(match primitive {
+        BlockPrimitive::Value => Step::Block {
             closure,
             arguments: StepArguments::Send,
             then: Continuation::Deliver,
         },
-        "numArgs" => Step::Value(Value::SmallInteger(parameters as i64)),
-        "whileTrue:" => condition_step(Box::new(WhileLoop {
+        BlockPrimitive::ArgumentCount => Step::Value(Value::SmallInteger(parameters as i64)),
+        BlockPrimitive::WhileTrue => condition_step(Box::new(WhileLoop {
             condition: closure,
             body: arguments[0],
             expect: true,
         })),
-        "whileFalse:" => condition_step(Box::new(WhileLoop {
+        BlockPrimitive::WhileFalse => condition_step(Box::new(WhileLoop {
             condition: closure,
             body: arguments[0],
             expect: false,
         })),
-        _ => return None,
     }))
 }
 
