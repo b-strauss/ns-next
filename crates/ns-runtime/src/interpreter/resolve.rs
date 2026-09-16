@@ -505,14 +505,18 @@ impl<'gc> Mutator<'gc> {
             }
             // Unreachable today: `resolve_class_side` never lets a
             // metaclass-chain primitive reach here on `ProtectedClassSide`
-            // (it treats one as `NotFound` per §5.9, see its own comment).
-            // Written out anyway, faithfully, so a later reader who adds a
-            // path into this arm does not inherit a silent difference from
-            // `resolve_lexical`'s own fall-through: continue lookupProtected
-            // on the metaclass chain first, and only when that still finds
-            // nothing fall to `lookupProtected` on `o`'s own class -- exactly
-            // the order `resolve_lexical` uses after an uncached
-            // `resolve_class_side` call.
+            // (it treats one as `NotFound` per §5.9, see its own comment), so
+            // this arm only ever runs from a state the uncached path never
+            // produces -- a `Primitive` resolved on `ProtectedClassSide`.
+            // Written out anyway, faithfully: continue lookupProtected on the
+            // metaclass chain first, the way the `PublicClassSide` arm above
+            // continues lookupPublic, and only when that still finds nothing
+            // fall to `lookupProtected` on `o`'s own class, the class-object
+            // chain in the order `resolve_lexical` falls to it. That fall-
+            // through is the only part this arm actually shares with the
+            // uncached path -- `resolve_class_side` itself never continues
+            // the metaclass chain above a miss, since a metaclass primitive
+            // is passed over entirely rather than failed into `act_above`.
             Chain::ProtectedClassSide => {
                 match dispatch::lookup_above(&self.heap, Rule::Protected, level, selector) {
                     Lookup::NotFound => {

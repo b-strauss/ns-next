@@ -7169,11 +7169,12 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
     // is one (`+`, numbered 0 in `prepare`'s family, before the `keep:`
     // setter that takes the block as its argument).
     assert_eq!(loaded.interpreter.cache_statistics().site_entries, 3);
-    // A second call reuses the range `base_for` minted on the first: the
-    // decoded closure's `NOT_ASSIGNED` feedback base is written back onto the
-    // closure once assigned, so `site_entries` does not grow again. Minting a
-    // fresh range per activation instead -- the defect this pins -- would
-    // double it to 6.
+    // A second call reuses the range `fresh_range` minted for the decoded
+    // closure on its first activation (`base_for` supplies only `apply:`'s
+    // own range): the closure's `NOT_ASSIGNED` feedback base is written back
+    // once assigned, so `site_entries` does not grow again. Minting a fresh
+    // range per activation instead -- the defect this pins -- would grow it
+    // by the block's family size of 1, to 4.
     let one = loaded.interpreter.stash(Value::SmallInteger(1));
     let second_answer = expect_ok(
         loaded
