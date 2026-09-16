@@ -1,0 +1,493 @@
+//! The inline caches (`docs/design/dispatch.md`, "3b — The caches"): what a
+//! site records for the receivers it sees. Every program here also answers
+//! what the uncached path answers; the fixtures and goldens pin that under
+//! both lowerings, these pin the caches' own states.
+
+use indoc::indoc;
+use ns_runtime::{
+    CachedTarget, CachedTargetKind, CallSiteState, HostResult, HostSignal, Interpreter, Lowering,
+    MethodSide, Root, SourceOrigin, Symbol, Value,
+};
+
+fn load_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))
+        .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap_with(lowering);
+    let class = interpreter.load_module(&resolved);
+    (interpreter, class)
+}
+
+fn load(source: &str) -> (Interpreter, Root) {
+    load_with(source, Lowering::Optimized)
+}
+
+fn expect_ok(result: HostResult, what: &str) -> Root {
+    match result {
+        Ok(root) => root,
+        Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+        Err(HostSignal::Error(error)) => {
+            panic!("{what}: unexpected Newspeak error: {}", error.message)
+        }
+    }
+}
+
+/// Sends `selector` to `receiver` with `arguments`, expecting a value.
+fn send(
+    interpreter: &mut Interpreter,
+    receiver: &Root,
+    selector: &str,
+    arguments: &[Root],
+) -> Root {
+    expect_ok(
+        interpreter.send(receiver, Symbol::intern(selector), arguments),
+        selector,
+    )
+}
+
+fn instantiate(interpreter: &mut Interpreter, class: &Root) -> Root {
+    expect_ok(interpreter.instantiate(class, &[]), "instantiate")
+}
+
+fn small_integer(interpreter: &mut Interpreter, root: &Root) -> i64 {
+    interpreter.enter(|mutator| match mutator.fetch(root) {
+        Value::SmallInteger(integer) => integer,
+        _ => panic!("expected a small integer"),
+    })
+}
+
+fn integer_argument(interpreter: &Interpreter, integer: i64) -> Root {
+    interpreter.stash(Value::SmallInteger(integer))
+}
+
+fn states(
+    interpreter: &mut Interpreter,
+    class: &Root,
+    side: MethodSide,
+    method: &str,
+    sent: &str,
+) -> Vec<CallSiteState> {
+    interpreter.call_site_states(class, side, Symbol::intern(method), Symbol::intern(sent))
+}
+
+fn public(kind: CachedTargetKind) -> CachedTarget {
+    CachedTarget {
+        kind,
+        private: false,
+    }
+}
+
+fn method(selector: &str) -> CachedTarget {
+    public(CachedTargetKind::Method(Symbol::intern(selector)))
+}
+
+/// Two `Inner` instances from two `Outer` instances share one monomorphic
+/// entry: the cache guards on the application, not on the class object.
+#[test]
+fn nested_class_instances_of_two_enclosing_objects_share_one_entry() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          class Outer = Object new () (
+            public class Inner = Object new () ( public describe = ( ^1 ) )
+          )
+          public run = (
+            | sum |
+            sum := 0.
+            {Outer new Inner new. Outer new Inner new. Outer new Inner new}
+              do: [:each | sum := sum + each describe].
+            ^sum
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = instantiate(&mut interpreter, &class);
+    let answer = send(&mut interpreter, &instance, "run", &[]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 3);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &class,
+            MethodSide::Instance,
+            "run",
+            "describe"
+        ),
+        vec![CallSiteState::Monomorphic(method("describe"))]
+    );
+}
+
+const FIVE_KINDS: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Subject = Object new () (
+      class KindOne = Object new () ( public value = ( ^1 ) )
+      class KindTwo = Object new () ( public value = ( ^2 ) )
+      class KindThree = Object new () ( public value = ( ^3 ) )
+      class KindFour = Object new () ( public value = ( ^4 ) )
+      class KindFive = Object new () ( public value = ( ^5 ) )
+      public run: count = (
+        | sum index all |
+        sum := 0.
+        index := 0.
+        all := {KindOne new. KindTwo new. KindThree new. KindFour new. KindFive new}.
+        [index < count] whileTrue: [
+          index := index + 1.
+          sum := sum + (all at: index) value].
+        ^sum
+      )
+    ) : ()
+"};
+
+/// A site that sees a second type goes polymorphic, keeps four in the order
+/// first seen, and a fifth makes it megamorphic.
+#[test]
+fn a_site_goes_polymorphic_then_megamorphic() {
+    let (mut interpreter, class) = load(FIVE_KINDS);
+    let instance = instantiate(&mut interpreter, &class);
+    let value_states = |interpreter: &mut Interpreter| {
+        states(interpreter, &class, MethodSide::Instance, "run:", "value")
+    };
+    let two = integer_argument(&interpreter, 2);
+    let answer = send(&mut interpreter, &instance, "run:", &[two]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 3);
+    assert_eq!(
+        value_states(&mut interpreter),
+        vec![CallSiteState::Polymorphic(vec![
+            method("value"),
+            method("value")
+        ])]
+    );
+    let four = integer_argument(&interpreter, 4);
+    send(&mut interpreter, &instance, "run:", &[four]);
+    assert_eq!(
+        value_states(&mut interpreter),
+        vec![CallSiteState::Polymorphic(vec![method("value"); 4])]
+    );
+    let five = integer_argument(&interpreter, 5);
+    let answer = send(&mut interpreter, &instance, "run:", &[five]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 15);
+    assert_eq!(
+        value_states(&mut interpreter),
+        vec![CallSiteState::Megamorphic]
+    );
+}
+
+/// `true` and `false` are instances of two classes: a site that is not
+/// inlined and sees both is bimorphic.
+#[test]
+fn a_site_on_true_and_false_is_bimorphic() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          public run = (
+            | count |
+            count := 0.
+            {true. false. true} do: [:each | each not ifTrue: [count := count + 1]].
+            ^count
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = instantiate(&mut interpreter, &class);
+    let answer = send(&mut interpreter, &instance, "run", &[]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 1);
+    let primitive = public(CachedTargetKind::Primitive);
+    assert_eq!(
+        states(&mut interpreter, &class, MethodSide::Instance, "run", "not"),
+        vec![CallSiteState::Polymorphic(vec![
+            primitive.clone(),
+            primitive
+        ])]
+    );
+}
+
+const TWO_APPLICATIONS: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Subject = Object new () (
+      class Narrow = Object new (| first ::= 1. |) ( public describe = ( ^1 ) )
+      class Wide = Object new (| first ::= 1. second ::= 2. third ::= 3. |) ( public describe = ( ^2 ) )
+      class Box on: base = Object new (| base = base. |) (
+        public class Cell = base new (| public held ::= 10. |) (
+          public describe = ( ^super describe + 10 )
+        )
+      )
+      public narrowCell = ( ^(Box on: Narrow) Cell )
+      public run = (
+        | sum |
+        sum := 0.
+        {(Box on: Narrow) Cell new. (Box on: Wide) Cell new}
+          do: [:each | sum := sum + each held + each describe].
+        ^sum
+      )
+    ) : ()
+"};
+
+/// One slot accessor under two applications of one mixin with different
+/// inherited slots: two entries, each with its own absolute field -- `held`
+/// after one inherited slot, and after three.
+#[test]
+fn a_slot_accessor_under_two_applications_has_two_fields() {
+    let (mut interpreter, class) = load(TWO_APPLICATIONS);
+    let instance = instantiate(&mut interpreter, &class);
+    let answer = send(&mut interpreter, &instance, "run", &[]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 43);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &class,
+            MethodSide::Instance,
+            "run",
+            "held"
+        ),
+        vec![CallSiteState::Polymorphic(vec![
+            public(CachedTargetKind::Slot { field: 1 }),
+            public(CachedTargetKind::Slot { field: 3 }),
+        ])]
+    );
+}
+
+/// `super` in a mixin applied under two superclasses: the key is the running
+/// method's application, so the one `super describe` site holds one entry per
+/// application of `Cell`, each naming its own superclass's method.
+#[test]
+fn a_super_send_in_a_mixin_applied_twice() {
+    let (mut interpreter, class) = load(TWO_APPLICATIONS);
+    let instance = instantiate(&mut interpreter, &class);
+    send(&mut interpreter, &instance, "run", &[]);
+    let cell = send(&mut interpreter, &instance, "narrowCell", &[]);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &cell,
+            MethodSide::Instance,
+            "describe",
+            "describe"
+        ),
+        vec![CallSiteState::Polymorphic(vec![
+            method("describe"),
+            method("describe")
+        ])]
+    );
+}
+
+/// A private lexical site whose `o` changes object and class stays
+/// monomorphic: its guard is N's application, which does not change, and
+/// §5.9 runs N's private method on every `o`.
+#[test]
+fn a_private_lexical_site_with_a_changing_receiver_stays_monomorphic() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          class Outer named: label = Object new (| name = label. |) (
+            private secret = ( ^name )
+            public class Inner = Object new () (
+              public reveal = ( ^secret )
+            )
+          )
+          class Sub named: label = Outer named: label () (
+            public secret = ( ^0 )
+          )
+          public anInner = ( ^(Outer named: 1) Inner )
+          public run = (
+            | sum |
+            sum := 0.
+            {Outer named: 1. Sub named: 2. Outer named: 3. Sub named: 4}
+              do: [:each | sum := sum + each Inner new reveal].
+            ^sum
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = instantiate(&mut interpreter, &class);
+    let answer = send(&mut interpreter, &instance, "run", &[]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 10);
+    let inner = send(&mut interpreter, &instance, "anInner", &[]);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &inner,
+            MethodSide::Instance,
+            "reveal",
+            "secret"
+        ),
+        vec![CallSiteState::Monomorphic(CachedTarget {
+            kind: CachedTargetKind::Method(Symbol::intern("secret")),
+            private: true,
+        })]
+    );
+}
+
+/// Class objects and instances at one site: a factory, a class-side method
+/// and an instance method, three entries.
+#[test]
+fn class_objects_and_instances_share_a_site() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          class Maker make = Object new () ( public describe = ( ^1 ) )
+          class Plain = Object new () ( public describe = ( ^2 ) ) : ( public make = ( ^Plain new ) )
+          class Custom = Object new () ( public describe = ( ^3 ) public make = ( ^self ) )
+          public run = (
+            | sum |
+            sum := 0.
+            {Maker. Plain. Custom new} do: [:each | sum := sum + each make describe].
+            ^sum
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = instantiate(&mut interpreter, &class);
+    let answer = send(&mut interpreter, &instance, "run", &[]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 6);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &class,
+            MethodSide::Instance,
+            "run",
+            "make"
+        ),
+        vec![CallSiteState::Polymorphic(vec![
+            public(CachedTargetKind::Factory),
+            method("make"),
+            method("make"),
+        ])]
+    );
+}
+
+const SUPER_FACTORY: &str = indoc! {"
+    Newspeak3
+    'T'
+    class Subject = Object new () (
+      class Base = Object new () () : ( public doesNotUnderstand: message = ( ^0 ) )
+      class Simple = Base new () ( public value = ( ^1 ) ) : ( public build = ( ^super new ) )
+      class Keyed with: seed = Simple new () ()
+      public simple = ( ^Simple )
+      public run: order = (
+        | sum |
+        sum := 0.
+        order do: [:each | | built |
+          built := each build.
+          sum := sum * 10 + ((built == 0) ifTrue: [0] ifFalse: [built value])].
+        ^sum
+      )
+      public simpleFirst = ( ^self run: {Simple. Keyed. Simple. Keyed} )
+      public keyedFirst = ( ^self run: {Keyed. Simple. Keyed. Simple} )
+    ) : ()
+"};
+
+/// The `super new` in `Simple`'s inherited class-side `build` misses and
+/// reaches the factory check on `self`: `Simple` instantiates, `Keyed`
+/// (factory `with:`) reaches the handler defined for S. Whichever the site
+/// records first, the other receiver must still get its own answer, under
+/// both lowerings.
+#[test]
+fn a_super_factory_entry_is_rechecked_against_self() {
+    for (entry, expected, first) in [
+        ("simpleFirst", 1010, CachedTargetKind::Factory),
+        ("keyedFirst", 101, CachedTargetKind::DoesNotUnderstand),
+    ] {
+        for lowering in [Lowering::Optimized, Lowering::Reference] {
+            let (mut interpreter, class) = load_with(SUPER_FACTORY, lowering);
+            let instance = instantiate(&mut interpreter, &class);
+            let answer = send(&mut interpreter, &instance, entry, &[]);
+            assert_eq!(
+                small_integer(&mut interpreter, &answer),
+                expected,
+                "{entry}"
+            );
+            if lowering == Lowering::Optimized {
+                let simple = send(&mut interpreter, &instance, "simple", &[]);
+                assert_eq!(
+                    states(&mut interpreter, &simple, MethodSide::Class, "build", "new"),
+                    vec![CallSiteState::Monomorphic(public(first.clone()))],
+                    "{entry}"
+                );
+            }
+        }
+    }
+}
+
+/// `doesNotUnderstand:` with a user handler and with a slot setter named
+/// `doesNotUnderstand` (§6.3.2) at one site: two entries.
+#[test]
+fn does_not_understand_handlers_are_entries_like_any_other() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          class Catcher = Object new () ( public doesNotUnderstand: message = ( ^1 ) )
+          class Recorder = Object new (| public doesNotUnderstand ::= nil. |) ()
+          public run = (
+            | sum |
+            sum := 0.
+            {Catcher new. Recorder new. Catcher new} do: [:each | | answer |
+              answer := each zork.
+              sum := sum + ((answer == each) ifTrue: [10] ifFalse: [answer])].
+            ^sum
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = instantiate(&mut interpreter, &class);
+    let answer = send(&mut interpreter, &instance, "run", &[]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 12);
+    let handler = public(CachedTargetKind::DoesNotUnderstand);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &class,
+            MethodSide::Instance,
+            "run",
+            "zork"
+        ),
+        vec![CallSiteState::Polymorphic(vec![handler.clone(), handler])]
+    );
+}
+
+/// A cached primitive that fails on a receiver of its own class -- the
+/// `transcript` stream shares the `Platform` class with the platform object
+/// -- keeps its entry, and the send continues uncached into
+/// `doesNotUnderstand:`.
+#[test]
+fn a_failing_primitive_keeps_its_entry() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          public run: platform = (
+            | stream |
+            stream := platform transcript.
+            {platform. stream} do: [:each | each transcript].
+            ^0
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = instantiate(&mut interpreter, &class);
+    let platform = interpreter.platform();
+    match interpreter.send(&instance, Symbol::intern("run:"), &[platform]) {
+        Err(HostSignal::Error(error)) => assert!(
+            error.message.contains("does not understand #transcript"),
+            "unexpected message: {}",
+            error.message
+        ),
+        _ => panic!("the stream does not understand `transcript`"),
+    }
+    let primitive = CallSiteState::Monomorphic(public(CachedTargetKind::Primitive));
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &class,
+            MethodSide::Instance,
+            "run:",
+            "transcript"
+        ),
+        vec![primitive.clone(), primitive]
+    );
+}

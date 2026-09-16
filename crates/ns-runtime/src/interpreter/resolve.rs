@@ -56,8 +56,7 @@ pub(crate) enum Resolved<'gc> {
         declaring_class: ClassReference<'gc>,
         /// `act` does not read it -- a nested class's accessor is the same
         /// whichever chain found it -- but a cache entry records it
-        /// (Task 7's `Target::NestedClass`), to count `level` from.
-        #[allow(dead_code)]
+        /// (`inline_cache::Target::NestedClass`), to count `level` from.
         chain: Chain,
     },
     Primitive {
@@ -70,6 +69,20 @@ pub(crate) enum Resolved<'gc> {
     Factory { chain: Chain },
     /// Nothing handles it, not even `doesNotUnderstand:`. Never recorded.
     Unhandled,
+}
+
+impl Resolved<'_> {
+    /// The chain a resolution was found on; `None` for `Unhandled`.
+    pub(crate) fn chain(&self) -> Option<Chain> {
+        match self {
+            Resolved::Method { chain, .. }
+            | Resolved::Slot { chain, .. }
+            | Resolved::NestedClass { chain, .. }
+            | Resolved::Primitive { chain, .. }
+            | Resolved::Factory { chain } => Some(*chain),
+            Resolved::Unhandled => None,
+        }
+    }
 }
 
 impl<'gc> Mutator<'gc> {
@@ -346,6 +359,29 @@ impl<'gc> Mutator<'gc> {
         selector: Symbol,
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
+        self.act_with_base(
+            resolved,
+            FeedbackBase::NOT_ASSIGNED,
+            receiver,
+            superclass,
+            selector,
+            arguments,
+        )
+    }
+
+    /// `act`, with the base a method step's activation takes -- a cache hit
+    /// knows its target's family, so the push need not ask the map. The one
+    /// executor both paths share; `act` is this with `NOT_ASSIGNED`.
+    #[inline(always)]
+    pub(crate) fn act_with_base(
+        &mut self,
+        resolved: Resolved<'gc>,
+        feedback_base: FeedbackBase,
+        receiver: Value<'gc>,
+        superclass: Option<ClassReference<'gc>>,
+        selector: Symbol,
+        arguments: &[Value<'gc>],
+    ) -> Result<Step<'gc>, Signal<'gc>> {
         match resolved {
             Resolved::Method {
                 method,
@@ -366,7 +402,7 @@ impl<'gc> Mutator<'gc> {
                     method,
                     defining_class,
                     arguments: StepArguments::Send,
-                    feedback_base: FeedbackBase::NOT_ASSIGNED,
+                    feedback_base,
                 }),
             },
             Resolved::Slot { kind, field, chain } => match chain {

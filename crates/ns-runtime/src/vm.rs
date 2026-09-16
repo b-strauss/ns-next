@@ -1,8 +1,11 @@
 //! The register VM's run loop -- and nothing else. `run` executes one
 //! activation and everything it activates, on the `Heap`'s activation stack,
 //! without recursing on the Rust stack: a send asks `interpreter/` what it
-//! means (`Mutator::decide_send`, `sends::decide_lexical_send`,
-//! `sends::decide_super_send`) and, when the answer is an activation, pushes
+//! means (`inline_cache::send_public`, `send_lexical` and `send_super`, which
+//! answer from the call site's cache or fall back on `Mutator::decide_send`,
+//! `sends::decide_lexical_send` and `sends::decide_super_send`, and
+//! `decide_send` itself for the reference lowering's `SendInlinable`) and,
+//! when the answer is an activation, pushes
 //! it and runs it here; a return pops it and resumes the caller. No dispatch
 //! logic, no `doesNotUnderstand:`, no native dispatch and no error text of its
 //! own live here -- dispatch lives in one place, which the reference lowering
@@ -12,13 +15,13 @@ use std::rc::Rc;
 
 use crate::bytecode::{CompiledCode, Instruction, Literal};
 use crate::heap::ActivationReference;
+use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::literals::{
     malformed_integer_error, parse_integer_literal, unresolved_identifier_error,
 };
 use crate::interpreter::locals::{
     home_of, read_local, read_outer_local, store_instance_field, write_local, write_outer_local,
 };
-use crate::interpreter::sends::{decide_lexical_send, decide_super_send};
 use crate::interpreter::{
     EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Signal, Step,
 };
@@ -194,11 +197,10 @@ fn execute<'gc>(
             receiver_register,
             argument_registers,
             destination,
-            // `call_site` is the reserved, inert inline-cache slot; nothing
-            // reads or writes it yet.
-            ..
+            call_site,
         } => {
             let receiver = read_local(&mutator.heap, activation, *receiver_register);
+            let family_size = code.family_size;
             send(
                 mutator,
                 activation,
@@ -207,11 +209,22 @@ fn execute<'gc>(
                 *destination,
                 floor,
                 false,
-                |mutator, arguments| mutator.decide_send(receiver, *selector, arguments),
+                |mutator, arguments| {
+                    send_public(
+                        mutator,
+                        feedback_base,
+                        family_size,
+                        *call_site,
+                        receiver,
+                        *selector,
+                        arguments,
+                    )
+                },
             )
         }
-        // Decided exactly as `SendPublic` is; only the depth count treats
-        // the block a control-flow native activates for it differently
+        // Decided as `SendPublic` is, but uncached: only the reference
+        // lowering emits it. Only the depth count treats the block a
+        // control-flow native activates for it differently
         // (`Mutator::push_step`).
         Instruction::SendInlinable {
             selector,
@@ -237,34 +250,59 @@ fn execute<'gc>(
             selector,
             argument_registers,
             destination,
-            ..
-        } => send(
-            mutator,
-            activation,
-            program_counter,
-            argument_registers,
-            *destination,
-            floor,
-            false,
-            |mutator, arguments| {
-                decide_lexical_send(mutator, activation, *depth, *selector, arguments)
-            },
-        ),
+            call_site,
+        } => {
+            let family_size = code.family_size;
+            send(
+                mutator,
+                activation,
+                program_counter,
+                argument_registers,
+                *destination,
+                floor,
+                false,
+                |mutator, arguments| {
+                    send_lexical(
+                        mutator,
+                        activation,
+                        feedback_base,
+                        family_size,
+                        *call_site,
+                        *depth,
+                        *selector,
+                        arguments,
+                    )
+                },
+            )
+        }
         Instruction::SendSuper {
             selector,
             argument_registers,
             destination,
-            ..
-        } => send(
-            mutator,
-            activation,
-            program_counter,
-            argument_registers,
-            *destination,
-            floor,
-            false,
-            |mutator, arguments| decide_super_send(mutator, activation, *selector, arguments),
-        ),
+            call_site,
+        } => {
+            let family_size = code.family_size;
+            send(
+                mutator,
+                activation,
+                program_counter,
+                argument_registers,
+                *destination,
+                floor,
+                false,
+                |mutator, arguments| {
+                    send_super(
+                        mutator,
+                        activation,
+                        feedback_base,
+                        family_size,
+                        *call_site,
+                        *selector,
+                        arguments,
+                    )
+                },
+            )
+        }
         Instruction::MakeClosure {
             destination,
             parameters,

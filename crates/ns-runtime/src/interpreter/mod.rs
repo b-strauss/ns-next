@@ -27,6 +27,9 @@ use crate::Symbol;
 // (a `pub mod`) is what gives `types.rs`'s `pub` field on `ClosureData` a
 // fully public path to it, which a `pub` field's type must have.
 pub use inline_cache::FeedbackBase;
+// The inline caches' test view (`Interpreter::call_site_states`), public
+// through `interpreter` for the same reason.
+pub use inline_cache::{CachedTarget, CachedTargetKind, CallSiteState, MethodSide};
 
 pub(crate) enum Signal<'gc> {
     Return(ActivationReference, Value<'gc>),
@@ -451,6 +454,38 @@ impl Interpreter {
             "internal: a nested class's creation outlived the run that began it"
         );
         result
+    }
+
+    /// The inline-cache states of `method`'s sends of `sent`, `method` looked
+    /// up on `class`'s own mixin (`side` chooses the class side). For tests
+    /// only; empty when `class` is not a class object or has no such method.
+    pub fn call_site_states(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+        sent: Symbol,
+    ) -> Vec<CallSiteState> {
+        self.enter(|mutator| {
+            let Value::Object(object) = mutator.fetch(class) else {
+                return Vec::new();
+            };
+            let Some(application) = mutator.heap.class_application(object) else {
+                return Vec::new();
+            };
+            let mixin = match side {
+                MethodSide::Instance => Some(application.mixin.clone()),
+                MethodSide::Class => application.mixin.class_side.clone(),
+            };
+            let Some(code) = mixin.and_then(|mixin| {
+                mixin
+                    .compiled_method(method)
+                    .map(|found| found.code.clone())
+            }) else {
+                return Vec::new();
+            };
+            mutator.caches.states_of(&code, sent)
+        })
     }
 
     /// The `platform` object, rooted for a host.
