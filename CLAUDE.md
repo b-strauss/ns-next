@@ -7,7 +7,9 @@ Rust 1.98.0, edition 2021, three crates:
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`.
 - `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
   with the reference lowering it is checked against in `compiler/reference.rs`),
-  the VM (`vm.rs`) and the send machinery it calls (`interpreter/`), core library
+  the VM (`vm.rs`) and the send machinery it calls (`interpreter/`, the inline
+  caches in `interpreter/inline_cache.rs` in front of the lookups in
+  `interpreter/resolve.rs`), core library
   (`builtins/`), image format (`image/`). Objects live in an arena owned by one
   `Heap` (`heap.rs`) and are addressed by 32-bit handles; activations live on an
   activation stack in the same `Heap` and are reified into the frame arena only
@@ -41,7 +43,10 @@ native dispatch, frame construction and `instantiate` live in `interpreter/`; th
 instruction loop calls them. Never copy dispatch logic, lookup logic or error text into
 `vm.rs` or `compiler/`: the reference lowering and, later, a JIT must reach the same
 dispatch and raise the same errors, and a second copy is how they would drift. If you
-need something private there, widen it to `pub(crate)`.
+need something private there, widen it to `pub(crate)`. The inline caches live in
+`interpreter/` too: a send in `vm.rs` hands the running activation's `feedback_base`, its
+code's `family_size` and the instruction's `CallSite` to `interpreter/inline_cache.rs` and
+does nothing else with them.
 
 **Compiling an already-resolved module can never raise a `NewspeakError`.** Compilation
 is a total, deterministic lowering; a compiler-invariant violation is `panic!` /
@@ -71,8 +76,9 @@ leak — `image::load` owns its `Interpreter` in a local, so every `Err` path dr
 it and both arenas with it — but the peak is amplified against the bytes remaining
 at the graph section, and both `bounded_count` calls divide the *same* remainder,
 so one file maxes out both arenas rather than trading one against the other:
-about **16.9x in a release build** (an `Object` is 56 bytes against a 6-byte
-minimum record, a frame-arena entry 136 against 18) and about 24.9x in a debug
+about **16.9x in a release build** (an `Object` is 56 bytes, which a release-build test
+pins, against a 6-byte minimum record, a frame-arena entry 136 against 18) and about
+24.9x in a debug
 build, where both are larger because every handle carries its heap's id and its
 move epoch. `bounded_count` is what keeps this proportional to
 the input at all rather than to a `u32` — do not add a pre-allocation that is not
@@ -196,6 +202,18 @@ nesting boundary runs with the class that lexically declares it, not the receive
 class — using the receiver's class instead silently resolves `outer` to the wrong
 enclosing object.
 
+**A cache records what the lookup decided; it never decides.** A send's lookup is
+`resolve_*` (`interpreter/resolve.rs`), and `act` is the one place that runs what it
+found; an inline-cache hit is `act` on the resolution `resolve` answered for the same
+key, rebuilt from the entry, so it can do nothing a miss would not. An entry holds no
+handle — a guard id, `Rc`s and numbers; the defining class is recomputed per hit — so
+it survives a move and cannot reach another heap. Anything `resolve` reads that the
+key does not cover (a class object's factory selector, a primitive's payload check)
+is re-checked in `act` on every send, never trusted from the entry; add such a read
+and its re-check goes with it. The reference lowering runs every send uncached, so it
+is the oracle a cache defect shows against (`docs/design/dispatch.md`, "3b — The
+caches").
+
 ## Working in this repository
 
 ```bash
@@ -206,6 +224,9 @@ cargo test --workspace
 # the same suite with every object moved at the run loop's safepoints
 # (debug builds only; Git Bash syntax)
 NS_NEXT_STRESS_MOVES=1 cargo test --workspace
+# the same suite with every inline cache vacated at every safepoint
+# (debug builds only; Git Bash syntax)
+NS_NEXT_STRESS_CACHES=1 cargo test --workspace
 # before every commit
 cargo fmt --all
 # must be warning-free
@@ -216,6 +237,8 @@ cargo run -p ns-cli -- parse-corpus corpus/modules
 cargo run -p ns-cli -- run-corpus corpus/modules
 # non-regression gate under the stress mode, same report
 NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules
+# non-regression gate under the cache stress mode, same report
+NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules
 ```
 
 Never judge performance from a debug build — `cargo build --workspace --release` is the
@@ -229,7 +252,11 @@ the alignment flag alone). Step 2c measured identical machine code 1–2% apart 
 64-byte phase shift of every hot function; pinned, a comparison measures code, not
 placement. The shipped build does not carry the pin: it costs about 110 KB (5.6%) and
 measured no faster. `docs/design/execution.md`'s measurement protocol ("What removing the
-re-entries moved") spells it out.
+re-entries moved") spells it out. `vm::run`'s per-instruction step sits near LLVM's
+inlining threshold and is forced inline; before timing a change to a send's path, check
+with `dumpbin /disasm` (from the Visual Studio Build Tools, not on `PATH`) on a release
+build with debug information that no `vm::run::closure` became a function of its own
+(`docs/design/execution.md`, "What the inline caches moved").
 
 A file that legitimately cannot parse yet belongs in `corpus/blacklist.toml`. A corpus
 module that runs end to end belongs in `corpus/runnable.toml`, with the entry selector

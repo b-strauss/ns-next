@@ -76,11 +76,14 @@ The key is the **mixin application**, not the class object; see
 initializers must be flushed along with everything else on a shape change,
 because `InitializeSlot` is layout-dependent.
 
-The inline caches planned in [dispatch.md](dispatch.md) ("3b — The caches")
-are built for this: an entry holds no handle, so invalidating all of them is
-resetting the heap's cache table and emptying its global cache, with every
-code family's range kept for the activations still running; a debug-build
-stress mode does exactly that at every safepoint. Scoping an invalidation to
+The inline caches ([dispatch.md](dispatch.md), "3b — The caches") are built
+for this: an entry holds no handle, so invalidating all of them
+(`Interpreter::invalidate_caches`) is resetting the heap's cache table and
+emptying its global cache, with every code family's range kept for the
+activations still running; a debug-build stress mode,
+`NS_NEXT_STRESS_CACHES`, does exactly that at every safepoint. Nothing calls
+it outside that mode and the tests yet, since nothing mutates a method table
+at run time. Scoping an invalidation to
 the applications a change affects comes with the first mutation that needs
 it. If step 3c puts the dispatch id into the object header, `become:` and a
 class change must exchange it along with the class.

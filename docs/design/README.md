@@ -34,9 +34,9 @@ that cannot name its code is describing an intention, and should say so.
 |---|---|---|---|
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built | — |
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built | `become:` |
-| Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built | inline caches: the caches (3b), the dispatch id's place (3c) — 3a, primitives as method-table entries, is built |
-| AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built | call-site ids per code family, as `u32` (3b) |
-| Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, and the loop polls a safepoint | closure conversion, JIT tiers |
+| Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a) and per-heap caches with a global cache behind them (3b) | the dispatch id's place (3c) |
+| AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built; call sites numbered per code family | — |
+| Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, the loop polls a safepoint, and its sends go through the inline caches | closure conversion, JIT tiers |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Partial — the arena, the activation stack, the safepoint, tracing, host roots, the stress mode and the lifetime brand are built; nothing reclaims an arena slot | a collector |
 | Serialization, both artifacts | [image-format.md](image-format.md) | Built | suspend and resume |
 | Builtins and the platform | [core-library.md](core-library.md) | Partial | the core library as Newspeak source |
@@ -119,17 +119,20 @@ regression.
 ```bash
 cargo test --workspace          # includes the golden program outcomes
 NS_NEXT_STRESS_MOVES=1 cargo test --workspace   # the same, moving everything at the run loop's safepoints
+NS_NEXT_STRESS_CACHES=1 cargo test --workspace  # the same, vacating every inline cache at every safepoint
 cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
 cargo fmt --all                 # before every commit
 cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 210, failed 0, expected-fail 1, stale 0
 cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 205 -- every row under both lowerings
 NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules   # the same report
+NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules  # the same report
 ```
 
-The two stress runs are Git Bash syntax and do anything only in a debug build
+The four stress runs are Git Bash syntax and do anything only in a debug build
 ([memory.md](memory.md), "Checking the roots before a collector exists: the
-stress mode"). Clippy's gate includes `min_ident_chars` (`clippy.toml`),
-which refuses identifiers of one or two characters: names are written out
+stress mode"; [dispatch.md](dispatch.md), "Invalidation"). Clippy's gate
+includes `min_ident_chars` (`clippy.toml`), which refuses identifiers of one
+or two characters: names are written out
 (`CLAUDE.md`, "Conventions").
 
 Never judge performance from a debug build; `cargo build --workspace --release`

@@ -1,14 +1,15 @@
 # Execution — activations, the VM
 
 > **Status:** built, including the trampoline; nothing re-enters the run loop
-> from Rust, the loop polls a safepoint, and each instruction it executes is
-> one entry of the step state.
+> from Rust, the loop polls a safepoint, each instruction it executes is
+> one entry of the step state, and the sends it executes go through inline
+> caches, except the reference lowering's.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > arena, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation), `heap/world.rs` (the step state at rest, and its entry),
 > `types.rs` (`Frame`, `Continuation` and the state its variants
 > carry), `vm.rs` (the run loop and its safepoint poll), `interpreter/` (the
-> send decisions, `Step`, every push, the depth limit, the host entry, the
+> inline caches, the send decisions, `Step`, every push, the depth limit, the host entry, the
 > safepoint's slow path), `builtins/boolean.rs`,
 > `builtins/block.rs` and `builtins/collections.rs` (the natives that answer
 > trampoline steps), `crates/ns-cli/src/main.rs` (the interpreter thread and
@@ -203,7 +204,8 @@ outlives a call — a closure, another frame, an image record — holds a `Frame
 ### Signatures
 
 - Wherever a function means *the running activation* it takes an
-  `ActivationReference`: `vm::run` and the loop's helpers, `sends::decide_lexical_send`,
+  `ActivationReference`: `vm::run` and the loop's helpers,
+  `inline_cache::send_lexical` and `send_super`, `sends::decide_lexical_send`,
   `sends::decide_super_send`, `read_local`/`write_local`,
   `read_outer_local`/`write_outer_local`, `raise_return`.
   `FrameReference` stays for closures, `Frame.home`, the image, and `frame_at_depth`
@@ -257,6 +259,15 @@ statement→program-counter table is reached through its kind. A stack entry als
 
 `program_counter` is an instruction index into the activation's compiled body.
 
+`feedback_base` is where the activation's code family starts in the heap's
+inline-cache table ([dispatch.md](dispatch.md), "Code families"): a send's
+entry is that base plus its call-site number. `push_step` sets it — from the
+cache entry that chose a method, from the closure for a block (a fresh range
+for a decoded closure, which has none), from the family map otherwise — and
+it is `NOT_ASSIGNED` only for a family whose range
+could not be allocated, whose sends then run uncached. It is a number, not a
+handle, and it is never serialized.
+
 **The chain of running activations is walkable independently of the Rust
 stack**: it is the activation stack, innermost last. That is what the debugger
 will reflect over and what a precise collector will scan. An image snapshot
@@ -290,9 +301,11 @@ activations from its callers'.
 
 - **A send** (`vm::send`) gathers its arguments from the caller's registers
   into the step state's reusable buffer, stores the caller's `program_counter`, and asks
-  `interpreter/` what the send means: `Mutator::decide_send`,
-  `sends::decide_lexical_send` or `sends::decide_super_send`, which answer a
-  `Step`. `Step::Value` — a native leaf, a slot access, a nested class or an
+  `interpreter/` what the send means: `inline_cache::send_public`,
+  `send_lexical` or `send_super`, which answer from the call site's cache or
+  run the lookup ([dispatch.md](dispatch.md), "3b — The caches"), or, for
+  the reference lowering's `SendInlinable`, `Mutator::decide_send`. Each
+  answers a `Step`. `Step::Value` — a native leaf, a slot access, a nested class or an
   instantiation that runs no code — is written to the send's `destination`,
   and the caller goes on. Anything else is an activation: `Step::Method`,
   `Step::Block`, or one of the bodies an instantiation or a nested-class
@@ -377,16 +390,19 @@ one place, which the reference lowering and a later JIT will reach unchanged —
 and it is why `CLAUDE.md`'s "`vm.rs` holds no dispatch logic" forbids copying
 anything out of `interpreter/` into `vm.rs`.
 
-**Planned (step 3b, [dispatch.md](dispatch.md), "3b — The caches"):** the
-inline caches keep it that way. The running activation gains a
-`feedback_base`, the start of its code family's range in the heap's cache
-table; `run` holds it in a local beside the code, `Flow::Switch` carries it,
-and a send passes it and its call-site id to the decision in `interpreter/`,
-which probes the cache there. `vm.rs` learns two numbers and no dispatch. A
-method's base comes with the cache entry that chose it, a block's from its
-closure, which copied it from the activation that created it. Being one field
-more on the hot loop's path, it is measured as a variant of its own
-([dispatch.md](dispatch.md), "Measurement").
+**The inline caches keep it that way** ([dispatch.md](dispatch.md), "3b —
+The caches"). `run` holds the running activation's `feedback_base` in a local
+beside its code, `Flow::Switch` carries it, and a send passes it, its code's
+`family_size` and the instruction's `CallSite` to `interpreter/inline_cache.rs`,
+which probes the cache there; `MakeClosure` copies it into the closure. `vm.rs`
+learns three numbers and no dispatch. **The per-instruction step is forced
+inline** (`#[inline(always)]` on the closure `run` hands to
+`Interpreter::enter`): every cached send inlines its hit path into it, and
+past LLVM's inlining threshold the step becomes a function of its own, so
+that every instruction pays a call and returns its `Flow` through memory —
+6.6–13.6% on every benchmark when it happened ("What the inline caches
+moved"). The step sits near that threshold; anything added to a send's hit
+path lands in it.
 
 Block invocation is not special-cased into an opcode: `Block value` is still a
 native method, which answers the closure as a step; the closure's activation is
@@ -489,9 +505,9 @@ compiling excluded — and reports the median of ten timed runs after a discarde
 warm-up. Its three fixtures each run a 50,000-iteration `whileTrue:` loop, which
 the compiler inlines: `bench_loop.ns` sums the counter, `bench_send.ns` adds a
 user-method send per iteration and `bench_block.ns` a method that creates and
-invokes a block. On a release build, on 2026-09-14, with the safepoint poll in
-the loop and each instruction an entry of the step state, their medians were
-about 11.2, 14.1 and 22.6 ms ("What 2c moved" below).
+invokes a block. On a release build, on 2026-09-16, with the inline caches,
+their medians were about 10.1, 11.1 and 19.4 ms ("What the inline caches
+moved" below).
 
 Never judge performance from a debug build.
 
@@ -1552,8 +1568,9 @@ overlapping, so with the hasher the second probe costs nothing measurable. The
 second returned the probe's finding as a three-way enum. It measured 3.4–14.7%
 slower on every source, entirely above on six. That variant changed only how a
 result travelled between two functions, so the lexical send's decision is
-sensitive to codegen. Step 3's caches rebuild that decision. They are measured
-the same way, and a variant that looks free is not assumed to be.
+sensitive to codegen. The inline caches replaced that decision on the hot
+path, and their measurement closes the finding ("What the inline caches
+moved" below).
 
 The suite (`cargo test --workspace`, debug build, test binaries already
 built) takes 12.7 s at 710 tests, and 189.9 s under `NS_NEXT_STRESS_MOVES=1`.
@@ -1673,8 +1690,181 @@ to insert a cache in front of it, as `resolve` then `act`
 caller a decision through a settled enum the way this step's first shape did,
 or a cache hit and miss sharing a function boundary the uncached path had
 just been split out of, would pay the same 15–20% this step paid before it
-was found and removed. 3b's own measurement watches for this shape
-specifically, not only for a slowdown at the end.
+was found and removed. 3b's own measurement watched for this shape
+specifically, and met a relative of it: the split into `resolve` and `act`
+pushed the run loop's step out of line ("What the inline caches moved"
+below).
+
+### What the inline caches moved
+
+3b, the inline caches ([dispatch.md](dispatch.md), "3b — The caches"), was
+measured in four parts, each against the commit it started from, and then
+whole, against 3a's head (`49a2a38`, "start") and `be3eb40`. Every part used
+the protocol of "What removing the re-entries moved" above: every binary built
+with the same `RUSTFLAGS` (`+crt-static` and the function-alignment pin),
+the before-binaries in throwaway worktrees; each binary checked to print the
+expected answer for every source first; `ns-next bench <source> --iterations
+30` over the seven sources, five rounds, the order of the binaries rotating
+from round to round; two whole sittings, nothing else running. The import
+check and the inlining checks below used `dumpbin` from the Visual Studio
+Build Tools, which is installed but not on `PATH`: `/dependents` on every
+binary, and `/disasm` on a release copy built with debug information to see
+which functions the optimizer kept whole. "Entirely below" and "entirely
+above" are the protocol's gate: all five after-medians below, or above, all
+five of the group compared with.
+
+**`feedback_base` on its own** (`f8fdcfa`, against its parent `401817a`).
+Every activation carries the base, `vm::run` holds it in a local and
+`Flow::Switch` carries it, and nothing reads it yet. Change of the mean,
+sitting 1 / sitting 2:
+
+| Source | vs parent | vs start | vs `be3eb40` |
+|---|---|---|---|
+| `bench_loop.ns` | +0.44% / −1.39% | +0.01% / −0.59% | +1.05% / +1.17% |
+| `bench_send.ns` | +1.31% / +0.27% | +0.58% / +0.42% | −9.42% / −8.73% |
+| `bench_block.ns` | +0.10% / −0.51% | −0.13% / −2.36% | −9.12% / −8.99% |
+| `bench_do.ns` | −0.46% / −0.05% | −0.31% / +0.13% | −6.77% / −6.96% |
+| `bench_new.ns` | +0.94% / +0.13% | −0.24% / +0.04% | −8.96% / −8.83% |
+| `bench_new2.ns` | +1.30% / +1.33% | +0.76% / +0.88% | −6.37% / −7.00% |
+| `bench_newarg.ns` | +1.02% / +1.51% | +1.39% / +2.21% | −8.31% / −8.08% |
+
+No group lies entirely above its parent's in either sitting, so the field
+was kept as designed — after `slot_base` in the stack entry, loaded by the
+switch that needs it — and none of the prepared variants (the base answered
+by the push beside the activation, another place in the entry, `run` loading
+it instead of `Flow::Switch` carrying it) was needed. `Result<Step, Signal>`
+stayed 56 bytes: `Step::Method`'s base fits its padding.
+
+**Resolve, then act** (`7d1f21d` and `1f4d6c6`, against `f8fdcfa`). The
+split alone made every source 6.6–13.6% slower, entirely above in both
+sittings. `dumpbin /disasm` showed why: before the split, the run loop's
+per-instruction step, the lexical and `super` sends inlined into it, was part
+of `run_from_host`; after it, the step was a function of its own,
+`vm::run::closure$1`, so every instruction — not only every send — paid a
+call and returned its `Flow` through memory. Four variants were measured
+against the same parent, two sittings each:
+
+| Variant | Change | `bench_loop.ns` | Sources entirely above the parent in both sittings |
+|---|---|---|---|
+| the split | the refactoring alone | +13.3% / +13.6% | all seven (+6.6% to +13.6%) |
+| 1 | `#[inline(always)]` on the three resolves | +16.2% / +15.1% | all seven; the step still out of line, so this tested nothing |
+| 2 | `#[inline(never)]` on `resolve_lexical` and `resolve_super` | +4.8% / +5.0% | `bench_loop.ns`, `bench_new2.ns` |
+| 3, kept | `#[inline(never)]` on `decide_super_send`; the step inline again | +3.8% / +4.3% | `bench_loop.ns` |
+| 4 | 3, `resolve_public` forced inline and the lexical fall-through behind a cold wrapper | +3.4% / +4.9% | `bench_loop.ns`, `bench_new.ns` |
+
+Variant 3 against its parent, sitting 1 / 2: `bench_send.ns` +0.98% /
++1.94%, `bench_block.ns` +1.18% / +3.14%, `bench_do.ns` +1.43% / +2.26%,
+`bench_new.ns` +1.28% / +2.32%, `bench_new2.ns` +2.32% / +1.67%,
+`bench_newarg.ns` +1.02% / +0.82%; entirely above for `bench_loop.ns` in
+both sittings, and for `bench_block.ns`, `bench_do.ns` and `bench_new2.ns` in
+one sitting each. The gate was not met on `bench_loop.ns`, and the miss was
+accepted and carried into the caches' own measurement: the split exists only to put the caches between `resolve` and
+`act`, and the caches had to leave `bench_loop.ns` no slower than 3a's head.
+
+**The caches** (`ead0d85` and `a702875`, against `1f4d6c6`). On the caches'
+first shape the step had fallen out of line again. Four reshapings were
+tried and checked with `dumpbin` only, untimed, and each left
+`vm::run::closure$1` a function of its own: `send_super` kept out of line;
+the uncached fallbacks moved into cold functions; `materialize`'s level walk
+moved into one out-of-line function; the handler arms and `Unhandled` routed
+through one cold call. The step is called once, but its size exceeded even
+the inliner's bonus for a single call site. Kept instead: `#[inline(always)]`
+on the step closure, after which `vm::run` is 4,910 instructions with no call
+per instruction. Means in ms, and the change of the after-mean, sitting 1 /
+sitting 2:
+
+| Source | parent | after | vs parent | vs start | vs `be3eb40` |
+|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.668 / 11.762 | 10.058 / 10.136 | −13.80% / −13.82% | −9.97% / −10.68% | −9.81% / −8.75% |
+| `bench_send.ns` | 12.651 / 12.681 | 11.123 / 11.210 | −12.07% / −11.60% | −11.21% / −10.28% | −19.50% / −19.20% |
+| `bench_block.ns` | 21.367 / 21.341 | 19.372 / 19.471 | −9.33% / −8.76% | −8.48% / −8.09% | −17.02% / −16.58% |
+| `bench_do.ns` | 7.464 / 7.522 | 6.866 / 6.891 | −8.01% / −8.39% | −7.10% / −8.19% | −13.89% / −14.73% |
+| `bench_new.ns` | 7.055 / 7.034 | 6.269 / 6.333 | −11.15% / −9.97% | −7.54% / −6.95% | −16.10% / −15.28% |
+| `bench_new2.ns` | 7.934 / 7.893 | 7.289 / 7.297 | −8.13% / −7.56% | −5.58% / −5.04% | −12.42% / −12.82% |
+| `bench_newarg.ns` | 9.919 / 9.888 | 9.148 / 9.145 | −7.77% / −7.51% | −5.81% / −5.58% | −14.79% / −13.74% |
+
+Every source's after-group lies entirely below the parent's, start's and
+`be3eb40`'s, in both sittings. The first shape of a cache — the design's —
+was not timed, since its step was out of line.
+
+**The step whole** (`c9c3c0f`, after invalidation and the stress mode), with
+an attribution binary: start plus only the `#[inline(always)]` on the step
+closure, and nothing of the caches. Means in ms:
+
+| Source | `be3eb40` | start | attribution | after | after vs start | after vs `be3eb40` | attribution vs start |
+|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 11.1697 / 11.1888 | 11.4004 / 11.3034 | 11.4019 / 11.2734 | 10.1160 / 10.0541 | −11.27% / −11.05% | −9.43% / −10.14% | +0.01% / −0.27% |
+| `bench_send.ns` | 13.8400 / 13.8667 | 12.5251 / 12.5185 | 12.6298 / 12.5398 | 11.1194 / 11.1351 | −11.22% / −11.05% | −19.66% / −19.70% | +0.84% / +0.17% |
+| `bench_block.ns` | 23.4688 / 23.3867 | 21.2699 / 21.1557 | 21.0996 / 21.2546 | 19.3142 / 19.5689 | −9.19% / −7.50% | −17.70% / −16.32% | −0.80% / +0.47% |
+| `bench_do.ns` | 8.0435 / 7.9979 | 7.3997 / 7.3612 | 7.4823 / 7.4336 | 6.8773 / 6.9189 | −7.06% / −6.01% | −14.50% / −13.49% | +1.12% / +0.98% |
+| `bench_new.ns` | 7.4893 / 7.5281 | 6.8036 / 6.7761 | 6.8229 / 6.8017 | 6.2731 / 6.3027 | −7.80% / −6.99% | −16.24% / −16.28% | +0.28% / +0.38% |
+| `bench_new2.ns` | 8.3419 / 8.3924 | 7.7106 / 7.7195 | 7.8412 / 7.7087 | 7.3149 / 7.2420 | −5.13% / −6.19% | −12.31% / −13.71% | +1.69% / −0.14% |
+| `bench_newarg.ns` | 10.6245 / 10.6709 | 9.6230 / 9.6057 | 9.6614 / 9.8064 | 9.1644 / 9.1958 | −4.77% / −4.27% | −13.74% / −13.82% | +0.40% / +2.09% |
+
+**The step is 4.3–11.3% faster than 3a's head and 9.4–19.7% faster than
+`be3eb40`**, every after-group entirely below both in both sittings.
+`bench_loop.ns`, level with `be3eb40` before this step, is now clearly below
+it.
+
+**The forced inlining explains none of it.** The attribution binary is
+within ±2.1% of start on every source, every group overlapping, the sign
+changing between sittings on three sources: on 3a's code the optimizer inlined
+the step anyway, so forcing it does nothing. The caches account for the whole
+gain; the forcing is what keeps it, once the caches' hit path makes the step
+too large for the inliner — the standing hazard [dispatch.md](dispatch.md)
+records.
+
+**The 16-byte entry** (`16e901f`, on the branch
+`experiment/sixteen-byte-entry`, against `c9c3c0f`): an index into side
+tables of methods and mixins instead of an `Rc`, which makes a `Target` 12
+bytes and an entry 16. Change of the mean, sitting 1 / sitting 2:
+`bench_loop.ns` +2.02% / +1.36%, `bench_send.ns` +0.84% / +2.33% (entirely
+above in the second sitting), `bench_block.ns` +0.45% / +0.92%,
+`bench_do.ns` +2.72% / +2.03%, `bench_new.ns` +0.22% / −1.42%,
+`bench_new2.ns` +0.08% / +0.14%, `bench_newarg.ns` +0.06% / +0.14%; every other
+group overlapping. No source is faster. A plausible cause, not verified: a
+hit reads a second, separately allocated vector where the 24-byte entry
+already holds the pointer. The side tables also grow with every genuine miss,
+not with distinct methods, so a megamorphic site cycling through more
+receiver shapes than the global cache holds grows them without bound until an
+invalidation — a regime none of the seven sources reaches, and one the cache
+stress mode cannot show, since it empties the tables at every safepoint. It
+was not adopted; the decision is the user's
+([PROGRESS.md](../PROGRESS.md), open findings).
+
+**What the caches hold** (`--cache-statistics`, a release build of
+`c9c3c0f`). An entry is 24 bytes, a polymorphic block 96, a global-cache
+entry 32, so the global cache is 32 KB whatever the program.
+
+| Source | Sites (filled) | Global entries filled |
+|---|---|---|
+| `bench_loop.ns` | 15 (14) | 10 of 1024 |
+| `bench_send.ns` | 15 (14) | 11 |
+| `bench_block.ns` | 16 (15) | 12 |
+| `bench_do.ns` | 12 (11) | 9 |
+| `bench_new.ns` | 15 (14) | 12 |
+| `bench_new2.ns` | 16 (15) | 13 |
+| `bench_newarg.ns` | 16 (15) | 13 |
+| `TestActor.ns`, `TextModule.ns` | 0 | 0 |
+| `MirrorTestingModel.ns` | 1 (1) | 1 |
+| `Ducts.ns`, `NewspeakASTs.ns`, `V5BytecodeSimulation.ns` | 2 (2) | 2 |
+
+The corpus rows are each `corpus/runnable.toml` module run with its entry
+selector. No site went polymorphic or megamorphic anywhere: every site these
+programs reach sees one receiver id.
+
+**Codegen sensitivity.** Spec-conformant lookup found a lexical send's
+decision sensitive to how its result travelled, 3.4–14.7% for a variant that
+changed nothing else ("What spec-conformant lookup moved" above). The cached
+lexical path does not show it: `bench_send.ns`'s two after-sittings are
+0.14% apart and `bench_block.ns`'s 1.3%, inside the jitter every measurement
+allows, and a codegen-only change — the attribution binary — moved both by
+less than 1%, every group overlapping start's. That closes the finding.
+
+The suite (`cargo test --workspace`, debug build) passes under both stress
+modes: about 3 min 9 s under `NS_NEXT_STRESS_MOVES=1` and about 1 min 5 s
+under `NS_NEXT_STRESS_CACHES=1`, which invalidates at every safepoint but
+moves nothing.
 
 ## The trampoline
 
@@ -1692,9 +1882,9 @@ stack is what a trampolined run loop needs, so replacing the Rust-stack
 recursion with a loop that pushes is the same change viewed from the other
 side. Getting there split every send so that it *decides* without *executing*:
 lookup, `doesNotUnderstand:`, native dispatch and the nested-class accessor stay
-in `interpreter/` (`Mutator::decide_send`, `sends::decide_lexical_send`,
-`sends::decide_super_send`), unchanged in what they produce, but they answer a
-`Step` — a value, a method to activate, or a block to activate and what to do
+in `interpreter/` (today `inline_cache::send_public`, `send_lexical` and
+`send_super`, over the lookups in `resolve.rs`), unchanged in what they
+produce, but they answer a `Step` — a value, a method to activate, or a block to activate and what to do
 with its value — instead of activating it. That keeps `vm.rs` free of dispatch
 logic: what moved into the loop is the act of running a body, never the
 decision of which body. The loop gathers a send's arguments from the caller's
@@ -2165,6 +2355,10 @@ binds it is that no native code may ever enter an image.
   trampoline steps, so that no Rust frame is live below a safepoint and the
   root discipline has nothing to root but the host's values. The bound on
   re-entries went with them.
+- **The run loop's per-instruction step is forced inline** (2026-09-16), since
+  the inline caches' hit path makes it too large for the inliner to take on
+  its own, and a step out of line costs every instruction a call; forcing it
+  alone measured no faster ("What the inline caches moved").
 - **The run loop polls a safepoint at every switch and every backward jump**
   ("The VM"): one compare of a flag the heap owns and a cold call when it is
   set, at the points where the loop's locals hold no handle a move would

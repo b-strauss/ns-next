@@ -142,9 +142,9 @@ Newspeak costs an activation for `do:` itself plus real sends for the loop
 mechanism, on top of the block activation per element it already pays. On the
 activation stack a user-method send costs ~91 ns, against ~146 ns on the arena
 binary measured in the same sitting ([execution.md](execution.md), "What the
-activation stack moved"), and the per-call lookup the inline caches remove is
-still in it. A regression today, so the move happens *after* the caches, not
-before. What Milestone 4 owes this section is only that it not deepen the
+activation stack moved"), and the per-call lookup the inline caches now remove
+was still in it then. A regression before the caches, so the move happens
+*after* them, not before. What Milestone 4 owes this section is only that it not deepen the
 investment in Rust callbacks while it is rewriting the code around them; step
 2a took the last callback away, as a trampoline step rather than as Newspeak,
 which leaves this ordering as it is.
