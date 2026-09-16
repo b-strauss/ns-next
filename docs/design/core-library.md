@@ -50,13 +50,12 @@ real slot data; the field count is purely a tag.
 
 This is a wart, and it is recorded rather than hidden. It exists because there was
 no second builtin-class slot to spare, and adding one would renumber the image
-format's builtin-class table for no behavioural gain. Once natives are
-method-table entries (planned, [dispatch.md](dispatch.md), "3a — Primitives
-are method-table entries"), all three objects' selectors sit in the one
-`Platform` table, and a selector sent to the wrong one of them is a primitive
-failure, which continues the lookup at `Object` exactly as today's `None`
-does. They keep the shared class,
-since `platform transcript class` answering `Platform` is observable.
+format's builtin-class table for no behavioural gain. Natives are method-table
+entries ([dispatch.md](dispatch.md), "Primitives"), so all three objects'
+selectors sit in the one `Platform` table, and a selector sent to the wrong one
+of them is a primitive failure, which continues the lookup at `Object` exactly
+as any other primitive's failure does. They keep the shared class, since
+`platform transcript class` answering `Platform` is observable.
 
 ## Deviation: `i64` integers
 
@@ -150,27 +149,26 @@ investment in Rust callbacks while it is rewriting the code around them; step
 2a took the last callback away, as a trampoline step rather than as Newspeak,
 which leaves this ordering as it is.
 
-A related item, same cause: native dispatch selects with `match
-selector.as_str()`, a string-comparison chain on the hot path that is not a
-shape a compiler can specialize either. It is part of what one native `+` costs
-on the activation stack, ~53 ns: `bench_send.ns` minus the send decomposition's
-row two. The arena binary's figure for the same difference, ~84 ns, also carries
-a temporaries allocation, so it overstates the native send
-([execution.md](execution.md), "What the activation stack moved"). The fix
-is not a faster `match`. It is planned as step 3a, ahead of the inline caches:
-every native becomes an entry of its builtin class's method table carrying an
+A related item, same cause, closed by step 3a: native dispatch used to select
+with `match selector.as_str()`, a string-comparison chain on the hot path that
+was not a shape a compiler could specialize either — part of what one native
+`+` cost on the activation stack, ~53 ns (`bench_send.ns` minus the send
+decomposition's row two; the arena binary's figure for the same difference,
+~84 ns, also carried a temporaries allocation, so it overstated the native
+send, [execution.md](execution.md), "What the activation stack moved"). Every
+native is now an entry of its builtin class's method table carrying an
 enumerated primitive, found by the ordinary lookups and executed by a `match`
-on the enumeration; a native inline-cache entry then carries the primitive,
-and the JIT emits it inline ([dispatch.md](dispatch.md), "Planned: inline
-caches", "3a — Primitives are method-table entries"). A native whose receiver
-has the wrong shape fails, and a failure passes its level over, so the lookup
-continues at `Object` and ends in `doesNotUnderstand:` if nothing answers —
-the outcome of the `None` a native answers today. It is the first half of "Where this is
-going" above — every builtin method a real method — for the leaves that exist
-now; the second half, Newspeak fallback bodies and library code in Newspeak,
-still comes after the caches. A leaf such as `+` additionally gets an inlined
-fast path in compiled code, guarded like the control-flow inlining, as Cog's
-`bytecodePrimAdd` does.
+on the enumeration ([dispatch.md](dispatch.md), "Primitives"); a native
+inline-cache entry will carry the primitive once 3b exists, and the JIT will
+emit it inline. A native whose receiver has the wrong shape fails, and a
+failure passes its level over, so the lookup continues at `Object` and ends
+in `doesNotUnderstand:` if nothing answers — the outcome the removed `None`
+gave. It is the first half of "Where this is going" above — every builtin
+method a real method — for the leaves that exist now; the second half,
+Newspeak fallback bodies and library code in Newspeak, still comes after the
+caches. A leaf such as `+` will additionally get an inlined fast path in
+compiled code, guarded like the control-flow inlining, as Cog's
+`bytecodePrimAdd` does — not built yet, since it waits on the caches too.
 
 ## Decisions
 
@@ -180,8 +178,8 @@ fast path in compiled code, guarded like the control-flow inlining, as Cog's
   than reversing it: the reasons for that decision — artifact size and the trust
   boundary — apply to leaves, which are almost all of the library.
 - **A native is bound as an enumerated primitive, not a function pointer**, so
-  the JIT can emit it inline — found, once step 3a is built, as an entry of its
-  builtin class's method table, with an access modifier (§5.5 makes `Object`'s
+  a later JIT tier can emit it inline. Found as an entry of its builtin class's
+  method table, with an access modifier (§5.5 makes `Object`'s
   `doesNotUnderstand:` protected).
 - **The core library is headed for Newspeak source with Rust primitives
   underneath**, as Primordial Soup's is, so that every builtin method is a real

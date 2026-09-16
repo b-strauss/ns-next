@@ -2,7 +2,9 @@
 
 > **Status:** built.
 > **Code:** `crates/ns-runtime/src/resolver/`, `dispatch.rs`,
-> `interpreter/mod.rs` (send, `doesNotUnderstand:`, lexical, super, native).
+> `interpreter/mod.rs` (send, `doesNotUnderstand:`, lexical, super, native),
+> `interpreter/sends.rs` (lexical and super sends), `builtins/primitive.rs`
+> (the enumerated primitive and each builtin class's method table).
 
 What a name means is settled in two halves: the resolver fixes the *shape* of
 each reference statically, and dispatch resolves the *target* at run time. They
@@ -279,15 +281,77 @@ Initialization never goes through an accessor ("The initialization itself is not
 accomplished by the setter method"): the instance initializer writes the field
 with `InitializeSlot`.
 
+## Primitives
+
+The builtin classes' natives are entries of their mixins' method tables
+(`MethodEntry::Primitive`, `mixin.rs`), found by the ordinary lookups instead
+of matched by their selector's text. `enum Primitive` (`builtins/primitive.rs`)
+names every native operation, one variant each, grouped by the builtin family
+whose module executes it — `Primitive::Integer(IntegerPrimitive::Add)`,
+`Primitive::Object(ObjectPrimitive::DoesNotUnderstand)`,
+`Primitive::Collection(CollectionPrimitive::Enumerate)` for `do:`,
+`Primitive::Platform(PlatformPrimitive::Show)` and the rest. One function,
+`builtins::execute(mutator, primitive, receiver, selector, arguments)`,
+matches on it — the selector only for the error texts that name the send —
+and the bodies stay in `builtins/`'s modules, with their semantics and error
+text unchanged. An enumeration and not a function pointer, because a later
+JIT tier must be able to recognize a primitive and emit it inline: a function
+pointer can only be called, the ceiling a Rust callback imposes
+([core-library.md](core-library.md)). This is the model of the Smalltalk and
+Newspeak systems above: in Cog and Primordial Soup a primitive is a *method*
+whose primitive number indexes the interpreter's table (`primitiveTable`,
+`Primitives::primitive_table_` in `prior-art/primordialsoup/vm/primitives.cc`),
+and SOMns keeps its primitives as dispatchables in the same table as its
+methods.
+
+The bootstrap fills each builtin mixin's method table from a static list per
+`BuiltinClass` of (selector, access, primitive) (`builtins/primitive.rs`'s
+`method_table`), as a `MethodEntry::Primitive` carrying the primitive and its
+access. Every primitive is `public`, except `Object`'s `doesNotUnderstand:`,
+which §5.5 requires to be `protected`. Before this, a native had no access at
+all and answered any explicit-receiver send, so an explicit
+`x doesNotUnderstand: m` sent from outside the receiver now itself ends in
+`doesNotUnderstand:` — the one behaviour change this step made.
+
+A lookup that reaches a primitive answers `Lookup::Primitive(primitive,
+level)`, `level` being the class object whose method table holds it — the
+same "defining class" a `Lookup::Method` reports.
+
+**A primitive can fail.** `builtins::execute` answers `None` exactly where the
+native it replaced did: a receiver of the wrong variant or payload — a user
+subclass of `Array`, whose instances carry no array payload, or one of the
+three platform objects that share `BuiltinClass::Platform` and are told apart
+by payload shape ([core-library.md](core-library.md), "Tagging inside the
+platform"). A failure passes the level over and the lookup continues from its
+superclass — `Object`, for every builtin — ending in `doesNotUnderstand:` if
+nothing above answers. In Cog a failing primitive falls into its method's
+body, whose code often sends the message on to `super`; these primitives have
+no body, so the lookup does it. Every place that can reach a
+`Lookup::Primitive` carries this rule itself: the arm matches on
+`builtins::execute`'s answer and, on `None`, continues the same lookup from
+`dispatch::lookup_above`, in the five callers that can reach one —
+`Mutator::decide_public_lookup`, whose continuation is the `#[cold]`
+`decide_public_above`; `Mutator::decide_class_side_lookup` and
+`Mutator::decide_does_not_understand_lookup` (`interpreter/mod.rs`), which
+continue inline rather than through a separately named helper; and
+`sends::decide_lexical_lookup` and `sends::decide_super_lookup`
+(`interpreter/sends.rs`), whose continuations are the `#[cold]`
+`decide_lexical_above` and `decide_super_above`. The platform objects keep
+their shared class: a class of their own each would be observable
+(`platform transcript class` answers `Platform`) and is not needed for
+correctness.
+
+Bytecode and image are unaffected: the builtin mixins are built by the
+bootstrap and never serialized, so primitive numbers never reach the wire.
+
 ## Planned: inline caches
 
-Every send would consult a cache at its own call site before running a lookup,
-and a native send would bind an enumerated primitive instead of matching its
-selector as a string. Designed on 2026-09-15, to be built in three steps —
-3a, 3b, 3c below — each landing green and measured on its own. **Nothing in
-this section is built yet**; today every send runs the full lookup of "The
-three lookup algorithms" above, and native dispatch matches
-`selector.as_str()` after the lookup found `Lookup::Native(kind)`.
+Every send would consult a cache at its own call site before running a lookup.
+Designed on 2026-09-15, in three steps — 3a, 3b, 3c below — each landing
+green and measured on its own. **3a is built** — a native send binds an
+enumerated primitive found by the ordinary lookup, "Primitives" above —
+**3b and 3c are not**; every send still runs the full lookup of "The three
+lookup algorithms" above on every occurrence, uncached.
 
 **What bounds the gain.** A cache removes the lookup and nothing else: what an
 activation costs to build is untouched. The last profile, taken before the
@@ -329,91 +393,9 @@ the wrong one, and a cache keyed by it would never hit on a nested class.
 Primordial Soup's per-class-object id is that key, and the price is visible in
 its implicit-receiver cache above.
 
-### 3a — Primitives are method-table entries
+### 3a is built
 
-**Planned.** Native behaviour becomes members of the builtin classes, found by
-the ordinary lookups; the string matching goes.
-
-An `enum Primitive` (`builtins/primitive.rs`) names every native operation,
-one variant each, grouped by the builtin family whose module executes it —
-`Primitive::Integer(IntegerPrimitive::Add)`,
-`Primitive::Object(ObjectPrimitive::DoesNotUnderstand)`,
-`Primitive::Collection(CollectionPrimitive::Enumerate)` for `do:`,
-`Primitive::Platform(PlatformPrimitive::Show)` and the rest. One function,
-`builtins::execute(mutator, primitive, receiver, selector, arguments)`,
-matches on it — the selector only for the error texts that name the send —
-and the bodies stay in today's `builtins/` modules with their semantics and
-error text unchanged. An
-enumeration and not a function pointer, because the JIT tiers must be able to
-recognize a primitive and emit it inline: a function pointer can only be
-called, which is the ceiling a Rust callback imposes
-([core-library.md](core-library.md)).
-
-The bootstrap fills each builtin mixin's method table from a static list per
-`BuiltinClass` of (selector, access, primitive), as a
-`MethodEntry::Primitive` carrying the primitive and its access. A lookup that
-reaches one answers `Lookup::Primitive(primitive, level)` in place of today's
-`Lookup::Native(kind)`, the level being the class whose table holds it. This is the model of the Smalltalk and
-Newspeak systems above: in Cog and Primordial Soup a primitive is a *method* whose primitive
-number indexes the interpreter's table (`primitiveTable`,
-`Primitives::primitive_table_` in `prior-art/primordialsoup/vm/primitives.cc`),
-and SOMns keeps its primitives as dispatchables in the same table as methods.
-It is also the step [core-library.md](core-library.md) is headed for — every
-builtin method a real method — taken for the leaves that exist today.
-
-What goes with it:
-
-- `dispatch::walk`'s early return at a builtin level. `==` sent to an integer
-  reaches `Object`'s entry by the ordinary walk, since `Integer`'s application
-  has `Object`'s as its superclass.
-- `Mutator::dispatch_native_inheriting_object`, which restores that one
-  inheritance step by hand today.
-- The fallbacks in `interpreter/sends.rs` that turn a native's `None` into a
-  public send.
-- Every `match selector.as_str()` in `builtins/` and `platform.rs`.
-
-`ClassData::builtin` stays, for `class_of`, the image's class tags and
-`LoadBuiltinClass`; lookup stops reading it.
-
-**A primitive can fail.** A native answers `None` today when its receiver has
-the wrong shape: a user subclass of `Array`, whose instances carry no array
-payload, or one of the three platform objects that share
-`BuiltinClass::Platform` and are told apart by payload shape
-([core-library.md](core-library.md), "Tagging inside the platform"). Today
-that `None` makes the caller try `Object`'s natives with the same selector, and
-send `doesNotUnderstand:` only if those do not answer either — so a user
-subclass of `String` still answers `=` by `Object`'s identity. It becomes a
-**primitive failure** with exactly that outcome: the failing level is passed
-over and the lookup continues from its superclass — `Object`, for every
-builtin — ending in `doesNotUnderstand:` if nothing above answers. In Cog a
-failing primitive falls into its method's body, whose code often sends the
-message on to `super`; these primitives have no body, so the lookup does it.
-The platform objects keep their shared class: a class of their own each would
-be observable (`platform transcript class` answers `Platform`) and is not
-needed for correctness.
-
-**Access.** Every primitive is `public`, except `Object`'s
-`doesNotUnderstand:`, which §5.5 requires to be `protected`. Today a native has
-no access at all and answers any explicit-receiver send, so an explicit
-`x doesNotUnderstand: m` from outside the receiver now itself ends in
-`doesNotUnderstand:`. That is the one change of behaviour 3a may make; if it
-alters a recorded outcome, the new output is established against §5.5 before
-the golden is updated.
-
-**Bytecode and image:** unchanged. The builtin mixins are built by the
-bootstrap and never serialized — 3a's plan confirms that against the encoder —
-so primitive numbers never reach the wire. Should they ever, in an
-ahead-of-time artifact, they are numbered once and never renumbered, as the
-instruction tags are.
-
-**Tests:** for each family of primitives, that the lookup finds its entry at
-the right level; a primitive failure continuing at `Object` and ending in
-`doesNotUnderstand:`; `Object`'s `doesNotUnderstand:` refusing an
-explicit-receiver send as a protected member. Every golden outcome,
-`run-corpus` under all four variants and the stress suite stay as they are.
-
-**Expected effect, to be measured:** `bench_loop.ns` most, whose 150,000 native
-sends each lose a chain of string comparisons.
+See "Primitives" above.
 
 ### 3b — The caches
 
@@ -753,9 +735,10 @@ by that measurement. The user decides on the numbers.
   reachability rather than only documenting intent.
 - **Dispatch lives in `interpreter/`, once.** Duplicating it into the VM is the
   failure mode this rule exists to prevent.
-- **Planned (2026-09-15): primitives are method-table entries** (3a), bound as
-  an enumerated primitive, so natives are members found by the ordinary
-  lookups, with an access modifier, as in Cog and Primordial Soup.
+- **Primitives are method-table entries** (3a, 2026-09-15), bound as an
+  enumerated primitive, so natives are members found by the ordinary lookups,
+  with an access modifier, as in Cog and Primordial Soup. Built; see
+  "Primitives" above.
 - **Planned (2026-09-15): inline caches per heap** (3b) — monomorphic, a
   polymorphic cache of 4, then megamorphic, with a global cache of 1024
   entries behind every site — guarded on the mixin application, never on the

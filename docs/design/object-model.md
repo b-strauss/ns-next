@@ -107,7 +107,7 @@ Hence three layers:
 ```rust
 struct Mixin {                    // one per declaration, shared for its lifetime
     name: Symbol,
-    methods: IdentityMap<Symbol, MethodEntry>,  // compiled methods and slot accessors
+    methods: IdentityMap<Symbol, MethodEntry>,  // compiled methods, slot accessors, primitives
     slots: Vec<MixinSlot>,        // name, mutability, accessibility
     initializer_expressions: Vec<ast::Statement>,
     factory: Option<Rc<ast::MessagePattern>>,
