@@ -574,13 +574,15 @@ impl<'gc> Mutator<'gc> {
     ///
     /// The caller matches the `Lookup` itself, rather than a wider "what the
     /// send settled on" enum that also carries a primitive's finished
-    /// `Result<Step, Signal>`: that enum is 64 bytes against `Lookup`'s 32,
+    /// `Result<Step, Signal>`: that enum is 64 bytes against `Lookup`'s 24,
     /// so returning one made every send -- slot and method sends included,
     /// which never touch a primitive -- write and re-read a decision through
-    /// memory. Measured on this branch, that shape cost 15-21% on every
-    /// benchmark source. It is the same effect the note on
-    /// `Sparing the second probe` in `docs/design/execution.md` records for
-    /// widening a lookup's answer.
+    /// memory. Dropping it measured 6.5% (`bench_loop.ns`) and 5.1%
+    /// (`bench_send.ns`) faster, the largest single part of the send path's
+    /// cost when primitives became method-table entries. It is the same
+    /// effect `docs/design/execution.md`'s "Sparing the second probe
+    /// measured level" records for widening a lookup's answer, which cost
+    /// 3.4-14.7% there.
     ///
     /// `#[inline(always)]` so that the caller that already holds the
     /// `Lookup` also builds the step, rather than handing the 24-byte value
