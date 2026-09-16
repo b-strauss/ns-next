@@ -287,8 +287,7 @@ impl<'gc> Mutator<'gc> {
         let Value::Object(object) = receiver else {
             return None;
         };
-        let factory_selector = primary_factory_selector(&self.heap, *object)?;
-        if selector != factory_selector {
+        if !is_factory_send(&self.heap, receiver, selector) {
             return None;
         }
         let builtin = self.heap.class_builtin(*object);
@@ -670,6 +669,20 @@ pub(crate) fn primary_factory_selector<'gc>(
             Some(factory) => factory.selector,
             None => Symbol::NEW,
         })
+}
+
+/// Whether `selector` sent to `receiver` is §6.1's instantiation: the
+/// receiver is a class object and the selector its primary factory selector.
+/// The one condition `try_factory_send` acts on, asked without acting.
+pub(crate) fn is_factory_send<'gc>(
+    heap: &Heap<'gc>,
+    receiver: &Value<'gc>,
+    selector: Symbol,
+) -> bool {
+    match receiver {
+        Value::Object(object) => primary_factory_selector(heap, *object) == Some(selector),
+        _ => false,
+    }
 }
 
 fn class_name<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Symbol {

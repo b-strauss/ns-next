@@ -7,14 +7,16 @@
 //! Cog's quick methods and SOMns's `CachedSlotRead`
 //! (`docs/design/dispatch.md`, "Slot accessors").
 
-use crate::mixin::{AccessorKind, SlotAccessor};
+use crate::mixin::AccessorKind;
 use crate::types::*;
+use crate::Symbol;
 
 use super::{Mutator, Signal, Step};
 
 impl<'gc> Mutator<'gc> {
     /// Reads or writes `field` of `receiver`, the absolute field the lookup
-    /// resolved the accessor's mixin-relative slot to. The getter "returns
+    /// resolved the accessor's mixin-relative slot to; `selector` is the
+    /// accessor's own, which the lookup matched it by. The getter "returns
     /// the value of the slot"; the setter "sets the value of the slot to be
     /// the incoming argument. It returns the receiver of the message"
     /// (§6.3.2).
@@ -26,7 +28,8 @@ impl<'gc> Mutator<'gc> {
     pub(crate) fn decide_slot_accessor(
         &mut self,
         receiver: Value<'gc>,
-        accessor: SlotAccessor,
+        kind: AccessorKind,
+        selector: Symbol,
         field: usize,
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
@@ -34,7 +37,7 @@ impl<'gc> Mutator<'gc> {
             Value::Object(object) => Some(object),
             _ => None,
         };
-        let answered = match (accessor.kind, object) {
+        let answered = match (kind, object) {
             (AccessorKind::Getter, Some(object)) => self.heap.instance_field(object, field),
             (AccessorKind::Setter, Some(object)) => arguments
                 .first()
@@ -45,12 +48,12 @@ impl<'gc> Mutator<'gc> {
         };
         answered.map(Step::Value).ok_or_else(|| {
             Signal::Error(NewspeakError {
-                selector: accessor.selector,
+                selector,
                 receiver,
                 message: format!(
                     "{} has no field {field} for the slot accessor {}",
                     self.heap.describe(&receiver),
-                    accessor.selector
+                    selector
                 ),
             })
         })
