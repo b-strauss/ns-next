@@ -92,7 +92,10 @@ that the step is still inline before it times anything (the first finding
 below).
 **One decision from 3b is open and the user's**: whether to pursue the
 16-byte cache entry kept on `experiment/sixteen-byte-entry` (the second
-finding below). 3c does not touch the entry.
+finding below). 3c does not touch the entry. **The points 3b settled on its
+own await the user's confirmation too**: the plan's five refinements and the
+rulings made during execution ([dispatch.md](design/dispatch.md),
+"Decisions").
 
 **Known gaps the step left**, each recorded where it applies:
 
@@ -213,6 +216,10 @@ finding below). 3c does not touch the entry.
   `interpreter::FeedbackBase`; `inline_cache::send_super` reads
   `current_class` and its superclass before it knows whether the send is
   cached, and `send_lexical` computes N twice on a private site's miss.
+  Also open: whether the family map per push shows on the instantiation
+  benchmarks, the condition under which a `Factory` entry would carry the
+  bases of the bodies its instantiation runs — no task isolated the map's
+  cost ([dispatch.md](design/dispatch.md), "Code families").
 - **`ns-cli build`'s `root_class_answers` accepts a slot setter as an entry
   selector, although its own doc comment says it must not.** It checks
   `mixin.methods.get(&symbol)` for any entry that is not a
@@ -2142,15 +2149,17 @@ lookup decided and never decides.
    (`16e901f`).
 10. **The documents.**
 
-The plan sharpened five points of the design, each kept in
+The plan sharpened five points of the design, executed as written and still
+awaiting the user's confirmation, each kept in
 [dispatch.md](design/dispatch.md): a private lexical site is guarded on N's
 application, since one mixin under two superclasses gives a private slot two
 fields; a vacant lexical site skips the global cache, since its privacy is
 not known until it is resolved; a `super` send's handler target re-checks
 the factory on `self`, like its `Factory` target; a block's `family_size` is
 its own subtree's; and the decoder requires dense numbering. The global
-cache writes one probe where Primordial Soup's writes both, a documented
-difference with the same correctness.
+cache writes one probe where Primordial Soup's writes both, a ruling during
+execution with the same correctness, also awaiting confirmation, as are the
+single stored dispatch id and the forced step inlining.
 
 **Measurement.** Whole, against 3a's head (`49a2a38`) and `be3eb40`, in two
 sittings by the protocol: every source is 4.3–11.3% faster than 3a's head

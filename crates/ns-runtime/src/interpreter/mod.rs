@@ -1965,8 +1965,8 @@ mod tests {
     /// `resolve::resolved_public` matches as it is rather than through the
     /// 64-byte settled enum 3a measured as costly on this path
     /// (`docs/design/execution.md`, "What primitives as method-table entries
-    /// moved"); pinned here so that growing a `Lookup` variant widens that
-    /// path noticeably rather than quietly.
+    /// moved"); pinned here so that growing a `Lookup` variant fails this
+    /// test instead of quietly widening that path.
     /// Unlike `Result<Step, Signal>` above, this one does not grow in a debug
     /// build: `SlotAccessor`'s own 12 bytes plus the absolute field index it
     /// carries already need a 24-byte slot once alignment rounds it up, and a

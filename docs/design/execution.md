@@ -1882,7 +1882,7 @@ stack is what a trampolined run loop needs, so replacing the Rust-stack
 recursion with a loop that pushes is the same change viewed from the other
 side. Getting there split every send so that it *decides* without *executing*:
 lookup, `doesNotUnderstand:`, native dispatch and the nested-class accessor stay
-in `interpreter/` (today `inline_cache::send_public`, `send_lexical` and
+in `interpreter/` (`inline_cache::send_public`, `send_lexical` and
 `send_super`, over the lookups in `resolve.rs`), unchanged in what they
 produce, but they answer a `Step` — a value, a method to activate, or a block to activate and what to do
 with its value — instead of activating it. That keeps `vm.rs` free of dispatch
@@ -2355,7 +2355,8 @@ binds it is that no native code may ever enter an image.
   trampoline steps, so that no Rust frame is live below a safepoint and the
   root discipline has nothing to root but the host's values. The bound on
   re-entries went with them.
-- **The run loop's per-instruction step is forced inline** (2026-09-16), since
+- **The run loop's per-instruction step is forced inline** (2026-09-16; a
+  ruling during 3b, awaiting the user's confirmation), since
   the inline caches' hit path makes it too large for the inliner to take on
   its own, and a step out of line costs every instruction a call; forcing it
   alone measured no faster ("What the inline caches moved").
