@@ -731,6 +731,12 @@ impl<'gc> Mutator<'gc> {
     /// `Object`'s own primitive one, which every class that does not
     /// override it inherits, arrives as `Lookup::Primitive` and is run like
     /// any other primitive.
+    ///
+    /// `#[cold]`: it is what a send does when nothing answered it, so the
+    /// "not found" arm of an inlined finisher must not take a register or a
+    /// cache line from the arms that did find something.
+    #[cold]
+    #[inline(never)]
     fn decide_does_not_understand(
         &mut self,
         receiver: Value<'gc>,
@@ -746,7 +752,10 @@ impl<'gc> Mutator<'gc> {
     /// the receiver's own class, so a subclass's own `doesNotUnderstand:`
     /// does not answer a `super` send that its superclass cannot. A class
     /// object's `super` send of its own factory selector still instantiates
-    /// (`try_factory_send`), exactly as the same send to it does.
+    /// (`try_factory_send`), exactly as the same send to it does. `#[cold]`
+    /// for the reason `decide_does_not_understand` gives.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn decide_super_does_not_understand(
         &mut self,
         receiver: Value<'gc>,
