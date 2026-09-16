@@ -19,7 +19,9 @@ use crate::interpreter::locals::{
     home_of, read_local, read_outer_local, store_instance_field, write_local, write_outer_local,
 };
 use crate::interpreter::sends::{decide_lexical_send, decide_super_send};
-use crate::interpreter::{EvaluationResult, HostResult, Interpreter, Mutator, Signal, Step};
+use crate::interpreter::{
+    EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Signal, Step,
+};
 use crate::types::*;
 
 /// What the loop does after one instruction.
@@ -33,6 +35,7 @@ enum Flow {
         activation: ActivationReference,
         code: Rc<CompiledCode>,
         program_counter: usize,
+        feedback_base: FeedbackBase,
     },
     /// The activation `run` was given is done, and so is everything it
     /// activated.
@@ -59,18 +62,26 @@ enum Flow {
 /// before), and `NonLocalReturn` (control leaves with a signal). Nothing reads
 /// `program_counter` while a straight-line instruction executes.
 pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> HostResult {
-    let (floor, mut code) = interpreter.enter(|mutator| {
+    let (floor, mut code, mut feedback_base) = interpreter.enter(|mutator| {
         (
             mutator.heap.activation_position(base),
             mutator.heap.activation_code(base),
+            mutator.heap.activation_feedback_base(base),
         )
     });
     let mut activation = base;
     let mut program_counter = 0usize;
     loop {
-        match interpreter
-            .enter(|mutator| execute(mutator, activation, &code, program_counter, floor))
-        {
+        match interpreter.enter(|mutator| {
+            execute(
+                mutator,
+                activation,
+                &code,
+                program_counter,
+                floor,
+                feedback_base,
+            )
+        }) {
             Flow::Next => {
                 program_counter += 1;
                 debug_assert!(
@@ -90,10 +101,12 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
                 activation: next,
                 code: next_code,
                 program_counter: next_program_counter,
+                feedback_base: next_feedback_base,
             } => {
                 activation = next;
                 code = next_code;
                 program_counter = next_program_counter;
+                feedback_base = next_feedback_base;
                 poll(interpreter);
             }
             Flow::Exit(result) => return result,
@@ -123,6 +136,7 @@ fn execute<'gc>(
     code: &CompiledCode,
     program_counter: usize,
     floor: usize,
+    feedback_base: FeedbackBase,
 ) -> Flow {
     match &code.instructions[program_counter] {
         Instruction::LoadLiteral {
@@ -268,6 +282,10 @@ fn execute<'gc>(
                 code: block.clone(),
                 captured_frame,
                 home,
+                // A block belongs to its enclosing method's family: the
+                // running activation's own base, already in hand here, so
+                // this costs no extra load.
+                feedback_base,
             }));
             write_local(&mut mutator.heap, activation, *destination, value);
             Flow::Next
@@ -382,6 +400,7 @@ fn send<'gc>(
                 activation: callee,
                 code: mutator.heap.activation_code(callee),
                 program_counter: 0,
+                feedback_base: mutator.heap.activation_feedback_base(callee),
             },
             Err(signal) => unwind(mutator, signal, floor),
         },
@@ -426,6 +445,7 @@ fn finish<'gc>(
                         activation: next,
                         code: mutator.heap.activation_code(next),
                         program_counter: 0,
+                        feedback_base: mutator.heap.activation_feedback_base(next),
                     },
                     Err(signal) => unwind(mutator, signal, floor),
                 };
@@ -462,6 +482,7 @@ fn resume_caller<'gc>(
         activation: caller,
         code,
         program_counter: program_counter + 1,
+        feedback_base: mutator.heap.activation_feedback_base(caller),
     }
 }
 

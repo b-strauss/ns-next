@@ -1734,6 +1734,9 @@ fn decode_closure_record<'gc>(
         code,
         captured_frame,
         home,
+        // Never on the wire: a decoded closure is given a fresh range of its
+        // family's size when it is first activated (`Mutator::push_step`).
+        feedback_base: crate::interpreter::FeedbackBase::NOT_ASSIGNED,
     })
 }
 

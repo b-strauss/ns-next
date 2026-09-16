@@ -74,6 +74,7 @@ impl Trace for ClosureData<'_> {
             code: _,
             captured_frame,
             home,
+            feedback_base: _, // not a handle
         } = self;
         tracer.frame(captured_frame);
         tracer.frame(home);

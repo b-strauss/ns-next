@@ -35,6 +35,7 @@ impl World {
                 lowering,
                 argument_buffer: Vec::new(),
                 next_dispatch_id: 0,
+                caches: crate::interpreter::inline_cache::InlineCaches::new(),
             },
         };
         world.enter(|mutator| mutator.bootstrap_builtin_classes());

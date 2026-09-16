@@ -15,6 +15,7 @@
 //! sites that call back into the interpreter while holding one -- which is
 //! most of `interpreter/locals.rs`.
 
+use crate::interpreter::FeedbackBase;
 use crate::mixin::{DispatchId, DispatchIds};
 use crate::types::*;
 use crate::Symbol;
@@ -253,6 +254,10 @@ pub struct ActivationHeader<'gc> {
     pub kind: FrameKind<'gc>,
     /// See `Frame::slot_base`.
     pub slot_base: usize,
+    /// Where the activation's code family starts in the heap's cache table
+    /// (`interpreter::inline_cache::InlineCaches`), found or assigned by
+    /// `Mutator::push_step` before the header is built.
+    pub feedback_base: FeedbackBase,
     /// The body the activation runs. The run loop reads it back to resume a
     /// caller once the activation above it returns.
     pub code: std::rc::Rc<crate::bytecode::CompiledCode>,
@@ -365,6 +370,8 @@ struct StackEntry<'gc> {
     argument_count: u32,
     program_counter: usize,
     slot_base: usize,
+    /// See `ActivationHeader::feedback_base`.
+    feedback_base: FeedbackBase,
     code: std::rc::Rc<crate::bytecode::CompiledCode>,
     then: Continuation<'gc>,
     /// See `ActivationHeader::counted`.
@@ -565,6 +572,7 @@ impl crate::trace::Trace for StackEntry<'_> {
             argument_count: _,
             program_counter: _,
             slot_base: _,
+            feedback_base: _, // not a handle
             code: _,
             then,
             counted: _,
@@ -1112,9 +1120,11 @@ impl<'gc> Heap<'gc> {
     }
 
     /// What activating closure `object` needs, read in one borrow: its body,
-    /// how many parameters it declares, and the frame it captured, whose
-    /// receiver and current class the activation takes. `None` when `object`
-    /// is not a closure.
+    /// how many parameters it declares, the frame it captured, whose
+    /// receiver and current class the activation takes, and its feedback
+    /// base, `FeedbackBase::NOT_ASSIGNED` for a closure an image decoded
+    /// rather than one `MakeClosure` built. `None` when `object` is not a
+    /// closure.
     pub(crate) fn closure_activation(
         &self,
         object: ObjectReference<'gc>,
@@ -1122,12 +1132,14 @@ impl<'gc> Heap<'gc> {
         std::rc::Rc<crate::bytecode::CompiledCode>,
         usize,
         FrameReference<'gc>,
+        FeedbackBase,
     )> {
         self.closure(object).map(|closure| {
             (
                 closure.code.clone(),
                 closure.parameters.len(),
                 closure.captured_frame,
+                closure.feedback_base,
             )
         })
     }
@@ -1139,6 +1151,30 @@ impl<'gc> Heap<'gc> {
     /// through the narrower accessors above.
     pub fn closure_data(&self, object: ObjectReference<'gc>) -> Option<ClosureData<'gc>> {
         self.closure(object).cloned()
+    }
+
+    /// Gives a decoded closure -- the only one still carrying
+    /// `FeedbackBase::NOT_ASSIGNED` once it has been activated -- the fresh
+    /// range `Mutator::push_step` minted for it, so every later activation of
+    /// the same closure object reuses it instead of minting again. On a
+    /// non-closure it does nothing: `image::decode`'s reconciliation is what
+    /// guarantees the caller's object is a closure, not this accessor.
+    fn closure_mut(&mut self, object: ObjectReference<'gc>) -> Option<&mut ClosureData<'gc>> {
+        self.check_object_origin(object);
+        match &mut self.objects[object.index as usize].data {
+            ObjectData::Closure(closure) => Some(closure),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn set_closure_feedback_base(
+        &mut self,
+        object: ObjectReference<'gc>,
+        feedback_base: FeedbackBase,
+    ) {
+        if let Some(closure) = self.closure_mut(object) {
+            closure.feedback_base = feedback_base;
+        }
     }
 
     /// Closure `object`'s captured frame and home, or `None` when `object` is
@@ -1669,6 +1705,7 @@ impl<'gc> Heap<'gc> {
             argument_count,
             program_counter: 0,
             slot_base: header.slot_base,
+            feedback_base: header.feedback_base,
             code: header.code,
             then: header.then,
             counted: header.counted,
@@ -1814,6 +1851,12 @@ impl<'gc> Heap<'gc> {
     pub fn activation_slot_base(&self, activation: ActivationReference) -> usize {
         self.check_activation(activation);
         self.stack.entries[activation.index as usize].slot_base
+    }
+
+    /// Where `activation`'s code family starts in the heap's cache table.
+    pub(crate) fn activation_feedback_base(&self, activation: ActivationReference) -> FeedbackBase {
+        self.check_activation(activation);
+        self.stack.entries[activation.index as usize].feedback_base
     }
 
     pub fn set_activation_program_counter(
@@ -2389,6 +2432,7 @@ mod tests {
             current_class: None,
             kind: FrameKind::TopLevel,
             slot_base: 0,
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
             code: trivial_code(),
             then: Continuation::Deliver,
             counted: true,
@@ -2704,6 +2748,7 @@ mod tests {
                 }),
                 captured_frame,
                 home: home_frame,
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
             }),
         );
         let closure_activation = heap.push_activation(
@@ -2712,6 +2757,7 @@ mod tests {
                 current_class: None,
                 kind: FrameKind::Closure(closure),
                 slot_base: 0,
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
                 code: trivial_code(),
                 then: Continuation::Deliver,
                 counted: true,
@@ -2774,6 +2820,7 @@ mod tests {
                 code: trivial_code(),
                 captured_frame: frame,
                 home: frame,
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
             }),
         );
         let before = [

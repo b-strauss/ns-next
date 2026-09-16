@@ -196,6 +196,11 @@ pub struct ClosureData<'gc> {
     /// The lexically enclosing *method* (or initializer) activation, which a
     /// `^` in the block returns from.
     pub home: FrameReference<'gc>,
+    /// The start of its family's range in the heap's cache table, copied from
+    /// the activation that created it, since a block belongs to its method's
+    /// family. Never serialized: a decoded closure carries `NOT_ASSIGNED`
+    /// and is given a fresh range when it is first activated.
+    pub feedback_base: crate::interpreter::inline_cache::FeedbackBase,
 }
 
 // ---------- Resolver output ----------

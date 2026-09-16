@@ -7,7 +7,7 @@ use crate::heap::ActivationReference;
 use crate::types::*;
 use crate::Symbol;
 
-use super::{Mutator, Signal, Step, StepArguments};
+use super::{FeedbackBase, Mutator, Signal, Step, StepArguments};
 
 /// `newspeak-spec.pdf` §5.7-§5.9: an implicit receiver send whose declaring
 /// class N is at lexical depth `k` is `outer N m`. `enclosing` is the kth
@@ -93,6 +93,7 @@ fn decide_lexical_lookup<'gc>(
             method,
             defining_class,
             arguments: StepArguments::Send,
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
         }),
         Lookup::SlotAccessor(accessor, field) => {
             mutator.decide_slot_accessor(enclosing, accessor, field, arguments)
@@ -184,6 +185,7 @@ fn decide_super_lookup<'gc>(
             method,
             defining_class,
             arguments: StepArguments::Send,
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
         }),
         // `super x` reaches the superclass's accessor even where the
         // receiver's own class overrides it (§5.10, §6.3.2).

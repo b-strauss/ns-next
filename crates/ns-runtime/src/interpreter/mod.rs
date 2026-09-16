@@ -4,6 +4,7 @@
 //! `locals.rs`, the errors a deferred literal raises in `literals.rs`; the
 //! bootstrap and class instantiation are in `instantiate.rs`.
 
+pub(crate) mod inline_cache;
 pub mod instantiate;
 pub(crate) mod literals;
 pub(crate) mod locals;
@@ -20,6 +21,12 @@ use crate::hash::IdentityMap;
 use crate::heap::{ActivationHeader, ActivationReference, Heap, Root};
 use crate::types::*;
 use crate::Symbol;
+
+// `inline_cache` is `pub(crate)`, so `FeedbackBase` on its own would be
+// visible only inside this crate; re-exporting it through `interpreter`
+// (a `pub mod`) is what gives `types.rs`'s `pub` field on `ClosureData` a
+// fully public path to it, which a `pub` field's type must have.
+pub use inline_cache::FeedbackBase;
 
 pub(crate) enum Signal<'gc> {
     Return(ActivationReference, Value<'gc>),
@@ -86,6 +93,10 @@ pub(crate) enum Step<'gc> {
         method: Rc<crate::mixin::MixinMethod>,
         defining_class: ClassReference<'gc>,
         arguments: StepArguments<'gc>,
+        /// The method's family's range, if already known -- a lexical or
+        /// `super` send's decision has none to give, so `push_step` looks it
+        /// up from the code itself when this is `NOT_ASSIGNED`.
+        feedback_base: inline_cache::FeedbackBase,
     },
     /// Activate the closure object `closure`, and do `then` with its value.
     /// A builtin control-flow native's block is marked by its `arguments`,
@@ -234,6 +245,9 @@ pub struct Mutator<'gc> {
     /// `DispatchId::VACANT` it stops minting and applications get `NONE`,
     /// which is never cached: slower, never wrong.
     pub(crate) next_dispatch_id: u32,
+    /// The inline caches (`inline_cache.rs`): per heap, since a dispatch id
+    /// means nothing in another heap.
+    pub(crate) caches: inline_cache::InlineCaches,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -661,6 +675,7 @@ impl<'gc> Mutator<'gc> {
                 method,
                 defining_class,
                 arguments: StepArguments::Send,
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
             }),
             // §6.3.2: a slot's accessors answer an explicit-receiver send
             // exactly when a method with the slot's accessibility would.
@@ -752,6 +767,7 @@ impl<'gc> Mutator<'gc> {
                 method,
                 defining_class,
                 arguments: StepArguments::Send,
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
             })),
             Lookup::SlotAccessor(accessor, field) => {
                 Some(self.decide_slot_accessor(receiver, accessor, field, arguments))
@@ -880,6 +896,7 @@ impl<'gc> Mutator<'gc> {
                 method,
                 defining_class,
                 arguments: StepArguments::Owned(vec![message_argument]),
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
             }),
             // §6.3.2: a mutable slot named `doesNotUnderstand` defines the
             // setter `doesNotUnderstand:`, a method like any other -- so it
@@ -972,10 +989,20 @@ impl<'gc> Mutator<'gc> {
                 method,
                 defining_class,
                 arguments,
+                feedback_base,
             } => {
                 let arguments = arguments.slice(send_arguments);
                 check_method_arity(&method, receiver, arguments.len())?;
                 let code = method.code.clone();
+                // A decision never knows its method's range -- only
+                // `push_step`, about to activate the family's root, does --
+                // so every decider hands `NOT_ASSIGNED` and this is where it
+                // is found, once, per family (`inline_cache::InlineCaches::base_for`).
+                let feedback_base = if feedback_base == FeedbackBase::NOT_ASSIGNED {
+                    self.caches.base_for(&code)
+                } else {
+                    feedback_base
+                };
                 let temporaries = (code.register_count - code.argument_count) as usize;
                 self.push(
                     ActivationHeader {
@@ -986,6 +1013,7 @@ impl<'gc> Mutator<'gc> {
                         code,
                         then: Continuation::Deliver,
                         counted: true,
+                        feedback_base,
                     },
                     arguments,
                     temporaries,
@@ -999,11 +1027,23 @@ impl<'gc> Mutator<'gc> {
             } => {
                 let control_flow = matches!(arguments, StepArguments::ControlFlow);
                 let arguments = arguments.slice(send_arguments);
-                let (code, parameter_count, captured_frame) = self
+                let (code, parameter_count, captured_frame, closure_feedback_base) = self
                     .heap
                     .closure_activation(closure)
                     .expect("internal: a block step is decided only for a closure object");
                 check_block_arity(&self.heap, parameter_count, captured_frame, arguments.len())?;
+                // A closure's range is minted once, the first time it is
+                // activated: every closure `MakeClosure` creates already
+                // carries its method's family's base (below), so
+                // `NOT_ASSIGNED` here means a closure an image decoded,
+                // which never ran `MakeClosure` at all.
+                let feedback_base = if closure_feedback_base == FeedbackBase::NOT_ASSIGNED {
+                    let fresh = self.caches.fresh_range(code.family_size);
+                    self.heap.set_closure_feedback_base(closure, fresh);
+                    fresh
+                } else {
+                    closure_feedback_base
+                };
                 // Exempt exactly the activation the optimized lowering
                 // inlines away: a block a control-flow native activates for
                 // a `SendInlinable`, and only if the sending activation
@@ -1030,6 +1070,7 @@ impl<'gc> Mutator<'gc> {
                         code,
                         then,
                         counted,
+                        feedback_base,
                     },
                     arguments,
                     temporaries,
@@ -1059,6 +1100,7 @@ impl<'gc> Mutator<'gc> {
                 arguments,
                 then,
             } => {
+                let feedback_base = self.caches.base_for(&code);
                 let temporaries = (code.register_count - code.argument_count) as usize;
                 self.push(
                     ActivationHeader {
@@ -1069,6 +1111,7 @@ impl<'gc> Mutator<'gc> {
                         code,
                         then: Continuation::Instantiate(then),
                         counted: true,
+                        feedback_base,
                     },
                     &arguments,
                     temporaries,
@@ -1076,6 +1119,7 @@ impl<'gc> Mutator<'gc> {
             }
             Step::SuperclassClause(creation) => {
                 let code = nested::superclass_clause_code(&creation.nested);
+                let feedback_base = self.caches.base_for(&code);
                 let temporaries = (code.register_count - code.argument_count) as usize;
                 let (enclosing, index) = (creation.enclosing, creation.index);
                 let activation = self.push(
@@ -1087,6 +1131,7 @@ impl<'gc> Mutator<'gc> {
                         code,
                         then: Continuation::NestedClass(creation),
                         counted: true,
+                        feedback_base,
                     },
                     &[],
                     temporaries,
@@ -1113,6 +1158,7 @@ impl<'gc> Mutator<'gc> {
         then: Continuation<'gc>,
     ) -> Result<ActivationReference, Signal<'gc>> {
         let (code, slot_base) = self.initializer_body(level);
+        let feedback_base = self.caches.base_for(&code);
         let temporaries = (code.register_count - code.argument_count) as usize;
         self.push(
             ActivationHeader {
@@ -1123,6 +1169,7 @@ impl<'gc> Mutator<'gc> {
                 code,
                 then,
                 counted: true,
+                feedback_base,
             },
             arguments,
             temporaries,

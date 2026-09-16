@@ -6224,6 +6224,7 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
                 current_class: None,
                 kind: FrameKind::TopLevel,
                 slot_base: 0,
+                feedback_base: ns_runtime::interpreter::FeedbackBase::NOT_ASSIGNED,
                 code: code_with(
                     CodeKind::Method,
                     0,
@@ -6293,6 +6294,7 @@ fn a_frames_sender_survives_a_round_trip() {
                         code: foo.clone(),
                         captured_frame: frame,
                         home: frame,
+                        feedback_base: ns_runtime::interpreter::FeedbackBase::NOT_ASSIGNED,
                     }),
                 );
                 vec![mutator.stash(Value::Object(closure))]

@@ -936,16 +936,23 @@ fn encode_closure_record<'gc>(
     context: &EncodeContext<'_, 'gc>,
     symbols: &mut symbols::Builder,
 ) {
-    writer.write_u16(u16_field(
-        "closure parameter count",
-        closure.parameters.len(),
-    ));
-    for parameter in closure.parameters.iter() {
+    // Destructured, not read field by field: a new `ClosureData` field must
+    // say here whether it belongs on the wire, rather than silently being
+    // left off it.
+    let ClosureData {
+        parameters,
+        code,
+        captured_frame,
+        home,
+        feedback_base: _, // never on the wire; see `decode_closure_record`
+    } = closure;
+    writer.write_u16(u16_field("closure parameter count", parameters.len()));
+    for parameter in parameters.iter() {
         writer.write_u32(symbols.intern(parameter.as_str()));
     }
-    writer.write_u32(context.code_ids.id_of(&closure.code));
-    writer.write_u32(context.table.frame_id(context.heap, closure.captured_frame));
-    writer.write_u32(context.table.frame_id(context.heap, closure.home));
+    writer.write_u32(context.code_ids.id_of(code));
+    writer.write_u32(context.table.frame_id(context.heap, *captured_frame));
+    writer.write_u32(context.table.frame_id(context.heap, *home));
 }
 
 /// A class object's record: which declaration it applies, and the three
