@@ -2,6 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **What landed differs from this plan in one shape.** A plan is an execution
+> record and is left as written, so this one still describes a
+> `Mutator::settle` answering a `Settled` enum. That shape measured 5.5–22.4%
+> slower than the commit the step started from, because every send returned
+> its decision through an enum carrying a whole `Result<Step, Signal>`; five
+> `perf:` commits replaced it with per-caller handling and a cold continuation
+> helper. **`docs/design/dispatch.md` describes what the code does; read it
+> for the failure rule's real shape**, and `docs/design/execution.md`, "What
+> primitives as method-table entries moved", for the measurement.
+
 **Goal:** Every native method becomes an entry of its builtin class's method
 table carrying an enumerated `Primitive`, found by the ordinary lookups and
 executed by a `match` on the enumeration, so that no send matches a selector
