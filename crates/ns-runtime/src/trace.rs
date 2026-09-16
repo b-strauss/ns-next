@@ -91,7 +91,7 @@ impl Trace for ClassData<'_> {
             superclass,
             builtin: _,
             metaclass,
-            dispatch_ids: _, // not a handle
+            dispatch_id: _, // not a handle
         } = self;
         trace_optional_object(enclosing, tracer);
         trace_optional_object(declaring_class, tracer);

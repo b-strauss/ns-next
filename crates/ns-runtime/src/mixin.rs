@@ -53,6 +53,21 @@ impl DispatchId {
         debug_assert!(value < DispatchId::VACANT.0);
         DispatchId(value)
     }
+
+    /// The class-side id that goes with this instances id, derived rather
+    /// than stored: `mint_dispatch_ids` always mints a pair consecutively
+    /// (instances first, class side immediately after), so `ClassData` needs
+    /// to keep only the instances id and this recovers the other -- which is
+    /// what keeps a class object the size `CLAUDE.md`'s image-amplification
+    /// paragraph assumes. `NONE` maps to `NONE`, since there is no pair to
+    /// derive one from.
+    pub(crate) fn class_side(self) -> DispatchId {
+        if self == DispatchId::NONE {
+            DispatchId::NONE
+        } else {
+            DispatchId(self.0 + 1)
+        }
+    }
 }
 
 /// An application's two ids: one for its instances, one for its class

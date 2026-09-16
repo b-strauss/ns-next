@@ -103,12 +103,17 @@ pub struct ClassData<'gc> {
     /// one whose mixin declares no class side at all -- §6.3's "no
     /// metaclass" case costs nothing.
     pub metaclass: Option<ClassReference<'gc>>,
-    /// A copy of `application.dispatch_ids`, so that a cache's guard reads
-    /// it from the class object without following the `Rc`
+    /// A copy of `application.dispatch_ids.instances`, so that a cache's
+    /// guard reads it from the class object without following the `Rc`
     /// (`Heap::dispatch_id`). Kept equal to the application's by
     /// `ClassData::new` and `Heap::set_class_application`, the only ways
-    /// either changes.
-    pub dispatch_ids: crate::mixin::DispatchIds,
+    /// either changes. The class-side id is not stored beside it: it is
+    /// derived on demand (`DispatchId::class_side`) from the invariant that
+    /// `mint_dispatch_ids` mints the pair consecutively, which is what keeps
+    /// a class object the size `CLAUDE.md`'s image-amplification paragraph
+    /// assumes rather than paying for a second 4-byte id nothing but that
+    /// derivation needs.
+    pub dispatch_id: crate::mixin::DispatchId,
 }
 
 impl<'gc> ClassData<'gc> {
@@ -122,7 +127,7 @@ impl<'gc> ClassData<'gc> {
         builtin: Option<BuiltinClass>,
     ) -> ClassData<'gc> {
         ClassData {
-            dispatch_ids: application.dispatch_ids,
+            dispatch_id: application.dispatch_ids.instances,
             application,
             enclosing,
             declaring_class,

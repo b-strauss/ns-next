@@ -1360,21 +1360,26 @@ impl<'gc> Heap<'gc> {
         self.check_object_origin(*object);
         let entry = &self.objects[object.index as usize];
         if let ObjectData::Class(data) = &entry.data {
-            return data.dispatch_ids.class_side;
+            return data.dispatch_id.class_side();
         }
         self.check_object_origin(entry.class);
         match &self.objects[entry.class.index as usize].data {
-            ObjectData::Class(data) => data.dispatch_ids.instances,
+            ObjectData::Class(data) => data.dispatch_id,
             _ => DispatchId::NONE,
         }
     }
 
     /// `class`'s ids, or `NONE` when it is not a class object: the key of a
-    /// `super` send and of a private lexical send.
+    /// `super` send and of a private lexical send. `ClassData` stores only
+    /// the instances id (`ClassData::dispatch_id`'s doc comment); this
+    /// rebuilds the pair from it.
     pub fn class_dispatch_ids(&self, class: ClassReference<'gc>) -> DispatchIds {
         self.check_object_origin(class);
         match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.dispatch_ids,
+            ObjectData::Class(data) => DispatchIds {
+                instances: data.dispatch_id,
+                class_side: data.dispatch_id.class_side(),
+            },
             _ => DispatchIds::NONE,
         }
     }
@@ -1442,7 +1447,7 @@ impl<'gc> Heap<'gc> {
     ) -> bool {
         self.check_object_origin(class);
         if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
-            data.dispatch_ids = application.dispatch_ids;
+            data.dispatch_id = application.dispatch_ids.instances;
             data.application = application;
             return true;
         }
@@ -2895,5 +2900,19 @@ mod tests {
                 crate::mixin::DispatchId::NONE
             );
         });
+    }
+
+    /// `CLAUDE.md`'s "An image is untrusted input" paragraph pins the
+    /// decoder's placeholder-arena amplification at "about 16.9x in a
+    /// release build (an `Object` is 56 bytes against a 6-byte minimum
+    /// record...)". That figure holds only while `Object` itself stays 56
+    /// bytes; `ClassData` stores just the one 4-byte `dispatch_id`, deriving
+    /// the class-side id instead of also storing it (`DispatchId::class_side`),
+    /// which is what keeps `ObjectData::Class` from growing past `Object`'s
+    /// other variants and widening the struct.
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
+    #[test]
+    fn an_object_stays_the_size_the_amplification_figure_assumes() {
+        assert_eq!(std::mem::size_of::<Object>(), 56);
     }
 }

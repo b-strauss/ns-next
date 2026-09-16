@@ -484,6 +484,13 @@ impl<'gc> Mutator<'gc> {
     /// `DispatchId::NONE` -- rather than at them -- is what keeps
     /// `DispatchId::from_counter`'s assertion from ever firing on a minted
     /// id.
+    ///
+    /// Always mints the pair consecutively -- `instances` then `instances +
+    /// 1` for `class_side` -- because `ClassData` stores only `instances`
+    /// and derives the other id from it (`DispatchId::class_side`) to keep a
+    /// class object the size `CLAUDE.md`'s image-amplification paragraph
+    /// assumes. The `debug_assert_eq!` below is what would catch the two
+    /// drifting apart if this ever minted them any other way.
     pub(crate) fn mint_dispatch_ids(&mut self) -> crate::mixin::DispatchIds {
         let first = self.next_dispatch_id;
         let Some(after) = first.checked_add(2) else {
@@ -493,9 +500,16 @@ impl<'gc> Mutator<'gc> {
             return crate::mixin::DispatchIds::NONE;
         }
         self.next_dispatch_id = after;
+        let instances = crate::mixin::DispatchId::from_counter(first);
+        let class_side = crate::mixin::DispatchId::from_counter(first + 1);
+        debug_assert_eq!(
+            class_side,
+            instances.class_side(),
+            "internal: a minted pair's class-side id must be exactly one past its instances id"
+        );
         crate::mixin::DispatchIds {
-            instances: crate::mixin::DispatchId::from_counter(first),
-            class_side: crate::mixin::DispatchId::from_counter(first + 1),
+            instances,
+            class_side,
         }
     }
 
@@ -2159,6 +2173,24 @@ mod tests {
 
             let exhausted = mutator.mint_dispatch_ids();
             assert_eq!(exhausted, crate::mixin::DispatchIds::NONE);
+        });
+    }
+
+    /// `ClassData` stores only a pair's `instances` id and derives
+    /// `class_side` from it (`DispatchId::class_side`), which only answers
+    /// the right id because `mint_dispatch_ids` always mints the pair
+    /// consecutively. Minting a handful of pairs and checking each one
+    /// against the derivation is what would catch that invariant breaking,
+    /// beyond the single check `mint_dispatch_ids`'s own `debug_assert_eq!`
+    /// makes on every call.
+    #[test]
+    fn every_minted_pairs_class_side_is_its_instances_id_derived() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            for _ in 0..5 {
+                let pair = mutator.mint_dispatch_ids();
+                assert_eq!(pair.class_side, pair.instances.class_side());
+            }
         });
     }
 }
