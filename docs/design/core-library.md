@@ -160,7 +160,8 @@ send, [execution.md](execution.md), "What the activation stack moved"). A
 native inline-cache entry will carry the primitive once 3b exists, and the
 JIT will emit it inline. A native whose receiver has the wrong shape fails,
 and a failure passes its level over, so the lookup continues at `Object` and
-ends in `doesNotUnderstand:` if nothing answers. It is the first half of "Where this is going" above — every builtin
+ends in `doesNotUnderstand:` if nothing answers. It is the first half of
+"Where this is going" above — every builtin
 method a real method — for the leaves that exist now; the second half,
 Newspeak fallback bodies and library code in Newspeak, still comes after the
 caches. A leaf such as `+` will additionally get an inlined fast path in
