@@ -52,13 +52,13 @@ pub(crate) fn decide_lexical_send<'gc>(
 /// "Otherwise, the #doesNotUnderstand: method defined for S is invoked". The
 /// lookup is `Mutator::resolve_super`.
 ///
-/// `#[inline(never)]` so that the run loop's instruction step stays small
-/// enough to be inlined into the loop itself: with this send's resolve and
-/// `act` inlined as well as the lexical send's, the step became a function
-/// of its own, and every instruction -- not only every send -- paid a call
-/// and a `Flow` returned through memory, 7-13% on all seven benchmarks. A
-/// `super` send is the rarest of the three kinds; the lexical send, which
-/// `bench_loop.ns` makes six of per iteration, keeps its lookup inline.
+/// `#[inline(never)]`: only an uncached `super` send comes here
+/// (`inline_cache::send_super` is the cached one), and the run loop's
+/// instruction step, which inlines every send, need not carry a copy of
+/// its lookup. Inlined, it once made the step a function of its own, and
+/// every instruction -- not only every send -- paid a call and a `Flow`
+/// returned through memory, 6.6-13.6% on all seven benchmarks; `vm::run`
+/// now forces the step inline.
 #[inline(never)]
 pub(crate) fn decide_super_send<'gc>(
     mutator: &mut Mutator<'gc>,

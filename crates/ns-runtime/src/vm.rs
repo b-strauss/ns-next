@@ -75,16 +75,27 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
     let mut activation = base;
     let mut program_counter = 0usize;
     loop {
-        match interpreter.enter(|mutator| {
-            execute(
-                mutator,
-                activation,
-                &code,
-                program_counter,
-                floor,
-                feedback_base,
-            )
-        }) {
+        // The step is forced into the loop rather than left to the
+        // inliner. It is called once, but it is large -- every cached send
+        // inlines its hit path -- and past LLVM's threshold it becomes a
+        // function of its own, so that every instruction, not only every
+        // send, pays a call and a `Flow` returned through memory: 6.6-13.6%
+        // on every benchmark when splitting resolve from act first did that.
+        // Forced, the caches measured 7.5-13.8% faster than that split's
+        // tuned head on all seven benchmarks.
+        match interpreter.enter(
+            #[inline(always)]
+            |mutator| {
+                execute(
+                    mutator,
+                    activation,
+                    &code,
+                    program_counter,
+                    floor,
+                    feedback_base,
+                )
+            },
+        ) {
             Flow::Next => {
                 program_counter += 1;
                 debug_assert!(
