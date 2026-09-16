@@ -30,8 +30,11 @@ pub use heap::{
     ActivationHeader, ActivationReference, ClassReference, FrameReference, Heap, ObjectReference,
     Root,
 };
-pub use interpreter::{HostError, HostResult, HostSignal, Interpreter, Mutator};
-pub use mixin::{Mixin, MixinApplication};
+pub use interpreter::{
+    CacheStatistics, CachedTarget, CachedTargetKind, CallSiteState, HostError, HostResult,
+    HostSignal, Interpreter, MethodSide, Mutator,
+};
+pub use mixin::{DispatchId, DispatchIds, Mixin, MixinApplication};
 pub use resolver::resolve;
 pub use symbol::Symbol;
 pub use types::*;

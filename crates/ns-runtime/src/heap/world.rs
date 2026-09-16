@@ -34,6 +34,8 @@ impl World {
                 spare_walks: Vec::new(),
                 lowering,
                 argument_buffer: Vec::new(),
+                next_dispatch_id: 0,
+                caches: crate::interpreter::inline_cache::InlineCaches::new(),
             },
         };
         world.enter(|mutator| mutator.bootstrap_builtin_classes());
@@ -92,6 +94,17 @@ impl World {
     #[cfg(debug_assertions)]
     pub(crate) fn creations_in_progress(&self) -> usize {
         self.mutator.creations_in_progress
+    }
+
+    /// Vacates every inline cache (`Interpreter::invalidate_caches`, and the
+    /// cache stress mode's safepoint).
+    pub(crate) fn invalidate_caches(&mut self) {
+        self.mutator.caches.invalidate();
+    }
+
+    /// The inline caches' sizes (`Interpreter::cache_statistics`).
+    pub(crate) fn cache_statistics(&self) -> crate::interpreter::inline_cache::CacheStatistics {
+        self.mutator.caches.statistics()
     }
 
     /// Moves every object and every reified frame (`Heap::move_everything`)

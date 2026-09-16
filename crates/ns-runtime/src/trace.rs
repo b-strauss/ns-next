@@ -74,6 +74,7 @@ impl Trace for ClosureData<'_> {
             code: _,
             captured_frame,
             home,
+            feedback_base: _, // not a handle
         } = self;
         tracer.frame(captured_frame);
         tracer.frame(home);
@@ -91,6 +92,7 @@ impl Trace for ClassData<'_> {
             superclass,
             builtin: _,
             metaclass,
+            dispatch_id: _, // not a handle
         } = self;
         trace_optional_object(enclosing, tracer);
         trace_optional_object(declaring_class, tracer);

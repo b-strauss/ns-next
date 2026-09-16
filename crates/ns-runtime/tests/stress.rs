@@ -71,20 +71,25 @@ const EVERY_CONTINUATION: &str = indoc! {"
     ) : ()
 "};
 
+/// Instantiates `class` and answers what its `run` answers.
+fn run_sum(interpreter: &mut Interpreter, class: &Root) -> i64 {
+    let instance = expect_ok(interpreter.instantiate(class, &[]), "instantiate");
+    let sum = expect_ok(
+        interpreter.send(&instance, Symbol::intern("run"), &[]),
+        "run",
+    );
+    interpreter.enter(|mutator| match mutator.fetch(&sum) {
+        Value::SmallInteger(sum) => sum,
+        _ => panic!("run answers a small integer"),
+    })
+}
+
 /// `run`'s answer, how many times everything moved, and how many safepoints
 /// the stress mode took.
 fn run_every_continuation(stress: bool) -> (i64, u32, usize) {
     let (mut interpreter, class) = load(EVERY_CONTINUATION);
     interpreter.set_stress_moves(stress);
-    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let sum = expect_ok(
-        interpreter.send(&instance, Symbol::intern("run"), &[]),
-        "run",
-    );
-    let sum = interpreter.enter(|mutator| match mutator.fetch(&sum) {
-        Value::SmallInteger(sum) => sum,
-        _ => panic!("`run` answers an integer"),
-    });
+    let sum = run_sum(&mut interpreter, &class);
     (sum, interpreter.moves(), interpreter.stress_safepoints())
 }
 
@@ -102,5 +107,22 @@ fn every_continuation_survives_a_move_at_every_safepoint() {
     assert_eq!(
         moves as usize, safepoints,
         "{safepoints} safepoints but {moves} moves: the heap outgrew the stress budget"
+    );
+}
+
+/// The cache stress mode vacates every cache at every safepoint, so filling,
+/// transitions and invalidation all run under a program with every kind of
+/// continuation; its answer is the one without the mode.
+#[test]
+fn the_cache_stress_mode_invalidates_at_every_safepoint_and_changes_no_answer() {
+    let (mut calm_interpreter, calm_class) = load(EVERY_CONTINUATION);
+    let calm = run_sum(&mut calm_interpreter, &calm_class);
+    let (mut interpreter, class) = load(EVERY_CONTINUATION);
+    interpreter.set_stress_caches(true);
+    let stressed = run_sum(&mut interpreter, &class);
+    assert_eq!(calm, stressed);
+    assert!(
+        interpreter.cache_invalidations() > 10,
+        "an invalidation at every safepoint of the run"
     );
 }

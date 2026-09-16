@@ -387,10 +387,10 @@ fn every_instruction_once() -> CompiledCode {
         argument_count: 1,
         register_count: 1,
         statement_program_counter: vec![(0, 0..1)],
-        call_sites: vec![],
+        family_size: 0,
         source: Span::new(1, 2),
     });
-    let call_site = CallSite { call_site_id: 7 };
+    let call_site = CallSite { number: 7 };
     CompiledCode {
         kind: CodeKind::Initializer,
         instructions: vec![
@@ -488,7 +488,12 @@ fn every_instruction_once() -> CompiledCode {
         argument_count: 2,
         register_count: 10,
         statement_program_counter: vec![(0, 0..3), (1, 3..20)],
-        call_sites: vec![call_site, call_site, call_site],
+        // One past the highest number among its own sends (all four share
+        // `call_site` here, so this is not a dense family; nothing in this
+        // round trip runs `verify_code_table`) and the block's `family_size`
+        // (0) -- see `bytecode::family_size_of`, which the decoder recomputes
+        // the same way, so the round trip must agree.
+        family_size: 8,
         source: Span::new(10, 20),
     }
 }
@@ -790,16 +795,141 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_u32(0);
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(OPCODE_BRANCH_IF_TRUE + 1); // ... one past the last real tag
+    writer.write_u8(25); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 21
+            tag: 25
         })
     );
+}
+
+/// One Method body's code table: no statements, `site_count` call-site
+/// entries (the retired list), and `instruction_count` instructions that
+/// `write_instructions` writes.
+fn one_method_code_table(
+    site_count: u32,
+    instruction_count: u32,
+    write_instructions: impl FnOnce(&mut encode::Writer),
+) -> Vec<u8> {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1); // one code entry
+    writer.write_u8(encode::code_kind_tag(CodeKind::Method));
+    writer.write_u16(0); // argument_count
+    writer.write_u16(2); // register_count
+    writer.write_u32(0); // source.start
+    writer.write_u32(0); // source.end
+    writer.write_u32(0); // no statement_program_counter entries
+    writer.write_u32(site_count);
+    for _ in 0..site_count {
+        writer.write_u32(0);
+    }
+    writer.write_u32(instruction_count);
+    write_instructions(&mut writer);
+    writer.into_bytes()
+}
+
+/// A unary send of symbol 0 from register 0 into register 1, under `tag`.
+fn write_unary_send(writer: &mut encode::Writer, tag: u8, number: u32) {
+    writer.write_u8(tag);
+    writer.write_u32(0); // selector: symbol 0
+    writer.write_u16(0); // receiver register
+    writer.write_u16(0); // no argument registers
+    writer.write_u16(1); // destination
+    writer.write_u32(number);
+}
+
+fn write_return(writer: &mut encode::Writer) {
+    writer.write_u8(OPCODE_RETURN);
+    writer.write_u16(1);
+}
+
+/// A body written with the retired `SendPublic` tag -- a stale artifact from
+/// before the call sites were widened -- is refused, not misread.
+#[test]
+fn a_retired_send_tag_is_refused() {
+    let bytes = one_method_code_table(0, 2, |writer| {
+        write_unary_send(writer, 8, 0);
+        write_return(writer);
+    });
+    let mut reader = decode::Reader::new(&bytes);
+    assert_eq!(
+        decode::decode_code_table(&mut reader, &table_with(&["size"])),
+        Err(decode::DecodeError::InvalidTag {
+            what: "instruction",
+            tag: 8
+        })
+    );
+}
+
+/// A code record whose call-site list is not empty was written before the
+/// list was retired; it is refused before its instructions are read.
+#[test]
+fn a_code_record_with_a_call_site_list_is_refused() {
+    let bytes = one_method_code_table(1, 1, write_return);
+    let mut reader = decode::Reader::new(&bytes);
+    assert_eq!(
+        decode::decode_code_table(&mut reader, &symbols::Table::empty()),
+        Err(decode::DecodeError::CallSiteListNotEmpty)
+    );
+}
+
+/// Two sends of one family with one number would share a cache entry, and
+/// a number past the family's count would let a crafted family allocate a
+/// range its bytes do not pay for.
+#[test]
+fn a_family_whose_call_sites_are_not_dense_is_refused() {
+    let shared = one_method_code_table(0, 3, |writer| {
+        write_unary_send(writer, OPCODE_SEND_PUBLIC, 0);
+        write_unary_send(writer, OPCODE_SEND_PUBLIC, 0);
+        write_return(writer);
+    });
+    let sparse = one_method_code_table(0, 2, |writer| {
+        write_unary_send(writer, OPCODE_SEND_PUBLIC, 5);
+        write_return(writer);
+    });
+    // `shared` and `sparse` both miss the count check before `seen` is ever
+    // consulted: `family_size_of` derives `family_size` from the highest
+    // call-site number decoded, not from the wire's instruction count, so
+    // `shared`'s two sends both numbered 0 count 2 against a `family_size` of
+    // 1, and `sparse`'s one send numbered 5 counts 1 against 6. Neither
+    // reaches the `seen[number]` branch. This body numbers three sends 0, 2,
+    // 2: `family_size_of` answers 3 (the highest number plus one), so the
+    // count of 3 matches and the walk proceeds only to find 2 seen twice.
+    let duplicate_within_family_size = one_method_code_table(0, 4, |writer| {
+        write_unary_send(writer, OPCODE_SEND_PUBLIC, 0);
+        write_unary_send(writer, OPCODE_SEND_PUBLIC, 2);
+        write_unary_send(writer, OPCODE_SEND_PUBLIC, 2);
+        write_return(writer);
+    });
+    for bytes in [shared, sparse, duplicate_within_family_size] {
+        let mut reader = decode::Reader::new(&bytes);
+        let table = decode::decode_code_table(&mut reader, &table_with(&["size"]))
+            .expect("each body decodes on its own");
+        assert_eq!(
+            decode::verify_code_table(&table),
+            Err(decode::DecodeError::CallSitesNotDense)
+        );
+    }
+}
+
+/// The same body numbered densely is accepted: the check refuses the
+/// defect, not the shape.
+#[test]
+fn a_family_numbered_densely_is_accepted() {
+    let bytes = one_method_code_table(0, 3, |writer| {
+        write_unary_send(writer, OPCODE_SEND_PUBLIC, 1);
+        write_unary_send(writer, OPCODE_SEND_PUBLIC, 0);
+        write_return(writer);
+    });
+    let mut reader = decode::Reader::new(&bytes);
+    let table =
+        decode::decode_code_table(&mut reader, &table_with(&["size"])).expect("the body decodes");
+    assert_eq!(table.codes[0].family_size, 2);
+    assert_eq!(decode::verify_code_table(&table), Ok(()));
 }
 
 #[test]
@@ -2606,7 +2736,7 @@ fn block_code(argument_count: u16) -> Rc<CompiledCode> {
         argument_count,
         register_count: argument_count + 1,
         statement_program_counter: vec![],
-        call_sites: vec![],
+        family_size: 0,
         source: Span::new(0, 0),
     })
 }
@@ -2938,7 +3068,11 @@ fn code_with(
         argument_count,
         register_count,
         statement_program_counter: vec![],
-        call_sites: vec![],
+        // None of these crafted bodies is exercised for its call-site
+        // numbering: every one either carries no send or is refused by an
+        // earlier check (`verify_body`) before `verify_call_site_numbering`
+        // runs.
+        family_size: 0,
         source: Span::new(0, 0),
     })
 }
@@ -3064,7 +3198,7 @@ fn a_register_in_a_send_argument_list_is_checked_too() {
                 receiver_register: 0,
                 argument_registers: vec![0, 4],
                 destination: 0,
-                call_site: CallSite { call_site_id: 0 },
+                call_site: CallSite { number: 0 },
             },
             Instruction::Return { register: 0 },
         ],
@@ -3090,7 +3224,7 @@ fn a_register_in_a_send_inlinable_is_checked_too() {
                 receiver_register: 0,
                 argument_registers: vec![4],
                 destination: 0,
-                call_site: CallSite { call_site_id: 0 },
+                call_site: CallSite { number: 0 },
             },
             Instruction::Return { register: 0 },
         ],
@@ -4179,14 +4313,7 @@ fn apply_and_wrap<'gc>(
     let application = mutator.apply_mixin(mixin, superclass);
     mutator.heap_mut().allocate_object(
         class_of_class,
-        ObjectData::Class(ClassData {
-            application,
-            enclosing: None,
-            declaring_class: None,
-            superclass: None,
-            builtin: None,
-            metaclass: None,
-        }),
+        ObjectData::Class(ClassData::new(application, None, None, None, None)),
     )
 }
 
@@ -4917,7 +5044,7 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
             argument_count: 0,
             register_count: 1,
             statement_program_counter: vec![(0, 0..2)],
-            call_sites: vec![],
+            family_size: 0,
             source: Span::new(0, 0),
         });
         let doctored = with_nested(mixin_of(mutator.heap(), class), "Derived", |nested| {
@@ -5672,14 +5799,7 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
         let object_class = mutator.builtin_class(BuiltinClass::Object);
         let class: ClassReference = mutator.heap_mut().allocate_object(
             object_class,
-            ObjectData::Class(ClassData {
-                application,
-                enclosing: None,
-                declaring_class: None,
-                superclass: None,
-                builtin: None,
-                metaclass: None,
-            }),
+            ObjectData::Class(ClassData::new(application, None, None, None, None)),
         );
         let platform = mutator.fetch(&platform);
         let Err(error) = image::snapshot(
@@ -6118,6 +6238,7 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
                 current_class: None,
                 kind: FrameKind::TopLevel,
                 slot_base: 0,
+                feedback_base: ns_runtime::interpreter::FeedbackBase::NOT_ASSIGNED,
                 code: code_with(
                     CodeKind::Method,
                     0,
@@ -6187,6 +6308,7 @@ fn a_frames_sender_survives_a_round_trip() {
                         code: foo.clone(),
                         captured_frame: frame,
                         home: frame,
+                        feedback_base: ns_runtime::interpreter::FeedbackBase::NOT_ASSIGNED,
                     }),
                 );
                 vec![mutator.stash(Value::Object(closure))]
@@ -6972,4 +7094,100 @@ fn the_graph_walk_consumes_the_section_exactly() {
             image.len()
         );
     }
+}
+
+/// A snapshot taken with the caches full loads with them empty -- no cache
+/// state and no base is serialized -- and a decoded closure is given a fresh
+/// range of its family's size when it is first activated.
+#[test]
+fn a_snapshot_with_full_caches_loads_with_empty_ones() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Keeper = Object new (
+            | keep ::= nil. |
+        ) (
+            public prepare = ( keep := [:each | each + 1]. ^self )
+            public apply: value = ( ^keep value: value )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    // This test pins what a site holds right after a run -- caches full
+    // before the snapshot, empty right after load -- which the cache stress
+    // mode vacates at every safepoint by design
+    // (`docs/design/dispatch.md`, "Invalidation"); turned off here regardless
+    // of `NS_NEXT_STRESS_CACHES` so the assertions below still run under it.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_caches(false);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("prepare"), &[]),
+        "prepare",
+    );
+    let one = interpreter.stash(Value::SmallInteger(1));
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("apply:"), &[one]),
+        "apply:",
+    );
+    assert!(interpreter.cache_statistics().filled_sites > 0);
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let instance = mutator.fetch(&instance);
+        image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("keeper.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    // `image::load` bootstraps its own interpreter from the environment, so
+    // it must be turned off here too, for the same reason as above.
+    #[cfg(debug_assertions)]
+    loaded.interpreter.set_stress_caches(false);
+    assert_eq!(loaded.interpreter.cache_statistics().site_entries, 0);
+    let forty_one = loaded.interpreter.stash(Value::SmallInteger(41));
+    let answer = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("apply:"), &[forty_one]),
+        "apply: after load",
+    );
+    let answer = loaded
+        .interpreter
+        .enter(|mutator| match mutator.fetch(&answer) {
+            Value::SmallInteger(integer) => integer,
+            _ => panic!("apply: answers a small integer"),
+        });
+    assert_eq!(answer, 42);
+    // `apply:`'s family is two sends (`keep`, `value:`); the decoded block's
+    // is one (`+`, numbered 0 in `prepare`'s family, before the `keep:`
+    // setter that takes the block as its argument).
+    assert_eq!(loaded.interpreter.cache_statistics().site_entries, 3);
+    // A second call reuses the range `fresh_range` minted for the decoded
+    // closure on its first activation (`base_for` supplies only `apply:`'s
+    // own range): the closure's `NOT_ASSIGNED` feedback base is written back
+    // once assigned, so `site_entries` does not grow again. Minting a fresh
+    // range per activation instead -- the defect this pins -- would grow it
+    // by the block's family size of 1, to 4.
+    let one = loaded.interpreter.stash(Value::SmallInteger(1));
+    let second_answer = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("apply:"), &[one]),
+        "apply: a second time after load",
+    );
+    let second_answer = loaded
+        .interpreter
+        .enter(|mutator| match mutator.fetch(&second_answer) {
+            Value::SmallInteger(integer) => integer,
+            _ => panic!("apply: answers a small integer"),
+        });
+    assert_eq!(second_answer, 2);
+    assert_eq!(loaded.interpreter.cache_statistics().site_entries, 3);
 }

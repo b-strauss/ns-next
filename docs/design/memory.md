@@ -19,7 +19,7 @@
 > that lends it out), `interpreter/mod.rs` (`Mutator`, and
 > `Interpreter::enter` with the doctests that pin the brand), `trace.rs`
 > (everything the collector traces), `interpreter/safepoint.rs` (the
-> safepoint and the stress mode), `vm.rs` (one entry per instruction, and
+> safepoint and the two stress modes), `vm.rs` (one entry per instruction, and
 > the poll), `types.rs` (`Value`, `Object`, `Frame`), `mixin.rs` (layout,
 > and the one remaining iterative `Drop`).
 
@@ -588,15 +588,23 @@ whose `captured_frame` and `home` the tracer then rewrites once, in its record.
 A native loop's state is boxed in its continuation (`Box<WhileLoop>`,
 `Box<DoLoop>`), owned by exactly one stack entry.
 
-The inline caches planned in [dispatch.md](dispatch.md) ("3b — The caches")
-add nothing to this list, by design: an entry holds a dispatch id and a target
-— an `Rc` to a method or a mixin, a field index, a primitive — and never a
-handle, the defining class included, which a hit recomputes from the receiver.
-The table lives in the step state, per heap, so nothing in it is ever reached
-from another heap. The ids a cache guards on are per heap and never serialized;
-step 3c may move them into the object header, where they would change
-`Object`'s size and so the amplification figures below, and are still not a
-handle.
+The inline caches ([dispatch.md](dispatch.md), "3b — The caches") add
+nothing to this list, by design, and are not traced: an entry holds a
+dispatch id and a target — an `Rc` to a method or a mixin, a field index, a
+primitive, a level count, a family's `feedback_base` — and never a handle,
+the defining class included, which a hit recomputes from the receiver. The
+polymorphic pool and the global cache hold the same entries, and the family
+map holds `Rc`s to code, which hold no handle. The table lives in the step
+state, per heap, so nothing in it is ever reached from another heap, and a
+move leaves every entry valid. The numbers the caches add to traced records
+are not handles either, and their `Trace` impls say so: a stack entry's and a
+closure's `feedback_base` (`ClosureData.feedback_base`), and a class
+object's `ClassData.dispatch_id`. The ids a cache guards on are per heap and
+never serialized; a class object stores only the instances id, in padding
+`ClassData` already had, so an `Object` is still 56 bytes in a release
+build. Step 3c may move the id into the object header, where it would change
+`Object`'s size and so the amplification figures below, and would still not
+be a handle.
 
 ### Checking the roots before a collector exists: the stress mode
 
@@ -656,6 +664,16 @@ fixture or golden — `build_load.rs` 48.3 s against 3.5 s, `run_fixtures.rs`
 24.5 s against 1.6 s, `snapshot_load.rs` 20.7 s against 1.7 s — so
 `cargo test -p ns-cli` alone takes about 97 s against 7.5 s. `run-corpus`,
 whose six modules are small, takes about a third of a second either way.
+
+**The inline caches have a stress mode of their own**, `NS_NEXT_STRESS_CACHES`,
+which shares this one's safepoint: set, every safepoint first vacates every
+inline cache, then the move schedule runs if it is on too, and either mode
+keeps the safepoint flag set ([dispatch.md](dispatch.md), "Invalidation").
+It moves nothing, so it checks the caches' filling and invalidation rather
+than the roots; the suite takes about 1 min 5 s under it, against about
+3 min 9 s under `NS_NEXT_STRESS_MOVES` (2026-09-16, 3b's head). The two are
+separate gates, not combined, because an entry holds no handle for a move to
+break.
 
 The stress runs are gates: `CLAUDE.md` requires the whole suite and
 `run-corpus` — every runnable module from source and as a built binary, under
@@ -831,6 +849,10 @@ its variables. After it, a surviving block holds exactly what it captured.
   | Record minimum | 6 B | 18 B | — |
   | Release size | 56 B → 9.3x | 136 B → 7.6x | **~16.9x** |
   | Debug size | 96 B → 16.0x | 160 B → 8.9x | ~24.9x |
+
+  The release `Object` size is pinned by a release-build test
+  (`an_object_stays_the_size_the_amplification_figure_assumes`, `heap.rs`),
+  so a field that grows it fails there before this figure goes stale.
 
   A frame-arena entry is a `FrameSlot`: the `Frame` (128 B in a release build,
   152 B in a debug one) and the `live` marriage field beside it, 8 bytes more.

@@ -44,7 +44,8 @@ that lowering is mostly a transliteration rather than a translation.
   — `Binding::OuterLocal`, walking the `captured_frame` chain exactly as
   `frame_at_depth` does.
 
-**Sends** — each carries a `call_site`; see "Call-site identity".
+**Sends** — each carries a `call_site`; see "Safepoints and call-site
+identity".
 
 - `SendPublic { selector, receiver_register, argument_registers, destination, call_site }` — an ordinary
   explicit-receiver send, resolved with `lookupPublic`.
@@ -98,7 +99,7 @@ CompiledCode {
     argument_count: u16,
     register_count: u16,       // arguments + named temporaries + scratch
     statement_program_counter: Vec<(usize, Range<usize>)>,   // safepoints
-    call_sites: Vec<CallSite>,
+    family_size: u32,          // one past the highest call-site number in this body and its blocks
     source: Span,
 }
 ```
@@ -297,26 +298,35 @@ An inlined block's statements are part of the enclosing statement's range;
 `statement_program_counter` records only the code body's own statements. A debugger wanting
 finer stepping inside inlined blocks would extend the table.
 
-`CallSite` is one entry per send instruction, index-addressed: the id is the send
-instruction's own index into `instructions`, so it is stable and reconstructible with no
-separate counter to drift. Each send carries its call site by value and
-`call_sites` lists them in instruction order. **Nothing reads or writes them
-today** — they are inert, existing so that inline caches can start writing state
-into an already-present slot instead of changing `Instruction`'s shape.
+**A send's `CallSite` is its number within its code family**
+(`bytecode::CallSite { number: u32 }`). A family is one root body — a method,
+an instance initializer, a superclass clause or its message, each compiled by
+its own top-level `Lowerer` — with every block nested in it. The lowerer
+hands out numbers from one counter per family in emission order
+(`Lowerer::take_call_site`): a block's lowerer starts where its creator's
+counter stands, and the creator continues from where the block's ended, so a
+family's sends are numbered densely from 0, blocks included, and no two share
+a number. The counter is checked in every build: a family of more than
+`u32::MAX - 1` sends is a compiler-invariant panic, never a wrapped number,
+since two sends sharing a number would share a cache entry.
 
-**Planned (step 3b, [dispatch.md](dispatch.md), "Code families"):** the id
-becomes the send's number within its *family* — a root body with every block
-nested in it, numbered densely — widened to a `u32`, and indexes the running
-heap's cache table from the activation's `feedback_base`. Every `CompiledCode`
-of a family records the family's size, and `call_sites` is no longer needed.
-The widening is a wire change handled by the tag rule: the four send tags are
-retired and the sends take new numbers ([image-format.md](image-format.md)).
-It also closes the open ceiling below, where `next_call_site` checks the
-`u16` with a `debug_assert!` only — harmless while the id is inert, a defect
-once a cache reads it, since two sends would share one entry. The reference
-lowering emits every send with `CallSite::UNCACHED`, so the code it compiles
-runs the full lookup on every send, and is the uncached oracle the cached
-optimized lowering is checked against.
+Each `CompiledCode` records its `family_size`, one past the highest number
+among its own sends and its nested blocks' sizes, 0 when there is none
+(`bytecode::family_size_of`). A block is finished before the root that
+contains it, so a block's size is its own subtree's, and the root's is the
+family's. The decoder derives the size with the same function, never reads
+it, and refuses a family whose numbers are not dense
+([image-format.md](image-format.md), "Verification").
+
+The number indexes the running heap's cache table from the activation's
+`feedback_base`; a send whose number is at or past its body's `family_size`
+runs uncached ([dispatch.md](dispatch.md), "Code families" and
+"`site_index`'s rule"). **`CallSite::UNCACHED`** (`u32::MAX`) is the number
+no family reaches, and the reference lowering emits it on every send, so
+everything it compiles runs the full lookup on every send, records nothing,
+and is the uncached oracle the cached optimized lowering is checked against
+("The reference lowering" below). Its `family_size` is 0. `ns-next disasm`
+prints a send's number as `@N`, and `UNCACHED` as `@-`.
 
 ## Compilation cannot fail
 
@@ -373,10 +383,15 @@ rewrite inside an inlined block, and the lowering of `^` there. Because it is
 written independently rather than as a mode of `Lowerer`, it also checks
 everything else a lowering decides: cascades, argument order, assignments and
 their setter sends, the `^` rule per code kind, how a body ends, the
-initializer's shape, and closure compilation.
+initializer's shape, and closure compilation. And because every send it
+emits is `CallSite::UNCACHED`, it runs every send through the full lookup
+while the optimized lowering's sends go through the inline caches, so it
+checks the caches too: a hit that did anything a lookup would not shows as
+the two lowerings disagreeing ([dispatch.md](dispatch.md), "3b — The
+caches").
 
 What it cannot check is anything the two share: the instructions' semantics in
-the VM, dispatch, the natives, `InitializeSlot` addressing, and the definitions both
+the VM, the lookups themselves, the natives, `InitializeSlot` addressing, and the definitions both
 take from `interpreter/`. Golden tests of exit status, stdout and stderr cover
 those. Nor can it catch a misreading of the specification both lowerings were
 written from; four of the six silent defects Milestone 3's review found were of
@@ -439,8 +454,8 @@ against code nothing had checked.
    written again rather than shared.
 9. An initializer is each own slot's initializer followed by `InitializeSlot`, then
    the `initExprs`.
-10. `statement_program_counter`, `call_sites` and `register_count` follow the same rules as in
-    `lower.rs`.
+10. `statement_program_counter` and `register_count` follow the same rules as in
+    `lower.rs`. Every send carries `CallSite::UNCACHED`, and `family_size` is 0.
 
 Its `finish` checks that shape in a debug build, which is what the test suite
 runs (`check_shape`): no branch instruction, since only inlining emits one;
@@ -448,15 +463,15 @@ every scratch register written by exactly one instruction; a named local
 written only by `StoreLocal`; and a named local read only by `Move`, every other
 operand being a scratch register — rule 3, the property that keeps a value from
 changing under its consumer. The ceilings — at most `u16::MAX` temporaries,
-block parameters, named locals, registers and instructions in a body — are
-checked in every build (`Body::new` and its callers, `fresh`, `emit_send`),
-because an index that wrapped would be silently wrong code. A method's or a
-factory's parameter count comes from the shared `argument_count_of` and
-`factory_argument_count`, whose narrowing rests on the parser's bound instead. The
-optimized lowering is not yet as strict: `lower.rs`'s `allocate_scratch` adds
-without a check, and `next_call_site` guards the call-site id with a
-`debug_assert!` only, so a body past either ceiling is silently wrong in a
-release build. Aligning it with `fresh` and `emit_send` is open.
+block parameters, named locals and registers in a body — are checked in every
+build (`Body::new` and its callers, `fresh`), because an index that wrapped
+would be silently wrong code. A method's or a factory's parameter count comes
+from the shared `argument_count_of` and `factory_argument_count`, whose
+narrowing rests on the parser's bound instead. The optimized lowering is not
+yet as strict: `lower.rs`'s `allocate_scratch` adds without a check, so a
+body past that ceiling is silently wrong in a release build. Aligning it with
+`fresh` is open. (Its call-site counter is checked in every build; see
+"Safepoints and call-site identity".)
 
 ### Selecting it
 
@@ -694,9 +709,12 @@ signatures is a design change to the image module's interface, not a migration.
   side effects and the inlined loop would diverge from the native one.
 - **Code lives on the mixin and `InitializeSlot` is mixin-relative**, because one mixin
   backs many applications with different inherited layouts.
-- **Call-site slots are emitted inert from the start**, so wiring up inline caches
-  changes no instruction's shape; step 3b changes only the id's meaning and
-  width (planned, "Safepoints and call-site identity").
+- **Every send carries a call site, numbered per code family as a `u32`**, so
+  the inline caches index a per-heap table without any instruction changing
+  shape; the reference lowering's `UNCACHED` makes it the uncached oracle
+  ("Safepoints and call-site identity"). The id was emitted inert, as the
+  instruction's own index, before the caches existed; the caches changed only
+  its meaning and width.
 - **The reference lowering is an independent module, not a mode of `Lowerer`**,
   so that it checks everything a lowering decides and no optimization can switch
   it off by forgetting a guard.

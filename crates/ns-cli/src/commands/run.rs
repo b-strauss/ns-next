@@ -10,7 +10,12 @@ use crate::source;
 /// instantiate the root class with whatever its declared primary factory
 /// takes, send the entry selector with whatever `entry_arguments` sizes for it,
 /// report.
-pub(crate) fn execute(file: &Path, send: &str, lowering: ns_runtime::Lowering) -> ExitCode {
+pub(crate) fn execute(
+    file: &Path,
+    send: &str,
+    lowering: ns_runtime::Lowering,
+    cache_statistics: bool,
+) -> ExitCode {
     let loaded = match source::load_source(file) {
         Ok(loaded) => loaded,
         Err(code) => return code,
@@ -29,5 +34,11 @@ pub(crate) fn execute(file: &Path, send: &str, lowering: ns_runtime::Lowering) -
         }
     };
     let selector = ns_runtime::Symbol::intern(send);
-    entry::report_entry_send(interpreter.send(&instance, selector, &arguments))
+    let result = interpreter.send(&instance, selector, &arguments);
+    // To stderr, after the answer is decided: no fixture or golden reads
+    // stdout's exit status or stdout content any differently for it.
+    if cache_statistics {
+        entry::print_cache_statistics(&interpreter.cache_statistics());
+    }
+    entry::report_entry_send(result)
 }

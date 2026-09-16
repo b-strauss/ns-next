@@ -899,3 +899,73 @@ fn an_explicit_does_not_understand_send_is_refused_as_protected() {
         "Uncaught Newspeak error: an object does not understand #doesNotUnderstand:\n",
     );
 }
+
+/// One site that reaches a user `doesNotUnderstand:`, the setter of a
+/// mutable slot named `doesNotUnderstand` (§6.3.2: a method like any other,
+/// so it is the handler, and answers the receiver), and `Object`'s own
+/// handler, which ends the run. A cache that recorded one handler must not
+/// answer another receiver with it (`docs/design/dispatch.md`, "3b — The
+/// caches").
+#[test]
+fn a_does_not_understand_site_with_three_kinds_of_handler() {
+    assert_outcome(
+        "cache_dnu_handlers",
+        indoc! {"
+            Newspeak3
+            'Test'
+            class CacheDoesNotUnderstandHandlers usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+                class Catcher = Object new () (
+                    public doesNotUnderstand: message = ( ^'caught ', (message at: 1) printString )
+                )
+                class Recorder = Object new (| public doesNotUnderstand ::= nil. |) (
+                )
+                public main: platform args: args = (
+                    | recorder |
+                    recorder := Recorder new.
+                    {Catcher new. recorder. Catcher new. recorder} do: [:each |
+                        transcript show: (each zork == each) printString; newLine].
+                    transcript show: (recorder doesNotUnderstand at: 1) printString; newLine.
+                    transcript show: (recorder doesNotUnderstand at: 2) size printString; newLine.
+                    {Catcher new. 3} do: [:each | transcript show: each zork printString; newLine].
+                )
+            ) : ()
+        "},
+        1,
+        "false\ntrue\nfalse\ntrue\n#zork\n0\n'caught #zork'\n",
+        "Uncaught Newspeak error: an object does not understand #zork\n",
+    );
+}
+
+/// A primitive that fails where its entry was recorded: `=` and
+/// `printString` on a user subclass of `String`, whose instances carry no
+/// string, fall to `Object`'s; `show:` answers two transcript streams and
+/// fails on the platform object, which shares their class, so the third send
+/// at the same site -- the same dispatch id -- ends in `doesNotUnderstand:`
+/// (`docs/design/dispatch.md`, "A primitive can fail").
+#[test]
+fn a_cached_primitive_that_fails_on_a_receiver_of_the_same_class() {
+    assert_outcome(
+        "cache_failing_primitive",
+        indoc! {"
+            Newspeak3
+            'Test'
+            class CacheFailingPrimitive usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+                class Text = String new () (
+                )
+                public main: platform args: args = (
+                    | text |
+                    text := Text new.
+                    {'abc'. text. 'abc'. text} do: [:each |
+                        transcript show: (each = each) printString; show: ' '; show: each printString; newLine].
+                    {platform transcript. platform. platform transcript} do: [:each |
+                        transcript show: (each = each) printString; newLine].
+                    {'abc'. #(1 2)} do: [:each | transcript show: each size printString; newLine].
+                    {platform transcript. platform transcript. platform} do: [:each | each show: 'shown'. each newLine].
+                )
+            ) : ()
+        "},
+        1,
+        "true 'abc'\ntrue an Object\ntrue 'abc'\ntrue an Object\ntrue\ntrue\ntrue\n3\n2\nshown\nshown\n",
+        "Uncaught Newspeak error: an object does not understand #show:\n",
+    );
+}

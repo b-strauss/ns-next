@@ -9,12 +9,12 @@ initializer InstanceInit (args 1, registers 6)
    3   stmt 1  InitSlot own 1 <- r1
    4   stmt 2  LoadLiteral r1, 0
    5   stmt 2  InitSlot own 2 <- r1
-   6   stmt 3  SendLexical r1 <- depth 0 #greeting () @6
-   7   stmt 3  SendPublic r2 <- r1 #size () @7
-   8   stmt 3  SendLexical r3 <- depth 0 #count: (r2) @8
-   9   stmt 4  SendLexical r1 <- depth 0 #out () @9
+   6   stmt 3  SendLexical r1 <- depth 0 #greeting () @1
+   7   stmt 3  SendPublic r2 <- r1 #size () @2
+   8   stmt 3  SendLexical r3 <- depth 0 #count: (r2) @3
+   9   stmt 4  SendLexical r1 <- depth 0 #out () @4
   10   stmt 4  LoadLiteral r2, 'init ran'
-  11   stmt 4  SendPublic r3 <- r1 #show: (r2) @11
-  12   stmt 4  SendPublic r4 <- r1 #newLine () @12
+  11   stmt 4  SendPublic r3 <- r1 #show: (r2) @5
+  12   stmt 4  SendPublic r4 <- r1 #newLine () @6
   13        -  LoadSelf r5
   14        -  ImplicitReturn r5

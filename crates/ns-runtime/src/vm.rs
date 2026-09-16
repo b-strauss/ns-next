@@ -1,8 +1,11 @@
 //! The register VM's run loop -- and nothing else. `run` executes one
 //! activation and everything it activates, on the `Heap`'s activation stack,
 //! without recursing on the Rust stack: a send asks `interpreter/` what it
-//! means (`Mutator::decide_send`, `sends::decide_lexical_send`,
-//! `sends::decide_super_send`) and, when the answer is an activation, pushes
+//! means (`inline_cache::send_public`, `send_lexical` and `send_super`, which
+//! answer from the call site's cache or fall back on `Mutator::decide_send`,
+//! `sends::decide_lexical_send` and `sends::decide_super_send`, and
+//! `decide_send` itself for the reference lowering's `SendInlinable`) and,
+//! when the answer is an activation, pushes
 //! it and runs it here; a return pops it and resumes the caller. No dispatch
 //! logic, no `doesNotUnderstand:`, no native dispatch and no error text of its
 //! own live here -- dispatch lives in one place, which the reference lowering
@@ -12,14 +15,16 @@ use std::rc::Rc;
 
 use crate::bytecode::{CompiledCode, Instruction, Literal};
 use crate::heap::ActivationReference;
+use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::literals::{
     malformed_integer_error, parse_integer_literal, unresolved_identifier_error,
 };
 use crate::interpreter::locals::{
     home_of, read_local, read_outer_local, store_instance_field, write_local, write_outer_local,
 };
-use crate::interpreter::sends::{decide_lexical_send, decide_super_send};
-use crate::interpreter::{EvaluationResult, HostResult, Interpreter, Mutator, Signal, Step};
+use crate::interpreter::{
+    EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Signal, Step,
+};
 use crate::types::*;
 
 /// What the loop does after one instruction.
@@ -33,6 +38,7 @@ enum Flow {
         activation: ActivationReference,
         code: Rc<CompiledCode>,
         program_counter: usize,
+        feedback_base: FeedbackBase,
     },
     /// The activation `run` was given is done, and so is everything it
     /// activated.
@@ -59,18 +65,42 @@ enum Flow {
 /// before), and `NonLocalReturn` (control leaves with a signal). Nothing reads
 /// `program_counter` while a straight-line instruction executes.
 pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> HostResult {
-    let (floor, mut code) = interpreter.enter(|mutator| {
+    let (floor, mut code, mut feedback_base) = interpreter.enter(|mutator| {
         (
             mutator.heap.activation_position(base),
             mutator.heap.activation_code(base),
+            mutator.heap.activation_feedback_base(base),
         )
     });
     let mut activation = base;
     let mut program_counter = 0usize;
     loop {
-        match interpreter
-            .enter(|mutator| execute(mutator, activation, &code, program_counter, floor))
-        {
+        // The step is forced into the loop rather than left to the
+        // inliner. It is called once, but it is large -- every cached send
+        // inlines its hit path -- and past LLVM's threshold it becomes a
+        // function of its own, so that every instruction, not only every
+        // send, pays a call and a `Flow` returned through memory: 6.6-13.6%
+        // on every benchmark when splitting resolve from act first did that.
+        // Forcing it buys no speed of its own: on the code before the caches,
+        // where the inliner took the step anyway, it moved no benchmark
+        // beyond noise (at most 2.1%). What it keeps is the caches' gain,
+        // 4.3-11.3% against that code, from being paid back in a call per
+        // instruction (`docs/design/execution.md`, "What the inline caches
+        // moved"). The step sits near the threshold: anything added to a
+        // send's hit path lands here.
+        match interpreter.enter(
+            #[inline(always)]
+            |mutator| {
+                execute(
+                    mutator,
+                    activation,
+                    &code,
+                    program_counter,
+                    floor,
+                    feedback_base,
+                )
+            },
+        ) {
             Flow::Next => {
                 program_counter += 1;
                 debug_assert!(
@@ -90,10 +120,12 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
                 activation: next,
                 code: next_code,
                 program_counter: next_program_counter,
+                feedback_base: next_feedback_base,
             } => {
                 activation = next;
                 code = next_code;
                 program_counter = next_program_counter;
+                feedback_base = next_feedback_base;
                 poll(interpreter);
             }
             Flow::Exit(result) => return result,
@@ -123,6 +155,7 @@ fn execute<'gc>(
     code: &CompiledCode,
     program_counter: usize,
     floor: usize,
+    feedback_base: FeedbackBase,
 ) -> Flow {
     match &code.instructions[program_counter] {
         Instruction::LoadLiteral {
@@ -180,11 +213,10 @@ fn execute<'gc>(
             receiver_register,
             argument_registers,
             destination,
-            // `call_site` is the reserved, inert inline-cache slot; nothing
-            // reads or writes it yet.
-            ..
+            call_site,
         } => {
             let receiver = read_local(&mutator.heap, activation, *receiver_register);
+            let family_size = code.family_size;
             send(
                 mutator,
                 activation,
@@ -193,11 +225,22 @@ fn execute<'gc>(
                 *destination,
                 floor,
                 false,
-                |mutator, arguments| mutator.decide_send(receiver, *selector, arguments),
+                |mutator, arguments| {
+                    send_public(
+                        mutator,
+                        feedback_base,
+                        family_size,
+                        *call_site,
+                        receiver,
+                        *selector,
+                        arguments,
+                    )
+                },
             )
         }
-        // Decided exactly as `SendPublic` is; only the depth count treats
-        // the block a control-flow native activates for it differently
+        // Decided as `SendPublic` is, but uncached: only the reference
+        // lowering emits it. Only the depth count treats the block a
+        // control-flow native activates for it differently
         // (`Mutator::push_step`).
         Instruction::SendInlinable {
             selector,
@@ -223,34 +266,59 @@ fn execute<'gc>(
             selector,
             argument_registers,
             destination,
-            ..
-        } => send(
-            mutator,
-            activation,
-            program_counter,
-            argument_registers,
-            *destination,
-            floor,
-            false,
-            |mutator, arguments| {
-                decide_lexical_send(mutator, activation, *depth, *selector, arguments)
-            },
-        ),
+            call_site,
+        } => {
+            let family_size = code.family_size;
+            send(
+                mutator,
+                activation,
+                program_counter,
+                argument_registers,
+                *destination,
+                floor,
+                false,
+                |mutator, arguments| {
+                    send_lexical(
+                        mutator,
+                        activation,
+                        feedback_base,
+                        family_size,
+                        *call_site,
+                        *depth,
+                        *selector,
+                        arguments,
+                    )
+                },
+            )
+        }
         Instruction::SendSuper {
             selector,
             argument_registers,
             destination,
-            ..
-        } => send(
-            mutator,
-            activation,
-            program_counter,
-            argument_registers,
-            *destination,
-            floor,
-            false,
-            |mutator, arguments| decide_super_send(mutator, activation, *selector, arguments),
-        ),
+            call_site,
+        } => {
+            let family_size = code.family_size;
+            send(
+                mutator,
+                activation,
+                program_counter,
+                argument_registers,
+                *destination,
+                floor,
+                false,
+                |mutator, arguments| {
+                    send_super(
+                        mutator,
+                        activation,
+                        feedback_base,
+                        family_size,
+                        *call_site,
+                        *selector,
+                        arguments,
+                    )
+                },
+            )
+        }
         Instruction::MakeClosure {
             destination,
             parameters,
@@ -268,6 +336,10 @@ fn execute<'gc>(
                 code: block.clone(),
                 captured_frame,
                 home,
+                // A block belongs to its enclosing method's family: the
+                // running activation's own base, already in hand here, so
+                // this costs no extra load.
+                feedback_base,
             }));
             write_local(&mut mutator.heap, activation, *destination, value);
             Flow::Next
@@ -382,6 +454,7 @@ fn send<'gc>(
                 activation: callee,
                 code: mutator.heap.activation_code(callee),
                 program_counter: 0,
+                feedback_base: mutator.heap.activation_feedback_base(callee),
             },
             Err(signal) => unwind(mutator, signal, floor),
         },
@@ -426,6 +499,7 @@ fn finish<'gc>(
                         activation: next,
                         code: mutator.heap.activation_code(next),
                         program_counter: 0,
+                        feedback_base: mutator.heap.activation_feedback_base(next),
                     },
                     Err(signal) => unwind(mutator, signal, floor),
                 };
@@ -462,6 +536,7 @@ fn resume_caller<'gc>(
         activation: caller,
         code,
         program_counter: program_counter + 1,
+        feedback_base: mutator.heap.activation_feedback_base(caller),
     }
 }
 

@@ -4,10 +4,12 @@
 //! `locals.rs`, the errors a deferred literal raises in `literals.rs`; the
 //! bootstrap and class instantiation are in `instantiate.rs`.
 
+pub(crate) mod inline_cache;
 pub mod instantiate;
 pub(crate) mod literals;
 pub(crate) mod locals;
 pub(crate) mod nested;
+pub(crate) mod resolve;
 mod safepoint;
 pub(crate) mod sends;
 mod slots;
@@ -15,11 +17,22 @@ mod slots;
 use std::rc::Rc;
 
 use crate::compiler::Lowering;
-use crate::dispatch::{self, Lookup};
 use crate::hash::IdentityMap;
 use crate::heap::{ActivationHeader, ActivationReference, Heap, Root};
 use crate::types::*;
 use crate::Symbol;
+
+// `inline_cache` is `pub(crate)`, so `FeedbackBase` on its own would be
+// visible only inside this crate; re-exporting it through `interpreter`
+// (a `pub mod`) is what gives `types.rs`'s `pub` field on `ClosureData` a
+// fully public path to it, which a `pub` field's type must have.
+pub use inline_cache::FeedbackBase;
+// The inline caches' test view (`Interpreter::call_site_states`) and sizes
+// (`Interpreter::cache_statistics`), public through `interpreter` for the
+// same reason.
+pub use inline_cache::{
+    CacheStatistics, CachedTarget, CachedTargetKind, CallSiteState, MethodSide,
+};
 
 pub(crate) enum Signal<'gc> {
     Return(ActivationReference, Value<'gc>),
@@ -86,6 +99,10 @@ pub(crate) enum Step<'gc> {
         method: Rc<crate::mixin::MixinMethod>,
         defining_class: ClassReference<'gc>,
         arguments: StepArguments<'gc>,
+        /// The method's family's range, if already known -- a lexical or
+        /// `super` send's decision has none to give, so `push_step` looks it
+        /// up from the code itself when this is `NOT_ASSIGNED`.
+        feedback_base: inline_cache::FeedbackBase,
     },
     /// Activate the closure object `closure`, and do `then` with its value.
     /// A builtin control-flow native's block is marked by its `arguments`,
@@ -230,6 +247,13 @@ pub struct Mutator<'gc> {
     /// when it is given back, so it holds no handle a move would have to
     /// find.
     pub(crate) argument_buffer: Vec<Value<'gc>>,
+    /// The next dispatch id `apply_mixin` mints. Past the last id below
+    /// `DispatchId::VACANT` it stops minting and applications get `NONE`,
+    /// which is never cached: slower, never wrong.
+    pub(crate) next_dispatch_id: u32,
+    /// The inline caches (`inline_cache.rs`): per heap, since a dispatch id
+    /// means nothing in another heap.
+    pub(crate) caches: inline_cache::InlineCaches,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -248,6 +272,16 @@ pub struct Interpreter {
     /// `set_stress_moves`). Debug builds only.
     #[cfg(debug_assertions)]
     stress: Option<safepoint::StressMoves>,
+    /// Whether the cache stress mode is on (`NS_NEXT_STRESS_CACHES`, or
+    /// `set_stress_caches`): every safepoint invalidates every inline cache.
+    /// Debug builds only.
+    #[cfg(debug_assertions)]
+    stress_caches: bool,
+    /// How many times the cache stress mode has invalidated the caches since
+    /// it was turned on, for a test to pin that it actually ran
+    /// (`cache_invalidations`). Debug builds only.
+    #[cfg(debug_assertions)]
+    cache_invalidations: usize,
 }
 
 impl Interpreter {
@@ -259,18 +293,29 @@ impl Interpreter {
     /// reference lowering is for checking the optimized one against it; an
     /// artifact decoded into either runs the code it carries.
     pub fn bootstrap_with(lowering: Lowering) -> Interpreter {
-        // Only the debug build's stress mode writes to it below.
+        // Only the debug build's stress modes write to these fields below.
         #[cfg_attr(not(debug_assertions), allow(unused_mut))]
         let mut interpreter = Interpreter {
             world: crate::heap::World::new(lowering),
             running: false,
             #[cfg(debug_assertions)]
             stress: safepoint::StressMoves::from_env(),
+            #[cfg(debug_assertions)]
+            stress_caches: safepoint::stress_caches_from_env(),
+            #[cfg(debug_assertions)]
+            cache_invalidations: 0,
         };
         #[cfg(debug_assertions)]
         {
-            let stress_enabled = interpreter.stress.is_some();
+            let stress_enabled = interpreter.stress.is_some() || interpreter.stress_caches;
             interpreter.world.set_safepoint_requested(stress_enabled);
+            // A fixture run small enough that every insert evicts
+            // (`run_fixtures.rs`); anything not a decimal power of two is
+            // ignored rather than refused, since this reads the ambient
+            // environment rather than an explicit host call.
+            if let Some(entries) = safepoint::global_cache_entries_from_env() {
+                interpreter.set_global_cache_size(entries);
+            }
         }
         interpreter
     }
@@ -435,12 +480,89 @@ impl Interpreter {
         result
     }
 
+    /// The inline-cache states of `method`'s sends of `sent`, `method` looked
+    /// up on `class`'s own mixin (`side` chooses the class side). For tests
+    /// only; empty when `class` is not a class object or has no such method.
+    pub fn call_site_states(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+        sent: Symbol,
+    ) -> Vec<CallSiteState> {
+        self.enter(|mutator| {
+            let Value::Object(object) = mutator.fetch(class) else {
+                return Vec::new();
+            };
+            let Some(application) = mutator.heap.class_application(object) else {
+                return Vec::new();
+            };
+            let mixin = match side {
+                MethodSide::Instance => Some(application.mixin.clone()),
+                MethodSide::Class => application.mixin.class_side.clone(),
+            };
+            let Some(code) = mixin.and_then(|mixin| {
+                mixin
+                    .compiled_method(method)
+                    .map(|found| found.code.clone())
+            }) else {
+                return Vec::new();
+            };
+            mutator.caches.states_of(&code, sent)
+        })
+    }
+
     /// The `platform` object, rooted for a host.
     pub fn platform(&mut self) -> Root {
         self.enter(|mutator| {
             let platform = mutator.platform_value();
             mutator.stash(platform)
         })
+    }
+
+    /// Vacates every inline cache -- every site, every polymorphic block and
+    /// the global cache -- while keeping every code family's assigned range
+    /// (`docs/design/dispatch.md`, "Invalidation"): a running activation's
+    /// `feedback_base` still names the same range afterwards, so the next
+    /// send through a vacated site simply fills it again and answers what it
+    /// answered before.
+    pub fn invalidate_caches(&mut self) {
+        self.world.invalidate_caches();
+    }
+
+    /// The inline caches' sizes: how much of what is allocated is actually
+    /// filled, and how large one entry of each kind is
+    /// (`--cache-statistics`, and the pinning tests).
+    pub fn cache_statistics(&mut self) -> CacheStatistics {
+        self.world.cache_statistics()
+    }
+
+    /// Replaces the global cache with a fresh one of `entries`, vacating
+    /// whatever it held. A test hook (`NS_NEXT_GLOBAL_CACHE_ENTRIES`,
+    /// `run_fixtures.rs`), not an input path a program can reach: `entries`
+    /// must be a power of two, and a host that gets this wrong panics rather
+    /// than the cache rounding it silently.
+    pub fn set_global_cache_size(&mut self, entries: usize) {
+        self.enter(|mutator| mutator.caches.set_global_cache_size(entries));
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Interpreter {
+    /// Turns the cache stress mode on or off for this interpreter, whatever
+    /// `NS_NEXT_STRESS_CACHES` says. For tests. Keeps the safepoint request
+    /// set while the move stress mode is on, since either one alone must
+    /// keep every safepoint coming back to `safepoint`.
+    pub fn set_stress_caches(&mut self, enabled: bool) {
+        self.stress_caches = enabled;
+        self.world
+            .set_safepoint_requested(enabled || self.stress.is_some());
+    }
+
+    /// How many times the cache stress mode has invalidated the caches since
+    /// it was turned on; 0 while it is off.
+    pub fn cache_invalidations(&self) -> usize {
+        self.cache_invalidations
     }
 }
 
@@ -453,6 +575,60 @@ impl<'gc> Mutator<'gc> {
     /// calls it once, in the first entry the world makes.
     pub(crate) fn bootstrap_builtin_classes(&mut self) {
         self.builtin_classes = build_builtin_classes(self);
+        // An immediate has no class field to read a dispatch id from, so the
+        // ids `dispatch_id` answers for one are read once, here, off the
+        // builtin class objects that were just built, and kept in a table of
+        // their own (`Heap::set_immediate_dispatch_ids`).
+        let instances = |mutator: &Mutator<'gc>, kind| {
+            mutator
+                .heap
+                .class_dispatch_ids(mutator.builtin_class(kind))
+                .instances
+        };
+        let ids = [
+            instances(self, BuiltinClass::Nil),
+            instances(self, BuiltinClass::False),
+            instances(self, BuiltinClass::True),
+            instances(self, BuiltinClass::Integer),
+            instances(self, BuiltinClass::Float),
+        ];
+        self.heap.set_immediate_dispatch_ids(ids);
+    }
+
+    /// The next pair of dispatch ids, or `DispatchIds::NONE` once the counter
+    /// is exhausted: an application built after that point is simply never
+    /// cached, which is slower but never wrong, so running out is not an
+    /// error. Stopping strictly before `DispatchId::VACANT` and
+    /// `DispatchId::NONE` -- rather than at them -- is what keeps
+    /// `DispatchId::from_counter`'s assertion from ever firing on a minted
+    /// id.
+    ///
+    /// Always mints the pair consecutively -- `instances` then `instances +
+    /// 1` for `class_side` -- because `ClassData` stores only `instances`
+    /// and derives the other id from it (`DispatchId::class_side`) to keep a
+    /// class object the size `CLAUDE.md`'s image-amplification paragraph
+    /// assumes. The `debug_assert_eq!` below is what would catch the two
+    /// drifting apart if this ever minted them any other way.
+    pub(crate) fn mint_dispatch_ids(&mut self) -> crate::mixin::DispatchIds {
+        let first = self.next_dispatch_id;
+        let Some(after) = first.checked_add(2) else {
+            return crate::mixin::DispatchIds::NONE;
+        };
+        if after > u32::MAX - 1 {
+            return crate::mixin::DispatchIds::NONE;
+        }
+        self.next_dispatch_id = after;
+        let instances = crate::mixin::DispatchId::from_counter(first);
+        let class_side = crate::mixin::DispatchId::from_counter(first + 1);
+        debug_assert_eq!(
+            class_side,
+            instances.class_side(),
+            "internal: a minted pair's class-side id must be exactly one past its instances id"
+        );
+        crate::mixin::DispatchIds {
+            instances,
+            class_side,
+        }
     }
 
     /// After `image::load`: never hand out an identity hash a loaded object
@@ -525,347 +701,22 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// Decides what an ordinary (explicit-receiver) send would run, without
-    /// running it (`docs/design/execution.md`, "Deciding, then running").
-    ///
-    /// Checked first, before any lookup: `ClassName new` (or a class's own
-    /// non-default factory selector) never has a real method to find --
-    /// every class object's own `.class` is a shared placeholder whose
-    /// method table holds only `Object`'s primitives, none of them a factory
-    /// (see `build_builtin_classes` below), so an ordinary `lookup_public`
-    /// search would just fall through to `doesNotUnderstand:` every time.
-    /// `try_factory_send` (`instantiate.rs`) recognizes the shape and decides
-    /// it as an instantiation (`decide_instantiation`) -- not through the host entry
-    /// `instantiate`, which would enter the run loop from inside it, the
-    /// re-entry `run_from_host` refuses; see its own doc comment for why this can
-    /// never double-fire against the superclass clause's own deferred
-    /// factory message (`climb_levels` never decides a send).
+    /// running it (`docs/design/execution.md`, "Deciding, then running"):
+    /// the lookup (`resolve_public`), then what it found (`act`), which
+    /// decides an instantiation (`decide_instantiation`) rather than
+    /// entering the host entry `instantiate`, which would enter the run loop
+    /// from inside it -- the re-entry `run_from_host` refuses. See
+    /// `try_factory_send`'s own doc comment for why this can never
+    /// double-fire against the superclass clause's own deferred factory
+    /// message (`climb_levels` never decides a send).
     pub(crate) fn decide_send(
         &mut self,
         receiver: Value<'gc>,
         selector: Symbol,
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
-        if let Some(result) = self.try_factory_send(&receiver, selector, arguments) {
-            return result;
-        }
-        // §6.3: a class object's class-side methods are reached through its
-        // metaclass, consulted before the class object's own (ordinary,
-        // `Object`-native) behaviour. A whole branch of its own, called out
-        // of line, rather than a `Lookup` folded into the walk below: a
-        // receiver that is not a class object -- every receiver on a hot
-        // send path -- then pays one `is_class` test and nothing else, and
-        // neither the metaclass lookup's `Lookup` nor its outcome takes
-        // room in this frame.
-        if let Value::Object(object) = &receiver {
-            if self.heap.is_class(*object) {
-                if let Some(result) =
-                    self.decide_class_side_send(*object, receiver, selector, arguments)
-                {
-                    return result;
-                }
-            }
-        }
-        let class = self.class_of(&receiver);
-        let lookup = dispatch::lookup_public(&self.heap, class, selector);
-        self.decide_public_lookup(lookup, receiver, selector, arguments)
-    }
-
-    /// What `lookup_public` found, turned into the step it names.
-    ///
-    /// The caller matches the `Lookup` itself, rather than a wider "what the
-    /// send settled on" enum that also carries a primitive's finished
-    /// `Result<Step, Signal>`: that enum is 64 bytes against `Lookup`'s 24,
-    /// so returning one made every send -- slot and method sends included,
-    /// which never touch a primitive -- write and re-read a decision through
-    /// memory. Dropping it measured 6.5% (`bench_loop.ns`) and 5.1%
-    /// (`bench_send.ns`) faster, the largest single part of the send path's
-    /// cost when primitives became method-table entries. It is the same
-    /// effect `docs/design/execution.md`'s "Sparing the second probe
-    /// measured level" records for widening a lookup's answer, which cost
-    /// 3.4-14.7% there.
-    ///
-    /// `#[inline(always)]` so that the caller that already holds the
-    /// `Lookup` also builds the step, rather than handing the 24-byte value
-    /// to a call that answers a 56-byte decision back through memory. The
-    /// `#[cold]` `decide_public_above` below breaks the recursion, so only
-    /// the hot half is duplicated into the senders.
-    #[inline(always)]
-    fn decide_public_lookup(
-        &mut self,
-        lookup: Lookup<'gc>,
-        receiver: Value<'gc>,
-        selector: Symbol,
-        arguments: &[Value<'gc>],
-    ) -> Result<Step<'gc>, Signal<'gc>> {
-        match lookup {
-            Lookup::Method(method, defining_class) => Ok(Step::Method {
-                receiver,
-                method,
-                defining_class,
-                arguments: StepArguments::Send,
-            }),
-            // §6.3.2: a slot's accessors answer an explicit-receiver send
-            // exactly when a method with the slot's accessibility would.
-            Lookup::SlotAccessor(accessor, field) => {
-                self.decide_slot_accessor(receiver, accessor, field, arguments)
-            }
-            // §6: the implicit accessor a nested declaration defines is
-            // reached exactly like any other member, and it ignores `arguments`
-            // -- the accessor is unary, so a send that supplied arguments
-            // did not name it (`walk` matched on the bare selector).
-            Lookup::NestedClass(mixin, declaring_class) => {
-                nested::nested_class(self, &receiver, &mixin, declaring_class)
-            }
-            Lookup::Primitive(primitive, level) => {
-                match crate::builtins::execute(self, primitive, receiver, selector, arguments) {
-                    Some(result) => result,
-                    None => self.decide_public_above(level, receiver, selector, arguments),
-                }
-            }
-            Lookup::NotFound => self.decide_does_not_understand(receiver, selector, arguments),
-        }
-    }
-
-    /// Where a failed primitive sends an explicit-receiver send on: the same
-    /// lookup, continued from the level above the one that declared it
-    /// (`docs/design/dispatch.md`, "A primitive can fail"), so `Object`'s
-    /// primitive of the same selector answers if there is one and
-    /// `doesNotUnderstand:` otherwise.
-    ///
-    /// `#[cold]`, and out of line, because a primitive fails only when its
-    /// receiver has the wrong shape for it -- an instance of a user subclass
-    /// of `String`, which carries no string, or a platform object sent
-    /// another platform object's selector. Every send in a running program
-    /// that reaches a primitive at all normally has the shape that primitive
-    /// works on, so this path must not take registers or a branch from the
-    /// one that does.
-    ///
-    /// It recurses back into `decide_public_lookup` rather than looping,
-    /// which keeps the loop's state out of the hot function entirely. The
-    /// recursion terminates and is shallow: each step moves at least one
-    /// level up a superclass chain that `image::decode` refuses to let form
-    /// a cycle.
-    #[cold]
-    #[inline(never)]
-    fn decide_public_above(
-        &mut self,
-        level: ClassReference<'gc>,
-        receiver: Value<'gc>,
-        selector: Symbol,
-        arguments: &[Value<'gc>],
-    ) -> Result<Step<'gc>, Signal<'gc>> {
-        let lookup = dispatch::lookup_above(&self.heap, dispatch::Rule::Public, level, selector);
-        self.decide_public_lookup(lookup, receiver, selector, arguments)
-    }
-
-    /// §6.3's class-side half of `decide_send`: what the class object
-    /// `class_object`'s metaclass answers for `selector`, or `None` where the
-    /// metaclass does not answer it at all -- which falls through to the class
-    /// object's own behaviour, the caller's ordinary walk. There is no second
-    /// `doesNotUnderstand:` path here, only a second class to try first.
-    ///
-    /// `#[inline(never)]`: only a class object ever reaches it.
-    #[inline(never)]
-    fn decide_class_side_send(
-        &mut self,
-        class_object: ObjectReference<'gc>,
-        receiver: Value<'gc>,
-        selector: Symbol,
-        arguments: &[Value<'gc>],
-    ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-        let metaclass = self.metaclass_of(class_object)?;
-        let lookup = dispatch::lookup_public(&self.heap, metaclass, selector);
-        self.decide_class_side_lookup(lookup, receiver, selector, arguments)
-    }
-
-    /// The class-side branch's own `decide_public_lookup`, kept apart from it
-    /// because its "nothing found" is not `doesNotUnderstand:` but a fall
-    /// through to the class object's own behaviour.
-    fn decide_class_side_lookup(
-        &mut self,
-        lookup: Lookup<'gc>,
-        receiver: Value<'gc>,
-        selector: Symbol,
-        arguments: &[Value<'gc>],
-    ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-        match lookup {
-            Lookup::Method(method, defining_class) => Some(Ok(Step::Method {
-                receiver,
-                method,
-                defining_class,
-                arguments: StepArguments::Send,
-            })),
-            Lookup::SlotAccessor(accessor, field) => {
-                Some(self.decide_slot_accessor(receiver, accessor, field, arguments))
-            }
-            Lookup::NestedClass(mixin, declaring_class) => Some(nested::nested_class(
-                self,
-                &receiver,
-                &mixin,
-                declaring_class,
-            )),
-            // No metaclass chain holds a primitive -- a metaclass's mixins
-            // are class sides or empty stand-ins, never a builtin's instance
-            // mixin -- so this arm is reached only in principle; it is
-            // written out so that nothing here depends on that.
-            Lookup::Primitive(primitive, level) => {
-                match crate::builtins::execute(self, primitive, receiver, selector, arguments) {
-                    Some(result) => Some(result),
-                    None => {
-                        let above = dispatch::lookup_above(
-                            &self.heap,
-                            dispatch::Rule::Public,
-                            level,
-                            selector,
-                        );
-                        self.decide_class_side_lookup(above, receiver, selector, arguments)
-                    }
-                }
-            }
-            Lookup::NotFound => None,
-        }
-    }
-
-    /// §5.5's `doesNotUnderstand:` fallback -- access-blind (`lookup_defined_for`),
-    /// per `docs/design/dispatch.md`.
-    ///
-    /// A user-overridden `doesNotUnderstand:` arrives as `Lookup::Method`;
-    /// `Object`'s own primitive one, which every class that does not
-    /// override it inherits, arrives as `Lookup::Primitive` and is run like
-    /// any other primitive.
-    ///
-    /// `#[cold]`: it is what a send does when nothing answered it, so the
-    /// "not found" arm of an inlined finisher must not take a register or a
-    /// cache line from the arms that did find something.
-    #[cold]
-    #[inline(never)]
-    fn decide_does_not_understand(
-        &mut self,
-        receiver: Value<'gc>,
-        selector: Symbol,
-        arguments: &[Value<'gc>],
-    ) -> Result<Step<'gc>, Signal<'gc>> {
-        let class = self.class_of(&receiver);
-        self.decide_does_not_understand_in(receiver, class, selector, arguments)
-    }
-
-    /// §5.10's failure: "Otherwise, the #doesNotUnderstand: method defined
-    /// for S is invoked" -- looked up from `superclass`, S, rather than from
-    /// the receiver's own class, so a subclass's own `doesNotUnderstand:`
-    /// does not answer a `super` send that its superclass cannot. A class
-    /// object's `super` send of its own factory selector still instantiates
-    /// (`try_factory_send`), exactly as the same send to it does.
-    ///
-    /// `#[cold]`, although this is not purely a failure path: every call
-    /// starts with `try_factory_send`, so a `super new` that does instantiate
-    /// -- a class overriding `new` and delegating to `super` -- passes
-    /// through here too, not only a send nothing answers. That is accepted
-    /// because instantiation's own allocations (the instance, its factory's
-    /// levels, every initializer activation) dwarf what marking this cold
-    /// costs a codegen decision that runs once per `super`-prefixed factory
-    /// send in the whole program, where an ordinary `super` failure runs on
-    /// every miss.
-    #[cold]
-    #[inline(never)]
-    pub(crate) fn decide_super_does_not_understand(
-        &mut self,
-        receiver: Value<'gc>,
-        superclass: ClassReference<'gc>,
-        selector: Symbol,
-        arguments: &[Value<'gc>],
-    ) -> Result<Step<'gc>, Signal<'gc>> {
-        if let Some(result) = self.try_factory_send(&receiver, selector, arguments) {
-            return result;
-        }
-        self.decide_does_not_understand_in(receiver, superclass, selector, arguments)
-    }
-
-    /// `doesNotUnderstand:` for `receiver`, looked up from `class`.
-    fn decide_does_not_understand_in(
-        &mut self,
-        receiver: Value<'gc>,
-        class: ClassReference<'gc>,
-        selector: Symbol,
-        arguments: &[Value<'gc>],
-    ) -> Result<Step<'gc>, Signal<'gc>> {
-        // A minimal message-mirror-shaped value: an Array `{selector.
-        // arguments}` rather than a real MessageMirror object, since mirrors do
-        // not exist yet (`docs/design/liveness-and-reflection.md`, "Mirrors and
-        // MirrorBuilder"). Callers relying on a real `MessageMirror` API are
-        // out of scope. Built before the lookup, since every handler takes
-        // it; allocation order is unobservable, identity hashes being drawn
-        // lazily.
-        let selector_value = self.new_symbol(selector);
-        let arguments_value = Value::Object(self.new_array(arguments.to_vec()));
-        let message_argument = Value::Object(self.new_array(vec![selector_value, arguments_value]));
-        let lookup = dispatch::lookup_defined_for(&self.heap, class, Symbol::DOES_NOT_UNDERSTAND);
-        self.decide_does_not_understand_lookup(lookup, receiver, selector, message_argument)
-    }
-
-    /// What the `doesNotUnderstand:` walk found, turned into the step it
-    /// names. Recursive, for the same reason `decide_public_above` is: a
-    /// handler that is a primitive can fail -- a platform object handed
-    /// `Object`'s `doesNotUnderstand:` still answers it, but a primitive
-    /// that does not recognize its receiver passes its level over and the
-    /// walk continues above it. Nothing here is a hot path: reaching it at
-    /// all means a send found no method.
-    fn decide_does_not_understand_lookup(
-        &mut self,
-        lookup: Lookup<'gc>,
-        receiver: Value<'gc>,
-        selector: Symbol,
-        message_argument: Value<'gc>,
-    ) -> Result<Step<'gc>, Signal<'gc>> {
-        match lookup {
-            Lookup::Method(method, defining_class) => Ok(Step::Method {
-                receiver,
-                method,
-                defining_class,
-                arguments: StepArguments::Owned(vec![message_argument]),
-            }),
-            // §6.3.2: a mutable slot named `doesNotUnderstand` defines the
-            // setter `doesNotUnderstand:`, a method like any other -- so it
-            // is the handler, and stores the message.
-            Lookup::SlotAccessor(accessor, field) => {
-                self.decide_slot_accessor(receiver, accessor, field, &[message_argument])
-            }
-            Lookup::Primitive(primitive, level) => {
-                match crate::builtins::execute(
-                    self,
-                    primitive,
-                    receiver,
-                    Symbol::DOES_NOT_UNDERSTAND,
-                    &[message_argument],
-                ) {
-                    Some(result) => result,
-                    None => {
-                        let above = dispatch::lookup_above(
-                            &self.heap,
-                            dispatch::Rule::DefinedFor,
-                            level,
-                            Symbol::DOES_NOT_UNDERSTAND,
-                        );
-                        self.decide_does_not_understand_lookup(
-                            above,
-                            receiver,
-                            selector,
-                            message_argument,
-                        )
-                    }
-                }
-            }
-            // A nested declaration can never be the `doesNotUnderstand:`
-            // handler: `walk` matches a declaration by name, and a class
-            // name is never a keyword selector. Folded into `NotFound`
-            // rather than given an arm of its own so the unreachable case
-            // still reports the ordinary "nothing handles this" error
-            // instead of a second, differently-worded one.
-            Lookup::NotFound | Lookup::NestedClass(..) => Err(Signal::Error(NewspeakError {
-                selector,
-                receiver,
-                message: format!("doesNotUnderstand: {selector} (and no doesNotUnderstand: found anywhere in the class chain)"),
-            })),
-        }
+        let resolved = self.resolve_public(receiver, selector);
+        self.act(resolved, receiver, None, selector, arguments)
     }
 
     pub(crate) fn take_argument_buffer(&mut self) -> Vec<Value<'gc>> {
@@ -914,10 +765,20 @@ impl<'gc> Mutator<'gc> {
                 method,
                 defining_class,
                 arguments,
+                feedback_base,
             } => {
                 let arguments = arguments.slice(send_arguments);
                 check_method_arity(&method, receiver, arguments.len())?;
                 let code = method.code.clone();
+                // A decision never knows its method's range -- only
+                // `push_step`, about to activate the family's root, does --
+                // so every decider hands `NOT_ASSIGNED` and this is where it
+                // is found, once, per family (`inline_cache::InlineCaches::base_for`).
+                let feedback_base = if feedback_base == FeedbackBase::NOT_ASSIGNED {
+                    self.caches.base_for(&code)
+                } else {
+                    feedback_base
+                };
                 let temporaries = (code.register_count - code.argument_count) as usize;
                 self.push(
                     ActivationHeader {
@@ -928,6 +789,7 @@ impl<'gc> Mutator<'gc> {
                         code,
                         then: Continuation::Deliver,
                         counted: true,
+                        feedback_base,
                     },
                     arguments,
                     temporaries,
@@ -941,11 +803,23 @@ impl<'gc> Mutator<'gc> {
             } => {
                 let control_flow = matches!(arguments, StepArguments::ControlFlow);
                 let arguments = arguments.slice(send_arguments);
-                let (code, parameter_count, captured_frame) = self
+                let (code, parameter_count, captured_frame, closure_feedback_base) = self
                     .heap
                     .closure_activation(closure)
                     .expect("internal: a block step is decided only for a closure object");
                 check_block_arity(&self.heap, parameter_count, captured_frame, arguments.len())?;
+                // A closure's range is minted once, the first time it is
+                // activated: every closure `MakeClosure` creates already
+                // carries its method's family's base (below), so
+                // `NOT_ASSIGNED` here means a closure an image decoded,
+                // which never ran `MakeClosure` at all.
+                let feedback_base = if closure_feedback_base == FeedbackBase::NOT_ASSIGNED {
+                    let fresh = self.caches.fresh_range(code.family_size);
+                    self.heap.set_closure_feedback_base(closure, fresh);
+                    fresh
+                } else {
+                    closure_feedback_base
+                };
                 // Exempt exactly the activation the optimized lowering
                 // inlines away: a block a control-flow native activates for
                 // a `SendInlinable`, and only if the sending activation
@@ -972,6 +846,7 @@ impl<'gc> Mutator<'gc> {
                         code,
                         then,
                         counted,
+                        feedback_base,
                     },
                     arguments,
                     temporaries,
@@ -1001,6 +876,7 @@ impl<'gc> Mutator<'gc> {
                 arguments,
                 then,
             } => {
+                let feedback_base = self.caches.base_for(&code);
                 let temporaries = (code.register_count - code.argument_count) as usize;
                 self.push(
                     ActivationHeader {
@@ -1011,6 +887,7 @@ impl<'gc> Mutator<'gc> {
                         code,
                         then: Continuation::Instantiate(then),
                         counted: true,
+                        feedback_base,
                     },
                     &arguments,
                     temporaries,
@@ -1018,6 +895,7 @@ impl<'gc> Mutator<'gc> {
             }
             Step::SuperclassClause(creation) => {
                 let code = nested::superclass_clause_code(&creation.nested);
+                let feedback_base = self.caches.base_for(&code);
                 let temporaries = (code.register_count - code.argument_count) as usize;
                 let (enclosing, index) = (creation.enclosing, creation.index);
                 let activation = self.push(
@@ -1029,6 +907,7 @@ impl<'gc> Mutator<'gc> {
                         code,
                         then: Continuation::NestedClass(creation),
                         counted: true,
+                        feedback_base,
                     },
                     &[],
                     temporaries,
@@ -1055,6 +934,7 @@ impl<'gc> Mutator<'gc> {
         then: Continuation<'gc>,
     ) -> Result<ActivationReference, Signal<'gc>> {
         let (code, slot_base) = self.initializer_body(level);
+        let feedback_base = self.caches.base_for(&code);
         let temporaries = (code.register_count - code.argument_count) as usize;
         self.push(
             ActivationHeader {
@@ -1065,6 +945,7 @@ impl<'gc> Mutator<'gc> {
                 code,
                 then,
                 counted: true,
+                feedback_base,
             },
             arguments,
             temporaries,
@@ -1424,14 +1305,13 @@ impl<'gc> Mutator<'gc> {
         let class = self.builtin_class(BuiltinClass::Object);
         self.heap.allocate_object(
             class,
-            ObjectData::Class(ClassData {
+            ObjectData::Class(ClassData::new(
                 application,
                 enclosing,
                 declaring_class,
                 superclass,
-                builtin: None,
-                metaclass: None,
-            }),
+                None,
+            )),
         )
     }
 
@@ -1467,12 +1347,14 @@ impl<'gc> Mutator<'gc> {
             nested_slot.insert(crate::mixin::mixin_key(nested), next);
             next += 1;
         }
+        let dispatch_ids = self.mint_dispatch_ids();
         let application = Rc::new(crate::mixin::MixinApplication {
             mixin: mixin.clone(),
             superclass: superclass.cloned(),
             slot_count: next,
             nested_slot,
             own_slot_base: inherited,
+            dispatch_ids,
         });
         self.applications.insert(key, application.clone());
         application
@@ -1640,14 +1522,13 @@ fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<
         let application = mutator.apply_mixin(&builtin_mixin(kind), Some(&object_application));
         classes.push(mutator.heap.allocate_object(
             class_of_class,
-            ObjectData::Class(ClassData {
+            ObjectData::Class(ClassData::new(
                 application,
-                enclosing: None,
-                declaring_class: None,
-                superclass: Some(class_of_class),
-                builtin: Some(kind),
-                metaclass: None,
-            }),
+                None,
+                None,
+                Some(class_of_class),
+                Some(kind),
+            )),
         ));
     }
     classes
@@ -1674,14 +1555,13 @@ fn build_self_referential_object_class<'gc>(
     heap: &mut Heap<'gc>,
     application: Rc<crate::mixin::MixinApplication>,
 ) -> ClassReference<'gc> {
-    heap.allocate_self_referential_class(ObjectData::Class(ClassData {
+    heap.allocate_self_referential_class(ObjectData::Class(ClassData::new(
         application,
-        enclosing: None,
-        declaring_class: None,
-        superclass: None,
-        builtin: Some(BuiltinClass::Object),
-        metaclass: None,
-    }))
+        None,
+        None,
+        None,
+        Some(BuiltinClass::Object),
+    )))
 }
 
 #[cfg(test)]
@@ -2081,9 +1961,12 @@ mod tests {
         assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 64);
     }
 
-    /// `decide_public_lookup`'s doc comment argues its shape from `Lookup`
-    /// being 24 bytes against a 64-byte settled enum; pinned here so that
-    /// growing a `Lookup` variant does not quietly make that argument wrong.
+    /// Every lookup hands its answer to `resolve` as a `Lookup`, which
+    /// `resolve::resolved_public` matches as it is rather than through the
+    /// 64-byte settled enum 3a measured as costly on this path
+    /// (`docs/design/execution.md`, "What primitives as method-table entries
+    /// moved"); pinned here so that growing a `Lookup` variant fails this
+    /// test instead of quietly widening that path.
     /// Unlike `Result<Step, Signal>` above, this one does not grow in a debug
     /// build: `SlotAccessor`'s own 12 bytes plus the absolute field index it
     /// carries already need a 24-byte slot once alignment rounds it up, and a
@@ -2094,6 +1977,46 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     #[test]
     fn a_lookup_stays_the_size_the_hot_path_was_measured_at() {
-        assert_eq!(std::mem::size_of::<Lookup>(), 24);
+        assert_eq!(std::mem::size_of::<crate::dispatch::Lookup>(), 24);
+    }
+
+    /// Minting stops strictly before `DispatchId::VACANT`, never landing on
+    /// it or on `NONE`: both are reserved meanings (`Heap::dispatch_id` never
+    /// answers `VACANT`, and `NONE` means "not cached"), so a minted id must
+    /// never equal either.
+    #[test]
+    fn minting_never_reaches_vacant_and_answers_none_once_exhausted() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            // One pair below the ceiling: the last mintable pair is
+            // (MAX - 3, MAX - 2), immediately below `VACANT` (MAX - 1).
+            mutator.next_dispatch_id = u32::MAX - 3;
+            let last = mutator.mint_dispatch_ids();
+            assert_ne!(last.instances, crate::mixin::DispatchId::VACANT);
+            assert_ne!(last.class_side, crate::mixin::DispatchId::VACANT);
+            assert_ne!(last.instances, crate::mixin::DispatchId::NONE);
+            assert_ne!(last.class_side, crate::mixin::DispatchId::NONE);
+
+            let exhausted = mutator.mint_dispatch_ids();
+            assert_eq!(exhausted, crate::mixin::DispatchIds::NONE);
+        });
+    }
+
+    /// `ClassData` stores only a pair's `instances` id and derives
+    /// `class_side` from it (`DispatchId::class_side`), which only answers
+    /// the right id because `mint_dispatch_ids` always mints the pair
+    /// consecutively. Minting a handful of pairs and checking each one
+    /// against the derivation is what would catch that invariant breaking,
+    /// beyond the single check `mint_dispatch_ids`'s own `debug_assert_eq!`
+    /// makes on every call.
+    #[test]
+    fn every_minted_pairs_class_side_is_its_instances_id_derived() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            for _ in 0..5 {
+                let pair = mutator.mint_dispatch_ids();
+                assert_eq!(pair.class_side, pair.instances.class_side());
+            }
+        });
     }
 }

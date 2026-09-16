@@ -25,10 +25,6 @@ fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_STORE_LOCAL, 4);
     assert_eq!(OPCODE_LOAD_OUTER_LOCAL, 5);
     assert_eq!(OPCODE_STORE_OUTER_LOCAL, 6);
-    assert_eq!(OPCODE_SEND_LEXICAL, 7);
-    assert_eq!(OPCODE_SEND_PUBLIC, 8);
-    assert_eq!(OPCODE_SEND_INLINABLE, 9);
-    assert_eq!(OPCODE_SEND_SUPER, 10);
     assert_eq!(OPCODE_MAKE_CLOSURE, 11);
     assert_eq!(OPCODE_MAKE_ARRAY, 12);
     assert_eq!(OPCODE_INITIALIZE_SLOT, 13);
@@ -39,6 +35,10 @@ fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_JUMP_IF_NOT_BOOLEAN, 18);
     assert_eq!(OPCODE_BRANCH_IF_FALSE, 19);
     assert_eq!(OPCODE_BRANCH_IF_TRUE, 20);
+    assert_eq!(OPCODE_SEND_LEXICAL, 21);
+    assert_eq!(OPCODE_SEND_PUBLIC, 22);
+    assert_eq!(OPCODE_SEND_INLINABLE, 23);
+    assert_eq!(OPCODE_SEND_SUPER, 24);
 }
 
 #[test]
@@ -111,6 +111,39 @@ fn no_two_tags_share_a_number() {
     let mut deduplicated = sorted.to_vec();
     deduplicated.dedup();
     assert_eq!(deduplicated.len(), literals.len(), "duplicate literal tag");
+}
+
+/// A retired tag stays retired: no live instruction takes its number
+/// (`image/opcodes.rs`).
+#[test]
+fn retired_instruction_tags_are_never_reused() {
+    assert_eq!(RETIRED_OPCODES, [7, 8, 9, 10]);
+    let live = [
+        OPCODE_LOAD_LITERAL,
+        OPCODE_LOAD_SELF,
+        OPCODE_LOAD_BUILTIN_CLASS,
+        OPCODE_MOVE,
+        OPCODE_STORE_LOCAL,
+        OPCODE_LOAD_OUTER_LOCAL,
+        OPCODE_STORE_OUTER_LOCAL,
+        OPCODE_SEND_LEXICAL,
+        OPCODE_SEND_PUBLIC,
+        OPCODE_SEND_INLINABLE,
+        OPCODE_SEND_SUPER,
+        OPCODE_MAKE_CLOSURE,
+        OPCODE_MAKE_ARRAY,
+        OPCODE_INITIALIZE_SLOT,
+        OPCODE_RETURN,
+        OPCODE_IMPLICIT_RETURN,
+        OPCODE_NON_LOCAL_RETURN,
+        OPCODE_JUMP,
+        OPCODE_JUMP_IF_NOT_BOOLEAN,
+        OPCODE_BRANCH_IF_FALSE,
+        OPCODE_BRANCH_IF_TRUE,
+    ];
+    for retired in RETIRED_OPCODES {
+        assert!(!live.contains(&retired), "tag {retired} is retired");
+    }
 }
 
 /// The graph section's tags, pinned for the same reason as the instruction

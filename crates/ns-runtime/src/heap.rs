@@ -15,6 +15,8 @@
 //! sites that call back into the interpreter while holding one -- which is
 //! most of `interpreter/locals.rs`.
 
+use crate::interpreter::FeedbackBase;
+use crate::mixin::{DispatchId, DispatchIds};
 use crate::types::*;
 use crate::Symbol;
 
@@ -30,6 +32,18 @@ fn next_heap_id() -> u32 {
     use std::sync::atomic::{AtomicU32, Ordering};
     static NEXT: AtomicU32 = AtomicU32::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Where `immediate_dispatch_ids` keeps an immediate's id.
+fn immediate_index(value: &Value<'_>) -> usize {
+    match value {
+        Value::Nil => 0,
+        Value::Boolean(false) => 1,
+        Value::Boolean(true) => 2,
+        Value::SmallInteger(_) => 3,
+        Value::Float(_) => 4,
+        Value::Object(_) => unreachable!("an object carries its own class"),
+    }
 }
 
 /// The brand every movable handle carries (`docs/design/memory.md`, "The
@@ -240,6 +254,10 @@ pub struct ActivationHeader<'gc> {
     pub kind: FrameKind<'gc>,
     /// See `Frame::slot_base`.
     pub slot_base: usize,
+    /// Where the activation's code family starts in the heap's cache table
+    /// (`interpreter::inline_cache::InlineCaches`), found or assigned by
+    /// `Mutator::push_step` before the header is built.
+    pub feedback_base: FeedbackBase,
     /// The body the activation runs. The run loop reads it back to resume a
     /// caller once the activation above it returns.
     pub code: std::rc::Rc<crate::bytecode::CompiledCode>,
@@ -352,6 +370,8 @@ struct StackEntry<'gc> {
     argument_count: u32,
     program_counter: usize,
     slot_base: usize,
+    /// See `ActivationHeader::feedback_base`.
+    feedback_base: FeedbackBase,
     code: std::rc::Rc<crate::bytecode::CompiledCode>,
     then: Continuation<'gc>,
     /// See `ActivationHeader::counted`.
@@ -417,6 +437,10 @@ pub struct Heap<'gc> {
     /// the mode is on; otherwise the safepoint that takes a request clears
     /// it.
     safepoint_requested: bool,
+    /// The instance ids of the builtin classes of the immediates, indexed by
+    /// `immediate_index`: an immediate has no class field to read one from.
+    /// Set once by the bootstrap; `NONE` before it.
+    immediate_dispatch_ids: [DispatchId; 5],
     /// This heap's distinct id, stamped onto every handle it mints. Debug
     /// builds only; see `next_heap_id`. No accessor exists for it: nothing
     /// outside a `cfg`-guarded position may name a field that does not
@@ -548,6 +572,7 @@ impl crate::trace::Trace for StackEntry<'_> {
             argument_count: _,
             program_counter: _,
             slot_base: _,
+            feedback_base: _, // not a handle
             code: _,
             then,
             counted: _,
@@ -596,6 +621,7 @@ impl<'gc> Heap<'gc> {
                 sweep_at: MIN_ROOT_SWEEP,
             }),
             safepoint_requested: false,
+            immediate_dispatch_ids: [DispatchId::NONE; 5],
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
             #[cfg(debug_assertions)]
@@ -1094,9 +1120,11 @@ impl<'gc> Heap<'gc> {
     }
 
     /// What activating closure `object` needs, read in one borrow: its body,
-    /// how many parameters it declares, and the frame it captured, whose
-    /// receiver and current class the activation takes. `None` when `object`
-    /// is not a closure.
+    /// how many parameters it declares, the frame it captured, whose
+    /// receiver and current class the activation takes, and its feedback
+    /// base, `FeedbackBase::NOT_ASSIGNED` for a closure an image decoded
+    /// rather than one `MakeClosure` built. `None` when `object` is not a
+    /// closure.
     pub(crate) fn closure_activation(
         &self,
         object: ObjectReference<'gc>,
@@ -1104,12 +1132,14 @@ impl<'gc> Heap<'gc> {
         std::rc::Rc<crate::bytecode::CompiledCode>,
         usize,
         FrameReference<'gc>,
+        FeedbackBase,
     )> {
         self.closure(object).map(|closure| {
             (
                 closure.code.clone(),
                 closure.parameters.len(),
                 closure.captured_frame,
+                closure.feedback_base,
             )
         })
     }
@@ -1121,6 +1151,32 @@ impl<'gc> Heap<'gc> {
     /// through the narrower accessors above.
     pub fn closure_data(&self, object: ObjectReference<'gc>) -> Option<ClosureData<'gc>> {
         self.closure(object).cloned()
+    }
+
+    /// Closure `object`'s payload, to write; `None` when `object` is not a
+    /// closure.
+    fn closure_mut(&mut self, object: ObjectReference<'gc>) -> Option<&mut ClosureData<'gc>> {
+        self.check_object_origin(object);
+        match &mut self.objects[object.index as usize].data {
+            ObjectData::Closure(closure) => Some(closure),
+            _ => None,
+        }
+    }
+
+    /// Gives a decoded closure -- the only one still carrying
+    /// `FeedbackBase::NOT_ASSIGNED` once it has been activated -- the fresh
+    /// range `Mutator::push_step` minted for it, so every later activation of
+    /// the same closure object reuses it instead of minting again. On a
+    /// non-closure it does nothing: `image::decode`'s reconciliation is what
+    /// guarantees the caller's object is a closure, not this accessor.
+    pub(crate) fn set_closure_feedback_base(
+        &mut self,
+        object: ObjectReference<'gc>,
+        feedback_base: FeedbackBase,
+    ) {
+        if let Some(closure) = self.closure_mut(object) {
+            closure.feedback_base = feedback_base;
+        }
     }
 
     /// Closure `object`'s captured frame and home, or `None` when `object` is
@@ -1329,6 +1385,47 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// The dispatch id an inline cache guards `value`'s send on
+    /// (`docs/design/dispatch.md`, "The dispatch id"): an instance's class's
+    /// instance id -- two arena loads -- a class object's own class-side id,
+    /// and an immediate's from a table. Nothing outside this function knows
+    /// where the id lives, which is what lets step 3c move it.
+    #[inline(always)]
+    pub fn dispatch_id(&self, value: &Value<'gc>) -> DispatchId {
+        let Value::Object(object) = value else {
+            return self.immediate_dispatch_ids[immediate_index(value)];
+        };
+        self.check_object_origin(*object);
+        let entry = &self.objects[object.index as usize];
+        if let ObjectData::Class(data) = &entry.data {
+            return data.dispatch_id.class_side();
+        }
+        self.check_object_origin(entry.class);
+        match &self.objects[entry.class.index as usize].data {
+            ObjectData::Class(data) => data.dispatch_id,
+            _ => DispatchId::NONE,
+        }
+    }
+
+    /// `class`'s ids, or `NONE` when it is not a class object: the key of a
+    /// `super` send and of a private lexical send. `ClassData` stores only
+    /// the instances id (`ClassData::dispatch_id`'s doc comment); this
+    /// rebuilds the pair from it.
+    pub fn class_dispatch_ids(&self, class: ClassReference<'gc>) -> DispatchIds {
+        self.check_object_origin(class);
+        match &self.objects[class.index as usize].data {
+            ObjectData::Class(data) => DispatchIds {
+                instances: data.dispatch_id,
+                class_side: data.dispatch_id.class_side(),
+            },
+            _ => DispatchIds::NONE,
+        }
+    }
+
+    pub(crate) fn set_immediate_dispatch_ids(&mut self, ids: [DispatchId; 5]) {
+        self.immediate_dispatch_ids = ids;
+    }
+
     /// Answers whether the write happened, mirroring `array_set`,
     /// `set_instance_field` and `set_class_superclass`/`set_class_application`
     /// below. `Mutator::metaclass_of` is the only caller, and it only
@@ -1388,6 +1485,7 @@ impl<'gc> Heap<'gc> {
     ) -> bool {
         self.check_object_origin(class);
         if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
+            data.dispatch_id = application.dispatch_ids.instances;
             data.application = application;
             return true;
         }
@@ -1609,6 +1707,7 @@ impl<'gc> Heap<'gc> {
             argument_count,
             program_counter: 0,
             slot_base: header.slot_base,
+            feedback_base: header.feedback_base,
             code: header.code,
             then: header.then,
             counted: header.counted,
@@ -1754,6 +1853,12 @@ impl<'gc> Heap<'gc> {
     pub fn activation_slot_base(&self, activation: ActivationReference) -> usize {
         self.check_activation(activation);
         self.stack.entries[activation.index as usize].slot_base
+    }
+
+    /// Where `activation`'s code family starts in the heap's cache table.
+    pub(crate) fn activation_feedback_base(&self, activation: ActivationReference) -> FeedbackBase {
+        self.check_activation(activation);
+        self.stack.entries[activation.index as usize].feedback_base
     }
 
     pub fn set_activation_program_counter(
@@ -2281,15 +2386,15 @@ mod tests {
             nested_slot: crate::hash::IdentityMap::default(),
             slot_count: 0,
             own_slot_base: 0,
+            dispatch_ids: crate::mixin::DispatchIds::NONE,
         });
-        heap.allocate_self_referential_class(ObjectData::Class(ClassData {
+        heap.allocate_self_referential_class(ObjectData::Class(ClassData::new(
             application,
-            enclosing: None,
-            declaring_class: None,
-            superclass: None,
-            builtin: None,
-            metaclass: None,
-        }))
+            None,
+            None,
+            None,
+            None,
+        )))
     }
 
     /// `describe`'s `ObjectData::Instance` arm is the one non-mechanical
@@ -2329,6 +2434,7 @@ mod tests {
             current_class: None,
             kind: FrameKind::TopLevel,
             slot_base: 0,
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
             code: trivial_code(),
             then: Continuation::Deliver,
             counted: true,
@@ -2343,7 +2449,7 @@ mod tests {
             argument_count: 0,
             register_count: 1,
             statement_program_counter: Vec::new(),
-            call_sites: Vec::new(),
+            family_size: 0,
             source: ns_syntax::Span::new(0, 0),
         })
     }
@@ -2639,11 +2745,12 @@ mod tests {
                     argument_count: 0,
                     register_count: 1,
                     statement_program_counter: vec![],
-                    call_sites: vec![],
+                    family_size: 0,
                     source: ns_syntax::Span::new(0, 0),
                 }),
                 captured_frame,
                 home: home_frame,
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
             }),
         );
         let closure_activation = heap.push_activation(
@@ -2652,6 +2759,7 @@ mod tests {
                 current_class: None,
                 kind: FrameKind::Closure(closure),
                 slot_base: 0,
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
                 code: trivial_code(),
                 then: Continuation::Deliver,
                 counted: true,
@@ -2714,6 +2822,7 @@ mod tests {
                 code: trivial_code(),
                 captured_frame: frame,
                 home: frame,
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
             }),
         );
         let before = [
@@ -2821,5 +2930,38 @@ mod tests {
         };
         heap.array_push(array, Value::Object(stale));
         move_bare_heap(&mut heap);
+    }
+
+    /// A class object whose data is not a class -- only a crafted image makes
+    /// an instance of one -- answers `NONE`, which nothing caches.
+    #[test]
+    fn an_instance_of_a_non_class_answers_no_dispatch_id() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let not_a_class = mutator
+                .heap
+                .allocate_self_referential_class(ObjectData::Instance(vec![]));
+            let instance = mutator
+                .heap
+                .allocate_object(not_a_class, ObjectData::Instance(vec![]));
+            assert_eq!(
+                mutator.heap.dispatch_id(&Value::Object(instance)),
+                crate::mixin::DispatchId::NONE
+            );
+        });
+    }
+
+    /// `CLAUDE.md`'s "An image is untrusted input" paragraph pins the
+    /// decoder's placeholder-arena amplification at "about 16.9x in a
+    /// release build (an `Object` is 56 bytes against a 6-byte minimum
+    /// record...)". That figure holds only while `Object` itself stays 56
+    /// bytes; `ClassData` stores just the one 4-byte `dispatch_id`, deriving
+    /// the class-side id instead of also storing it (`DispatchId::class_side`),
+    /// which is what keeps `ObjectData::Class` from growing past `Object`'s
+    /// other variants and widening the struct.
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
+    #[test]
+    fn an_object_stays_the_size_the_amplification_figure_assumes() {
+        assert_eq!(std::mem::size_of::<Object>(), 56);
     }
 }

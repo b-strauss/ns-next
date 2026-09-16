@@ -103,6 +103,39 @@ pub struct ClassData<'gc> {
     /// one whose mixin declares no class side at all -- §6.3's "no
     /// metaclass" case costs nothing.
     pub metaclass: Option<ClassReference<'gc>>,
+    /// A copy of `application.dispatch_ids.instances`, so that a cache's
+    /// guard reads it from the class object without following the `Rc`
+    /// (`Heap::dispatch_id`). Kept equal to the application's by
+    /// `ClassData::new` and `Heap::set_class_application`, the only ways
+    /// either changes. The class-side id is not stored beside it: it is
+    /// derived on demand (`DispatchId::class_side`) from the invariant that
+    /// `mint_dispatch_ids` mints the pair consecutively, which is what keeps
+    /// a class object the size `CLAUDE.md`'s image-amplification paragraph
+    /// assumes rather than paying for a second 4-byte id nothing but that
+    /// derivation needs.
+    pub dispatch_id: crate::mixin::DispatchId,
+}
+
+impl<'gc> ClassData<'gc> {
+    /// A class object's data around `application`, with no metaclass yet
+    /// (`Mutator::metaclass_of` builds it on first use).
+    pub fn new(
+        application: Rc<crate::mixin::MixinApplication>,
+        enclosing: Option<ObjectReference<'gc>>,
+        declaring_class: Option<ClassReference<'gc>>,
+        superclass: Option<ClassReference<'gc>>,
+        builtin: Option<BuiltinClass>,
+    ) -> ClassData<'gc> {
+        ClassData {
+            dispatch_id: application.dispatch_ids.instances,
+            application,
+            enclosing,
+            declaring_class,
+            superclass,
+            builtin,
+            metaclass: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -163,6 +196,11 @@ pub struct ClosureData<'gc> {
     /// The lexically enclosing *method* (or initializer) activation, which a
     /// `^` in the block returns from.
     pub home: FrameReference<'gc>,
+    /// The start of its family's range in the heap's cache table, copied from
+    /// the activation that created it, since a block belongs to its method's
+    /// family. Never serialized: a decoded closure carries `NOT_ASSIGNED`
+    /// and is given a fresh range when it is first activated.
+    pub feedback_base: crate::interpreter::FeedbackBase,
 }
 
 // ---------- Resolver output ----------
@@ -430,6 +468,7 @@ mod tests {
             nested_slot: crate::hash::IdentityMap::default(),
             slot_count: 0,
             own_slot_base: 0,
+            dispatch_ids: crate::mixin::DispatchIds::NONE,
         })
     }
 
@@ -442,14 +481,13 @@ mod tests {
     /// ordinary safe Rust under the arena: the slot's index is known before
     /// the slot is filled.
     fn dummy_class<'gc>(heap: &mut crate::Heap<'gc>) -> ClassReference<'gc> {
-        heap.allocate_self_referential_class(ObjectData::Class(ClassData {
-            application: empty_application("Object"),
-            enclosing: None,
-            declaring_class: None,
-            superclass: None,
-            builtin: Some(BuiltinClass::Object),
-            metaclass: None,
-        }))
+        heap.allocate_self_referential_class(ObjectData::Class(ClassData::new(
+            empty_application("Object"),
+            None,
+            None,
+            None,
+            Some(BuiltinClass::Object),
+        )))
     }
 
     #[test]
