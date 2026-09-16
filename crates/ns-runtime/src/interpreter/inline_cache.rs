@@ -182,8 +182,11 @@ impl InlineCaches {
     /// family uncached.
     pub(crate) fn fresh_range(&mut self, size: u32) -> FeedbackBase {
         let start = self.sites.len();
-        match u32::try_from(start + size as usize) {
-            Ok(end) if end < FeedbackBase::NOT_ASSIGNED.0 => {
+        match start
+            .checked_add(size as usize)
+            .and_then(|end| u32::try_from(end).ok())
+        {
+            Some(end) if end < FeedbackBase::NOT_ASSIGNED.0 => {
                 self.sites.resize(end as usize, CacheEntry::vacant());
                 FeedbackBase(start as u32)
             }

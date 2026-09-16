@@ -891,7 +891,21 @@ fn a_family_whose_call_sites_are_not_dense_is_refused() {
         write_unary_send(writer, OPCODE_SEND_PUBLIC, 5);
         write_return(writer);
     });
-    for bytes in [shared, sparse] {
+    // `shared` and `sparse` both miss the count check before `seen` is ever
+    // consulted: `family_size_of` derives `family_size` from the highest
+    // call-site number decoded, not from the wire's instruction count, so
+    // `shared`'s two sends both numbered 0 count 2 against a `family_size` of
+    // 1, and `sparse`'s one send numbered 5 counts 1 against 6. Neither
+    // reaches the `seen[number]` branch. This body numbers three sends 0, 2,
+    // 2: `family_size_of` answers 3 (the highest number plus one), so the
+    // count of 3 matches and the walk proceeds only to find 2 seen twice.
+    let duplicate_within_family_size = one_method_code_table(0, 4, |writer| {
+        write_unary_send(writer, OPCODE_SEND_PUBLIC, 0);
+        write_unary_send(writer, OPCODE_SEND_PUBLIC, 2);
+        write_unary_send(writer, OPCODE_SEND_PUBLIC, 2);
+        write_return(writer);
+    });
+    for bytes in [shared, sparse, duplicate_within_family_size] {
         let mut reader = decode::Reader::new(&bytes);
         let table = decode::decode_code_table(&mut reader, &table_with(&["size"]))
             .expect("each body decodes on its own");
@@ -7154,5 +7168,25 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
     // `apply:`'s family is two sends (`keep`, `value:`); the decoded block's
     // is one (`+`, numbered 0 in `prepare`'s family, before the `keep:`
     // setter that takes the block as its argument).
+    assert_eq!(loaded.interpreter.cache_statistics().site_entries, 3);
+    // A second call reuses the range `base_for` minted on the first: the
+    // decoded closure's `NOT_ASSIGNED` feedback base is written back onto the
+    // closure once assigned, so `site_entries` does not grow again. Minting a
+    // fresh range per activation instead -- the defect this pins -- would
+    // double it to 6.
+    let one = loaded.interpreter.stash(Value::SmallInteger(1));
+    let second_answer = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("apply:"), &[one]),
+        "apply: a second time after load",
+    );
+    let second_answer = loaded
+        .interpreter
+        .enter(|mutator| match mutator.fetch(&second_answer) {
+            Value::SmallInteger(integer) => integer,
+            _ => panic!("apply: answers a small integer"),
+        });
+    assert_eq!(second_answer, 2);
     assert_eq!(loaded.interpreter.cache_statistics().site_entries, 3);
 }

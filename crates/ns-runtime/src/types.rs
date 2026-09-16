@@ -200,7 +200,7 @@ pub struct ClosureData<'gc> {
     /// the activation that created it, since a block belongs to its method's
     /// family. Never serialized: a decoded closure carries `NOT_ASSIGNED`
     /// and is given a fresh range when it is first activated.
-    pub feedback_base: crate::interpreter::inline_cache::FeedbackBase,
+    pub feedback_base: crate::interpreter::FeedbackBase,
 }
 
 // ---------- Resolver output ----------

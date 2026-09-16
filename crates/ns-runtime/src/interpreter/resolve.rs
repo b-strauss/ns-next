@@ -496,11 +496,33 @@ impl<'gc> Mutator<'gc> {
                     found => resolved(found, Chain::PublicClassSide),
                 }
             }
-            Chain::Protected | Chain::ProtectedClassSide | Chain::Private => {
+            Chain::Protected | Chain::Private => {
                 match dispatch::lookup_above(&self.heap, Rule::Protected, level, selector) {
                     // §5.9: nothing found is an ordinary send to `o`.
                     Lookup::NotFound => self.resolve_public(receiver, selector),
                     found => resolved(found, Chain::Protected),
+                }
+            }
+            // Unreachable today: `resolve_class_side` never lets a
+            // metaclass-chain primitive reach here on `ProtectedClassSide`
+            // (it treats one as `NotFound` per §5.9, see its own comment).
+            // Written out anyway, faithfully, so a later reader who adds a
+            // path into this arm does not inherit a silent difference from
+            // `resolve_lexical`'s own fall-through: continue lookupProtected
+            // on the metaclass chain first, and only when that still finds
+            // nothing fall to `lookupProtected` on `o`'s own class -- exactly
+            // the order `resolve_lexical` uses after an uncached
+            // `resolve_class_side` call.
+            Chain::ProtectedClassSide => {
+                match dispatch::lookup_above(&self.heap, Rule::Protected, level, selector) {
+                    Lookup::NotFound => {
+                        let class = self.class_of(&receiver);
+                        match dispatch::lookup_protected(&self.heap, class, selector) {
+                            Lookup::NotFound => self.resolve_public(receiver, selector),
+                            found => resolved(found, Chain::Protected),
+                        }
+                    }
+                    found => resolved(found, Chain::ProtectedClassSide),
                 }
             }
             Chain::Super => {
