@@ -423,13 +423,13 @@ described below where it applies.
 
 #### The state lives per heap
 
-The cache entries live in a table the step state
-owns (`Mutator.caches`, an `InlineCaches`), not in the shared `CompiledCode`,
-which stays immutable. This is V8's split — shared bytecode, feedback per
-context — reached the way HotSpot's interpreter reaches its `MethodData`: the
-running activation carries an index into the table, `feedback_base`, and a
-site's entry is `sites[feedback_base + call_site.number]`. It follows from
-invariants this repository already holds:
+The cache entries live in a table the step state owns (`Mutator.caches`, an
+`InlineCaches`), not in the shared `CompiledCode`, which stays immutable. This
+is V8's split — shared bytecode, feedback per context — reached the way
+HotSpot's interpreter reaches its `MethodData`: the running activation carries
+an index into the table, `feedback_base`, and a site's entry is
+`sites[feedback_base + call_site.number]`. It follows from invariants this
+repository already holds:
 
 - A per-heap id in shared code would mean nothing in another heap, and would
   answer a *different, valid* application there — the failure `CLAUDE.md`
@@ -483,16 +483,15 @@ counter hands out `NONE`, so that application runs uncached.
 
 #### Resolve, then act
 
-In `interpreter/resolve.rs`, a send's decision is
-split in two. `resolve_public`, `resolve_lexical` and `resolve_super` are the
-lookups of "The three lookup algorithms" and "Resolving a lexical send at run
-time", their order and their rules unchanged, and each answers a `Resolved`:
-what it found, with its defining class as a handle, and the `Chain` it was
-found on — `Public`, `PublicClassSide`, `Protected`, `ProtectedClassSide`,
-`Private`, `Super`, or one of the handler chains, `DoesNotUnderstand` and
-`SuperDoesNotUnderstand`. The chain says which class object the defining
-class is counted from and where a failed primitive continues. A `Resolved`
-is one of:
+In `interpreter/resolve.rs`, a send's decision is split in two.
+`resolve_public`, `resolve_lexical` and `resolve_super` are the lookups of "The
+three lookup algorithms" and "Resolving a lexical send at run time", their order
+and their rules unchanged, and each answers a `Resolved`: what it found, with
+its defining class as a handle, and the `Chain` it was found on — `Public`,
+`PublicClassSide`, `Protected`, `ProtectedClassSide`, `Private`, `Super`, or one
+of the handler chains, `DoesNotUnderstand` and `SuperDoesNotUnderstand`. The
+chain says which class object the defining class is counted from and where a
+failed primitive continues. A `Resolved` is one of:
 
 - `Method` — the method and its defining class;
 - `Slot` — an accessor's kind and absolute field, fixed by the application
@@ -588,21 +587,20 @@ to run every fixture with a one-entry cache, where every insertion evicts.
 
 #### Code families
 
-A family is one root body — a method, an instance
-initializer, a superclass clause or its message — with every block nested in
-it. Its sends are numbered densely from 0 in emission order, blocks
-included, and the number is the send's `CallSite`
-([compiler.md](compiler.md), "Safepoints and call-site identity"). Each body
-records its `family_size`, one past the highest number among its own sends
-and its nested blocks' sizes. A block's is therefore its own subtree's, not
-the whole family's — a block is compiled, and its `CompiledCode` finished,
-before the root that contains it — which bounds every site the block can
-run, all the check below needs; the root's is the family's. A family gets a
+A family is one root body — a method, an instance initializer, a superclass
+clause or its message — with every block nested in it. Its sends are numbered
+densely from 0 in emission order, blocks included, and the number is the send's
+`CallSite` ([compiler.md](compiler.md), "Safepoints and call-site identity").
+Each body records its `family_size`, one past the highest number among its own
+sends and its nested blocks' sizes. A block's is therefore its own subtree's,
+not the whole family's — a block is compiled, and its `CompiledCode` finished,
+before the root that contains it — which bounds every site the block can run,
+all the check below needs; the root's is the family's. A family gets a
 contiguous range of the table the first time its root is activated
-(`InlineCaches::base_for`, keyed by the root body's identity), so a table
-that code never ran stays unallocated, as V8 allocates a feedback vector
-lazily, and a body with no sends takes no room. `feedback_base` reaches an
-activation this way:
+(`InlineCaches::base_for`, keyed by the root body's identity), so a table that
+code never ran stays unallocated, as V8 allocates a feedback vector lazily, and
+a body with no sends takes no room. `feedback_base` reaches an activation this
+way:
 
 - A method: a hit carries its target's base in the entry, which the miss that
   filled it asked the map for; an uncached decision leaves it `NOT_ASSIGNED`,
@@ -624,14 +622,13 @@ activation this way:
 
 #### `site_index`'s rule
 
-A send runs uncached — the full lookup, nothing
-recorded — when its number is at or past its running code's `family_size`,
-or when its activation's base is `NOT_ASSIGNED`. `CallSite::UNCACHED`, the
-number every reference-lowering send carries, is `u32::MAX`, which no family
-size reaches, so the same test makes all of those uncached; a table that
-cannot grow to a family's range answers `NOT_ASSIGNED`. Every read of the
-table is a checked `get`, so no crafted artifact can make it panic or index
-out of range.
+A send runs uncached — the full lookup, nothing recorded — when its number is at
+or past its running code's `family_size`, or when its activation's base is
+`NOT_ASSIGNED`. `CallSite::UNCACHED`, the number every reference-lowering send
+carries, is `u32::MAX`, which no family size reaches, so the same test makes all
+of those uncached; a table that cannot grow to a family's range answers
+`NOT_ASSIGNED`. Every read of the table is a checked `get`, so no crafted
+artifact can make it panic or index out of range.
 
 #### A send, step by step
 
@@ -679,70 +676,79 @@ different factory selectors.
 
 #### Every target is a function of its key and its site
 
-That is the property the entries rest on, and a lookup that also reads something the key does not
-cover re-checks it in `act`, as the factory checks do. The plan audited every
-read `resolve` and its callees make: the only ones the key does not cover are
-a class object's factory selector and `ClassData.builtin`, which `act`
-re-reads on every send (`try_factory_send`), and a primitive's payload check,
-which `builtins::execute` re-runs on every send.
+That is the property the entries rest on, and a lookup that also reads something
+the key does not cover re-checks it in `act`, as the factory checks do. The plan
+audited every read `resolve` and its callees make: the only ones the key does
+not cover are a class object's factory selector and `ClassData.builtin`, which
+`act` re-reads on every send (`try_factory_send`), and a primitive's payload
+check, which `builtins::execute` re-runs on every send.
+
+The audit also covers the class-side fall-through: once the metaclass lookup
+finds nothing, `resolve_public` and `act_above`'s `PublicClassSide` arm both
+re-read the class object's own `class` field (`class_of`) to reach `Object`'s
+primitives, and that read is outside the key too — the class-side guard is
+the metaclass's dispatch id, never the class object's own. Built from source
+this is never a problem: every class object shares the one placeholder class,
+so the field never varies. A crafted image could still give a class object a
+different `class` than the guard assumes; the result is wrong but safe, never
+a panic, because the level walk from there runs through the same
+`Option`-returning steps (`metaclass_of`, `class_of`) as any other lookup.
 
 #### The private rule, decided once per site
 
-Whether §5.9's private rule
-applies depends on N alone, the class declaration `k` levels out from the
-running method's class, and it is not known until the site is first
-resolved. So a vacant lexical site skips the global cache — an entry there
-under `o`'s id may have been filled by a site whose N declares nothing
-private — and runs `resolve_lexical` (`send_lexical_first`). What that first
-resolution finds decides the site for good: a `Private` resolution makes it a
-private site, anything else a non-private one, and its transitions keep the
-decision. A non-private site is guarded on `o`'s id, and a hit never computes
-N. A private site is guarded on N's instances id, under the `LexicalPrivate`
-rule, and computes `o` and N (`kth_lexical_class`) on every send. It is
-guarded rather than fixed because one mixin applied under two superclasses
-gives N two applications with different inherited slots, so a private slot
-accessor's absolute field differs between them; such a site goes polymorphic
-on N's applications, however many classes `o` has. The guard is also what
-makes a crafted image safe: a site whose N changed simply misses, and `fill`
-refuses to record a resolution whose privacy is not the site's, so a crafted
-site gets wrong but safe behaviour, never a panic.
-`image::decode::verify_mixins` therefore needs no check that code and N
-agree: nothing assumes a relation between them.
+Whether §5.9's private rule applies depends on N alone, the class declaration
+`k` levels out from the running method's class, and it is not known until the
+site is first resolved. So a vacant lexical site skips the global cache — an
+entry there under `o`'s id may have been filled by a site whose N declares
+nothing private — and runs `resolve_lexical` (`send_lexical_first`). What that
+first resolution finds decides the site for good: a `Private` resolution makes
+it a private site, anything else a non-private one, and its transitions keep the
+decision. A non-private site is guarded on `o`'s id, and a hit never computes N.
+A private site is guarded on N's instances id, under the `LexicalPrivate` rule,
+and computes `o` and N (`kth_lexical_class`) on every send. It is guarded rather
+than fixed because one mixin applied under two superclasses gives N two
+applications with different inherited slots, so a private slot accessor's
+absolute field differs between them; such a site goes polymorphic on N's
+applications, however many classes `o` has. The guard is also what makes a
+crafted image safe: a site whose N changed simply misses, and `fill` refuses to
+record a resolution whose privacy is not the site's, so a crafted site gets
+wrong but safe behaviour, never a panic. `image::decode::verify_mixins`
+therefore needs no check that code and N agree: nothing assumes a relation
+between them.
 
 #### No new error text
 
-Every error comes from the same paths as before the
-caches, inside `resolve` or `act`, word for word; a hit produces exactly the
-step, value or signal the uncached path would.
+Every error comes from the same paths as before the caches, inside `resolve` or
+`act`, word for word; a hit produces exactly the step, value or signal the
+uncached path would.
 
 #### Invalidation
 
-Nothing mutates a method table at run time yet, so nothing
-has to be invalidated, but the mechanism exists, because the entries are
-designed for it: they hold no handle, so `InlineCaches::invalidate`
-(`Interpreter::invalidate_caches`) vacates every site, clears the pool and
-its free list, and vacates the global cache, keeping every family's range,
-since running activations keep their bases — the next send through a
-vacated site fills the same index again. A debug-build stress mode,
+Nothing mutates a method table at run time yet, so nothing has to be
+invalidated, but the mechanism exists, because the entries are designed for it:
+they hold no handle, so `InlineCaches::invalidate`
+(`Interpreter::invalidate_caches`) vacates every site, clears the pool and its
+free list, and vacates the global cache, keeping every family's range, since
+running activations keep their bases — the next send through a vacated site
+fills the same index again. A debug-build stress mode,
 `NS_NEXT_STRESS_CACHES=1`, invalidates at every safepoint
 (`interpreter/safepoint.rs`, ahead of the move stress mode's schedule, either
 mode keeping the safepoint request set), so that filling, transitions and
 invalidation run under the whole suite; `Interpreter::cache_invalidations`
-counts them. Scoping an invalidation to the application a change affects —
-the dependency key of [liveness-and-reflection.md](liveness-and-reflection.md),
-"Caches and their dependency keys" — comes with the first mutation that
-needs it.
+counts them. Scoping an invalidation to the application a change affects — the
+dependency key of [liveness-and-reflection.md](liveness-and-reflection.md),
+"Caches and their dependency keys" — comes with the first mutation that needs
+it.
 
 #### What stays uncached
 
-A host's `Interpreter::send`, a send a continuation
-decides (the `mustBeBoolean` a non-Boolean loop condition is sent), and every
-send the reference lowering compiles run the full lookup and record nothing.
+A host's `Interpreter::send`, a send a continuation decides (the `mustBeBoolean`
+a non-Boolean loop condition is sent), and every send the reference lowering
+compiles run the full lookup and record nothing.
 
 #### Bytecode and image
 
-No instruction changed shape except in the width of
-its site:
+No instruction changed shape except in the width of its site:
 
 - `CallSite` is the send's number within its family, a `u32`. It was the
   instruction's index as a `u16`, which the optimized lowering checked with a
@@ -769,21 +775,20 @@ its site:
 
 #### Verification
 
-The oracle: the reference lowering runs uncached and the
-optimized lowering cached, and both are held to every `tests-fixtures/*.ns`
-and its `.expected`, the golden outcomes in `program_outcomes.rs`, and
-`run-corpus` from source and as a binary, so a cache defect shows as the two
-lowerings disagreeing. Six fixtures (`tests-fixtures/cache_*.ns`) and two
-golden outcomes, added before any cache existed, pin the outcomes a cache
-could change.
-`NS_NEXT_STRESS_CACHES=1` is a gate of its own beside `NS_NEXT_STRESS_MOVES`;
-the two are not combined, because an entry holds no handle for a move to
-break, and emptied caches would leave the moves hardly any hit to run under.
-The suite takes about 1 min 5 s under it, against about 3 min 9 s under the
-move stress mode. A test that observes cache states turns the mode off for
-its own interpreter (`Interpreter::set_stress_caches(false)`), so that it
-still runs, and asserts, under the gate. Targeted tests pin, through a test
-view of a site's state (`Interpreter::call_site_states`), in
+The oracle: the reference lowering runs uncached and the optimized lowering
+cached, and both are held to every `tests-fixtures/*.ns` and its `.expected`,
+the golden outcomes in `program_outcomes.rs`, and `run-corpus` from source and
+as a binary, so a cache defect shows as the two lowerings disagreeing. Six
+fixtures (`tests-fixtures/cache_*.ns`) and two golden outcomes, added before any
+cache existed, pin the outcomes a cache could change. `NS_NEXT_STRESS_CACHES=1`
+is a gate of its own beside `NS_NEXT_STRESS_MOVES`; the two are not combined,
+because an entry holds no handle for a move to break, and emptied caches would
+leave the moves hardly any hit to run under. The suite takes about 1 min 5 s
+under it, against about 3 min 9 s under the move stress mode. A test that
+observes cache states turns the mode off for its own interpreter
+(`Interpreter::set_stress_caches(false)`), so that it still runs, and asserts,
+under the gate. Targeted tests pin, through a test view of a site's state
+(`Interpreter::call_site_states`), in
 `crates/ns-runtime/tests/inline_caches.rs`, `stress.rs`, `image.rs` and
 `opcode_tags.rs`, `inline_cache.rs`'s unit tests and
 `crates/ns-cli/tests/run_fixtures.rs`:
@@ -832,17 +837,16 @@ lexical send's decision is sensitive to codegen ([PROGRESS.md](../PROGRESS.md)).
 
 #### Considered, not adopted: a 16-byte entry
 
-`Target::Method` and
-`Target::NestedClass` holding a `u32` index into side tables of methods and
-mixins instead of an `Rc` make a `Target` 12 bytes and an entry 16, so a
-polymorphic block fits one 64-byte cache line. Measured against the 24-byte
-entry, no source was faster, `bench_send.ns` was entirely slower in one of
-two sittings, and the side tables grow with every genuine miss rather than
-with distinct methods, so a megamorphic site cycling through more shapes than
-the global cache holds would grow them without bound until an invalidation.
-The experiment is kept, unmerged, on the branch
-`experiment/sixteen-byte-entry` (`16e901f`); whether to pursue it is the
-user's decision, open in [PROGRESS.md](../PROGRESS.md).
+`Target::Method` and `Target::NestedClass` holding a `u32` index into side
+tables of methods and mixins instead of an `Rc` make a `Target` 12 bytes and an
+entry 16, so a polymorphic block fits one 64-byte cache line. Measured against
+the 24-byte entry, no source was faster, `bench_send.ns` was entirely slower in
+one of two sittings, and the side tables grow with every genuine miss rather
+than with distinct methods, so a megamorphic site cycling through more shapes
+than the global cache holds would grow them without bound until an invalidation.
+The experiment is kept, unmerged, on the branch `experiment/sixteen-byte-entry`
+(`16e901f`); whether to pursue it is the user's decision, open in
+[PROGRESS.md](../PROGRESS.md).
 
 #### A standing hazard
 
