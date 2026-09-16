@@ -81,10 +81,25 @@ fn method(selector: &str) -> CachedTarget {
     public(CachedTargetKind::Method(Symbol::intern(selector)))
 }
 
+/// Whether `NS_NEXT_STRESS_CACHES` is asking for the cache stress mode.
+/// Every test below pins what a site or the global cache holds right after a
+/// run -- exactly the state the stress mode erases at every safepoint by
+/// design (`docs/design/dispatch.md`, "Invalidation") -- so under it there is
+/// nothing left to pin: skip rather than fail on an interaction the stress
+/// mode is not testing (that is `stress.rs`'s
+/// `the_cache_stress_mode_invalidates_at_every_safepoint_and_changes_no_answer`,
+/// which checks the answer, never the cache state).
+fn skip_under_cache_stress() -> bool {
+    std::env::var_os("NS_NEXT_STRESS_CACHES").is_some_and(|value| !value.is_empty() && value != "0")
+}
+
 /// Two `Inner` instances from two `Outer` instances share one monomorphic
 /// entry: the cache guards on the application, not on the class object.
 #[test]
 fn nested_class_instances_of_two_enclosing_objects_share_one_entry() {
+    if skip_under_cache_stress() {
+        return;
+    }
     let source = indoc! {"
         Newspeak3
         'T'
@@ -143,6 +158,9 @@ const FIVE_KINDS: &str = indoc! {"
 /// first seen, and a fifth makes it megamorphic.
 #[test]
 fn a_site_goes_polymorphic_then_megamorphic() {
+    if skip_under_cache_stress() {
+        return;
+    }
     let (mut interpreter, class) = load(FIVE_KINDS);
     let instance = instantiate(&mut interpreter, &class);
     let value_states = |interpreter: &mut Interpreter| {
@@ -177,6 +195,9 @@ fn a_site_goes_polymorphic_then_megamorphic() {
 /// inlined and sees both is bimorphic.
 #[test]
 fn a_site_on_true_and_false_is_bimorphic() {
+    if skip_under_cache_stress() {
+        return;
+    }
     let source = indoc! {"
         Newspeak3
         'T'
@@ -230,6 +251,9 @@ const TWO_APPLICATIONS: &str = indoc! {"
 /// after one inherited slot, and after three.
 #[test]
 fn a_slot_accessor_under_two_applications_has_two_fields() {
+    if skip_under_cache_stress() {
+        return;
+    }
     let (mut interpreter, class) = load(TWO_APPLICATIONS);
     let instance = instantiate(&mut interpreter, &class);
     let answer = send(&mut interpreter, &instance, "run", &[]);
@@ -254,6 +278,9 @@ fn a_slot_accessor_under_two_applications_has_two_fields() {
 /// application of `Cell`, each naming its own superclass's method.
 #[test]
 fn a_super_send_in_a_mixin_applied_twice() {
+    if skip_under_cache_stress() {
+        return;
+    }
     let (mut interpreter, class) = load(TWO_APPLICATIONS);
     let instance = instantiate(&mut interpreter, &class);
     send(&mut interpreter, &instance, "run", &[]);
@@ -278,6 +305,9 @@ fn a_super_send_in_a_mixin_applied_twice() {
 /// §5.9 runs N's private method on every `o`.
 #[test]
 fn a_private_lexical_site_with_a_changing_receiver_stays_monomorphic() {
+    if skip_under_cache_stress() {
+        return;
+    }
     let source = indoc! {"
         Newspeak3
         'T'
@@ -325,6 +355,9 @@ fn a_private_lexical_site_with_a_changing_receiver_stays_monomorphic() {
 /// and an instance method, three entries.
 #[test]
 fn class_objects_and_instances_share_a_site() {
+    if skip_under_cache_stress() {
+        return;
+    }
     let source = indoc! {"
         Newspeak3
         'T'
@@ -388,6 +421,9 @@ const SUPER_FACTORY: &str = indoc! {"
 /// both lowerings.
 #[test]
 fn a_super_factory_entry_is_rechecked_against_self() {
+    if skip_under_cache_stress() {
+        return;
+    }
     for (entry, expected, first) in [
         ("simpleFirst", 1010, CachedTargetKind::Factory),
         ("keyedFirst", 101, CachedTargetKind::DoesNotUnderstand),
@@ -417,6 +453,9 @@ fn a_super_factory_entry_is_rechecked_against_self() {
 /// `doesNotUnderstand` (§6.3.2) at one site: two entries.
 #[test]
 fn does_not_understand_handlers_are_entries_like_any_other() {
+    if skip_under_cache_stress() {
+        return;
+    }
     let source = indoc! {"
         Newspeak3
         'T'
@@ -456,6 +495,9 @@ fn does_not_understand_handlers_are_entries_like_any_other() {
 /// same state a direct resolve would: `Monomorphic`.
 #[test]
 fn a_second_site_fills_from_the_global_cache() {
+    if skip_under_cache_stress() {
+        return;
+    }
     let source = indoc! {"
         Newspeak3
         'T'
@@ -483,12 +525,116 @@ fn a_second_site_fills_from_the_global_cache() {
     );
 }
 
+/// An invalidation vacates every site, every polymorphic block and the
+/// global cache, and keeps every family's range, since running activations
+/// keep their bases; the next run fills the sites again and answers the same
+/// (`docs/design/dispatch.md`, "Invalidation").
+#[test]
+fn an_invalidation_vacates_every_site_and_keeps_the_ranges() {
+    if skip_under_cache_stress() {
+        return;
+    }
+    let (mut interpreter, class) = load(FIVE_KINDS);
+    let instance = instantiate(&mut interpreter, &class);
+    let five = integer_argument(&interpreter, 5);
+    send(&mut interpreter, &instance, "run:", &[five]);
+    let before = interpreter.cache_statistics();
+    assert_eq!(
+        before.megamorphic_sites, 1,
+        "only the `value` site saw five kinds"
+    );
+    assert!(before.filled_global_entries > 0);
+    interpreter.invalidate_caches();
+    let after = interpreter.cache_statistics();
+    assert_eq!(after.site_entries, before.site_entries, "the ranges stay");
+    assert_eq!(after.filled_sites, 0);
+    assert_eq!(after.megamorphic_sites, 0);
+    assert_eq!(after.polymorphic_blocks_in_use, 0);
+    assert_eq!(after.filled_global_entries, 0);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &class,
+            MethodSide::Instance,
+            "run:",
+            "value"
+        ),
+        vec![CallSiteState::Vacant]
+    );
+    let one = integer_argument(&interpreter, 1);
+    let answer = send(&mut interpreter, &instance, "run:", &[one]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 1);
+    assert_eq!(
+        states(
+            &mut interpreter,
+            &class,
+            MethodSide::Instance,
+            "run:",
+            "value"
+        ),
+        vec![CallSiteState::Monomorphic(method("value"))]
+    );
+}
+
+/// A global cache of one or two entries, where inserts evict each other,
+/// answers what a full one answers: the megamorphic `value` site resolves
+/// through it on every send.
+#[test]
+fn a_tiny_global_cache_answers_like_a_full_one() {
+    if skip_under_cache_stress() {
+        return;
+    }
+    for entries in [1, 2] {
+        let (mut interpreter, class) = load(FIVE_KINDS);
+        interpreter.set_global_cache_size(entries);
+        let instance = instantiate(&mut interpreter, &class);
+        for _ in 0..3 {
+            let five = integer_argument(&interpreter, 5);
+            let answer = send(&mut interpreter, &instance, "run:", &[five]);
+            assert_eq!(small_integer(&mut interpreter, &answer), 15);
+        }
+        assert_eq!(interpreter.cache_statistics().global_entries, entries);
+    }
+}
+
+/// Only the families that ran take room in the table: `used`'s two sends
+/// (`+` in its block, `do:`), and nothing for `unused` or for an initializer
+/// with no sends.
+#[test]
+fn only_the_families_that_ran_take_room_in_the_cache_table() {
+    if skip_under_cache_stress() {
+        return;
+    }
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Subject = Object new () (
+          public used = (
+            | sum |
+            sum := 0.
+            #(1 2) do: [:each | sum := sum + each].
+            ^sum
+          )
+          public unused = ( ^1 + 2 + 3 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = instantiate(&mut interpreter, &class);
+    assert_eq!(interpreter.cache_statistics().site_entries, 0);
+    let answer = send(&mut interpreter, &instance, "used", &[]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 3);
+    assert_eq!(interpreter.cache_statistics().site_entries, 2);
+}
+
 /// A cached primitive that fails on a receiver of its own class -- the
 /// `transcript` stream shares the `Platform` class with the platform object
 /// -- keeps its entry, and the send continues uncached into
 /// `doesNotUnderstand:`.
 #[test]
 fn a_failing_primitive_keeps_its_entry() {
+    if skip_under_cache_stress() {
+        return;
+    }
     let source = indoc! {"
         Newspeak3
         'T'

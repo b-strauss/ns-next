@@ -191,9 +191,7 @@ impl InlineCaches {
         }
     }
 
-    /// Only this crate's tests call it: Task 8's statistics are the
-    /// production caller.
-    #[allow(dead_code)]
+    /// How many sites the table holds -- `statistics`'s `site_entries`.
     pub(crate) fn table_len(&self) -> usize {
         self.sites.len()
     }
@@ -276,6 +274,84 @@ impl InlineCaches {
             .find(|slot| slot.guard == guard)
             .map(|slot| slot.target.clone())
     }
+
+    /// Vacates every site, every polymorphic block and the global cache
+    /// (`docs/design/dispatch.md`, "Invalidation"): a class redefinition
+    /// invalidates every guard at once, rather than tracking which ones a
+    /// change could affect. `families` and `family_codes` stay -- an
+    /// activation already running still names its family's range, so the
+    /// next send through a vacated site fills the same index again instead
+    /// of minting a new one. Clearing the pool rather than only the sites
+    /// is what leaves every polymorphic block vacant too, not merely
+    /// unreachable from a site that still names it.
+    pub(crate) fn invalidate(&mut self) {
+        for entry in &mut self.sites {
+            *entry = CacheEntry::vacant();
+        }
+        self.pool.clear();
+        self.free_blocks.clear();
+        self.global.clear();
+    }
+
+    /// The table's sizes: how much of what is allocated is actually filled,
+    /// and how large one entry of each kind is, for
+    /// `Interpreter::cache_statistics` and `--cache-statistics`.
+    pub(crate) fn statistics(&self) -> CacheStatistics {
+        let mut filled_sites = 0;
+        let mut megamorphic_sites = 0;
+        for entry in &self.sites {
+            match entry.target {
+                Target::Vacant => {}
+                Target::Megamorphic { .. } => megamorphic_sites += 1,
+                _ => filled_sites += 1,
+            }
+        }
+        let filled_global_entries = self
+            .global
+            .entries
+            .iter()
+            .filter(|entry| !entry.is_vacant())
+            .count();
+        CacheStatistics {
+            site_entries: self.table_len(),
+            filled_sites,
+            polymorphic_blocks: self.pool.len(),
+            polymorphic_blocks_in_use: self.pool.len() - self.free_blocks.len(),
+            megamorphic_sites,
+            global_entries: self.global.entries.len(),
+            filled_global_entries,
+            entry_bytes: std::mem::size_of::<CacheEntry>(),
+            global_entry_bytes: std::mem::size_of::<GlobalEntry>(),
+        }
+    }
+
+    /// Replaces the global cache with a fresh one of `entries`, vacating
+    /// whatever it held: a test hook for measuring a program's answer under
+    /// a cache small enough that every insert evicts
+    /// (`NS_NEXT_GLOBAL_CACHE_ENTRIES`, `set_global_cache_size`), never a
+    /// host's input path, so a size that is not a power of two is the
+    /// host's mistake -- `GlobalCache::with_entries` panics on it rather
+    /// than rounding silently.
+    pub(crate) fn set_global_cache_size(&mut self, entries: usize) {
+        self.global = GlobalCache::with_entries(entries);
+    }
+}
+
+/// The inline caches' sizes, read without disturbing them
+/// (`InlineCaches::statistics`): how much of what is allocated is actually
+/// filled -- a `filled_sites`/`megamorphic_sites` gap from `site_entries`
+/// is every site still vacant -- and how large one entry of each kind is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheStatistics {
+    pub site_entries: usize,
+    pub filled_sites: usize,
+    pub polymorphic_blocks: usize,
+    pub polymorphic_blocks_in_use: usize,
+    pub megamorphic_sites: usize,
+    pub global_entries: usize,
+    pub filled_global_entries: usize,
+    pub entry_bytes: usize,
+    pub global_entry_bytes: usize,
 }
 
 /// The index of `site` in its activation's range, or `None` when the send
@@ -371,9 +447,7 @@ impl GlobalCache {
         };
     }
 
-    /// Only this crate's tests call it: Task 8's invalidation is the
-    /// production caller.
-    #[allow(dead_code)]
+    /// Vacates every entry: `InlineCaches::invalidate`'s global half.
     fn clear(&mut self) {
         for entry in &mut self.entries {
             *entry = GlobalEntry::vacant();
@@ -381,7 +455,10 @@ impl GlobalCache {
     }
 
     pub(crate) fn with_entries(entries: usize) -> GlobalCache {
-        assert!(entries.is_power_of_two());
+        assert!(
+            entries.is_power_of_two(),
+            "the global cache must be sized to a power of two, not {entries}"
+        );
         GlobalCache {
             entries: (0..entries).map(|_| GlobalEntry::vacant()).collect(),
             mask: entries - 1,

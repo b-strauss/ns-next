@@ -11,8 +11,10 @@ use super::Interpreter;
 
 impl Interpreter {
     /// The run loop's safepoint, when the heap has asked for one. In a debug
-    /// build under the stress mode, a move when the schedule says one is
-    /// due, and the request stays set so that every safepoint comes here.
+    /// build, the move stress mode moves everything when its schedule says
+    /// one is due, and the cache stress mode invalidates every inline cache
+    /// on every safepoint (`docs/design/dispatch.md`, "Invalidation"); either
+    /// one keeps the request set, so that every safepoint comes here.
     ///
     /// Otherwise the safepoint that takes a request serves it, by clearing
     /// it. Until the collector's allocation counter exists nothing in a
@@ -24,14 +26,49 @@ impl Interpreter {
     #[inline(never)]
     pub(crate) fn safepoint(&mut self) {
         #[cfg(debug_assertions)]
-        if let Some(stress) = &mut self.stress {
-            if stress.due(self.world.traced_size()) {
-                self.world.move_everything();
+        {
+            let mut stressed = false;
+            if self.stress_caches {
+                self.world.invalidate_caches();
+                self.cache_invalidations += 1;
+                stressed = true;
             }
-            return;
+            if let Some(stress) = &mut self.stress {
+                if stress.due(self.world.traced_size()) {
+                    self.world.move_everything();
+                }
+                stressed = true;
+            }
+            if stressed {
+                return;
+            }
         }
         self.world.clear_safepoint_request();
     }
+}
+
+/// Whether `NS_NEXT_STRESS_CACHES` asks for the cache stress mode: set, and
+/// neither empty nor `0`. Debug builds only. It vacates every inline cache
+/// at every safepoint, so that filling, transitions and invalidation run
+/// under the whole suite long before edit-and-continue needs them
+/// (`docs/design/dispatch.md`, "Invalidation"). Not combined with the move
+/// stress mode as a gate: an entry holds no handle for a move to break, and
+/// emptied caches would leave the moves hardly a hit to run under.
+#[cfg(debug_assertions)]
+pub(crate) fn stress_caches_from_env() -> bool {
+    std::env::var_os("NS_NEXT_STRESS_CACHES").is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+/// A global-cache size the environment asks for, for the fixture run with
+/// a cache small enough that every insert evicts (`run_fixtures.rs`).
+/// Debug builds only.
+#[cfg(debug_assertions)]
+pub(crate) fn global_cache_entries_from_env() -> Option<usize> {
+    std::env::var("NS_NEXT_GLOBAL_CACHE_ENTRIES")
+        .ok()?
+        .parse::<usize>()
+        .ok()
+        .filter(|entries| entries.is_power_of_two())
 }
 
 /// How much move work the stress mode spends per safepoint, on average: it
@@ -93,10 +130,13 @@ impl Interpreter {
     }
 
     /// Turns the stress mode on or off for this interpreter, whatever
-    /// `NS_NEXT_STRESS_MOVES` says. For tests.
+    /// `NS_NEXT_STRESS_MOVES` says. For tests. Keeps the safepoint request
+    /// set while the cache stress mode is on, since either one alone must
+    /// keep every safepoint coming back to `safepoint`.
     pub fn set_stress_moves(&mut self, enabled: bool) {
         self.stress = enabled.then(StressMoves::default);
-        self.world.set_safepoint_requested(enabled);
+        self.world
+            .set_safepoint_requested(enabled || self.stress_caches);
     }
 
     /// How many times this interpreter's heap has moved everything.

@@ -73,3 +73,33 @@ fn every_tests_fixtures_ns_file_produces_its_expected_stdout() {
          this floor when adding a fixture, never lower it"
     );
 }
+
+/// Every fixture answers alike when the global cache has one entry, so that
+/// every insert evicts the one before it (`NS_NEXT_GLOBAL_CACHE_ENTRIES`,
+/// read by debug builds only).
+#[cfg(debug_assertions)]
+#[test]
+fn every_fixture_answers_alike_with_a_one_entry_global_cache() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
+    for entry in std::fs::read_dir(&directory).expect("read tests-fixtures") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("ns") {
+            continue;
+        }
+        let expected = std::fs::read_to_string(path.with_extension("expected"))
+            .expect("every fixture has its expected output");
+        let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+            .arg("run")
+            .arg(&path)
+            .env("NS_NEXT_GLOBAL_CACHE_ENTRIES", "1")
+            .output()
+            .expect("run ns-next");
+        assert!(output.status.success(), "{} failed", path.display());
+        assert_eq!(
+            normalize_newlines(&String::from_utf8_lossy(&output.stdout)),
+            normalize_newlines(&expected),
+            "{} with a one-entry global cache",
+            path.display()
+        );
+    }
+}

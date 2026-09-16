@@ -7081,3 +7081,77 @@ fn the_graph_walk_consumes_the_section_exactly() {
         );
     }
 }
+
+/// A snapshot taken with the caches full loads with them empty -- no cache
+/// state and no base is serialized -- and a decoded closure is given a fresh
+/// range of its family's size when it is first activated.
+#[test]
+fn a_snapshot_with_full_caches_loads_with_empty_ones() {
+    // The cache stress mode invalidates on every safepoint by design
+    // (`docs/design/dispatch.md`, "Invalidation"), so nothing this test pins
+    // -- caches full before the snapshot, empty right after load -- survives
+    // under it: skip rather than fail on an interaction the stress mode is
+    // not testing.
+    if std::env::var_os("NS_NEXT_STRESS_CACHES")
+        .is_some_and(|value| !value.is_empty() && value != "0")
+    {
+        return;
+    }
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Keeper = Object new (
+            | keep ::= nil. |
+        ) (
+            public prepare = ( keep := [:each | each + 1]. ^self )
+            public apply: value = ( ^keep value: value )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("prepare"), &[]),
+        "prepare",
+    );
+    let one = interpreter.stash(Value::SmallInteger(1));
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("apply:"), &[one]),
+        "apply:",
+    );
+    assert!(interpreter.cache_statistics().filled_sites > 0);
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let instance = mutator.fetch(&instance);
+        image::snapshot(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("keeper.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    assert_eq!(loaded.interpreter.cache_statistics().site_entries, 0);
+    let forty_one = loaded.interpreter.stash(Value::SmallInteger(41));
+    let answer = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("apply:"), &[forty_one]),
+        "apply: after load",
+    );
+    let answer = loaded
+        .interpreter
+        .enter(|mutator| match mutator.fetch(&answer) {
+            Value::SmallInteger(integer) => integer,
+            _ => panic!("apply: answers a small integer"),
+        });
+    assert_eq!(answer, 42);
+    // `apply:`'s family is two sends (`keep`, `value:`); the decoded block's
+    // is one (`+`, numbered 0 in `prepare`'s family, before the `keep:`
+    // setter that takes the block as its argument).
+    assert_eq!(loaded.interpreter.cache_statistics().site_entries, 3);
+}

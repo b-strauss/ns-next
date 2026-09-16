@@ -68,6 +68,9 @@ enum Command {
         /// The lowering to compile the source with.
         #[arg(long, value_enum, default_value_t = LoweringArgument::Optimized)]
         lowering: LoweringArgument,
+        /// Print the inline caches' sizes to stderr after the run.
+        #[arg(long)]
+        cache_statistics: bool,
     },
     /// Run a file, then serialize the resulting (quiesced) world to an
     /// image file.
@@ -122,6 +125,9 @@ enum Command {
         /// warm-up run.
         #[arg(long, default_value_t = 10)]
         iterations: u32,
+        /// Print the inline caches' sizes to stderr after the timed runs.
+        #[arg(long)]
+        cache_statistics: bool,
     },
     /// Print one compiled body: a method, or with --initializer the target
     /// class's instance initializer. Takes either a .ns file, which is
@@ -213,7 +219,8 @@ fn execute(command: Command) -> ExitCode {
             file,
             send,
             lowering,
-        } => commands::run::execute(&file, &send, lowering.into()),
+            cache_statistics,
+        } => commands::run::execute(&file, &send, lowering.into(), cache_statistics),
         Command::Snapshot {
             file,
             out,
@@ -232,7 +239,8 @@ fn execute(command: Command) -> ExitCode {
             file,
             send,
             iterations,
-        } => commands::bench::execute(&file, &send, iterations),
+            cache_statistics,
+        } => commands::bench::execute(&file, &send, iterations, cache_statistics),
         Command::Disasm {
             file,
             selector,

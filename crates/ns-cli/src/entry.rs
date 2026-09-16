@@ -4,6 +4,24 @@
 
 use std::process::ExitCode;
 
+/// `--cache-statistics`'s one line, shared by `run` and `bench` -- always to
+/// stderr, so it never lands where a fixture or a golden reads stdout.
+pub(crate) fn print_cache_statistics(statistics: &ns_runtime::CacheStatistics) {
+    eprintln!(
+        "cache: {} site entries ({} filled, {} megamorphic), {}/{} polymorphic blocks, {}/{} \
+         global entries; entry {} bytes, global entry {} bytes",
+        statistics.site_entries,
+        statistics.filled_sites,
+        statistics.megamorphic_sites,
+        statistics.polymorphic_blocks_in_use,
+        statistics.polymorphic_blocks,
+        statistics.filled_global_entries,
+        statistics.global_entries,
+        statistics.entry_bytes,
+        statistics.global_entry_bytes,
+    );
+}
+
 /// Renders the entry send's outcome -- `program_outcomes.rs` pins these
 /// strings byte for byte, so they live here once and are never duplicated.
 pub(crate) fn report_entry_send(result: ns_runtime::HostResult) -> ExitCode {

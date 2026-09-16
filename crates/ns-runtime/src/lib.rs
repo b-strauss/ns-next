@@ -31,8 +31,8 @@ pub use heap::{
     Root,
 };
 pub use interpreter::{
-    CachedTarget, CachedTargetKind, CallSiteState, HostError, HostResult, HostSignal, Interpreter,
-    MethodSide, Mutator,
+    CacheStatistics, CachedTarget, CachedTargetKind, CallSiteState, HostError, HostResult,
+    HostSignal, Interpreter, MethodSide, Mutator,
 };
 pub use mixin::{DispatchId, DispatchIds, Mixin, MixinApplication};
 pub use resolver::resolve;

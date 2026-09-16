@@ -12,6 +12,9 @@ struct BenchmarkStatistics {
     median: std::time::Duration,
     min: std::time::Duration,
     max: std::time::Duration,
+    /// The inline caches' sizes after the timed runs, when `--cache-statistics`
+    /// asked for them.
+    cache_statistics: Option<ns_runtime::CacheStatistics>,
 }
 
 /// Renders an `instantiate`/`send` failure for `bench`'s purposes. Neither
@@ -62,6 +65,7 @@ fn benchmark_entry(
     loaded: &LoadedSource,
     send: &str,
     iterations: u32,
+    cache_statistics: bool,
 ) -> Result<BenchmarkStatistics, String> {
     let (mut interpreter, class) = source::bootstrap(loaded, ns_runtime::Lowering::Optimized);
     let platform = interpreter.platform();
@@ -109,17 +113,26 @@ fn benchmark_entry(
     } else {
         (timings[middle - 1] + timings[middle]) / 2
     };
+    // After every timed run, so it reports what the timed sends actually
+    // filled, not only the discarded warm-up.
+    let cache_statistics = cache_statistics.then(|| interpreter.cache_statistics());
     Ok(BenchmarkStatistics {
         iterations,
         median,
         min,
         max,
+        cache_statistics,
     })
 }
 
 /// `ns-next bench`: see the `Bench` variant's doc comment for what is
 /// timed and why, and `benchmark_entry`/`timed_send` for how.
-pub(crate) fn execute(file: &Path, send: &str, iterations: u32) -> ExitCode {
+pub(crate) fn execute(
+    file: &Path,
+    send: &str,
+    iterations: u32,
+    cache_statistics: bool,
+) -> ExitCode {
     if cfg!(debug_assertions) {
         eprintln!(
             "warning: this is a debug build; the timings below measure debug-build overhead, \
@@ -139,11 +152,16 @@ pub(crate) fn execute(file: &Path, send: &str, iterations: u32) -> ExitCode {
          bootstrapping, and compiling all happened once beforehand and are excluded. \
          {iterations} timed run(s), after one discarded warm-up run."
     );
-    match benchmark_entry(&loaded, send, iterations) {
-        Ok(statistics) => println!(
-            "median {:?} (min {:?}, max {:?}, n={})",
-            statistics.median, statistics.min, statistics.max, statistics.iterations
-        ),
+    match benchmark_entry(&loaded, send, iterations, cache_statistics) {
+        Ok(statistics) => {
+            println!(
+                "median {:?} (min {:?}, max {:?}, n={})",
+                statistics.median, statistics.min, statistics.max, statistics.iterations
+            );
+            if let Some(cache_statistics) = &statistics.cache_statistics {
+                entry::print_cache_statistics(cache_statistics);
+            }
+        }
         Err(message) => {
             eprintln!("error: {message}");
             return ExitCode::FAILURE;

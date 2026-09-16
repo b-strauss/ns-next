@@ -27,9 +27,12 @@ use crate::Symbol;
 // (a `pub mod`) is what gives `types.rs`'s `pub` field on `ClosureData` a
 // fully public path to it, which a `pub` field's type must have.
 pub use inline_cache::FeedbackBase;
-// The inline caches' test view (`Interpreter::call_site_states`), public
-// through `interpreter` for the same reason.
-pub use inline_cache::{CachedTarget, CachedTargetKind, CallSiteState, MethodSide};
+// The inline caches' test view (`Interpreter::call_site_states`) and sizes
+// (`Interpreter::cache_statistics`), public through `interpreter` for the
+// same reason.
+pub use inline_cache::{
+    CacheStatistics, CachedTarget, CachedTargetKind, CallSiteState, MethodSide,
+};
 
 pub(crate) enum Signal<'gc> {
     Return(ActivationReference, Value<'gc>),
@@ -269,6 +272,16 @@ pub struct Interpreter {
     /// `set_stress_moves`). Debug builds only.
     #[cfg(debug_assertions)]
     stress: Option<safepoint::StressMoves>,
+    /// Whether the cache stress mode is on (`NS_NEXT_STRESS_CACHES`, or
+    /// `set_stress_caches`): every safepoint invalidates every inline cache.
+    /// Debug builds only.
+    #[cfg(debug_assertions)]
+    stress_caches: bool,
+    /// How many times the cache stress mode has invalidated the caches since
+    /// it was turned on, for a test to pin that it actually ran
+    /// (`cache_invalidations`). Debug builds only.
+    #[cfg(debug_assertions)]
+    cache_invalidations: usize,
 }
 
 impl Interpreter {
@@ -280,18 +293,29 @@ impl Interpreter {
     /// reference lowering is for checking the optimized one against it; an
     /// artifact decoded into either runs the code it carries.
     pub fn bootstrap_with(lowering: Lowering) -> Interpreter {
-        // Only the debug build's stress mode writes to it below.
+        // Only the debug build's stress modes write to these fields below.
         #[cfg_attr(not(debug_assertions), allow(unused_mut))]
         let mut interpreter = Interpreter {
             world: crate::heap::World::new(lowering),
             running: false,
             #[cfg(debug_assertions)]
             stress: safepoint::StressMoves::from_env(),
+            #[cfg(debug_assertions)]
+            stress_caches: safepoint::stress_caches_from_env(),
+            #[cfg(debug_assertions)]
+            cache_invalidations: 0,
         };
         #[cfg(debug_assertions)]
         {
-            let stress_enabled = interpreter.stress.is_some();
+            let stress_enabled = interpreter.stress.is_some() || interpreter.stress_caches;
             interpreter.world.set_safepoint_requested(stress_enabled);
+            // A fixture run small enough that every insert evicts
+            // (`run_fixtures.rs`); anything not a decimal power of two is
+            // ignored rather than refused, since this reads the ambient
+            // environment rather than an explicit host call.
+            if let Some(entries) = safepoint::global_cache_entries_from_env() {
+                interpreter.set_global_cache_size(entries);
+            }
         }
         interpreter
     }
@@ -494,6 +518,51 @@ impl Interpreter {
             let platform = mutator.platform_value();
             mutator.stash(platform)
         })
+    }
+
+    /// Vacates every inline cache -- every site, every polymorphic block and
+    /// the global cache -- while keeping every code family's assigned range
+    /// (`docs/design/dispatch.md`, "Invalidation"): a running activation's
+    /// `feedback_base` still names the same range afterwards, so the next
+    /// send through a vacated site simply fills it again and answers what it
+    /// answered before.
+    pub fn invalidate_caches(&mut self) {
+        self.world.invalidate_caches();
+    }
+
+    /// The inline caches' sizes: how much of what is allocated is actually
+    /// filled, and how large one entry of each kind is
+    /// (`--cache-statistics`, and the pinning tests).
+    pub fn cache_statistics(&mut self) -> CacheStatistics {
+        self.world.cache_statistics()
+    }
+
+    /// Replaces the global cache with a fresh one of `entries`, vacating
+    /// whatever it held. A test hook (`NS_NEXT_GLOBAL_CACHE_ENTRIES`,
+    /// `run_fixtures.rs`), not an input path a program can reach: `entries`
+    /// must be a power of two, and a host that gets this wrong panics rather
+    /// than the cache rounding it silently.
+    pub fn set_global_cache_size(&mut self, entries: usize) {
+        self.enter(|mutator| mutator.caches.set_global_cache_size(entries));
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Interpreter {
+    /// Turns the cache stress mode on or off for this interpreter, whatever
+    /// `NS_NEXT_STRESS_CACHES` says. For tests. Keeps the safepoint request
+    /// set while the move stress mode is on, since either one alone must
+    /// keep every safepoint coming back to `safepoint`.
+    pub fn set_stress_caches(&mut self, enabled: bool) {
+        self.stress_caches = enabled;
+        self.world
+            .set_safepoint_requested(enabled || self.stress.is_some());
+    }
+
+    /// How many times the cache stress mode has invalidated the caches since
+    /// it was turned on; 0 while it is off.
+    pub fn cache_invalidations(&self) -> usize {
+        self.cache_invalidations
     }
 }
 
