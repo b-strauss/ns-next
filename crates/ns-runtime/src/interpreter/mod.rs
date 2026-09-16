@@ -754,8 +754,17 @@ impl<'gc> Mutator<'gc> {
     /// the receiver's own class, so a subclass's own `doesNotUnderstand:`
     /// does not answer a `super` send that its superclass cannot. A class
     /// object's `super` send of its own factory selector still instantiates
-    /// (`try_factory_send`), exactly as the same send to it does. `#[cold]`
-    /// for the reason `decide_does_not_understand` gives.
+    /// (`try_factory_send`), exactly as the same send to it does.
+    ///
+    /// `#[cold]`, although this is not purely a failure path: every call
+    /// starts with `try_factory_send`, so a `super new` that does instantiate
+    /// -- a class overriding `new` and delegating to `super` -- passes
+    /// through here too, not only a send nothing answers. That is accepted
+    /// because instantiation's own allocations (the instance, its factory's
+    /// levels, every initializer activation) dwarf what marking this cold
+    /// costs a codegen decision that runs once per `super`-prefixed factory
+    /// send in the whole program, where an ordinary `super` failure runs on
+    /// every miss.
     #[cold]
     #[inline(never)]
     pub(crate) fn decide_super_does_not_understand(
@@ -2070,5 +2079,21 @@ mod tests {
     #[test]
     fn a_decision_stays_the_size_it_has_in_a_debug_build() {
         assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 64);
+    }
+
+    /// `decide_public_lookup`'s doc comment argues its shape from `Lookup`
+    /// being 24 bytes against a 64-byte settled enum; pinned here so that
+    /// growing a `Lookup` variant does not quietly make that argument wrong.
+    /// Unlike `Result<Step, Signal>` above, this one does not grow in a debug
+    /// build: `SlotAccessor`'s own 12 bytes plus the absolute field index it
+    /// carries already need a 24-byte slot once alignment rounds it up, and a
+    /// debug `ClassReference`'s wider handle (12 bytes against a release
+    /// build's 4, for the origin and move epoch that catch a stale or
+    /// cross-heap read) only brings `Method`'s payload up to that same total,
+    /// not past it.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn a_lookup_stays_the_size_the_hot_path_was_measured_at() {
+        assert_eq!(std::mem::size_of::<Lookup>(), 24);
     }
 }
