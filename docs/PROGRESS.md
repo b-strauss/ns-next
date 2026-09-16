@@ -71,11 +71,10 @@ The megamorphic fallback is the global cache, and the place of the dispatch id
 is decided by 3c's measurement.
 
 **The next piece is 3b's plan**, under `docs/superpowers/plans/`, written
-against [dispatch.md](design/dispatch.md), "3b — The caches". It opens with a
-fresh profile, taken against 3a's head rather than carried over from before
-it, so that the caches' ceiling is measured on the send path they will
-actually sit in front of ([dispatch.md](design/dispatch.md), "Planned: inline
-caches", "What bounds the gain"). Performance is measured, not assumed: the
+against [dispatch.md](design/dispatch.md), "3b — The caches". The profile it
+opens with, taken against 3a's head rather than carried over from before it,
+is recorded in [execution.md](design/execution.md), "3a's head, before the
+caches (2026-09-16)". Performance is measured, not assumed: the
 protocol and the seven sources of "What removing the re-entries moved"
 ([execution.md](design/execution.md); `bench_do.ns` is written out in the
 [2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),

@@ -901,6 +901,63 @@ self). Spec-conformant lookup removed both: a slot's accessors are method-table
 entries, so no send interns a name, and the tables hash identity keys with one
 multiply ("What spec-conformant lookup moved" below).
 
+### 3a's head, before the caches (2026-09-16)
+
+Before building the caches, 3a's head (`60ac69e`, the same code as the plan's
+`START`, `49a2a38`) was profiled to read the caches' ceiling off the send path
+they will actually sit in front of, rather than assume it. One release build
+with debug information and the protocol's flags (`+crt-static`, the
+function-alignment pin), `samply record --save-only` at 500 iterations per
+source (ETW sampling at 1 kHz, Windows 11), over the seven sources of "What
+removing the re-entries moved" below: the three fixtures and the four
+throwaway `target\bench-lookup` sources. `--save-only` defers all
+symbolication to the viewer, so the saved profile carried no symbol names for
+any module, ns-next.exe included; every ns-next.exe frame was resolved
+afterwards against `target\release\ns_next.pdb` through `wholesym`, the
+library samply's own local symbol server uses for the same job, including its
+inline site records. At this optimization level `vm::run`,
+`sends::decide_lexical_send`, `sends::decide_super_send` and
+`dispatch::private_member` carry no standalone symbol at all: LLVM inlined
+each of them into `Interpreter::run_from_host`, and only the PDB's inline
+chain still names them, at their own program counters inside it.
+`Mutator::decide_send`, `dispatch::lookup_public`, `lookup_protected`,
+`metaclass_of`, `builtins::execute`, `decide_slot_accessor`, `nested_class`,
+`decide_instantiation`, `push_step`, `push_activation`, `pop_activation` and
+`reify` each still stand as their own symbol. Reading every call site confirms
+`lookup_public`, `lookup_protected`, `private_member` and `metaclass_of` are
+reached only from inside `Mutator::decide_send`, `sends::decide_lexical_send`
+or `sends::decide_super_send`, so their samples are already inside those three
+functions' union and add nothing on top of it. As in the 2026-09-12 profile,
+only samples under `timed_send` are counted and a system-module frame
+(`ntdll`, `KernelBase`) with no name of its own is charged to the nearest
+ns-next.exe caller on the stack.
+
+| Source | Timed samples | Deciding a send | `builtins::execute` | `push_step`/`push_activation` | `pop_activation`/`reify` | `vm::run` self | **Lookup ceiling** |
+|---|---|---|---|---|---|---|---|
+| `bench_loop.ns` | 5,742 | 52.8% | 12.4% | 0.0% | 0.0% | 4.2% | **19.2%** |
+| `bench_send.ns` | 6,282 | 48.6% | 12.1% | 5.8% | 0.5% | 3.7% | **19.8%** |
+| `bench_block.ns` | 12,361 | 29.0% | 5.9% | 6.1% | 27.0% | 2.5% | **15.0%** |
+| `bench_do.ns` | 3,802 | 37.9% | 13.9% | 15.2% | 0.6% | 2.5% | **13.5%** |
+| `bench_new.ns` | 3,598 | 55.8% | 8.2% | 8.6% | 0.6% | 2.4% | **22.4%** |
+| `bench_new2.ns` | 4,121 | 51.6% | 7.6% | 12.7% | 0.8% | 3.0% | **19.8%** |
+| `bench_newarg.ns` | 5,387 | 41.5% | 5.4% | 11.9% | 1.1% | 2.6% | **15.7%** |
+
+The lookup ceiling is "deciding a send" minus the samples where deciding also
+touches `builtins::execute`, `decide_slot_accessor`, `nested_class` or
+`decide_instantiation` — the primitive itself, the accessor and nested-class
+answers a slot or nested declaration reaches directly, and instantiation's own
+work, none of which a cache removes. On every source the ceiling sits at less
+than half of "deciding a send": `bench_new.ns`'s instantiation-heavy path
+spends most of its deciding time inside `decide_instantiation` itself, not the
+method-table walk a cache would shortcut, and `bench_block.ns`'s repeated
+reification and divorce — 27.0%, the largest single share on any source — is
+what "Planned: closure conversion" and a collector ([memory.md](memory.md))
+are for, not the caches. `bench_loop.ns`'s `+` and `<` never leave the
+primitive path, so it pushes no activation at all (0.0%) and pops none;
+`bench_send.ns`'s single `tick:` call an iteration pushes one (5.8%) and,
+since `tick:` creates no closure, pops it without reifying (0.5%, against
+`bench_block.ns`'s 27.0%, where every iteration creates one).
+
 ### What removing the re-entries moved
 
 Taking the last re-entries of the loop from Rust away ("No re-entry from Rust"
