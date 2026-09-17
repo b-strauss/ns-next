@@ -1032,7 +1032,13 @@ by that measurement. The user decides on the numbers.
     an artifact. The send tags 21–24 retire for new numbers; the density
     check and `CallSitesNotDense` go; a code record carries a flag for a
     family compiled uncached, so that an artifact built with the reference
-    lowering still runs uncached. Rejected alternatives to the refusal 3b
+    lowering still runs uncached. A block precedes its parent in the code
+    table, but its numbers depend on its place in the parent, so the decoder
+    numbers a family once its root is read, rebuilding the blocks' bodies; a
+    test pins that decoded numbering equals the compiler's, the golden image
+    round trip included. The code record's empty call-site list, whose only
+    job was to refuse a stale body, can go, since the retired send tags do
+    that; the plan settles it. Rejected alternatives to the refusal 3b
     built: per-family hash tables (a hash per hit, and shared numbers stay
     unsafe); the selector in every entry (a compare per hit, and an
     oversized number still needs bounding).
