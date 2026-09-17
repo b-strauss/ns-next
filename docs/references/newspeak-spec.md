@@ -367,7 +367,9 @@ Except for `Top` all classes are subclasses of class `Object`, which provides a 
 
 > *(The PDF has a figure here, on page 12; it is a diagram and is not reproduced.)*
 
-Figure 2: Mixins, classes and instances and objects, such as the classes of the built-in literals (5.1) e.g., `String`. In addition, the methods `Array` and `ByteArray` provide predefined factory objects for arrays.
+Figure 2: Mixins, classes and instances
+
+and objects, such as the classes of the built-in literals (5.1) e.g., `String`. In addition, the methods `Array` and `ByteArray` provide predefined factory objects for arrays.
 
 <!-- page 13 -->
 
