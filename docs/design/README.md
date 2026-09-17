@@ -155,6 +155,7 @@ rather than an oversight.
 | `self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved; they are recognized contextually | §4.1 | [frontend.md](frontend.md) |
 | Integers are `i64`; overflow raises a Newspeak error rather than promoting | — | [core-library.md](core-library.md) |
 | Lazy slots are eager: the parser drops `lazy` | §6.3.3 | [frontend.md](frontend.md) |
+| The primary factory is a special case ahead of lookup, not a class-side method, so `super` with the factory selector in an inherited class-side method answers `doesNotUnderstand:` for a subclass with another factory; to be fixed before 3c | §6.3 | [dispatch.md](dispatch.md), "Decisions" |
 | A builtin class name no enclosing declaration declares loads the builtin class directly, rather than being a send to `Object`'s accessor for it, so a superclass cannot override it | §3.2 | [dispatch.md](dispatch.md) |
 
 ## What lives elsewhere

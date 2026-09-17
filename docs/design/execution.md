@@ -2354,11 +2354,14 @@ binds it is that no native code may ever enter an image.
   trampoline steps, so that no Rust frame is live below a safepoint and the
   root discipline has nothing to root but the host's values. The bound on
   re-entries went with them.
-- **The run loop's per-instruction step is forced inline** (2026-09-16; a
-  ruling during 3b, awaiting the user's confirmation), since
+- **The run loop's per-instruction step is forced inline** (2026-09-16,
+  confirmed by the user 2026-09-17), since
   the inline caches' hit path makes it too large for the inliner to take on
   its own, and a step out of line costs every instruction a call; forcing it
-  alone measured no faster ("What the inline caches moved").
+  alone measured no faster ("What the inline caches moved"). Planned for
+  later: one `Interpreter::enter` per stretch between two safepoints rather
+  than one per instruction, so that no per-instruction boundary exists
+  ([dispatch.md](dispatch.md), "Decisions").
 - **The run loop polls a safepoint at every switch and every backward jump**
   ("The VM"): one compare of a flag the heap owns and a cold call when it is
   set, at the points where the loop's locals hold no handle a move would

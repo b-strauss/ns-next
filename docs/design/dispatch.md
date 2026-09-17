@@ -861,7 +861,9 @@ speed of its own — on 3a's head it moved no source beyond noise — it keeps
 the caches' gain. Anything later added to a send's hit path lands in
 `vm::run`, and a change there checks that the step is still inline
 (`dumpbin /disasm`, [execution.md](execution.md), "What the inline caches
-moved") before timing anything.
+moved") before timing anything. The structural answer, planned for later,
+is one `Interpreter::enter` per stretch between two safepoints rather than
+one per instruction ("Decisions" below).
 
 ### 3c — The dispatch id in the object header
 
@@ -959,33 +961,91 @@ by that measurement. The user decides on the numbers.
   application, never on the class object. A cache records what the lookup
   decided and never decides: `resolve`, then `act`, and a hit is `act` on a
   rebuilt resolution. Built; see "3b — The caches" above.
-- **Built during 3b, awaiting the user's confirmation** (2026-09-16): the
-  user approved executing the plan, not each of these points; each is
-  described above.
-  - A private lexical site is guarded on N's application, not left unguarded
-    as first designed: one mixin applied under two superclasses gives a
-    private slot accessor two fields, and the guard also keeps a crafted
-    image from making the site do anything unsafe (the plan's refinement).
-  - A vacant lexical site skips the global cache, and its first resolution
-    decides whether it is private (the plan's refinement).
-  - A `super` send's handler target re-checks the factory, like its
-    `Factory` target, because §5.10's failure path starts with the factory
-    check on `self`, which the key does not cover (the plan's refinement).
-  - A block's `family_size` is its own subtree's, which bounds every site a
-    block can run (the plan's refinement).
-  - The decoder refuses a family numbered other than densely, which bounds a
-    crafted family's range by its bytes and keeps two sends from sharing an
-    entry (the plan's refinement).
-  - A class object stores one dispatch id, the instances id, and derives the
-    class side's as the next, so that `Object` stays 56 bytes until 3c
-    decides the id's place (a ruling during execution).
-  - The global cache writes one probe — the first if it is free or already
-    holds the key, else the second if so, else the first — not both, as
-    Primordial Soup's `InsertOrdinary` does; a probe miss costs only a
-    lookup, so both are correct (a ruling during execution).
-  - `vm::run`'s step is forced inline, because the caches' hit path pushes
-    it past LLVM's inlining threshold, where every instruction pays a call
-    (a ruling during execution).
+- **Confirmed by the user (2026-09-17), as built in 3b:**
+  - **A private lexical site is guarded on N's application**, not left
+    unguarded as first designed: one mixin applied under two superclasses
+    gives a private slot accessor two fields, and the guard keeps a crafted
+    image from making the site do anything wrong. Rejected: an unguarded
+    site with a mixin-relative slot index (nothing would check that N is
+    still the recorded mixin, so a crafted image gets a foreign method or
+    field); not caching private sends (a probe of N's method table on every
+    private send, the common case). Kept open as a later option: guarding on
+    N's *mixin* through a per-heap mixin id kept on the application, with a
+    mixin-relative slot index — the site stays monomorphic when a mixin is
+    applied under several superclasses, at a second load per private hit;
+    worth measuring against the built guard once a program has that shape
+    (none of the measured sources did).
+  - **A block's `family_size` is its own subtree's**, which bounds every site
+    a block can run, computed by one function in compiler and decoder.
+    Rejected: the whole family's size on every body (a second pass, and a
+    decoded closure's fresh range grows for nothing); the range's end carried
+    at run time (larger closures and activations, and a decoded closure still
+    needs a size); blocks pointing at their root (a reference cycle or a
+    table, and a load per block send).
+  - **A class object stores one dispatch id**, the instances id, and derives
+    the class side's as the next, so that `Object` stays 56 bytes. Rejected:
+    both ids on `ClassData` (`Object` 64 bytes, amplification 18.2x); the ids
+    only on the application (a further load on every send). Whether the id
+    moves into the object header is 3c's measured question.
+  - **`vm::run`'s step is forced inline**, and `decide_super_send` kept out
+    of it: the caches' hit path pushes the step past LLVM's inlining
+    threshold, where every instruction pays a call. Rejected: keeping the
+    step small enough without the attribute (fragile against any change and
+    any LLVM version); profile-guided builds (the fragility moves into the
+    profiles). Planned for later ("A standing hazard" above): one
+    `Interpreter::enter` per stretch between two safepoints instead of one
+    per instruction, so that no per-instruction boundary exists at all — to
+    be looked at before a send's hit path grows further, and at the latest
+    with the JIT tiers.
+- **Decided by the user (2026-09-17), to be built before 3c:**
+  - **The global cache's lexical key includes N's application**:
+    `(o's id, selector, lexical, N's application id)`; private entries stay
+    keyed by N's application alone. Whether §5.9's private rule applies
+    depends only on N and the selector, so every entry under such a key is
+    right for any site, and a vacant lexical site may use it — Primordial
+    Soup keys its implicit-receiver cache by the calling method for the same
+    reason (`prior-art/primordialsoup/vm/lookup_cache.h`, `LookupNS`). It
+    replaces 3b's rule that a vacant lexical site skips the global cache.
+    Rejected: a compile-time private flag (adding or removing a private
+    member live would need its senders recompiled); probing N's table on a
+    global hit (about the cost of the lookup it saves).
+  - **The primary factory is a method of the class side** (§6.3: "The class
+    side, together with the primary factory method, defines the mixin for
+    the metaclass"), an entry of the metaclass mixin's method table, found by
+    the ordinary lookups — as both references build it (Primordial Soup's
+    `astForPrimaryFactory:` in
+    `prior-art/primordialsoup/newspeak/Newspeak2PrimordialSoupCompilation.ns`,
+    SOMns's `MixinBuilder.assemblePrimaryFactoryMethod`). 3b's special cases
+    go: the factory check ahead of lookup, the `Factory` target and its
+    re-check, and the factory re-check ahead of a `super` send's
+    `doesNotUnderstand:` target. `super new` in an inherited class-side
+    method then finds the superclass's factory, so
+    `tests-fixtures/cache_super_send_reaches_the_factory_check.ns` pins a
+    non-conforming answer today and is corrected with the change. Its design
+    settles which initializer runs when a superclass's factory runs on a
+    subclass, and a class-side method named like the factory, which both
+    references refuse. Until then this is a deviation, listed in
+    [README.md](README.md).
+  - **Call-site numbers are not serialized**: the decoder numbers each family
+    in the compiler's order — a body's sends in order, a block's at its
+    `MakeClosure` — so a number is a property of the code, never read from
+    an artifact. The send tags 21–24 retire for new numbers; the density
+    check and `CallSitesNotDense` go; a code record carries a flag for a
+    family compiled uncached, so that an artifact built with the reference
+    lowering still runs uncached. Rejected alternatives to the refusal 3b
+    built: per-family hash tables (a hash per hit, and shared numbers stay
+    unsafe); the selector in every entry (a compare per hit, and an
+    oversized number still needs bounding).
+  - **The global cache is set-associative with two slots a group, least
+    recently used out** (Strongtalk's `lookupCache`,
+    `prior-art/strongtalk/vm/lookup/lookupCache.cpp`): 512 groups of two
+    adjacent slots; a miss moves the first slot's entry to the second and
+    writes the first; a hit in the second swaps them. It replaces 3b's
+    insert, which evicts the first probe whatever its use. Rejected: writing
+    both probes (Primordial Soup; half the capacity); zapping the other
+    probes on insert (Cog; discards other keys for a reason particular to
+    Cog). Measured against 3b's insert with a benchmark whose site is
+    megamorphic, since none of the existing sources reaches one.
 - **An entry holds an `Rc` and is 24 bytes** (2026-09-16, the user's
   decision): the 16-byte variant with an index into side tables measured no
   faster and grows those tables with misses ("Considered, not adopted: a

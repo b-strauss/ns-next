@@ -31,7 +31,7 @@ Rust, so holding one across a safepoint, keeping one outside an entry, and a
 native re-entering the loop fail to compile; see "M4 — The lifetime brand"
 below. Measured whole, it is level with `a5d1e05` on every source; its first
 measurement was not, and finding out why put a function-alignment pin into
-the measurement protocol — and only there (the second finding below).
+the measurement protocol — and only there (the third finding below).
 
 **Name resolution and lookup follow the specification**, a step inserted
 ahead of the inline caches and done: a slot's accessors are method-table
@@ -71,9 +71,27 @@ its own. Measured whole, every source is 4.3–11.3% faster than 3a's head and
   ([dispatch.md](design/dispatch.md), "3c — The dispatch id in the object
   header").
 
-**The next piece is 3c's plan**, under `docs/superpowers/plans/`, written
-against [dispatch.md](design/dispatch.md), "3c — The dispatch id in the
-object header", and measured against 3b's head. Performance is measured, not
+**The next piece is a step before 3c: four changes the user decided on
+2026-09-17** ([dispatch.md](design/dispatch.md), "Decisions", "Decided by the
+user … to be built before 3c"), planned and measured together:
+- **The primary factory is a class-side method** (§6.3), found by the
+  ordinary lookups; the factory special cases go, and
+  `tests-fixtures/cache_super_send_reaches_the_factory_check.ns`, which pins
+  a non-conforming answer today, is corrected — `Keyed build` answers a
+  `Keyed` instance. Design first, against the specification and both
+  references: which initializer runs when a superclass's factory runs on a
+  subclass, and a class-side method named like the factory.
+- **The global cache's lexical key includes N's application**, so a vacant
+  lexical site may use it.
+- **Call-site numbers are no longer serialized**; the decoder numbers each
+  family, with a flag for a family compiled uncached; the send tags retire
+  again.
+- **The global cache becomes two-slot least-recently-used groups**, measured
+  against 3b's insert with a benchmark whose site is megamorphic.
+
+**Then 3c's plan**, under `docs/superpowers/plans/`, written against
+[dispatch.md](design/dispatch.md), "3c — The dispatch id in the object
+header", and measured against the head of that step. Performance is measured, not
 assumed: the protocol and the seven sources of "What removing the re-entries
 moved" ([execution.md](design/execution.md); `bench_do.ns` is written out in
 the [2c plan](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
@@ -90,9 +108,6 @@ changes what every cached guard reads, which is on the hot path the run
 loop's step inlines, so its measurement should check with `dumpbin /disasm`
 that the step is still inline before it times anything (the first finding
 below).
-**The points 3b settled on its own await the user's confirmation**: the plan's five refinements and the
-rulings made during execution ([dispatch.md](design/dispatch.md),
-"Decisions").
 
 **Known gaps the step left**, each recorded where it applies:
 
@@ -124,7 +139,18 @@ rulings made during execution ([dispatch.md](design/dispatch.md),
   a send's hit path lands in the step: check it with `dumpbin /disasm` (from
   the Visual Studio Build Tools, not on `PATH`) on a release build with debug
   information — no `vm::run::closure` may be a function of its own — before
-  timing it.
+  timing it. The structural answer is planned for later (the user's decision,
+  2026-09-17): one `Interpreter::enter` per stretch between two safepoints
+  rather than one per instruction, so that no per-instruction boundary
+  exists; to be looked at before a send's hit path grows further, and at the
+  latest with the JIT tiers.
+- **A later option for private lexical sites: guard on N's mixin.** 3b
+  guards a private site on N's application, so a site goes polymorphic when
+  its mixin is applied under several superclasses. A per-heap mixin id on the
+  application, with a mixin-relative slot index, would keep it monomorphic
+  at a second load per private hit ([dispatch.md](design/dispatch.md),
+  "Decisions"). None of the measured sources has such a site; measure it
+  against the built guard once a program does.
 - **A measurement builds every compared binary with the same explicit
   flags, function alignment pinned; the shipped build is unpinned.** 2c's
   first whole-step measurement read 1–2.5% slower than `a5d1e05` on the
@@ -2130,17 +2156,17 @@ lookup decided and never decides.
    merged.
 10. **The documents.**
 
-The plan sharpened five points of the design, executed as written and still
-awaiting the user's confirmation, each kept in
-[dispatch.md](design/dispatch.md): a private lexical site is guarded on N's
-application, since one mixin under two superclasses gives a private slot two
-fields; a vacant lexical site skips the global cache, since its privacy is
-not known until it is resolved; a `super` send's handler target re-checks
-the factory on `self`, like its `Factory` target; a block's `family_size` is
-its own subtree's; and the decoder requires dense numbering. The global
-cache writes one probe where Primordial Soup's writes both, a ruling during
-execution with the same correctness, also awaiting confirmation, as are the
-single stored dispatch id and the forced step inlining.
+The plan sharpened five points of the design and three more were ruled on
+during execution; the user went through all eight on 2026-09-17
+([dispatch.md](design/dispatch.md), "Decisions"). Confirmed as built: a
+private lexical site guarded on N's application, a block's `family_size`
+being its own subtree's, one stored dispatch id, and the forced step
+inlining. Replaced by decisions still to be built: a vacant lexical site
+skipping the global cache (the lexical global key takes N's application
+instead), the factory re-checks (the primary factory becomes a class-side
+method, §6.3, which also corrects a non-conforming fixture), the decoder's
+density check (call-site numbers are no longer serialized), and the global
+cache's one-probe insert (a two-slot least-recently-used group instead).
 
 **Measurement.** Whole, against 3a's head (`49a2a38`) and `be3eb40`, in two
 sittings by the protocol: every source is 4.3–11.3% faster than 3a's head
