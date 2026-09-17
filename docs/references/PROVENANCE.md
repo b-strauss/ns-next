@@ -71,6 +71,14 @@ their publishers grant.
     rules of the specification proper — the string literal's equivalence, both tuple
     literal forms, the cascade and the statement sequence among them — were being
     dropped. The filter is now confined to the pages the contents are on.
+  - **Structure the fonts alone do not give.** The page geometry decides the rest, and
+    each rule had to be found against the rendered pages: a vertical bar is set in the
+    symbol face, so `[:p | body]` fell out of its code span in three pieces; the second
+    level of a list is marked with a dash and the sub-items of a numbered step with a
+    bullet one step further in, so both were flattened; a paragraph set back at the
+    margin after a list was pulled into the last item; a run-in heading is a wholly
+    bold line sharing a baseline with the text it opens, which a paragraph merely
+    beginning with a bold word is not.
 
   It was then compared word by word against an independent `pdftotext` extraction: 99.0%
   of the words match exactly, and every difference was reviewed. They fall into four

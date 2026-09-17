@@ -161,11 +161,11 @@ Other methods that take parameters are known as *keyword methods*. We follow Sma
 
 #### 2.2.3 Closures and other Literals
 
-An n-ary closure is written as in Smalltalk: `[:p1 ... :pN` \| `body]`.
+An n-ary closure is written as in Smalltalk: `[:p1 ... :pN | body]`.
 
-*This notation is much more concise than those used in functional programming. Closures are still rare enough that most programmers are not wedded to a particular syntax. However, we will likely change the syntax to* {`:p1 ... :pN` \| `body`} *as we adopt curly braces for class and method delimiters*.
+*This notation is much more concise than those used in functional programming. Closures are still rare enough that most programmers are not wedded to a particular syntax. However, we will likely change the syntax to* `{:p1 ... :pN | body}` *as we adopt curly braces for class and method delimiters*.
 
-Tuples are written {`e1 . .... . eN` }.
+Tuples are written `{e1 . .... . eN }`.
 
 *If we change the closure syntax, we would use square braces for tuples, which is closer to widely recognized javascript notation. The remaining difference would be the use of dots rather than commas as separators. We see real value in using comma as an operator, and do not plan to conform exactly to javascript notation*.
 
@@ -265,25 +265,25 @@ Figure 1: Enclosing classes, nested classes and their instances
 Because all references to nested classes are message sends, nested classes can be overridden.
 
 ```newspeak
-     class ChildOfOuter = Outer () (
-             public foo = (^Inner new) (* Note that the caret acts like return *)
-     )
-     class GrandChildOfOuter = ChildOfOuter( | public Inner = String. |) (
-     )
-     GrandChildOfOuter new foo. (* returns a String, not an Inner *)
+class ChildOfOuter = Outer () (
+        public foo = (^Inner new) (* Note that the caret acts like return *)
+)
+class GrandChildOfOuter = ChildOfOuter( | public Inner = String. |) (
+)
+GrandChildOfOuter new foo. (* returns a String, not an Inner *)
 ```
 
 Here we have overridden a nested class declaration with a slot. It is also possible to override a superclass of a nested class; consider this variation:
 
 ```newspeak
-     class ChildOfOuter = Outer () (
-          public class Nested = Inner () ()
-          public foo = (^Inner new)
-     )
-     class GrandChildOfOuter = ChildOfOuter( | public Inner ::= String. |) (
-     )
-     GrandChildOfOuter new Nested. (* returns a subclass of String, not Inner *)
-     (GrandChildOfOuter new Inner: Array) Nested. (* returns a subclass of Array *)
+class ChildOfOuter = Outer () (
+     public class Nested = Inner () ()
+     public foo = (^Inner new)
+)
+class GrandChildOfOuter = ChildOfOuter( | public Inner ::= String. |) (
+)
+GrandChildOfOuter new Nested. (* returns a subclass of String, not Inner *)
+(GrandChildOfOuter new Inner: Array) Nested. (* returns a subclass of Array *)
 ```
 
 The code above demonstrates that one cannot, in general, expect two instances to have the same nested classes. Nested classes are created lazily, and cached thereafter. Hence `Nested` is created after `inner` has been set to `Array`. This also shows that all nested classes must be compiled as mixins, as the superclass cannot be reliably known at compilation time.
@@ -291,19 +291,17 @@ The code above demonstrates that one cannot, in general, expect two instances to
 Here are a few more illustrative examples. If `g` is an instance of `GrandChildOfOuter`, then
 
 ```newspeak
-     g Inner. (* returns String *)
-     g Nested. (* returns a subclass of String *)
-     (g Inner: Array) Nested. (* returns the same subclass of String, even though Inner has changed *)
-     g Inner (* returns Array *)
+g Inner. (* returns String *)
+g Nested. (* returns a subclass of String *)
+(g Inner: Array) Nested. (* returns the same subclass of String, even though Inner has changed *)
+g Inner (* returns Array *)
 ```
 
 #### 2.3.1 Implicit Receivers and Scope
 
 In most object-oriented programming languages, if the receiver is **self** (aka **this**) it can be omitted. It is often said that we are referring to a method name that is *in scope*.
 
-In the presence of class (or object literal) nesting, if the receiver is implicit (i.e., omitted), it may be either **self** or an enclosing object of **self**. In statically typed languages, the lexical level of the receiver is determined at compile time. In dynamically typed languages, it is usually done at run time as part of the method lookup process. Typically, one starts the lookup with the class of
-
-**self** (or **self** itself in a prototype based language) and proceeds up its inheritance chain; if no method is found, one jumps to the enclosing lexical level and recurses.
+In the presence of class (or object literal) nesting, if the receiver is implicit (i.e., omitted), it may be either **self** or an enclosing object of **self**. In statically typed languages, the lexical level of the receiver is determined at compile time. In dynamically typed languages, it is usually done at run time as part of the method lookup process. Typically, one starts the lookup with the class of **self** (or **self** itself in a prototype based language) and proceeds up its inheritance chain; if no method is found, one jumps to the enclosing lexical level and recurses.
 
 Newspeak differs in that lookup proceeds up the lexical scope chain (starting with the lexically deepest activation record) and only if no lexically visible matching method is found, do we proceed up the inheritance chain of **self**. After that, no further lookup is done. See figure 4 for an illustration. For a discussion of the rationale for this decision see [Bra07b]. An extensive treatment of Newspeak’s nested classes and their impact on modularity is given in [BvdAB<sup>+</sup>10].
 
@@ -323,11 +321,11 @@ Some objects cannot change after they are created. They are *deeply immutable* a
 
 - Under the assumption that *o* is a value object, it can be shown that:
 
-**–** All its slots are immutable, have been initialized and contain value objects; and
+   - All its slots are immutable, have been initialized and contain value objects; and
 
-**–** Its enclosing objects (3.3) are all value objects; and
+   - Its enclosing objects (3.3) are all value objects; and
 
-**–** Its class inherits from class `Value` and does not define an identity method (`==`).
+   - Its class inherits from class `Value` and does not define an identity method (`==`).
 
 If the class `Value` declares an identity method, that method must return the same results as `Value`’s equality method (`=`).
 
@@ -415,11 +413,11 @@ The 0th *enclosing object of o with respect to* a class *C* is *o* if *C* is a s
 
 5. There is no class *S*<sub>k</sub> such that
 
-- *S*<sub>k</sub> is a superclass of *C*<sub>n−1</sub>.
+   - *S*<sub>k</sub> is a superclass of *C*<sub>n−1</sub>.
 
-- *S*<sub>k</sub> is a proper subclass of *S*<sub>n−1</sub>.
+   - *S*<sub>k</sub> is a proper subclass of *S*<sub>n−1</sub>.
 
-- *S*<sub>k</sub> is an application of the mixin associated with the *n*−1st lexically enclosing class declaration of *C*.
+   - *S*<sub>k</sub> is an application of the mixin associated with the *n*−1st lexically enclosing class declaration of *C*.
 
 *The definition above may seem rather esoteric and unmotivated. However*, *it is useful in order to to define the precise meaning of method lookup. The concept of the kth enclosing object with respect to a class is used in section 5.9*, *which in turn is referenced when defining self sends and implicit receiver sends in general*.
 
@@ -489,9 +487,9 @@ An activation *a* derived from a method definition or closure *p* in response to
 
 - The current *continuation object*. Let *sender* be the activation that sent the message that caused this invocation. Then *sender* determines the continuation object as follows:
 
-**–** If *sender* has further computation that it needs to perform after this invocation, then the continuation object is *sender*.
+   - If *sender* has further computation that it needs to perform after this invocation, then the continuation object is *sender*.
 
-**–** Otherwise, the continuation object is the continuation object of *sender*.
+   - Otherwise, the continuation object is the continuation object of *sender*.
 
 *This specifies tail call elimination, to the extent that it is observable. Unimplemented*.
 
@@ -661,15 +659,15 @@ Ordinary comments are given as metadata that does not specify a tag. That way, t
 *Here is an example showing how metadata is distributed in a class declaration*:
 
 ```newspeak
-     class Foo bar: x (*:exemplar: Foo bar: #baz *) = (* :superfactory: Bla send metadata *) Bla bar = (
-         | (:type: Integer *) x = 3. |
-       (* :baz-metadata: *) baz: (* :x=meta: *) x.
-     ) (* :class-meta: *) (
-        baz: (* :type: Integer *) t (* :return-type: ^Integer *) (* :exemplar: baz: 42*) = (
-             (*:setter-meta: *) y:: (*:send-meta: *) x.
-             (*:return-meta: *) ^ (*:send-meta: *) x
-          )
+class Foo bar: x (*:exemplar: Foo bar: #baz *) = (* :superfactory: Bla send metadata *) Bla bar = (
+    | (:type: Integer *) x = 3. |
+  (* :baz-metadata: *) baz: (* :x=meta: *) x.
+) (* :class-meta: *) (
+   baz: (* :type: Integer *) t (* :return-type: ^Integer *) (* :exemplar: baz: 42*) = (
+        (*:setter-meta: *) y:: (*:send-meta: *) x.
+        (*:return-meta: *) ^ (*:send-meta: *) x
      )
+)
 ```
 
 *The slot and expression metadata precedes the AST (so send metadata is unambiguous). Method metadata immediately succeeds the last parameter (or the method name if there are no parameters). This means that the return type is given as is method-wide metadata. The same rules work for class factories and super factory calls. Class wide metadata is provided after class header and before class body*.
@@ -679,7 +677,7 @@ Ordinary comments are given as metadata that does not specify a tag. That way, t
 Expressions are either *literals* (5.1) or *message sends* (5.4). Expressions are evaluated in the context of an activation (3.6) *a*, known as the *current activation*.
 
 ```
-     expression → [setterKeyword] cascadedMessageExpression;
+expression → [setterKeyword] cascadedMessageExpression;
 ```
 
 <!-- page 23 -->
@@ -703,22 +701,22 @@ literal →  pattern | number | symbol | characterConstant | string | tuple;
 Numeric literals are value objects. Their form is given by the following grammar:
 
 ```
-     digit → "0" - "9";
-     digits →  digit+;
-     uppercaseLetter → "A" - "Z";
-     extendedDigits → (digit | uppercaseLetter)+;
-     radix → digits "r";
-     fraction →  dot digits;
-     extendedFraction →  dot extendedDigits;
-     exponent →  "e" ["-"] digits;
-     decimalNum → ["-"] digits [fraction] [exponent];
-     radixNum → radix,
-                       ["-"]
-                      extendedDigits
-                      [extendedFraction]
-                      [exponent];
-     num → radixNum | decimalNum;
-     number →  (whitespace | comment)* num;
+digit → "0" - "9";
+digits →  digit+;
+uppercaseLetter → "A" - "Z";
+extendedDigits → (digit | uppercaseLetter)+;
+radix → digits "r";
+fraction →  dot digits;
+extendedFraction →  dot extendedDigits;
+exponent →  "e" ["-"] digits;
+decimalNum → ["-"] digits [fraction] [exponent];
+radixNum → radix,
+                  ["-"]
+                 extendedDigits
+                 [extendedFraction]
+                 [exponent];
+num → radixNum | decimalNum;
+number →  (whitespace | comment)* num;
 ```
 
 A number that includes neither a fraction nor an exponent denotes an object that obeys the protocol of class `Integer`. That instance denotes an integer whose value is *sgn* · Σ*r*<sup>i</sup> · *d*<sub>i</sub>, where *sgn* is -1 if a leading minus was present and 1 otherwise, *d*<sub>i</sub>*, i* ∈ 0*..n* are the digits of the number (given by `digits`) from right to left, and *r* is the radix given by `radix` (or 10 if no radix is given). The radix itself is interpreted similarly, except that its radix is always 10.
@@ -769,7 +767,7 @@ characterConstant → (whitespace | comment)* aChar;
 
 #### 5.1.5 String Literals
 
-String literals have the form `"`*σ*`"`or `'`*σ*`'` where *σ* is a sequence of zero or more Unicode extended graphemes. The value of a string literal is equivalent to the result of the expression *S* `fromCollection:` {*c*<sub>1</sub>`.` . . . `.` *c*<sub>k</sub>} where *S* is the class `CanonicalString` and *c*<sub>i</sub>, 1 ≤ *i* ≤ *k* are integers representing the encoding of the string in Unicode normal form C.
+String literals have the form `"`*σ*`"`or `'`*σ*`'` where *σ* is a sequence of zero or more Unicode extended graphemes. The value of a string literal is equivalent to the result of the expression *S* `fromCollection: {`*c*<sub>1</sub>`.` . . . `.` *c*<sub>k</sub>} where *S* is the class `CanonicalString` and *c*<sub>i</sub>, 1 ≤ *i* ≤ *k* are integers representing the encoding of the string in Unicode normal form C.
 
 *The actual source program may be encoded in various ways. The implementation may choose to represent strings in different ways as well. The* `String`, `Symbol` *and* `Character` *classes provide an API that encapsulates this decision (up to performance differences). The requirement above ensures that the semantic effect is as if the source was converted to Unicode NFC, and that strings were stored using that encoding*.
 
@@ -864,27 +862,29 @@ A closure takes zero or more parameters. An *n*-ary closure *b* may be invoked b
 
 - If the closure body is empty, control is passed back to *a*’s continuation object (3.6). The value returned is **nil** (5.1.3).
 
-- Otherwise, the closure body is executed in the context of *a*. If execution of the closure body completes, let *e* be the value of the last statement in the closure body. In this case, control is passed back to *a*’s continuation object. The value returned is *e*. *If the closure body completes, its statement is necessarily an expression statement, since otherwise it would have been a return statement which would have passed control elsewhere before the closure completed*.
+- Otherwise, the closure body is executed in the context of *a*. If execution of the closure body completes, let *e* be the value of the last statement in the closure body. In this case, control is passed back to *a*’s continuation object. The value returned is *e*.
+
+*If the closure body completes, its statement is necessarily an expression statement, since otherwise it would have been a return statement which would have passed control elsewhere before the closure completed*.
 
 #### 5.1.9 Pattern Literals
 
 *Experimental*. A pattern literal is either a wildcard pattern, a literal pattern or a keyword pattern. The exact meaning depends on the binding of the message `Pattern` in the environment where the literal is evaluated. By default, `Pattern` is defined in class `Object` and denotes class `Pattern` of the Newspeak library.
 
 ```
-     pattern → "<", patternLiteral, ">";
-     patternLiteral → wildcardPattern | literalPattern | keywordPattern;
+pattern → "<", patternLiteral, ">";
+patternLiteral → wildcardPattern | literalPattern | keywordPattern;
 ```
 
 **Wildcard Patterns** A wildcard pattern matches any object. It is equivalent to evaluating `Pattern wildcard`.
 
 ```
-     wildcardPattern → "_';
+wildcardPattern → "_';
 ```
 
 **Literal Patterns** A literal pattern matches a particular Newspeak literal. The pattern matches any object whose #= method returns **true** when invoked upon the literal named in the pattern. A literal pattern *\< l \>* is equivalent to evaluating `Pattern literal: l`, where *l* is either a number literal, a symbol literal, a character literal, a string literal or a tuple literal.
 
 ```
-     literalPattern → (whitespace | comment)* number | symbol | characterConstant | string | tuple;
+literalPattern → (whitespace | comment)* number | symbol | characterConstant | string | tuple;
 ```
 
 **Keyword Patterns** A keyword pattern is equivalent to evaluating `Pattern keywords: kws patterns: pats` , where *kws* is a list of symbols denoting keywords, and *pats* is a list of expressions. Sending a message with the selector *kws* to the pattern should return a *binding object* describing if and how the pattern matches the message arguments.
@@ -892,11 +892,11 @@ A closure takes zero or more parameters. An *n*-ary closure *b* may be invoked b
 <!-- page 28 -->
 
 ```
-     keywordPattern → kwPatternPair+;
-     kwPatternPair → keyword, [kwPatternValue].
-     kwPatternValue → wildcardPattern | literalPattern | variablePattern | nestedPatternLiteral;
-     variablePattern → (whitespace | comment)* ( ('?'), id );
-     nestedPatternLiteral → (whitespace | comment)* pattern;
+keywordPattern → kwPatternPair+;
+kwPatternPair → keyword, [kwPatternValue].
+kwPatternValue → wildcardPattern | literalPattern | variablePattern | nestedPatternLiteral;
+variablePattern → (whitespace | comment)* ( ('?'), id );
+nestedPatternLiteral → (whitespace | comment)* pattern;
 ```
 
 A keyword pattern may contain a *variable pattern* of the form ?*x* nested within it.
@@ -920,7 +920,7 @@ If the enclosing object is **nil**, the superclass clause must be implicit, and 
 *For literals in general, we have a choice as discussed in the beginning of section 5.1, but consistency pushes in the direction of flexiblility*.
 
 ```
-     objectLiteral → [identifier [keywordMsg]] classBody;
+objectLiteral → [identifier [keywordMsg]] classBody;
 ```
 
 ### 5.2 self
@@ -932,7 +932,7 @@ When not part of a self send (5.8), the reserved word **self** denotes the curre
 Evaluating an expression in parentheses (*e*) is equivalent to evaluating *e*.
 
 ```
-     parenthesizedExpression →  lparen expression rparen;
+parenthesizedExpression →  lparen expression rparen;
 ```
 
 ### 5.4 Message Send Expressions
@@ -999,11 +999,15 @@ Message sends come in four syntactic forms.
 
 **Unary Expressions** A unary expression *u* consists of either:
 
-- A primary expression *p* which is either a literal (5.1), a parenthesized expression (5.3) or **self** (5.2). In this case the value of *u* is the value of *p*. or one of the following:
+- A primary expression *p* which is either a literal (5.1), a parenthesized expression (5.3) or **self** (5.2). In this case the value of *u* is the value of *p*.
+
+or one of the following:
 
 - A unary message, which is directed at the implicit receiver.
 
-- A receiver given by a unary expression, **outer**, or **super** followed by a unary message In these cases, *u* is a message send expression, and it is evaluated as described in section 5.4.1.
+- A receiver given by a unary expression, **outer**, or **super** followed by a unary message
+
+In these cases, *u* is a message send expression, and it is evaluated as described in section 5.4.1.
 
 ```
 primary →  unarySelector |
@@ -1025,20 +1029,24 @@ binaryExpression →  unaryExpression binaryMsg*;
 
 **Keyword Expressions** A keyword expression *k* consists of either:
 
-- A binary expression *b*. In this case the value of *k* is the value of *b*. or one of the following:
+- A binary expression *b*. In this case the value of *k* is the value of *b*.
+
+or one of the following:
 
 - A keyword message, which is directed at the implicit receiver.
 
-- A receiver given by a binary expression followed by a keyword message. In these cases, *k* is a message send expression, and it is evaluated as described in section 5.4.1.
+- A receiver given by a binary expression followed by a keyword message.
 
 <!-- page 31 -->
+
+In these cases, *k* is a message send expression, and it is evaluated as described in section 5.4.1.
 
 ```
 keywordExpression →  binaryExpression [keywordMsg];
 implicitKeywordSend → keywordMsg;
 ```
 
-**Setter Sends** A setter message has the form `id:: e`. It is equivalent to the expression `[:p` \| `id:p. p] value:(e)` where *p* ≠ *id*. Tools may treat it as a single message send however.
+**Setter Sends** A setter message has the form `id:: e`. It is equivalent to the expression `[:p | id:p. p] value:(e)` where *p* ≠ *id*. Tools may treat it as a single message send however.
 
 ```
 sendExpression → implicitKeywordSend | cascadedMessageExpression;
@@ -1053,7 +1061,7 @@ expression → [setterKeyword] sendExpression;
 
 #### 5.4.4 Compound Message Send Expressions
 
-**Cascades** A *cascade* has the form `e` *μ*<sub>0</sub>`;` *. . . μ*<sub>n</sub> where *μ*<sub>i</sub>*, i* ∈ 0*..n* are message clauses and `e` is an expression. It is equivalent to `[:p` \| `p` *μ*<sub>0</sub>`.` . . . `p` *μ*<sub>n</sub>`] value:(e)`.
+**Cascades** A *cascade* has the form `e` *μ*<sub>0</sub>`;` *. . . μ*<sub>n</sub> where *μ*<sub>i</sub>*, i* ∈ 0*..n* are message clauses and `e` is an expression. It is equivalent to `[:p | p` *μ*<sub>0</sub>`.` . . . `p` *μ*<sub>n</sub>`] value:(e)`.
 
 ```
 nontrivialUnaryMessages → unarySelector+ binaryMsg* [keywordMsg];
@@ -1067,7 +1075,7 @@ msgCascade → nonEmptyMessages cascadeMsg*;
 cascadedMessageExpression → primary [msgCascade];
 ```
 
-**Chains** *Unimplemented*. A *chain* has the form `e :`\| *μ*. It is equivalent to `(e)` *μ*.
+**Chains** *Unimplemented*. A *chain* has the form `e :|` *μ*. It is equivalent to `(e)` *μ*.
 
 *Chains are a new proposed feature that has not yet been implemented. They are intended as a sugar that allows one to chain sends without excess parentheses (similar to the $ operator in Haskell), as in*:
 
@@ -1102,9 +1110,7 @@ Let *f* = *lookupPublic*(*s, R*) where *R* is the class of *o* and *lookupPublic
 
 - *m*, if the mixin of *C* defines a method *m* with selector *n* and **public** access.
 
-- Undefined, if the mixin of *C* defines a method *m* with selector *n* and
-
-**protected** access.
+- Undefined, if the mixin of *C* defines a method *m* with selector *n* and **protected** access.
 
 - *lookupPublic*(*n, superclass*(*C*)) otherwise.
 
@@ -1173,11 +1179,11 @@ An implicit receiver send consists of a message clause (5.4.2) *m*. Let *s* be t
 
 - Let *d* be the innermost lexically enclosing construct in which a method, slot or class named *s* is declared, if such a construct exists.
 
-**–** If *d* is a class then let *N* be the name of *d*. Then the implicit receiver send is equivalent to an outer send (5.9) of the form `outer` *N m*.
+   - If *d* is a class then let *N* be the name of *d*. Then the implicit receiver send is equivalent to an outer send (5.9) of the form `outer` *N m*.
 
-**–** If *d* is an object literal, then let *o* be the value of the object literal, let *f* be the method with selector *s* defined on (3.4) *o*, and let *μ* be the value of *m*. The value of the implicit receiver send is the result of invoking *f* on *o* in response to (3.5) *μ*.
+   - If *d* is an object literal, then let *o* be the value of the object literal, let *f* be the method with selector *s* defined on (3.4) *o*, and let *μ* be the value of *m*. The value of the implicit receiver send is the result of invoking *f* on *o* in response to (3.5) *μ*.
 
-**–** Otherwise, *d* is necessarily a method or a closure literal. Then the implicit receiver send is equivalent to a send of the message *m* to the current activation (3.6) of *d*.
+   - Otherwise, *d* is necessarily a method or a closure literal. Then the implicit receiver send is equivalent to a send of the message *m* to the current activation (3.6) of *d*.
 
 - Otherwise, the implicit receiver send is equivalent to a self send (5.8) of the form `self` *m*.
 
@@ -1278,19 +1284,19 @@ The superclass may be specified as part of a mixin application as noted above, o
 <!-- page 39 -->
 
 ```
-     classDeclaration → (classToken identifier typeParameterDecl? messagePattern equalSign
-                             inheritanceListAndOrBody) |
-                          (classToken identifier typeParameterDecl? empty equalSign
-                             inheritanceListAndOrBody);
-     classToken → (whitespace | comment)* "class" ;
-     typeParameterDecl → langleBracket lbracket identifier (comma identifier)* rbracket rangleBracket;
-     inheritanceListAndOrBody → defaultSuperclassAndBody |
-                                                explicitInheritanceListAndOrBody;
-     defaultSuperclassAndBody → classBody;
-     explicitInheritanceListAndOrBody → inheritanceClause mixinSpec;
-     mixinSpec →  classBody | mixinAppSuffix;
-     mixinAppSuffix → (mixinOperator inheritanceClause)+
-                              (dot | classBody);
+classDeclaration → (classToken identifier typeParameterDecl? messagePattern equalSign
+                        inheritanceListAndOrBody) |
+                     (classToken identifier typeParameterDecl? empty equalSign
+                        inheritanceListAndOrBody);
+classToken → (whitespace | comment)* "class" ;
+typeParameterDecl → langleBracket lbracket identifier (comma identifier)* rbracket rangleBracket;
+inheritanceListAndOrBody → defaultSuperclassAndBody |
+                                           explicitInheritanceListAndOrBody;
+defaultSuperclassAndBody → classBody;
+explicitInheritanceListAndOrBody → inheritanceClause mixinSpec;
+mixinSpec →  classBody | mixinAppSuffix;
+mixinAppSuffix → (mixinOperator inheritanceClause)+
+                         (dot | classBody);
 ```
 
 An optional type parameter declaration may appear between the class name and the primary factory method pattern. It declares the formal type parameters of a generic class. For example, `class Map <[K, V]> new: capacity <Integer>` declares that `Map` has two type parameters, `K` and `V`. These names are in scope within the class body and may be used in type annotations on slots, method parameters, and return types.
@@ -1448,7 +1454,7 @@ slotDef →  [accessModifier] slotDecl
       [((equalSign | "::=") expression dot) | dot];
 ```
 
-*The trailing dot is mandatory after an initializer and optional after an uninitialized slot, so all of* \| `a` \|, \| `a.` \|, \| `a = 1. b. c` \| *are well-formed slot bars*.
+*The trailing dot is mandatory after an initializer and optional after an uninitialized slot, so all of* `| a |`, `| a. |`, `| a = 1. b. c |` *are well-formed slot bars*.
 
 When the clause is executed, the slot declarations within it are executed in sequence, one after the other.
 
@@ -1506,11 +1512,7 @@ lazySlotDecl → ((lazyModifier [accessModifier]) | (accessModifier lazyModifier
                          slotDecl (equalSign | "::=") expression dot;
 ```
 
-A lazy slot declaration has the form `lazy` *m* ::= *e*. or `lazy` *m* = *e*.. The token `lazy` may optionally be preceded *or* followed by an access modifier; both `lazy public` *m* = *e*. and `public lazy` *m* = *e*. are accepted, with identical meaning. A lazy slot always has an initialization expression *e*, but the slot value is initially
-
-**nil**. When the slot is read by invoking its getter method *m*, if the slot contains
-
-**nil**, *e* is evaluated to an object *o*, the slot’s value is set to *o* (but not by means of a setter method), and *o* is returned as the result of the send. Otherwise, the result of getter method invocation *m* is the value the slot contains.
+A lazy slot declaration has the form `lazy` *m* ::= *e*. or `lazy` *m* = *e*.. The token `lazy` may optionally be preceded *or* followed by an access modifier; both `lazy public` *m* = *e*. and `public lazy` *m* = *e*. are accepted, with identical meaning. A lazy slot always has an initialization expression *e*, but the slot value is initially **nil**. When the slot is read by invoking its getter method *m*, if the slot contains **nil**, *e* is evaluated to an object *o*, the slot’s value is set to *o* (but not by means of a setter method), and *o* is returned as the result of the send. Otherwise, the result of getter method invocation *m* is the value the slot contains.
 
 *Lazy slots are particularly useful for implementing* orthogonal synchronization *[Bra]. The intent is that when synchronization occurs, all lazy slots will be set to* <strong>nil</strong>*, and recomputed on demand based on persistent values that are synchronized. Lazy slots themselves need never be persisted or synchronized*.
 
