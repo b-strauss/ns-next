@@ -91,6 +91,8 @@ Version 0.106 · Gilad Bracha · May 30, 2026
   - [8.6 Exception Handling](#86-exception-handling)
 - [References](#references)
 
+<!-- page 3 -->
+
 ## 1 Introduction
 
 **Caveat Emptor**
