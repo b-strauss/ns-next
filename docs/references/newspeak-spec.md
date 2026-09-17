@@ -401,7 +401,7 @@ Given an object *o*:
 
 <!-- page 14 -->
 
-The 0th *enclosing object of o with respect to* a class *C* is *o* if *C* is a superclass of the class of *o* and undefined otherwise. The 1st *enclosing object of o with respect to* a class *C* is the enclosing object of *C*. For *n \>* 1, an object *o*<sub>n</sub> is the *n*th *enclosing object of o with respect to* a class *C* if *o*<sub>n</sub> is the enclosing object of *S*<sub>n−1</sub> where:
+The 0th *enclosing object of o with respect to* a class *C* is *o* if *C* is a superclass of the class of *o* and undefined otherwise. The 1st *enclosing object of o with respect to* a class *C* is the enclosing object of *C*. For *n >* 1, an object *o*<sub>n</sub> is the *n*th *enclosing object of o with respect to* a class *C* if *o*<sub>n</sub> is the enclosing object of *S*<sub>n−1</sub> where:
 
 1. *o*<sub>n−1</sub> is the *n* − 1st enclosing object of *o* with respect to *C*.
 
@@ -569,7 +569,7 @@ A top level expressions is executed in the context of a top level activation. A 
 
 <!-- page 20 -->
 
-*Likewise, by definition there is no surrounding class at the top level, so* **self* (5.2), self sends (5.8), outer sends (5.9) and super sends (5.10) are excluded as well*.
+*Likewise, by definition there is no surrounding class at the top level, so* **self** *(5.2), self sends (5.8), outer sends (5.9) and super sends (5.10) are excluded as well*.
 
 *What can be expressed are module declarations (6.4), and sends that can be used to send these declarations to a module that can instantiate them and link them together*.
 
@@ -881,7 +881,7 @@ patternLiteral → wildcardPattern | literalPattern | keywordPattern;
 wildcardPattern → "_';
 ```
 
-**Literal Patterns** A literal pattern matches a particular Newspeak literal. The pattern matches any object whose #= method returns **true** when invoked upon the literal named in the pattern. A literal pattern *\< l \>* is equivalent to evaluating `Pattern literal: l`, where *l* is either a number literal, a symbol literal, a character literal, a string literal or a tuple literal.
+**Literal Patterns** A literal pattern matches a particular Newspeak literal. The pattern matches any object whose #= method returns **true** when invoked upon the literal named in the pattern. A literal pattern *< l >* is equivalent to evaluating `Pattern literal: l`, where *l* is either a number literal, a symbol literal, a character literal, a string literal or a tuple literal.
 
 ```
 literalPattern → (whitespace | comment)* number | symbol | characterConstant | string | tuple;
@@ -1145,7 +1145,7 @@ p doesNotUnderstand: #foo. (* 3 *)
 
 ### 5.6 Asynchronous Sends
 
-An asynchronous send consists of an explicit receiver expression followed by the asynchronous send token *\<*-: followed by a message clause. The receiver expression is evaluated first, yielding an object *o*. Then the message clause is evaluated, yielding a message *μ*.
+An asynchronous send consists of an explicit receiver expression followed by the asynchronous send token *<*-: followed by a message clause. The receiver expression is evaluated first, yielding an object *o*. Then the message clause is evaluated, yielding a message *μ*.
 
 If *o* is a promise, then at some point after *o* is resolved to an object *o*′, the send will be processed further as if the receiver were *o*′. If *o* is a near reference, then the send will immediately be processed further as if the receiver were the remote representation of *o*.
 
@@ -1217,7 +1217,7 @@ x foo
 
 *This would be easily fixed by having a special syntax for self sends, e.g*., **SelfSend** *m. However, this flies in the face of deeply ingrained habits, and would likely cause many mistakes*.
 
-*No doubt programmers would be surprised that (*<strong>self</strong>*) m only called public methods (because it was just an ordinary send), though the likelihood of that mistake is negligible. On the other hand, if we were to introduce a special syntax for self sends, programmers would constantly be surprised and annoyed that* **self* m was an ordinary send*.
+*No doubt programmers would be surprised that (*<strong>self</strong>*) m only called public methods (because it was just an ordinary send), though the likelihood of that mistake is negligible. On the other hand, if we were to introduce a special syntax for self sends, programmers would constantly be surprised and annoyed that* **self** *m was an ordinary send*.
 
 *Instead, the solution is to recognize the parenthesized form as a self send as well. All self sends work as expected, and so do parentheses*.
 
@@ -1327,7 +1327,7 @@ A declaration of a nested class *N* nested directly within another class *OC* im
 
 *Since a class object has no slots of its own, the only state it can access is that which is available through its enclosing object. This implies that a module definition has no state, since its enclosing object is* **nil**.
 
-A class declaration *C* is its own 0th lexically enclosing class declaration. For *n \>* 0, a class *C*<sub>n</sub> is the *n*th lexically enclosing class declaration of a class declaration *C*<sub>0</sub>, if it is the immediately enclosing class declaration of the *n* −1st lexically enclosing class declaration of *C*<sub>0</sub>.
+A class declaration *C* is its own 0th lexically enclosing class declaration. For *n >* 0, a class *C*<sub>n</sub> is the *n*th lexically enclosing class declaration of a class declaration *C*<sub>0</sub>, if it is the immediately enclosing class declaration of the *n* −1st lexically enclosing class declaration of *C*<sub>0</sub>.
 
 ### 6.1 Inheritance Clauses
 
@@ -1374,7 +1374,7 @@ The value of the message pattern *m* is known as *the message determined by the 
 
 A mixin may be *applied* to a superclass to produce a new class that is an application of the mixin.
 
-Syntactically, a mixin application consists of an explicit superclass clause denoting a class *S*, followed by the mixin application operator *\<*`:`, followed by an inheritance clause that specifies a class *C* whose mixin *M* will be applied to the superclass. The inheritance clause’s message clause *m* specifies how to initialize the subobject defined by the mixin.
+Syntactically, a mixin application consists of an explicit superclass clause denoting a class *S*, followed by the mixin application operator *<*`:`, followed by an inheritance clause that specifies a class *C* whose mixin *M* will be applied to the superclass. The inheritance clause’s message clause *m* specifies how to initialize the subobject defined by the mixin.
 
 The result of a mixin application expression is a class *I* with mixin *M* and superclass *S*. The enclosing object of *I* is the enclosing object of *C*. Class *I* has a primary factory method (6) with the same selector as *m*. When invoked, the primary factory of *I* creates a new instance *o* of *I*, and runs the instance initializer (6.3) of *I* on *o*; then it returns *o*.
 
@@ -1655,7 +1655,7 @@ Because Newspeak provides reflective access (8.2) to the activation (3.6), excep
 
 ## References
 
-[Bra] Gilad Bracha. Objects as software services. Invited talk at OOPSLA 2005 Dynamic Languages Symposium; updated video available at https://www.youtube.com/watch?v=\_cBGtvjaLM0 Unpublished manuscript available at http://bracha.org/objectsAsSoftwareServices.pdf.
+[Bra] Gilad Bracha. Objects as software services. Invited talk at OOPSLA 2005 Dynamic Languages Symposium; updated video available at https://www.youtube.com/watch?v=_cBGtvjaLM0 Unpublished manuscript available at http://bracha.org/objectsAsSoftwareServices.pdf.
 
 [Bra04] Gilad Bracha. Pluggable type systems, October 2004. OOPSLA Workshop on Revival of Dynamic Languages. Available at http://pico.vub.ac.be/%7Ewdmeuter/RDL04/papers/Bracha.pdf.
 
