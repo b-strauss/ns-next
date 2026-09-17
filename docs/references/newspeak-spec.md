@@ -149,7 +149,9 @@ As noted above, if there are no parameters, no parameter list needs to be writte
 
 *Another issue is that while the common precedence rules may make sense for general purpose programming, they may not be good choices in domain specific languages. Good Newspeak practice is to embed domain specific languages within Newspeak as much as possible*.
 
-Other methods that take parameters are known as *keyword methods*. We follow Smalltalk’s rules (not Self’s!). Parameters are interspersed with the method name in a mixfix notation. Places where a parameter is expected are denoted by a colon, which is then followed by the parameter, and then the rest of the method name (if further parameters are needed). **Example**: `anArray at: 5 + 1 put: 0+ 6 factorial` would probably be written as `anArray.atPut(5+1, 0 + 6.factorial())` in a more traditional syntax, and, assuming that the receiver is indeed an array, places the value 720 into the receiver’s 6th element.
+Other methods that take parameters are known as *keyword methods*. We follow Smalltalk’s rules (not Self’s!). Parameters are interspersed with the method name in a mixfix notation. Places where a parameter is expected are denoted by a colon, which is then followed by the parameter, and then the rest of the method name (if further parameters are needed).
+
+**Example**: `anArray at: 5 + 1 put: 0+ 6 factorial` would probably be written as `anArray.atPut(5+1, 0 + 6.factorial())` in a more traditional syntax, and, assuming that the receiver is indeed an array, places the value 720 into the receiver’s 6th element.
 
 <!-- page 6 -->
 
@@ -299,7 +301,9 @@ Here are a few more illustrative examples. If `g` is an instance of `GrandChildO
 
 In most object-oriented programming languages, if the receiver is **self** (aka **this**) it can be omitted. It is often said that we are referring to a method name that is *in scope*.
 
-In the presence of class (or object literal) nesting, if the receiver is implicit (i.e., omitted), it may be either **self** or an enclosing object of **self**. In statically typed languages, the lexical level of the receiver is determined at compile time. In dynamically typed languages, it is usually done at run time as part of the method lookup process. Typically, one starts the lookup with the class of **self** (or **self** itself in a prototype based language) and proceeds up its inheritance chain; if no method is found, one jumps to the enclosing lexical level and recurses.
+In the presence of class (or object literal) nesting, if the receiver is implicit (i.e., omitted), it may be either **self** or an enclosing object of **self**. In statically typed languages, the lexical level of the receiver is determined at compile time. In dynamically typed languages, it is usually done at run time as part of the method lookup process. Typically, one starts the lookup with the class of
+
+**self** (or **self** itself in a prototype based language) and proceeds up its inheritance chain; if no method is found, one jumps to the enclosing lexical level and recurses.
 
 Newspeak differs in that lookup proceeds up the lexical scope chain (starting with the lexically deepest activation record) and only if no lexically visible matching method is found, do we proceed up the inheritance chain of **self**. After that, no further lookup is done. See figure 4 for an illustration. For a discussion of the rationale for this decision see [Bra07b]. An extensive treatment of Newspeak’s nested classes and their impact on modularity is given in [BvdAB<sup>+</sup>10].
 
@@ -315,13 +319,15 @@ An *object* is an entity that can perform computation in response to a *message*
 
 Some objects cannot change after they are created. They are *deeply immutable* and known as *value objects*. A value object is globally unique, in the sense that no other object is equal to it. An object *o* is a value object iff one or both of the following conditions hold:
 
-- *o* is either a module definition (6.4) or an instance of `String`, `Symbol`,
+- *o* is either a module definition (6.4) or an instance of `String`, `Symbol`, `Character`, `Boolean` or `Number`.
 
-```newspeak
-Character, Boolean or Number.
-```
+- Under the assumption that *o* is a value object, it can be shown that:
 
-- Under the assumption that *o* is a value object, it can be shown that: **–** All its slots are immutable, have been initialized and contain value objects; and **–** Its enclosing objects (3.3) are all value objects; and **–** Its class inherits from class `Value` and does not define an identity method (`==`).
+**–** All its slots are immutable, have been initialized and contain value objects; and
+
+**–** Its enclosing objects (3.3) are all value objects; and
+
+**–** Its class inherits from class `Value` and does not define an identity method (`==`).
 
 If the class `Value` declares an identity method, that method must return the same results as `Value`’s equality method (`=`).
 
@@ -481,7 +487,11 @@ An activation *a* derived from a method definition or closure *p* in response to
 
 - The current class. In the case of method activations, the current class is *definingClass*(*s, C*) where *s* is the selector of *p* and *C* is the class of the current instance, unless explicitly specified otherwise (*the only such cases are super sends (5.10)*). For closure activations, the current class is the current class of *p*.
 
-- The current *continuation object*. Let *sender* be the activation that sent the message that caused this invocation. Then *sender* determines the continuation object as follows: **–** If *sender* has further computation that it needs to perform after this invocation, then the continuation object is *sender*. **–** Otherwise, the continuation object is the continuation object of *sender*.
+- The current *continuation object*. Let *sender* be the activation that sent the message that caused this invocation. Then *sender* determines the continuation object as follows:
+
+**–** If *sender* has further computation that it needs to perform after this invocation, then the continuation object is *sender*.
+
+**–** Otherwise, the continuation object is the continuation object of *sender*.
 
 *This specifies tail call elimination, to the extent that it is observable. Unimplemented*.
 
@@ -602,10 +612,10 @@ semicolon → ";";
 slash → "/";
 vbar → "|";
 letter → "a" - "z"| "A" - "Z";
- specialCharacter → | "/" | "\'" | "*" | "~" | "+"
+ specialCharacter → "+" | "/" | "\'" | "*" | "~" |
                                              "<" | ">" | "=" | "@" | "%" |
                                           "|" | "&" | "?" | "!" | ",'";
-      underscore →  " ";
+      underscore →  "_";
       id → (letter | underscore) (letter | digit | underscore)*;
       identifier →  (whitespace | comment)* id;
       kw → id ":";
@@ -682,7 +692,7 @@ literal →  pattern | number | symbol | characterConstant | string | tuple;
 
 *There are two basic approaches to specifying the meaning of literals in Newspeak*.
 
-*One is to define them with respect to fixed classes in the underlying platform*, *or as reserved words (in the case of booleans and* **nil***). This is what the existing implementation does. It is the path of least resistance; it is easier to implement and easier to make efficient*.
+*One is to define them with respect to fixed classes in the underlying platform*, *or as reserved words (in the case of booleans and* <strong>nil</strong>*). This is what the existing implementation does. It is the path of least resistance; it is easier to implement and easier to make efficient*.
 
 *The alternative is to specify literals as the results of implicit receiver message sends (5.7). This means that they can be overridden by user code, effectively changing the meaning of literals. This is closer to the late bound spirit of the language, and allows for some neat usage patterns when embedding domain specific languages in Newspeak*.
 
@@ -753,24 +763,24 @@ character → digit | letter | specialCharacter | "[" | "]" |
                    "^" | ";" | "$" | "#" |
                    ":" | "." | "-" | underscore | "'";
 twoDblQuotes → ""' ""'.;
-aChar →  """ (character | twoDblQuotes | `"' | ` ') """;
+aChar →  """ (character | twoDblQuotes | '"' | ' ') """;
 characterConstant → (whitespace | comment)* aChar;
 ```
 
 #### 5.1.5 String Literals
 
-String literals have the form `"`*σ*`"`or `` ` ``*σ*`'` where *σ* is a sequence of zero or more Unicode extended graphemes. The value of a string literal is equivalent to the `CanonicalString` and *c*<sub>i</sub>, 1 ≤ *i* ≤ *k* are integers representing the encoding of the string in Unicode normal form C.
+String literals have the form `"`*σ*`"`or `'`*σ*`'` where *σ* is a sequence of zero or more Unicode extended graphemes. The value of a string literal is equivalent to the result of the expression *S* `fromCollection:` {*c*<sub>1</sub>`.` . . . `.` *c*<sub>k</sub>} where *S* is the class `CanonicalString` and *c*<sub>i</sub>, 1 ≤ *i* ≤ *k* are integers representing the encoding of the string in Unicode normal form C.
 
 *The actual source program may be encoded in various ways. The implementation may choose to represent strings in different ways as well. The* `String`, `Symbol` *and* `Character` *classes provide an API that encapsulates this decision (up to performance differences). The requirement above ensures that the semantic effect is as if the source was converted to Unicode NFC, and that strings were stored using that encoding*.
 
 String literals are value objects. Such objects will be canonicalized by the default implementation.
 
-*Currently, we only support the syntax* `` `abc' `` *but not* `"abc"`
+*Currently, we only support the syntax* `'abc'` *but not* `"abc"`
 
 The current , temporary, syntax of string literals is given below:
 
 ```
-twoQuotes → `"' `"';
+twoQuotes → '"' '"';
 stringBody → (character | aWhitespaceChar | "'" | twoQuotes)*;
 str →  "'" , stringBody "'";
 string → (whitespace | comment)* str;
@@ -793,7 +803,7 @@ symbol → (whitespace | comment)* pound sym;
 
 #### 5.1.7 Tuple Literals
 
-*n* ≥ 1. The syntax of tuple literals is given below:
+A tuple literal is either the *empty tuple*, {}, or has the form {*e*<sub>1</sub>*. . . . e*<sub>n</sub>} for *n* ≥ 1. The syntax of tuple literals is given below:
 
 ```
 tuple →  lcurly [expression (dot expression)* [dot]] rcurly;
@@ -803,6 +813,12 @@ The empty tuple denotes
 
 ```newspeak
 (R new: 0)
+```
+
+and {*e*<sub>1</sub>*. . . . e*<sub>n</sub>} is equivalent to the following
+
+```newspeak
+R fromArray: ((Array new: n) at: 1 put: e1; . . .; at: n put: en; yourself)
 ```
 
 where *R* is the class `ReadOnlyTuple`. Tools such as debuggers may treat the expression as an atomic composition of the results of *e*<sub>i</sub>*, i* ∈ 1 → *n*.
@@ -840,7 +856,7 @@ statementSequence → expression [furtherStatements];
 furtherStatements → dot statements;
 ```
 
-*Closures are special - they know about the continuation of their lexically enclosing method and its receiver, as well as having a continuation object given to them by their caller. Thus the behavior of return statements in a closure is “non-local” (they return from the nearest enclosing method) , and the result of executing a body without executing a return statement will return the last expression’s value, not* **self***)*.
+*Closures are special - they know about the continuation of their lexically enclosing method and its receiver, as well as having a continuation object given to them by their caller. Thus the behavior of return statements in a closure is “non-local” (they return from the nearest enclosing method) , and the result of executing a body without executing a return statement will return the last expression’s value, not* <strong>self</strong>*)*.
 
 <!-- page 27 -->
 
@@ -862,7 +878,7 @@ A closure takes zero or more parameters. An *n*-ary closure *b* may be invoked b
 **Wildcard Patterns** A wildcard pattern matches any object. It is equivalent to evaluating `Pattern wildcard`.
 
 ```
-     wildcardPattern → " ';
+     wildcardPattern → "_';
 ```
 
 **Literal Patterns** A literal pattern matches a particular Newspeak literal. The pattern matches any object whose #= method returns **true** when invoked upon the literal named in the pattern. A literal pattern *\< l \>* is equivalent to evaluating `Pattern literal: l`, where *l* is either a number literal, a symbol literal, a character literal, a string literal or a tuple literal.
@@ -957,25 +973,31 @@ message → keywordMsg | unarySelector | binaryMsg;
 unarySelector → identifier;
 ```
 
-Evaluation of a unary message clause consists of constructing a message object with no arguments and a selector that is a symbol derived from the identifier given by the message clause. **Binary Message Clauses** A *binary message clause* consists of a selector that consists of special characters as defined in section 4.2, along with a single argument given by a unary expression.
+Evaluation of a unary message clause consists of constructing a message object with no arguments and a selector that is a symbol derived from the identifier given by the message clause.
+
+**Binary Message Clauses** A *binary message clause* consists of a selector that consists of special characters as defined in section 4.2, along with a single argument given by a unary expression.
 
 ```
 binaryMsg → binarySelector unaryExpression;
 ```
 
-Evaluation of a binary message clause consists of evaluating its unary expression to yield an object *a*, and constructing a message object with the argument *a* and the selector given by the message clause. **Keyword Message Clauses** A *keyword message clause* consists of one or more keywords each followed by a binary expression. A keyword is defined as an identifier suffixed by a colon character.
+Evaluation of a binary message clause consists of evaluating its unary expression to yield an object *a*, and constructing a message object with the argument *a* and the selector given by the message clause.
+
+**Keyword Message Clauses** A *keyword message clause* consists of one or more keywords each followed by a binary expression. A keyword is defined as an identifier suffixed by a colon character.
 
 ```
 keywordMsg →  (keyword binaryExpression)+;
 ```
 
-Evaluation of a keyword message clause consists of evaluating its binary expressions in the order they appear, starting at the left, to yield objects and a selector that is a symbol representing the concatenation of all the keywords given in the message clause.
+Evaluation of a keyword message clause consists of evaluating its binary expressions in the order they appear, starting at the left, to yield objects *a*<sub>1</sub> *. . . a*<sub>n</sub>, 1 ≤ *n*, and constructing a message object with arguments *a*<sub>1</sub> *. . . a*<sub>n</sub> and a selector that is a symbol representing the concatenation of all the keywords given in the message clause.
 
 <!-- page 30 -->
 
 #### 5.4.3 Message Send Syntax
 
-Message sends come in four syntactic forms. **Unary Expressions** A unary expression *u* consists of either:
+Message sends come in four syntactic forms.
+
+**Unary Expressions** A unary expression *u* consists of either:
 
 - A primary expression *p* which is either a literal (5.1), a parenthesized expression (5.3) or **self** (5.2). In this case the value of *u* is the value of *p*. or one of the following:
 
@@ -1031,6 +1053,8 @@ expression → [setterKeyword] sendExpression;
 
 #### 5.4.4 Compound Message Send Expressions
 
+**Cascades** A *cascade* has the form `e` *μ*<sub>0</sub>`;` *. . . μ*<sub>n</sub> where *μ*<sub>i</sub>*, i* ∈ 0*..n* are message clauses and `e` is an expression. It is equivalent to `[:p` \| `p` *μ*<sub>0</sub>`.` . . . `p` *μ*<sub>n</sub>`] value:(e)`.
+
 ```
 nontrivialUnaryMessages → unarySelector+ binaryMsg* [keywordMsg];
 nontrivialBinaryMessages → binaryMsg+ [keywordMsg];
@@ -1043,7 +1067,7 @@ msgCascade → nonEmptyMessages cascadeMsg*;
 cascadedMessageExpression → primary [msgCascade];
 ```
 
-*Unimplemented*. A *chain* has the form `e :`\| *μ*. It is equivalent to `(e)` **Chains* μ*.
+**Chains** *Unimplemented*. A *chain* has the form `e :`\| *μ*. It is equivalent to `(e)` *μ*.
 
 *Chains are a new proposed feature that has not yet been implemented. They are intended as a sugar that allows one to chain sends without excess parentheses (similar to the $ operator in Haskell), as in*:
 
@@ -1078,7 +1102,9 @@ Let *f* = *lookupPublic*(*s, R*) where *R* is the class of *o* and *lookupPublic
 
 - *m*, if the mixin of *C* defines a method *m* with selector *n* and **public** access.
 
-- Undefined, if the mixin of *C* defines a method *m* with selector *n* and **protected** access.
+- Undefined, if the mixin of *C* defines a method *m* with selector *n* and
+
+**protected** access.
 
 - *lookupPublic*(*n, superclass*(*C*)) otherwise.
 
@@ -1090,7 +1116,7 @@ The class `Object` must provide a default implementation of `#doesNotUnderstand:
 
 *This ensures that there always is a* `#doesNotUnderstand:`*, method defined for the class. Subclasses may override it to customize behavior. For example, a class can choose to have its instances forward messages to other objects*.
 
-*It is important that* `#doesNotUnderstand:` *is* **protected***. Otherwise it would be possible to distinguish between an object and a proxy*.
+*It is important that* `#doesNotUnderstand:` *is* <strong>protected</strong>*. Otherwise it would be possible to distinguish between an object and a proxy*.
 
 *Let* `o` *be an object, and let* `p` *be a proxy for that object, that operates using* `#doesNotUnderstand:` *to forward all messages to* `o`*. Given a* **public** `#doesNotUnderstand:` *method, one can compare the behavior of* `o` *and* `p`*. Say* `o` *supports a message* `#foo` *that returns 3*.
 
@@ -1145,7 +1171,13 @@ Otherwise, the the execution of the send resulted in an exception *e* being thro
 
 An implicit receiver send consists of a message clause (5.4.2) *m*. Let *s* be the selector of the message that results from the evaluation of *m*.
 
-- Let *d* be the innermost lexically enclosing construct in which a method, slot or class named *s* is declared, if such a construct exists. **–** If *d* is a class then let *N* be the name of *d*. Then the implicit receiver send is equivalent to an outer send (5.9) of the form `outer` *N m*. **–** If *d* is an object literal, then let *o* be the value of the object literal, let *f* be the method with selector *s* defined on (3.4) *o*, and let *μ* be the value of *m*. The value of the implicit receiver send is the result of invoking *f* on *o* in response to (3.5) *μ*. **–** Otherwise, *d* is necessarily a method or a closure literal. Then the implicit receiver send is equivalent to a send of the message *m* to the current activation (3.6) of *d*.
+- Let *d* be the innermost lexically enclosing construct in which a method, slot or class named *s* is declared, if such a construct exists.
+
+**–** If *d* is a class then let *N* be the name of *d*. Then the implicit receiver send is equivalent to an outer send (5.9) of the form `outer` *N m*.
+
+**–** If *d* is an object literal, then let *o* be the value of the object literal, let *f* be the method with selector *s* defined on (3.4) *o*, and let *μ* be the value of *m*. The value of the implicit receiver send is the result of invoking *f* on *o* in response to (3.5) *μ*.
+
+**–** Otherwise, *d* is necessarily a method or a closure literal. Then the implicit receiver send is equivalent to a send of the message *m* to the current activation (3.6) of *d*.
 
 - Otherwise, the implicit receiver send is equivalent to a self send (5.8) of the form `self` *m*.
 
@@ -1171,15 +1203,15 @@ x:: self.
 x foo
 ```
 
-*Here*, `x foo` *is not the same as* `self foo`*. The former is an ordinary send*, *which will succeed only if* `foo` *is* **public***. The latter is a self send, which can access* **protected** *members of the the immediately enclosing class, as well as any* **private** *members declared within it*.
+*Here*, `x foo` *is not the same as* `self foo`*. The former is an ordinary send*, *which will succeed only if* `foo` *is* <strong>public</strong>*. The latter is a self send, which can access* **protected** *members of the the immediately enclosing class, as well as any* **private** *members declared within it*.
 
 *The option of enclosing a self send in parentheses is of little practical use*. *However, by specifying that all such forms are all treated as self sends, we avoid an ugly wart*.
 
-*If the self send construct did not allow for parentheses, (***self***) m would behave differently from a self send - it would be an ordinary send, and so could not invoke non-public methods. The parentheses would have a semantic effect beyond order of evaluation*!
+*If the self send construct did not allow for parentheses, (*<strong>self</strong>*) m would behave differently from a self send - it would be an ordinary send, and so could not invoke non-public methods. The parentheses would have a semantic effect beyond order of evaluation*!
 
 *This would be easily fixed by having a special syntax for self sends, e.g*., **SelfSend** *m. However, this flies in the face of deeply ingrained habits, and would likely cause many mistakes*.
 
-*No doubt programmers would be surprised that (***self***) m only called public methods (because it was just an ordinary send), though the likelihood of that mistake is negligible. On the other hand, if we were to introduce a special syntax for self sends, programmers would constantly be surprised and annoyed that* **self* m was an ordinary send*.
+*No doubt programmers would be surprised that (*<strong>self</strong>*) m only called public methods (because it was just an ordinary send), though the likelihood of that mistake is negligible. On the other hand, if we were to introduce a special syntax for self sends, programmers would constantly be surprised and annoyed that* **self* m was an ordinary send*.
 
 *Instead, the solution is to recognize the parenthesized form as a self send as well. All self sends work as expected, and so do parentheses*.
 
@@ -1213,13 +1245,13 @@ Otherwise, the `#doesNotUnderstand:` method defined for (3.5) the class of *o* i
 
 *The appropriate receiver for our outer send must be an instance of N, or more precisely, an instance o*<sub>k</sub> *of some subclass C*<sub>k</sub> *of an application of* `N mixin`. *As you’ll see, this is exactly the kth enclosing object of* **self** *with respect to C*.
 
-*To find o*<sub>k</sub>*, we’ll start with the class C*<sub>0</sub> *of o*<sub>0</sub> = **self***. Somewhere along the superclass chain of C*<sub>0</sub> *there must be a class S*<sub>0</sub>*, that is an application of* `C mixin`*. Usually, this is the class where the current method, which contains our outer send, was found (in the case of super calls, this may not be the case, but we’ll ignore that possibility to keep this example simple; the definition of kth enclosing object handles the situation correctly). From here, we can climb up the lexical chain of C*.
+*To find o*<sub>k</sub>*, we’ll start with the class C*<sub>0</sub> *of o*<sub>0</sub> = <strong>self</strong>*. Somewhere along the superclass chain of C*<sub>0</sub> *there must be a class S*<sub>0</sub>*, that is an application of* `C mixin`*. Usually, this is the class where the current method, which contains our outer send, was found (in the case of super calls, this may not be the case, but we’ll ignore that possibility to keep this example simple; the definition of kth enclosing object handles the situation correctly). From here, we can climb up the lexical chain of C*.
 
 *We can now look at o*<sub>1</sub>*, the enclosing object of S*<sub>0</sub>*. The class of o*<sub>1</sub> *is C*<sub>1</sub>. *We can apply the same procedure we applied to C*<sub>0</sub> *to C*<sub>1</sub>*, except that now we’re looking for an application of a mixin that corresponds to the next step in the lexical chain (C’s immediately enclosing class). There has to be one (why*? *exercise for the reader)*.
 
 *After k times (and k might be zero) we will reach o*<sub>k</sub>*. We don’t have to precompute k - that is simply an optimization. Instead, we might, at every stage, check if C*<sub>n</sub> *is in fact an application of a mixin named N*.
 
-*If the method is* **private***, it cannot be overridden and so the code could be predetermined - but the receiver could not. If the method is not* **private***, a standard lookup can be done on o*<sub>k</sub>*. This completes the exegesis of this particularly thorny issue*.
+*If the method is* <strong>private</strong>*, it cannot be overridden and so the code could be predetermined - but the receiver could not. If the method is not* <strong>private</strong>*, a standard lookup can be done on o*<sub>k</sub>*. This completes the exegesis of this particularly thorny issue*.
 
 <!-- page 38 -->
 
@@ -1428,7 +1460,9 @@ simSlotDecls → doublevbar slotDefs doublevbar;
 
 A simultaneous slot declaration with a right hand side expression *e* initializes the slot to the value of *p* `computing:` *e*, where *p* is the class `` Past`Future ``. The result is a *future* that will compute the expression *e* on demand. All these futures are resolved once the last slot declaration in the simultaneous slot clause has been executed.
 
-`` Past`Future `` implements a pipelined promise so that any well founded mutual recursion between simultaneous slots will resolve properly. **Immutable Slots** Immutable slots are introduced via the syntax
+`` Past`Future `` implements a pipelined promise so that any well founded mutual recursion between simultaneous slots will resolve properly.
+
+**Immutable Slots** Immutable slots are introduced via the syntax
 
 ```newspeak
 identifier = expression;
@@ -1442,7 +1476,9 @@ When an instance is created, its immutable slots are set to the value of their i
 
 An immutable slot may be accessed exclusively by invoking a getter method via a unary message consisting of the name of the slot. The getter method is implicitly defined by the slot declaration, and returns the value of the slot. The accessibility of the method is the same as the slot’s. There is no setter method associated with the slot and slot initialization is not accomplished by means of a setter method.
 
-*Consequently, defining a setter will not impact such an initialization, unless the method is explicitly invoked in the course of executing the initializer*. **Mutable Slots** Mutable slots are introduced in two ways.
+*Consequently, defining a setter will not impact such an initialization, unless the method is explicitly invoked in the course of executing the initializer*.
+
+**Mutable Slots** Mutable slots are introduced in two ways.
 
 - With an initializer, via the syntax `identifier ::= expression.` Slots declared in this manner are initialized to the value of their initialization expression when an instance of the class declaring the slot is created.
 
@@ -1470,9 +1506,13 @@ lazySlotDecl → ((lazyModifier [accessModifier]) | (accessModifier lazyModifier
                          slotDecl (equalSign | "::=") expression dot;
 ```
 
-A lazy slot declaration has the form `lazy` *m* ::= *e*. or `lazy` *m* = *e*.. The token `lazy` may optionally be preceded *or* followed by an access modifier; both `lazy public` *m* = *e*. and `public lazy` *m* = *e*. are accepted, with identical meaning. A lazy slot always has an initialization expression *e*, but the slot value is initially **nil**. When the slot is read by invoking its getter method *m*, if the slot contains **nil**, *e* is evaluated to an object *o*, the slot’s value is set to *o* (but not by means of a setter method), and *o* is returned as the result of the send. Otherwise, the result of getter method invocation *m* is the value the slot contains.
+A lazy slot declaration has the form `lazy` *m* ::= *e*. or `lazy` *m* = *e*.. The token `lazy` may optionally be preceded *or* followed by an access modifier; both `lazy public` *m* = *e*. and `public lazy` *m* = *e*. are accepted, with identical meaning. A lazy slot always has an initialization expression *e*, but the slot value is initially
 
-*Lazy slots are particularly useful for implementing* orthogonal synchronization *[Bra]. The intent is that when synchronization occurs, all lazy slots will be set to* **nil***, and recomputed on demand based on persistent values that are synchronized. Lazy slots themselves need never be persisted or synchronized*.
+**nil**. When the slot is read by invoking its getter method *m*, if the slot contains
+
+**nil**, *e* is evaluated to an object *o*, the slot’s value is set to *o* (but not by means of a setter method), and *o* is returned as the result of the send. Otherwise, the result of getter method invocation *m* is the value the slot contains.
+
+*Lazy slots are particularly useful for implementing* orthogonal synchronization *[Bra]. The intent is that when synchronization occurs, all lazy slots will be set to* <strong>nil</strong>*, and recomputed on demand based on persistent values that are synchronized. Lazy slots themselves need never be persisted or synchronized*.
 
 *Note that lazy slots may be immutable. The changes to a slot as a result of synchronization should be seen as reflective program changes, not as imperative mutations*.
 
@@ -1524,7 +1564,7 @@ returnStatement → hat expression [dot];
 
 ### 7.3 Statement Sequences
 
-context of an activation *a* consists of the execution of *s*<sub>i</sub>, 1 ≤ *i* ≤ *n*, in the order they appear, in the context of *a*.
+A statement sequence has the form *s*<sub>1</sub>*. . . . s*<sub>n</sub>. Execution of *s*<sub>1</sub>*. . . . s*<sub>n</sub> in the context of an activation *a* consists of the execution of *s*<sub>i</sub>, 1 ≤ *i* ≤ *n*, in the order they appear, in the context of *a*.
 
 ## 8 Pragmatics
 
@@ -1613,7 +1653,7 @@ Because Newspeak provides reflective access (8.2) to the activation (3.6), excep
 
 ## References
 
-[Bra] Gilad Bracha. Objects as software services. Invited talk at OOPSLA 2005 Dynamic Languages Symposium; updated video available at https://www.youtube.com/watch?v=_cBGtvjaLM0 Unpublished manuscript available at http://bracha.org/objectsAsSoftwareServices.pdf.
+[Bra] Gilad Bracha. Objects as software services. Invited talk at OOPSLA 2005 Dynamic Languages Symposium; updated video available at https://www.youtube.com/watch?v=\_cBGtvjaLM0 Unpublished manuscript available at http://bracha.org/objectsAsSoftwareServices.pdf.
 
 [Bra04] Gilad Bracha. Pluggable type systems, October 2004. OOPSLA Workshop on Revival of Dynamic Languages. Available at http://pico.vub.ac.be/%7Ewdmeuter/RDL04/papers/Bracha.pdf.
 

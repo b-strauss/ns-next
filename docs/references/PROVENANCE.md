@@ -47,18 +47,42 @@ their publishers grant.
   left out. It was produced from the PDF's text spans, which is what makes it faithful
   where a plain text extraction is not — the PDF's fonts say which words are Newspeak
   code, which are emphasized and which are headings, so code is fenced, emphasis is kept
-  and the section structure is real rather than guessed. The characters several fonts
-  render from the wrong slot are mapped back (a type annotation's angle brackets,
-  Newspeak's caret, the Greek mu of the message metavariable), ligatures are normalized
-  so that a search for "defined" finds it, and every word the typesetter broke across
-  two lines was rejoined, each decision checked by hand. It was then compared word by
-  word against an independent `pdftotext` extraction: 99.1% of the words match exactly,
-  and every difference was reviewed. They fall into four groups — the labels drawn
-  inside the figures, which this file leaves out along with the figures themselves;
-  places where the two extractions read the page in a different order, such as the
-  bibliography's labels; places where `pdftotext` is wrong and this file is right
-  (`def iningClass`, `lookupP ublic`, dropped prime marks); and three places where the
-  PDF's own text layer omits a space between two words, which are repaired here.
+  and the section structure is real rather than guessed. Ligatures are normalized so
+  that a search for "defined" finds it, and every word the typesetter broke across two
+  lines was rejoined, each decision checked by hand.
+
+  Three classes of defect had to be found and fixed, and they are worth knowing about,
+  because each is invisible to an ordinary text extraction and the first was reported by
+  a reader rather than caught by a check:
+
+  - **Characters the fonts render from the wrong slot.** A type annotation's angle
+    brackets arrive as inverted marks, Newspeak's caret as a modifier circumflex, the
+    message metavariable's Greek mu as a micro sign, and every quote as a curly one.
+    They are mapped back. One glyph is ambiguous: the left single quote is both an
+    opening quotation mark and Newspeak's namespace separator, and only its neighbours
+    tell them apart — between two word characters it is the separator, as in
+    ``Past`Future``, and anywhere else a quote, as in the grammar's `'"'`.
+  - **Characters that are not text at all.** The sans face has no underscore, so the
+    typesetter draws a short rule on the baseline and leaves a space in the text. Every
+    extraction of this document therefore loses all three underscores, including the one
+    in `underscore → "_";`. They are recovered from the page's drawings.
+  - **Content dropped by a filter that was too broad.** The table of contents is
+    recognized by its dot leaders, and the body sets an ellipsis the same way, so seven
+    rules of the specification proper — the string literal's equivalence, both tuple
+    literal forms, the cascade and the statement sequence among them — were being
+    dropped. The filter is now confined to the pages the contents are on.
+
+  It was then compared word by word against an independent `pdftotext` extraction: 99.0%
+  of the words match exactly, and every difference was reviewed. They fall into four
+  groups — the labels drawn inside the figures, which this file leaves out along with
+  the figures themselves; places where the two extractions read the page in a different
+  order, such as the bibliography's labels; places where `pdftotext` is wrong and this
+  file is right (`def iningClass`, `lookupP ublic`, dropped prime marks and every
+  underscore); and three places where the PDF's own text layer omits a space between two
+  words, which are repaired here. That comparison is necessary but not sufficient: both
+  extractions read the same text layer, so it is blind to anything that is not in it,
+  which is how the underscores survived it. What caught the rest was rendering pages as
+  images and reading them.
 
   **The PDF remains the authority.** Cite sections as before (`newspeak-spec.pdf` §6.3);
   this file is how to find them, not a second source. If the two ever disagree, the PDF
