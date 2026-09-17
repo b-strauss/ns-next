@@ -48,8 +48,10 @@ their publishers grant.
   where a plain text extraction is not — the PDF's fonts say which words are Newspeak
   code, which are emphasized and which are headings, so code is fenced, emphasis is kept
   and the section structure is real rather than guessed. Ligatures are normalized so
-  that a search for "defined" finds it, and every word the typesetter broke across two
-  lines was rejoined, each decision checked by hand.
+  that a search for "defined" finds it, quotation marks and apostrophes are the plain
+  ASCII ones throughout rather than the typographic pairs the faces render them as, and
+  every word the typesetter broke across two lines was rejoined, each decision checked
+  by hand.
 
   Three classes of defect had to be found and fixed, and they are worth knowing about,
   because each is invisible to an ordinary text extraction and the first was reported by

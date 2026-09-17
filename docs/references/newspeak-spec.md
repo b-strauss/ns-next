@@ -6,6 +6,8 @@ Version 0.106 · Gilad Bracha · May 30, 2026
 > it so that the whole specification can be searched in one step rather
 > than a section at a time. The wording is the PDF's, taken from its text
 > spans and checked word by word against a second, independent extraction.
+> Quotation marks and apostrophes are the plain ones and ligatures are
+> written out, so that a search finds them.
 > **The PDF remains the authority**: where the two disagree, it wins.
 >
 > `<!-- page N -->` marks where page N of the PDF begins, so a citation can
@@ -105,7 +107,7 @@ When we refer to a class with a specific name *n*, we mean the class *n* defined
 
 Newspeak is a programming language in the Smalltalk [GR83] tradition. Newspeak is:
 
-- *Message-based*. All computation - even an object’s own access to its internal structure - is performed by sending messages to objects. Hence, everything in Newspeak is an object, from elementary data such as numbers and booleans up to functions, classes and modules.
+- *Message-based*. All computation - even an object's own access to its internal structure - is performed by sending messages to objects. Hence, everything in Newspeak is an object, from elementary data such as numbers and booleans up to functions, classes and modules.
 
 - *Secure*. Newspeak objects encapsulate their representation, and Newspeak programs have no static state, providing a sound basis for an object-capability security model [Mil06].
 
@@ -117,7 +119,7 @@ Newspeak is a programming language in the Smalltalk [GR83] tradition. Newspeak i
 
 - *Concurrent*. Concurrency in Newspeak is based on *actors*. Actors are objects with their own thread of control. They share no state with other actors; they communicate exclusively via asynchronous message passing. Actors are non-blocking, race-and-deadlock free, and scalable. *Note that the FFI (8.5) can undermine actor isolation as C can take state passed from one actor, store it globally, and return it to another actor. Non-blockingness also requires care, as a callback passed in by one actor can be invoked when C is called by another. Must ensure that said call back acts as a future, or fails (the former, to allow event processing). In an ideal world, one would only communicate with foreign languages running in a distinct actor. This would be more secure, and require less special handling; this was part of the original vision of Smalltalk. Newspeak is pragmatic in this regard; it remains idealistic, but only to an extent*.
 
-- *Optionally typed*. Newspeak supports pluggable types [Bra04], allowing the language to be extended with arbitrary type systems. These type systems are necessarily optional, and never affect run-time semantics. They utilize Newspeak’s metadata facility (4.3), which allows annotations to be attached to any node in a program’s abstract syntax tree. *Unimplemented*.
+- *Optionally typed*. Newspeak supports pluggable types [Bra04], allowing the language to be extended with arbitrary type systems. These type systems are necessarily optional, and never affect run-time semantics. They utilize Newspeak's metadata facility (4.3), which allows annotations to be attached to any node in a program's abstract syntax tree. *Unimplemented*.
 
 - *Network-serviceable*. Newspeak applications can be updated over the internet *while running*; the combination of reflective update and lazy slots (6.3.3) means the language can support *orthogonal synchronization*, making it straightforward to synchronize persistent data with a remote server, supporting backup, sharing and collaboration [Bra].
 
@@ -147,13 +149,13 @@ In Newspeak, as in Smalltalk, the only operation on objects is member selection,
 
 As noted above, if there are no parameters, no parameter list needs to be written in Newspeak. If there are parameters, we follow the Smalltalk lead of distinguishing between methods that denote binary operators (aka binary methods) and other methods. Binary methods are written in the traditional infix notation: `5 + 4`. However, all binary operators have the same precedence and are evaluated from left to right, so `5+4*2` evaluates to 18 rather than 13.
 
-*This is controversial, as it may surprise most programmers. An alternative is to have the most common operators follow conventional precedence, while others follow the usual left to right precedence. Scala [OSV08] takes this route*. *However, beyond addition/subtraction and multiplication/division, it’s not clear what to do. Should one treat all C operators specially? All Java operators? All Python operators*?
+*This is controversial, as it may surprise most programmers. An alternative is to have the most common operators follow conventional precedence, while others follow the usual left to right precedence. Scala [OSV08] takes this route*. *However, beyond addition/subtraction and multiplication/division, it's not clear what to do. Should one treat all C operators specially? All Java operators? All Python operators*?
 
 *Another issue is that while the common precedence rules may make sense for general purpose programming, they may not be good choices in domain specific languages. Good Newspeak practice is to embed domain specific languages within Newspeak as much as possible*.
 
-Other methods that take parameters are known as *keyword methods*. We follow Smalltalk’s rules (not Self’s!). Parameters are interspersed with the method name in a mixfix notation. Places where a parameter is expected are denoted by a colon, which is then followed by the parameter, and then the rest of the method name (if further parameters are needed).
+Other methods that take parameters are known as *keyword methods*. We follow Smalltalk's rules (not Self's!). Parameters are interspersed with the method name in a mixfix notation. Places where a parameter is expected are denoted by a colon, which is then followed by the parameter, and then the rest of the method name (if further parameters are needed).
 
-**Example**: `anArray at: 5 + 1 put: 0+ 6 factorial` would probably be written as `anArray.atPut(5+1, 0 + 6.factorial())` in a more traditional syntax, and, assuming that the receiver is indeed an array, places the value 720 into the receiver’s 6th element.
+**Example**: `anArray at: 5 + 1 put: 0+ 6 factorial` would probably be written as `anArray.atPut(5+1, 0 + 6.factorial())` in a more traditional syntax, and, assuming that the receiver is indeed an array, places the value 720 into the receiver's 6th element.
 
 <!-- page 6 -->
 
@@ -197,7 +199,7 @@ Same as above, with the superclass listed explicitly.
 class Box = (| contents | )()
 ```
 
-This class has a single slot named `contents`. Slots are declared in between vertical bars, much like Smalltalk local variables. The first set of parentheses in the above declaration delimits the *instance initializer* of the class. Such an initializer always exists, though, as we’ve seen, it may be empty. It contains all slot declarations for the class. Slots may be followed by initialization expressions
+This class has a single slot named `contents`. Slots are declared in between vertical bars, much like Smalltalk local variables. The first set of parentheses in the above declaration delimits the *instance initializer* of the class. Such an initializer always exists, though, as we've seen, it may be empty. It contains all slot declarations for the class. Slots may be followed by initialization expressions
 
 ```newspeak
 class BoxWithNonNullContents = ( | contents = {1. 2. 3}. | )()
@@ -254,7 +256,7 @@ The relationship between an instance *o* of an enclosing class *EC* and its nest
 
 *The enclosing object relationship is also shown in figure 1*.
 
-The enclosing object is a property of a class, and so it is common to all the class’ instances. Hence we may also speak of the enclosing object of an object *i*, which is the enclosing object of *i*’s class.
+The enclosing object is a property of a class, and so it is common to all the class' instances. Hence we may also speak of the enclosing object of an object *i*, which is the enclosing object of *i*'s class.
 
 <!-- page 8 -->
 
@@ -305,7 +307,7 @@ In most object-oriented programming languages, if the receiver is **self** (aka 
 
 In the presence of class (or object literal) nesting, if the receiver is implicit (i.e., omitted), it may be either **self** or an enclosing object of **self**. In statically typed languages, the lexical level of the receiver is determined at compile time. In dynamically typed languages, it is usually done at run time as part of the method lookup process. Typically, one starts the lookup with the class of **self** (or **self** itself in a prototype based language) and proceeds up its inheritance chain; if no method is found, one jumps to the enclosing lexical level and recurses.
 
-Newspeak differs in that lookup proceeds up the lexical scope chain (starting with the lexically deepest activation record) and only if no lexically visible matching method is found, do we proceed up the inheritance chain of **self**. After that, no further lookup is done. See figure 4 for an illustration. For a discussion of the rationale for this decision see [Bra07b]. An extensive treatment of Newspeak’s nested classes and their impact on modularity is given in [BvdAB<sup>+</sup>10].
+Newspeak differs in that lookup proceeds up the lexical scope chain (starting with the lexically deepest activation record) and only if no lexically visible matching method is found, do we proceed up the inheritance chain of **self**. After that, no further lookup is done. See figure 4 for an illustration. For a discussion of the rationale for this decision see [Bra07b]. An extensive treatment of Newspeak's nested classes and their impact on modularity is given in [BvdAB<sup>+</sup>10].
 
 <!-- page 10 -->
 
@@ -329,7 +331,7 @@ Some objects cannot change after they are created. They are *deeply immutable* a
 
    - Its class inherits from class `Value` and does not define an identity method (`==`).
 
-If the class `Value` declares an identity method, that method must return the same results as `Value`’s equality method (`=`).
+If the class `Value` declares an identity method, that method must return the same results as `Value`'s equality method (`=`).
 
 *The implications for actor concurrency (3.7) are that values can be passed among actors. Values can be copied freely across actor boundaries, or shared*, *as desired - but only if their initialization is complete*.
 
@@ -357,11 +359,11 @@ Values are only immutable at the base level. If the code that defines a value ch
 
 A *class* is an object that defines a family of objects, known as its *instances*. All instances of a class respond to the same set of messages. A class is either the empty class `Top` or the application of a *mixin* to another class known as its *superclass*. Only the class `Object` may have `Top` as its superclass. See figure 2.
 
-*The purpose of* `Top` *is to allow for a uniform definition in which all code resides in mixins - including the code in* `Object`. `Top` *doesn’t exist yet*.
+*The purpose of* `Top` *is to allow for a uniform definition in which all code resides in mixins - including the code in* `Object`. `Top` *doesn't exist yet*.
 
 A class *S* is *a proper superclass of* a class *C* iff *S* is either the superclass of *C* or a proper superclass of the superclass of *C*. A class *S* is *a superclass of* a class *C* iff *S* is either a proper superclass of *C* or *S* = *C*. A class *S* is *a proper subclass of C* iff *C* is a proper superclass of *S*. A class *S* is *a subclass of C* iff *C* is a superclass of *S*.
 
-The class’ mixin specifies how the class differs from the superclass. The class *inherits* all the properties of its superclass that are not explicitly *overridden* (i.e., specified to be different) by its mixin. Mixins are associated with class declarations (6). A class’ mixin may be used in a mixin application expression (6.2) to derive additional classes that share the same mixin but may have different superclasses.
+The class' mixin specifies how the class differs from the superclass. The class *inherits* all the properties of its superclass that are not explicitly *overridden* (i.e., specified to be different) by its mixin. Mixins are associated with class declarations (6). A class' mixin may be used in a mixin application expression (6.2) to derive additional classes that share the same mixin but may have different superclasses.
 
 Except for `Top` all classes are subclasses of class `Object`, which provides a small number of methods available to all classes. These include equality, identity, the corresponding hashes etc. They also include accessors for predefined classes
 
@@ -379,7 +381,7 @@ and objects, such as the classes of the built-in literals (5.1) e.g., `String`. 
 
 Each class is an instance of a unique *metaclass*. All metaclasses are instances of class `Metaclass`, and are direct subclasses of `Class`. Metaclasses may not be subclassed.
 
-*This differs from Smalltalk, where the metaclass would be a subclass of the metaclass of the class’ superclass. The metaclass hierarchy in Newspeak is deliberately kept very flat*.
+*This differs from Smalltalk, where the metaclass would be a subclass of the metaclass of the class' superclass. The metaclass hierarchy in Newspeak is deliberately kept very flat*.
 
 ### 3.3 Enclosing Objects
 
@@ -387,7 +389,7 @@ Every class has an *enclosing object* defined as follows:
 
 - The enclosing object of a class definition expression (6) is its surrounding activation, if any, and **nil** (5.1.3) otherwise, as specified in section 6.
 
-- The enclosing object of an object literal’s (5.1.10) class is the literal’s surrounding activation, if any, and **nil** otherwise, as specified in section 5.1.10.
+- The enclosing object of an object literal's (5.1.10) class is the literal's surrounding activation, if any, and **nil** otherwise, as specified in section 5.1.10.
 
 - The enclosing object of a class created by a mixin application expression (6.2) is the enclosing object of the class used to derive the mixin, as specified in section 6.2.
 
@@ -397,7 +399,7 @@ Every class has an *enclosing object* defined as follows:
 
 *The above rules imply that the enclosing object of the result of evaluating a top level expression (3.8) is always* **nil** *and in particular, the enclosing object of a module definition (6.4) is* **nil**.
 
-Method and closure activations (3.6) also have enclosing objects. The enclosing object of a method activation *a* is *a*’s current instance. The enclosing object of an activation of a closure *c* is the (method or closure) activation that instantiated *c*.
+Method and closure activations (3.6) also have enclosing objects. The enclosing object of a method activation *a* is *a*'s current instance. The enclosing object of an activation of a closure *c* is the (method or closure) activation that instantiated *c*.
 
 Let *o* be an instance of class *C* and let *S* be a superclass of *C*. The *enclosing object of o with respect to S* is the enclosing object of *S*.
 
@@ -433,7 +435,7 @@ The 0th *enclosing object of o with respect to* a class *C* is *o* if *C* is a s
 
 ### 3.4 Messages
 
-A message consists of a distinguished object known as its *selector*, and a list of argument objects. Computation takes place when an object receives a message. Messages are usually inaccessible to an executing Newspeak program, but they may be *reified* by the implementation by means of a *message mirror*. A message mirror on a message *μ* is an object obeying the protocol of class `MessageMirror` that provides access to *μ*’s selector and arguments.
+A message consists of a distinguished object known as its *selector*, and a list of argument objects. Computation takes place when an object receives a message. Messages are usually inaccessible to an executing Newspeak program, but they may be *reified* by the implementation by means of a *message mirror*. A message mirror on a message *μ* is an object obeying the protocol of class `MessageMirror` that provides access to *μ*'s selector and arguments.
 
 <!-- page 15 -->
 
@@ -453,9 +455,9 @@ A method defines an action be executed when it is *invoked on* an object *in res
 
 We say that a method *f* is *defined by* the mixin (6) of the class declaration in which *f* is declared. A method *f* is *defined for* a class *C* under the following conditions:
 
-- If *f* is defined by the class’ mixin.
+- If *f* is defined by the class' mixin.
 
-- Otherwise, if *f* is defined for the class’ superclass.
+- Otherwise, if *f* is defined for the class' superclass.
 
 Let *C* be a class and *s* be a selector; the *defining class of s with respect to C* (written *definingClass*(*s, C*)) is
 
@@ -467,7 +469,7 @@ Let *C* be a class and *s* be a selector; the *defining class of s with respect 
 
 When a user defined method *f* is invoked on an object *o* in response to a message *μ*, an activation *a* (3.6) derived from *f* in response to *μ* is instantiated. The current instance of the activation is set to *o*.
 
-The code in the method is then executed (7) in the context of *a*. If execution of the method completes, control is passed back to *a*’s continuation object (3.6) and *a*’s continuation object becomes **nil**. If no explicit return statement (7.2) is executed, the value returned is *o* (the current binding of **self**).
+The code in the method is then executed (7) in the context of *a*. If execution of the method completes, control is passed back to *a*'s continuation object (3.6) and *a*'s continuation object becomes **nil**. If no explicit return statement (7.2) is executed, the value returned is *o* (the current binding of **self**).
 
 *Severing the connection between an activation and its continuation object upon method termination means that closures are not full continuations by default. Continuations should be created very explicitly via mirrors on activations*.
 
@@ -499,7 +501,7 @@ An activation *a* derived from a method definition or closure *p* in response to
 
 It is a compile-time error to define a method or closure that has a parameter and a local with the same name.
 
-Activations may be marked *uncontinuable*. When an activation *a* is marked uncontinuable, it’s continuation object is set to **nil**. Furthermore, any activation *x* whose continuation object is *a* is marked uncontinuable.
+Activations may be marked *uncontinuable*. When an activation *a* is marked uncontinuable, it's continuation object is set to **nil**. Furthermore, any activation *x* whose continuation object is *a* is marked uncontinuable.
 
 Newspeak programming environments must always allow developers to retain activations during debugging so that accurate and complete stack traces can be maintained.
 
@@ -551,7 +553,7 @@ Actors are created from top-level mixins.
 
 *Instead, a suitable top level mixin leads to the creation of a new actor A*, *from which one can then extract a suitable far reference to any nested class within A as desired*.
 
-Given a mixin *M*, an actor is created by applying *M* to Object, producing a fresh class in the new actor’s heap. A far reference to the class is returned to the creating actor. Typically, the fresh class’ factory is then invoked asynchronously to produce a (far-reference to an) instance of the actor.
+Given a mixin *M*, an actor is created by applying *M* to Object, producing a fresh class in the new actor's heap. A far reference to the class is returned to the creating actor. Typically, the fresh class' factory is then invoked asynchronously to produce a (far-reference to an) instance of the actor.
 
 *How do we efficiently enforce these requirements? Using a bit that marks values (a deeply immutable bit)*?
 
@@ -636,7 +638,7 @@ endComment;
 
 ### 4.3 Metadata
 
-Metadata appears in nestable comments of the form `(*:id: xyz *)` where `id` is the name of a particular metadata interpreter that is intended to parse and process the text `xyz`. The identifier given between the colons is the comment’s *tag*, and the text following the second colon is the comment’s *payload*.
+Metadata appears in nestable comments of the form `(*:id: xyz *)` where `id` is the name of a particular metadata interpreter that is intended to parse and process the text `xyz`. The identifier given between the colons is the comment's *tag*, and the text following the second colon is the comment's *payload*.
 
 A metadata comment can appear between any two expressions or declarations.
 
@@ -644,7 +646,7 @@ A metadata comment *mc* is considered to appear immediately before an expression
 
 A metadata comment *mc* is considered to appear immediately after an expression, formal parameter or slot declaration *x* if nothing but whitespace and comments appears after *x* and before *mc*.
 
-A metadata comment that appears immediately prior to an expression is associated with that expression. A metadata comment that appears immediately prior to a slot or parameter declaration is associated with that slot declaration. A metadata comment that appears immediately after a method or class factory’s message pattern is associated with that method or class factory. A metadata comment that appears immediately after a classes’ header is associated with that class.
+A metadata comment that appears immediately prior to an expression is associated with that expression. A metadata comment that appears immediately prior to a slot or parameter declaration is associated with that slot declaration. A metadata comment that appears immediately after a method or class factory's message pattern is associated with that method or class factory. A metadata comment that appears immediately after a classes' header is associated with that class.
 
 *The above implies that multiple metadata comments can be associated with an expression or declaration; that is, metadata comments can appear in sequence with no intervening expressions or declarations*.
 
@@ -733,11 +735,11 @@ A number that includes neither a fraction nor an exponent denotes an object that
 
 Non-integral numbers denote an object that obeys the protocol of class `FixedPointNumber`.
 
-*Actually, we don’t have a class* `FixedPointNumber` *at the moment, and non-integral numbers are currently represented as instances of the Squeak class* `Fraction`*. This is a bug*.
+*Actually, we don't have a class* `FixedPointNumber` *at the moment, and non-integral numbers are currently represented as instances of the Squeak class* `Fraction`*. This is a bug*.
 
 *Most users of Newspeak are not very performance sensitive, and are better off with numbers that they understand. Financial applications in particular need accurate decimal numbers. Machine supported floating point numbers can behave in counterintuitive ways and require a great deal of expertise to manage their subtleties*.
 
-*On the other hand, there are certainly applications where floating point performance is critical. Recent experience shows that using arbitrary precision rationals in numeric computations doesn’t always work very well. The precision computed my greatly exceed what is required, becoming very expensive for no benefit*.
+*On the other hand, there are certainly applications where floating point performance is critical. Recent experience shows that using arbitrary precision rationals in numeric computations doesn't always work very well. The precision computed my greatly exceed what is required, becoming very expensive for no benefit*.
 
 *One possibility is to allow users to choose a numeric implementation. The crude way to do this would force those users who really want machine floats/doubles to specify their literals in an awkward way. This is the opposite default from most languages, which make it hard for users to get accurate numbers. A better option would be to define fractional literals as message sends (as suggested above for all literals), and allow people to choose*.
 
@@ -858,15 +860,15 @@ statementSequence → expression [furtherStatements];
 furtherStatements → dot statements;
 ```
 
-*Closures are special - they know about the continuation of their lexically enclosing method and its receiver, as well as having a continuation object given to them by their caller. Thus the behavior of return statements in a closure is “non-local” (they return from the nearest enclosing method) , and the result of executing a body without executing a return statement will return the last expression’s value, not* <strong>self</strong>*)*.
+*Closures are special - they know about the continuation of their lexically enclosing method and its receiver, as well as having a continuation object given to them by their caller. Thus the behavior of return statements in a closure is "non-local" (they return from the nearest enclosing method) , and the result of executing a body without executing a return statement will return the last expression's value, not* <strong>self</strong>*)*.
 
 <!-- page 27 -->
 
 A closure takes zero or more parameters. An *n*-ary closure *b* may be invoked by sending it a `value` message of the appropriate arity. This will cause instantation of a closure activation *a* derived from *b* in response to the message. Then
 
-- If the closure body is empty, control is passed back to *a*’s continuation object (3.6). The value returned is **nil** (5.1.3).
+- If the closure body is empty, control is passed back to *a*'s continuation object (3.6). The value returned is **nil** (5.1.3).
 
-- Otherwise, the closure body is executed in the context of *a*. If execution of the closure body completes, let *e* be the value of the last statement in the closure body. In this case, control is passed back to *a*’s continuation object. The value returned is *e*.
+- Otherwise, the closure body is executed in the context of *a*. If execution of the closure body completes, let *e* be the value of the last statement in the closure body. In this case, control is passed back to *a*'s continuation object. The value returned is *e*.
 
 *If the closure body completes, its statement is necessarily an expression statement, since otherwise it would have been a return statement which would have passed control elsewhere before the closure completed*.
 
@@ -909,9 +911,9 @@ A keyword pattern may contain a *variable pattern* of the form ?*x* nested withi
 
 *Unimplemented*. An *object literal* expression *e* evaluates to a newly allocated object *o*.
 
-*if it’s a value class, how can we tell*?
+*if it's a value class, how can we tell*?
 
-The class *C*<sub>o</sub> of *o* is implicitly declared by *e*. The expression *e* specifies the superclass of *C*<sub>o</sub>, what parameters are to be passed to the superclass’ factory method, and what the mixin *M*<sub>e</sub> of *C*<sub>o</sub> is. In particular, *e* specifies what slots, methods and nested classes the mixin declares and how it initializes its instances.
+The class *C*<sub>o</sub> of *o* is implicitly declared by *e*. The expression *e* specifies the superclass of *C*<sub>o</sub>, what parameters are to be passed to the superclass' factory method, and what the mixin *M*<sub>e</sub> of *C*<sub>o</sub> is. In particular, *e* specifies what slots, methods and nested classes the mixin declares and how it initializes its instances.
 
 Each evaluation of *e* produces a new class *C*<sub>o</sub>, but its mixin *M*<sub>e</sub> is identical for all evaluations of *e*.
 
@@ -1100,7 +1102,7 @@ index between: 1 and: string size :| ifTrue: [string at: index]
 collection select: [:each | each > 0] :| collect: [:each | each factorial]
 ```
 
-*While in some cases, a cascade could be used, this doesn’t work if one is coding in a functional style, where each expression produces a new value. One can consider chains as ”cascades for functional programming”. Is this worthwhile*? *Or are we falling into a cesspool of sweetener? It looks like the idea of chains can be generalized in a powerful and uniform way. Both chains and cascades are a form of syntactic combinator. While chains in isolation may seem excessive*, *we may yet be able to generalize this in an attractive way. It’s an open question if chains stay in the language*.
+*While in some cases, a cascade could be used, this doesn't work if one is coding in a functional style, where each expression produces a new value. One can consider chains as "cascades for functional programming". Is this worthwhile*? *Or are we falling into a cesspool of sweetener? It looks like the idea of chains can be generalized in a powerful and uniform way. Both chains and cascades are a form of syntactic combinator. While chains in isolation may seem excessive*, *we may yet be able to generalize this in an attractive way. It's an open question if chains stay in the language*.
 
 <!-- page 32 -->
 
@@ -1141,7 +1143,7 @@ p doesNotUnderstand: #foo. (* 3 *)
 
 *However, because* `#doesNotUnderstand:` *is protected, the last call fails. If*, *on the other hand*, `o` *decides to make its* `#doesNotUnderstand:` *method* **public**, *both calls will return 3, and so* `o` *and* `p` *are indistinguishable*.
 
-*Subclasses should not, as a matter of good practice, reduce the accessibility of inherited methods, but there is nothing to prevent them from doing so. In particular, one could override* `#doesNotUnderstand:` *with a protected or private method. However, the wording of the semantics above ensures that the class’ implementation of* `#doesNotUnderstand:` *will be invoked by the system regardless of its accessibility, and so such an attempt to restrict access would be pointless*.
+*Subclasses should not, as a matter of good practice, reduce the accessibility of inherited methods, but there is nothing to prevent them from doing so. In particular, one could override* `#doesNotUnderstand:` *with a protected or private method. However, the wording of the semantics above ensures that the class' implementation of* `#doesNotUnderstand:` *will be invoked by the system regardless of its accessibility, and so such an attempt to restrict access would be pointless*.
 
 *An alternative semantics would be to do an ordinary send of* `#doesNotUnderstand:`*. In that case, changing the access would have an effect, and we would have to specify what happened if no* `#doesNotUnderstand:` *method was defined (presumably a run time error). I see no advantage to this, as an attacker can always determine what messages an object supports*.
 
@@ -1155,7 +1157,7 @@ If *o* is a promise, then at some point after *o* is resolved to an object *o*�
 
 If *o* is a far reference (3.1.2) then let *A* be the actor associated with the referent of *o*. We will often say that the message *μ* is sent to *A* in this case. If *A* is the current actor *A*<sub>current</sub>, then let *μ*′ be *μ*, otherwise let *μ*′ be a new message in the heap of *A*, equivalent to *μ* except that for each argument *a* in *μ*, the remote representation of *a* is placed in the corresponding position in *μ*′.
 
-The message *μ*′ is later placed on *A*’s message queue for subsequent evaluation. The timing of this placement is constrained by the following rules:
+The message *μ*′ is later placed on *A*'s message queue for subsequent evaluation. The timing of this placement is constrained by the following rules:
 
 Let *A*<sub>1</sub>*, A*<sub>2</sub> and *A*<sub>3</sub> be actors.
 
@@ -1191,7 +1193,7 @@ An implicit receiver send consists of a message clause (5.4.2) *m*. Let *s* be t
 
 - Otherwise, the implicit receiver send is equivalent to a self send (5.8) of the form `self` *m*.
 
-*The curved line in figure 4 indicates the lookup path taken for an implicit receiver send. First, the surrounding lexical scope chain is traversed (as indicated by the broad red arrow), from a class C through its enclosing class OC, and up to the top level class OOC. Only if this fails is the receiver’s inheritance chain followed (broad grey arrow)*.
+*The curved line in figure 4 indicates the lookup path taken for an implicit receiver send. First, the surrounding lexical scope chain is traversed (as indicated by the broad red arrow), from a class C through its enclosing class OC, and up to the top level class OOC. Only if this fails is the receiver's inheritance chain followed (broad grey arrow)*.
 
 ### 5.8 Self Sends
 
@@ -1253,13 +1255,13 @@ Otherwise, the `#doesNotUnderstand:` method defined for (3.5) the class of *o* i
 
 *The latter tells us what lexical scope we are in, because the mixin was induced by a class declaration C. Using this information we should be able to locate the nearest enclosing class declaration named N. This need not necessarily be done dynamically*.
 
-*The appropriate receiver for our outer send must be an instance of N, or more precisely, an instance o*<sub>k</sub> *of some subclass C*<sub>k</sub> *of an application of* `N mixin`. *As you’ll see, this is exactly the kth enclosing object of* **self** *with respect to C*.
+*The appropriate receiver for our outer send must be an instance of N, or more precisely, an instance o*<sub>k</sub> *of some subclass C*<sub>k</sub> *of an application of* `N mixin`. *As you'll see, this is exactly the kth enclosing object of* **self** *with respect to C*.
 
-*To find o*<sub>k</sub>*, we’ll start with the class C*<sub>0</sub> *of o*<sub>0</sub> = <strong>self</strong>*. Somewhere along the superclass chain of C*<sub>0</sub> *there must be a class S*<sub>0</sub>*, that is an application of* `C mixin`*. Usually, this is the class where the current method, which contains our outer send, was found (in the case of super calls, this may not be the case, but we’ll ignore that possibility to keep this example simple; the definition of kth enclosing object handles the situation correctly). From here, we can climb up the lexical chain of C*.
+*To find o*<sub>k</sub>*, we'll start with the class C*<sub>0</sub> *of o*<sub>0</sub> = <strong>self</strong>*. Somewhere along the superclass chain of C*<sub>0</sub> *there must be a class S*<sub>0</sub>*, that is an application of* `C mixin`*. Usually, this is the class where the current method, which contains our outer send, was found (in the case of super calls, this may not be the case, but we'll ignore that possibility to keep this example simple; the definition of kth enclosing object handles the situation correctly). From here, we can climb up the lexical chain of C*.
 
-*We can now look at o*<sub>1</sub>*, the enclosing object of S*<sub>0</sub>*. The class of o*<sub>1</sub> *is C*<sub>1</sub>. *We can apply the same procedure we applied to C*<sub>0</sub> *to C*<sub>1</sub>*, except that now we’re looking for an application of a mixin that corresponds to the next step in the lexical chain (C’s immediately enclosing class). There has to be one (why*? *exercise for the reader)*.
+*We can now look at o*<sub>1</sub>*, the enclosing object of S*<sub>0</sub>*. The class of o*<sub>1</sub> *is C*<sub>1</sub>. *We can apply the same procedure we applied to C*<sub>0</sub> *to C*<sub>1</sub>*, except that now we're looking for an application of a mixin that corresponds to the next step in the lexical chain (C's immediately enclosing class). There has to be one (why*? *exercise for the reader)*.
 
-*After k times (and k might be zero) we will reach o*<sub>k</sub>*. We don’t have to precompute k - that is simply an optimization. Instead, we might, at every stage, check if C*<sub>n</sub> *is in fact an application of a mixin named N*.
+*After k times (and k might be zero) we will reach o*<sub>k</sub>*. We don't have to precompute k - that is simply an optimization. Instead, we might, at every stage, check if C*<sub>n</sub> *is in fact an application of a mixin named N*.
 
 *If the method is* <strong>private</strong>*, it cannot be overridden and so the code could be predetermined - but the receiver could not. If the method is not* <strong>private</strong>*, a standard lookup can be done on o*<sub>k</sub>*. This completes the exegesis of this particularly thorny issue*.
 
@@ -1267,7 +1269,7 @@ Otherwise, the `#doesNotUnderstand:` method defined for (3.5) the class of *o* i
 
 ### 5.10 Super Sends
 
-A super send consists of the reserved word **super**, followed by a message clause (5.4.2) *m*. Let *a* be the current activation (3.6) and *C* be *a*’s current class. It is a run time error if *C* is `Object` or `Top`. Otherwise, let *S* be the superclass of *C*. Evaluation of the send begins by evaluating the message clause. Let *μ* be the resulting message, let *s* be the selector of *μ* and let *o* be the current instance of *a*. If a **public** or **protected** method *f* named *s* is defined for (3.5) *S*, the value of the send is the result of invoking *f* in response to (3.5) message *μ* on *o*. The method activation’s current class is set to *definingClass*(*s, S*). Otherwise, the `#doesNotUnderstand:` method defined for *S* is invoked with an argument that is a message mirror on *μ*, and the result returned by the corresponding method activation is the value of the message send.
+A super send consists of the reserved word **super**, followed by a message clause (5.4.2) *m*. Let *a* be the current activation (3.6) and *C* be *a*'s current class. It is a run time error if *C* is `Object` or `Top`. Otherwise, let *S* be the superclass of *C*. Evaluation of the send begins by evaluating the message clause. Let *μ* be the resulting message, let *s* be the selector of *μ* and let *o* be the current instance of *a*. If a **public** or **protected** method *f* named *s* is defined for (3.5) *S*, the value of the send is the result of invoking *f* in response to (3.5) message *μ* on *o*. The method activation's current class is set to *definingClass*(*s, S*). Otherwise, the `#doesNotUnderstand:` method defined for *S* is invoked with an argument that is a message mirror on *μ*, and the result returned by the corresponding method activation is the value of the message send.
 
 ### 5.11 Class Expressions
 
@@ -1277,7 +1279,7 @@ Class expressions are used to define classes, and are described in the following
 
 ## 6 Classes
 
-A class expression begins with the word **class**, followed by an identifier that is the name of the class being created by the expression. The identifier may be followed by a method signature for the *primary factory* method of the class. If the signature is omitted it defaults to `new`. Next is a specification of the class’ superclass and mixin.
+A class expression begins with the word **class**, followed by an identifier that is the name of the class being created by the expression. The identifier may be followed by a method signature for the *primary factory* method of the class. If the signature is omitted it defaults to `new`. Next is a specification of the class' superclass and mixin.
 
 The mixin can be specified via a *class body* (6.3) that declares instance and class members and specifies how to initialize an instance, based on the parameters given to the primary factory. The formal parameters named in the primary factory signature are in scope in the instance initializer but not in the rest of the class body.
 
@@ -1309,19 +1311,19 @@ A class expression is always evaluated in the context of an enclosing object *eo
 
 *Unimplemented. The current syntax does not allow a class declaration to appear as an ordinary expression, but the intent is that it will be permitted*.
 
-If a class expression is lexically nested directly within another class or within an object literal, then the declaration is necessarily evaluated in response to a message (3.4) whose selector is the class’ name. The enclosing object *eo* is then the receiver of that message.
+If a class expression is lexically nested directly within another class or within an object literal, then the declaration is necessarily evaluated in response to a message (3.4) whose selector is the class' name. The enclosing object *eo* is then the receiver of that message.
 
 Otherwise, the class expression is necessarily evaluated at the top level, and *eo* is **nil** (5.1.3).
 
-The class expression evaluates to a class. This class is an instance of a metaclass that is the application of the metaclass mixin defined by the class’ class side to the class `Class` as defined by the underlying platform.
+The class expression evaluates to a class. This class is an instance of a metaclass that is the application of the metaclass mixin defined by the class' class side to the class `Class` as defined by the underlying platform.
 
 The class has a name, given by the class expression, and an enclosing object which is *eo*.
 
-The class is an application of the mixin defined by the class’ instance side to its superclass. If *eo* is **nil** the superclass clause must be implicit, and the superclass is `Object`.
+The class is an application of the mixin defined by the class' instance side to its superclass. If *eo* is **nil** the superclass clause must be implicit, and the superclass is `Object`.
 
 Every instance of a class *C* has a distinct nested class for each nested class declaration given in the declaration of *C* and its superclasses.
 
-*The nested classes are distinct, because they implicitly refer to the instance*; *every instance created by a nested class refers to the enclosing object via lexical scoping. This information comes to it from its class (see the discussion of enclosing objects). Hence, each nested class has one piece of state - it’s enclosing object, and so there must be a distinct class per instance of the enclosing class*. *Also, the superclass of a nested class might be distinct in different instances, as it might be a parameter to a module*.
+*The nested classes are distinct, because they implicitly refer to the instance*; *every instance created by a nested class refers to the enclosing object via lexical scoping. This information comes to it from its class (see the discussion of enclosing objects). Hence, each nested class has one piece of state - it's enclosing object, and so there must be a distinct class per instance of the enclosing class*. *Also, the superclass of a nested class might be distinct in different instances, as it might be a parameter to a module*.
 
 <!-- page 40 -->
 
@@ -1364,7 +1366,7 @@ In the future, the receiver may also be a parenthesized expression.
 
 <!-- page 41 -->
 
-If the inheritance clause occurs within an enclosing class *E*, then the expression *e*<sub>c</sub> is evaluated as if it occurred inside an instance method of *E* where the enclosing object of the class expression, *eo*, is the method’s receiver.
+If the inheritance clause occurs within an enclosing class *E*, then the expression *e*<sub>c</sub> is evaluated as if it occurred inside an instance method of *E* where the enclosing object of the class expression, *eo*, is the method's receiver.
 
 If the inheritance clause does not appear within an enclosing class the expression *e*<sub>c</sub> is evaluated as if it was a top level expression. *Consequently, it will almost certainly fail since no interesting classes are available at top level*.
 
@@ -1378,7 +1380,7 @@ The value of the message pattern *m* is known as *the message determined by the 
 
 A mixin may be *applied* to a superclass to produce a new class that is an application of the mixin.
 
-Syntactically, a mixin application consists of an explicit superclass clause denoting a class *S*, followed by the mixin application operator *<*`:`, followed by an inheritance clause that specifies a class *C* whose mixin *M* will be applied to the superclass. The inheritance clause’s message clause *m* specifies how to initialize the subobject defined by the mixin.
+Syntactically, a mixin application consists of an explicit superclass clause denoting a class *S*, followed by the mixin application operator *<*`:`, followed by an inheritance clause that specifies a class *C* whose mixin *M* will be applied to the superclass. The inheritance clause's message clause *m* specifies how to initialize the subobject defined by the mixin.
 
 The result of a mixin application expression is a class *I* with mixin *M* and superclass *S*. The enclosing object of *I* is the enclosing object of *C*. Class *I* has a primary factory method (6) with the same selector as *m*. When invoked, the primary factory of *I* creates a new instance *o* of *I*, and runs the instance initializer (6.3) of *I* on *o*; then it returns *o*.
 
@@ -1392,7 +1394,7 @@ Any change made to the structure or code of a mixin effects all of its applicati
 
 A class body consists of an *initializer* and two *sides*, the *instance side* and the *class side*.
 
-Each side defines a *mixin*. The methods, lazy slots and nested classes of the class’ mixin are defined via the instance side. The initializer declares the slots (6.3.2) of the class’ mixin and an optional initialization statement. The class side, together with the primary factory method, defines the mixin for the metaclass, whose methods are typically *secondary factory methods*.
+Each side defines a *mixin*. The methods, lazy slots and nested classes of the class' mixin are defined via the instance side. The initializer declares the slots (6.3.2) of the class' mixin and an optional initialization statement. The class side, together with the primary factory method, defines the mixin for the metaclass, whose methods are typically *secondary factory methods*.
 
 <!-- page 42 -->
 
@@ -1424,13 +1426,13 @@ A class body implicitly induces an instance initialization method, whose argumen
 
 When a class object receives a message *μ* whose selector is the name of its primary factory method, the instance initializer is invoked on an instance *o* of the class, whose identity is distinct from all other instances of the class. The object *o* has distinct copies of all slots declared by the class and its superclasses. All slots have **nil** as their initial value.
 
-The message used for the instance initializer invocation is *μ*, so that the arguments to the instance initializer are the same arguments given to the primary factory method. The invocation gives rise to an activation *i*, per sections 3.5 and 3.6. Execution of the instance initializer begins with evaluation of the message clause given in the class’ superclass clause in the context of *i*. The superclass’ instance initializer is then invoked on *o* with the resulting message.
+The message used for the instance initializer invocation is *μ*, so that the arguments to the instance initializer are the same arguments given to the primary factory method. The invocation gives rise to an activation *i*, per sections 3.5 and 3.6. Execution of the instance initializer begins with evaluation of the message clause given in the class' superclass clause in the context of *i*. The superclass' instance initializer is then invoked on *o* with the resulting message.
 
 *The above means that the bindings of the formal parameters of the factory method are available in the message clause ofthe superclass clause*.
 
-Then, all the slot clauses (6.3.2) given in the class’ initializer are executed in the context of *i*, in the order they were declared. Afterwards, the (possibly empty) statement given in the class’ initializer is executed. Finally, *i* returns *o* to the primary factory method, which returns it to its caller.
+Then, all the slot clauses (6.3.2) given in the class' initializer are executed in the context of *i*, in the order they were declared. Afterwards, the (possibly empty) statement given in the class' initializer is executed. Finally, *i* returns *o* to the primary factory method, which returns it to its caller.
 
-*Note that this formulation implies that the body of a class has no access to the actual parameters passed during instance creation - only the initializer does. This encourages a style where all external dependencies of a module are listed explicitly in the initializer, as slots that are extracted from the factory parameters. These act as “imports”, and make it easy to see what a module’s requirements from its environment are. In addition, it allows the implementation to garbage collect any unused parameters, instead of retaining them for the life of the instance*.
+*Note that this formulation implies that the body of a class has no access to the actual parameters passed during instance creation - only the initializer does. This encourages a style where all external dependencies of a module are listed explicitly in the initializer, as slots that are extracted from the factory parameters. These act as "imports", and make it easy to see what a module's requirements from its environment are. In addition, it allows the implementation to garbage collect any unused parameters, instead of retaining them for the life of the instance*.
 
 <!-- page 43 -->
 
@@ -1482,9 +1484,9 @@ The above form is an *immutable slot declaration*.
 
 <!-- page 44 -->
 
-When an instance is created, its immutable slots are set to the value of their initialization expression - the expression following the = sign in the slot’s declaration.
+When an instance is created, its immutable slots are set to the value of their initialization expression - the expression following the = sign in the slot's declaration.
 
-An immutable slot may be accessed exclusively by invoking a getter method via a unary message consisting of the name of the slot. The getter method is implicitly defined by the slot declaration, and returns the value of the slot. The accessibility of the method is the same as the slot’s. There is no setter method associated with the slot and slot initialization is not accomplished by means of a setter method.
+An immutable slot may be accessed exclusively by invoking a getter method via a unary message consisting of the name of the slot. The getter method is implicitly defined by the slot declaration, and returns the value of the slot. The accessibility of the method is the same as the slot's. There is no setter method associated with the slot and slot initialization is not accomplished by means of a setter method.
 
 *Consequently, defining a setter will not impact such an initialization, unless the method is explicitly invoked in the course of executing the initializer*.
 
@@ -1500,7 +1502,7 @@ Access to the value of a mutable slot is via a getter method, following the same
 
 *Consequently, overriding a setter will not impact such an initialization, unless the method is explicitly invoked in the course of executing the initializer*.
 
-The setter method is implicitly defined by the slot declaration. It sets the value of the slot to be the incoming argument. It returns the receiver of the message. The accessibility of the method is the same as the slot’s.
+The setter method is implicitly defined by the slot declaration. It sets the value of the slot to be the incoming argument. It returns the receiver of the message. The accessibility of the method is the same as the slot's.
 
 *In some cases, one would prefer that the setter method return its argument rather than its receiver. In such cases, one may use a settxer send (5.4.3). One might quibble that this choice couples the syntactic convenience of setter sends with a policy choice regarding their result. This is true, but supporting the cross product of desired return type and desired precedence seems too complex. In practice, the current specification seems satisfactory*.
 
@@ -1516,7 +1518,7 @@ lazySlotDecl → ((lazyModifier [accessModifier]) | (accessModifier lazyModifier
                          slotDecl (equalSign | "::=") expression dot;
 ```
 
-A lazy slot declaration has the form `lazy` *m* ::= *e*. or `lazy` *m* = *e*.. The token `lazy` may optionally be preceded *or* followed by an access modifier; both `lazy public` *m* = *e*. and `public lazy` *m* = *e*. are accepted, with identical meaning. A lazy slot always has an initialization expression *e*, but the slot value is initially **nil**. When the slot is read by invoking its getter method *m*, if the slot contains **nil**, *e* is evaluated to an object *o*, the slot’s value is set to *o* (but not by means of a setter method), and *o* is returned as the result of the send. Otherwise, the result of getter method invocation *m* is the value the slot contains.
+A lazy slot declaration has the form `lazy` *m* ::= *e*. or `lazy` *m* = *e*.. The token `lazy` may optionally be preceded *or* followed by an access modifier; both `lazy public` *m* = *e*. and `public lazy` *m* = *e*. are accepted, with identical meaning. A lazy slot always has an initialization expression *e*, but the slot value is initially **nil**. When the slot is read by invoking its getter method *m*, if the slot contains **nil**, *e* is evaluated to an object *o*, the slot's value is set to *o* (but not by means of a setter method), and *o* is returned as the result of the send. Otherwise, the result of getter method invocation *m* is the value the slot contains.
 
 *Lazy slots are particularly useful for implementing* orthogonal synchronization *[Bra]. The intent is that when synchronization occurs, all lazy slots will be set to* <strong>nil</strong>*, and recomputed on demand based on persistent values that are synchronized. Lazy slots themselves need never be persisted or synchronized*.
 
@@ -1556,9 +1558,9 @@ An expression statement consists of an expression *e* (5). Execution of an expre
 
 ### 7.2 Return Statements
 
-A return statement has the form ^*e*, where *e* is an expression (5). Execution of such a return statement in the context of an activation *a* causes *e* to be evaluated in the context of *a*. Then, if *a* is a method activation, control is passed to *a*’s continuation object (3.6), with the result of the evaluation of *e*. Then *a* is marked uncontinuable (3.6).
+A return statement has the form ^*e*, where *e* is an expression (5). Execution of such a return statement in the context of an activation *a* causes *e* to be evaluated in the context of *a*. Then, if *a* is a method activation, control is passed to *a*'s continuation object (3.6), with the result of the evaluation of *e*. Then *a* is marked uncontinuable (3.6).
 
-Otherwise, *a* is a closure activation; let *a*<sub>m</sub> be *a*’s enclosing method activation, and let *c* be the continuation object of *a*<sub>m</sub>. Control is passed to *c*. Then *a*<sub>m</sub> is marked uncontinuable.
+Otherwise, *a* is a closure activation; let *a*<sub>m</sub> be *a*'s enclosing method activation, and let *c* be the continuation object of *a*<sub>m</sub>. Control is passed to *c*. Then *a*<sub>m</sub> is marked uncontinuable.
 
 If execution of a return statement causes control to be passed to **nil**, a `cannotReturn` exception is thrown.
 
@@ -1677,7 +1679,7 @@ Because Newspeak provides reflective access (8.2) to the activation (3.6), excep
 
 [GR83] A. Goldberg and D. Robson. *Smalltalk-80: the Language and Its Implementation*. Addison-Wesley, 1983.
 
-[Mad99] Ole Lehrmann Madsen. Semantic analysis of virtual classes and nested classes. In *OOPSLA ’99: Proceedings of the 14th ACM SIGPLAN conference on Object-oriented programming, systems*, *languages, and applications*, pages 114–131, New York, NY, USA, 1999. ACM.
+[Mad99] Ole Lehrmann Madsen. Semantic analysis of virtual classes and nested classes. In *OOPSLA '99: Proceedings of the 14th ACM SIGPLAN conference on Object-oriented programming, systems*, *languages, and applications*, pages 114–131, New York, NY, USA, 1999. ACM.
 
 [Mil06] Mark Samuel Miller. *Robust Composition: Towards a Unified Approach to Access Control and Concurrency Control*. PhD thesis, Johns Hopkins University, Baltimore, Maryland, USA, May 2006.
 
