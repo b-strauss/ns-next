@@ -99,7 +99,7 @@ block answers it as a trampoline step instead of calling it:
 | `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler for a literal block, with the native kept as the guarded fallback. The native is a trampoline step: it returns the block to activate instead of calling it, with a continuation for what `and:` and `or:` do with its value ([execution.md](execution.md), "The trampoline") |
 | `whileTrue:`, `whileFalse:` | The same, both halves: the native is a trampoline step that returns the condition block, and its continuation activates the body or ends the loop |
 | `value`, `value:`, … | A trampoline step that returns the block to activate: activating a closure is what the activation stack does. See [execution.md](execution.md) |
-| `do:` | A trampoline step: it answers the block for the first element, and its continuation activates it for each next one ([execution.md](execution.md), "No re-entry from Rust"); written in Newspeak after the inline caches |
+| `do:` | A trampoline step: it answers the block for the first element, and its continuation activates it for each next one ([execution.md](execution.md), "No re-entry from Rust"); written in Newspeak in step 6 of M4's order of work ([PROGRESS.md](../PROGRESS.md)) |
 
 So no native calls back into Newspeak, which the root discipline needs as well:
 no Rust frame may be live below a safepoint ([memory.md](memory.md), "No Rust
@@ -129,8 +129,8 @@ are often megamorphic — `action value:` inside `do:` sees every block in the
 program — and the feedback pays off once the JIT inlines library methods into
 their callers, not from the caches alone.
 
-It comes after the inline caches, for the reason "The ordering matters" gives
-for `do:`, and it does not change the image's decision to keep the builtins out
+It is step 6 of M4's order of work ([PROGRESS.md](../PROGRESS.md)), for the
+reason "The ordering matters" gives for `do:`, and it does not change the image's decision to keep the builtins out
 of every artifact ([image-format.md](image-format.md), "How upstream
 compares"): the library would be compiled from source the runtime ships, as the
 bootstrap is built from Rust today. Nothing done before then should make the
@@ -163,8 +163,8 @@ and a failure passes its level over, so the lookup continues at `Object` and
 ends in `doesNotUnderstand:` if nothing answers. It is the first half of
 "Where this is going" above — every builtin
 method a real method — for the leaves that exist now; the second half,
-Newspeak fallback bodies and library code in Newspeak, still comes after the
-caches. A leaf such as `+` will additionally get an inlined fast path in
+Newspeak fallback bodies and library code in Newspeak, is step 6 of M4's order
+of work. A leaf such as `+` will additionally get an inlined fast path in
 compiled code, guarded like the control-flow inlining, as Cog's
 `bytecodePrimAdd` does — not built yet, since it waits on the caches too.
 
@@ -181,7 +181,10 @@ compiled code, guarded like the control-flow inlining, as Cog's
   `doesNotUnderstand:` protected).
 - **The core library is headed for Newspeak source with Rust primitives
   underneath**, as Primordial Soup's is, so that every builtin method is a real
-  method. Planned, after the inline caches.
+  method. Planned as step 6 of M4's order of work ([PROGRESS.md](../PROGRESS.md)):
+  after the caches, closure conversion and the collector, and before the JIT
+  tiers, which need the library as real Newspeak code to optimize. Everything
+  that calls back into Newspeak moves; the leaves stay primitives.
 - **The platform grows only against a whitelisted module**, so every capability
   has a test that would notice it breaking.
 - **`i64` with an error on overflow**, rather than silent wraparound or a bignum

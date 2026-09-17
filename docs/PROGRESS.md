@@ -438,15 +438,28 @@ so nothing is lost by it going second.
    conservative stack scan finds was considered and rejected for the same reason.
    This is what ends the arena's never-reclaim interim.
 
-Deferred past the milestone on purpose: moving `do:` out of Rust and into
-Newspeak. It is required eventually, so that `do:` becomes a real method that
-lookup, mirrors, the debugger and a JIT see — a `do:` in Rust is opaque to a
-JIT, which cannot inline its block or compile the loop as a unit
-([core-library.md](design/core-library.md)) — but
-doing it before the steps above makes the numbers worse and after them costs
-nothing. M4 owed it only that the rewrite not deepen the investment in Rust
-callbacks, and step 2a took the last callback away, as a trampoline step
-rather than as Newspeak.
+Then, after M4 and before the JIT tiers:
+
+6. **The core library in Newspeak, on Rust primitives** —
+   [core-library.md](design/core-library.md). Every builtin method that calls
+   back into Newspeak — `do:`, `whileTrue:`, `whileFalse:`, `collect:` and the
+   fallback bodies Rust reimplements today — becomes Newspeak source, the way
+   Primordial Soup's kernel is; the leaves (`+`, `<`, `at:put:`, `size`,
+   `show:`) stay Rust primitives, since a leaf is what a Rust primitive is good
+   for and the artifact-size and trust arguments still hold for it. It is
+   required so that every builtin method is a real method lookup, mirrors, the
+   debugger and a JIT see: a `do:` in Rust is opaque to a JIT, which can
+   neither inline its block nor compile the loop as a unit. Where it sits is
+   fixed from both ends. Before the steps above it makes the numbers worse; a
+   `do:` written in Newspeak pays for its block until the caches and a JIT can
+   inline it. After them it costs nothing, and it must come before the tiers,
+   which need the library as real Newspeak code to optimize at all. M4 owed it
+   only that the rewrite not deepen the investment in Rust callbacks, and step
+   2a took the last callback away, as a trampoline step rather than as
+   Newspeak. What it still needs: the kernel classes loadable as Newspeak
+   source without the bootstrap depending on it, and the leaves reachable as
+   primitives from that source — which 3a prepared, a primitive being a method
+   table entry carrying a number.
 
 What M4 unlocks beyond speed is recorded where it applies: suspending a running
 computation and serializing it needed the trampoline and the removal of the

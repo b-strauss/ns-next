@@ -1917,8 +1917,8 @@ Three things the trampoline settles on its own:
   the static nesting of `and:` and `while` blocks, so no fixed native stack
   would guarantee that the count trips before the native stack under both
   lowerings. `do:` answers its block as a step too ("No re-entry from Rust"
-  below), and moves to Newspeak after the inline caches
-  ([core-library.md](core-library.md)).
+  below), and moves to Newspeak in step 6 of M4's order of
+  work ([core-library.md](core-library.md), [PROGRESS.md](../PROGRESS.md)).
 - **Recursion depth is a checkable limit and an ordinary Newspeak error**
   instead of a native stack overflow that aborts the process. That closes the
   exposure [image-format.md](image-format.md) records against a loaded
