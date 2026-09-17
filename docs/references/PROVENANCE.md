@@ -13,6 +13,7 @@ their publishers grant.
 | File | Work |
 |---|---|
 | `newspeak-spec.pdf` | Gilad Bracha. *Newspeak Programming Language Draft Specification*. <https://newspeaklanguage.org/spec/newspeak-spec.pdf> |
+| `newspeak-spec.md` | A transcription of the above, for searching. Same work, same copyright. |
 | `newspeak-modules.pdf` | Gilad Bracha, Peter Ahe, Vassili Bykov, Yaron Kashai, William Maddox, Eliot Miranda. *Modules as Objects in Newspeak*. ECOOP 2010, Maribor; Springer LNCS. Best paper award. <https://bracha.org/newspeak-modules.pdf> |
 | `dyla-final.pdf` | Gilad Bracha. *On the Interaction of Method Lookup and Scope with Inheritance and Nesting*. 3rd ECOOP Workshop on Dynamic Languages and Applications, 2007. <https://bracha.org/dyla-final.pdf> |
 | `mirrors.pdf` | Gilad Bracha, David Ungar. *Mirrors: Design Principles for Meta-level Facilities of Object-Oriented Programming Languages*. OOPSLA 2004; Most Influential Paper award, 2014. <https://bracha.org/mirrors.pdf> |
@@ -32,9 +33,36 @@ their publishers grant.
   has its own source and release cadence, independent of the `newspeaklanguage/newspeak`
   repository the corpus is copied from.
 
-  Refreshing it: re-download from the URL above, update the version here, and re-check
-  that `docs/design/`'s section citations still point at the same content —
-  section numbers can shift between spec versions.
+  Refreshing it: re-download from the URL above, update the version here, re-make the
+  transcription below, and re-check that `docs/design/`'s section citations still point
+  at the same content — section numbers can shift between spec versions.
+- **`newspeak-spec.md`** — the same document as Markdown, so that a question about the
+  language can be answered by searching the *whole* specification in one step. That is
+  what it is for: the answer to a question is regularly in a section whose heading does
+  not look related, and reading only the section that seems topical is how a rule gets
+  missed. Before stating that the specification says nothing about something, search
+  this file.
+
+  It is a transcription, not a summary: the wording is the PDF's, and no paragraph is
+  left out. It was produced from the PDF's text spans, which is what makes it faithful
+  where a plain text extraction is not — the PDF's fonts say which words are Newspeak
+  code, which are emphasized and which are headings, so code is fenced, emphasis is kept
+  and the section structure is real rather than guessed. The characters several fonts
+  render from the wrong slot are mapped back (a type annotation's angle brackets,
+  Newspeak's caret, the Greek mu of the message metavariable), ligatures are normalized
+  so that a search for "defined" finds it, and every word the typesetter broke across
+  two lines was rejoined, each decision checked by hand. It was then compared word by
+  word against an independent `pdftotext` extraction: 99.1% of the words match exactly,
+  and every difference was reviewed. They fall into four groups — the labels drawn
+  inside the figures, which this file leaves out along with the figures themselves;
+  places where the two extractions read the page in a different order, such as the
+  bibliography's labels; places where `pdftotext` is wrong and this file is right
+  (`def iningClass`, `lookupP ublic`, dropped prime marks); and three places where the
+  PDF's own text layer omits a space between two words, which are repaired here.
+
+  **The PDF remains the authority.** Cite sections as before (`newspeak-spec.pdf` §6.3);
+  this file is how to find them, not a second source. If the two ever disagree, the PDF
+  wins and the transcription is wrong and should be fixed.
 - **`dyla-final.pdf`** — the paper behind Milestone 1's three access-control-aware dispatch
   algorithms. It is about exactly the hard part: what a name means in a dynamic language
   with nested classes and inheritance.

@@ -272,6 +272,14 @@ catch it rotting.
 Add no new external dependency without a reason that survives review — the image format
 is hand-rolled on purpose.
 
+**Search the whole specification before concluding it is silent.**
+`docs/references/newspeak-spec.md` is the specification transcribed from
+`newspeak-spec.pdf` for exactly this: a rule is regularly stated in a section whose
+heading looks unrelated — §3.2 decides how the primary factory is found, from a page
+about metaclasses — and reading only the topical section is how one gets missed. The
+PDF stays the authority and is what a citation names; the Markdown is how to find the
+passage (`docs/references/PROVENANCE.md`).
+
 **Ground a design decision in prior art before proposing options.** `prior-art/` holds
 seven reference implementations as submodules. Four answer "what does Newspeak do here":
 the canonical Newspeak on Squeak, its cross-language benchmark suite, Ryan Macnak's
