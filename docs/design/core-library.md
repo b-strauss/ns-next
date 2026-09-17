@@ -73,6 +73,19 @@ the last of those is sketched in
 [liveness-and-reflection.md](liveness-and-reflection.md). Beyond that, "widen
 when a whitelisted module demands it" still governs what gets added.
 
+**This step also carries the rest of §3.2** (decided 2026-09-18): `Class`,
+`Behavior` and `Metaclass` become declared kernel classes rather than objects
+hand-built in Rust, and a class object's own class becomes its metaclass. Both
+references declare exactly these three in their kernel source
+(`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`,
+`prior-art/newspeak/KernelForJS.ns`), building them earlier would mean building
+them twice, and the reflection work right after this step cannot start without
+them — a mirror's test for a metaclass is `Metaclass = classOf: reflectee`,
+which needs the instance-of relation reified. The flat metaclass hierarchy that
+§3.2 also requires does *not* wait for this step: it is corrected before 3c,
+because the primary factory's special cases depend on it
+([object-model.md](object-model.md), "Class sides and metaclasses").
+
 What is decided is *where a builtin may live*, and it is a constraint on future
 work rather than a wish. Everything in this runtime must stay optimizable,
 builtins included: a builtin must eventually be able to become native code. A

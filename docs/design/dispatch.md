@@ -997,7 +997,10 @@ by that measurement. The user decides on the numbers.
     per instruction, so that no per-instruction boundary exists at all — to
     be looked at before a send's hit path grows further, and at the latest
     with the JIT tiers.
-- **Decided by the user (2026-09-17), to be built before 3c:**
+- **Decided by the user (2026-09-17, extended 2026-09-18), to be built
+  before 3c:** the last three came out of designing the factory change, which
+  §3.2 turned out to settle from a section the earlier reading had not
+  reached.
   - **The global cache's lexical key includes N's application**:
     `(o's id, selector, lexical, N's application id)`; private entries stay
     keyed by N's application alone. Whether §5.9's private rule applies
@@ -1016,16 +1019,60 @@ by that measurement. The user decides on the numbers.
     `astForPrimaryFactory:` in
     `prior-art/primordialsoup/newspeak/Newspeak2PrimordialSoupCompilation.ns`,
     SOMns's `MixinBuilder.assemblePrimaryFactoryMethod`). 3b's special cases
-    go: the factory check ahead of lookup, the `Factory` target and its
-    re-check, and the factory re-check ahead of a `super` send's
-    `doesNotUnderstand:` target. `super new` in an inherited class-side
-    method then finds the superclass's factory, so
-    `tests-fixtures/cache_super_send_reaches_the_factory_check.ns` pins a
-    non-conforming answer today and is corrected with the change. Its design
-    settles which initializer runs when a superclass's factory runs on a
-    subclass, and a class-side method named like the factory, which both
-    references refuse. Until then this is a deviation, listed in
-    [README.md](README.md).
+    go, and **nothing takes their place**: the factory check ahead of lookup,
+    the `Factory` target and its re-check, and the factory re-check ahead of
+    a `super` send's `doesNotUnderstand:` target. The re-checks are
+    unnecessary once metaclasses are flat (the decision below, taken with
+    this one): a factory entry is then reachable only on the receiver's own
+    metaclass, which the class-side guard — that metaclass's dispatch id —
+    determines, and never on a `super` chain or through inheritance. The
+    builtin branch of `try_factory_send` goes into the entry, since `Array`
+    and `OrderedCollection` need an `ObjectData::Array` payload rather than a
+    generic instance; that removes `ClassData.builtin` from the reads a key
+    does not cover ("Every target is a function of its key and its site"
+    above). `primary_factory_selector` stays only where §6.1 needs it, in the
+    superclass clause's check, which does not change.
+  - **A class side may not declare the primary factory's selector**: the
+    resolver refuses it, in the check that already reports a name declared
+    twice on one side (`resolver::classes::duplicate_member_names`), since
+    §6.3 makes the factory a member of that same metaclass mixin and a method
+    table holds one entry per selector. Primordial Soup refuses it too
+    (`Intermediates.ns`'s `checkNameConflictsForFactory:`, which is
+    `checkForMethod:`). Rejected: SOMns's rule, where the declared class-side
+    method wins and the factory is filed under an unreachable name
+    (`MixinBuilder.addFactoryMethod`, the `isPrimary` branch, deliberately,
+    so that `ValueArray` can delegate to a primitive) — the class then no
+    longer instantiates and nothing says so.
+  - **Metaclasses are flat**, so **a class side is not inherited**. §3.2:
+    "All metaclasses are instances of class Metaclass, and are direct
+    subclasses of Class. Metaclasses may not be subclassed. […] The metaclass
+    hierarchy in Newspeak is deliberately kept very flat"; §6: a class is an
+    instance of "a metaclass that is the application of the metaclass mixin
+    defined by the class' class side to the class Class". ns-next applies a
+    class side to the *superclass's metaclass* instead, Smalltalk-style
+    (`Interpreter::metaclass_of`), and that deviation is what makes an
+    inherited factory reachable at all — the reason this is decided together
+    with the factory rather than after it. All three Newspeak
+    implementations build it flat: Primordial Soup's `superclassOf:
+    newMetaclass put: Class` (`KernelForPrimordialSoup.ns`, the rule spelled
+    out at its `Mixin` comment), SOMns's class side over `new SClass[]
+    {Classes.classClass}` (`MixinDefinition.createClassFactory`), and the
+    canonical compiler applying "the runtime metamixin to […] the runtime
+    class of `Class`" (`Newspeak2JSCompilation.ns`). Since ns-next reifies no
+    `Class`, a metaclass's superclass becomes `Object`'s behaviour — the
+    fall-through the class-side chain already ends in, reached directly
+    instead of after a walk. A class-side chain then finds a member on the
+    receiver's own metaclass or not at all, and §5.10 in a class-side method
+    looks in `Object`'s behaviour. Two recorded outcomes pin the inheritance
+    today and are re-cut to pin the conforming rule instead:
+    `tests-fixtures/class_side.ns`, whose `SpecialWidget describe` answers an
+    inherited class-side method, and
+    `tests-fixtures/cache_super_send_reaches_the_factory_check.ns`, whose
+    whole shape rests on a class-side `doesNotUnderstand:` declared by a
+    superclass. The rest of §3.2 — the reified instance-of relation and the
+    `Class`, `Behavior` and `Metaclass` kernel classes — is scheduled for
+    step 6, the core library in Newspeak ([object-model.md](object-model.md),
+    "Class sides and metaclasses").
   - **Call-site numbers are not serialized**: the decoder numbers each family
     in the compiler's order — a body's sends in order, a block's at its
     `MakeClosure` — so a number is a property of the code, never read from

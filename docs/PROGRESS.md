@@ -71,16 +71,25 @@ its own. Measured whole, every source is 4.3–11.3% faster than 3a's head and
   ([dispatch.md](design/dispatch.md), "3c — The dispatch id in the object
   header").
 
-**The next piece is a step before 3c: four changes the user decided on
-2026-09-17** ([dispatch.md](design/dispatch.md), "Decisions", "Decided by the
-user … to be built before 3c"), planned and measured together:
-- **The primary factory is a class-side method** (§6.3), found by the
-  ordinary lookups; the factory special cases go, and
-  `tests-fixtures/cache_super_send_reaches_the_factory_check.ns`, which pins
-  a non-conforming answer today, is corrected — `Keyed build` answers a
-  `Keyed` instance. Design first, against the specification and both
-  references: which initializer runs when a superclass's factory runs on a
-  subclass, and a class-side method named like the factory.
+**The next piece is a step before 3c: five changes the user decided on
+2026-09-17 and 2026-09-18** ([dispatch.md](design/dispatch.md), "Decisions",
+"Decided by the user … to be built before 3c"), planned and measured
+together. Designing the factory change is what added the last two: §3.2
+settles, from a section the earlier reading had not reached, that a class side
+is not inherited at all.
+- **Metaclasses become flat** (§3.2, §6): a class side is applied to `Class` —
+  to `Object`'s behaviour here, since ns-next reifies no `Class` — instead of
+  to the superclass's metaclass, so a class side is not inherited and a
+  class-side `super` send looks in `Object`'s behaviour.
+  `tests-fixtures/class_side.ns` and
+  `cache_super_send_reaches_the_factory_check.ns` pin the inheritance today
+  and are re-cut to pin the conforming rule.
+- **The primary factory is a class-side method** (§6.3), an entry of the
+  metaclass mixin's method table found by the ordinary lookups. With flat
+  metaclasses the factory's special cases go with nothing in their place:
+  a factory entry sits only on the receiver's own metaclass, which the
+  class-side guard determines, so neither re-check survives. A class side may
+  not declare the factory's selector; the resolver refuses it.
 - **The global cache's lexical key includes N's application**, so a vacant
   lexical site may use it.
 - **Call-site numbers are no longer serialized**; the decoder numbers each
@@ -88,6 +97,12 @@ user … to be built before 3c"), planned and measured together:
   again.
 - **The global cache becomes two-slot least-recently-used groups**, measured
   against 3b's insert with a benchmark whose site is megamorphic.
+
+The rest of §3.2 — the reified instance-of relation and the `Class`,
+`Behavior` and `Metaclass` kernel classes — is **scheduled for step 6, the
+core library in Newspeak**, where both references declare them and which sits
+immediately before the reflection work that cannot be done without them
+([object-model.md](design/object-model.md), "Class sides and metaclasses").
 
 **Then 3c's plan**, under `docs/superpowers/plans/`, written against
 [dispatch.md](design/dispatch.md), "3c — The dispatch id in the object
@@ -459,7 +474,13 @@ Then, after M4 and before the JIT tiers:
    Newspeak. What it still needs: the kernel classes loadable as Newspeak
    source without the bootstrap depending on it, and the leaves reachable as
    primitives from that source — which 3a prepared, a primitive being a method
-   table entry carrying a number.
+   table entry carrying a number. **It also carries the rest of §3.2**
+   (decided 2026-09-18): `Class`, `Behavior` and `Metaclass` become declared
+   kernel classes, as they are in both references, and a class object's own
+   class becomes its metaclass — the reified instance-of relation that
+   mirrors need and that nothing before this step does
+   ([object-model.md](design/object-model.md), "Class sides and
+   metaclasses").
 
 What M4 unlocks beyond speed is recorded where it applies: suspending a running
 computation and serializing it needed the trampoline and the removal of the

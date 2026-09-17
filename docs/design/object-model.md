@@ -287,11 +287,41 @@ created lazily, on the first class-side send or reflective access, so a class
 with no class side costs nothing. Class-side declarations are kept and dispatched
 as metaclass behaviour rather than parsed and dropped.
 
-**Deviation from §3.2.** The specification makes every class formally an instance
-of its own flat metaclass, itself a subclass of `Class` and an instance of
-`Metaclass`. That reified hierarchy is not built. What exists is the lazily
-created metaclass above, which carries class-side behaviour and nothing more.
-What reflection will need beyond it is not yet known; see
+**A metaclass is flat: a class side is not inherited.** §3.2 states it and says
+what it is not — "All metaclasses are instances of class Metaclass, and are
+direct subclasses of Class. Metaclasses may not be subclassed. […] This differs
+from Smalltalk, where the metaclass would be a subclass of the metaclass of the
+class' superclass. The metaclass hierarchy in Newspeak is deliberately kept very
+flat" — and §6 gives the construction: a class is an instance of "a metaclass
+that is the application of the metaclass mixin defined by the class' class side
+to the class Class". So a subclass answers a class-side message only if its own
+class side declares it, and a class-side `super` send looks in `Class`. Since
+ns-next reifies no `Class` (below), a metaclass's superclass is `Object`'s
+behaviour, which is where the class-side chain already falls through.
+
+*Being built:* `Interpreter::metaclass_of` chains a metaclass under the
+superclass's metaclass, Smalltalk-style, which inherits class sides. It is
+corrected in the step before 3c, together with making the primary factory an
+entry of the metaclass mixin's method table, because that factory's remaining
+special cases exist only while a class side is inherited
+([dispatch.md](dispatch.md), "Decisions").
+
+**Deviation from §3.2, scheduled for step 6.** The specification also makes
+every class formally an instance of its metaclass, which is in turn an instance
+of `Metaclass` and a subclass of `Class`. That reified hierarchy is not built:
+what exists is the lazily created metaclass above, which carries class-side
+behaviour and nothing more, and a class object's own class is the bootstrap
+`Object` placeholder. It lands with the core library in Newspeak
+([core-library.md](core-library.md)), which is where `Class`, `Behavior` and
+`Metaclass` become declared kernel classes rather than objects hand-built in
+Rust — both references declare them exactly there
+(`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`,
+`prior-art/newspeak/KernelForJS.ns`) — and which sits immediately before the
+reflection work that cannot be done without them: a mirror's test for a
+metaclass is `Metaclass = classOf: reflectee`, which needs the instance-of
+relation reified. Pulling it earlier costs a metaclass eagerly per class object,
+where it is lazy today, and a change to the decoder's placeholder scheme
+(below), and nothing before step 6 depends on it; see
 [liveness-and-reflection.md](liveness-and-reflection.md).
 
 One consequence is load-bearing elsewhere: `Object::class` is not an
