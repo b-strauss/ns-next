@@ -1213,12 +1213,20 @@ impl<'gc> Mutator<'gc> {
         self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil, Value::Nil]))
     }
 
-    /// A class object around an already-computed application. The one place
-    /// the three-way invariant is established: a class object's `superclass`
-    /// is linked exactly when its application's `superclass` is (callers
-    /// derive `application` from `superclass` through `apply_mixin`), which
-    /// is what `dispatch::next_level` relies on when it steps both chains
-    /// together.
+    /// A class object around an already-computed application. For an
+    /// ordinary class object, this is where the invariant `dispatch::next_level`
+    /// relies on is established: `superclass` is linked exactly when
+    /// `application`'s own `superclass` is (callers derive `application`
+    /// from `superclass` through `apply_mixin`), so the two chains it steps
+    /// together stay the same length.
+    ///
+    /// `Mutator::metaclass_of` is the one deliberate exception: it passes a
+    /// `superclass` of `Object` (so a `super` send inside a class-side
+    /// method reaches `Object`'s behaviour, `newspeak-spec.pdf` §5.10) but
+    /// an `application` whose own `superclass` is `None` (§3.2: a class
+    /// side is not inherited, so the metaclass's application has nothing
+    /// above it to apply against). See `dispatch::next_level`'s doc comment
+    /// for why that mismatch is safe rather than a defect.
     ///
     /// `class` is the shared `Object` placeholder: a class object's own
     /// `.class` field never points at its metaclass. `metaclass_of` reaches

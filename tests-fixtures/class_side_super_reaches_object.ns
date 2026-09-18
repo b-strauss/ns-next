@@ -1,6 +1,6 @@
 Newspeak3
 'Test'
-class CacheSuperSendReachesTheFactoryCheck usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+class ClassSideSuperReachesObject usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
 	class Base = Object new () (
 	) : (
 	)
