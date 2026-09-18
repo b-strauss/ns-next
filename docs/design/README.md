@@ -144,9 +144,16 @@ the re-entries moved", the protocol).
 
 ## Deviations from the language specification
 
-Places where the implementation deliberately differs from
+Places where the implementation differs from
 `docs/references/newspeak-spec.pdf`. Recorded so a deviation is a decision
-rather than an oversight.
+rather than an oversight -- and, for the last row, so that a defect nobody has
+had time to fix is at least not a surprise.
+
+Most rows only under-reject or narrow what can be expressed. Four do worse:
+the dropped local-slot initializer, the sequential simultaneous slot clauses,
+the synchronous asynchronous send and the name-keyed member set each answer a
+**correct** program **wrongly, at exit status 0**. Read those four before
+trusting a program's output.
 
 | Deviation | Spec | Where it is explained |
 |---|---|---|
@@ -156,6 +163,11 @@ rather than an oversight.
 | Integers are `i64`; overflow raises a Newspeak error rather than promoting | — | [core-library.md](core-library.md) |
 | Lazy slots are eager: the parser drops `lazy` | §6.3.3 | [frontend.md](frontend.md) |
 | A builtin class name no enclosing declaration declares loads the builtin class directly, rather than being a send to `Object`'s accessor for it, so a superclass cannot override it | §3.2 | [dispatch.md](dispatch.md) |
+| A local slot's initializer is dropped: `\| x = expression. \|` in a method or block body declares the slot but leaves it **nil** | §3.6, §6.3.2 | [frontend.md](frontend.md) |
+| Simultaneous slot clauses `\|\| ... \|\|` initialize sequentially, so mutual recursion between them sees **nil** | §6.3.2 | [frontend.md](frontend.md) |
+| Mixin application `Base <: Trait` does not parse | §6.2 | [frontend.md](frontend.md) |
+| An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
+| A §5.7 member set is keyed by a class's simple name, so two same-named classes in one module share one set. A defect, not a decision: it answers wrongly at exit status 0 | §5.7 | [dispatch.md](dispatch.md) |
 
 ## What lives elsewhere
 

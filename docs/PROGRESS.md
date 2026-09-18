@@ -159,6 +159,21 @@ below).
   §3.2 describes ([dispatch.md](design/dispatch.md), "Deviation: a builtin
   class name is loaded, not sent").
 
+**Older than this step**, found by a specification audit run before it merged
+and recorded in [README.md](design/README.md)'s deviations table rather than
+here, because none of them is this step's doing. Four answer a correct program
+wrongly at exit status 0, which is the class of defect the rest of this
+repository's invariants exist to prevent, so they are worth a plan of their
+own: a local slot's initializer is dropped (§3.6), simultaneous slot clauses
+initialize sequentially (§6.3.2), an asynchronous send runs synchronously
+(§5.6), and a §5.7 member set is keyed by a class's simple name so two
+same-named classes in one module share one set. The last is the worst of them
+-- it makes a program's meaning depend on the name of an unrelated class
+elsewhere in the module, the reference lowering agrees with the optimized one
+because the mistake is made above both, and the fix is a real class identity
+in place of a name. Mixin application (§6.2) is unimplemented but fails
+loudly.
+
 **Open findings**, for whoever plans next to weigh:
 
 - **The global cache's replacement rule is unmeasured.** The cache is 512

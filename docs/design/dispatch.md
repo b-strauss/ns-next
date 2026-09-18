@@ -97,6 +97,24 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    member already has, and the direction the open question below would have to
    settle for all of them at once.
 
+   **Defect: a member set is keyed by the class's simple name.**
+   `resolver::build_member_sets` maps a class's *name* to its own members, so
+   two classes with the same simple name anywhere in one module share one
+   entry and the last one collected wins. A member declared by the loser is
+   then invisible to §5.7's search, which walks out to an enclosing
+   declaration instead -- or finds nothing and raises
+   `doesNotUnderstand:`. Renaming the unrelated class fixes it, which is the
+   signature of the defect: two programs differing only in the name of an
+   empty class in a sibling subtree answer differently, at exit status 0.
+   A textual count finds eighteen of the 211 corpus modules declaring two
+   classes under one simple name -- a lower bound, since it only scans source
+   text -- and none of the six on `corpus/runnable.toml` is among them, so no
+   gate sees it. The
+   reference lowering is no help either -- the mistake is made in the
+   resolver, above both lowerings, so they agree on the wrong answer. The fix
+   is a real class identity as the key rather than a name, which is why it has
+   not been done in passing.
+
    **Open: the class side's scope.** Both sides of a class declaration
    contribute to one member set. The specification is silent on whether an
    instance-side method sees class-side declarations lexically; the canonical
@@ -119,7 +137,8 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
 
 There is deliberately **no separate "class value" binding**. A nested or
 enclosing class name is referenced through the ordinary `LexicalSend` mechanism
-and dispatch happens to land on that class's implicit accessor (§6.4). This
+and dispatch happens to land on that class's implicit accessor (§6's
+unnumbered introduction). This
 includes the superclass clause's receiver part, which §6.1 evaluates "as if it
 occurred inside an instance method" of the enclosing class — the same mechanism,
 evaluated at a particular time rather than a distinct binding kind.
