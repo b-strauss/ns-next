@@ -568,8 +568,9 @@ fn application_of<'gc>(
 /// as a second enclosing instance appeared.
 ///
 /// `Widget` is nested inside `Outer` and reached from two different `Outer`
-/// instances: §6.2 gives each enclosing instance its own `Widget` class
-/// object, but both apply the same declaration, so `apply_mixin`'s (mixin
+/// instances: §6's introduction gives each enclosing instance its own
+/// `Widget` class object, but both apply the same declaration, so
+/// `apply_mixin`'s (mixin
 /// identity, superclass) cache must answer the same metaclass application
 /// for both -- flat metaclasses key that application on the mixin alone
 /// (`Mutator::metaclass_of` applies it with no superclass application),
@@ -815,7 +816,7 @@ fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
     });
 }
 
-/// §6.3.1: a class side is written inside the same class declaration its
+/// §6.3: a class side is written inside the same class declaration its
 /// instance side is, and `resolver::resolve_class` resolves both against
 /// one lexical chain -- so `outer` in a class-side method reaches exactly
 /// what it reaches on the instance side. `Widget`'s class side is at

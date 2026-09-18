@@ -69,7 +69,7 @@ pub struct ClassData<'gc> {
     /// this class's declaration -- `Lookup::NestedClass`'s `ClassReference`,
     /// the level `interpreter::nested` evaluated the declaration at. `None` for
     /// a class that no declaration encloses: the module's root class, and a
-    /// builtin. A metaclass copies the class it belongs to (§6.3.1 puts a class
+    /// builtin. A metaclass copies the class it belongs to (§6.3 puts a class
     /// side in the same declaration as its instance side), so a class-side
     /// `outer` walks the same chain.
     ///

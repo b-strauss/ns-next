@@ -1129,7 +1129,7 @@ impl<'gc> Mutator<'gc> {
         let declaring_class = self.heap.class_declaring(class);
         let metaclass_application = self.apply_mixin(&class_side_mixin, None);
         let object_class = self.builtin_class(BuiltinClass::Object);
-        // §6.3.1: a class side is written inside the same class declaration
+        // §6.3: a class side is written inside the same class declaration
         // its instance side is, so a class-side method's `outer` must reach
         // exactly the objects an instance-side method's does. The metaclass
         // borrows the class's own place in the declaration chain.
@@ -1211,11 +1211,12 @@ impl<'gc> Mutator<'gc> {
         // There is no dedicated Character payload variant on
         // ObjectData -- represent a character as a one-`char` Rust String
         // wrapped the same way String literals are (String), consistent with
-        // how the language spec itself treats characters as "a special
-        // case of string literals" going forward (`newspeak-spec.pdf`
-        // §2.2.3). `builtins::text` tags the *class* as
-        // `BuiltinClass::Character` so dispatch still lands on the right
-        // native methods; only the payload representation is shared.
+        // how the language spec itself anticipates going forward: §2.2.3
+        // expects to "make all string literals act as symbols, and represent
+        // characters as a special case of these" (`newspeak-spec.pdf`).
+        // `builtins::text` tags the *class* as `BuiltinClass::Character` so
+        // dispatch still lands on the right native methods; only the payload
+        // representation is shared.
         let class = self.builtin_class(BuiltinClass::Character);
         self.new_instance_object(class, ObjectData::String(character.to_string()))
     }

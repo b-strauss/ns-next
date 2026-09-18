@@ -457,8 +457,9 @@ fn a_bare_super_raises_only_when_it_is_reached() {
     );
 }
 
-/// §6.1: "It is a run time error if the message determined by the
-/// inheritance clause is not the primary factory message of C."
+/// §6.1: "It is a run time error if the message selector specified by the
+/// inheritance clause is not the selector of the primary factory of the
+/// class *C*."
 #[test]
 fn a_superclass_clause_naming_the_wrong_factory_fails() {
     assert_outcome(

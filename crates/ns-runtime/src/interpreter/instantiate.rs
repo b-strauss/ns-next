@@ -455,8 +455,8 @@ impl<'gc> Mutator<'gc> {
                 continue;
             };
             // The message is evaluated on the instance being initialized and
-            // with *this* level's factory arguments -- §6.2's "in the context
-            // of the instance initializer".
+            // with *this* level's factory arguments -- §6.3 runs each level's
+            // slot clauses and statement "in the context of *i*".
             let message_arguments = arguments.clone();
             state.levels.push((level, arguments));
             state.phase = InstantiationPhase::Climbing { level, superclass };
@@ -591,8 +591,9 @@ impl<'gc> Mutator<'gc> {
         Ok(())
     }
 
-    /// Step 3's first half, up to running anything: `newspeak-spec.pdf` §6.2's
-    /// "the superclass clause's message is evaluated to a concrete message".
+    /// Step 3's first half, up to running anything: §6.3's "evaluation of the
+    /// message clause given in the class' superclass clause in the context of
+    /// *i*" (`newspeak-spec.pdf`).
     /// Answers the compiled body that evaluates the message's arguments, or
     /// `None` when there are none.
     ///
@@ -672,8 +673,8 @@ fn class_name<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Symbol {
 }
 
 /// `newspeak-spec.pdf` §6.1: "It is a run time error if the message
-/// determined by the inheritance clause is not the primary factory message
-/// of C."
+/// selector specified by the inheritance clause is not the selector of the
+/// primary factory of the class *C*."
 fn not_the_primary_factory_error<'gc>(
     heap: &Heap<'gc>,
     class: ClassReference<'gc>,

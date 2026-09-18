@@ -95,9 +95,12 @@ pub(crate) fn factory_arguments_for<'gc>(
         // is nothing to guess regardless of what the selector is spelled.
         None => Ok(vec![]),
         Some(factory) if factory.argument_count == 0 => Ok(vec![]),
-        // `usingPlatform:`'s one parameter (`newspeak-spec.pdf` §8.4's Core
-        // Library factory convention) is the only keyword shape the CLI
-        // knows what to fill in.
+        // `usingPlatform:`'s one parameter is the only keyword shape the CLI
+        // knows what to fill in. The selector is the canonical Newspeak
+        // library's convention for a module factory, not a specification
+        // rule -- it appears nowhere in `newspeak-spec.pdf`, which settles
+        // only that an application's `main:args:` receives a platform
+        // object (§8.3, §8.4).
         Some(factory)
             if factory.argument_count == 1
                 && factory.selector == ns_runtime::Symbol::USING_PLATFORM =>
