@@ -1237,12 +1237,12 @@ recorded as closed by that measurement. The user decides on the numbers.
     existing sources reaches a megamorphic site. **The replacement rule
     itself is unmeasured, and that benchmark cannot measure it.** It fills 27
     of the 1024 slots, five of them at the one megamorphic site it drives, so
-    across 512 groups its hot keys share no group: almost every hit lands
-    in the first slot, the second is almost never read, and almost certainly
-    nothing is evicted. What
-    it measures is the probe path — one hash and one cache line against 3b's
-    two hashes anywhere in the table — and on that the change moved no source
-    beyond the noise: `bench_megamorphic.ns` +1.16% / +0.41%, every group
+    across 512 groups its hot keys almost certainly share no group: almost
+    every hit lands in the first slot, the second is almost never read, and
+    almost certainly nothing is evicted. What it measures is the probe path —
+    one hash and one cache line against 3b's two hashes anywhere in the table
+    — and on that the change moved no source beyond the noise:
+    `bench_megamorphic.ns` +1.16% / +0.41%, every group
     overlapping in both sittings ([execution.md](execution.md), "What the
     step before 3c moved"). A benchmark that crowds one group — more live
     keys than 1024, or a deliberately colliding set — is what would decide

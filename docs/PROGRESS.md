@@ -166,11 +166,12 @@ below).
   `lookupCache` rule, and it replaced 3b's insert on that precedent, not on
   numbers of this runtime's own. `tests-fixtures/bench_megamorphic.ns`, added
   for the comparison, cannot supply them: it fills 27 of 1024 slots, five of
-  them at the one megamorphic site it drives, so across 512 groups no hot key
-  shares a group with another — every hit is at the first slot, the second is
-  never read and nothing is evicted. What it measured is the probe path, one
-  hash and one cache line against 3b's two hashes anywhere in the table, and
-  there the change moved no source beyond noise. Deciding the rule on numbers
+  them at the one megamorphic site it drives, so across 512 groups its hot keys
+  almost certainly share no group — almost every hit is at the first slot, the
+  second is almost never read and almost certainly nothing is evicted. What it
+  measured is the probe path, one hash and one cache line against 3b's two
+  hashes anywhere in the table, and there the change moved no source beyond
+  noise. Deciding the rule on numbers
   needs cache pressure: many more hot keys than any fixture has, or a debug
   build's small `NS_NEXT_GLOBAL_CACHE_ENTRIES`
   ([dispatch.md](design/dispatch.md), "The global cache";
