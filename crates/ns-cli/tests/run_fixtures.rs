@@ -67,6 +67,40 @@ fn every_golden_matches_its_recorded_expectation() {
     }
 }
 
+/// The two guards on `skipped` itself, which nothing else exercises. Either
+/// failure would take a golden out of the suite without saying so: a reason
+/// left blank in a hurry leaves nothing behind that says what would switch
+/// the golden back on, and a misspelled key would be ignored rather than
+/// refused, so an expectation would quietly stop being checked.
+#[test]
+fn the_guards_on_skipped_refuse_what_they_promise_to() {
+    let refused = toml::from_str::<common::Expectation>(
+        "statuss = 1
+",
+    );
+    assert!(
+        refused.is_err(),
+        "an unknown key must be refused, not ignored"
+    );
+
+    let directory = common::ScratchDirectory::new("blank-skip-reason");
+    let source = directory.join("blank.ns");
+    std::fs::write(&source, "").expect("write source");
+    std::fs::write(
+        source.with_extension("toml"),
+        "skipped = \"   \"
+",
+    )
+    .expect("write expectation");
+    // The refusal is a panic, and its message would otherwise be printed by
+    // the default hook and read as a failure of this test.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let refused = std::panic::catch_unwind(|| common::expectation_of(&source));
+    std::panic::set_hook(hook);
+    assert!(refused.is_err(), "a blank `skipped` must be refused");
+}
+
 /// Every golden is a pair, checked in both directions. The floor this
 /// replaced counted what the walk found, which cannot detect the thing it
 /// was there to detect: a golden that stops being discovered because it was

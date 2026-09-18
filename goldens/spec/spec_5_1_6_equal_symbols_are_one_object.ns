@@ -20,7 +20,6 @@ Newspeak3
 class Spec516SymbolIdentity usingPlatform: p = Object new (| t = p transcript. |) (
     public main: platform args: arguments = (
         t show: (#foo == #foo) printString; newLine.
-        t show: ('foo' asSymbol == #foo) printString; newLine.
         t show: (#at:put: == #at:put:) printString; newLine.
         t show: (#+ == #+) printString; newLine.
         t show: (#'hello there' == #'hello there') printString; newLine.

@@ -119,11 +119,11 @@ and a `.toml` beside it holding the outcome that program must produce:
 empty, empty), so an ordinary golden's file is just its `stdout` and one that
 raises writes its `status` and `stderr`. Both lowerings must produce it, byte
 for byte and exit status included (`crates/ns-cli/tests/run_fixtures.rs`).
-Every golden, the ones recorded as raising included, also goes through the
-snapshot and the build/load round trip, which hold an image's and a binary's
-three streams against what `run` answers on the source.
+Every golden that is not skipped, the ones recorded as raising included, also
+goes through the snapshot and the build/load round trip, which hold an image's
+and a binary's three streams against what `run` answers on the source.
 
-A fifth key, `skipped`, carries why the runtime does not answer this one
+A fourth key, `skipped`, carries why the runtime does not answer this one
 yet -- `skipped = "not implemented yet: §3.6 requires a local slot's
 initializer to run"`. The sweeps pass it over and count it; everything
 else about it still holds, including the pairing check, so a `skipped`
@@ -195,8 +195,8 @@ the re-entries moved", the protocol).
 
 Places where the implementation differs from
 `docs/references/newspeak-spec.pdf`. Recorded so a deviation is a decision
-rather than an oversight -- and, for the last row, so that a defect nobody has
-had time to fix is at least not a surprise.
+rather than an oversight -- and, where a row says so, to keep a defect nobody
+has had time to fix from being a surprise.
 
 Most rows only under-reject or narrow what can be expressed. Six do worse:
 the dropped local-slot initializer, the sequential simultaneous slot

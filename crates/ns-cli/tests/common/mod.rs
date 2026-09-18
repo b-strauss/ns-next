@@ -82,7 +82,8 @@ pub fn golden(path: &str) -> PathBuf {
     let name = parts.next().unwrap_or_default();
     assert!(
         !category.is_empty() && !name.is_empty() && parts.next().is_none(),
-        "{path} is not `<category>/<name>` -- a golden lives one level below          goldens/, so its path has exactly one directory component"
+        "{path} is not `<category>/<name>` -- a golden lives one level below \
+         goldens/, so its path has exactly one directory component"
     );
     let source = goldens_root().join(category).join(format!("{name}.ns"));
     assert!(
