@@ -1,7 +1,7 @@
 //! `ns-next build` -- the stateless deployment binary.
 
 mod common;
-use common::{fixture, ns_next, ScratchDirectory};
+use common::{golden, ns_next, ScratchDirectory};
 use std::path::Path;
 
 #[test]
@@ -10,7 +10,7 @@ fn build_writes_a_stateless_binary_that_inspect_recognizes() {
     let out = directory.join("app.nsb");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        fixture("arithmetic.ns").as_os_str(),
+        golden("language/arithmetic").as_os_str(),
         out.as_os_str(),
     ]);
     assert!(ok, "{error}");
@@ -29,7 +29,7 @@ fn build_refuses_an_entry_the_root_class_does_not_have() {
     let out = directory.join("app.nsb");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        fixture("arithmetic.ns").as_os_str(),
+        golden("language/arithmetic").as_os_str(),
         out.as_os_str(),
         "--entry".as_ref(),
         "noSuchSelector".as_ref(),
@@ -50,7 +50,7 @@ fn build_refuses_an_entry_only_a_builtin_answers() {
     let out = directory.join("app.nsb");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        fixture("arithmetic.ns").as_os_str(),
+        golden("language/arithmetic").as_os_str(),
         out.as_os_str(),
         "--entry".as_ref(),
         "printString".as_ref(),
@@ -66,7 +66,7 @@ fn build_refuses_an_entry_arity_the_cli_cannot_supply() {
     let out = directory.join("app.nsb");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        fixture("arithmetic.ns").as_os_str(),
+        golden("language/arithmetic").as_os_str(),
         out.as_os_str(),
         "--entry".as_ref(),
         "a:b:c:".as_ref(),
@@ -90,7 +90,7 @@ fn build_requires_an_entry_when_the_root_class_declares_no_main() {
 fn a_built_binary_runs_exactly_as_its_source_does() {
     let directory = ScratchDirectory::new("equivalence");
     let out = directory.join("app.nsb");
-    let source = fixture("arithmetic.ns");
+    let source = golden("language/arithmetic");
 
     let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), out.as_os_str()]);
     assert!(ok, "{error}");
@@ -109,7 +109,7 @@ fn loading_a_binary_runs_its_initializers_against_the_loading_platform() {
     // initializers did not run on load the entry send would see nil slots.
     let directory = ScratchDirectory::new("init");
     let out = directory.join("app.nsb");
-    let source = fixture("instance_init.ns");
+    let source = golden("language/instance_init");
     let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), out.as_os_str()]);
     assert!(ok, "{error}");
 
@@ -121,19 +121,24 @@ fn loading_a_binary_runs_its_initializers_against_the_loading_platform() {
 /// `build` then `load` must be indistinguishable from `run` on the same
 /// source -- exit status, stdout and stderr -- under both lowerings. A binary
 /// carries no source, so comparing it against `run` is how a binary is checked
-/// at all; `run_fixtures.rs` pins the same fixtures' output against their
-/// `.expected` files, so equality here also holds against a recorded answer.
+/// at all; `run_fixtures.rs` pins the same goldens' status, stdout and stderr
+/// against their `.toml` files, so equality here also holds against a
+/// recorded answer.
 /// Under the reference lowering this also takes the encoder and decoder over
 /// code with no jumps and many registers.
+///
+/// A golden recorded as failing is swept too, and deliberately: `build` never
+/// instantiates, so a program that raises still builds, and the `load` that
+/// runs it is where the deployment artifact's *error* path -- the shared
+/// uncaught-error report, read out of a binary rather than a source -- is
+/// pinned against `run`.
 #[test]
-fn every_fixture_runs_identically_from_source_and_from_a_binary() {
-    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
-    let directory = ScratchDirectory::new("all-fixtures");
+fn every_golden_runs_identically_from_source_and_from_a_binary() {
+    let directory = ScratchDirectory::new("all-goldens");
     let mut checked = 0;
 
-    for entry in std::fs::read_dir(&fixtures).expect("read tests-fixtures") {
-        let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("ns") {
+    for path in common::golden_sources() {
+        if common::expectation_of(&path).skipped().is_some() {
             continue;
         }
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
@@ -147,7 +152,7 @@ fn every_fixture_runs_identically_from_source_and_from_a_binary() {
                 lowering.as_ref(),
             ]);
             if !built {
-                // A fixture whose root class declares no `main:args:` and
+                // A golden whose root class declares no `main:args:` and
                 // needs an explicit entry is not a failure of this property.
                 // Anything else is, so the reason is asserted rather than
                 // assumed.
@@ -176,7 +181,7 @@ fn every_fixture_runs_identically_from_source_and_from_a_binary() {
 
     assert!(
         checked >= 10,
-        "expected several fixtures to be covered under both lowerings, got {checked}"
+        "expected several goldens to be covered under both lowerings, got {checked}"
     );
 }
 
@@ -190,7 +195,7 @@ fn every_fixture_runs_identically_from_source_and_from_a_binary() {
 #[test]
 fn a_build_and_a_snapshot_agree_on_the_describing_sections() {
     let directory = ScratchDirectory::new("prefix");
-    let source = fixture("arithmetic.ns");
+    let source = golden("language/arithmetic");
     let binary = directory.join("app.nsb");
     let image = directory.join("world.img");
 

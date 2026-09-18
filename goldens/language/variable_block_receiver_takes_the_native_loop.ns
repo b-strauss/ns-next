@@ -1,0 +1,12 @@
+Newspeak3
+'T'
+class WhileVar usingPlatform: platform = Object new (
+    | n ::= 0. |
+) (
+    public main: p args: a = (
+        | cond |
+        cond := [n < 3].
+        cond whileTrue: [n := n + 1].
+        p transcript show: n printString; newLine
+    )
+) : ()

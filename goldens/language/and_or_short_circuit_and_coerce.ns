@@ -1,0 +1,17 @@
+Newspeak3
+'T'
+(* Only the non-short-circuited arms run, and a non-Boolean block value
+   coerces to `false`. *)
+class AndOr usingPlatform: platform = Object new (
+    | log ::= ''. |
+) (
+    note: s = ( log := log, s. ^true )
+    public main: p args: a = (
+        p transcript show: (true and: [self note: 'A']) printString; newLine.
+        p transcript show: (false and: [self note: 'B']) printString; newLine.
+        p transcript show: (true or: [self note: 'C']) printString; newLine.
+        p transcript show: (false or: [self note: 'D']) printString; newLine.
+        p transcript show: (true and: [3]) printString; newLine.
+        p transcript show: log; newLine
+    )
+) : ()

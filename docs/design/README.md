@@ -111,13 +111,62 @@ end needs ([execution.md](execution.md), "The depth limit"); loading a source
 file, and instantiating the root class and sending the entry, which several
 commands share, live in `source.rs` and `entry.rs`.
 
+## The goldens
+
+`goldens/` is this runtime's recorded behaviour. A golden is a `.ns` program
+and a `.toml` beside it holding the outcome that program must produce:
+`status`, `stdout` and `stderr`, each defaulting to the success case (`0`,
+empty, empty), so an ordinary golden's file is just its `stdout` and one that
+raises writes its `status` and `stderr`. Both lowerings must produce it, byte
+for byte and exit status included (`crates/ns-cli/tests/run_fixtures.rs`).
+Every golden that is not skipped, the ones recorded as raising included, also
+goes through the snapshot and the build/load round trip, which hold an image's
+and a binary's three streams against what `run` answers on the source.
+
+A fourth key, `skipped`, carries why the runtime does not answer this one
+yet -- `skipped = "not implemented yet: §3.6 requires a local slot's
+initializer to run"`. The sweeps pass it over and count it; everything
+else about it still holds, including the pairing check, so a `skipped`
+cannot switch a half-written golden past discovery. The other three keys
+still record what the program *should* answer, which is the point: a gap
+gets its golden the day it is found, stating the whole expectation, and
+closing the gap is deleting one line. A reason is required, and a blank
+one fails. `cargo test -- --show-output` prints the count and the list,
+since the harness keeps a passing test quiet.
+
+| Directory | What belongs in it |
+|---|---|
+| `bench/` | the measurement protocol's own sources, the ones `ns-next bench` times |
+| `cache/` | an outcome an inline cache could change, each added before any cache existed |
+| `class-side/` | class sides: an implicit one, `outer` from one, class-side `super` |
+| `errors/` | a program that raises, where the error text and the exit status are the point |
+| `language/` | the core language — arithmetic, blocks, closures, slots, control flow |
+| `limits/` | the activation limit: what still runs at 1000 deep, and what overflows |
+| `nesting/` | nested classes: `outer`, redeclaration, overriding, nested `super` |
+| `spec/` | one named rule of `newspeak-spec.pdf`, its section in the file name |
+
+A golden lives in a category directory, one level down, and the set is found
+by reading `goldens/` and then each category — no list, no count, so adding
+one needs no edit anywhere. Anything at another depth is refused by name
+rather than skipped, because a golden nothing discovers is not a golden at
+all. `every_golden_is_a_complete_pair` covers the other half: an orphan on
+either side is a golden that stopped being discovered because one half was
+renamed, moved or re-extended. Deleting both halves together is not caught,
+and shows up in a diff as two deletions.
+
+A golden's rationale — why that outcome is the right one, and which
+specification section it comes from — is a `(* ... *)` comment at the top of
+the `.ns`, under the category string, so that it sits with the program it
+explains rather than beside it. The `.toml` holds the recorded answer and
+nothing else.
+
 ## Gates
 
 These are non-regression gates, not suggestions. Each has caught a real
 regression.
 
 ```bash
-cargo test --workspace          # includes the golden program outcomes
+cargo test --workspace          # includes every golden, under both lowerings
 NS_NEXT_STRESS_MOVES=1 cargo test --workspace   # the same, moving everything at the run loop's safepoints
 NS_NEXT_STRESS_CACHES=1 cargo test --workspace  # the same, vacating every inline cache at every safepoint
 cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
@@ -146,21 +195,27 @@ the re-entries moved", the protocol).
 
 Places where the implementation differs from
 `docs/references/newspeak-spec.pdf`. Recorded so a deviation is a decision
-rather than an oversight -- and, for the last row, so that a defect nobody has
-had time to fix is at least not a surprise.
+rather than an oversight -- and, where a row says so, to keep a defect nobody
+has had time to fix from being a surprise.
 
-Most rows only under-reject or narrow what can be expressed. Four do worse:
-the dropped local-slot initializer, the sequential simultaneous slot clauses,
-the synchronous asynchronous send and the name-keyed member set each answer a
-**correct** program **wrongly, at exit status 0**. Read those four before
-trusting a program's output.
+Most rows only under-reject or narrow what can be expressed. Six do worse:
+the dropped local-slot initializer, the sequential simultaneous slot
+clauses, the eager lazy slot, the binary float behind a non-integral
+literal, the synchronous asynchronous send and the name-keyed member set
+each answer a **correct** program **wrongly, at exit status 0**. Two more
+behave that way without being rows here, because they are rules not
+implemented yet rather than decisions to differ -- equal symbols are not
+one object, and a parameter slot accepts a setter send; the closing
+paragraph below names them. Read all eight before trusting a program's
+output.
 
 | Deviation | Spec | Where it is explained |
 |---|---|---|
 | No reified `Class`/`Metaclass` hierarchy; a class has a lazily created metaclass carrying its class side, and a class object's own class is the bootstrap `Object` placeholder; scheduled for step 6, the core library in Newspeak | §3.2 | [object-model.md](object-model.md) |
 | No formal "value object" notion, because there are no actors to need it | §3.1.1 | [liveness-and-reflection.md](liveness-and-reflection.md) |
 | `self`, `super`, `outer`, `true`, `false`, `nil` are not lexer-reserved; they are recognized contextually | §4.1 | [frontend.md](frontend.md) |
-| Integers are `i64`; overflow raises a Newspeak error rather than promoting | — | [core-library.md](core-library.md) |
+| Integers are `i64`; overflow raises a Newspeak error rather than promoting, where "integers are not limited in size" | §5.1.1 | [core-library.md](core-library.md) |
+| A non-integral literal is a binary `f64`, not the exact-decimal `FixedPointNumber` the section names | §5.1.1 | [core-library.md](core-library.md) |
 | Lazy slots are eager: the parser drops `lazy` | §6.3.3 | [frontend.md](frontend.md) |
 | A builtin class name no enclosing declaration declares loads the builtin class directly, rather than being a send to `Object`'s accessor for it, so a superclass cannot override it | §3.2 | [dispatch.md](dispatch.md) |
 | A local slot's initializer is dropped: `\| x = expression. \|` in a method or block body declares the slot but leaves it **nil** | §3.6, §6.3.2 | [frontend.md](frontend.md) |
@@ -168,6 +223,27 @@ trusting a program's output.
 | Mixin application `Base <: Trait` does not parse | §6.2 | [frontend.md](frontend.md) |
 | An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
 | A §5.7 member set is keyed by a class's simple name, so two same-named classes in one module share one set. A defect, not a decision: it answers wrongly at exit status 0 | §5.7 | [dispatch.md](dispatch.md) |
+| The class category string is required, where the grammar (`corpus/reference/NewspeakGrammar.ns:202`, `classCategory = string opt.`) and the section make it optional | §8.1 | [frontend.md](frontend.md) |
+| `main:args:` receives **nil** for `args:` rather than a list of the environment's arguments; there is no command-line passthrough into Newspeak | §8.4 | [image-format.md](image-format.md) |
+| `doesNotUnderstand:`'s argument is a two-element tuple of the selector and the arguments, not an object obeying `MessageMirror`'s protocol | §3.4 | [dispatch.md](dispatch.md) |
+
+Five of these have a golden under `goldens/spec/`, recorded as `skipped`:
+the dropped local-slot initializer, the sequential simultaneous slot
+clauses, the eager lazy slot, the name-keyed member set and the unparsed
+mixin application. Each states what the specification requires the program
+to answer, so closing the gap is deleting the `skipped` line, and the
+expectation written the day the gap was found is what then has to hold. The
+asynchronous send has none: §5.6 says the result is "a promise that is
+immediately returned to the sender", and with no promise to observe there
+is no answer to record that would not be invented.
+
+A `skipped` golden is not always a row here. `goldens/spec/` also records
+rules the runtime simply does not implement yet, rather than places where a
+decision was taken to differ: equal symbols are not one object (§5.1.6), a
+parameter slot accepts a setter send (§3.6), `nil` does not answer `isNil`
+(§5.1.3), and a parameter and a local of the same name compile (§3.6). Each
+carries its own `skipped` reason, and the first two answer wrongly at exit
+status 0.
 
 ## What lives elsewhere
 

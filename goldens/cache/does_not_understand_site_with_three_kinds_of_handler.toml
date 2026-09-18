@@ -1,0 +1,13 @@
+status = 1
+stdout = '''
+false
+true
+false
+true
+#zork
+0
+'caught #zork'
+'''
+stderr = '''
+Uncaught Newspeak error: an object does not understand #zork
+'''

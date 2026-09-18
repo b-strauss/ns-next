@@ -2,14 +2,14 @@
 
 use indoc::indoc;
 mod common;
-use common::{fixture, ns_next, ScratchDirectory};
+use common::{golden, ns_next, ScratchDirectory};
 use std::path::Path;
 
 #[test]
 fn a_snapshot_taken_after_the_entry_send_loads_and_reruns_it_identically() {
     let directory = ScratchDirectory::new("arithmetic");
     let image = directory.join("world.img");
-    let source = fixture("arithmetic.ns");
+    let source = golden("language/arithmetic");
     let (ok, out, error) = ns_next(&[
         "snapshot".as_ref(),
         source.as_os_str(),
@@ -40,7 +40,7 @@ fn a_snapshot_taken_after_the_entry_send_loads_and_reruns_it_identically() {
 fn a_loaded_world_does_not_rerun_its_instance_initializer() {
     let directory = ScratchDirectory::new("instance-init");
     let image = directory.join("world.img");
-    let source = fixture("instance_init.ns");
+    let source = golden("language/instance_init");
     let (ok, out, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
     assert!(ok, "{error}");
     assert!(out.starts_with("init ran\n"), "{out}");
@@ -68,10 +68,8 @@ fn a_loaded_world_does_not_rerun_its_instance_initializer() {
 fn a_world_holding_nested_class_objects_snapshots_and_reruns_identically() {
     let directory = ScratchDirectory::new("nested-outer-inherited");
     let image = directory.join("world.img");
-    let source = fixture("nested_outer_inherited.ns");
-    let expected = std::fs::read_to_string(fixture("nested_outer_inherited.expected"))
-        .expect("read expected")
-        .replace("\r\n", "\n");
+    let source = golden("nesting/nested_outer_inherited");
+    let expected = common::expectation_of(&golden("nesting/nested_outer_inherited")).stdout;
     let (ok, out, error) = ns_next(&[
         "snapshot".as_ref(),
         source.as_os_str(),
@@ -97,7 +95,7 @@ fn a_world_holding_nested_class_objects_snapshots_and_reruns_identically() {
 fn load_without_send_prints_a_summary_and_a_corrupt_image_is_reported() {
     let directory = ScratchDirectory::new("summary");
     let image = directory.join("world.img");
-    let source = fixture("hello.ns");
+    let source = golden("language/hello");
     let (ok, _out, error) = ns_next(&["snapshot".as_ref(), source.as_os_str(), image.as_os_str()]);
     assert!(ok, "{error}");
     let (ok, out, _error) = ns_next(&["load".as_ref(), image.as_os_str()]);
@@ -130,9 +128,10 @@ fn assert_snapshot_load_matches_run(name: &str, source: &Path) -> (bool, String,
             "main:args:".as_ref(),
         ])
     } else {
-        // `snapshot` failed the same way `run` did (the entry send raised),
-        // so there is no image and nothing further to compare: its own
-        // streams carry the whole outcome.
+        // `snapshot` sends no entry, so it fails only where `run` already
+        // failed before its own entry send -- while instantiating the root
+        // class. There is then no image and nothing further to compare: its
+        // own streams carry the whole outcome.
         (snapshot_ok, String::new(), String::new())
     };
     // `snapshot`'s own last line ("wrote <path>") is the command's report,
@@ -149,8 +148,8 @@ fn assert_snapshot_load_matches_run(name: &str, source: &Path) -> (bool, String,
     );
     // stderr too: `report_entry_send` is shared, so an `Uncaught Newspeak
     // error:` line must come out identical on both paths -- comparing only
-    // stdout would let the two diverge on exactly the messages
-    // `program_outcomes.rs` pins byte for byte.
+    // stdout would let the two diverge on exactly the messages the goldens'
+    // recorded `stderr` pins byte for byte.
     assert_eq!(
         format!("{snapshot_error}{load_error}"),
         run_error,
@@ -164,17 +163,21 @@ fn assert_snapshot_load_matches_run(name: &str, source: &Path) -> (bool, String,
     (run_ok, run_out, run_error)
 }
 
-/// Every fixture, snapshotted and reloaded. That is the strongest property
+/// Every golden, snapshotted and reloaded. That is the strongest property
 /// the image has -- the image's own bytecode, its own object graph,
 /// and a freshly bootstrapped world reproduce a plain `run` byte for byte
-/// -- and it is asserted per fixture rather than argued.
+/// -- and it is asserted per golden rather than argued.
+///
+/// The goldens recorded as failing are swept too. `snapshot` without `--send`
+/// only instantiates, so a program that raises in its entry still yields an
+/// image, and the raise happens on the `load` that runs it: that is where the
+/// image's own code is pinned to report the uncaught error exactly as `run`
+/// does.
 #[test]
 fn a_snapshot_and_a_load_reproduce_exactly_what_run_prints() {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures");
     let mut checked = 0;
-    for entry in std::fs::read_dir(&directory).expect("read tests-fixtures") {
-        let source = entry.expect("dir entry").path();
-        if source.extension().and_then(|extension| extension.to_str()) != Some("ns") {
+    for source in common::golden_sources() {
+        if common::expectation_of(&source).skipped().is_some() {
             continue;
         }
         let name = source
@@ -183,17 +186,24 @@ fn a_snapshot_and_a_load_reproduce_exactly_what_run_prints() {
             .to_string_lossy()
             .to_string();
         let (ok, _out, error) = assert_snapshot_load_matches_run(&name, &source);
-        assert!(ok, "run {name} exited non-zero: {error}");
+        // Not "the run succeeded" -- a golden recorded as failing is swept
+        // too, and the recorded answer is what says which it is.
+        assert_eq!(
+            ok,
+            common::expectation_of(&source).succeeds(),
+            "run {name} did not end as its recorded status says: {error}"
+        );
         checked += 1;
     }
-    assert!(checked >= 3, "expected at least three fixtures");
+    assert!(checked >= 3, "expected at least three goldens");
 }
 
-/// The failing direction of the same property, on an inline source rather
-/// than a fixture (every `tests-fixtures/*.ns` must exit zero, so a program
-/// that raises cannot live there). The uncaught-error line is written by
-/// the shared `report_entry_send` on both paths; this is what pins that it
-/// stays shared.
+/// The failing direction, on an inline source rather than a golden, and
+/// asserted on rather than merely swept: that `run` writes nothing to stdout
+/// and that stderr opens with the uncaught-error line. The sweep above proves
+/// the two paths agree; this proves what they agree *on*, so a change that
+/// made both report nothing could not pass. The line is written by the shared
+/// `report_entry_send` on both paths; this is what pins that it stays shared.
 #[test]
 fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
     let directory = ScratchDirectory::new("raises");
@@ -229,7 +239,7 @@ fn a_load_reports_an_uncaught_error_exactly_as_run_does() {
 fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
     let directory = ScratchDirectory::new("corruption");
     let image = directory.join("world.img");
-    let source = fixture("blocks_and_return.ns");
+    let source = golden("language/blocks_and_return");
     let (ok, _out, error) = ns_next(&[
         "snapshot".as_ref(),
         source.as_os_str(),
@@ -277,8 +287,8 @@ fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
 /// image can be exported back to `.ns` while no decompiler exists.
 #[test]
 fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
-    let source = fixture("arithmetic.ns");
-    let text = std::fs::read_to_string(&source).expect("read fixture");
+    let source = golden("language/arithmetic");
+    let text = std::fs::read_to_string(&source).expect("read golden");
     // Every line carrying program text, not one hand-picked needle: a
     // partial leak (one method body, one initializer statement) has to fail
     // this too. Lines under 12 characters are structural punctuation --
@@ -293,7 +303,7 @@ fn snapshot_is_source_free_unless_debug_source_is_asked_for() {
         .map(str::trim)
         .filter(|line| line.len() >= 12)
         .collect();
-    assert!(lines.len() >= 4, "the fixture must have text to look for");
+    assert!(lines.len() >= 4, "the golden must have text to look for");
 
     let plain_directory = ScratchDirectory::new("source-free");
     let plain = plain_directory.join("world.img");

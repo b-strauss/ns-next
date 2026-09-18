@@ -36,15 +36,13 @@ of the six silent defects Milestone 3's review found were identically wrong
 under both.
 
 Behaviour is protected by recorded answers, which both lowerings must produce:
-every `tests-fixtures/*.ns` against its `.expected` stdout and an empty stderr
-(`crates/ns-cli/tests/run_fixtures.rs`), the golden exit status, stdout and
-stderr of the programs that cannot be fixtures
-(`crates/ns-cli/tests/program_outcomes.rs`), and `run-corpus` over the runnable
-corpus. The answers recorded before the retirement are verdicts the oracle and
-the VM agreed on. A change that alters one is a behaviour change, to be
-justified as one — never recorded because the code now produces it. The
-reference lowering ([compiler.md](compiler.md), "The reference
-lowering") is the differential oracle that replaced it.
+every `goldens/<category>/*.ns` against the exit status, stdout and stderr
+recorded in the `.toml` beside it (`crates/ns-cli/tests/run_fixtures.rs`), and
+`run-corpus` over the runnable corpus. The answers recorded before the
+retirement are verdicts the oracle and the VM agreed on. A change that alters
+one is a behaviour change, to be justified as one — never recorded because the
+code now produces it. The reference lowering ([compiler.md](compiler.md), "The
+reference lowering") is the differential oracle that replaced it.
 
 ## Activations
 
@@ -73,7 +71,7 @@ frame's temporaries and a widowed context needs none of them. ns-next's closures
 read an enclosing activation's locals **by reference**, through
 `captured_frame`, including after that activation has returned — a counter block
 returned from the method that declares `n` goes on writing `n`
-(`tests-fixtures/closure_variables.ns` pins this). So a reified frame here keeps
+(`goldens/language/closure_variables.ns` pins this). So a reified frame here keeps
 its registers when its activation returns ("Pop" below). Removing that need is a
 step of its own, "Planned: closure conversion" below.
 
@@ -568,7 +566,7 @@ Replacing `Rc<RefCell<_>>` with an arena of 32-bit handles, for objects and
 activations together (`docs/design/memory.md`, "The representation"), was
 measured before and after in one sitting: the pre-arena binary was built from
 this branch's merge-base into a throwaway worktree, and both binaries ran the
-same `ns-next bench tests-fixtures/bench_loop.ns` — ten timed runs after a
+same `ns-next bench goldens/bench/bench_loop.ns` — ten timed runs after a
 discarded warm-up — three times each, alternating.
 
 | Run | Before, bytecode | After, bytecode |
@@ -1140,8 +1138,9 @@ nested-class accessor to the activation limit, about 50,000 creations underway
 at the deepest, and the cyclic-definition check scanned a list of every
 creation underway at each level, quadratic in the depth, where the bound on
 re-entries had stopped such a recursion at 1,000 levels. With the marker in the
-cache slot the check is one read, and `accessor-recursion` in
-`crates/ns-cli/tests/program_outcomes.rs` takes 0.3 s again.
+cache slot the check is one read, and
+`goldens/limits/recursion_through_the_nested_class_accessor_is_bounded_by_the_activation_limit.ns`
+takes 0.3 s again.
 
 ### What 2b moved
 
@@ -1878,7 +1877,7 @@ the earlier commits in throwaway worktrees; no binary imports
 every source first; `ns-next bench <source> --iterations 30`, five rounds,
 the order of the six binaries rotating from round to round; two whole
 sittings, nothing else running. An eighth source joins the seven:
-`tests-fixtures/bench_megamorphic.ns`, added with the least-recently-used
+`goldens/bench/bench_megamorphic.ns`, added with the least-recently-used
 groups, whose `value` site sees five receiver classes in turn and is the only
 source that drives a megamorphic site — 50,000 iterations, the count the
 other fixtures use.
@@ -2119,8 +2118,8 @@ Three things the trampoline settles on its own:
   Measured on Windows's 1 MB main-thread stack before the trampoline, the
   reachable recursion depth was 818 inside an `ifFalse:` block (release
   build), and 307 through `do:` — below the 1000 that Newspeak's own
-  `KernelWeakTests.ns` (`deepStack: 1000`) expects. The `deep-stack` golden
-  outcome (`crates/ns-cli/tests/program_outcomes.rs`) runs exactly that
+  `KernelWeakTests.ns` (`deepStack: 1000`) expects. The golden
+  `goldens/limits/thousand_deep_recursion_runs.ns` runs exactly that
   recursion, under both lowerings.
 
 ### The depth limit
@@ -2403,8 +2402,9 @@ buffer of its own. `Interpreter::reenter`, `invoke_closure`,
 bound's error, `stack overflow: too many nested native calls`, are gone with
 the re-entries.
 
-**Three golden outcomes changed.** `do-recursion`, `instantiation-recursion`
-and `accessor-recursion` in `crates/ns-cli/tests/program_outcomes.rs` ended in
+**Three recorded outcomes changed.** The three goldens now under
+`goldens/limits/` that recurse through `do:`, through instantiation and through
+the nested-class accessor ended in
 `stack overflow: too many nested native calls`, the bound on re-entries, and
 end in `stack overflow: recursion too deep`. Each of those recursions is made
 only of counted activations now, so it ends at L like any other recursion;

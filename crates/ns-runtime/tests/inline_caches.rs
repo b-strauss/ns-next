@@ -1,6 +1,6 @@
 //! The inline caches (`docs/design/dispatch.md`, "3b — The caches"): what a
 //! site records for the receivers it sees. Every program here also answers
-//! what the uncached path answers; the fixtures and goldens pin that under
+//! what the uncached path answers; the goldens pin that under
 //! both lowerings, these pin the caches' own states.
 
 use indoc::indoc;

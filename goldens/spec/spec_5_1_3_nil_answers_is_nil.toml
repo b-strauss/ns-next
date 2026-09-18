@@ -1,0 +1,4 @@
+skipped = "not implemented yet: nothing declares isNil, so nil isNil raises doesNotUnderstand:"
+stdout = '''
+true
+'''

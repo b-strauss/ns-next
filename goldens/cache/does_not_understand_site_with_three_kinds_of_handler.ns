@@ -1,0 +1,24 @@
+Newspeak3
+'Test'
+(* One site that reaches a user `doesNotUnderstand:`, the setter of a
+   mutable slot named `doesNotUnderstand` (§6.3.2: a method like any other,
+   so it is the handler, and answers the receiver), and `Object`'s own
+   handler, which ends the run. A cache that recorded one handler must not
+   answer another receiver with it (`docs/design/dispatch.md`, "3b — The
+   caches"). *)
+class CacheDoesNotUnderstandHandlers usingPlatform: thePlatform = Object new (| transcript = thePlatform transcript. |) (
+    class Catcher = Object new () (
+        public doesNotUnderstand: message = ( ^'caught ', (message at: 1) printString )
+    )
+    class Recorder = Object new (| public doesNotUnderstand ::= nil. |) (
+    )
+    public main: platform args: args = (
+        | recorder |
+        recorder := Recorder new.
+        {Catcher new. recorder. Catcher new. recorder} do: [:each |
+            transcript show: (each zork == each) printString; newLine].
+        transcript show: (recorder doesNotUnderstand at: 1) printString; newLine.
+        transcript show: (recorder doesNotUnderstand at: 2) size printString; newLine.
+        {Catcher new. 3} do: [:each | transcript show: each zork printString; newLine].
+    )
+) : ()

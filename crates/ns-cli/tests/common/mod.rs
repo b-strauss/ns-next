@@ -2,19 +2,170 @@
 //!
 //! Each test binary that needs these declares `mod common;`, so this file is
 //! compiled once per binary rather than linked once -- which is why the
-//! allow below is here: a binary that uses only two of the three helpers
-//! would otherwise warn about the third.
+//! allow below is here: a binary that uses only some of the helpers would
+//! otherwise warn about the rest.
 
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// A file under `tests-fixtures/`, by name.
-pub fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests-fixtures")
-        .join(name)
+/// The `goldens/` directory: every recorded program outcome lives under a
+/// category directory inside it.
+pub fn goldens_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../goldens")
+}
+
+/// Every golden file with `extension`, found by walking rather than from a
+/// list, so that adding one needs no edit anywhere. Sorted, so a failure names
+/// the same golden on every platform and run.
+///
+/// The layout is exactly two levels -- `goldens/<category>/<name>.<extension>`
+/// -- and anything else is refused rather than skipped. A golden the walk does
+/// not accept but silently drops is not a golden at all: no sweep runs it and
+/// the pairing check cannot see it, so a wrong recorded answer would pass
+/// unnoticed. The category is the organizing principle, so a file outside one
+/// is a mistake to report, not a layout to support.
+pub fn golden_files(extension: &str) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let root = goldens_root();
+    let categories =
+        std::fs::read_dir(&root).unwrap_or_else(|error| panic!("read {}: {error}", root.display()));
+    for category in categories {
+        let category = category.expect("goldens category entry").path();
+        assert!(
+            category.is_dir(),
+            "{} is a file at the root of {} -- every golden belongs in a category directory",
+            category.display(),
+            root.display()
+        );
+        let entries = std::fs::read_dir(&category)
+            .unwrap_or_else(|error| panic!("read {}: {error}", category.display()));
+        for entry in entries {
+            let path = entry.expect("golden entry").path();
+            assert!(
+                !path.is_dir(),
+                "{} is a directory inside the category {} -- a golden lives one level \
+                 below {}, never deeper",
+                path.display(),
+                category.display(),
+                root.display()
+            );
+            if path.extension().and_then(|found| found.to_str()) == Some(extension) {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    assert!(
+        !files.is_empty(),
+        "no .{extension} files found under {} -- the directory moved or the walk is wrong",
+        root.display()
+    );
+    files
+}
+
+/// Every golden's source.
+pub fn golden_sources() -> Vec<PathBuf> {
+    golden_files("ns")
+}
+
+/// One golden's source by its path below `goldens/`, without the extension --
+/// `golden("language/arithmetic")`. Naming the category is what makes the
+/// answer unambiguous: two categories may hold the same name, and a caller
+/// that says which one it means cannot be surprised by a golden added later
+/// somewhere else. Panics on a miss, so a renamed or moved golden fails
+/// loudly here rather than silently skipping the test that wanted it.
+pub fn golden(path: &str) -> PathBuf {
+    let mut parts = path.split('/');
+    let category = parts.next().unwrap_or_default();
+    let name = parts.next().unwrap_or_default();
+    assert!(
+        !category.is_empty() && !name.is_empty() && parts.next().is_none(),
+        "{path} is not `<category>/<name>` -- a golden lives one level below \
+         goldens/, so its path has exactly one directory component"
+    );
+    let source = goldens_root().join(category).join(format!("{name}.ns"));
+    assert!(
+        source.is_file(),
+        "no golden at {} -- goldens/{path}.ns does not exist",
+        source.display()
+    );
+    source
+}
+
+/// A golden's recorded outcome. Every field defaults to the success case, so
+/// an ordinary golden's file is just its `stdout` and a failing one's is its
+/// `status` and `stderr`. `deny_unknown_fields` turns a misspelled key into a
+/// failure instead of an expectation that silently stops being checked.
+///
+/// `skipped` carries why the runtime does not answer this yet. The other
+/// three fields still record what it *should* answer, so a golden written
+/// for a known gap states the whole expectation up front, and closing the
+/// gap is deleting one line rather than rediscovering months later what
+/// the answer was meant to be.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Expectation {
+    #[serde(default)]
+    pub status: i32,
+    #[serde(default)]
+    pub stdout: String,
+    #[serde(default)]
+    pub stderr: String,
+    #[serde(default)]
+    pub skipped: Option<String>,
+}
+
+impl Expectation {
+    /// Whether the golden is expected to exit zero -- the recorded answer to
+    /// "does this program run to completion", which a sweep asserts against
+    /// rather than assuming.
+    pub fn succeeds(&self) -> bool {
+        self.status == 0
+    }
+
+    /// Why this golden is not run, if it is not. A sweep skips it and
+    /// counts it; the pairing check still holds it to being a complete
+    /// pair, so `skipped` cannot smuggle a half-written golden past
+    /// discovery.
+    pub fn skipped(&self) -> Option<&str> {
+        self.skipped.as_deref()
+    }
+}
+
+/// The recorded outcome beside `source`, with its line endings normalized.
+///
+/// `.gitattributes` covers only `corpus/**` and `core.autocrlf` is true, so a
+/// fresh Windows checkout really does write a CRLF `.toml`, while the CLI
+/// always writes `\n`. TOML's multi-line literal string is specified as taken
+/// as-is, so nothing in the format promises the `\r` is dropped -- today's
+/// parser drops it, but that is its choice, not the format's. Normalizing here
+/// makes every reader of a recorded answer right by construction instead of by
+/// a dependency's behaviour.
+pub fn expectation_of(source: &Path) -> Expectation {
+    let path = source.with_extension("toml");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let recorded: Expectation =
+        toml::from_str(&text).unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
+    if let Some(reason) = &recorded.skipped {
+        // A blank reason is the whole failure mode this field could
+        // introduce: a golden switched off in a hurry, with nothing left
+        // saying what would switch it back on.
+        assert!(
+            !reason.trim().is_empty(),
+            "{} has an empty `skipped` -- a golden is skipped only with a \
+             reason that says what would let it run",
+            path.display()
+        );
+    }
+    Expectation {
+        status: recorded.status,
+        stdout: recorded.stdout.replace("\r\n", "\n"),
+        stderr: recorded.stderr.replace("\r\n", "\n"),
+        skipped: recorded.skipped,
+    }
 }
 
 /// A temporary directory that removes itself, under the repository's own
@@ -29,7 +180,7 @@ pub fn fixture(name: &str) -> PathBuf {
 ///
 /// The name carries the process id and a counter as well as the test's own
 /// name because cargo runs a binary's tests as threads of one process: two
-/// tests naming the same fixture would otherwise share a directory and delete
+/// tests naming the same golden would otherwise share a directory and delete
 /// each other's files.
 pub struct ScratchDirectory {
     path: PathBuf,

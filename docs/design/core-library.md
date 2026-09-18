@@ -60,10 +60,31 @@ as any other primitive's failure does. They keep the shared class, since
 ## Deviation: `i64` integers
 
 Integers are `i64`. Overflow raises a Newspeak error rather than promoting to a
-bignum. Arbitrary-precision integers are not built.
+bignum. Arbitrary-precision integers are not built. §5.1.1 says the opposite in
+one sentence — "*Note that integers are not limited in size*" — and puts no
+bound on the *n* in the digit sum it defines a literal by, so a literal past
+`i64`'s range is an ordinary `Integer` there and a deferred
+`Literal::MalformedInteger` here.
 
 This is observable to any program that overflows, which is why it is a recorded
 deviation rather than an implementation detail.
+
+## Deviation: a non-integral literal is a binary float
+
+§5.1.1: "Non-integral numbers denote an object that obeys the protocol of class
+`FixedPointNumber`" — an exact decimal type, chosen there so that "financial
+applications in particular" get "accurate decimal numbers" and users are not
+exposed to floating point's "counterintuitive ways". `2.5` here is an `f64`
+(`compiler/lower.rs` parses the literal's text straight into one), so the
+arithmetic is binary floating point: `(0.1 + 0.2) = 0.3` answers `false` where
+an exact decimal type answers `true`.
+
+The specification records the same divergence in its own implementation
+("non-integral numbers are currently represented as instances of the Squeak
+class `Fraction`. This is a bug"), and it names the open design question —
+whether a user chooses the numeric implementation — rather than settling it.
+A golden for the rule would have to be skipped behind a whole numeric tower,
+so the deviation is recorded here instead.
 
 ## Planned: the core library as Newspeak source
 

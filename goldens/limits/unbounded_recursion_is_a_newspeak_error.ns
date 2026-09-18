@@ -1,0 +1,12 @@
+Newspeak3
+'T'
+(* Unbounded recursion is an ordinary Newspeak error, not a process abort,
+   and the same one under both lowerings. *)
+class Unbounded usingPlatform: platform = Object new (
+) (
+    down: n = ( ^1 + (down: n + 1) )
+    public main: p args: a = (
+        p transcript show: 'start'; newLine.
+        down: 0
+    )
+) : ()

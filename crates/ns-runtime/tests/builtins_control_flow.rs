@@ -3,8 +3,8 @@
 //! Every block reaches
 //! the send through a variable: the compiler inlines only literal blocks, so
 //! a variable is what makes these the natives running rather than the
-//! inlined form, which the compiler's own tests and `program_outcomes.rs`
-//! cover.
+//! inlined form, which the compiler's own tests and the goldens under
+//! `goldens/language/` and `goldens/errors/` cover.
 
 use indoc::formatdoc;
 use std::path::PathBuf;

@@ -1,0 +1,22 @@
+Newspeak3
+'T'
+(* `newspeak-spec.pdf` §5.7: no lexically enclosing declaration declares `n`
+   -- `Enclosing` only inherits it from `OuterBase` -- so `^n` is "equivalent
+   to a self send", and on figure 4, "Only if this fails is the receiver's
+   inheritance chain followed": the receiver's, `Nested`'s, which has no
+   `n`. §2.3.1: "After that, no further lookup is done." *)
+class EnclosingInherited usingPlatform: platform = Object new (
+) (
+    class OuterBase = Object new () (
+        public n = ( ^1 )
+    )
+    class Enclosing = OuterBase new () (
+        class Nested = Object new () (
+            public implicit = ( ^n )
+        )
+        public test = ( ^Nested new implicit )
+    )
+    public main: pl args: a = (
+        Enclosing new test
+    )
+) : ()

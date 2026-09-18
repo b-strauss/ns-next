@@ -2,13 +2,13 @@
 //! (`docs/design/compiler.md`, "The reference lowering").
 
 mod common;
-use common::{fixture, ns_next, ScratchDirectory};
+use common::{golden, ns_next, ScratchDirectory};
 
 /// Only control-flow inlining emits a branch, so a listing under the
 /// reference lowering has none, and the optimized one of the same loop does.
 #[test]
 fn the_reference_lowering_inlines_nothing() {
-    let source = fixture("while_loop.ns");
+    let source = golden("language/while_loop");
     let (ok, optimized, error) =
         ns_next(&["disasm".as_ref(), source.as_os_str(), "main:args:".as_ref()]);
     assert!(ok, "{error}");
@@ -27,19 +27,17 @@ fn the_reference_lowering_inlines_nothing() {
 }
 
 #[test]
-fn a_fixture_runs_under_the_reference_lowering() {
+fn a_golden_runs_under_the_reference_lowering() {
     let (ok, out, error) = ns_next(&[
         "run".as_ref(),
-        fixture("while_loop.ns").as_os_str(),
+        golden("language/while_loop").as_os_str(),
         "--lowering".as_ref(),
         "reference".as_ref(),
     ]);
     assert!(ok, "{error}");
     assert_eq!(
         out,
-        std::fs::read_to_string(fixture("while_loop.expected"))
-            .expect("read expected")
-            .replace("\r\n", "\n")
+        common::expectation_of(&golden("language/while_loop")).stdout
     );
 }
 
@@ -63,7 +61,7 @@ fn has_branch(artifact: &std::path::Path) -> bool {
 #[test]
 fn build_compiles_with_the_lowering_it_is_given() {
     let directory = ScratchDirectory::new("lowering-build");
-    let source = fixture("while_loop.ns");
+    let source = golden("language/while_loop");
     let optimized = directory.join("optimized.nsb");
     let reference = directory.join("reference.nsb");
     let (ok, _, error) = ns_next(&["build".as_ref(), source.as_os_str(), optimized.as_os_str()]);
@@ -88,7 +86,7 @@ fn build_compiles_with_the_lowering_it_is_given() {
 #[test]
 fn snapshot_compiles_with_the_lowering_it_is_given() {
     let directory = ScratchDirectory::new("lowering-snapshot");
-    let source = fixture("while_loop.ns");
+    let source = golden("language/while_loop");
     let optimized = directory.join("optimized.img");
     let reference = directory.join("reference.img");
     let (ok, _, error) = ns_next(&[
@@ -135,7 +133,7 @@ fn disasm_refuses_a_lowering_for_an_artifact() {
     let out = directory.join("app.nsb");
     let (ok, _, error) = ns_next(&[
         "build".as_ref(),
-        fixture("while_loop.ns").as_os_str(),
+        golden("language/while_loop").as_os_str(),
         out.as_os_str(),
     ]);
     assert!(ok, "{error}");

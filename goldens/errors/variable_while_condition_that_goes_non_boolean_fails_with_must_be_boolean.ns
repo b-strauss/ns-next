@@ -1,0 +1,14 @@
+Newspeak3
+'T'
+(* A native loop whose condition goes non-Boolean after two rounds sends
+   `mustBeBoolean` to it, after exactly two bodies. *)
+class WhileVarMbb usingPlatform: platform = Object new (
+    | n ::= 0. |
+) (
+    public main: p args: a = (
+        | cond body |
+        cond := [n < 2 ifTrue: [true] ifFalse: [n]].
+        body := [n := n + 1. p transcript show: n printString; newLine].
+        cond whileTrue: body
+    )
+) : ()

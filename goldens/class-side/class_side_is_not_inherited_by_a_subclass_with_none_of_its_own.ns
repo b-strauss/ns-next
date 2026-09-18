@@ -1,0 +1,18 @@
+Newspeak3
+'Test'
+(* `newspeak-spec.pdf` §3.2: metaclasses are flat, so a class side is not
+   inherited down the subclass chain. `SpecialWidget` declares no class
+   side of its own; its superclass `Widget` does, but `SpecialWidget
+   describe` must not reach it -- an ordinary `doesNotUnderstand:`, at a
+   non-zero exit status, which this golden records as such. *)
+class ClassSideNotInherited usingPlatform: platform = Object new (| transcript ::= platform transcript. |) (
+    public class Widget new = Object new () (
+    ) : (
+        public describe = ( ^'a widget class' )
+    )
+    public class SpecialWidget new = Widget new () (
+    )
+    public main: platform args: args = (
+        transcript show: SpecialWidget describe; newLine.
+    )
+) : ()

@@ -1,0 +1,20 @@
+Newspeak3
+'T'
+(* A send's operands mutating each other's inputs: every operand keeps the
+   value it had when it was evaluated. One case per consumer -- keyword
+   arguments, a binary send's right operand mutating the left,
+   dynamic-array elements, and an inlined arm. *)
+class OperandOrder usingPlatform: platform = Object new (
+) (
+    first: x second: y = ( ^x )
+    keywordArgs = ( | t | t := 1. ^self first: t second: (t := 9) )
+    binaryOperand = ( | t | t := 2. ^t + (t := 30) )
+    arrayElements = ( | t | t := 1. ^{t. t := 5. t} at: 1 )
+    inlinedArm = ( | t | t := 2. ^t + (true ifTrue: [t := 9. 1] ifFalse: [2]) )
+    public main: p args: a = (
+        p transcript show: self keywordArgs printString; newLine.
+        p transcript show: self binaryOperand printString; newLine.
+        p transcript show: self arrayElements printString; newLine.
+        p transcript show: self inlinedArm printString; newLine
+    )
+) : ()

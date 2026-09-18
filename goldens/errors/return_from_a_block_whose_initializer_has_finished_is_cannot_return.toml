@@ -1,0 +1,4 @@
+status = 1
+stderr = '''
+Uncaught Newspeak error: cannotReturn: the enclosing method activation has already returned
+'''

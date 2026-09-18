@@ -1,0 +1,18 @@
+Newspeak3
+'Test'
+(* The method-home counterpart: `stash` stores a block holding `^` and
+   returns normally; a later send invokes it after its home's frame was
+   divorced. *)
+class StoredBlockReturn usingPlatform: platform = Object new (
+    | blk ::= nil. |
+) (
+    stash = (
+        blk := [^'too late'].
+        ^'stashed'
+    )
+    public main: p args: a = (
+        p transcript show: self stash; newLine.
+        blk value.
+        p transcript show: 'unreachable'; newLine
+    )
+) : ()

@@ -659,7 +659,7 @@ fn a_class_sides_own_method_is_found_before_falling_through_to_object() {
 /// wrong level. `Derived` inherits nothing here (it overrides `describe`
 /// itself), but its `super describe` lands in `Base`'s activation, and
 /// `Base`'s own `outer Outer label` must resolve from *that* activation.
-/// Mirrors `tests-fixtures/nested_super.ns` at the API level.
+/// Mirrors `goldens/nesting/nested_super.ns` at the API level.
 const NESTED_SUPER_SOURCE: &str = indoc! {"
     Newspeak3
     'Test'

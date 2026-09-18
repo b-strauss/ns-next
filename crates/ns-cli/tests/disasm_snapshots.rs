@@ -9,13 +9,10 @@ use indoc::indoc;
 mod common;
 use common::ScratchDirectory;
 
-use std::path::Path;
 use std::process::Command;
 
-fn disasm(file: &str, arguments: &[&str]) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests-fixtures")
-        .join(file);
+fn disasm(golden: &str, arguments: &[&str]) -> String {
+    let path = common::golden(golden);
     let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
         .arg(&path)
@@ -32,38 +29,38 @@ fn disasm(file: &str, arguments: &[&str]) -> String {
 
 #[test]
 fn disasm_arithmetic_main() {
-    insta::assert_snapshot!(disasm("arithmetic.ns", &["main:args:"]));
+    insta::assert_snapshot!(disasm("language/arithmetic", &["main:args:"]));
 }
 
 #[test]
 fn disasm_arithmetic_initializer() {
-    insta::assert_snapshot!(disasm("arithmetic.ns", &["--initializer"]));
+    insta::assert_snapshot!(disasm("language/arithmetic", &["--initializer"]));
 }
 
 #[test]
 fn disasm_blocks_and_return_find_in() {
-    insta::assert_snapshot!(disasm("blocks_and_return.ns", &["find:in:"]));
+    insta::assert_snapshot!(disasm("language/blocks_and_return", &["find:in:"]));
 }
 
 #[test]
 fn disasm_while_loop_main() {
-    insta::assert_snapshot!(disasm("while_loop.ns", &["main:args:"]));
+    insta::assert_snapshot!(disasm("language/while_loop", &["main:args:"]));
 }
 
 #[test]
 fn disasm_control_flow_fallback_main() {
-    insta::assert_snapshot!(disasm("control_flow_fallback.ns", &["main:args:"]));
+    insta::assert_snapshot!(disasm("language/control_flow_fallback", &["main:args:"]));
 }
 
 #[test]
 fn disasm_instance_init_initializer() {
-    insta::assert_snapshot!(disasm("instance_init.ns", &["--initializer"]));
+    insta::assert_snapshot!(disasm("language/instance_init", &["--initializer"]));
 }
 
 #[test]
 fn disasm_while_loop_main_under_the_reference_lowering() {
     insta::assert_snapshot!(disasm(
-        "while_loop.ns",
+        "language/while_loop",
         &["main:args:", "--lowering", "reference"]
     ));
 }
@@ -71,14 +68,14 @@ fn disasm_while_loop_main_under_the_reference_lowering() {
 #[test]
 fn disasm_control_flow_fallback_main_under_the_reference_lowering() {
     insta::assert_snapshot!(disasm(
-        "control_flow_fallback.ns",
+        "language/control_flow_fallback",
         &["main:args:", "--lowering", "reference"]
     ));
 }
 
 #[test]
 fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/hello.ns");
+    let path = common::golden("language/hello");
     let missing = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
         .arg(&path)
@@ -100,10 +97,10 @@ fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
 
 /// `--class` addresses a nested class's own method and a class side's own
 /// method by mixin path, and reports a clean error (not a panic) for a
-/// path segment that names nothing in the tree. Not a `tests-fixtures/`
-/// fixture: this only exercises `disasm`'s addressing and never runs the
-/// module, while every fixture is run end to end and checked against its
-/// `.expected` file by `run_fixtures.rs`.
+/// path segment that names nothing in the tree. Not a golden: this only
+/// exercises `disasm`'s addressing and never runs the module, while every
+/// golden is run end to end and checked against the outcome recorded in its
+/// `.toml` by `run_fixtures.rs`.
 #[test]
 fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
     let directory = ScratchDirectory::new("disasm-nested-path");
@@ -122,7 +119,7 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
             )
         "},
     )
-    .expect("write temp fixture");
+    .expect("write temp source");
 
     let inner = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("disasm")
@@ -173,7 +170,7 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
 /// these ever differ, the image's code table is not what the compiler emitted.
 #[test]
 fn disasm_of_an_image_matches_disasm_of_its_source() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/arithmetic.ns");
+    let source = common::golden("language/arithmetic");
     let directory = ScratchDirectory::new("disasm-img");
     let image = directory.join("world.img");
 
@@ -201,7 +198,7 @@ fn disasm_of_an_image_matches_disasm_of_its_source() {
         String::from_utf8_lossy(&from_image.stderr)
     );
 
-    let from_source = disasm("arithmetic.ns", &["main:args:"]);
+    let from_source = disasm("language/arithmetic", &["main:args:"]);
     assert_eq!(
         String::from_utf8_lossy(&from_image.stdout).replace("\r\n", "\n"),
         from_source
@@ -216,7 +213,7 @@ fn disasm_of_an_image_matches_disasm_of_its_source() {
 /// image form never exercises) could have passed the image test above.
 #[test]
 fn disasm_of_a_binary_matches_disasm_of_its_source() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-fixtures/arithmetic.ns");
+    let source = common::golden("language/arithmetic");
     let directory = ScratchDirectory::new("disasm-bin");
     let binary = directory.join("app.nsb");
 
@@ -244,7 +241,7 @@ fn disasm_of_a_binary_matches_disasm_of_its_source() {
         String::from_utf8_lossy(&from_binary.stderr)
     );
 
-    let from_source = disasm("arithmetic.ns", &["main:args:"]);
+    let from_source = disasm("language/arithmetic", &["main:args:"]);
     assert_eq!(
         String::from_utf8_lossy(&from_binary.stdout).replace("\r\n", "\n"),
         from_source

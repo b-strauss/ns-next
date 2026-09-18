@@ -1,0 +1,27 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 5.4.3's grammar is the whole precedence rule:
+   `unaryExpression = primary unarySelector*`,
+   `binaryExpression = unaryExpression binaryMsg*`,
+   `keywordExpression = binaryExpression [keywordMsg]`. So a unary send
+   binds tightest, a binary send next and a keyword send loosest; and since
+   a binary expression's receiver is a binary expression while 5.4.2 gives
+   a binary clause "a single argument given by a unary expression", binary
+   sends run strictly left to right with no arithmetic precedence.
+
+   2.2.2 states the last part outright and gives the first line's answer:
+   "all binary operators have the same precedence and are evaluated from
+   left to right, so 5+4*2 evaluates to 18 rather than 13". The second line
+   would be (2 + self) ten if binary bound tighter than unary, the third
+   (self twice: 2) + 3 if keyword bound tighter than binary. A regression
+   here is silent wrong output at exit status 0 in every program that does
+   arithmetic. *)
+class Spec543Precedence usingPlatform: p = Object new (| t = p transcript. |) (
+    public ten = ( ^10 )
+    public twice: value = ( ^value * 2 )
+    public main: platform args: arguments = (
+        t show: (5 + 4 * 2) printString; newLine.
+        t show: (2 + self ten) printString; newLine.
+        t show: (self twice: 2 + 3) printString; newLine.
+    )
+) : ()

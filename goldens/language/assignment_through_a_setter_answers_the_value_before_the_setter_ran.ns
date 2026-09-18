@@ -1,0 +1,43 @@
+Newspeak3
+'T'
+(* `x := e` answers the value of `e` (`docs/design/dispatch.md`, "Setter
+   sends"), even when the setter it sends writes the local `e` read, through a
+   closure built earlier. One case per position that reads an assignment's
+   value after its setter send has run: a `^`, a `^` inside a block, a block's
+   last statement, the last statement of an inlined branch, of an inlined
+   `and:` block and of an inlined loop condition, and a slot initializer. Each
+   line is the value `e` had before the setter ran: `1`, `true` for the
+   `and:`, and one loop iteration, since the second test finds `false`. *)
+class SetterValue usingPlatform: platform = Object new (
+    | blk ::= nil. |
+) (
+    public class Init new: n = Object new (
+        | hook = [n := 99]. answer = (x := n). |
+    ) (
+        x: v = ( hook value )
+        public result = ( ^answer )
+    )
+    x: v = ( blk value )
+    returned = ( | y | y := 1. blk := [y := 99]. ^x := y )
+    returnedFromABlock = ( [ | z | z := 1. blk := [z := 99]. ^x := z ] value. ^0 )
+    blockValue = ( ^[ | z | z := 1. blk := [z := 99]. x := z ] value )
+    inlinedBranch: c = ( | y | y := 1. blk := [y := 99]. ^c ifTrue: [x := y] ifFalse: [0] )
+    inlinedAnd = ( | y | y := true. blk := [y := false]. ^true and: [x := y] )
+    inlinedCondition = (
+        | y count |
+        y := true.
+        count := 0.
+        blk := [y := false].
+        [x := y] whileTrue: [count := count + 1].
+        ^count
+    )
+    public main: p args: a = (
+        p transcript show: self returned printString; newLine.
+        p transcript show: self returnedFromABlock printString; newLine.
+        p transcript show: self blockValue printString; newLine.
+        p transcript show: (self inlinedBranch: true) printString; newLine.
+        p transcript show: self inlinedAnd printString; newLine.
+        p transcript show: self inlinedCondition printString; newLine.
+        p transcript show: (Init new: 1) result printString; newLine
+    )
+) : ()

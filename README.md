@@ -38,7 +38,7 @@ other tooling is needed; the project has no external runtime dependencies.
 ```bash
 # build every crate; the ns-next binary lands in target/debug
 cargo build --workspace
-# the full suite, including the golden program outcomes
+# the full suite, including every golden under both lowerings
 cargo test --workspace
 # formatting
 cargo fmt --all
@@ -62,18 +62,18 @@ On Windows the C runtime is linked statically (see `.cargo/config.toml`), so
 `ns-next.exe` is one self-contained file: it needs no Rust installation and no VC++
 redistributable on the machine that runs it.
 
-Every fixture is checked against its recorded `.expected` stdout and an empty stderr,
-and `crates/ns-cli/tests/program_outcomes.rs` pins the exit status, stdout and stderr
-of programs that cannot be fixtures, byte for byte — each under both lowerings, the
-optimized one and the reference lowering it is checked against. The corpus is a
-vendored set of real Newspeak modules, kept as a non-regression gate for the parser;
-the six on `corpus/runnable.toml` also run end to end, under both lowerings.
+`goldens/` holds end-to-end programs, each a `.ns` source and a `.toml` beside it
+recording the exit status, stdout and stderr that source must produce, byte for byte —
+under both lowerings, the optimized one and the reference lowering it is checked
+against (`docs/design/README.md`, "The goldens"). The corpus is a vendored set of real
+Newspeak modules, kept as a non-regression gate for the parser; the six on
+`corpus/runnable.toml` also run end to end, under both lowerings.
 
 ## Usage
 
 ```bash
 # run a file end to end: parse, resolve, bootstrap, load, instantiate, send the entry selector
-cargo run -p ns-cli -- run tests-fixtures/hello.ns
+cargo run -p ns-cli -- run goldens/language/hello.ns
 ```
 
 The entry selector defaults to `main:args:`; `--send <selector>` picks another one.
@@ -83,18 +83,18 @@ optimized one; `run`, `snapshot`, `build` and `disasm` take it.
 ```bash
 # print one compiled body; nothing is instantiated or run. Takes a .ns file,
 # which it compiles, or an artifact, whose bodies it decodes instead
-cargo run -p ns-cli -- disasm tests-fixtures/blocks_and_return.ns find:in:
+cargo run -p ns-cli -- disasm goldens/language/blocks_and_return.ns find:in:
 ```
 
 ```bash
 # serialize a running world to an image, then load it back and send it a message
-cargo run -p ns-cli -- snapshot tests-fixtures/instance_init.ns world.img
+cargo run -p ns-cli -- snapshot goldens/language/instance_init.ns world.img
 cargo run -p ns-cli -- load world.img --send main:args:
 ```
 
 ```bash
 # check that a file parses; --ast prints the syntax tree
-cargo run -p ns-cli -- parse tests-fixtures/hello.ns
+cargo run -p ns-cli -- parse goldens/language/hello.ns
 ```
 
 ```bash
@@ -102,7 +102,7 @@ cargo run -p ns-cli -- parse tests-fixtures/hello.ns
 # state. `build` never instantiates; `load` does, against its own loading
 # world's platform, then sends the recorded entry (main:args: here, since the
 # root class declares it) -- override with --send
-cargo run -p ns-cli -- build tests-fixtures/arithmetic.ns app.nsb
+cargo run -p ns-cli -- build goldens/language/arithmetic.ns app.nsb
 cargo run -p ns-cli -- load app.nsb
 ```
 
@@ -118,7 +118,7 @@ cargo run -p ns-cli -- inspect world.img --full
 
 ```bash
 # time one entry send; measure with --release, never a debug build
-cargo run --release -p ns-cli -- bench tests-fixtures/bench_loop.ns --iterations 30
+cargo run --release -p ns-cli -- bench goldens/bench/bench_loop.ns --iterations 30
 ```
 
 `ns-next <command> --help` documents the remaining flags.
@@ -130,7 +130,7 @@ crates/ns-syntax     lexer, parser, AST, spans
 crates/ns-runtime    resolver, object model, dispatch, compiler, VM, core library, image format
 crates/ns-cli        the `ns-next` binary
 corpus/              vendored Newspeak modules used as a parser corpus
-tests-fixtures/      end-to-end programs with their expected output
+goldens/             end-to-end programs, each with its recorded outcome
 prior-art/           reference implementations as submodules, read but never built (see PROVENANCE.md)
 docs/design/         living design documents — start at its README.md
 docs/PROGRESS.md     milestone chronology

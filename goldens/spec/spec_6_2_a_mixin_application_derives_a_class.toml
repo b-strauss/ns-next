@@ -1,0 +1,5 @@
+skipped = "not implemented yet: the parser does not accept <: in a superclass clause"
+stdout = '''
+from the mixin
+from the superclass
+'''

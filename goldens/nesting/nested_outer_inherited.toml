@@ -1,0 +1,6 @@
+stdout = '''
+own method: top
+inherited method: top
+own nesting: top
+inherited nesting: top
+'''

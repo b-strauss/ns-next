@@ -241,6 +241,18 @@ by the presence-only "defined for" relation instead: the first
 `doesNotUnderstand:` found walking the receiver's class chain, whatever its
 access modifier.
 
+**Deviation: the reified message is a two-element tuple.** §3.4 says a message
+"may be *reified* by the implementation by means of a *message mirror*", "an
+object obeying the protocol of class `MessageMirror` that provides access to
+*µ*'s selector and arguments". There are no mirrors
+([liveness-and-reflection.md](liveness-and-reflection.md)), so
+`resolve.rs`'s `handler_message` hands the handler `{selector. arguments}` — a
+two-element `Array` whose first element is the selector symbol and whose second
+is an `Array` of the arguments. A handler therefore reads `message at: 1` and
+`message at: 2` rather than sending a mirror protocol, which
+`goldens/cache/does_not_understand_site_with_three_kinds_of_handler.ns`
+records. The shape changes when mirrors arrive.
+
 **Unmarked access defaults to `protected`** (§6.3.1). This is binding rather than
 cosmetic: it decides whether a member participates in `lookupPublic` at all. A
 top-level class's own access is always public regardless of what is written on
@@ -883,10 +895,10 @@ No instruction changed shape except in the width of its site:
 #### Verification
 
 The oracle: the reference lowering runs uncached and the optimized lowering
-cached, and both are held to every `tests-fixtures/*.ns` and its `.expected`,
-the golden outcomes in `program_outcomes.rs`, and `run-corpus` from source and
-as a binary, so a cache defect shows as the two lowerings disagreeing. Six
-fixtures (`tests-fixtures/cache_*.ns`) and two golden outcomes, added before any
+cached, and both are held to every `goldens/<category>/*.ns` and the outcome
+recorded beside it, and to `run-corpus` from source and
+as a binary, so a cache defect shows as the two lowerings disagreeing. The seven
+goldens under `goldens/cache/`, added before any
 cache existed, pin the outcomes a cache could change. `NS_NEXT_STRESS_CACHES=1`
 is a gate of its own beside `NS_NEXT_STRESS_MOVES`; the two are not combined,
 because an entry holds no handle for a move to break, and emptied caches would
@@ -1209,13 +1221,13 @@ recorded as closed by that measurement. The user decides on the numbers.
     receiver's own metaclass or not at all, and §5.10 in a class-side method
     looks in `Object`'s behaviour. Built; the two recorded outcomes that
     pinned the inheritance were re-cut to pin the conforming rule instead.
-    `tests-fixtures/class_side.ns` sent `SpecialWidget describe` for an
+    `goldens/class-side/class_side.ns` sent `SpecialWidget describe` for an
     inherited class-side method; its subclass now declares its own
-    `describe`, since a class side that declares none answers nothing.
-    `tests-fixtures/cache_super_send_reaches_the_factory_check.ns` rested on
+    `describe`, since a class side that declares none answers nothing. A
+    cache golden rested on
     a class-side `doesNotUnderstand:` declared by a superclass, which a flat
-    metaclass makes unreachable; it is replaced by
-    `tests-fixtures/class_side_super_reaches_object.ns`, whose class-side
+    metaclass makes unreachable; it is gone, replaced by
+    `goldens/class-side/class_side_super_reaches_object.ns`, whose class-side
     `super printString` answers `Object`'s: §5.10 makes S the superclass of
     the running activation's current class, which §3.2 makes `Class` for a
     metaclass, and `Object`'s behaviour is what stands in for `Class` here.
@@ -1252,7 +1264,7 @@ recorded as closed by that measurement. The user decides on the numbers.
     both probes (Primordial Soup; half the capacity); zapping the other
     probes on insert (Cog; discards other keys for a reason particular to
     Cog). Built, and measured against 3b's insert with
-    `tests-fixtures/bench_megamorphic.ns`, added for it because none of the
+    `goldens/bench/bench_megamorphic.ns`, added for it because none of the
     existing sources reaches a megamorphic site. **The replacement rule
     itself is unmeasured, and that benchmark cannot measure it.** It fills 27
     of the 1024 slots, five of them at the one megamorphic site it drives, so

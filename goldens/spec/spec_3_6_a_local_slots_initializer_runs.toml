@@ -1,0 +1,4 @@
+skipped = "not implemented yet: the parser drops a code body's slot initializers, so the slot stays nil"
+stdout = '''
+the initializer ran
+'''

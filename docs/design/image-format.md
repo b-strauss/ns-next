@@ -589,6 +589,16 @@ nothing for at all. On purpose: see `root_class_answers` in
 `crates/ns-cli/src/commands/build.rs` for why only this narrower set keeps the
 byte-identity guarantee above sound.
 
+**Deviation: `args:` receives `nil`.** §8.4 gives `main:args:` "a platform
+object (8.3) as its first parameter, and a list of any environment-specific
+(e.g., command line) arguments as its second". `crates/ns-cli/src/entry.rs`'s
+`entry_arguments` — the one place any command that sends an entry builds its
+arguments — supplies the platform and then `Value::Nil`, because there is no
+command-line-argument passthrough into Newspeak. A program that inspects `args`
+sees `nil` where the specification promises an empty list. The deviation is the
+CLI's, not the format's: the encoded entry is a selector, and nothing about it
+records what the arguments are.
+
 **Loading.** `load` reads the header and branches. A stateful image is unchanged.
 A stateless binary decodes symbols → code → mixins → root class → entry id, with
 no graph section, then verifies the decoded declarations against their code and
@@ -603,7 +613,7 @@ in the runtime needs to know it was invoked from a terminal.
 
 **Tests**, in order of importance: `build` then `load` reproduces
 `run`'s stdout, stderr and exit status byte for byte
-(`every_fixture_runs_identically_from_source_and_from_a_binary`); `build` and
+(`every_golden_runs_identically_from_source_and_from_a_binary`); `build` and
 `snapshot` agree on the describing sections' bytes
 (`a_build_and_a_snapshot_agree_on_the_describing_sections`); `run-corpus`
 carries a third lane that builds and loads each whitelisted entry, where a

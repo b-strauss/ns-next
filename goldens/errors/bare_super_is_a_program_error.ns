@@ -1,0 +1,10 @@
+Newspeak3
+'T'
+(* A bare `super` parses and resolves but has no binding, so it is a
+   program-level error raised where it is evaluated. *)
+class BareSuper usingPlatform: platform = Object new (
+) (
+    public main: p args: a = (
+        ^super
+    )
+) : ()

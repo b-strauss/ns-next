@@ -1,0 +1,7 @@
+skipped = "not implemented yet: every evaluation of a symbol literal allocates a fresh wrapper, so equal symbols are not identical"
+stdout = '''
+true
+true
+true
+true
+'''

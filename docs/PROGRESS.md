@@ -10,7 +10,7 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
-| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md), [inline-caches-3b](superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md), [flat-metaclasses-factory-and-cache-refinements](superpowers/plans/2026-09-18-0211-ns-next-flat-metaclasses-factory-and-cache-refinements.md) |
+| M4 — Representation: arena, checked roots, stack activations | In progress | — | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md), [inline-caches-3b](superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md), [flat-metaclasses-factory-and-cache-refinements](superpowers/plans/2026-09-18-0211-ns-next-flat-metaclasses-factory-and-cache-refinements.md), [goldens](superpowers/plans/2026-09-18-1355-ns-next-goldens.md) |
 | M5–M6 — JIT | Not started | — | — |
 
 ## Where the next session starts
@@ -99,7 +99,7 @@ inherited at all.
   family, with a flag for a family compiled uncached, and the send tags
   retired again, to 25–28.
 - **The global cache is 512 two-slot least-recently-used groups**, measured
-  against 3b's insert with `tests-fixtures/bench_megamorphic.ns` — which
+  against 3b's insert with `goldens/bench/bench_megamorphic.ns` — which
   measures the probe path only, so the replacement rule itself is still
   unmeasured (the finding below).
 
@@ -117,11 +117,12 @@ changed a send's path, and so the baseline whatever lands after it.
 Performance is measured, not assumed: the protocol and the seven sources of
 "What removing the re-entries moved"
 ([execution.md](design/execution.md)), plus
-`tests-fixtures/bench_megamorphic.ns`, the eighth source and the only one
+`goldens/bench/bench_megamorphic.ns`, the eighth source and the only one
 that drives a megamorphic site.
 
-**Four of the eight sources are not fixtures and must be written out from the
-text the documents give, never reconstructed from their prose descriptions.**
+**Four of the eight sources are goldens, under `goldens/bench/`. The other
+four are not in the tree at all and must be written out from the text the
+documents give, never reconstructed from their prose descriptions.**
 A reconstruction runs and prints the right answer while measuring something
 else, and older comparison binaries may not run it at all. `bench_do.ns` is
 written out in the
@@ -179,7 +180,7 @@ loudly.
 - **The global cache's replacement rule is unmeasured.** The cache is 512
   two-slot groups with the least recently *used* evicted, Strongtalk's
   `lookupCache` rule, and it replaced 3b's insert on that precedent, not on
-  numbers of this runtime's own. `tests-fixtures/bench_megamorphic.ns`, added
+  numbers of this runtime's own. `goldens/bench/bench_megamorphic.ns`, added
   for the comparison, cannot supply them: it fills 27 of 1024 slots, five of
   them at the one megamorphic site it drives, so across 512 groups its hot keys
   almost certainly share no group — almost every hit is at the first slot, the

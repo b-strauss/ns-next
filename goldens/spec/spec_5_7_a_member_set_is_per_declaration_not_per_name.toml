@@ -1,0 +1,4 @@
+skipped = "not implemented yet: a member set is keyed by the class's simple name, so Beta's Dup overwrites Alpha's Dup"
+stdout = '''
+Dup's own marker
+'''

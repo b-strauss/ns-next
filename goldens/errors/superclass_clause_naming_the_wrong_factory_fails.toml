@@ -1,0 +1,4 @@
+status = 1
+stderr = '''
+Uncaught Newspeak error: the superclass clause of class Derived sends #new, but the primary factory of class Base is #withBase:
+'''
