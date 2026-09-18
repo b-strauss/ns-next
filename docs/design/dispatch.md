@@ -619,8 +619,9 @@ buys — one hash and one cache line per send of a megamorphic site, instead
 of two hashes anywhere in the table — not the eviction rule: the whole
 program fills 27 of 1024 entries, five of them its megamorphic `value`
 site's own, and 27 keys over 512 groups collide less than once on average
-while eviction needs three keys in one group, so on the hot path nothing is
-evicted. An eviction-rule comparison needs cache pressure (a small
+while eviction needs three keys in one group, so on the hot path almost
+certainly nothing is evicted. An eviction-rule comparison needs cache
+pressure (a small
 `NS_NEXT_GLOBAL_CACHE_ENTRIES`, or many more hot keys than this fixture
 has), and no measurement has supplied it, so the rule rests on Strongtalk's
 precedent rather than on numbers of this runtime's own
@@ -1218,8 +1219,9 @@ by that measurement. The user decides on the numbers.
     existing sources reaches a megamorphic site. **The replacement rule
     itself is unmeasured, and that benchmark cannot measure it.** It fills 27
     of the 1024 slots, five of them at the one megamorphic site it drives, so
-    across 512 groups its hot keys share no group: every hit lands in the
-    first slot, the second is never read, and nothing is ever evicted. What
+    across 512 groups its hot keys share no group: almost every hit lands
+    in the first slot, the second is almost never read, and almost certainly
+    nothing is evicted. What
     it measures is the probe path — one hash and one cache line against 3b's
     two hashes anywhere in the table — and on that the change moved no source
     beyond the noise: `bench_megamorphic.ns` +1.16% / +0.41%, every group

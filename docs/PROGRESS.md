@@ -2392,7 +2392,8 @@ costs the send benchmarks").
 `bench_megamorphic.ns` fills 27 of 1024 global slots, five of them at the one
 megamorphic site it drives; 27 keys over 512 groups collide less than once on
 average and eviction needs three in a group, so on the hot path every read
-answers at the first slot and the replacement rule never runs. It measures
+almost certainly answers at the first slot and the replacement rule almost
+certainly never runs. It measures
 the probe path and cannot measure the replacement rule, which therefore
 stands on Strongtalk's precedent rather than on numbers of this runtime's own
 (the open finding above).
