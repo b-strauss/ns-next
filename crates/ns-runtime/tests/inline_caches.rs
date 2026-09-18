@@ -589,12 +589,12 @@ fn an_invalidation_vacates_every_site_and_keeps_the_ranges() {
     );
 }
 
-/// A global cache of one or two entries, where inserts evict each other,
-/// answers what a full one answers: the megamorphic `value` site resolves
-/// through it on every send.
+/// A global cache of one or two groups, where every insert contends for the
+/// same two-slot group, answers what a full one answers: the megamorphic
+/// `value` site resolves through it on every send.
 #[test]
 fn a_tiny_global_cache_answers_like_a_full_one() {
-    for entries in [1, 2] {
+    for entries in [2, 4] {
         let (mut interpreter, class) = load(FIVE_KINDS);
         interpreter.set_global_cache_size(entries);
         let instance = instantiate(&mut interpreter, &class);

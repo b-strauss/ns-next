@@ -580,30 +580,43 @@ site that is not inlined and sees both is bimorphic.
 
 #### The global cache
 
-The global cache (`GlobalCache`) has 1024 entries keyed by (dispatch id,
-selector, rule, lexical) — the rule `Public`, `Lexical`, `LexicalPrivate` or
-`Super` (`CacheRule`), since one id and selector resolve differently under
-§5.5, §5.9 and §5.10 — probed twice, at two hashes of the key, as Primordial
-Soup's `LookupCache` is. `lexical` is the key's fourth component, N's
-application (its `instances` dispatch id) for a `Lexical` entry and
-`DispatchId::NONE` for every other rule: §5.9's private rule is a function of
-N and the selector alone, never of `o`, so a `Lexical` entry recorded for one
-N is right to reuse only at a site whose own N matches, and this is what
-lets a still-vacant lexical site read the cache at all before it has
-resolved anything ("The private rule, decided once per site" below). It is
-every site's miss path, probed before a lookup runs,
-and the only cache a megamorphic site consults, as Cog's open PICs probe the
-method cache and Strongtalk's miss handler its `lookupCache`. A hit there
-moves the site's state on. An insertion writes the first probe if it is
-vacant or already holds the key, else the second probe if that one is, else
-evicts the first. Primordial Soup's `InsertOrdinary` probes the same two
-places but writes the key into both; writing one keeps two keys whose first
-probes collide both cached while the second probe of one is free. A miss
-there costs only a lookup, so both rules are correct, and they differ only in
-the hit rate under collisions. An entry is 32 bytes, so the cache is about
-32 KB whatever the program's size. Its size is a power of two, 1024; a debug
-build takes another from `NS_NEXT_GLOBAL_CACHE_ENTRIES`, which the suite uses
-to run every fixture with a one-entry cache, where every insertion evicts.
+The global cache (`GlobalCache`) has 512 two-slot groups, 1024 entries in
+all, keyed by (dispatch id, selector, rule) — the rule `Public`, `Lexical`,
+`LexicalPrivate` or `Super` (`CacheRule`), since one id and selector resolve
+differently under §5.5, §5.9 and §5.10. `Lexical` carries a payload, N's
+application (its `instances` dispatch id) — `DispatchId::NONE` where it is
+not yet known — so the key needs no separate component for it:
+§5.9's private rule is a function of N and the selector alone, never of `o`,
+so a `Lexical` entry recorded for one N is right to reuse only at a site
+whose own N matches, and this is what lets a still-vacant lexical site read
+the cache at all before it has resolved anything ("The private rule, decided
+once per site" below). It is every site's miss path, probed before a lookup
+runs, and the only cache a megamorphic site consults, as Cog's open PICs
+probe the method cache and Strongtalk's miss handler its `lookupCache`. A hit
+there moves the site's state on.
+
+One hash picks a key's group — unlike 3a/3b's two independent probes
+anywhere in the table — and the group's two adjacent slots are one cache
+line's worth of probing. Strongtalk's `lookupCache`
+(`prior-art/strongtalk/vm/lookup/lookupCache.cpp`): a key already at the
+first slot is refreshed in place; found at the second slot, or found
+nowhere, the first slot's entry moves to the second, discarding whatever the
+second held, and the key is written into the first — the least recently
+used of the two goes, and a key found at the second slot is thereby promoted
+rather than evicted. A read (`get`) never reorders a group; only `insert`
+keeps the more recently used of two colliding keys, so a read costs no more
+than two comparisons. This replaces 3b's insertion, which evicted the first
+probe whatever its use. Rejected: writing both probes, as Primordial Soup's
+`InsertOrdinary` does (half the capacity); zapping the other probe on
+insert, as Cog does (discards other keys for a reason particular to Cog).
+Measured against 3b's insertion with `bench_megamorphic.ns`, whose `value`
+site sees five receiver classes in a loop and so is megamorphic on every
+send — none of the other measured sources reaches one. An entry is 32 bytes,
+so the cache is about 32 KB whatever the program's size. Its number of
+groups is a power of two, 512; a debug build takes a size in entries from
+`NS_NEXT_GLOBAL_CACHE_ENTRIES`, which the suite uses to run every fixture
+with a cache of one group, where every insertion contends for the same two
+slots.
 
 #### Code families
 
@@ -666,11 +679,10 @@ so it gains no dispatch logic:
    `current_class`'s application; the receiver stays `self`, and a send with
    no `current_class` or no superclass runs uncached, which is where its two
    errors are raised. `SendInlinable` is emitted only by the reference
-   lowering and runs uncached (`decide_send`). The global cache's key adds a
-   fourth component, `lexical`: N's instances id for a non-private lexical
-   send, `DispatchId::NONE` for every other rule -- computed lazily, only
-   once a miss is certain (`miss`'s `lexical_of` closure), so a hit never
-   pays for it.
+   lowering and runs uncached (`decide_send`). A non-private lexical send's
+   rule carries a payload, N's instances id, `DispatchId::NONE` until it is
+   filled -- computed lazily, only once a miss is certain (`miss`'s
+   `lexical_of` closure), so a hit never pays for it.
 3. The site's entry: if its guard matches, the target is rebuilt
    (`materialize`) and acted on. That is the monomorphic hit, inline in
    `vm::run`; everything after it is `miss`, out of line.
@@ -742,10 +754,11 @@ no check that code and N agree: nothing assumes a relation between them.
 As first built, a vacant lexical site skipped the global cache entirely for
 this reason: an entry there under `o`'s id alone might have been filled by a
 site whose N declares nothing private, wrong for a site whose own N does.
-2026-09-18 added N's application as the `Lexical` key's fourth component
-(`GlobalEntry.lexical`, `DispatchId::NONE` for every rule that does not need
-it) precisely so a still-vacant site can tell the two apart: a hit under
-`(o, selector, Lexical, N)` is right regardless of which site left it, since
+2026-09-18 added N's application as the `Lexical` rule's payload
+(`CacheRule::Lexical(DispatchId)`, `DispatchId::NONE` where it is not yet
+known; every other rule needs none) precisely so a still-vacant site can
+tell the two apart: a hit under `(o, selector, Lexical(N))` is right
+regardless of which site left it, since
 §5.9's private rule is a function of N and the selector alone, never of `o`.
 `send_lexical_first` now probes two rows before resolving anything -- N's own
 `LexicalPrivate` row, keyed by N alone, then the `Lexical` row keyed by `(o,

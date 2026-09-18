@@ -1,0 +1,23 @@
+Newspeak3
+'Test'
+class BenchMegamorphic usingPlatform: platform = Object new (
+	| n ::= 0. sum ::= 0. |
+) (
+	class KindA = Object new () ( public value = ( ^1 ) )
+	class KindB = Object new () ( public value = ( ^2 ) )
+	class KindC = Object new () ( public value = ( ^3 ) )
+	class KindD = Object new () ( public value = ( ^4 ) )
+	class KindE = Object new () ( public value = ( ^5 ) )
+	public main: p args: a = (
+		| kinds which |
+		kinds := {KindA new. KindB new. KindC new. KindD new. KindE new}.
+		which := 1.
+		[n < 50000] whileTrue: [
+			sum := sum + ((kinds at: which) value).
+			which := which + 1.
+			(which > 5) ifTrue: [which := 1].
+			n := n + 1
+		].
+		p transcript show: sum printString; newLine
+	)
+) : ()

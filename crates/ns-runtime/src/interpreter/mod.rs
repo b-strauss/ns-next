@@ -314,10 +314,10 @@ impl Interpreter {
         {
             let stress_enabled = interpreter.stress.is_some() || interpreter.stress_caches;
             interpreter.world.set_safepoint_requested(stress_enabled);
-            // A fixture run small enough that every insert evicts
-            // (`run_fixtures.rs`); anything not a decimal power of two is
-            // ignored rather than refused, since this reads the ambient
-            // environment rather than an explicit host call.
+            // A fixture run small enough that every insert contends for the
+            // same group (`run_fixtures.rs`); anything not twice a decimal
+            // power of two is ignored rather than refused, since this reads
+            // the ambient environment rather than an explicit host call.
             if let Some(entries) = safepoint::global_cache_entries_from_env() {
                 interpreter.set_global_cache_size(entries);
             }
@@ -542,11 +542,11 @@ impl Interpreter {
         self.world.cache_statistics()
     }
 
-    /// Replaces the global cache with a fresh one of `entries`, vacating
-    /// whatever it held. A test hook (`NS_NEXT_GLOBAL_CACHE_ENTRIES`,
+    /// Replaces the global cache with a fresh one sized for `entries`,
+    /// vacating whatever it held. A test hook (`NS_NEXT_GLOBAL_CACHE_ENTRIES`,
     /// `run_fixtures.rs`), not an input path a program can reach: `entries`
-    /// must be a power of two, and a host that gets this wrong panics rather
-    /// than the cache rounding it silently.
+    /// must be twice a power of two -- two per group -- and a host that gets
+    /// this wrong panics rather than the cache rounding it silently.
     pub fn set_global_cache_size(&mut self, entries: usize) {
         self.enter(|mutator| mutator.caches.set_global_cache_size(entries));
     }
