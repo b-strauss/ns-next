@@ -216,3 +216,57 @@ fn a_nested_class_and_a_method_of_one_name_are_a_resolve_error() {
     "});
     assert_eq!(errors, ["class `Foo` has multiple definitions of `Inner`"]);
 }
+
+/// §6.3 makes the primary factory a member of the metaclass mixin the class
+/// side becomes, so a method table has one entry per selector to give it --
+/// the same rule as a slot and a method of one name, extended to the
+/// factory. Primordial Soup refuses it too (`Intermediates.ns`,
+/// `checkNameConflictsForFactory:`).
+#[test]
+fn a_class_side_may_not_declare_the_factory_selector() {
+    let errors = resolve_errors(indoc! {"
+        Newspeak3
+        'Test'
+        class Conflict usingPlatform: platform = Object new () (
+            class Widget new = Object new () (
+            ) : (
+                public new = ( ^'not a widget' )
+            )
+        ) : ()
+    "});
+    assert_eq!(errors, ["class `Widget` has multiple definitions of `new`"]);
+}
+
+/// A class written with no factory pattern defaults to `new` (§6.1), so the
+/// collision is refused even when nothing in the source spells the selector
+/// out.
+#[test]
+fn a_class_side_may_not_declare_the_default_factory_selector() {
+    let errors = resolve_errors(indoc! {"
+        Newspeak3
+        'Test'
+        class Conflict usingPlatform: platform = Object new () (
+            class Widget = Object new () (
+            ) : (
+                public new = ( ^'not a widget' )
+            )
+        ) : ()
+    "});
+    assert_eq!(errors, ["class `Widget` has multiple definitions of `new`"]);
+}
+
+/// A class side under a different selector than the factory's is
+/// legitimate -- the check must refuse only the method under the factory's
+/// own selector, not every class-side method.
+#[test]
+fn a_class_side_method_under_another_selector_resolves() {
+    let errors = resolve_errors(indoc! {"
+        Newspeak3
+        'Test'
+        class Widget new = Object new () (
+        ) : (
+            public make = ( ^'not a widget' )
+        )
+    "});
+    assert!(errors.is_empty(), "{errors:?}");
+}

@@ -82,18 +82,54 @@ pub(super) fn own_member_names(declaration: &ast::ClassDeclaration) -> HashSet<S
     names
 }
 
+/// The declaration's factory selector: the selector its own message pattern
+/// spells out, or `new` when it writes none (`newspeak-spec.pdf` §6.1's "a
+/// class definition need not include ... a message pattern", defaulted the
+/// same way `interpreter::instantiate::build_mixin` defaults the mixin's
+/// `Factory`). One implementation, so the resolver's notion of "the factory
+/// selector" cannot drift from the one the metaclass mixin is actually built
+/// with.
+fn factory_selector_of(declaration: &ast::ClassDeclaration) -> Symbol {
+    match &declaration.factory {
+        Some(pattern) => Symbol::intern(&crate::interpreter::instantiate::method_name(pattern)),
+        None => Symbol::NEW,
+    }
+}
+
 /// The names one side of `declaration` declares more than once, each once.
-/// The specification states no rule; the canonical compiler refuses them
+/// The specification states no rule for two ordinary members of one name;
+/// the canonical compiler refuses them
 /// (`prior-art/newspeak/Newspeak2SqueakCompilation.ns`,
 /// `checkForDuplicateNames:`), and a mixin's method table cannot hold two
 /// members under one selector. Each side is its own table, so a name the
 /// instance side and the class side both declare is not a duplicate.
+///
+/// The class side's table is not only what it declares, though: §6.3 makes
+/// the primary factory a member of the metaclass mixin the class side
+/// becomes, so a class-side method under the factory's own selector is a
+/// second entry for that one name -- refused here the same way, by seeding
+/// the class side's `seen` set with it before walking its declared members.
+/// The image side (`image::mixins::check_member_names`) checks the same
+/// collision on a decoded class-side row, against the mixin's own encoded
+/// `Factory` -- populated, when the mixin was built, by this same
+/// `method_name` computation -- so a source-level refusal here and an
+/// image-level refusal there agree on exactly the same programs. Primordial
+/// Soup refuses it too (`prior-art/primordialsoup/newspeak/Intermediates.ns`,
+/// `checkNameConflictsForFactory:`); SOMns lets the declared method win and
+/// files the factory under an unreachable name, after which the class no
+/// longer instantiates and nothing says so.
 pub(super) fn duplicate_member_names(declaration: &ast::ClassDeclaration) -> Vec<Symbol> {
     let mut duplicates = Vec::new();
-    let sides = std::iter::once(&declaration.instance_side).chain(declaration.class_side.as_ref());
-    for side in sides {
+    let mut seen = HashSet::new();
+    for member in declared_members(&declaration.instance_side) {
+        if !seen.insert(member) && !duplicates.contains(&member) {
+            duplicates.push(member);
+        }
+    }
+    if let Some(class_side) = declaration.class_side.as_ref() {
         let mut seen = HashSet::new();
-        for member in declared_members(side) {
+        seen.insert(factory_selector_of(declaration));
+        for member in declared_members(class_side) {
             if !seen.insert(member) && !duplicates.contains(&member) {
                 duplicates.push(member);
             }
