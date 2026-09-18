@@ -1,7 +1,7 @@
 //! Canonical decoding, the inverse of `encode.rs`. A malformed byte stream
 //! is a `DecodeError`, never a panic.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -1986,6 +1986,20 @@ struct PendingClass {
 /// here and get the same `Rc` back, which is what keeps a call site
 /// monomorphic across a save/load.
 ///
+/// A metaclass is the exception, and is applied flat: `newspeak-spec.pdf`
+/// §3.2 makes a metaclass a direct subclass of `Class`, so the live
+/// `Mutator::metaclass_of` gives it no superclass *application* even though
+/// its class object's superclass link names `Object`'s
+/// (`dispatch::next_level` rests on exactly that asymmetry). A metaclass
+/// reaches the graph as an ordinary class record -- as a class-side
+/// activation's `current_class` -- naming the class side's own mixin row and
+/// the superclass `Object`, so applying the record's superclass here the way
+/// every other record's is applied would rebuild it chained and silently
+/// un-flatten it: an ordinary lookup that missed on the decoded metaclass
+/// would step into `Object`'s own methods. `metaclass_rows` below names
+/// exactly the rows a metaclass applies, the same way
+/// `mixins::metaclass_factory_entries` does.
+///
 /// The order is the catch: a class object's record may name a superclass
 /// whose own record appears later in the table. Each class has at most one
 /// superclass, so the dependency structure is a forest; this walks each
@@ -2012,6 +2026,7 @@ fn rebuild_applications<'gc>(
             index,
         );
     }
+    let metaclass_rows = metaclass_rows(context.mixins);
     let mut done = vec![false; pending.len()];
     let mut on_chain = vec![false; pending.len()];
     let mut chain: Vec<usize> = Vec::new();
@@ -2045,15 +2060,20 @@ fn rebuild_applications<'gc>(
         // application in hand.
         for &pending_index in chain.iter().rev() {
             let object = &objects[pending[pending_index].object];
-            let super_application = match context.mutator.heap.class_superclass(*object) {
-                Some(superclass) => Some(
-                    context
-                        .mutator
-                        .heap
-                        .class_application(superclass)
-                        .ok_or(DecodeError::NotAClassReference)?,
-                ),
-                None => None,
+            let mixin = &pending[pending_index].mixin;
+            let super_application = if metaclass_rows.contains(&crate::mixin::mixin_key(mixin)) {
+                None
+            } else {
+                match context.mutator.heap.class_superclass(*object) {
+                    Some(superclass) => Some(
+                        context
+                            .mutator
+                            .heap
+                            .class_application(superclass)
+                            .ok_or(DecodeError::NotAClassReference)?,
+                    ),
+                    None => None,
+                }
             };
             let application = context
                 .mutator
@@ -2071,6 +2091,23 @@ fn rebuild_applications<'gc>(
         chain.clear();
     }
     Ok(())
+}
+
+/// The mixin keys of the rows that are some other row's class side -- the
+/// rows a decoded class object applies as a metaclass, and the only ones
+/// `rebuild_applications` applies with no superclass application.
+///
+/// Derived from the decoded table rather than from anything the graph
+/// section writes, so a crafted class record cannot claim to be a metaclass
+/// (or deny being one) to obtain a layout the mixin tree does not describe.
+/// `mixins::check_preorder` has already established that every row is
+/// reached exactly once, so no row is the class side of two declarations.
+fn metaclass_rows(mixins: &[Rc<crate::mixin::Mixin>]) -> HashSet<usize> {
+    mixins
+        .iter()
+        .filter_map(|mixin| mixin.class_side.as_ref())
+        .map(crate::mixin::mixin_key)
+        .collect()
 }
 
 /// Whether `class` is one of the two class objects a graph never creates:
@@ -2370,6 +2407,10 @@ fn decode_class_record<'gc>(
     // itself in the graph -- as a class-side activation's `current_class` --
     // decodes as a class record of its own and is never linked back into the
     // class it belongs to, so `metaclass_of` mints a second one beside it.
+    // The two share one `MixinApplication`, so they share behaviour, layout
+    // and dispatch ids: both are the class side's own row applied flat, and
+    // `apply_mixin`'s cache is keyed by exactly that pair
+    // (`rebuild_applications` is what applies the decoded one flat).
     // Nothing observes the difference today: `metaclass_of` is reached only
     // from `Interpreter::send`'s dispatch, so no Newspeak value names a
     // metaclass and no two of them can be compared. Recording it rather than

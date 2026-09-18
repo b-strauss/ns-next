@@ -7278,3 +7278,91 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
     assert_eq!(second_answer, 2);
     assert_eq!(loaded.interpreter.cache_statistics().site_entries, 3);
 }
+
+/// A metaclass that reaches the graph is rebuilt **flat**: its application
+/// names no superclass application, exactly as the live
+/// `Mutator::metaclass_of` mints it (`newspeak-spec.pdf` §3.2, a metaclass
+/// is a direct subclass of `Class`).
+///
+/// A metaclass is written as an ordinary class record -- naming the class
+/// side's mixin row and the superclass `Object` -- so the generic rule
+/// `rebuild_applications` applies to every other record would chain it onto
+/// `Object`'s application. Nothing walks from a decoded metaclass today, so
+/// the difference is silent; `dispatch::next_level`'s whole flat rule rests
+/// on the asymmetry between the class-object link (`Object`) and the
+/// application link (none), which is why it is pinned here rather than left
+/// to the first lookup that starts from one.
+///
+/// A class-side method that answers a block the module keeps is what puts
+/// the metaclass in the graph: the closure's captured frame is the
+/// class-side activation, whose `current_class` is the metaclass.
+#[test]
+fn a_decoded_metaclass_is_rebuilt_with_no_superclass_application() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class X = Object new (
+          | held ::= nil. |
+        ) (
+          public class Widget = Object new (
+          ) (
+          ) : (
+            public makeBlock = ( ^[ 'from the class side' ] )
+          )
+          public keep = ( held := Widget makeBlock. ^held )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("keep"), &[]),
+        "keep",
+    );
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        let instance = mutator.fetch(&instance);
+        image::snapshot(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    loaded.interpreter.enter(|mutator| {
+        let root_0 = mutator.fetch(&loaded.roots[0]);
+        let held = mutator
+            .heap()
+            .instance_field(*object(&root_0), 0)
+            .expect("expected an instance");
+        let captured = mutator
+            .heap()
+            .closure_data(*object(&held))
+            .expect("the slot holds the class side's block")
+            .captured_frame;
+        let metaclass = mutator
+            .heap()
+            .frame_current_class(captured)
+            .expect("a class-side method activation carries its metaclass");
+        let application = mutator
+            .heap()
+            .class_application(metaclass)
+            .expect("the decoded metaclass has an application");
+        assert!(
+            application.superclass.is_none(),
+            "a decoded metaclass must be applied flat -- a superclass \
+             application here lets an ordinary lookup step into Object's own \
+             methods and un-flattens the metaclass"
+        );
+        assert!(
+            mutator.heap().class_superclass(metaclass).is_some(),
+            "the class-object superclass link stays: it is the asymmetry \
+             dispatch::next_level rests on, not an oversight"
+        );
+    });
+}

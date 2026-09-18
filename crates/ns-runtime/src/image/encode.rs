@@ -988,7 +988,12 @@ fn encode_closure_record<'gc>(
 /// class side (`newspeak-spec.pdf` §3.2; ns-next's own representation is
 /// `docs/design/object-model.md`, "Class sides and metaclasses"), which is
 /// part of the module's declaration tree like any other mixin, so the id
-/// lookup below finds it. The other kind of metaclass mixin --
+/// lookup below finds it. The superclass written for it is `Object`'s class
+/// object, the link `metaclass_of` gives a metaclass; the *application* it
+/// is rebuilt with is flat all the same, because
+/// `decode::rebuild_applications` recognizes a record whose mixin is some
+/// row's class side and applies it with no superclass application. The other
+/// kind of metaclass mixin --
 /// the otherwise empty one `metaclass_of` synthesizes for a class that
 /// declares no class side, so that §6.3's factory entry has somewhere to
 /// live -- is in no `mixin::preorder` walk and has no id. It cannot reach
