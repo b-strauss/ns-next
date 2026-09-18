@@ -199,11 +199,15 @@ rather than an oversight -- and, for the last row, so that a defect nobody has
 had time to fix is at least not a surprise.
 
 Most rows only under-reject or narrow what can be expressed. Six do worse:
-the dropped local-slot initializer, the sequential simultaneous slot clauses,
-the eager lazy slot, the binary float behind a non-integral literal, the
-synchronous asynchronous send and the name-keyed member set each answer a
-**correct** program **wrongly, at exit status 0**. Read those six before
-trusting a program's output.
+the dropped local-slot initializer, the sequential simultaneous slot
+clauses, the eager lazy slot, the binary float behind a non-integral
+literal, the synchronous asynchronous send and the name-keyed member set
+each answer a **correct** program **wrongly, at exit status 0**. Two more
+behave that way without being rows here, because they are rules not
+implemented yet rather than decisions to differ -- equal symbols are not
+one object, and a parameter slot accepts a setter send; the closing
+paragraph below names them. Read all eight before trusting a program's
+output.
 
 | Deviation | Spec | Where it is explained |
 |---|---|---|
