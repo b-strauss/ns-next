@@ -133,6 +133,19 @@ method-table entries, are written out in
 [execution.md](design/execution.md), "What spec-conformant lookup moved" —
 in that document, not in the 2c plan.
 
+**The order after 3c, decided by the user on 2026-09-18: 3c first, then every
+specification gap in one go.** The gaps do not depend on each other and none
+depends on 3c; what couples them is the measurement. `393311f` is 3c's
+baseline, and at least two of the fixes can move it -- the member-set fix is
+in the resolver, and interning symbol literals changes a value representation
+that selectors share -- so whichever lands first costs the other a fresh
+baseline. Doing 3c while its context is freshest keeps that measurement
+valid, and doing the gaps together means re-measuring once instead of once
+per fix. The failure mode to avoid is the tempting one: closing a gap here
+and there between measured steps, after which no number compares with any
+other. The member-set fix wants a plan of its own -- a real class identity in
+place of a name -- and the two cheap ones can ride along with it.
+
 Then: **every compared
 binary, the current tree included,
 built with the protocol's explicit flags through `RUSTFLAGS`** —
