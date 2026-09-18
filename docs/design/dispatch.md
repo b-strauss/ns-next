@@ -90,7 +90,12 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    class's member `new` and answered that member instead of an instance,
    silently and at exit status 0. It is the same selector a class-side method
    may not redeclare (`classes::duplicate_member_names`), so the two
-   agree on what the class side holds.
+   agree on what the class side holds. Because the two sides share one member
+   set, an implicit `new` in an *instance*-side method now binds at the
+   declaring class too, and answers `doesNotUnderstand:` where it used to
+   reach an enclosing member `new` — the same shape every other class-side
+   member already has, and the direction the open question below would have to
+   settle for all of them at once.
 
    **Open: the class side's scope.** Both sides of a class declaration
    contribute to one member set. The specification is silent on whether an
