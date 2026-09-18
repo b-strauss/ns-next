@@ -402,7 +402,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     });
     offset = reader.position();
 
-    let table =
+    let mut table =
         decode::decode_code_table(&mut reader, &symbol_table).map_err(|error| error.to_string())?;
     sections.push(Section {
         name: "code",
@@ -411,6 +411,14 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         detail: format!("{} bodies", table.codes.len()),
     });
     offset = reader.position();
+    // A call-site number is no longer in the artifact at all, so without
+    // this the `full` disassembly below would show every send's number as
+    // the same placeholder rather than what the compiler actually numbered
+    // it -- `number_call_site_families` is safe to call on its own (it needs
+    // only `lexical_parents`, not the rest of `verify_code_table`), which is
+    // what lets `inspect` keep showing a body from a file that would fail
+    // full verification.
+    decode::number_call_site_families(&mut table).map_err(|error| error.to_string())?;
 
     let decoded = mixins::decode(&mut reader, &symbol_table, &table.codes)
         .map_err(|error| error.to_string())?;

@@ -35,10 +35,10 @@ fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_JUMP_IF_NOT_BOOLEAN, 18);
     assert_eq!(OPCODE_BRANCH_IF_FALSE, 19);
     assert_eq!(OPCODE_BRANCH_IF_TRUE, 20);
-    assert_eq!(OPCODE_SEND_LEXICAL, 21);
-    assert_eq!(OPCODE_SEND_PUBLIC, 22);
-    assert_eq!(OPCODE_SEND_INLINABLE, 23);
-    assert_eq!(OPCODE_SEND_SUPER, 24);
+    assert_eq!(OPCODE_SEND_LEXICAL, 25);
+    assert_eq!(OPCODE_SEND_PUBLIC, 26);
+    assert_eq!(OPCODE_SEND_INLINABLE, 27);
+    assert_eq!(OPCODE_SEND_SUPER, 28);
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn no_two_tags_share_a_number() {
 /// (`image/opcodes.rs`).
 #[test]
 fn retired_instruction_tags_are_never_reused() {
-    assert_eq!(RETIRED_OPCODES, [7, 8, 9, 10]);
+    assert_eq!(RETIRED_OPCODES, [7, 8, 9, 10, 21, 22, 23, 24]);
     let live = [
         OPCODE_LOAD_LITERAL,
         OPCODE_LOAD_SELF,

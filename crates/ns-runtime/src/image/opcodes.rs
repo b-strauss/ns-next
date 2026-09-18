@@ -19,10 +19,12 @@
 //! said.
 
 // Instructions, numbered in the order `bytecode::Instruction` declares them,
-// except the four sends: retired at 7-10 (see `RETIRED_OPCODES`) and
-// reassigned below at 21-24 once their call site widened from a `u16`
-// instruction index to a `u32` family number.
-// Next free number: 25.
+// except the four sends: retired at 7-10 (see `RETIRED_OPCODES`) once their
+// call site widened from a `u16` instruction index to a `u32` family number,
+// reassigned to 21-24, then retired a second time and reassigned below at
+// 25-28 once the number itself stopped being part of the artifact at all --
+// a property the decoder now derives instead of reading.
+// Next free number: 29.
 
 /// Loads a literal into a register; a string, symbol, character or array
 /// literal allocates a fresh object every time it runs.
@@ -73,22 +75,24 @@ pub const OPCODE_BRANCH_IF_FALSE: u8 = 19;
 pub const OPCODE_BRANCH_IF_TRUE: u8 = 20;
 /// Sends a message with an implicit receiver, the enclosing object at the
 /// lexical depth the resolver fixed, by the rules of §5.7–§5.9.
-pub const OPCODE_SEND_LEXICAL: u8 = 21;
+pub const OPCODE_SEND_LEXICAL: u8 = 25;
 /// Sends a message to an explicit receiver, found by `lookupPublic` (§5.5).
-pub const OPCODE_SEND_PUBLIC: u8 = 22;
+pub const OPCODE_SEND_PUBLIC: u8 = 26;
 /// Exactly a `SendPublic`, emitted only by the reference lowering for a
 /// control-flow send the optimized lowering inlines, so that both lowerings
 /// count recursion depth alike.
-pub const OPCODE_SEND_INLINABLE: u8 = 23;
+pub const OPCODE_SEND_INLINABLE: u8 = 27;
 /// Sends a message to `self`, looked up from the superclass of the running
 /// method's defining class (§5.10).
-pub const OPCODE_SEND_SUPER: u8 = 24;
+pub const OPCODE_SEND_SUPER: u8 = 28;
 
 /// Instruction tags that no longer name anything and are never reused:
 /// 7–10 were the four sends while their call site was a `u16` instruction
-/// index. Widening it changed what their operands mean, so the sends took
-/// 21–24 and a stale artifact meets an unknown tag.
-pub const RETIRED_OPCODES: [u8; 4] = [7, 8, 9, 10];
+/// index; widening it to a `u32` family number moved them to 21–24. Retiring
+/// those in turn and moving to 25–28 is what makes a stale artifact from
+/// before call-site numbers stopped being serialized at all meet an unknown
+/// tag instead of decoding into a different, perfectly valid program.
+pub const RETIRED_OPCODES: [u8; 8] = [7, 8, 9, 10, 21, 22, 23, 24];
 
 // Literals, carried by `OPCODE_LOAD_LITERAL` and nested inside `LITERAL_ARRAY`.
 // Next free number: 10.

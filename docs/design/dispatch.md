@@ -425,7 +425,10 @@ only on the receiver's own metaclass, which the class-side guard determines,
 so there is nothing left for a `super` send's handler target to re-check.
 The second is gone too, superseded by 2026-09-18's decision below: the
 global cache's `Lexical` key now carries N's application as a fourth
-component, so a vacant lexical site may read it after all.
+component, so a vacant lexical site may read it after all. The fifth is
+superseded too, by 2026-09-18's "Call-site numbers are not serialized"
+below: the decoder assigns a family's numbers instead of checking density,
+so there is no longer a wire-level dense-numbering requirement to keep.
 
 #### The state lives per heap
 
@@ -791,16 +794,20 @@ No instruction changed shape except in the width of its site:
   release build; read by a cache, two sends would share one entry and the
   second would run the first's target. The compiler checks a family's count
   in every build.
-- A wider operand changes what a tag means, so the four send tags 7–10 are
-  retired and the sends are 21–24 ([image-format.md](image-format.md), "The
-  instruction encoding"). A stale artifact meets a retired tag and is
+- A wider operand changes what a tag means, so the four send tags 7–10 were
+  retired and the sends moved to 21–24 ([image-format.md](image-format.md),
+  "The instruction encoding"). A stale artifact meets a retired tag and is
   refused.
-- The code record's call-site list is written empty and a non-empty one is
-  refused (`CallSiteListNotEmpty`), so a stale code body with sends is
-  refused before its instructions are read. The family size is derived from
-  the sends' numbers on decode (`bytecode::family_size_of`, which the
-  compiler uses too), never read, and a family whose numbers are not dense is
-  refused (`CallSitesNotDense`): that bounds the range a crafted family's
+- The number itself stopped being part of the artifact at all ("Call-site
+  numbers are not serialized" below): 21–24 retired in turn and the sends
+  moved to 25–28. The decoder assigns every family's numbers once the whole
+  code table is read, in the compiler's own emission order, so a family's
+  numbers are dense by construction rather than checked on decode; a code
+  record carries a flag for a family the reference lowering compiled
+  uncached, in place of the call-site list that used to guard a stale body.
+  The family size is derived from the sends' numbers the same way on both
+  sides (`bytecode::family_size_of`, which the compiler and the decoder both
+  call), never read from the artifact. That bounds the range a crafted family's
   first activation can allocate by the family's own bytes, and keeps two
   sends from sharing an entry.
 - The reference lowering emits every send with `CallSite::UNCACHED`, so

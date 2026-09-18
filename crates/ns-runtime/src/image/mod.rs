@@ -270,9 +270,13 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let mut interpreter = Interpreter::bootstrap();
     let decoded = interpreter.enter(|mutator| -> Result<_, String> {
         let symbols = symbols::decode(&mut reader).map_err(|error| error.to_string())?;
-        let table =
+        let mut table =
             decode::decode_code_table(&mut reader, &symbols).map_err(|error| error.to_string())?;
         decode::verify_code_table(&table).map_err(|error| error.to_string())?;
+        // Every body in the table is read and structurally sound now, so a
+        // family's call-site numbers -- a block's depend on where its
+        // `MakeClosure` sits in its root's emission order -- can be assigned.
+        decode::number_call_site_families(&mut table).map_err(|error| error.to_string())?;
         let mixins = mixins::decode(&mut reader, &symbols, &table.codes)
             .map_err(|error| error.to_string())?;
         decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;

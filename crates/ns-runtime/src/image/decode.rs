@@ -260,19 +260,6 @@ pub enum DecodeError {
     TrailingBytes {
         count: usize,
     },
-    /// A code record carries a call-site list, which the format no longer
-    /// has: the list was retired when a call site's identity moved from the
-    /// instruction's own index to a number the compiler and the decoder both
-    /// derive (`bytecode::family_size_of`). A non-empty count is a stale
-    /// artifact from before that change, written by an encoder this decoder
-    /// no longer matches -- refused before its instructions are read, rather
-    /// than silently skipped.
-    CallSiteListNotEmpty,
-    /// A code family's call sites are not numbered densely from 0: two sends
-    /// sharing a number would share a cache entry and run each other's
-    /// targets, and a number past the family's own count would let a crafted
-    /// family allocate a range its bytes do not pay for.
-    CallSitesNotDense,
 }
 
 impl std::fmt::Display for DecodeError {
@@ -439,14 +426,6 @@ impl std::fmt::Display for DecodeError {
             DecodeError::TrailingBytes { count } => {
                 write!(f, "{count} trailing byte(s) after the last section")
             }
-            DecodeError::CallSiteListNotEmpty => write!(
-                f,
-                "a code record carries a call-site list, which the format no longer has"
-            ),
-            DecodeError::CallSitesNotDense => write!(
-                f,
-                "a code family's call sites are not numbered densely from 0"
-            ),
         }
     }
 }
@@ -949,6 +928,95 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
     Ok(parents)
 }
 
+/// Assigns every family's call-site numbers once every body in the table is
+/// decoded: a block's numbers depend on where its `MakeClosure` sits in its
+/// root's emission order, which only the flat table read back in full can
+/// answer (`docs/design/dispatch.md`, "Decisions"). A root -- a body no
+/// `MakeClosure` creates -- is found the same way `verify_code_table` finds
+/// one, by reusing `lexical_parents`' scan, so this can run on its own
+/// wherever `decode_code_table` succeeded, before `verify_code_table` or
+/// after it.
+///
+/// A root's own table slot is its only reference at this point: nothing
+/// creates a root via `MakeClosure` (`lexical_parents` already proved that),
+/// and nothing has cloned anything out of the table yet -- `mixins::decode`,
+/// the first thing that does, has not run. Mutating it in place through
+/// `Rc::get_mut` therefore never allocates. A block's slot, by contrast, is
+/// still shared with its parent's `MakeClosure` field, so numbering it
+/// through that field (`Rc::make_mut`) clones the block away from the
+/// table's own, still-unnumbered copy; `writeback` re-points the table at
+/// the numbered clone afterwards, so `Rc::as_ptr` identity -- what
+/// `code_index`, `lexical_parents` and `verify_closure` all key on -- still
+/// agrees with what a decoded closure or frame points to later.
+pub fn number_call_site_families(table: &mut DecodedCodeTable) -> Result<(), DecodeError> {
+    let parents = lexical_parents(table)?;
+    let index_of = code_index(table);
+    let mut writeback: Vec<(usize, Rc<CompiledCode>)> = Vec::new();
+    for index in parents
+        .iter()
+        .enumerate()
+        .filter(|(_, parent)| parent.is_none())
+        .map(|(index, _)| index)
+    {
+        let root = Rc::get_mut(&mut table.codes[index]).expect(
+            "a root's own table slot is its only reference before the mixin table clones it",
+        );
+        let mut next = 0;
+        number_call_sites(root, &mut next, &index_of, &mut writeback)?;
+    }
+    for (index, code) in writeback {
+        table.codes[index] = code;
+    }
+    Ok(())
+}
+
+/// Numbers one code family as `compiler::lower` numbers it: one counter
+/// threaded through a body's own sends and every block nested in it, in
+/// emission order, so no two sends under one root ever share a number. The
+/// number is a property of the code, never read from the artifact, so a
+/// stale body cannot bring a number of its own. A send already `UNCACHED` --
+/// the whole body was compiled by the reference lowering -- is left alone:
+/// every send in such a body is `UNCACHED` (`encode::compiled_uncached`), so
+/// there is nothing to number and `next` does not advance for it.
+///
+/// Recursion depth is the block-nesting depth, which `decode_code_table`
+/// already bounded (`MAX_BLOCK_NESTING`) before this ever runs, so a crafted
+/// artifact cannot use this walk to recurse further than that.
+fn number_call_sites(
+    code: &mut CompiledCode,
+    next: &mut u32,
+    index_of: &HashMap<usize, usize>,
+    writeback: &mut Vec<(usize, Rc<CompiledCode>)>,
+) -> Result<(), DecodeError> {
+    for instruction in &mut code.instructions {
+        match instruction {
+            Instruction::MakeClosure { code: block, .. } => {
+                // Captured before `Rc::make_mut` can move the block to a
+                // fresh allocation: `index_of` was built from the table's
+                // original pointers, and `lexical_parents` already proved
+                // this one names exactly one table entry.
+                let block_index = *index_of
+                    .get(&(Rc::as_ptr(block) as usize))
+                    .ok_or(DecodeError::CodeNotInTable)?;
+                number_call_sites(Rc::make_mut(block), next, index_of, writeback)?;
+                writeback.push((block_index, block.clone()));
+            }
+            Instruction::SendLexical { call_site, .. }
+            | Instruction::SendPublic { call_site, .. }
+            | Instruction::SendInlinable { call_site, .. }
+            | Instruction::SendSuper { call_site, .. }
+                if *call_site != CallSite::UNCACHED =>
+            {
+                *call_site = CallSite { number: *next };
+                *next += 1;
+            }
+            _ => {}
+        }
+    }
+    code.family_size = crate::bytecode::family_size_of(&code.instructions);
+    Ok(())
+}
+
 /// Every decoded body checked against what the VM will do with it:
 /// its arity fits its register file, it cannot run past its last
 /// instruction, every jump target is one of its own instructions, every
@@ -959,62 +1027,6 @@ pub fn verify_code_table(table: &DecodedCodeTable) -> Result<(), DecodeError> {
     for (index, code) in table.codes.iter().enumerate() {
         verify_body(code)?;
         verify_outer_locals(table, &parents, index, code)?;
-    }
-    verify_call_site_numbering(table, &parents)?;
-    Ok(())
-}
-
-/// Every family -- a body no `MakeClosure` creates, with every block under
-/// it -- numbers its sends densely: each number once, all below the root's
-/// `family_size`, and exactly `family_size` of them. Two sends sharing a
-/// number would share a cache entry and run each other's targets, and a
-/// sparse family would make its first activation allocate a range its bytes
-/// do not pay for. `UNCACHED` sends are not counted. Iterative: a family's
-/// depth is bounded, but its width is the image's.
-fn verify_call_site_numbering(
-    table: &DecodedCodeTable,
-    parents: &[Option<usize>],
-) -> Result<(), DecodeError> {
-    for (index, root) in table.codes.iter().enumerate() {
-        if parents[index].is_some() {
-            continue;
-        }
-        // Collected once, iteratively: every body under `root`, the block
-        // nesting the decoder already bounded.
-        let mut family: Vec<&CompiledCode> = Vec::new();
-        let mut pending: Vec<&CompiledCode> = vec![root];
-        while let Some(code) = pending.pop() {
-            for instruction in &code.instructions {
-                if let Instruction::MakeClosure { code: block, .. } = instruction {
-                    pending.push(block);
-                }
-            }
-            family.push(code);
-        }
-        let numbers = || {
-            family
-                .iter()
-                .flat_map(|code| code.instructions.iter())
-                .filter_map(Instruction::call_site)
-                .filter(|site| *site != CallSite::UNCACHED)
-                .map(|site| site.number as usize)
-        };
-        let size = root.family_size as usize;
-        // Bound before allocating `seen`: `family_size` is a claim from the
-        // wire, and a `seen` sized off it before this count would let a
-        // crafted body claim a `u32`-sized family on a handful of bytes.
-        // Counting first bounds the allocation by the family's own decoded
-        // sends instead.
-        if numbers().count() != size {
-            return Err(DecodeError::CallSitesNotDense);
-        }
-        let mut seen = vec![false; size];
-        for number in numbers() {
-            if number >= size || seen[number] {
-                return Err(DecodeError::CallSitesNotDense);
-            }
-            seen[number] = true;
-        }
     }
     Ok(())
 }
@@ -1248,32 +1260,31 @@ fn decode_code(
         let range_end = reader.read_u32()? as usize;
         statement_program_counter.push((statement, range_start..range_end));
     }
-    // The call-site list is retired: a non-zero count is a stale artifact
-    // from before a call site's identity moved off the instruction stream,
-    // refused here rather than skipped or misread.
-    let site_count = reader.read_u32()?;
-    if site_count != 0 {
-        return Err(DecodeError::CallSiteListNotEmpty);
-    }
+    // Whether this body's sends were compiled uncached (`encode::encode_code`).
+    // A number is no longer part of the artifact -- `decode_instruction`
+    // builds every send with a placeholder, `CallSite::UNCACHED` for an
+    // uncached body and `CallSite { number: 0 }` otherwise, and
+    // `number_call_site_families` overwrites the placeholder with the real
+    // number once every body in the table is read.
+    let uncached = reader.read_boolean()?;
     let instruction_count = reader.read_u32()? as usize;
     let mut instructions = reserve_for(instruction_count, reader);
     for _ in 0..instruction_count {
-        instructions.push(decode_instruction(reader, codes, symbols)?);
+        instructions.push(decode_instruction(reader, codes, symbols, uncached)?);
     }
     Ok(CompiledCode {
         kind,
+        // A placeholder, not yet the real answer: every send here carries a
+        // number-shaped stand-in, not the number `number_call_site_families`
+        // will give it, so this would double-count a non-uncached body's
+        // sends as if they were already dense from 0. Recomputed there, once
+        // the real numbers exist.
         family_size: crate::bytecode::family_size_of(&instructions),
         instructions,
         argument_count,
         register_count,
         statement_program_counter,
         source,
-    })
-}
-
-fn decode_call_site(reader: &mut Reader) -> Result<CallSite, DecodeError> {
-    Ok(CallSite {
-        number: reader.read_u32()?,
     })
 }
 
@@ -1293,11 +1304,22 @@ fn decode_symbol(reader: &mut Reader, symbols: &symbols::Table) -> Result<Symbol
     symbols.get(reader.read_u32()?)
 }
 
+/// `uncached` is the enclosing code record's own flag
+/// (`encode::compiled_uncached`): every send this decodes gets
+/// `CallSite::UNCACHED` when it is set, or a `CallSite { number: 0 }`
+/// placeholder otherwise, for `number_call_site_families` to overwrite once
+/// the whole table is read.
 fn decode_instruction(
     reader: &mut Reader,
     codes: &[Rc<CompiledCode>],
     symbols: &symbols::Table,
+    uncached: bool,
 ) -> Result<Instruction, DecodeError> {
+    let call_site = if uncached {
+        CallSite::UNCACHED
+    } else {
+        CallSite { number: 0 }
+    };
     Ok(match reader.read_u8()? {
         OPCODE_LOAD_LITERAL => {
             let destination = reader.read_u16()?;
@@ -1358,7 +1380,7 @@ fn decode_instruction(
                 selector,
                 argument_registers,
                 destination,
-                call_site: decode_call_site(reader)?,
+                call_site,
             }
         }
         OPCODE_SEND_PUBLIC => {
@@ -1371,7 +1393,7 @@ fn decode_instruction(
                 receiver_register,
                 argument_registers,
                 destination,
-                call_site: decode_call_site(reader)?,
+                call_site,
             }
         }
         OPCODE_SEND_INLINABLE => {
@@ -1384,7 +1406,7 @@ fn decode_instruction(
                 receiver_register,
                 argument_registers,
                 destination,
-                call_site: decode_call_site(reader)?,
+                call_site,
             }
         }
         OPCODE_SEND_SUPER => {
@@ -1395,7 +1417,7 @@ fn decode_instruction(
                 selector,
                 argument_registers,
                 destination,
-                call_site: decode_call_site(reader)?,
+                call_site,
             }
         }
         OPCODE_MAKE_CLOSURE => {

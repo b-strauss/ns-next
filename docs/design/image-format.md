@@ -178,11 +178,12 @@ Instructions:
   steps out along the chain of captured frames.
 - 6 `StoreOuterLocal`: writes a local variable of an enclosing activation,
   reached the same way.
-- 7–10: retired. They were the four sends while a send's call site was its
-  instruction's index as a `u16`; widening it to a `u32` family number changed
-  what the operands mean, so the sends took new numbers (21–24) and bytes
-  written before that change meet an unknown tag and are refused
-  (`opcodes::RETIRED_OPCODES`).
+- 7–10, 21–24: retired. 7–10 were the four sends while a send's call site was
+  its instruction's index as a `u16`; widening it to a `u32` family number
+  changed what the operands mean, so the sends took 21–24. Serializing the
+  number at all was retired in turn -- see the call-site paragraph below --
+  so the sends moved again, to 25–28, and bytes written before either change
+  meet an unknown tag and are refused (`opcodes::RETIRED_OPCODES`).
 - 11 `MakeClosure`: creates a block closure over a compiled block body,
   capturing the running activation.
 - 12 `MakeArray`: creates an array from the values of a list of registers, for a
@@ -202,20 +203,21 @@ Instructions:
   through for anything else.
 - 20 `BranchIfTrue`: jumps when a register holds exactly `true`, and falls
   through for anything else.
-- 21 `SendLexical`: sends a message with an implicit receiver, the enclosing
+- 25 `SendLexical`: sends a message with an implicit receiver, the enclosing
   object at the lexical depth the resolver fixed, by the rules of §5.7–§5.9.
-- 22 `SendPublic`: sends a message to an explicit receiver, found by
+- 26 `SendPublic`: sends a message to an explicit receiver, found by
   `lookupPublic` (§5.5).
-- 23 `SendInlinable`: exactly a `SendPublic`, emitted only by the reference
+- 27 `SendInlinable`: exactly a `SendPublic`, emitted only by the reference
   lowering for a control-flow send the optimized lowering inlines, so that both
   lowerings count recursion depth alike.
-- 24 `SendSuper`: sends a message to `self`, looked up from the superclass of
+- 28 `SendSuper`: sends a message to `self`, looked up from the superclass of
   the running method's defining class (§5.10).
 
-The next free instruction number is 25. Each send's operands end with its
-call site, a `u32`: its number within its code family, or `u32::MAX`
-(`CallSite::UNCACHED`) for every send the reference lowering emits
-([compiler.md](compiler.md), "Safepoints and call-site identity").
+The next free instruction number is 29. A send's `CallSite` -- its number
+within its code family, a `u32`, or `u32::MAX` (`CallSite::UNCACHED`) for
+every send the reference lowering emits ([compiler.md](compiler.md),
+"Safepoints and call-site identity") -- is not among its operands at all: see
+the call-site paragraph below.
 
 Literals:
 
@@ -233,16 +235,24 @@ Literals:
 - 9 `UnresolvedIdentifier`: an identifier that names nothing, such as a bare
   `super`; it raises its error when it runs.
 
-**A code record's call-site list is always empty.** The record still has its
-count field, written 0, and a decoder refuses any other count
-(`DecodeError::CallSiteListNotEmpty`) before reading an instruction: the
-list named each send's instruction index while that was its call site, and a
-code body written then carries a non-zero count, so it is refused there
-rather than decoded under today's meaning. A body's `family_size` is not on
-the wire; the decoder derives it from the sends' numbers and the blocks'
-sizes, with the function the compiler uses (`bytecode::family_size_of`).
-The change left the golden image at 1235 bytes: each send's call site grew
-by 2 bytes and each send's entry in the list, 2 bytes, went.
+**A call-site number is a property of the code, never a byte on the wire.**
+It is feedback-table bookkeeping, not program meaning: the decoder assigns
+every family's numbers itself, in the compiler's own emission order, once
+the whole code table is read (`decode::number_call_site_families`), rather
+than trusting a number the file claims. A code record instead carries one
+flag, whether its sends were compiled uncached (the reference lowering never
+numbers a send at all, so it marks the whole body rather than leaving each
+send to say so); the call-site list this replaced, which named each send's
+instruction index while that was its call site, is gone along with the
+count field that used to guard it. A body's `family_size` is not on the wire
+either way; both sides derive it from the sends' numbers and the blocks'
+sizes with the same function (`bytecode::family_size_of`). A block precedes
+its parent in the table, but its numbers depend on where its `MakeClosure`
+sits in its root's emission order, so the decoder numbers a family only once
+its root -- the body nothing else's `MakeClosure` creates -- has been read in
+full. The golden image shrank to 1154 bytes: every send's call-site field (4
+bytes) and most of every code record's list-count field (3 of its 4 bytes,
+replaced by the 1-byte flag) went.
 
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.
@@ -416,27 +426,26 @@ why the check runs as each body is read rather than in `verify_code_table`.
 `the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs` in
 `crates/ns-runtime/tests/image.rs` pin both sides.
 
-**Every code family is numbered densely.** After the per-body checks,
-`verify_code_table` walks each family — a body no `MakeClosure` creates, with
-every block under it, iteratively — and refuses it
-(`DecodeError::CallSitesNotDense`) unless its sends other than
-`CallSite::UNCACHED` carry exactly the root's `family_size` numbers, each
-below it and none twice. The count is compared before anything is sized off
-the claimed `family_size`, so a crafted family cannot make the check
-allocate more than its own decoded sends pay for. What it guarantees: two
-sends of one family never share a cache entry and run each other's targets,
-and the range a family's first activation allocates in the heap's cache
-table is bounded by that family's bytes. What it does not: that a send's
-code agrees with the mixin it is attached to, which no cache relies on
-([dispatch.md](dispatch.md), "The private rule, decided once per site"); a
-site whose recorded decision no longer fits misses, and a mismatch gives
-wrong but safe behaviour. A body's own `family_size` is derived from its own
-sends and blocks, so every send's number is below its body's size by
-construction; density is a property of the family as a whole. `a_family_whose_call_sites_are_not_dense_is_refused`,
-`a_family_numbered_densely_is_accepted`,
-`a_code_record_with_a_call_site_list_is_refused` and
-`a_retired_send_tag_is_refused` in `crates/ns-runtime/tests/image.rs` pin
-both checks and the retired tags.
+**Every code family is numbered densely, by construction.** After the
+per-body checks, `number_call_site_families` walks each family — a body no
+`MakeClosure` creates (a root), with every block under it — and assigns its
+sends, other than `CallSite::UNCACHED`, one shared counter's values in the
+compiler's own emission order: a root's own sends in instruction order,
+recursing into a nested block at its `MakeClosure`. Nothing on the wire says
+what a send's number is, so there is no claimed count to refuse -- a family
+cannot be sparse or share a number the way a serialized one could, and the
+root's `family_size` is recomputed from the freshly assigned numbers
+(`bytecode::family_size_of`) rather than read. What this guarantees is what
+the density check used to: two sends of one family never share a cache entry
+and run each other's targets, and the range a family's first activation
+allocates in the heap's cache table is bounded by that family's own decoded
+sends. What it does not: that a send's code agrees with the mixin it is
+attached to, which no cache relies on ([dispatch.md](dispatch.md), "The
+private rule, decided once per site"); a site whose recorded decision no
+longer fits misses, and a mismatch gives wrong but safe behaviour.
+`a_decoded_family_is_numbered_as_the_compiler_numbered_it` and
+`a_send_tag_retired_by_the_call_site_removal_is_refused` in
+`crates/ns-runtime/tests/image.rs` pin the numbering and the retired tags.
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns
@@ -686,9 +695,20 @@ builtins.
   dispatch id or a `feedback_base`: all three are per heap, so a loaded
   artifact starts with empty caches and mints its own ids.
 - **Widening the send's call site retired its four tags** (2026-09-16), 7–10,
-  rather than reusing them, and the call-site list stays in the code record,
-  written empty and refused otherwise, so a stale body is refused rather than
-  misread.
+  rather than reusing them, and the call-site list stayed in the code record,
+  written empty and refused otherwise, so a stale body was refused rather than
+  misread. Superseded 2026-09-18, next bullet: the list and its count are gone.
+- **Call-site numbers are not serialized** (2026-09-18): a number is
+  feedback-table bookkeeping, not program meaning, so the decoder assigns it
+  instead of trusting the file. 21–24 retired in turn for 25–28; the
+  call-site list and its count field, and the density check
+  (`CallSitesNotDense`) it existed to run, go with the numbers; a code
+  record carries a flag for a family compiled uncached instead. Rejected:
+  per-family hash tables (a hash per hit, and shared numbers stay unsafe);
+  the selector in every cache entry (a compare per hit, and an oversized
+  number still needs bounding) — the alternatives 3b's refusal already
+  rejected, still true once the refusal moved from checking a claimed number
+  to never reading one.
 - **`FORMAT_VERSION` is not bumped**, because there are no external users and the
   safety property does not depend on it.
 - **Artifacts are readable but not writable as text.** A dump serves inspection;
