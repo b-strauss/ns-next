@@ -1,0 +1,20 @@
+Newspeak3
+'Test'
+class FactoryIsAClassSideMember usingPlatform: platform = Object new (| transcript = platform transcript. |) (
+	class Plain = Object new () (
+		public label = ( ^'a Plain instance' )
+	) : (
+		public make = ( ^new label )
+	)
+	class Labelled withLabel: text = Object new (| labelText = text. |) (
+		public label = ( ^'a Labelled instance labelled ', labelText )
+	) : (
+		public make = ( ^(withLabel: 'here') label )
+	)
+	public new = ( ^'the enclosing new' )
+	public withLabel: text = ( ^'the enclosing withLabel: ', text )
+	public main: platform args: args = (
+		transcript show: Plain make; newLine.
+		transcript show: Labelled make; newLine.
+	)
+) : ()

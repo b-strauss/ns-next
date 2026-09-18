@@ -71,7 +71,17 @@ fn declared_members(body: &ast::ClassBody) -> Vec<Symbol> {
 
 /// The members one class declaration declares, both sides together
 /// (`docs/design/dispatch.md`, "Resolution": the class side's own scope is an
-/// open question the specification does not settle).
+/// open question the specification does not settle), plus the primary
+/// factory selector.
+///
+/// The factory belongs here because `newspeak-spec.pdf` §6.3 makes it a
+/// member of the metaclass mixin the class side becomes -- a member this
+/// declaration declares, and therefore one §5.7's depth search must see.
+/// Leaving it out bound an implicit `new` written inside a class-side method
+/// to an *enclosing* class's member `new`, silently answering that enclosing
+/// member instead of an instance of this class; `duplicate_member_names`
+/// below already treats it as a class-side member, and the two must agree on
+/// what the class side holds.
 pub(super) fn own_member_names(declaration: &ast::ClassDeclaration) -> HashSet<Symbol> {
     let mut names: HashSet<Symbol> = declared_members(&declaration.instance_side)
         .into_iter()
@@ -79,6 +89,7 @@ pub(super) fn own_member_names(declaration: &ast::ClassDeclaration) -> HashSet<S
     if let Some(class_side) = &declaration.class_side {
         names.extend(declared_members(class_side));
     }
+    names.insert(factory_selector_of(declaration));
     names
 }
 

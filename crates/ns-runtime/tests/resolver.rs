@@ -290,3 +290,49 @@ fn a_class_side_may_not_declare_a_keyword_factory_selector() {
         ["class `Boxed` has multiple definitions of `with:`"]
     );
 }
+
+/// The primary factory selector is a member of the class side
+/// (`newspeak-spec.pdf` §6.3: "The class side, together with the primary
+/// factory method, defines the mixin for the metaclass"), so §5.7's depth
+/// search must find it on the declaring class. Before it did, an implicit
+/// `new` written inside a class-side method bound to an *enclosing* class's
+/// member `new` at depth 1 and answered that member's value instead of an
+/// instance -- silently, at exit status 0. Pinned at the exact span of the
+/// `new` identifier, because a depth-0 binding somewhere in the module says
+/// nothing about this one.
+#[test]
+fn an_implicit_factory_send_binds_to_the_declaring_class_not_an_enclosing_member() {
+    let source = indoc! {"
+        Newspeak3
+        'T'
+        class Outer = Object new (
+        ) (
+          class Inner = Object new (
+          ) (
+          ) : (
+            make = ( ^new )
+          )
+          public new = ( ^'the enclosing new' )
+        ) : ()
+    "};
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = resolve_source(source);
+
+    let inner = &module.root_class.instance_side.nested_classes[0];
+    let class_side = inner
+        .class_side
+        .as_ref()
+        .expect("Inner declares a class side");
+    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression::Identifier(factory_send)) =
+        &class_side.methods[0].body.statements[0]
+    else {
+        panic!("expected the class-side method's only statement to be `^new`");
+    };
+    assert_eq!(factory_send.name, "new");
+    assert_eq!(
+        resolved.bindings.get(&factory_send.span),
+        Some(&Binding::LexicalSend { depth: 0 }),
+        "an implicit send of the factory selector must bind to the class that \
+         declares the factory, not to the enclosing class's member `new`"
+    );
+}
