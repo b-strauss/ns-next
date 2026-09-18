@@ -160,20 +160,29 @@ below).
   §3.2 describes ([dispatch.md](design/dispatch.md), "Deviation: a builtin
   class name is loaded, not sent").
 
-**Older than this step**, found by a specification audit run before it merged
-and recorded in [README.md](design/README.md)'s deviations table rather than
-here, because none of them is this step's doing. Four answer a correct program
-wrongly at exit status 0, which is the class of defect the rest of this
-repository's invariants exist to prevent, so they are worth a plan of their
-own: a local slot's initializer is dropped (§3.6), simultaneous slot clauses
-initialize sequentially (§6.3.2), an asynchronous send runs synchronously
-(§5.6), and a §5.7 member set is keyed by a class's simple name so two
-same-named classes in one module share one set. The last is the worst of them
--- it makes a program's meaning depend on the name of an unrelated class
-elsewhere in the module, the reference lowering agrees with the optimized one
-because the mistake is made above both, and the fix is a real class identity
-in place of a name. Mixin application (§6.2) is unimplemented but fails
-loudly.
+**Older than this step**, found by two specification audits and recorded in
+[README.md](design/README.md)'s deviations table rather than here, because
+none of them is this step's doing. **Eight answer a correct program wrongly at
+exit status 0** -- the class of defect the rest of this repository's invariants
+exist to prevent -- so they are worth a plan of their own.
+
+**Nine of them have a golden**, under `goldens/spec/`, recorded as `skipped`
+with what the specification requires the program to answer. That list is the
+work item, and it is executable rather than descriptive: closing a gap is
+deleting the golden's `skipped` line and making the recorded answer hold.
+`grep -l '^skipped' goldens/*/*.toml` enumerates it; each golden's
+`(* ... *)` comment carries the rule and its section.
+
+The worst of them is that a §5.7 member set is keyed by a class's simple
+name, so two same-named classes in one module share one set. It makes a
+program's meaning depend on the name of an unrelated class elsewhere in the
+module; eighteen corpus modules have the shape; and the reference lowering
+agrees with the optimized one, because the mistake is made in the resolver,
+above both, so the oracle cannot catch it. The fix is a real class identity in
+place of a name. Two were found only by the second audit and are cheap by
+comparison: equal symbol literals are not one object (§5.1.6) and a parameter
+slot accepts a setter send (§3.6). Mixin application (§6.2) is unimplemented
+but fails loudly.
 
 **Open findings**, for whoever plans next to weigh:
 
@@ -2313,6 +2322,38 @@ in about 12 s with the test binaries built; the same tests passing under
 `NS_NEXT_STRESS_CACHES=1` (about 1 min 5 s); `parse-corpus` at
 **210/0/1/0** and `run-corpus` at **6/0/205**, plain and under both stress
 modes. No recorded outcome moved.
+
+## M4 — The goldens directory (2026-09-18)
+
+Plan: [ns-next-goldens](superpowers/plans/2026-09-18-1355-ns-next-goldens.md).
+
+Test infrastructure rather than runtime work, but it changed a gate
+`CLAUDE.md` names, so it belongs here. `tests-fixtures/` became `goldens/`:
+a `.ns` program and a `.toml` beside it recording `status`, `stdout` and
+`stderr`, filed under eight category directories and found by walking rather
+than from any list, with anything at another depth refused by name instead of
+skipped. `crates/ns-cli/tests/program_outcomes.rs` was dissolved into it --
+its 33 tests existed only because the old `.expected` sidecar could not record
+a non-zero exit -- and the hardcoded floor of 42 gave way to a two-way pairing
+check, which catches the half-move the floor was there for and cannot catch a
+whole-pair deletion, the trade for having no count.
+
+A `skipped` key records why the runtime does not answer a golden yet, with the
+other keys still holding what it should. That turned the deviations table from
+a description into a work list: nine goldens are skipped, six for gaps the
+table already recorded and three for rules nothing had pinned.
+
+Two specification-coverage audits ran over the whole document, section by
+section, and found more than the gaps: §6.3's five-step instantiation order
+and §5.4.4's cascade receiver were both unpinned, the second one relied on by
+nearly every golden. The cascade rule is where the specification's own prose
+and its grammar disagree; canonical Newspeak settles it
+(`corpus/modules/NewspeakASTs.ns:170`, `CascadedSendAST>>receiver` is
+`^self previousSend receiver`), and ns-next agrees. Thirteen goldens and five
+deviation rows came out of the two audits.
+
+88 goldens, 79 running. No recorded answer changed in the move, which was
+checked mechanically at each step rather than by eye.
 
 ## M4 — Flat metaclasses, the factory and the cache refinements (2026-09-18)
 
