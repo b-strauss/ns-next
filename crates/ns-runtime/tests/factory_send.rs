@@ -325,8 +325,9 @@ fn a_class_without_a_class_side_still_has_a_factory_entry() {
     );
 }
 
-/// A builtin declares no factory pattern, so §6.1's default applies: its
-/// metaclass holds one entry, under `new`.
+/// A builtin declares no factory pattern, so the default from §6's
+/// unnumbered introduction (before §6.1 begins) applies: its metaclass
+/// holds one entry, under `new`.
 #[test]
 fn a_builtin_class_has_a_factory_entry_under_new() {
     let mut interpreter = Interpreter::bootstrap();

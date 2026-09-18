@@ -31,7 +31,7 @@ pub enum Lookup<'gc> {
     /// and the lookup continues from its superclass (`lookup_above`).
     Primitive(Primitive, ClassReference<'gc>),
     /// §6.3's primary factory, found on the receiver's metaclass. It carries
-    /// no level: §6.1 instantiates the *receiver* of the factory message,
+    /// no level: §6.3 instantiates the *receiver* of the factory message,
     /// whichever level of the metaclass mixin's chain the entry was found at
     /// -- and with a flat metaclass (§3.2) there is only ever the one.
     Factory,
@@ -358,7 +358,7 @@ fn walk<'gc>(
 /// whose mixin declares the slot, so `own_slot_base` places it (§6.3.2, as
 /// `InitializeSlot` places a slot's initial value) -- a primitive with
 /// that level, which its failure passes over, or the primary factory, which
-/// needs no level at all because §6.1 instantiates the receiver.
+/// needs no level at all because §6.3 instantiates the receiver.
 fn found_entry<'gc>(
     entry: &MethodEntry,
     application: &MixinApplication,

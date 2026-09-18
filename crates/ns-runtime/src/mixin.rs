@@ -210,9 +210,10 @@ pub struct PrimitiveMethod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FactoryMethod {
     pub selector: Symbol,
-    /// The factory pattern's parameter count (§6.1), carried so that an
-    /// entry answers everything a lookup's caller can ask of a method
-    /// without reaching back to the declaration -- a decoded mixin has none.
+    /// The primary factory signature's parameter count (§6's unnumbered
+    /// introduction, before §6.1 begins), carried so that an entry answers
+    /// everything a lookup's caller can ask of a method without reaching
+    /// back to the declaration -- a decoded mixin has none.
     pub argument_count: usize,
     pub access: ast::AccessModifier,
 }
@@ -253,9 +254,12 @@ impl MethodEntry {
 }
 
 /// The one entry a metaclass mixin holds beyond the class side's own
-/// members: §6.3's primary factory method, under the selector §6.1
-/// instantiates the class by -- the declared factory pattern's, or `new` for
-/// a declaration that writes none and for a builtin, which declares none.
+/// members: §6.3's primary factory method, under the selector that
+/// instantiates the class -- "when a class object receives a message ...
+/// whose selector is the name of its primary factory method, the instance
+/// initializer is invoked" (§6.3) -- the declared factory pattern's, or
+/// `new` for a declaration that writes none and for a builtin, which
+/// declares none.
 ///
 /// One definition, called from every place a metaclass mixin is assembled
 /// -- from a declared class side, for the empty one a class without a class
@@ -312,9 +316,11 @@ pub fn slot_accessors(slots: &[MixinSlot]) -> Vec<(Symbol, MethodEntry)> {
 }
 
 /// A mixin's primary factory message, reduced to the two things the run
-/// time asks of it: which selector instantiates it (`newspeak-spec.pdf`
-/// §6.1) and how many arguments that selector takes. `None` for a mixin
-/// with no factory of its own -- a builtin's, and a class side's.
+/// time asks of it: which selector instantiates it and how many arguments
+/// that selector takes -- the signature §6's unnumbered introduction, before
+/// §6.1 begins, allows right after the class name, defaulting to `new` when
+/// omitted. `None` for a mixin with no factory of its own -- a builtin's,
+/// and a class side's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Factory {
     pub selector: Symbol,

@@ -69,7 +69,7 @@ pub(crate) enum Target {
         chain: Chain,
     },
     /// §6.3's primary factory. It carries no level, unlike every other
-    /// target: §6.1 instantiates the *receiver*, which the guard already
+    /// target: §6.3 instantiates the *receiver*, which the guard already
     /// names.
     Factory {
         chain: Chain,
@@ -669,7 +669,7 @@ fn materialize<'gc>(
                 FeedbackBase::NOT_ASSIGNED,
             )
         }
-        // §6.1 instantiates the class object the factory message was sent
+        // §6.3 instantiates the class object the factory message was sent
         // to, so the entry records no level: the class a hit instantiates is
         // the receiver, which the guard -- that class object's class-side
         // dispatch id -- already determines. A factory entry is reachable

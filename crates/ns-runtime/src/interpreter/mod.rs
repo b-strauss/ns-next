@@ -1154,7 +1154,8 @@ impl<'gc> Mutator<'gc> {
     /// (`image::mixins::decode`) alike. A class that declares none still
     /// needs a metaclass to hold that one entry, and gets an otherwise empty
     /// mixin here: the case that covers every builtin, whose behaviour is
-    /// native and whose factory is `new` (§6.1's default).
+    /// native and whose factory is `new` -- the default §6's unnumbered
+    /// introduction gives an omitted factory signature, before §6.1 begins.
     fn metaclass_mixin(&mut self, mixin: &Rc<crate::mixin::Mixin>) -> Rc<crate::mixin::Mixin> {
         if let Some(class_side) = &mixin.class_side {
             return class_side.clone();

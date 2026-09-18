@@ -590,7 +590,7 @@ const TWO_FACTORIES: &str = indoc! {"
 "};
 
 /// A `Factory` entry records the chain and nothing else, because
-/// `newspeak-spec.pdf` §6.1 instantiates the *receiver*; a hit reads the
+/// `newspeak-spec.pdf` §6.3 instantiates the *receiver*; a hit reads the
 /// class out of the send's key rather than out of the entry.
 ///
 /// The case that says so is **one guard, two receivers**, which two

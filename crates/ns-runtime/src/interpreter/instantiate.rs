@@ -177,10 +177,13 @@ impl<'gc> Mutator<'gc> {
             .iter()
             .map(|nested| self.build_mixin(nested, bindings))
             .collect();
-        // §6.1: a class written without a factory pattern is instantiated by
-        // `new`, which is also what an omitted superclass-clause *message*
-        // defaults to -- the two halves of the same rule, so
-        // `class C = (...)` inherits from `Object` through `new`. Resolved
+        // §6's unnumbered introduction, before §6.1 begins: "If the
+        // signature is omitted it defaults to `new`" -- a class written
+        // without a factory pattern is instantiated by `new`. A separate
+        // rule, §6.1's own default for an omitted superclass-clause
+        // *message*, defaults to `new` too -- the same selector, not the
+        // same rule -- so `class C = (...)` inherits from `Object` through
+        // `new` by two independent defaults landing on one value. Resolved
         // before the class side is built, because §6.3 makes the factory a
         // member of the metaclass mixin the class side becomes.
         let factory = match &declaration.factory {
@@ -261,7 +264,9 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// §6.3's instantiation, the action of a factory entry: a fresh instance
-    /// of `class`, then its instance initializer (`newspeak-spec.pdf` §6.1).
+    /// of `class`, then its instance initializer (`newspeak-spec.pdf` §6.3:
+    /// "the instance initializer is invoked on an instance *o* of the
+    /// class").
     ///
     /// No re-check of what the lookup decided: the entry was found on the
     /// receiver's own metaclass, whose dispatch id is the class-side guard a

@@ -237,9 +237,9 @@ fn a_class_side_may_not_declare_the_factory_selector() {
     assert_eq!(errors, ["class `Widget` has multiple definitions of `new`"]);
 }
 
-/// A class written with no factory pattern defaults to `new` (§6.1), so the
-/// collision is refused even when nothing in the source spells the selector
-/// out.
+/// A class written with no factory pattern defaults to `new` (§6's
+/// unnumbered introduction, before §6.1 begins), so the collision is refused
+/// even when nothing in the source spells the selector out.
 #[test]
 fn a_class_side_may_not_declare_the_default_factory_selector() {
     let errors = resolve_errors(indoc! {"

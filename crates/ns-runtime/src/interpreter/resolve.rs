@@ -64,7 +64,7 @@ pub(crate) enum Resolved<'gc> {
         chain: Chain,
     },
     /// §6.3's primary factory, found on `level`'s metaclass; `level` is the
-    /// class object §6.1 instantiates, which is the send's receiver. `chain`
+    /// class object §6.3 instantiates, which is the send's receiver. `chain`
     /// is `PublicClassSide` or `ProtectedClassSide`: a factory entry lives
     /// on a metaclass and metaclasses are flat (§3.2), so no other chain
     /// reaches one.
@@ -340,7 +340,7 @@ fn resolved<'gc>(lookup: Lookup<'gc>, chain: Chain) -> Resolved<'gc> {
 /// (§6.3), where `receiver` is the class object whose metaclass was
 /// searched.
 ///
-/// §6.1 instantiates the class object the primary factory message was
+/// §6.3 instantiates the class object the primary factory message was
 /// *sent to*, whichever level of the metaclass chain held the entry -- and
 /// §3.2's flat metaclass leaves only the one level anyway. So the factory
 /// resolution names the receiver, and no level is counted or recorded.
