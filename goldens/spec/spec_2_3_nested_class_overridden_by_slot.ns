@@ -1,11 +1,11 @@
 Newspeak3
 'Test'
+(* newspeak-spec.pdf 2.3, verbatim apart from the module around it: "Here
+   is a class with a single nested class", then "Because all references
+   to nested classes are message sends, nested classes can be
+   overridden." ... "Here we have overridden a nested class declaration
+   with a slot." *)
 class Spec23NestedClassOverriddenBySlot usingPlatform: p = Object new (| t = p transcript. |) (
-    (* newspeak-spec.pdf 2.3, verbatim apart from the module around it: "Here
-       is a class with a single nested class", then "Because all references
-       to nested classes are message sends, nested classes can be
-       overridden." ... "Here we have overridden a nested class declaration
-       with a slot." *)
     class Outer = () (
        public class Inner = ()()
     )

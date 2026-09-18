@@ -1,19 +1,19 @@
 Newspeak3
 'Test'
+(* newspeak-spec.pdf 5.7: "Let d be the innermost lexically enclosing
+   construct in which a method, slot or class named s is declared"; and on
+   figure 4: "First, the surrounding lexical scope chain is traversed ...
+   Only if this fails is the receiver's inheritance chain followed". 2.3.1:
+   "only if no lexically visible matching method is found, do we proceed up
+   the inheritance chain of self. After that, no further lookup is done."
+
+   Inner inherits an m from Sup but does not declare one; Outer declares
+   m. So the m in foo is outer Outer m, answering 91, not Sup's 42.
+
+   An enclosing class's *inherited* member is reached by an explicit
+   outer send: 5.9 runs lookupProtected on the class of the enclosing
+   object, which finds OuterBase's n. *)
 class Spec57LexicalBeforeInherited usingPlatform: p = Object new (| t = p transcript. |) (
-    (* newspeak-spec.pdf 5.7: "Let d be the innermost lexically enclosing
-       construct in which a method, slot or class named s is declared"; and on
-       figure 4: "First, the surrounding lexical scope chain is traversed ...
-       Only if this fails is the receiver's inheritance chain followed". 2.3.1:
-       "only if no lexically visible matching method is found, do we proceed up
-       the inheritance chain of self. After that, no further lookup is done."
-
-       Inner inherits an m from Sup but does not declare one; Outer declares
-       m. So the m in foo is outer Outer m, answering 91, not Sup's 42.
-
-       An enclosing class's *inherited* member is reached by an explicit
-       outer send: 5.9 runs lookupProtected on the class of the enclosing
-       object, which finds OuterBase's n. *)
     class Sup = Object new () (
         public m = ( ^42 )
     )

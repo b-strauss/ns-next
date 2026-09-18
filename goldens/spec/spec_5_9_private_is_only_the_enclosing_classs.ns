@@ -1,13 +1,13 @@
 Newspeak3
 'Test'
+(* newspeak-spec.pdf 5.9: "If N declares a private method f named s then
+   the value of the send is the result of invoking f in response to (3.5)
+   message u on o. Otherwise, Let f = lookupProtected(s, R) where R is the
+   class of o", and lookupProtected passes a private declaration over.
+   In Base's run, s is Base's own protected s (5.7: Base declares it, so
+   N is Base): Child's private s is neither N's nor reachable by
+   lookupProtected, so Child new run answers 1. *)
 class Spec59PrivateIsOnlyTheEnclosingClasss usingPlatform: p = Object new (| t = p transcript. |) (
-    (* newspeak-spec.pdf 5.9: "If N declares a private method f named s then
-       the value of the send is the result of invoking f in response to (3.5)
-       message u on o. Otherwise, Let f = lookupProtected(s, R) where R is the
-       class of o", and lookupProtected passes a private declaration over.
-       In Base's run, s is Base's own protected s (5.7: Base declares it, so
-       N is Base): Child's private s is neither N's nor reachable by
-       lookupProtected, so Child new run answers 1. *)
     class Base = Object new () (
         s = ( ^1 )
         public run = ( ^s )

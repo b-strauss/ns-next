@@ -1,18 +1,18 @@
 Newspeak3
 'Test'
-class Spec632SlotAccessorsAreMethods usingPlatform: p = Object new (| t = p transcript. |) (
-    (* newspeak-spec.pdf 6.3.2: "Access to the value of a mutable slot is via a
-       getter method ... a mutable slot may be set exclusively by a invoking a
-       setter method ... The setter method is implicitly defined by the slot
-       declaration. It sets the value of the slot to be the incoming argument.
-       It returns the receiver of the message." And: "The initialization
-       itself is not accomplished by the setter method. Consequently,
-       overriding a setter will not impact such an initialization". 2.3:
-       "Methods are always virtual (i.e., subject to override)".
+(* newspeak-spec.pdf 6.3.2: "Access to the value of a mutable slot is via a
+   getter method ... a mutable slot may be set exclusively by a invoking a
+   setter method ... The setter method is implicitly defined by the slot
+   declaration. It sets the value of the slot to be the incoming argument.
+   It returns the receiver of the message." And: "The initialization
+   itself is not accomplished by the setter method. Consequently,
+   overriding a setter will not impact such an initialization". 2.3:
+   "Methods are always virtual (i.e., subject to override)".
 
-       So Child's x and x: override the accessors Base's slot defines: Base's
-       readX and writeX: reach them, while creating a Child initializes x
-       without running Child's x:. *)
+   So Child's x and x: override the accessors Base's slot defines: Base's
+   readX and writeX: reach them, while creating a Child initializes x
+   without running Child's x:. *)
+class Spec632SlotAccessorsAreMethods usingPlatform: p = Object new (| t = p transcript. |) (
     class Base = Object new (| public x ::= 1. |) (
         public readX = ( ^x )
         public writeX: value = ( ^x: value )

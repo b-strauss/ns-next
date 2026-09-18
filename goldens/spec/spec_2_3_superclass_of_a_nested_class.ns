@@ -1,12 +1,12 @@
 Newspeak3
 'Test'
+(* newspeak-spec.pdf 2.3, verbatim apart from the module around it: "It is
+   also possible to override a superclass of a nested class; consider this
+   variation", then "Here are a few more illustrative examples. If g is an
+   instance of GrandChildOfOuter, then" -- each example's comment is kept
+   beside the line that checks it. (g Inner: Array) sends the slot's
+   setter to g, which 6.3.2 has answer "the receiver of the message". *)
 class Spec23SuperclassOfANestedClass usingPlatform: p = Object new (| t = p transcript. |) (
-    (* newspeak-spec.pdf 2.3, verbatim apart from the module around it: "It is
-       also possible to override a superclass of a nested class; consider this
-       variation", then "Here are a few more illustrative examples. If g is an
-       instance of GrandChildOfOuter, then" -- each example's comment is kept
-       beside the line that checks it. (g Inner: Array) sends the slot's
-       setter to g, which 6.3.2 has answer "the receiver of the message". *)
     class Outer = () (
        public class Inner = ()()
     )

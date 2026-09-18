@@ -1,12 +1,12 @@
 Newspeak3
 'Test'
+(* newspeak-spec.pdf 5.5: lookupPublic(n, C) is "m, if the mixin of C
+   defines a method m with selector n and public access. Undefined, if the
+   mixin of C defines a method m with selector n and protected access.
+   lookupPublic(n, superclass(C)) otherwise." A private declaration is
+   therefore passed over, not a stop: PrivateShadow new foo reaches
+   PublicBase's public foo. *)
 class Spec55PublicLookupSkipsPrivate usingPlatform: p = Object new (| t = p transcript. |) (
-    (* newspeak-spec.pdf 5.5: lookupPublic(n, C) is "m, if the mixin of C
-       defines a method m with selector n and public access. Undefined, if the
-       mixin of C defines a method m with selector n and protected access.
-       lookupPublic(n, superclass(C)) otherwise." A private declaration is
-       therefore passed over, not a stop: PrivateShadow new foo reaches
-       PublicBase's public foo. *)
     class PublicBase = Object new () (
         public foo = ( ^1 )
     )

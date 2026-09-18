@@ -218,6 +218,16 @@ trusting a program's output.
 | An asynchronous send runs synchronously and answers the value rather than a promise; there are no actors | §5.6 | [frontend.md](frontend.md) |
 | A §5.7 member set is keyed by a class's simple name, so two same-named classes in one module share one set. A defect, not a decision: it answers wrongly at exit status 0 | §5.7 | [dispatch.md](dispatch.md) |
 
+Four of these have a golden under `goldens/spec/`, recorded as `skipped`:
+the dropped local-slot initializer, the sequential simultaneous slot
+clauses, the name-keyed member set and the unparsed mixin application. Each
+states what the specification requires the program to answer, so closing
+the gap is deleting the `skipped` line, and the expectation written the day
+the gap was found is what then has to hold. The asynchronous send has none:
+§5.6 says the result is "a promise that is immediately returned to the
+sender", and with no promise to observe there is no answer to record that
+would not be invented.
+
 ## What lives elsewhere
 
 - **`CLAUDE.md`** — the invariants that are easy to break, each of which has

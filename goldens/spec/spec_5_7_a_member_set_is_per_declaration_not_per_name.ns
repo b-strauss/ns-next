@@ -1,0 +1,32 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 5.7: the receiver of an implicit send is "the
+   innermost lexically enclosing construct in which a method, slot or class
+   named s is declared". Alpha's Dup declares marker itself, so the marker
+   in reach is Dup's own, whatever any enclosing class declares.
+
+   The resolver keys a declaration's member set by the class's simple name
+   (docs/design/dispatch.md, "Defect: a member set is keyed by the class's
+   simple name"), so Beta's Dup -- collected later, declaring nothing --
+   overwrites Alpha's Dup's set and reach walks out to Alpha's marker
+   instead. Renaming the unrelated Beta.Dup makes this answer correctly,
+   which is the shape of the defect: a program's meaning depends on the
+   name of a class it never mentions. Skipped until a member set is keyed
+   by a class identity rather than a name. *)
+class Spec57MemberSetPerDeclaration usingPlatform: p = Object new (| t = p transcript. |) (
+    class Alpha = Object new () (
+        marker = ( ^'an enclosing marker' )
+        class Dup = Object new () (
+            marker = ( ^'Dup''s own marker' )
+            public reach = ( ^marker )
+        ) : ()
+        public probe = ( ^Dup new reach )
+    ) : ()
+    class Beta = Object new () (
+        class Dup = Object new () (
+        ) : ()
+    ) : ()
+    public main: platform args: arguments = (
+        t show: Alpha new probe; newLine
+    )
+) : ()

@@ -1,0 +1,22 @@
+Newspeak3
+'Test'
+(* newspeak-spec.pdf 6.3.2: a simultaneous slot declaration with a right
+   hand side e "initializes the slot to the value of p computing: e, where
+   p is the class Past`Future", and "All these futures are resolved once
+   the last slot declaration in the simultaneous slot clause has been
+   executed" -- so that "any well founded mutual recursion between
+   simultaneous slots will resolve properly". first reads second, which is
+   declared after it, and must still answer 3.
+
+   The parser computes the simultaneous flag only to pick the closing
+   delimiter and discards it (docs/design/frontend.md, "Deviation:
+   simultaneous slot clauses initialize sequentially"), so second is still
+   nil when first is computed. Skipped until the futures exist. *)
+class Spec632SimultaneousSlots usingPlatform: p = Object new (| t = p transcript. |) (
+    class Probe = Object new (|| first = second + 1. second = 2. ||) (
+        public answer = ( ^first )
+    ) : ()
+    public main: platform args: arguments = (
+        t show: Probe new answer printString; newLine
+    )
+) : ()
