@@ -178,12 +178,11 @@ Instructions:
   steps out along the chain of captured frames.
 - 6 `StoreOuterLocal`: writes a local variable of an enclosing activation,
   reached the same way.
-- 7–10, 21–24: retired. 7–10 were the four sends while a send's call site was
-  its instruction's index as a `u16`; widening it to a `u32` family number
-  changed what the operands mean, so the sends took 21–24. Serializing the
-  number at all was retired in turn -- see the call-site paragraph below --
-  so the sends moved again, to 25–28, and bytes written before either change
-  meet an unknown tag and are refused (`opcodes::RETIRED_OPCODES`).
+- 7–10 and 21–24: retired. 7–10 were the sends while a call site was a `u16`
+  instruction index; 21–24 were the sends while the number was serialized as
+  a `u32` (see the call-site paragraph below). The sends are 25–28; bytes
+  written under either retired number meet an unknown tag and are refused
+  (`opcodes::RETIRED_OPCODES`).
 - 11 `MakeClosure`: creates a block closure over a compiled block body,
   capturing the running activation.
 - 12 `MakeArray`: creates an array from the values of a list of registers, for a
@@ -239,20 +238,16 @@ Literals:
 It is feedback-table bookkeeping, not program meaning: the decoder assigns
 every family's numbers itself, in the compiler's own emission order, once
 the whole code table is read (`decode::number_call_site_families`), rather
-than trusting a number the file claims. A code record instead carries one
-flag, whether its sends were compiled uncached (the reference lowering never
+than trusting a number the file claims. A code record carries one flag,
+whether its sends were compiled uncached (the reference lowering never
 numbers a send at all, so it marks the whole body rather than leaving each
-send to say so); the call-site list this replaced, which named each send's
-instruction index while that was its call site, is gone along with the
-count field that used to guard it. A body's `family_size` is not on the wire
-either way; both sides derive it from the sends' numbers and the blocks'
-sizes with the same function (`bytecode::family_size_of`). A block precedes
-its parent in the table, but its numbers depend on where its `MakeClosure`
-sits in its root's emission order, so the decoder numbers a family only once
-its root -- the body nothing else's `MakeClosure` creates -- has been read in
-full. The golden image shrank to 1154 bytes: every send's call-site field (4
-bytes) and most of every code record's list-count field (3 of its 4 bytes,
-replaced by the 1-byte flag) went.
+send to say so). A body's `family_size` is not on the wire either way; both
+sides derive it from the sends' numbers and the blocks' sizes with the same
+function (`bytecode::family_size_of`). A block precedes its parent in the
+table, but its numbers depend on where its `MakeClosure` sits in its root's
+emission order, so the decoder numbers a family only once its root -- the
+body nothing else's `MakeClosure` creates -- has been read in full. The
+golden image is 1154 bytes.
 
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.
@@ -444,8 +439,9 @@ attached to, which no cache relies on ([dispatch.md](dispatch.md), "The
 private rule, decided once per site"); a site whose recorded decision no
 longer fits misses, and a mismatch gives wrong but safe behaviour.
 `a_decoded_family_is_numbered_as_the_compiler_numbered_it` and
-`a_send_tag_retired_by_the_call_site_removal_is_refused` in
-`crates/ns-runtime/tests/image.rs` pin the numbering and the retired tags.
+`a_retired_send_tag_is_refused` (looped over every entry of
+`RETIRED_OPCODES`) in `crates/ns-runtime/tests/image.rs` pin the numbering
+and the retired tags.
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns

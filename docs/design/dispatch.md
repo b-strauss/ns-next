@@ -794,22 +794,22 @@ No instruction changed shape except in the width of its site:
   release build; read by a cache, two sends would share one entry and the
   second would run the first's target. The compiler checks a family's count
   in every build.
-- A wider operand changes what a tag means, so the four send tags 7–10 were
-  retired and the sends moved to 21–24 ([image-format.md](image-format.md),
-  "The instruction encoding"). A stale artifact meets a retired tag and is
+- The four sends are 25–28 ([image-format.md](image-format.md), "The
+  instruction encoding"); 7–10 and 21–24 are retired, 7–10 because a send's
+  call site was a `u16` instruction index and 21–24 because the number was
+  serialized as a `u32` at all. A stale artifact meets a retired tag and is
   refused.
-- The number itself stopped being part of the artifact at all ("Call-site
-  numbers are not serialized" below): 21–24 retired in turn and the sends
-  moved to 25–28. The decoder assigns every family's numbers once the whole
-  code table is read, in the compiler's own emission order, so a family's
-  numbers are dense by construction rather than checked on decode; a code
-  record carries a flag for a family the reference lowering compiled
-  uncached, in place of the call-site list that used to guard a stale body.
-  The family size is derived from the sends' numbers the same way on both
-  sides (`bytecode::family_size_of`, which the compiler and the decoder both
-  call), never read from the artifact. That bounds the range a crafted family's
-  first activation can allocate by the family's own bytes, and keeps two
-  sends from sharing an entry.
+- No call-site number is on the wire ("Call-site numbers are not serialized"
+  below). The decoder assigns every family's numbers once the whole code
+  table is read, in the compiler's own emission order, so a family's numbers
+  are dense by construction rather than checked on decode; a code record
+  carries a flag for a family the reference lowering compiled uncached, in
+  place of the call-site list that used to guard a stale body. The family
+  size is derived from the sends' numbers the same way on both sides
+  (`bytecode::family_size_of`, which the compiler and the decoder both
+  call), never read from the artifact. That bounds the range a crafted
+  family's first activation can allocate by the family's own bytes, and
+  keeps two sends from sharing an entry.
 - The reference lowering emits every send with `CallSite::UNCACHED`, so
   everything it compiles runs the full lookup on every send.
 - No cache state and no `feedback_base` is ever serialized; a loaded artifact

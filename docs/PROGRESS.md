@@ -228,10 +228,9 @@ below).
   under `NS_NEXT_STRESS_CACHES=1`, about 1 min 5 s. Both are gates before
   every commit, so a plan should budget for them.
 - **Small follow-ups 3b's reviews deferred**, none affecting an outcome:
-  `verify_call_site_numbering`'s duplicate-number branch has no test of its
-  own (a family numbered 0, 2, 2 would reach it); `InlineCaches::fresh_range`
-  adds `start + size as usize` unchecked, which only a 32-bit `usize` could
-  overflow; no unit test covers a decoded closure's base being written back
+  `InlineCaches::fresh_range` adds `start + size as usize` unchecked, which
+  only a 32-bit `usize` could overflow; no unit test covers a decoded
+  closure's base being written back
   or `fresh_range` refusing a range past the table's limit (an image test
   covers the first through a program); `types.rs` names
   `interpreter::inline_cache::FeedbackBase` rather than its re-export
